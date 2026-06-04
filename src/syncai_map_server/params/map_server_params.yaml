@@ -1,0 +1,14 @@
+# Parameters for the syncai_map_server "map_server" node.
+# The top-level key must match the node name (see launch file: name="map_server").
+map_server:
+  ros__parameters:
+    # Absolute path to the map YAML file to load on startup.
+    # Leave empty ("") to start without a map and load it later via the
+    # "/map_server/load_map" service.
+    yaml_filename: ""
+
+    # Topic on which the OccupancyGrid is published (latched / transient_local QoS).
+    topic_name: "map"
+
+    # frame_id stamped on the published OccupancyGrid.
+    frame_id: "map"

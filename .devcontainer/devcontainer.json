@@ -3,7 +3,7 @@
   "build": {
     "dockerfile": "Dockerfile",
     "args": {
-      "USERNAME": "ros",
+      "USERNAME": "ubuntu",
       "USER_UID": "1000",
       "USER_GID": "1000"
     }
@@ -11,6 +11,9 @@
   "remoteUser": "ros",
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "mounts": [
+    "source=syncai-claude,target=/home/ros/.claude,type=volume"
+  ],
   "runArgs": [
     "--network=host"
   ],

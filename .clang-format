@@ -1,0 +1,28 @@
+---
+Language: Cpp
+# 與 ROS2 ament_clang_format 預設一致(BasedOnStyle: Google + 客製)
+BasedOnStyle: Google
+
+AccessModifierOffset: -2
+AlignAfterOpenBracket: AlwaysBreak
+BraceWrapping:
+  AfterClass: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+AllowShortFunctionsOnASingleLine: InlineOnly
+BreakBeforeBraces: Custom
+ColumnLimit: 100
+ConstructorInitializerIndentWidth: 0
+ContinuationIndentWidth: 2
+DerivePointerAlignment: false
+PointerAlignment: Middle
+ReflowComments: false
+IncludeCategories:
+  - Regex: '^<.*\.h(pp)?>'
+    Priority: 1
+  - Regex: '^<.*>'
+    Priority: 2
+  - Regex: '.*'
+    Priority: 3
+...

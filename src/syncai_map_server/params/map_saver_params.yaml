@@ -1,0 +1,14 @@
+# Parameters for the syncai_map_server "map_saver" node.
+# The top-level key must match the node name (see launch file: name="map_saver_server").
+map_saver_server:
+  ros__parameters:
+    # Timeout (seconds) to wait for a map message on the requested topic before giving up.
+    save_map_timeout: 5.0
+
+    # Default thresholds applied when the SaveMap request leaves them at 0.0.
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+
+    # Subscribe to the map topic with transient_local (latched) QoS so that a map
+    # published once (e.g. by map_server) is still received.
+    map_subscribe_transient_local: true

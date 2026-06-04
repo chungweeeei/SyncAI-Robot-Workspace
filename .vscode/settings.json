@@ -1,0 +1,17 @@
+{
+  // 切換焦點時自動存檔 —— 這個模式才會觸發 formatOnSave
+  // (afterDelay 打字自動存不會套用格式)
+  "files.autoSave": "onFocusChange",
+  "editor.formatOnSave": true,
+
+  // 用 clang-format,並讀取 repo 根目錄的 .clang-format 設定
+  "C_Cpp.formatting": "clangFormat",
+  "C_Cpp.clang_format_style": "file",
+
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  }
+}
