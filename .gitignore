@@ -1,0 +1,56 @@
+# colcon / ROS2 build artifacts
+build/
+install/
+log/
+.colcon/
+
+# rosdep / ament
+*.deb
+.catkin_tools/
+devel/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# C/C++
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dSYM/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Editor / IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.bag
+*.mcap
+*.tmp
