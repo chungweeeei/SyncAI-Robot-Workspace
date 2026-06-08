@@ -1,5 +1,5 @@
-#ifndef NAV2_UTIL__GEOMETRY_UTILS_HPP_
-#define NAV2_UTIL__GEOMETRY_UTILS_HPP_
+#ifndef SYNCAI_NAV2_UTIL__GEOMETRY_UTILS_HPP_
+#define SYNCAI_NAV2_UTIL__GEOMETRY_UTILS_HPP_
 
 #include <cmath>
 
@@ -164,4 +164,4 @@ inline double calculate_path_length(const nav_msgs::msg::Path & path, size_t sta
 }  // namespace geometry_utils
 }  // namespace syncai_util
 
-#endif  // NAV2_UTIL__GEOMETRY_UTILS_HPP_
+#endif  // SYNCAI_NAV2_UTIL__GEOMETRY_UTILS_HPP_

@@ -3,15 +3,21 @@
   // (afterDelay 打字自動存不會套用格式)
   "files.autoSave": "onFocusChange",
   "editor.formatOnSave": true,
-
   // 用 clang-format,並讀取 repo 根目錄的 .clang-format 設定
   "C_Cpp.formatting": "clangFormat",
   "C_Cpp.clang_format_style": "file",
-
   "[cpp]": {
     "editor.defaultFormatter": "ms-vscode.cpptools"
   },
   "[c]": {
     "editor.defaultFormatter": "ms-vscode.cpptools"
-  }
+  },
+  "python.autoComplete.extraPaths": [
+    "/opt/ros/humble/lib/python3.10/site-packages",
+    "/opt/ros/humble/local/lib/python3.10/dist-packages"
+  ],
+  "python.analysis.extraPaths": [
+    "/opt/ros/humble/lib/python3.10/site-packages",
+    "/opt/ros/humble/local/lib/python3.10/dist-packages"
+  ]
 }

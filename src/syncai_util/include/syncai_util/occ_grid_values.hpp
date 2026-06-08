@@ -1,5 +1,5 @@
-#ifndef SYNCAI_UTIL__OCC_GRID_VALUES_HPP_
-#define SYNCAI_UTIL__OCC_GRID_VALUES_HPP_
+#ifndef SYNCAI_NAV2_UTIL__OCC_GRID_VALUES_HPP_
+#define SYNCAI_NAV2_UTIL__OCC_GRID_VALUES_HPP_
 
 #include <cstdint>
 
@@ -10,4 +10,4 @@ static constexpr int8_t OCC_GRID_FREE = 0;
 static constexpr int8_t OCC_GRID_OCCUPIED = 100;
 }  // namespace syncai_util
 
-#endif  // SYNCAI_UTIL__OCC_GRID_VALUES_HPP_
+#endif  // SYNCAI_NAV2_UTIL__OCC_GRID_VALUES_HPP_

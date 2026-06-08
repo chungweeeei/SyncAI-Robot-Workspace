@@ -35,7 +35,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
 
-RUN groupadd --gid $USER_GID $USERNAME \
+RUN if id -u ubuntu >/dev/null 2>&1 && [ "$USERNAME" != "ubuntu" ]; then \
+        userdel -r ubuntu 2>/dev/null || true; \
+    fi \
+    && groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME -s /bin/bash \
     && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
@@ -45,7 +48,7 @@ echo "export ROS_DOMAIN_ID=0" >> /home/$USERNAME/.bashrc
 echo "source /opt/ros/humble/setup.bash" >> /home/$USERNAME/.bashrc
 EOF
 
-RUN mkdir -p /home/$USERNAME/.claude \
+RUN mkdir -p /home/$USERNAME/.claude /workspace \
     && chown -R $USER_UID:$USER_GID /home/$USERNAME/.claude /workspace
 
 USER $USERNAME
