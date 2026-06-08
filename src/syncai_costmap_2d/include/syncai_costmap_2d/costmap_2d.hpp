@@ -63,7 +63,7 @@ public:
   Costmap2D & operator=(const Costmap2D & map);
 
   /**
-   * @brief  Turn this costmap into a copy of a window of a costmap passed in
+   * @brief  把另一張costmap中某個矩形「窗口」區域複製出來，讓當前Costmap2D物件變成那個窗口的副本。
    * @param  map The costmap to copy
    * @param win_origin_x The x origin (lower left corner) for the window to copy, in meters
    * @param win_origin_y The y origin (lower left corner) for the window to copy, in meters
@@ -75,14 +75,14 @@ public:
     double win_size_y);
 
   /**
-   * @brief Copies the (x0,y0)..(xn,yn) window from source costmap into a current costmap
-     @param source Source costmap where the window will be copied from
-     @param sx0 Lower x-boundary of the source window to copy, in cells
-     @param sy0 Lower y-boundary of the source window to copy, in cells
-     @param sxn Upper x-boundary of the source window to copy, in cells
-     @param syn Upper y-boundary of the source window to copy, in cells
-     @param dx0 Lower x-boundary of the destination window to copy, in cells
-     @param dx0 Lower y-boundary of the destination window to copy, in cells
+   * @brief 複製來源 costmap 中的 (x0,y0)..(xn,yn) 窗口到當前 costmap
+     @param source 來源 costmap
+     @param sx0 來源窗口的下界 x，單位：cells
+     @param sy0 來源窗口的下界 y，單位：cells
+     @param sxn 來源窗口的上界 x，單位：cells
+     @param syn 來源窗口的上界 y，單位：cells
+     @param dx0 目標窗口的下界 x，單位：cells
+     @param dy0 目標窗口的下界 y，單位：cells
      @returns true if copy was succeeded or false in negative case
    */
   bool copyWindow(
@@ -166,13 +166,9 @@ public:
 
   unsigned int getSizeInCellsX() const;
   unsigned int getSizeInCellsY() const;
-
   double getSizeInMetersX() const;
   double getSizeInMetersY() const;
 
-  /**
-   * @brief Get costmap metadata: origin and resolution.
-   */
   double getOriginX() const;
   double getOriginY() const;
   double getResolution() const;
@@ -260,6 +256,7 @@ protected:
    */
   virtual void initMaps(unsigned int size_x, unsigned int size_y);
 
+  // TODO: know what is raytraceLine
   template <class ActionType>
   inline void raytraceLine(
     ActionType at, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1,
@@ -393,4 +390,4 @@ protected:
 
 }  // namespace syncai_costmap_2d
 
-#endif
+#endif  // SYNCAI_NAV2_COSTMAP_2D_COSTMAP_2D_HPP_

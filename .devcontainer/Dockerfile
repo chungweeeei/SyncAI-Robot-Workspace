@@ -6,6 +6,12 @@ ARG USER_GID=$USER_UID
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Make apt resilient behind OrbStack's transparent proxy (serialize downloads + retry)
+RUN echo 'Acquire::Retries "8";' > /etc/apt/apt.conf.d/80-retries \
+    && echo 'Acquire::http::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/80-retries \
+    && echo 'Acquire::http::No-Cache "true";' >> /etc/apt/apt.conf.d/80-retries \
+    && echo 'Acquire::Queue-Mode "access";' >> /etc/apt/apt.conf.d/80-retries
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     vim \
@@ -18,11 +24,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
-# ROS2 package dependencies for ros2_laser_scan_merger
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-pcl-conversions \
-    ros-humble-pcl-ros \
-    ros-humble-pointcloud-to-laserscan \
+# ROS2 package dependencies for ros2_laser_scan_merger.
+# pcl-ros pulls a huge boost/VTK dependency tree (~500MB); the OrbStack proxy
+# tends to drop a few files near the end. Retry in-layer so already-fetched
+# .debs in the apt cache are reused and only the stragglers are re-fetched.
+RUN apt-get update \
+    && n=0; until [ $n -ge 6 ]; do \
+        apt-get install -y --no-install-recommends --fix-missing \
+            ros-humble-pcl-conversions \
+            ros-humble-pcl-ros \
+            ros-humble-pointcloud-to-laserscan \
+        && break; \
+        n=$((n+1)); echo "apt install attempt $n failed, retrying..."; sleep 5; \
+    done; [ $n -lt 6 ] \
     && rm -rf /var/lib/apt/lists/*
 
 # System dependencies for syncai_map_server (GraphicsMagick++ is used by map_io)
