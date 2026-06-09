@@ -18,15 +18,27 @@
 namespace syncai_costmap_2d
 {
 
+/**
+  * @brief A tool to periodically publish "visualization" data from a Costmap2D
+*/
 class Costmap2DPublisher
 {
 public:
+  /**
+   * @brief  Constructor for the Costmap2DPublisher
+   */
   Costmap2DPublisher(
     const rclcpp::Node::SharedPtr & node, Costmap2D * costmap, std::string global_frame,
     std::string topic_name, bool always_send_full_costmap = false);
 
+  /**
+   * @brief  Destructor
+   */
   ~Costmap2DPublisher();
 
+  /** 
+    * @brief Include the given bounds in the changed-rectangle. 
+    */
   void updateBounds(unsigned int x0, unsigned int xn, unsigned int y0, unsigned int yn)
   {
     x0_ = std::min(x0, x0_);
@@ -35,12 +47,17 @@ public:
     yn_ = std::max(yn, yn_);
   }
 
+  /**
+    * @brief Publishes the visualization data over ROS
+    */
   void publishCostmap();
 
 private:
+  /** @brief Prepare grid_ message for publication. */
   void prepareGrid();
   void prepareCostmap();
 
+  /** @brief GetCostmap callback service */
   void costmap_service_callback(
     const std::shared_ptr<rmw_request_id_t> request_header,
     const std::shared_ptr<nav2_msgs::srv::GetCostmap::Request> request,
@@ -56,6 +73,7 @@ private:
   double saved_origin_x_, saved_origin_y_;
   bool always_send_full_costmap_;
 
+  // Publisher for translated costmap values as msg::OccupancyGrid used in visualization
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   rclcpp::Publisher<map_msgs::msg::OccupancyGridUpdate>::SharedPtr costmap_update_pub_;
 

@@ -121,9 +121,6 @@ bool Costmap2D::copyCostmapWindow(
 
   // compute the bounds of our new map
   unsigned int lower_left_x, lower_left_y, upper_right_x, upper_right_y;
-
-  // compute the bounds of our new map
-  unsigned int lower_left_x, lower_left_y, upper_right_x, upper_right_y;
   if (
     !map.worldToMap(win_origin_x, win_origin_y, lower_left_x, lower_left_y) ||
     !map.worldToMap(
