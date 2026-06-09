@@ -5,7 +5,7 @@ map_server:
     # Absolute path to the map YAML file to load on startup.
     # Leave empty ("") to start without a map and load it later via the
     # "/map_server/load_map" service.
-    yaml_filename: ""
+    yaml_filename: "/home/ubuntu/map/warehouse.yaml"
 
     # Topic on which the OccupancyGrid is published (latched / transient_local QoS).
     topic_name: "map"
