@@ -378,7 +378,7 @@ protected:
     inline void operator()(unsigned int offset)
     {
       MapLocation loc;
-      //   costmap_.indexToCells(offset, loc.x, loc.y);
+      costmap_.indexToCells(offset, loc.x, loc.y);
       cells_.push_back(loc);
     }
 

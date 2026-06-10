@@ -1,0 +1,20 @@
+<class_libraries>
+  <library path="syncai_costmap_2d">
+    <class type="syncai_costmap_2d::StaticLayer" base_class_type="syncai_costmap_2d::Layer">
+      <description>
+        Listens to an OccupancyGrid map topic and writes it into the costmap
+        (the static map layer).
+      </description>
+    </class>
+    <class type="syncai_costmap_2d::InflationLayer" base_class_type="syncai_costmap_2d::Layer">
+      <description>
+        Inflates obstacles in the costmap by the robot's inscribed/inflation radius.
+      </description>
+    </class>
+    <class type="syncai_costmap_2d::ObstacleLayer" base_class_type="syncai_costmap_2d::Layer">
+      <description>
+        Marks and clears obstacles in the costmap from laser scan / point cloud sensor sources.
+      </description>
+    </class>
+  </library>
+</class_libraries>

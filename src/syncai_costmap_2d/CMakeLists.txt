@@ -18,6 +18,10 @@ find_package(nav2_msgs REQUIRED)
 find_package(map_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(syncai_util REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(laser_geometry REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 
 set(dependencies
   rclcpp
@@ -31,6 +35,10 @@ set(dependencies
   map_msgs
   rcl_interfaces
   syncai_util
+  sensor_msgs
+  laser_geometry
+  message_filters
+  tf2_sensor_msgs
 )
 
 add_library(${PROJECT_NAME} SHARED
@@ -38,6 +46,7 @@ add_library(${PROJECT_NAME} SHARED
   src/costmap_2d.cpp
   src/costmap_2d_publisher.cpp
   src/costmap_2d_ros.cpp
+  src/costmap_layer.cpp
   src/costmap_math.cpp
   src/costmap_subscriber.cpp
   src/footprint.cpp
@@ -45,6 +54,10 @@ add_library(${PROJECT_NAME} SHARED
   src/footprint_subscriber.cpp
   src/layer.cpp
   src/layered_costmap.cpp
+  src/observation_buffer.cpp
+  plugins/static_layer.cpp
+  plugins/inflation_layer.cpp
+  plugins/obstacle_layer.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -53,6 +66,14 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 ament_target_dependencies(${PROJECT_NAME} ${dependencies})
+
+# Register the costmap layer plugins (e.g. StaticLayer) with pluginlib
+pluginlib_export_plugin_description_file(syncai_costmap_2d costmap_plugins.xml)
+
+# Standalone node to run the costmap (manual configure/activate, non-lifecycle)
+add_executable(costmap_2d_node src/costmap_2d_node.cpp)
+target_link_libraries(costmap_2d_node ${PROJECT_NAME})
+ament_target_dependencies(costmap_2d_node ${dependencies})
 
 install(
   TARGETS ${PROJECT_NAME}
@@ -63,8 +84,23 @@ install(
 )
 
 install(
+  TARGETS costmap_2d_node
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
   DIRECTORY include/
   DESTINATION include
+)
+
+install(
+  DIRECTORY launch params rviz
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS scripts/fake_scan.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

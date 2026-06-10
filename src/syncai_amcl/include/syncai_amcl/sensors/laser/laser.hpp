@@ -1,27 +1,11 @@
-// Copyright (c) 2018 Intel Corporation
-//
-// This library is free software; you can redistribute it and/or
-// modify it under the terms of the GNU Lesser General Public
-// License as published by the Free Software Foundation; either
-// version 2.1 of the License, or (at your option) any later version.
-//
-// This library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-// Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public
-// License along with this library; if not, write to the Free Software
-// Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-
-
 #ifndef SYNCAI_AMCL__SENSORS__LASER__LASER_HPP_
 #define SYNCAI_AMCL__SENSORS__LASER__LASER_HPP_
 
 #include <string>
+
+#include "syncai_amcl/map/map.hpp"
 #include "syncai_amcl/pf/pf.hpp"
 #include "syncai_amcl/pf/pf_pdf.hpp"
-#include "syncai_amcl/map/map.hpp"
 
 namespace syncai_amcl
 {
@@ -93,16 +77,16 @@ public:
   /*
    * @brief LaserData constructor
    */
-  LaserData() {ranges = NULL;}
+  LaserData() { ranges = NULL; }
   /*
    * @brief LaserData destructor
    */
-  virtual ~LaserData() {delete[] ranges;}
+  virtual ~LaserData() { delete[] ranges; }
 
 public:
   int range_count;
   double range_max;
-  double(*ranges)[2];
+  double (*ranges)[2];
 };
 
 /*
@@ -146,8 +130,8 @@ public:
    * @brief BeamModel constructor
    */
   LikelihoodFieldModel(
-    double z_hit, double z_rand, double sigma_hit, double max_occ_dist,
-    size_t max_beams, map_t * map);
+    double z_hit, double z_rand, double sigma_hit, double max_occ_dist, size_t max_beams,
+    map_t * map);
 
   /*
    * @brief Run a sensor update on laser
@@ -178,9 +162,8 @@ public:
    * @brief BeamModel constructor
    */
   LikelihoodFieldModelProb(
-    double z_hit, double z_rand, double sigma_hit, double max_occ_dist,
-    bool do_beamskip, double beam_skip_distance,
-    double beam_skip_threshold, double beam_skip_error_threshold,
+    double z_hit, double z_rand, double sigma_hit, double max_occ_dist, bool do_beamskip,
+    double beam_skip_distance, double beam_skip_threshold, double beam_skip_error_threshold,
     size_t max_beams, map_t * map);
 
   /*

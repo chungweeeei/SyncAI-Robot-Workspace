@@ -81,7 +81,7 @@ public:
    * @param max_y Y max map coord of the window to update
    */
   virtual void updateCosts(
-    nav2_costmap_2d::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j);
+    syncai_costmap_2d::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j);
 
   /**
    * @brief Match the size of the master costmap
@@ -167,3 +167,5 @@ protected:
 };
 
 }  // namespace syncai_costmap_2d
+
+#endif  // SYNCAI_COSTMAP_2D__STATIC_LAYER_HPP_

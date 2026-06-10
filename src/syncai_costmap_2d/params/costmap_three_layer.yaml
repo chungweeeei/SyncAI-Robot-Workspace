@@ -1,0 +1,67 @@
+costmap:
+  ros__parameters:
+    use_sim_time: false
+
+    # Frames
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.3
+
+    # Update / publish rates
+    update_frequency: 5.0
+    publish_frequency: 2.0
+
+    # Master costmap geometry (the static layer resizes the master to the map)
+    rolling_window: false
+    track_unknown_space: true
+    width: 10
+    height: 10
+    resolution: 0.05
+    origin_x: 0.0
+    origin_y: 0.0
+
+    # Robot footprint (circular)
+    robot_radius: 0.2
+    footprint_padding: 0.01
+
+    # Global map source (static layer falls back to this)
+    map_topic: /map
+    always_send_full_costmap: true
+
+    # Layer stack — order matters: static -> obstacle(mark/clear) -> inflation
+    plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+    static_layer:
+      plugin: "syncai_costmap_2d::StaticLayer"
+      enabled: true
+      map_subscribe_transient_local: true
+
+    obstacle_layer:
+      plugin: "syncai_costmap_2d::ObstacleLayer"
+      enabled: true
+      footprint_clearing_enabled: true
+      max_obstacle_height: 2.0
+      combination_method: 1            # 0=Overwrite, 1=Maximum
+      observation_sources: scan
+      scan:
+        topic: /scan
+        sensor_frame: base_scan
+        data_type: "LaserScan"
+        marking: true
+        clearing: true
+        # NOTE: these are per-source and default to 0.0 — if you leave
+        # max_obstacle_height at its 0.0 default, the observation buffer filters
+        # out every point above the ground plane and nothing is ever marked.
+        min_obstacle_height: 0.0
+        max_obstacle_height: 2.0
+        obstacle_max_range: 2.5
+        obstacle_min_range: 0.0
+        raytrace_max_range: 3.0
+        raytrace_min_range: 0.0
+        inf_is_valid: false
+
+    inflation_layer:
+      plugin: "syncai_costmap_2d::InflationLayer"
+      enabled: true
+      inflation_radius: 0.55
+      cost_scaling_factor: 10.0

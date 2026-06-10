@@ -56,6 +56,36 @@ public:
   ~Costmap2DROS();
 
   /**
+   * @brief Initialize the costmap after construction (manual on_configure).
+   *
+   * Must be called once after the node is held by a std::shared_ptr (i.e.
+   * after std::make_shared<Costmap2DROS>()), since it relies on
+   * shared_from_this() for parameter declaration, the tf listener and
+   * plugin initialization. Reads parameters, creates the tf buffer/listener,
+   * builds the LayeredCostmap, loads and initializes the configured layer
+   * plugins, sets up the publishers and starts the map update thread.
+   */
+  void init();
+
+  /**
+   * @brief Activate the costmap (manual on_activate).
+   *
+   * Call once after init(). Waits for the robot transform, spawns the map
+   * update thread, activates the layer plugins and registers the dynamic
+   * parameter callback.
+   */
+  void activate();
+
+  /**
+   * @brief Deactivate the costmap (manual on_deactivate).
+   *
+   * Reverses activate(): unregisters the dynamic parameter callback, stops the
+   * layer plugins and joins the map update thread. Safe to call from the
+   * destructor.
+   */
+  void deactivate();
+
+  /**
    * @brief  Subscribes to sensor topics if necessary and starts costmap
    * updates, can be called to restart the costmap after calls to either
    * stop() or pause()

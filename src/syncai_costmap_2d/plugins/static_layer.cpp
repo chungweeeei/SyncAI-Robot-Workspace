@@ -46,7 +46,7 @@ void StaticLayer::onInitialize()
     throw std::runtime_error{"Failed to get node in StaticLayer"};
   }
 
-  map_sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+  map_sub_ = node_->create_subscription<nav_msgs::msg::OccupancyGrid>(
     map_topic_, map_qos, std::bind(&StaticLayer::incomingMap, this, std::placeholders::_1));
 
   if (subscribe_to_updates_) {
@@ -88,26 +88,26 @@ void StaticLayer::getParameters()
     throw std::runtime_error{"Failed to get node in StaticLayer"};
   }
 
-  node->get_parameter(name_ + "." + "enabled", enabled_);
-  node->get_parameter(name_ + "." + "subscribe_to_updates", subscribe_to_updates_);
-  node->get_parameter(name_ + "." + "footprint_clearing_enabled", footprint_clearing_enabled_);
+  node_->get_parameter(name_ + "." + "enabled", enabled_);
+  node_->get_parameter(name_ + "." + "subscribe_to_updates", subscribe_to_updates_);
+  node_->get_parameter(name_ + "." + "footprint_clearing_enabled", footprint_clearing_enabled_);
 
   std::string private_map_topic, global_map_topic;
-  node->get_parameter(name_ + "." + "map_topic", private_map_topic);
-  node->get_parameter("map_topic", global_map_topic);
+  node_->get_parameter(name_ + "." + "map_topic", private_map_topic);
+  node_->get_parameter("map_topic", global_map_topic);
   if (!private_map_topic.empty()) {
     map_topic_ = private_map_topic;
   } else {
     map_topic_ = global_map_topic;
   }
-  node->get_parameter(
+  node_->get_parameter(
     name_ + "." + "map_subscribe_transient_local", map_subscribe_transient_local_);
-  node->get_parameter("track_unknown_space", track_unknown_space_);
-  node->get_parameter("use_maximum", use_maximum_);
-  node->get_parameter("lethal_cost_threshold", temp_lethal_threshold);
-  node->get_parameter("unknown_cost_value", unknown_cost_value_);
-  node->get_parameter("trinary_costmap", trinary_costmap_);
-  node->get_parameter("transform_tolerance", temp_tf_tol);
+  node_->get_parameter("track_unknown_space", track_unknown_space_);
+  node_->get_parameter("use_maximum", use_maximum_);
+  node_->get_parameter("lethal_cost_threshold", temp_lethal_threshold);
+  node_->get_parameter("unknown_cost_value", unknown_cost_value_);
+  node_->get_parameter("trinary_costmap", trinary_costmap_);
+  node_->get_parameter("transform_tolerance", temp_tf_tol);
 
   // Enforce bounds
   lethal_threshold_ = std::max(std::min(temp_lethal_threshold, 100), 0);
@@ -117,7 +117,7 @@ void StaticLayer::getParameters()
   transform_tolerance_ = tf2::durationFromSec(temp_tf_tol);
 
   // Add callback for dynamic parameters
-  dyn_params_handler_ = node->add_on_set_parameters_callback(
+  dyn_params_handler_ = node_->add_on_set_parameters_callback(
     std::bind(&StaticLayer::dynamicParametersCallback, this, std::placeholders::_1));
 }
 

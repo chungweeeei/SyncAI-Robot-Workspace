@@ -117,6 +117,24 @@ void padFootprint(std::vector<geometry_msgs::msg::Point> & footprint, double pad
   }
 }
 
+std::vector<geometry_msgs::msg::Point> makeFootprintFromRadius(double radius)
+{
+  std::vector<geometry_msgs::msg::Point> points;
+
+  // Loop over 16 angles around a circle making a point each time
+  int N = 16;
+  geometry_msgs::msg::Point pt;
+  for (int i = 0; i < N; ++i) {
+    double angle = i * 2 * M_PI / N;
+    pt.x = cos(angle) * radius;
+    pt.y = sin(angle) * radius;
+
+    points.push_back(pt);
+  }
+
+  return points;
+}
+
 bool makeFootprintFromString(
   const std::string & footprint_string, std::vector<geometry_msgs::msg::Point> & footprint)
 {

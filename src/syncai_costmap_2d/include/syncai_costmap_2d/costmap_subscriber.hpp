@@ -25,7 +25,7 @@ public:
   /**
     * @brief A destructor
     */
-  ~CostmapSubscriber();
+  ~CostmapSubscriber() {};
 
   /**
    * @brief A Get the costmap from topic
@@ -44,7 +44,7 @@ public:
 
 protected:
   std::shared_ptr<Costmap2D> costmap_;
-  nav_msgs::msg::Costmap::SharedPtr costmap_msg_;
+  nav2_msgs::msg::Costmap::SharedPtr costmap_msg_;
   std::string topic_name_;
   bool costmap_received_{false};
   rclcpp::Subscription<nav2_msgs::msg::Costmap>::SharedPtr costmap_sub_;

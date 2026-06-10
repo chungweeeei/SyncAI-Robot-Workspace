@@ -1,0 +1,40 @@
+costmap:
+  ros__parameters:
+    use_sim_time: false
+
+    # Frames
+    global_frame: map
+    robot_base_frame: robot01/base_link
+    transform_tolerance: 0.3
+
+    # Update / publish rates
+    update_frequency: 5.0
+    publish_frequency: 2.0
+
+    # Master costmap geometry (used when no rolling window; the static layer will
+    # resize the master to match the incoming map anyway)
+    rolling_window: false
+    track_unknown_space: true
+    width: 10
+    height: 10
+    resolution: 0.05
+    origin_x: 0.0
+    origin_y: 0.0
+
+    # Robot footprint (circular)
+    robot_radius: 0.2
+    footprint_padding: 0.01
+
+    # Map source for the static layer (falls back to this if the layer's own
+    # map_topic is empty)
+    map_topic: /robot01/map
+    always_send_full_costmap: true
+
+    # Layer stack
+    plugins: ["static_layer"]
+    static_layer:
+      plugin: "syncai_costmap_2d::StaticLayer"
+      enabled: true
+      subscribe_to_updates: false
+      map_subscribe_transient_local: true
+      footprint_clearing_enabled: false
