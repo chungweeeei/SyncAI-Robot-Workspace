@@ -1,4 +1,4 @@
-image: /home/ubuntu/map/warehouse.pgm
+image: /home/ubuntu/robot_ws/map/warehouse.pgm
 resolution: 0.050000
 origin: [-11.362341, -7.165529, 0.0]
 negate: 0

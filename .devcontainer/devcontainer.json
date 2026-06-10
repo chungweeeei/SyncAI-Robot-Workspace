@@ -14,6 +14,10 @@
   "mounts": [
     "source=syncai-claude,target=/home/ros/.claude,type=volume"
   ],
+  "containerEnv": {
+    "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
+    "CYCLONEDDS_URI": "file:///workspace/config/cyclonedds.xml"
+  },
   "runArgs": [
     "--network=host"
   ],

@@ -9,24 +9,19 @@ services:
     # keep the right ownership. HOME is world-writable in the image.
     user: "${UID:-1000}:${GID:-1000}"
     # Bridge networking: container sits on an isolated docker network.
-    networks:
-      - robot_net
+    network_mode: host
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
+      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
       - DISPLAY=${DISPLAY:-:0}
     volumes:
       # Mount the colcon workspace (src/ lives here) into the container.
       - .:/home/ubuntu/robot_ws
-      # Mount the map folder at a stable path for the map server to load.
-      - ./map:/home/ubuntu/map
       # X11 forwarding so GUI tools like rviz2 can display on the host.
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     working_dir: /home/ubuntu/robot_ws
     stdin_open: true
     tty: true
     command: [ "bash" ]
-
-networks:
-  robot_net:
-    driver: bridge

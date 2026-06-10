@@ -1,10 +1,52 @@
 #ifndef SYNCAI_AMCL__AMCL_NODE_HPP_
 #define SYNCAI_AMCL__AMCL_NODE_HPP_
 
+#include <atomic>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "message_filters/subscriber.h"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
+#include "std_srvs/srv/empty.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_broadcaster.h"
+#include "tf2_ros/transform_listener.h"
+
+#include "nav2_msgs/msg/particle.hpp"
+#include "nav2_msgs/msg/particle_cloud.hpp"
+#include "nav2_msgs/srv/set_initial_pose.hpp"
+
+#include "syncai_amcl/motion_model/motion_model.hpp"
+#include "syncai_amcl/sensors/laser/laser.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wreorder"
+#include "tf2_ros/message_filter.h"
+#pragma GCC diagnostic pop
+
+#define NEW_UNIFORM_SAMPLING 1
 
 namespace syncai_amcl
 {
+/*
+ * @class AmclNode
+ * @brief A non-lifecycle ROS wrapper for AMCL
+ *
+ * Unlike nav2_amcl, this node derives from rclcpp::Node. Because several
+ * members require shared_from_this() (the TF broadcaster and the message-filter
+ * subscriber), initialization is split into a two-phase pattern: the
+ * constructor only declares parameters, and configure() — which must be called
+ * after the node is owned by a shared_ptr — performs the rest of the setup.
+ */
 class AmclNode : public rclcpp::Node
 {
 public:
@@ -18,22 +60,246 @@ public:
    */
   ~AmclNode();
 
+  /*
+   * @brief Second-phase initialization. Call this once the node is held by a
+   * shared_ptr (e.g. right after std::make_shared<AmclNode>()), because it uses
+   * shared_from_this().
+   */
+  void configure();
+
 private:
-  void initParameters();
-  void initTransforms();
+  // Pose hypothesis
+  typedef struct
+  {
+    double weight;             // Total weight (weights sum to 1)
+    pf_vector_t pf_pose_mean;  // Mean of pose esimate
+    pf_matrix_t pf_pose_cov;   // Covariance of pose estimate
+  } amcl_hyp_t;
 
-  // Dedicated callback group and executor for services and subscriptions in AmclNode,
-  // in order to isolate TF timer used in message filter.
+  // Dedicated callback group for AmclNode's subscriptions and services so a
+  // MultiThreadedExecutor can service the TF buffer timer on another thread.
   rclcpp::CallbackGroup::SharedPtr callback_group_;
-  rclcpp::executors::SingleThreadedExecutor executor_;
 
+  // Map-related
+  /*
+   * @brief Get new map from ROS topic to localize in
+   * @param msg Map message
+   */
+  void mapReceived(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+  /*
+   * @brief Handle a new map message
+   * @param msg Map message
+   */
+  void handleMapMessage(const nav_msgs::msg::OccupancyGrid & msg);
+  /*
+   * @brief Creates lookup table of free cells in map
+   */
+  void createFreeSpaceVector();
+  /*
+   * @brief Frees allocated map related memory
+   */
+  void freeMapDependentMemory();
+  map_t * map_{nullptr};
+  /*
+   * @brief Convert an occupancy grid map to an AMCL map
+   * @param map_msg Map message
+   * @return pointer to map for AMCL to use
+   */
+  map_t * convertMap(const nav_msgs::msg::OccupancyGrid & map_msg);
   bool first_map_only_{true};
+  std::atomic<bool> first_map_received_{false};
+  amcl_hyp_t * initial_pose_hyp_{nullptr};
+  std::recursive_mutex mutex_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::ConstSharedPtr map_sub_;
+#if NEW_UNIFORM_SAMPLING
+  static std::vector<std::pair<int, int>> free_space_indices;
+#endif
 
-  /**
+  // Transforms
+  /*
+   * @brief Initialize required ROS transformations
+   */
+  void initTransforms();
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  bool sent_first_transform_{false};
+  bool latest_tf_valid_{false};
+  tf2::Transform latest_tf_;
+
+  // Message filters
+  /*
+   * @brief Initialize incoming data message subscribers and filters
+   */
+  void initMessageFilters();
+  std::unique_ptr<message_filters::Subscriber<sensor_msgs::msg::LaserScan,
+    rclcpp::Node>> laser_scan_sub_;
+  std::unique_ptr<tf2_ros::MessageFilter<sensor_msgs::msg::LaserScan>> laser_scan_filter_;
+  message_filters::Connection laser_scan_connection_;
+
+  // Publishers and subscribers
+  /*
+   * @brief Initialize pub subs of AMCL
+   */
+  void initPubSub();
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::ConstSharedPtr
+    initial_pose_sub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_pub_;
+  rclcpp::Publisher<nav2_msgs::msg::ParticleCloud>::SharedPtr particle_cloud_pub_;
+  /*
+   * @brief Handle with an initial pose estimate is received
+   */
+  void initialPoseReceived(geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
+  /*
+   * @brief Handle when a laser scan is received
+   */
+  void laserReceived(sensor_msgs::msg::LaserScan::ConstSharedPtr laser_scan);
+
+  // Services and service callbacks
+  /*
+   * @brief Initialize state services
+   */
+  void initServices();
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr global_loc_srv_;
+  /*
+   * @brief Service callback for a global relocalization request
+   */
+  void globalLocalizationCallback(
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+    std::shared_ptr<std_srvs::srv::Empty::Response> response);
+
+  // service server for providing an initial pose guess
+  rclcpp::Service<nav2_msgs::srv::SetInitialPose>::SharedPtr initial_guess_srv_;
+  /*
+   * @brief Service callback for an initial pose guess request
+   */
+  void initialPoseReceivedSrv(
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const std::shared_ptr<nav2_msgs::srv::SetInitialPose::Request> request,
+    std::shared_ptr<nav2_msgs::srv::SetInitialPose::Response> response);
+
+  // Let amcl update samples without requiring motion
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr nomotion_update_srv_;
+  /*
+   * @brief Request an AMCL update even though the robot hasn't moved
+   */
+  void nomotionUpdateCallback(
+    const std::shared_ptr<rmw_request_id_t> request_header,
+    const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+    std::shared_ptr<std_srvs::srv::Empty::Response> response);
+
+  // Nomotion update control. Used to temporarily let amcl update samples even when no motion occurs
+  std::atomic<bool> force_update_{false};
+
+  // Odometry
+  /*
+   * @brief Initialize odometry
+   */
+  void initOdometry();
+  /*
+   * @brief Factory replacing pluginlib: build a motion model from its type name
+   */
+  std::shared_ptr<syncai_amcl::MotionModel> createMotionModel(const std::string & type);
+  std::shared_ptr<syncai_amcl::MotionModel> motion_model_;
+  geometry_msgs::msg::PoseStamped latest_odom_pose_;
+  geometry_msgs::msg::PoseWithCovarianceStamped last_published_pose_;
+  double init_pose_[3];  // Initial robot pose
+  double init_cov_[3];
+  /*
+   * @brief Get robot pose in odom frame using TF
+   */
+  bool getOdomPose(
+    // Helper to get odometric pose from transform system
+    geometry_msgs::msg::PoseStamped & pose,
+    double & x, double & y, double & yaw,
+    const rclcpp::Time & sensor_timestamp, const std::string & frame_id);
+  std::atomic<bool> first_pose_sent_;
+
+  // Particle filter
+  /*
+   * @brief Initialize particle filter
+   */
+  void initParticleFilter();
+  /*
+   * @brief Pose-generating function used to uniformly distribute particles over the map
+   */
+  static pf_vector_t uniformPoseGenerator(void * arg);
+  pf_t * pf_{nullptr};
+  bool pf_init_;
+  pf_vector_t pf_odom_pose_;
+  int resample_count_{0};
+
+  // Laser scan related
+  /*
+   * @brief Initialize laser scan
+   */
+  void initLaserScan();
+  /*
+   * @brief Create a laser object
+   */
+  syncai_amcl::Laser * createLaserObject();
+  int scan_error_count_{0};
+  std::vector<syncai_amcl::Laser *> lasers_;
+  std::vector<bool> lasers_update_;
+  std::map<std::string, int> frame_to_laser_;
+  rclcpp::Time last_laser_received_ts_;
+
+  /*
+   * @brief Check if sufficient time has elapsed to get an update
+   */
+  bool checkElapsedTime(std::chrono::seconds check_interval, rclcpp::Time last_time);
+  rclcpp::Time last_time_printed_msg_;
+  /*
+   * @brief Add a new laser scanner if a new one is received in the laser scallbacks
+   */
+  bool addNewScanner(
+    int & laser_index,
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr & laser_scan,
+    const std::string & laser_scan_frame_id,
+    geometry_msgs::msg::PoseStamped & laser_pose);
+  /*
+   * @brief Whether the pf needs to be updated
+   */
+  bool shouldUpdateFilter(const pf_vector_t pose, pf_vector_t & delta);
+  /*
+   * @brief Update the PF
+   */
+  bool updateFilter(
+    const int & laser_index,
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr & laser_scan,
+    const pf_vector_t & pose);
+  /*
+   * @brief Publish particle cloud
+   */
+  void publishParticleCloud(const pf_sample_set_t * set);
+  /*
+   * @brief Get the current state estimat hypothesis from the particle cloud
+   */
+  bool getMaxWeightHyp(
+    std::vector<amcl_hyp_t> & hyps, amcl_hyp_t & max_weight_hyps,
+    int & max_weight_hyp);
+  /*
+   * @brief Publish robot pose in map frame from AMCL
+   */
+  void publishAmclPose(
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr & laser_scan,
+    const std::vector<amcl_hyp_t> & hyps, const int & max_weight_hyp);
+  /*
+   * @brief Determine TF transformation from map to odom
+   */
+  void calculateMaptoOdomTransform(
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr & laser_scan,
+    const std::vector<amcl_hyp_t> & hyps,
+    const int & max_weight_hyp);
+  /*
+   * @brief Publish TF transformation from map to odom
+   */
+  void sendMapToOdomTransform(const tf2::TimePoint & transform_expiration);
+  /*
    * @brief Handle a new pose estimate callback
    */
   void handleInitialPose(geometry_msgs::msg::PoseWithCovarianceStamped & msg);
-  bool init_pose_received_on_inactive{false};
   bool initial_pose_is_known_{false};
   bool set_initial_pose_{false};
   bool always_reset_initial_pose_;
@@ -45,6 +311,7 @@ private:
   /*
    * @brief Get ROS parameters for node
    */
+  void initParameters();
   double alpha1_;
   double alpha2_;
   double alpha3_;
@@ -54,6 +321,7 @@ private:
   double beam_skip_distance_;
   double beam_skip_error_threshold_;
   double beam_skip_threshold_;
+  bool do_beamskip_;
   std::string global_frame_id_;
   double lambda_short_;
   double laser_likelihood_max_dist_;
@@ -85,4 +353,4 @@ private:
 };
 }  // namespace syncai_amcl
 
-#endif
+#endif  // SYNCAI_AMCL__AMCL_NODE_HPP_

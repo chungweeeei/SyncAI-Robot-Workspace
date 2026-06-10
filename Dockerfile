@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
 # Install pre-requisites
 RUN apt-get update && apt-get install -y \
@@ -17,12 +17,13 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install ROS 2 Jazzy + Navigation2 + dependencies
+# Install ROS 2 Humble + Navigation2 + dependencies
 RUN apt-get update && apt-get install -y \
-    ros-jazzy-ros-base \
-    ros-jazzy-tf2-tools \
-    ros-jazzy-rmw-cyclonedds-cpp \
-    ros-jazzy-rviz2 \
+    ros-humble-ros-base \
+    ros-humble-tf2-tools \
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-rviz2 \
+    ros-humble-nav2-msgs \
     python3-colcon-common-extensions \
     python3-rosdep \
     byobu \
@@ -30,20 +31,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Initialize rosdep
-RUN rosdep init || true && rosdep update --rosdistro jazzy
+RUN rosdep init || true && rosdep update --rosdistro humble
 
 # Allow any uid (overridden via compose `user:`) to sudo without password.
 RUN echo "ALL ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Make HOME world-writable so a runtime-overridden uid can still write
-# things like ~/.ros, ~/.cache, ~/.bash_history.
-RUN chmod -R 777 /home/ubuntu
+# ubuntu:22.04 has no default uid-1000 user, so create the `ubuntu` user and
+# its home dir. Then make HOME world-writable so a runtime-overridden uid
+# (via compose `user:`) can still write ~/.ros, ~/.cache, ~/.bash_history.
+RUN groupadd -g 1000 ubuntu && \
+    useradd -m -u 1000 -g 1000 -s /bin/bash ubuntu && \
+    chmod -R 777 /home/ubuntu
 
 USER ubuntu
 WORKDIR /home/ubuntu
 
 # Auto-source ROS 2 and workspace in every shell
-RUN echo 'source /opt/ros/jazzy/setup.bash' >> ~/.bashrc && \
+RUN echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && \
     echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
 
 CMD ["bash"]

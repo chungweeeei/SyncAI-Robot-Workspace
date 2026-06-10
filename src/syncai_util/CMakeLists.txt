@@ -26,6 +26,7 @@ set(dependencies
 add_library(${PROJECT_NAME} SHARED
   src/node_thread.cpp
   src/robot_utils.cpp
+  src/string_utils.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

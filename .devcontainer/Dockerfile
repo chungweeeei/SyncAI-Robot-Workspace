@@ -29,6 +29,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgraphicsmagick++1-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# CycloneDDS RMW (selected via RMW_IMPLEMENTATION + CYCLONEDDS_URI in devcontainer.json)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
