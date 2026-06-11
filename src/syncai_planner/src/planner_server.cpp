@@ -24,7 +24,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   default_ids_{"GridBased"},
   default_types_{"syncai_planner/NavfnPlanner"}
 {
-  RCLCPP_INFO(get_logger(), "Creating");
+  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Creating PlannerServer", __func__);
 
   // Declare this node's parameters
   declare_parameter("planner_plugins", default_ids_);
@@ -57,7 +57,7 @@ PlannerServer::~PlannerServer()
 
 void PlannerServer::configure()
 {
-  RCLCPP_INFO(get_logger(), "Configuring");
+  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Configuring PlannerServer", __func__);
 
   costmap_ros_->init();
   costmap_ = costmap_ros_->getCostmap();
@@ -66,7 +66,8 @@ void PlannerServer::configure()
   costmap_thread_ = std::make_unique<syncai_util::NodeThread>(costmap_ros_);
 
   RCLCPP_DEBUG(
-    get_logger(), "Costmap size: %d,%d", costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
+    get_logger(), "[PlannerServer][%s] Costmap size: %d,%d", __func__, costmap_->getSizeInCellsX(),
+    costmap_->getSizeInCellsY());
 
   tf_ = costmap_ros_->getTfBuffer();
 
@@ -80,12 +81,14 @@ void PlannerServer::configure()
       syncai_nav_core::GlobalPlanner::Ptr planner =
         gp_loader_.createUniqueInstance(planner_types_[i]);
       RCLCPP_INFO(
-        get_logger(), "Created global planner plugin %s of type %s", planner_ids_[i].c_str(),
-        planner_types_[i].c_str());
+        get_logger(), "[PlannerServer][%s] Created global planner plugin %s of type %s", __func__,
+        planner_ids_[i].c_str(), planner_types_[i].c_str());
       planner->initialize(node, planner_ids_[i], tf_, costmap_ros_);
       planners_.insert({planner_ids_[i], planner});
     } catch (const pluginlib::PluginlibException & ex) {
-      RCLCPP_FATAL(get_logger(), "Failed to create global planner. Exception: %s", ex.what());
+      RCLCPP_FATAL(
+        get_logger(), "[PlannerServer][%s] Failed to create global planner. Exception: %s",
+        __func__, ex.what());
       exit(-1);
     }
   }
@@ -95,7 +98,8 @@ void PlannerServer::configure()
   }
 
   RCLCPP_INFO(
-    get_logger(), "Planner Server has %s planners available.", planner_ids_concat_.c_str());
+    get_logger(), "[PlannerServer][%s] Planner Server has %s planners available.", __func__,
+    planner_ids_concat_.c_str());
 
   double expected_planner_frequency;
   get_parameter("expected_planner_frequency", expected_planner_frequency);
@@ -132,7 +136,9 @@ void PlannerServer::configure()
 bool PlannerServer::isServerInactive()
 {
   if (action_server_pose_ == nullptr || !action_server_pose_->is_server_active()) {
-    RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
+    RCLCPP_DEBUG(
+      get_logger(), "[PlannerServer][%s] Action server unavailable or inactive. Stopping.",
+      __func__);
     return true;
   }
 
@@ -151,7 +157,8 @@ void PlannerServer::waitForCostmap()
 bool PlannerServer::isCancelRequested()
 {
   if (action_server_pose_->is_cancel_requested()) {
-    RCLCPP_INFO(get_logger(), "Goal was canceled. Canceling planning action.");
+    RCLCPP_INFO(
+      get_logger(), "[PlannerServer][%s] Goal was canceled. Canceling planning action.", __func__);
     action_server_pose_->terminate_all();
     return true;
   }
@@ -185,7 +192,10 @@ bool PlannerServer::transformPosesToGlobalFrame(
   if (
     !costmap_ros_->transformPoseToGlobalFrame(curr_start, curr_start) ||
     !costmap_ros_->transformPoseToGlobalFrame(curr_goal, curr_goal)) {
-    RCLCPP_WARN(get_logger(), "Could not transform the start or goal pose in the costmap frame");
+    RCLCPP_WARN(
+      get_logger(),
+      "[PlannerServer][%s] Could not transform the start or goal pose in the costmap frame",
+      __func__);
     action_server_pose_->terminate_current();
     return false;
   }
@@ -200,16 +210,16 @@ bool PlannerServer::validatePath(
   if (path.poses.size() == 0) {
     RCLCPP_WARN(
       get_logger(),
-      "Planning algorithm %s failed to generate a valid"
+      "[PlannerServer][%s] Planning algorithm %s failed to generate a valid"
       " path to (%.2f, %.2f)",
-      planner_id.c_str(), goal.pose.position.x, goal.pose.position.y);
+      __func__, planner_id.c_str(), goal.pose.position.x, goal.pose.position.y);
     action_server_pose_->terminate_current();
     return false;
   }
 
   RCLCPP_DEBUG(
-    get_logger(), "Found valid path of size %zu to (%.2f, %.2f)", path.poses.size(),
-    goal.pose.position.x, goal.pose.position.y);
+    get_logger(), "[PlannerServer][%s] Found valid path of size %zu to (%.2f, %.2f)", __func__,
+    path.poses.size(), goal.pose.position.x, goal.pose.position.y);
 
   return true;
 }
@@ -260,14 +270,16 @@ void PlannerServer::computePlan()
     if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
       RCLCPP_WARN(
         get_logger(),
-        "Planner loop missed its desired rate of %.4f Hz. Current loop rate is %.4f Hz",
-        1 / max_planner_duration_, 1 / cycle_duration.seconds());
+        "[PlannerServer][%s] Planner loop missed its desired rate of %.4f Hz. Current loop rate is "
+        "%.4f Hz",
+        __func__, 1 / max_planner_duration_, 1 / cycle_duration.seconds());
     }
 
     action_server_pose_->succeeded_current(result);
   } catch (std::exception & ex) {
     RCLCPP_WARN(
-      get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",
+      get_logger(),
+      "[PlannerServer][%s] %s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"", __func__,
       goal->planner_id.c_str(), goal->goal.pose.position.x, goal->goal.pose.position.y, ex.what());
     action_server_pose_->terminate_current();
   }
@@ -279,9 +291,10 @@ nav_msgs::msg::Path PlannerServer::getPlan(
 {
   RCLCPP_DEBUG(
     get_logger(),
-    "Attempting to a find path from (%.2f, %.2f) to "
+    "[PlannerServer][%s] Attempting to a find path from (%.2f, %.2f) to "
     "(%.2f, %.2f).",
-    start.pose.position.x, start.pose.position.y, goal.pose.position.x, goal.pose.position.y);
+    __func__, start.pose.position.x, start.pose.position.y, goal.pose.position.x,
+    goal.pose.position.y);
 
   if (planners_.find(planner_id) != planners_.end()) {
     return planners_[planner_id]->createPlan(start, goal);
@@ -289,17 +302,17 @@ nav_msgs::msg::Path PlannerServer::getPlan(
     if (planners_.size() == 1 && planner_id.empty()) {
       RCLCPP_WARN_ONCE(
         get_logger(),
-        "No planners specified in action call. "
+        "[PlannerServer][%s] No planners specified in action call. "
         "Server will use only plugin %s in server."
         " This warning will appear once.",
-        planner_ids_concat_.c_str());
+        __func__, planner_ids_concat_.c_str());
       return planners_[planners_.begin()->first]->createPlan(start, goal);
     } else {
       RCLCPP_ERROR(
         get_logger(),
-        "planner %s is not a valid planner. "
+        "[PlannerServer][%s] planner %s is not a valid planner. "
         "Planner names are: %s",
-        planner_id.c_str(), planner_ids_concat_.c_str());
+        __func__, planner_id.c_str(), planner_ids_concat_.c_str());
     }
   }
 
@@ -331,9 +344,10 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
         } else {
           RCLCPP_WARN(
             get_logger(),
-            "The expected planner frequency parameter is %.4f Hz. The value should to be greater"
+            "[PlannerServer][%s] The expected planner frequency parameter is %.4f Hz. The value "
+            "should to be greater"
             " than 0.0 to turn on duration overrrun warning messages",
-            parameter.as_double());
+            __func__, parameter.as_double());
           max_planner_duration_ = 0.0;
         }
       }

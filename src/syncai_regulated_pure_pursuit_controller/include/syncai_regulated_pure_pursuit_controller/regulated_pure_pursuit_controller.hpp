@@ -61,9 +61,8 @@ public:
    * @param tf TF buffer
    * @param costmap_ros Costmap2DROS object of environment
    */
-  void configure(
-    const rclcpp::Node::SharedPtr & node,
-    std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
+  void initialize(
+    const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
     std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
 
   /**
@@ -79,8 +78,7 @@ public:
    * @return          Best command
    */
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
-    const geometry_msgs::msg::PoseStamped & pose,
-    const geometry_msgs::msg::Twist & velocity,
+    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
     syncai_nav_core::GoalChecker * goal_checker) override;
 
   /**
@@ -106,8 +104,7 @@ protected:
    * @param pose pose to transform
    * @return Path in new frame
    */
-  nav_msgs::msg::Path transformGlobalPlan(
-    const geometry_msgs::msg::PoseStamped & pose);
+  nav_msgs::msg::Path transformGlobalPlan(const geometry_msgs::msg::PoseStamped & pose);
 
   /**
    * @brief Transform a pose to another frame.
@@ -117,8 +114,7 @@ protected:
    * @return bool if successful
    */
   bool transformPose(
-    const std::string frame,
-    const geometry_msgs::msg::PoseStamped & in_pose,
+    const std::string frame, const geometry_msgs::msg::PoseStamped & in_pose,
     geometry_msgs::msg::PoseStamped & out_pose) const;
 
   /**
@@ -160,8 +156,8 @@ protected:
    * @param curr_speed the current robot speed
    */
   void rotateToHeading(
-    double & linear_vel, double & angular_vel,
-    const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed);
+    double & linear_vel, double & angular_vel, const double & angle_to_path,
+    const geometry_msgs::msg::Twist & curr_speed);
 
   /**
    * @brief Whether collision is imminent
@@ -173,9 +169,7 @@ protected:
    * @return Whether collision is imminent
    */
   bool isCollisionImminent(
-    const geometry_msgs::msg::PoseStamped &,
-    const double &, const double &,
-    const double &);
+    const geometry_msgs::msg::PoseStamped &, const double &, const double &, const double &);
 
   /**
    * @brief checks for collision at projected pose
@@ -184,10 +178,7 @@ protected:
    * @param theta orientation of Yaw
    * @return Whether in collision
    */
-  bool inCollision(
-    const double & x,
-    const double & y,
-    const double & theta);
+  bool inCollision(const double & x, const double & y, const double & theta);
 
   /**
    * @brief Cost at a point
@@ -197,14 +188,9 @@ protected:
    */
   double costAtPose(const double & x, const double & y);
 
-  double approachVelocityScalingFactor(
-    const nav_msgs::msg::Path & path
-  ) const;
+  double approachVelocityScalingFactor(const nav_msgs::msg::Path & path) const;
 
-  void applyApproachVelocityScaling(
-    const nav_msgs::msg::Path & path,
-    double & linear_vel
-  ) const;
+  void applyApproachVelocityScaling(const nav_msgs::msg::Path & path, double & linear_vel) const;
 
   /**
    * @brief apply regulation constraints to the system
@@ -215,9 +201,8 @@ protected:
    * @param pose_cost cost at this pose
    */
   void applyConstraints(
-    const double & curvature, const geometry_msgs::msg::Twist & speed,
-    const double & pose_cost, const nav_msgs::msg::Path & path,
-    double & linear_vel, double & sign);
+    const double & curvature, const geometry_msgs::msg::Twist & speed, const double & pose_cost,
+    const nav_msgs::msg::Path & path, double & linear_vel, double & sign);
 
   /**
    * @brief Find the intersection a circle and a line segment.
@@ -229,9 +214,7 @@ protected:
    * @return point of intersection
    */
   static geometry_msgs::msg::Point circleSegmentIntersection(
-    const geometry_msgs::msg::Point & p1,
-    const geometry_msgs::msg::Point & p2,
-    double r);
+    const geometry_msgs::msg::Point & p1, const geometry_msgs::msg::Point & p2, double r);
 
   /**
    * @brief Get lookahead point
@@ -258,15 +241,15 @@ protected:
    * @brief Callback executed when a parameter change is detected
    * @param event ParameterEvent message
    */
-  rcl_interfaces::msg::SetParametersResult
-  dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
+  rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
+    std::vector<rclcpp::Parameter> parameters);
 
   rclcpp::Node::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
   std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
   syncai_costmap_2d::Costmap2D * costmap_;
-  rclcpp::Logger logger_ {rclcpp::get_logger("RegulatedPurePursuitController")};
+  rclcpp::Logger logger_{rclcpp::get_logger("RegulatedPurePursuitController")};
   rclcpp::Clock::SharedPtr clock_;
 
   double desired_linear_vel_, base_desired_linear_vel_;
@@ -302,7 +285,7 @@ protected:
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr carrot_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr carrot_arc_pub_;
   std::unique_ptr<syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *>>
-  collision_checker_;
+    collision_checker_;
 
   // Dynamic parameters handler
   std::mutex mutex_;

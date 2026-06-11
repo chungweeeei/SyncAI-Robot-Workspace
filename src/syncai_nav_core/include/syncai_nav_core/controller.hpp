@@ -38,7 +38,7 @@ public:
    * @param tf A pointer to a TF buffer
    * @param costmap_ros A pointer to the costmap
    */
-  virtual void configure(
+  virtual void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
     std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) = 0;
 
