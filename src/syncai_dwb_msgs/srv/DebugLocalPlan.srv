@@ -1,0 +1,6 @@
+# For a given pose velocity and global_plan, run the local planner and return full results
+Pose2DStamped pose
+Twist2D velocity
+Path2D global_plan
+---
+LocalPlanEvaluation results

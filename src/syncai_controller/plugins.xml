@@ -1,0 +1,19 @@
+<class_libraries>
+  <library path="syncai_controller_plugins">
+    <class type="syncai_controller::SimpleProgressChecker" base_class_type="syncai_nav_core::ProgressChecker">
+      <description>Checks if distance between current and previous pose is above a threshold</description>
+    </class>
+    <class type="syncai_controller::PoseProgressChecker" base_class_type="syncai_nav_core::ProgressChecker">
+      <description>Checks if distance or angle between current and previous pose is above a threshold</description>
+    </class>
+    <class type="syncai_controller::SimpleGoalChecker" base_class_type="syncai_nav_core::GoalChecker">
+      <description>Checks linear and angular distance to the goal</description>
+    </class>
+    <class type="syncai_controller::StoppedGoalChecker" base_class_type="syncai_nav_core::GoalChecker">
+      <description>Checks linear and angular distance to the goal and that the robot is stopped</description>
+    </class>
+    <class type="syncai_controller::PositionGoalChecker" base_class_type="syncai_nav_core::GoalChecker">
+      <description>Checks position difference to the goal, ignoring orientation</description>
+    </class>
+  </library>
+</class_libraries>

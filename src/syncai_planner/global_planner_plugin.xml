@@ -1,0 +1,12 @@
+<library path="syncai_planner">
+  <class name="syncai_planner/NavfnPlanner"
+         type="syncai_planner::NavfnPlanner"
+         base_class_type="syncai_nav_core::GlobalPlanner">
+    <description>NavFn global planner (Dijkstra / optional A*) ported from nav2_navfn_planner.</description>
+  </class>
+  <class name="syncai_planner/StraightLinePlanner"
+         type="syncai_planner::StraightLinePlanner"
+         base_class_type="syncai_nav_core::GlobalPlanner">
+    <description>Straight-line global planner (minimal reference plugin).</description>
+  </class>
+</library>

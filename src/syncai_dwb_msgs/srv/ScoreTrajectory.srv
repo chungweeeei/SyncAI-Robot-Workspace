@@ -1,0 +1,6 @@
+Pose2DStamped pose
+Twist2D velocity
+Path2D global_plan
+Trajectory2D traj
+---
+TrajectoryScore score

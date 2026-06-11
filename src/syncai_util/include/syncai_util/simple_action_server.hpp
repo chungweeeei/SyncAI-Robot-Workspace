@@ -100,7 +100,7 @@ public:
     if (spin_thread_) {
       executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
       executor_->add_callback_group(callback_group_, node_base_interface_);
-      executor_thread_ = std::make_unique<nav2_util::NodeThread>(executor_);
+      executor_thread_ = std::make_unique<syncai_util::NodeThread>(executor_);
     }
   }
   /**
@@ -156,14 +156,14 @@ public:
 
     if (is_active(current_handle_) || is_running()) {
       debug_msg("An older goal is active, moving the new goal to a pending slot.");
-
+      // 已經有一個 action goal 正在執行了 -> 新的 goal 放進 pending slot 等待
       if (is_active(pending_handle_)) {
         debug_msg(
           "The pending slot is occupied."
           " The previous pending goal will be terminated and replaced.");
-        terminate(pending_handle_);
+        terminate(pending_handle_);  // pending 已被占用 -> 舊的 pending 直接終結，最新的贏
       }
-      pending_handle_ = handle;
+      pending_handle_ = handle;  // pending slot 放入新的 goal handle
       preempt_requested_ = true;
     } else {
       if (is_active(current_handle_)) {
@@ -172,18 +172,33 @@ public:
         preempt_requested_ = false;
       }
 
+      // 沒有正在執行的 goal 了 -> 直接成為 current，開一個
       current_handle_ = handle;
       // Return quickly to avoid blocking the executor, so spin up a new thread
       debug_msg("Executing goal asynchronously.");
+
+      /**
+       * std::async 有兩種啟動策略：
+       * std::async(std::launch::async, func) 保證「如同在新的thread」立刻開始執行 func
+       * std::async(std::launch::deferred, func) 完全不開thread，直到有人對future 呼叫 .get()/.wait()時，才在「呼叫者的thread」上同步執行
+       * std::async(f) 預設
+       */
       execution_future_ = std::async(std::launch::async, [this]() { work(); });
     }
   }
 
   void work()
   {
+    /** 
+     * 這裡的 while loop主要負責
+     * 1. 檢查是否需要 stop execution
+     * 2. 檢查是否有正在執行的goal handle
+     * 3. 每一個 loop 代表處理完一個 action goal
+     */
     while (rclcpp::ok() && !stop_execution_ && is_active(current_handle_)) {
       debug_msg("Executing the goal...");
       try {
+        // blocking call
         execute_callback_();
       } catch (std::exception & ex) {
         RCLCPP_ERROR(
@@ -493,7 +508,7 @@ protected:
   bool spin_thread_;
   rclcpp::CallbackGroup::SharedPtr callback_group_{nullptr};
   rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
-  std::unique_ptr<nav2_util::NodeThread> executor_thread_;
+  std::unique_ptr<syncai_util::NodeThread> executor_thread_;
 
   /**
    * @brief Generate an empty result object for an action type
@@ -577,5 +592,8 @@ protected:
       node_logging_interface_->get_logger(), "[%s] [ActionServer] %s", action_name_.c_str(),
       msg.c_str());
   }
-}
+};
+
 }  // namespace syncai_util
+
+#endif  // SYNCAI_UTIL__SIMPLE_ACTION_SERVER_HPP_

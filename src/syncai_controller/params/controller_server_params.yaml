@@ -1,0 +1,138 @@
+# Parameters for the syncai_controller "controller_server" node and its
+# internal local costmap node. The /**/ wildcard keys match the node names
+# in any namespace, so the same file works with the launch `namespace`
+# argument (default robot01). Topic values below are RELATIVE names — they
+# get the namespace prefix automatically (e.g. scan_front ->
+# /robot01/scan_front). TF frame names are NOT namespaced by ROS, so they
+# keep their explicit robot01/ prefix.
+/**/controller_server:
+  ros__parameters:
+    use_sim_time: true
+
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    speed_limit_topic: "speed_limit"
+    publish_zero_velocity: true
+
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "syncai_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+
+    goal_checker:
+      plugin: "syncai_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+      stateful: true
+
+    FollowPath:
+      plugin: "syncai_dwb_controller::DWBLocalPlanner"
+      debug_trajectory_details: true
+      # Kinematics (differential drive)
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      max_vel_x: 0.26
+      max_vel_y: 0.0
+      max_vel_theta: 1.0
+      min_speed_xy: 0.0
+      max_speed_xy: 0.26
+      min_speed_theta: 0.0
+      acc_lim_x: 2.5
+      acc_lim_y: 0.0
+      acc_lim_theta: 3.2
+      decel_lim_x: -2.5
+      decel_lim_y: 0.0
+      decel_lim_theta: -3.2
+      # Trajectory sampling
+      vx_samples: 20
+      vy_samples: 5
+      vtheta_samples: 20
+      sim_time: 1.7
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      transform_tolerance: 0.2
+      xy_goal_tolerance: 0.25
+      trans_stopped_velocity: 0.25
+      short_circuit_trajectory_evaluation: true
+      stateful: true
+      # Critics (resolved in the syncai_dwb_controller namespace)
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+# The local costmap is an internal node created by controller_server
+# (constructed as a plain node named "local_costmap").
+#
+# IMPORTANT: keep the local costmap a fixed-size rolling window. The DWB
+# map-grid critics build a distance cache sized to the costmap when first
+# used; a layer that later resizes the costmap (e.g. a full-map static
+# layer) overruns that cache (upstream nav2 costmap_queue behavior).
+/**/local_costmap:
+  ros__parameters:
+    use_sim_time: true
+
+    # Frames
+    global_frame: robot01/odom
+    robot_base_frame: robot01/base_link
+    transform_tolerance: 0.3
+
+    # Update / publish rates
+    update_frequency: 5.0
+    publish_frequency: 2.0
+
+    # Fixed-size rolling window centered on the robot
+    rolling_window: true
+    width: 3
+    height: 3
+    resolution: 0.05
+
+    # Robot footprint (circular)
+    robot_radius: 0.22
+    footprint_padding: 0.01
+
+    # Layer stack — order matters: obstacle(mark/clear) -> inflation
+    plugins: ["obstacle_layer", "inflation_layer"]
+
+    obstacle_layer:
+      plugin: "syncai_costmap_2d::ObstacleLayer"
+      enabled: true
+      footprint_clearing_enabled: true
+      max_obstacle_height: 2.0
+      combination_method: 1            # 0=Overwrite, 1=Maximum
+      observation_sources: scan
+      scan:
+        # Relative topic: resolves to /<namespace>/scan_front
+        topic: scan_front
+        # TF frame (not affected by the node namespace)
+        sensor_frame: robot01/scan_front
+        data_type: "LaserScan"
+        marking: true
+        clearing: true
+        min_obstacle_height: 0.0
+        max_obstacle_height: 2.0
+        obstacle_max_range: 2.5
+        obstacle_min_range: 0.0
+        raytrace_max_range: 3.0
+        raytrace_min_range: 0.0
+        inf_is_valid: false
+
+    inflation_layer:
+      plugin: "syncai_costmap_2d::InflationLayer"
+      enabled: true
+      inflation_radius: 0.55
+      cost_scaling_factor: 3.0

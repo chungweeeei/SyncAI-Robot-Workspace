@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="syncai_dwb_controller">
+    <class type="syncai_dwb_controller::DWBLocalPlanner" base_class_type="syncai_nav_core::Controller">
+      <description>Plugin-based flexible local planner (DWB)</description>
+    </class>
+  </library>
+</class_libraries>

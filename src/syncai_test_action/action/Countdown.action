@@ -1,0 +1,8 @@
+# Goal: number of seconds to count down, ticking once per second
+int32 seconds
+---
+# Result: true if the countdown reached zero, false if it was canceled/terminated
+bool success
+---
+# Feedback: seconds left before the countdown completes
+int32 remaining_seconds

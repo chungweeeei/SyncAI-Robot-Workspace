@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="syncai_regulated_pure_pursuit_controller">
+    <class type="syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController" base_class_type="syncai_nav_core::Controller">
+      <description>Regulated pure pursuit controller</description>
+    </class>
+  </library>
+</class_libraries>
