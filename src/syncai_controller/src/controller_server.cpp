@@ -7,11 +7,10 @@
 #include <utility>
 #include <vector>
 
-#include "syncai_dwb_controller/conversions.hpp"
-#include "syncai_dwb_controller/tf_help.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "syncai_util/robot_utils.hpp"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -30,7 +29,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   default_goal_checker_types_{"syncai_controller::SimpleGoalChecker"},
   lp_loader_("syncai_nav_core", "syncai_nav_core::Controller"),
   default_ids_{"FollowPath"},
-  default_types_{"syncai_dwb_controller::DWBLocalPlanner"}
+  default_types_{"syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController"}
 {
   RCLCPP_INFO(get_logger(), "Creating controller server");
 
@@ -169,7 +168,7 @@ void ControllerServer::configure()
       RCLCPP_INFO(
         get_logger(), "Created controller : %s of type %s",
         controller_ids_[i].c_str(), controller_types_[i].c_str());
-      controller->configure(
+      controller->initialize(
         node, controller_ids_[i],
         costmap_ros_->getTfBuffer(), costmap_ros_);
       controllers_.insert({controller_ids_[i], controller});
@@ -189,7 +188,7 @@ void ControllerServer::configure()
     get_logger(),
     "Controller Server has %s controllers available.", controller_ids_concat_.c_str());
 
-  odom_sub_ = std::make_unique<syncai_dwb_controller::OdomSubscriber>(node);
+  odom_sub_ = std::make_unique<syncai_util::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
 
   // Create the action server that we implement with our followPath method.
@@ -390,7 +389,7 @@ void ControllerServer::computeAndPublishVelocity()
     throw syncai_nav_core::PlannerException("Failed to make progress");
   }
 
-  syncai_dwb_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+  geometry_msgs::msg::Twist twist = getThresholdedTwist(odom_sub_->getTwist());
 
   geometry_msgs::msg::TwistStamped cmd_vel_2d;
 
@@ -398,7 +397,7 @@ void ControllerServer::computeAndPublishVelocity()
     cmd_vel_2d =
       controllers_[current_controller_]->computeVelocityCommands(
       pose,
-      syncai_dwb_controller::twist2Dto3D(twist),
+      twist,
       goal_checkers_[current_goal_checker_].get());
     last_valid_cmd_time_ = now();
   } catch (syncai_nav_core::PlannerException & e) {
@@ -509,14 +508,12 @@ bool ControllerServer::isGoalReached()
     return false;
   }
 
-  syncai_dwb_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-  geometry_msgs::msg::Twist velocity = syncai_dwb_controller::twist2Dto3D(twist);
+  geometry_msgs::msg::Twist velocity = getThresholdedTwist(odom_sub_->getTwist());
 
   geometry_msgs::msg::PoseStamped transformed_end_pose;
-  rclcpp::Duration tolerance(rclcpp::Duration::from_seconds(costmap_ros_->getTransformTolerance()));
-  syncai_dwb_controller::transformPose(
-    costmap_ros_->getTfBuffer(), costmap_ros_->getGlobalFrameID(),
-    end_pose_, transformed_end_pose, tolerance);
+  syncai_util::transformPoseInTargetFrame(
+    end_pose_, transformed_end_pose, *costmap_ros_->getTfBuffer(),
+    costmap_ros_->getGlobalFrameID(), costmap_ros_->getTransformTolerance());
 
   return goal_checkers_[current_goal_checker_]->isGoalReached(
     pose.pose, transformed_end_pose.pose,

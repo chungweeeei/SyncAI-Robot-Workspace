@@ -1,7 +1,0 @@
-Pose2DStamped pose
-Twist2D velocity
-Path2D global_plan
-Trajectory2D traj
-string critic_name
----
-CriticScore score

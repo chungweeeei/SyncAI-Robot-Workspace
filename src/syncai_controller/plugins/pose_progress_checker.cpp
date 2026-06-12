@@ -18,11 +18,11 @@
 #include <memory>
 #include <vector>
 #include "angles/angles.h"
-#include "syncai_dwb_controller/conversions.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "tf2/utils.h"
 
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
@@ -52,7 +52,9 @@ bool PoseProgressChecker::check(geometry_msgs::msg::PoseStamped & current_pose)
   // relies on short circuit evaluation to not call is_robot_moved_enough if
   // baseline_pose is not set.
   geometry_msgs::msg::Pose2D current_pose2d;
-  current_pose2d = syncai_dwb_controller::poseToPose2D(current_pose.pose);
+  current_pose2d.x = current_pose.pose.position.x;
+  current_pose2d.y = current_pose.pose.position.y;
+  current_pose2d.theta = tf2::getYaw(current_pose.pose.orientation);
 
   if (!baseline_pose_set_ || PoseProgressChecker::isRobotMovedEnough(current_pose2d)) {
     resetBaselinePose(current_pose2d);

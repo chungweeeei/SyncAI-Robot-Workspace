@@ -13,12 +13,11 @@
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
-#include "syncai_dwb_controller/odom_subscriber.hpp"
-#include "syncai_dwb_msgs/msg/twist2_d.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
 #include "syncai_nav_core/progress_checker.hpp"
 #include "syncai_util/node_thread.hpp"
+#include "syncai_util/odom_subscriber.hpp"
 #include "syncai_util/simple_action_server.hpp"
 #include "tf2_ros/transform_listener.h"
 
@@ -153,12 +152,13 @@ protected:
    * @param Twist The current Twist from odometry
    * @return Twist Twist after thresholds applied
    */
-  syncai_dwb_msgs::msg::Twist2D getThresholdedTwist(const syncai_dwb_msgs::msg::Twist2D & twist)
+  geometry_msgs::msg::Twist getThresholdedTwist(const geometry_msgs::msg::Twist & twist)
   {
-    syncai_dwb_msgs::msg::Twist2D twist_thresh;
-    twist_thresh.x = getThresholdedVelocity(twist.x, min_x_velocity_threshold_);
-    twist_thresh.y = getThresholdedVelocity(twist.y, min_y_velocity_threshold_);
-    twist_thresh.theta = getThresholdedVelocity(twist.theta, min_theta_velocity_threshold_);
+    geometry_msgs::msg::Twist twist_thresh;
+    twist_thresh.linear.x = getThresholdedVelocity(twist.linear.x, min_x_velocity_threshold_);
+    twist_thresh.linear.y = getThresholdedVelocity(twist.linear.y, min_y_velocity_threshold_);
+    twist_thresh.angular.z =
+      getThresholdedVelocity(twist.angular.z, min_theta_velocity_threshold_);
     return twist_thresh;
   }
 
@@ -178,7 +178,7 @@ protected:
   std::unique_ptr<syncai_util::NodeThread> costmap_thread_;
 
   // Publishers and subscribers
-  std::unique_ptr<syncai_dwb_controller::OdomSubscriber> odom_sub_;
+  std::unique_ptr<syncai_util::OdomSubscriber> odom_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr vel_publisher_;
   rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
 

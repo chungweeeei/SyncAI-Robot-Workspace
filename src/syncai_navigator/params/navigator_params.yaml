@@ -1,5 +1,0 @@
-# Parameters for the syncai_navigator "navigator" node. The /**/ wildcard
-# key matches the node in any namespace (see the launch `namespace` argument).
-/**/navigator:
-  ros__parameters:
-    use_sim_time: true

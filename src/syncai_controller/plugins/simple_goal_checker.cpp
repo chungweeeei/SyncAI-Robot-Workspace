@@ -1,46 +1,14 @@
-/*
- * Software License Agreement (BSD License)
- *
- *  Copyright (c) 2017, Locus Robotics
- *  All rights reserved.
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted provided that the following conditions
- *  are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above
- *     copyright notice, this list of conditions and the following
- *     disclaimer in the documentation and/or other materials provided
- *     with the distribution.
- *   * Neither the name of the copyright holder nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- *  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- *  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- *  POSSIBILITY OF SUCH DAMAGE.
- */
+#include "syncai_controller/plugins/simple_goal_checker.hpp"
 
+#include <limits>
 #include <memory>
 #include <string>
-#include <limits>
 #include <vector>
-#include "syncai_controller/plugins/simple_goal_checker.hpp"
-#include "pluginlib/class_list_macros.hpp"
+
 #include "angles/angles.h"
-#include "syncai_util/node_utils.hpp"
+#include "pluginlib/class_list_macros.hpp"
 #include "syncai_util/geometry_utils.hpp"
+#include "syncai_util/node_utils.hpp"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include "tf2/utils.h"
@@ -63,30 +31,38 @@ SimpleGoalChecker::SimpleGoalChecker()
 }
 
 void SimpleGoalChecker::initialize(
-  const rclcpp::Node::SharedPtr & parent,
-  const std::string & plugin_name,
-  const std::shared_ptr<syncai_costmap_2d::Costmap2DROS>/*costmap_ros*/)
+  const rclcpp::Node::SharedPtr & node, const std::string & plugin_name,
+  const std::shared_ptr<syncai_costmap_2d::Costmap2DROS> /*costmap_ros*/)
 {
   plugin_name_ = plugin_name;
-  const auto & node = parent;
 
   syncai_util::declare_parameter_if_not_declared(
-    node,
-    plugin_name + ".xy_goal_tolerance", rclcpp::ParameterValue(0.25));
-  syncai_util::declare_parameter_if_not_declared(
-    node,
-    plugin_name + ".yaw_goal_tolerance", rclcpp::ParameterValue(0.25));
-  syncai_util::declare_parameter_if_not_declared(
-    node,
-    plugin_name + ".stateful", rclcpp::ParameterValue(true));
-  syncai_util::declare_parameter_if_not_declared(
-    node,
-    plugin_name + ".symmetric_yaw_tolerance", rclcpp::ParameterValue(false));
-
+    node, plugin_name + ".xy_goal_tolerance", rclcpp::ParameterValue(0.25));
   node->get_parameter(plugin_name + ".xy_goal_tolerance", xy_goal_tolerance_);
+  RCLCPP_INFO(
+    node->get_logger(), "[SimpleGoalChecker][%s] xy_goal_tolerance: %f", __func__,
+    xy_goal_tolerance_);
+
+  syncai_util::declare_parameter_if_not_declared(
+    node, plugin_name + ".yaw_goal_tolerance", rclcpp::ParameterValue(0.25));
   node->get_parameter(plugin_name + ".yaw_goal_tolerance", yaw_goal_tolerance_);
+  RCLCPP_INFO(
+    node->get_logger(), "[SimpleGoalChecker][%s] yaw_goal_tolerance: %f", __func__,
+    yaw_goal_tolerance_);
+
+  syncai_util::declare_parameter_if_not_declared(
+    node, plugin_name + ".stateful", rclcpp::ParameterValue(true));
   node->get_parameter(plugin_name + ".stateful", stateful_);
+  RCLCPP_INFO(
+    node->get_logger(), "[SimpleGoalChecker][%s] stateful: %s", __func__,
+    stateful_ ? "true" : "false");
+
+  syncai_util::declare_parameter_if_not_declared(
+    node, plugin_name + ".symmetric_yaw_tolerance", rclcpp::ParameterValue(false));
   node->get_parameter(plugin_name + ".symmetric_yaw_tolerance", symmetric_yaw_tolerance_);
+  RCLCPP_INFO(
+    node->get_logger(), "[SimpleGoalChecker][%s] symmetric_yaw_tolerance: %s", __func__,
+    symmetric_yaw_tolerance_ ? "true" : "false");
 
   xy_goal_tolerance_sq_ = xy_goal_tolerance_ * xy_goal_tolerance_;
 
@@ -97,6 +73,7 @@ void SimpleGoalChecker::initialize(
 
 void SimpleGoalChecker::reset()
 {
+  // reset the state of the goal checker
   check_xy_ = true;
 }
 
@@ -106,38 +83,41 @@ bool SimpleGoalChecker::isGoalReached(
 {
   if (check_xy_) {
     double dx = query_pose.position.x - goal_pose.position.x,
-      dy = query_pose.position.y - goal_pose.position.y;
+           dy = query_pose.position.y - goal_pose.position.y;
+
+    // calculate the squared distance and compare to the squared tolerance to avoid a sqrt
     if (dx * dx + dy * dy > xy_goal_tolerance_sq_) {
       return false;
     }
-    // We are within the window
-    // If we are stateful, change the state.
+    // We are within the window, If we are stateful, change the state.
     if (stateful_) {
       check_xy_ = false;
     }
   }
 
+  // start checking robot heading and goal orientation
   double query_yaw = tf2::getYaw(query_pose.orientation);
   double goal_yaw = tf2::getYaw(goal_pose.orientation);
+
   if (symmetric_yaw_tolerance_) {
     // For symmetric robots: accept either goal orientation or goal + 180°
     double dyaw_forward = angles::shortest_angular_distance(query_yaw, goal_yaw);
-    double dyaw_backward = angles::shortest_angular_distance(
-      query_yaw, angles::normalize_angle(goal_yaw + M_PI));
+    double dyaw_backward =
+      angles::shortest_angular_distance(query_yaw, angles::normalize_angle(goal_yaw + M_PI));
 
     bool forward_match = fabs(dyaw_forward) <= yaw_goal_tolerance_;
     bool backward_match = fabs(dyaw_backward) <= yaw_goal_tolerance_;
 
     return forward_match || backward_match;
   } else {
+    // For non symmetric robots: only accept goal orientation
     double dyaw = angles::shortest_angular_distance(query_yaw, goal_yaw);
     return fabs(dyaw) <= yaw_goal_tolerance_;
   }
 }
 
 bool SimpleGoalChecker::getTolerances(
-  geometry_msgs::msg::Pose & pose_tolerance,
-  geometry_msgs::msg::Twist & vel_tolerance)
+  geometry_msgs::msg::Pose & pose_tolerance, geometry_msgs::msg::Twist & vel_tolerance)
 {
   double invalid_field = std::numeric_limits<double>::lowest();
 
@@ -158,8 +138,8 @@ bool SimpleGoalChecker::getTolerances(
   return true;
 }
 
-rcl_interfaces::msg::SetParametersResult
-SimpleGoalChecker::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters)
+rcl_interfaces::msg::SetParametersResult SimpleGoalChecker::dynamicParametersCallback(
+  std::vector<rclcpp::Parameter> parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
   for (auto & parameter : parameters) {

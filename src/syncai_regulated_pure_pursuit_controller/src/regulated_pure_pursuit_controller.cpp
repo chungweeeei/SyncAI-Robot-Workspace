@@ -1,18 +1,3 @@
-// Copyright (c) 2020 Shrijit Singh
-// Copyright (c) 2020 Samsung Research America
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "syncai_regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.hpp"
 
 #include <algorithm>
@@ -47,12 +32,12 @@ void RegulatedPurePursuitController::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
   std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
 {
-  node_ = node;
-
   costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros_->getCostmap();
+
   tf_ = tf;
   plugin_name_ = name;
+
   logger_ = node->get_logger();
   clock_ = node->get_clock();
 
@@ -62,20 +47,55 @@ void RegulatedPurePursuitController::initialize(
 
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".desired_linear_vel", rclcpp::ParameterValue(0.5));
+  node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
+  base_desired_linear_vel_ = desired_linear_vel_;
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController][%s] desired_linear_vel: %f", __func__,
+    desired_linear_vel_);
+
+  // pure pursuit lookahead parameters
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".lookahead_dist", rclcpp::ParameterValue(0.6));
+  node->get_parameter(plugin_name_ + ".lookahead_dist", lookahead_dist_);
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".min_lookahead_dist", rclcpp::ParameterValue(0.3));
+  node->get_parameter(plugin_name_ + ".min_lookahead_dist", min_lookahead_dist_);
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_lookahead_dist", rclcpp::ParameterValue(0.9));
+  node->get_parameter(plugin_name_ + ".max_lookahead_dist", max_lookahead_dist_);
+  RCLCPP_INFO(
+    logger_,
+    "[RegulatedPurePursuitController][%s] lookahead_dist: %f, min_lookahead_dist: %f, "
+    "max_lookahead_dist: %f",
+    __func__, lookahead_dist_, min_lookahead_dist_, max_lookahead_dist_);
+
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".lookahead_time", rclcpp::ParameterValue(1.5));
+  node->get_parameter(plugin_name_ + ".lookahead_time", lookahead_time_);
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController][%s] lookahead_time: %f", __func__, lookahead_time_);
+
+  //
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".rotate_to_heading_angular_vel", rclcpp::ParameterValue(1.8));
+  node->get_parameter(
+    plugin_name_ + ".rotate_to_heading_angular_vel", rotate_to_heading_angular_vel_);
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController][%s] rotate_to_heading_angular_vel: %f", __func__,
+    rotate_to_heading_angular_vel_);
+
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".transform_tolerance", rclcpp::ParameterValue(0.1));
+  node->get_parameter(plugin_name_ + ".transform_tolerance", transform_tolerance);
+
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_velocity_scaled_lookahead_dist", rclcpp::ParameterValue(false));
+  node->get_parameter(
+    plugin_name_ + ".use_velocity_scaled_lookahead_dist", use_velocity_scaled_lookahead_dist_);
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController][%s] use_velocity_scaled_lookahead_dist: %s",
+    __func__, use_velocity_scaled_lookahead_dist_ ? "true" : "false");
+
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".min_approach_linear_velocity", rclcpp::ParameterValue(0.05));
   declare_parameter_if_not_declared(
@@ -114,17 +134,6 @@ void RegulatedPurePursuitController::initialize(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_interpolation", rclcpp::ParameterValue(true));
 
-  node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
-  base_desired_linear_vel_ = desired_linear_vel_;
-  node->get_parameter(plugin_name_ + ".lookahead_dist", lookahead_dist_);
-  node->get_parameter(plugin_name_ + ".min_lookahead_dist", min_lookahead_dist_);
-  node->get_parameter(plugin_name_ + ".max_lookahead_dist", max_lookahead_dist_);
-  node->get_parameter(plugin_name_ + ".lookahead_time", lookahead_time_);
-  node->get_parameter(
-    plugin_name_ + ".rotate_to_heading_angular_vel", rotate_to_heading_angular_vel_);
-  node->get_parameter(plugin_name_ + ".transform_tolerance", transform_tolerance);
-  node->get_parameter(
-    plugin_name_ + ".use_velocity_scaled_lookahead_dist", use_velocity_scaled_lookahead_dist_);
   node->get_parameter(
     plugin_name_ + ".min_approach_linear_velocity", min_approach_linear_velocity_);
   node->get_parameter(
@@ -183,6 +192,7 @@ void RegulatedPurePursuitController::initialize(
     allow_reversing_ = false;
   }
 
+  // initialize publishers
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("lookahead_point", 1);
   carrot_arc_pub_ = node->create_publisher<nav_msgs::msg::Path>("lookahead_collision_arc", 1);
@@ -241,7 +251,7 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     goal_dist_tol_ = pose_tolerance.position.x;
   }
 
-  // Transform path to robot base frame
+  // Transform path to robot base frame, that is convert pose from map frame to odom frame
   auto transformed_plan = transformGlobalPlan(pose);
 
   // Find look ahead distance and point on path and publish
@@ -262,7 +272,6 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   carrot_pub_->publish(createCarrotMsg(carrot_pose));
 
   double linear_vel, angular_vel;
-
   // Find distance^2 to look ahead point (carrot) in robot base frame
   // This is the chord length of the circle
   const double carrot_dist2 = (carrot_pose.pose.position.x * carrot_pose.pose.position.x) +
@@ -282,7 +291,11 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
 
   linear_vel = desired_linear_vel_;
 
-  // Make sure we're in compliance with basic constraints
+  // Make sure we're in compliance with basic constraints。
+  // Constraints 主要有三個分支：
+  // 1. 到目標點附近，原地轉到朝向goal heading。
+  // 2. 偏離路徑朝向太多，先原地轉向到Local Path上。
+  // 3. 正常路徑追蹤。
   double angle_to_heading;
   if (shouldRotateToGoalHeading(carrot_pose)) {
     double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
@@ -298,7 +311,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     angular_vel = linear_vel * curvature;
   }
 
-  // Collision checking on this velocity heading
+  // 剛算好的(v, w) 定義了一條弧線，在真的執行之前，先在costmap上模擬機器人沿這條弧線走的過程中 footprint 會不會壓到障礙物。
+  // 這裡可以在經過regulate後知道預測出來的路徑會不會撞到障礙物，算是一個安全的檢查機制。
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
     throw syncai_nav_core::PlannerException(
@@ -396,12 +410,8 @@ geometry_msgs::msg::PoseStamped RegulatedPurePursuitController::getLookAheadPoin
   if (goal_pose_it == transformed_plan.poses.end()) {
     goal_pose_it = std::prev(transformed_plan.poses.end());
   } else if (use_interpolation_ && goal_pose_it != transformed_plan.poses.begin()) {
-    // Find the point on the line segment between the two poses
-    // that is exactly the lookahead distance away from the robot pose (the origin)
-    // This can be found with a closed form for the intersection of a segment and a circle
-    // Because of the way we did the std::find_if, prev_pose is guaranteed to be inside the circle,
-    // and goal_pose is guaranteed to be outside the circle.
     auto prev_pose_it = std::prev(goal_pose_it);
+    // 插值簡單來說就是在解一個幾何方程式：線段與圓的交點，這個交點當作前看點讓機器人追該點
     auto point = circleSegmentIntersection(
       prev_pose_it->pose.position, goal_pose_it->pose.position, lookahead_dist);
     geometry_msgs::msg::PoseStamped pose;
@@ -421,7 +431,7 @@ bool RegulatedPurePursuitController::isCollisionImminent(
   // Note(stevemacenski): This may be a bit unusual, but the robot_pose is in
   // odom frame and the carrot_pose is in robot base frame.
 
-  // check current point is OK
+  // 檢查機器人「此刻」的footprint是否有壓在 LETHAL 障礙物上
   if (
     inCollision(
       robot_pose.pose.position.x, robot_pose.pose.position.y,
@@ -433,6 +443,7 @@ bool RegulatedPurePursuitController::isCollisionImminent(
   nav_msgs::msg::Path arc_pts_msg;
   arc_pts_msg.header.frame_id = costmap_ros_->getGlobalFrameID();
   arc_pts_msg.header.stamp = robot_pose.header.stamp;
+
   geometry_msgs::msg::PoseStamped pose_msg;
   pose_msg.header.frame_id = arc_pts_msg.header.frame_id;
   pose_msg.header.stamp = arc_pts_msg.header.stamp;
@@ -449,6 +460,7 @@ bool RegulatedPurePursuitController::isCollisionImminent(
     projection_time = 2.0 * sin((costmap_->getResolution() / 2) / max_radius) / fabs(angular_vel);
   } else {
     // Normal path tracking
+    // each step(one grid in costmap) => time = distance / speed
     projection_time = costmap_->getResolution() / fabs(linear_vel);
   }
 
@@ -480,6 +492,8 @@ bool RegulatedPurePursuitController::isCollisionImminent(
     arc_pts_msg.poses.push_back(pose_msg);
 
     // check for collision at the projected pose
+    // whether the robot footprint at the projected pose would be in collision with obstacles on the costmap
+    // it would publish the projected arc for visualization
     if (inCollision(curr_pose.x, curr_pose.y, curr_pose.theta)) {
       carrot_arc_pub_->publish(arc_pts_msg);
       return true;
@@ -487,7 +501,6 @@ bool RegulatedPurePursuitController::isCollisionImminent(
   }
 
   carrot_arc_pub_->publish(arc_pts_msg);
-
   return false;
 }
 
@@ -572,6 +585,11 @@ void RegulatedPurePursuitController::applyConstraints(
   const double & curvature, const geometry_msgs::msg::Twist & /*curr_speed*/,
   const double & pose_cost, const nav_msgs::msg::Path & path, double & linear_vel, double & sign)
 {
+  // 正常路徑追蹤下，根據曲率和障礙物成本對線速度進行約束。
+  // 相較於傳統的pure pursuit controller，這裡就是多出來的部分。主要有三個調節器。
+  // 1. 曲率調節：迴轉半徑，按比例線性降速 -> 過彎減速。
+  // 2. 障礙物鄰近調節： 透過 local costmap 的 inflation layer，算出離障礙物的距離。
+  // 3. 接近目標減速，按「到終點距離」線性減速。
   double curvature_vel = linear_vel;
   double cost_vel = linear_vel;
 
@@ -599,9 +617,13 @@ void RegulatedPurePursuitController::applyConstraints(
   }
 
   // Use the lowest of the 2 constraint heuristics, but above the minimum translational speed
+  // 一開始的兩個調節器都是算出一個上限值，要同時滿足就取最嚴的
+  // - curvature_vel:「這個彎這麼急，最多只能開到速度X」
+  // - cost_vel：「離障礙物這麼近，最多只能開到Y」
   linear_vel = std::min(cost_vel, curvature_vel);
   linear_vel = std::max(linear_vel, regulated_linear_scaling_min_speed_);
 
+  // limit the linear velocity as we approach the goal
   applyApproachVelocityScaling(path, linear_vel);
 
   // Limit linear velocities to be valid
@@ -634,6 +656,13 @@ void RegulatedPurePursuitController::setSpeedLimit(
 nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
   const geometry_msgs::msg::PoseStamped & pose)
 {
+  /**
+   * @brief Transforms the global plan into the robot's frame of reference.
+   * 這個function主要解決了3個問題：
+   *    1. global plan 在 map frame,但 pure pursuit 的數學(找 lookahead 點、算曲率)在 robot frame
+   *    2. 完整路徑可能幾百公尺,但控制器只關心 local costmap 範圍內的部分
+   *    3. 走過的路徑要丟掉，不然每個ComputeVelocityCommands function都要重複處理
+   */
   if (global_plan_.poses.empty()) {
     throw syncai_nav_core::PlannerException("Received plan with zero length");
   }
@@ -648,19 +677,18 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
   // We'll discard points on the plan that are outside the local costmap
   double max_costmap_extent = getCostmapMaxExtent();
 
+  // 用沿利累積距離，劃出允許搜尋的範圍上限
   auto closest_pose_upper_bound = syncai_util::geometry_utils::first_after_integrated_distance(
     global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
 
-  // First find the closest pose on the path to the robot
-  // bounded by when the path turns around (if it does) so we don't get a pose from a later
-  // portion of the path
+  // 在上面找出的範圍內找離機器人最近的路徑點
   auto transformation_begin = syncai_util::geometry_utils::min_by(
     global_plan_.poses.begin(), closest_pose_upper_bound,
     [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
       return euclidean_distance(robot_pose, ps);
     });
 
-  // Find points up to max_transform_dist so we only transform them.
+  // 從 transformation_begin 往後掃，找到第一個離機器人直線距離超過 local costmap 範圍的點，作為 transformation_end
   auto transformation_end = std::find_if(
     transformation_begin, global_plan_.poses.end(),
     [&](const auto & pose) { return euclidean_distance(pose, robot_pose) > max_costmap_extent; });
@@ -676,7 +704,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
     return transformed_pose;
   };
 
-  // Transform the near part of the global plan into the robot's frame of reference.
+  // 把上面篩選出來範圍的path逐點transform到robot frame上
   nav_msgs::msg::Path transformed_plan;
   std::transform(
     transformation_begin, transformation_end, std::back_inserter(transformed_plan.poses),

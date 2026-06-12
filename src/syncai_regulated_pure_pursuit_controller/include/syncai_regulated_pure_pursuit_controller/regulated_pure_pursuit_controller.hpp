@@ -1,17 +1,4 @@
-// Copyright (c) 2020 Shrijit Singh
-// Copyright (c) 2020 Samsung Research America
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+
 
 #ifndef SYNCAI_REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
 #define SYNCAI_REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
@@ -35,11 +22,6 @@ namespace syncai_regulated_pure_pursuit_controller
 
 /**
  * @class syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController
- * @brief Regulated pure pursuit controller plugin ported from
- * nav2_regulated_pure_pursuit_controller. Unlike the nav2 version, the plugin
- * receives a plain rclcpp::Node and there is no activate/deactivate/cleanup:
- * configure() does the full setup (including registering the dynamic
- * parameters callback) and teardown happens in the destructor.
  */
 class RegulatedPurePursuitController : public syncai_nav_core::Controller
 {
@@ -244,7 +226,6 @@ protected:
   rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
     std::vector<rclcpp::Parameter> parameters);
 
-  rclcpp::Node::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
   std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;

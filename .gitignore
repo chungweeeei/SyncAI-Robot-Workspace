@@ -4,6 +4,9 @@ install/
 log/
 .colcon/
 
+# Third-party source checkouts (cloned, not tracked here)
+third-party/
+
 # rosdep / ament
 *.deb
 .catkin_tools/

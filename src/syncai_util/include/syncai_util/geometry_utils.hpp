@@ -133,9 +133,9 @@ inline Iter first_after_integrated_distance(Iter begin, Iter end, Getter getComp
   }
   Getter dist = 0.0;
   for (Iter it = begin; it != end - 1; it++) {
-    dist += euclidean_distance(*it, *(it + 1));
+    dist += euclidean_distance(*it, *(it + 1));  // 累加每一小段的長度
     if (dist > getCompareVal) {
-      return it + 1;
+      return it + 1;  // 超過門檻 -> 回傳下個iterator
     }
   }
   return end;
