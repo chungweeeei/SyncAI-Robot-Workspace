@@ -27,6 +27,7 @@ set(dependencies
 
 add_library(${PROJECT_NAME} SHARED
   src/node_thread.cpp
+  src/odometry_utils.cpp
   src/robot_utils.cpp
   src/string_utils.cpp
 )

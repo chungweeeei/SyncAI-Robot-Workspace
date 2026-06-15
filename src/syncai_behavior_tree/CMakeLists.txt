@@ -16,6 +16,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(syncai_test_action REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -31,6 +32,7 @@ set(dependencies
   rclcpp_lifecycle
   std_msgs
   std_srvs
+  syncai_test_action
   syncai_util
   tf2
   tf2_ros
@@ -56,6 +58,32 @@ add_executable(engine_demo examples/engine_demo.cpp)
 target_link_libraries(engine_demo ${library_name})
 ament_target_dependencies(engine_demo ${dependencies})
 
+# Behavior Tree action node plugins
+add_library(syncai_compute_path_to_pose_action_bt_node SHARED
+  plugins/action/compute_path_to_pose_action.cpp)
+list(APPEND plugin_libs syncai_compute_path_to_pose_action_bt_node)
+
+add_library(syncai_follow_path_action_bt_node SHARED
+  plugins/action/follow_path_action.cpp)
+list(APPEND plugin_libs syncai_follow_path_action_bt_node)
+
+add_library(syncai_navigate_to_pose_action_bt_node SHARED
+  plugins/action/navigate_to_pose_action.cpp)
+list(APPEND plugin_libs syncai_navigate_to_pose_action_bt_node)
+
+add_library(syncai_countdown_action_bt_node SHARED
+  plugins/action/countdown_action.cpp)
+list(APPEND plugin_libs syncai_countdown_action_bt_node)
+
+foreach(bt_plugin ${plugin_libs})
+  target_include_directories(${bt_plugin} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  ament_target_dependencies(${bt_plugin} ${dependencies})
+  target_compile_definitions(${bt_plugin} PRIVATE BT_PLUGIN_EXPORT)
+endforeach()
+
 install(
   TARGETS ${library_name}
   EXPORT export_${library_name}
@@ -67,6 +95,13 @@ install(
 install(
   TARGETS engine_demo
   RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS ${plugin_libs}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 install(

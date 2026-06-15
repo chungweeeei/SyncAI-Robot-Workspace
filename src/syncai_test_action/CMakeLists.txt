@@ -10,11 +10,13 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(syncai_util REQUIRED)
 
 set(dependencies
   rclcpp
   rclcpp_action
+  std_srvs
   syncai_util
 )
 

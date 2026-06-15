@@ -86,17 +86,20 @@ public:
     server_timeout_(server_timeout),
     spin_thread_(spin_thread)
   {
-    using namespace std::placeholders;  // NOLINT
     if (spin_thread_) {
       callback_group_ = node_base_interface->create_callback_group(
         rclcpp::CallbackGroupType::MutuallyExclusive, false);
     }
+
     action_server_ = rclcpp_action::create_server<ActionT>(
       node_base_interface_, node_clock_interface_, node_logging_interface_,
       node_waitables_interface_, action_name_,
-      std::bind(&SimpleActionServer::handle_goal, this, _1, _2),
-      std::bind(&SimpleActionServer::handle_cancel, this, _1),
-      std::bind(&SimpleActionServer::handle_accepted, this, _1), options, callback_group_);
+      std::bind(
+        &SimpleActionServer::handle_goal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&SimpleActionServer::handle_cancel, this, std::placeholders::_1),
+      std::bind(&SimpleActionServer::handle_accepted, this, std::placeholders::_1), options,
+      callback_group_);
+
     if (spin_thread_) {
       executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
       executor_->add_callback_group(callback_group_, node_base_interface_);
@@ -141,7 +144,7 @@ public:
       return rclcpp_action::CancelResponse::REJECT;
     }
 
-    debug_msg("Received request for goal cancellation");
+    info_msg("Received request for goal cancellation");
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
@@ -165,6 +168,7 @@ public:
       }
       pending_handle_ = handle;  // pending slot 放入新的 goal handle
       preempt_requested_ = true;
+
     } else {
       if (is_active(current_handle_)) {
         error_msg("Forgot to handle a preemption. Terminating the pending goal.");
@@ -205,7 +209,9 @@ public:
           node_logging_interface_->get_logger(),
           "Action server failed while executing action callback: \"%s\"", ex.what());
         terminate_all();
-        completion_callback_();
+        if (completion_callback_) {
+          completion_callback_();
+        }
         return;
       }
 
@@ -215,14 +221,18 @@ public:
       if (stop_execution_) {
         warn_msg("Stopping the thread per request.");
         terminate_all();
-        completion_callback_();
+        if (completion_callback_) {
+          completion_callback_();
+        }
         break;
       }
 
       if (is_active(current_handle_)) {
         warn_msg("Current goal was not completed successfully.");
         terminate(current_handle_);
-        completion_callback_();
+        if (completion_callback_) {
+          completion_callback_();
+        }
       }
 
       if (is_active(pending_handle_)) {
@@ -247,7 +257,7 @@ public:
   }
 
   /**
-   * @brief Deactive action server
+   * @brief Deactivate action server
    */
   void deactivate()
   {
@@ -496,7 +506,14 @@ protected:
   std::future<void> execution_future_;
   bool stop_execution_{false};
 
+  // 這裡的 mutex 只要是用來防止 race condition 的發生
+  // Thread A: spin thread => handle_goal / handle_cancel / handle_accepted
+  // Thread B: std::async worker => work()、以及 callback 裡呼叫的 succeeded_current / publish_feedback / is_cancel_requested / accept_pending_goal ...
+  // 共享的 variable 主要有
+  // - current_handle_、 pending_handle_
+  // - preempt_requested_ 、 server_active_ 、 stop_execution_
   mutable std::recursive_mutex update_mutex_;
+
   bool server_active_{false};
   bool preempt_requested_{false};
   std::chrono::milliseconds server_timeout_;

@@ -1,0 +1,21 @@
+<!--
+  Minimal behavior tree that drives the Countdown action via the BT node
+  registered as "Countdown" (see syncai_behavior_tree:
+  plugins/action/countdown_action.cpp).
+
+  - seconds="30"           : 靜態值，倒數 30 秒
+  - success="{...}"        : 把 result.success 寫到 blackboard key countdown_success
+  - message="{...}"        : 把 result.message 寫到 blackboard key countdown_message
+
+  注意：node 連線的 action 名稱由 builder 的第二參數決定（預設 "countdown"）。
+  若要改連別的 server，可在這裡加 server_name="/other_countdown"。
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="root">
+      <Countdown seconds="30"
+                 success="{countdown_success}"
+                 message="{countdown_message}"/>
+    </Sequence>
+  </BehaviorTree>
+</root>
