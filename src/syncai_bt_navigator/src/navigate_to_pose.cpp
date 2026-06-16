@@ -1,3 +1,5 @@
+#include "syncai_bt_navigator/navigators/navigate_to_pose.hpp"
+
 #include <limits>
 #include <memory>
 #include <set>
@@ -5,21 +7,26 @@
 #include <vector>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
-#include "syncai_bt_navigator/navigators/navigate_to_pose.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/robot_utils.hpp"
 
 namespace syncai_bt_navigator
 {
 
-bool
-NavigateToPoseNavigator::configure(
-  rclcpp::Node::WeakPtr parent_node,
-  std::shared_ptr<syncai_util::OdomSmoother> odom_smoother)
+bool NavigateToPoseNavigator::configure(
+  rclcpp::Node::WeakPtr parent_node, std::shared_ptr<syncai_util::OdomSmoother> odom_smoother)
 {
   start_time_ = rclcpp::Time(0);
   auto node = parent_node.lock();
 
+  // XML 裡面用的是 {goal} 和 {path}，正好對上參數的預設值 "goal" / "path"
+  // goal_blackboard_id_ 和 path_blackboard_id_ 是兩個字串，內容是「navigator 要都寫哪個 blackboard key」
+  // 為何需要做成「 ROS 參數」而不是寫死
+  // 原因：如果哪天換了一顆自訂的 BT XML，裡面 port 寫的是 {goal_pose} 而不是 {goal}，不用重新 compile -- 只需要在 params檔把參數改成對應的名字：
+  // bt_navigator:
+  //    ros__parameters:
+  //        goal_blackboard_id: "goal_pose"
+  //        path_blackboard_id: "path"
   if (!node->has_parameter("goal_blackboard_id")) {
     node->declare_parameter("goal_blackboard_id", std::string("goal"));
   }
@@ -35,29 +42,27 @@ NavigateToPoseNavigator::configure(
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
 
+  // register action client
   self_client_ = rclcpp_action::create_client<ActionT>(node, getName());
 
+  // register subscription for receiving goal pose from rviz
   goal_sub_ = node->create_subscription<geometry_msgs::msg::PoseStamped>(
-    "goal_pose",
-    rclcpp::SystemDefaultsQoS(),
+    "goal_pose", rclcpp::SystemDefaultsQoS(),
     std::bind(&NavigateToPoseNavigator::onGoalPoseReceived, this, std::placeholders::_1));
   return true;
 }
 
-std::string
-NavigateToPoseNavigator::getDefaultBTFilepath(
-  rclcpp::Node::WeakPtr parent_node)
+std::string NavigateToPoseNavigator::getDefaultBTFilepath(rclcpp::Node::WeakPtr parent_node)
 {
   std::string default_bt_xml_filename;
   auto node = parent_node.lock();
 
+  // 找出 default_nav_to_pose_bt_xml 參數，如果沒有宣告
+  // 就宣告一個，內容是「從 share 目錄底下的 behavior_trees/navigate_to_pose.xml」。
   if (!node->has_parameter("default_nav_to_pose_bt_xml")) {
-    std::string pkg_share_dir =
-      ament_index_cpp::get_package_share_directory("syncai_bt_navigator");
+    std::string pkg_share_dir = ament_index_cpp::get_package_share_directory("syncai_bt_navigator");
     node->declare_parameter<std::string>(
-      "default_nav_to_pose_bt_xml",
-      pkg_share_dir +
-      "/behavior_trees/navigate_to_pose.xml");
+      "default_nav_to_pose_bt_xml", pkg_share_dir + "/behavior_trees/navigate_to_pose.xml");
   }
 
   node->get_parameter("default_nav_to_pose_bt_xml", default_bt_xml_filename);
@@ -65,23 +70,24 @@ NavigateToPoseNavigator::getDefaultBTFilepath(
   return default_bt_xml_filename;
 }
 
-bool
-NavigateToPoseNavigator::cleanup()
+bool NavigateToPoseNavigator::cleanup()
 {
   goal_sub_.reset();
   self_client_.reset();
   return true;
 }
 
-bool
-NavigateToPoseNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
+bool NavigateToPoseNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
 {
+  // subclass 中主要負責載入 XML + 寫 goal
+  // 而 behavior_tree 是 nav2_msgs/action/NavigateTOPose 的自訂 action message
   auto bt_xml_filename = goal->behavior_tree;
 
+  // 在 BT.CPP v3裡面， loadBehaviorTree 有個 guard
+  // 真正的「重載」（讀檔 + 解析 + 建立behavior tree）只有在BT真正換了後才做。
+  // 同名就直接 early return。 樹直接被重用
   if (!bt_action_server_->loadBehaviorTree(bt_xml_filename)) {
-    RCLCPP_ERROR(
-      logger_, "BT file not found: %s. Navigation canceled.",
-      bt_xml_filename.c_str());
+    RCLCPP_ERROR(logger_, "BT file not found: %s. Navigation canceled.", bt_xml_filename.c_str());
     return false;
   }
 
@@ -90,15 +96,16 @@ NavigateToPoseNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
   return true;
 }
 
-void
-NavigateToPoseNavigator::goalCompleted(
+void NavigateToPoseNavigator::goalCompleted(
   typename ActionT::Result::SharedPtr /*result*/,
   const syncai_behavior_tree::BtStatus /*final_bt_status*/)
 {
 }
 
-void
-NavigateToPoseNavigator::onLoop()
+/**
+ * @brief A callback to be called when bt_->run() 的 tick loop裡，每 tick 一次、反覆執行，直到tree finished。
+ */
+void NavigateToPoseNavigator::onLoop()
 {
   // action server feedback (pose, duration of task,
   // number of recoveries, and distance remaining to goal)
@@ -106,34 +113,41 @@ NavigateToPoseNavigator::onLoop()
 
   geometry_msgs::msg::PoseStamped current_pose;
   syncai_util::getCurrentPose(
-    current_pose, *feedback_utils_.tf,
-    feedback_utils_.global_frame, feedback_utils_.robot_frame,
+    current_pose, *feedback_utils_.tf, feedback_utils_.global_frame, feedback_utils_.robot_frame,
     feedback_utils_.transform_tolerance);
 
   auto blackboard = bt_action_server_->getBlackboard();
 
+  /**
+   * NavigateToPose 所定義的 action result有
+   * geometry_msgs/PostStamped current_pose
+   * builtin_interfaces/Duration navigation_time
+   * builtin_interfaces/Duration estimated_time_remaining
+   * int16 number_of_recoveries
+   * float32 distance_remaining
+   */
   try {
     // Get current path points
     nav_msgs::msg::Path current_path;
     blackboard->get<nav_msgs::msg::Path>(path_blackboard_id_, current_path);
 
     // Find the closest pose to current pose on global path
-    auto find_closest_pose_idx =
-      [&current_pose, &current_path]() {
-        size_t closest_pose_idx = 0;
-        double curr_min_dist = std::numeric_limits<double>::max();
-        for (size_t curr_idx = 0; curr_idx < current_path.poses.size(); ++curr_idx) {
-          double curr_dist = syncai_util::geometry_utils::euclidean_distance(
-            current_pose, current_path.poses[curr_idx]);
-          if (curr_dist < curr_min_dist) {
-            curr_min_dist = curr_dist;
-            closest_pose_idx = curr_idx;
-          }
+    auto find_closest_pose_idx = [&current_pose, &current_path]() {
+      size_t closest_pose_idx = 0;
+      double curr_min_dist = std::numeric_limits<double>::max();
+      for (size_t curr_idx = 0; curr_idx < current_path.poses.size(); ++curr_idx) {
+        double curr_dist = syncai_util::geometry_utils::euclidean_distance(
+          current_pose, current_path.poses[curr_idx]);
+        if (curr_dist < curr_min_dist) {
+          curr_min_dist = curr_dist;
+          closest_pose_idx = curr_idx;
         }
-        return closest_pose_idx;
-      };
+      }
+      return closest_pose_idx;
+    };
 
     // Calculate distance on the path
+    // 沿著path的路徑總長而不是到終點的直線距離
     double distance_remaining =
       syncai_util::geometry_utils::calculate_path_length(current_path, find_closest_pose_idx());
 
@@ -141,6 +155,7 @@ NavigateToPoseNavigator::onLoop()
     rclcpp::Duration estimated_time_remaining = rclcpp::Duration::from_seconds(0.0);
 
     // Get current speed
+    // odom smoother 裡已經平滑過 twist的資訊，避免 jitter的產生，odom_smoother_主要負責平均一段時間內的twist資訊
     geometry_msgs::msg::Twist current_odom = odom_smoother_->getTwist();
     double current_linear_speed = std::hypot(current_odom.linear.x, current_odom.linear.y);
 
@@ -166,15 +181,14 @@ NavigateToPoseNavigator::onLoop()
   bt_action_server_->publishFeedback(feedback_msg);
 }
 
-void
-NavigateToPoseNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
+void NavigateToPoseNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
 {
   RCLCPP_INFO(logger_, "Received goal preemption request");
 
-  if (goal->behavior_tree == bt_action_server_->getCurrentBTFilename() ||
+  if (
+    goal->behavior_tree == bt_action_server_->getCurrentBTFilename() ||
     (goal->behavior_tree.empty() &&
-    bt_action_server_->getCurrentBTFilename() == bt_action_server_->getDefaultBTFilename()))
-  {
+     bt_action_server_->getCurrentBTFilename() == bt_action_server_->getDefaultBTFilename())) {
     // if pending goal requests the same BT as the current goal, accept the pending goal
     // if pending goal has an empty behavior_tree field, it requests the default BT file
     // accept the pending goal if the current goal is running the default BT file
@@ -191,19 +205,17 @@ NavigateToPoseNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
   }
 }
 
-void
-NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
+void NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
 {
   geometry_msgs::msg::PoseStamped current_pose;
   syncai_util::getCurrentPose(
-    current_pose, *feedback_utils_.tf,
-    feedback_utils_.global_frame, feedback_utils_.robot_frame,
+    current_pose, *feedback_utils_.tf, feedback_utils_.global_frame, feedback_utils_.robot_frame,
     feedback_utils_.transform_tolerance);
 
   RCLCPP_INFO(
     logger_, "Begin navigating from current location (%.2f, %.2f) to (%.2f, %.2f)",
-    current_pose.pose.position.x, current_pose.pose.position.y,
-    goal->pose.pose.position.x, goal->pose.pose.position.y);
+    current_pose.pose.position.x, current_pose.pose.position.y, goal->pose.pose.position.x,
+    goal->pose.pose.position.y);
 
   // Reset state for new action feedback
   start_time_ = clock_->now();
@@ -214,8 +226,8 @@ NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
 }
 
-void
-NavigateToPoseNavigator::onGoalPoseReceived(const geometry_msgs::msg::PoseStamped::SharedPtr pose)
+void NavigateToPoseNavigator::onGoalPoseReceived(
+  const geometry_msgs::msg::PoseStamped::SharedPtr pose)
 {
   ActionT::Goal goal;
   goal.pose = *pose;

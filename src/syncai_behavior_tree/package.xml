@@ -18,7 +18,7 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
-  <depend>syncai_test_action</depend>
+  <depend>syncai_test_bt_action_msgs</depend>
   <depend>syncai_util</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>

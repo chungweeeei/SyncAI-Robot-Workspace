@@ -57,3 +57,7 @@ Thumbs.db
 *.bag
 *.mcap
 *.tmp
+
+
+# environment variables
+.env

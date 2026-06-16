@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(docker build *)"
+      "Bash(docker build *)",
+      "Bash(docker exec *)"
     ]
   }
 }

@@ -15,6 +15,7 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(syncai_behavior_tree REQUIRED)
+find_package(syncai_test_bt_action_msgs REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2_ros REQUIRED)
 
@@ -27,6 +28,7 @@ set(dependencies
   rclcpp
   rclcpp_action
   syncai_behavior_tree
+  syncai_test_bt_action_msgs
   syncai_util
   tf2_ros
 )
@@ -57,10 +59,10 @@ add_executable(bt_navigator src/main.cpp)
 target_link_libraries(bt_navigator ${PROJECT_NAME})
 ament_target_dependencies(bt_navigator ${dependencies})
 
-# Standalone runner that ticks behavior_trees/countdown.xml against
-# test_action_server (loads the Countdown BT plugin via BehaviorTreeEngine).
-add_executable(countdown_bt_runner src/countdown_bt_runner.cpp)
-ament_target_dependencies(countdown_bt_runner ${dependencies})
+# Standalone runner that exposes the /askmodel action and runs behavior_trees/
+# askmodel.xml — a minimal BtActionServer node WITHOUT the Navigator layer.
+add_executable(askmodel_bt_runner src/askmodel_bt_runner.cpp)
+ament_target_dependencies(askmodel_bt_runner ${dependencies})
 
 install(
   TARGETS syncai_navigate_to_pose_navigator ${PROJECT_NAME}
@@ -71,7 +73,7 @@ install(
 )
 
 install(
-  TARGETS bt_navigator countdown_bt_runner
+  TARGETS bt_navigator askmodel_bt_runner
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 

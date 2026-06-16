@@ -18,8 +18,7 @@ namespace syncai_behavior_tree
 template <class ActionT>
 BtActionServer<ActionT>::BtActionServer(
   const rclcpp::Node::SharedPtr & node, const std::string & action_name,
-  const std::vector<std::string> & plugin_lib_names,
-  const std::string & default_bt_xml_filename,
+  const std::vector<std::string> & plugin_lib_names, const std::string & default_bt_xml_filename,
   OnGoalReceivedCallback on_goal_received_callback, OnLoopCallback on_loop_callback,
   OnPreemptCallback on_preempt_callback, OnCompletionCallback on_completion_callback)
 : action_name_(action_name),
@@ -111,16 +110,15 @@ void BtActionServer<ActionT>::initialize()
   blackboard_ = BT::Blackboard::create();
 
   // Put items on the blackboard
-  blackboard_->set<rclcpp::Node::SharedPtr>("node", client_node_);                          // NOLINT
-  blackboard_->set<std::chrono::milliseconds>("server_timeout", default_server_timeout_);   // NOLINT
-  blackboard_->set<std::chrono::milliseconds>("bt_loop_duration", bt_loop_duration_);       // NOLINT
+  blackboard_->set<rclcpp::Node::SharedPtr>("node", client_node_);                         // NOLINT
+  blackboard_->set<std::chrono::milliseconds>("server_timeout", default_server_timeout_);  // NOLINT
+  blackboard_->set<std::chrono::milliseconds>("bt_loop_duration", bt_loop_duration_);      // NOLINT
   blackboard_->set<std::chrono::milliseconds>(
     "wait_for_service_timeout", wait_for_service_timeout_);
 
   // Load the default behavior tree and activate the action server
   if (!loadBehaviorTree(default_bt_xml_filename_)) {
-    throw std::runtime_error{
-      "Error loading XML file: " + default_bt_xml_filename_};
+    throw std::runtime_error{"Error loading XML file: " + default_bt_xml_filename_};
   }
   action_server_->activate();
 }
@@ -145,8 +143,8 @@ bool BtActionServer<ActionT>::loadBehaviorTree(const std::string & bt_xml_filena
     return false;
   }
 
-  auto xml_string = std::string(
-    std::istreambuf_iterator<char>(xml_file), std::istreambuf_iterator<char>());
+  auto xml_string =
+    std::string(std::istreambuf_iterator<char>(xml_file), std::istreambuf_iterator<char>());
 
   // Create the Behavior Tree from the XML input
   try {
