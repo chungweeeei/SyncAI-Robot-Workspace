@@ -11,6 +11,7 @@
   "remoteUser": "ros",
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "postCreateCommand": "sudo rosdep init 2>/dev/null || true && rosdep update && rosdep install --from-paths src --ignore-src -r -y",
   "mounts": [
     "source=syncai-claude,target=/home/ros/.claude,type=volume"
   ],
