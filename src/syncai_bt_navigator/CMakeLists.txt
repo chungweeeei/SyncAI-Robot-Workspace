@@ -83,7 +83,7 @@ install(
 )
 
 install(
-  DIRECTORY behavior_trees
+  DIRECTORY behavior_trees launch params
   DESTINATION share/${PROJECT_NAME}
 )
 

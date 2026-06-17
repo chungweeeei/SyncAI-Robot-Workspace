@@ -24,10 +24,23 @@ RUN apt-get update && apt-get install -y \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-rviz2 \
     ros-humble-nav2-msgs \
+    ros-humble-pcl-conversions \
+    ros-humble-pointcloud-to-laserscan \
+    ros-humble-angles \
     python3-colcon-common-extensions \
     python3-rosdep \
+    python3-dotenv \
     byobu \
     net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# System deps for workspace packages that have no ament/CMake config:
+#   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
+#   - libzmq3-dev / libncurses-dev: behaviortree_cpp
+RUN apt-get update && apt-get install -y \
+    libgraphicsmagick++1-dev \
+    libzmq3-dev \
+    libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Initialize rosdep
@@ -45,6 +58,10 @@ RUN groupadd -g 1000 ubuntu && \
 
 USER ubuntu
 WORKDIR /home/ubuntu
+
+# Populate rosdep cache for the ubuntu user (the root-level update above does not
+# carry over to ~ubuntu/.ros), so `rosdep install` works at runtime.
+RUN rosdep update --rosdistro humble
 
 # Auto-source ROS 2 and workspace in every shell
 RUN echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && \

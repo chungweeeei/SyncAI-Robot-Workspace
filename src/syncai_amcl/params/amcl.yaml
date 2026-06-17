@@ -7,44 +7,51 @@ amcl:
     global_frame_id: "map"
 
     # --- Topics ---
-    scan_topic: "robot01/scan_front"
+    scan_topic: "robot01/scan"
     map_topic: "robot01/map"
 
     # --- Motion model (odometry noise) ---
     # robot_model_type: "differential" or "omni"
     robot_model_type: "differential"
-    alpha1: 0.2   # rotation noise from rotation
-    alpha2: 0.2   # rotation noise from translation
-    alpha3: 0.2   # translation noise from translation
-    alpha4: 0.2   # translation noise from rotation
-    alpha5: 0.2   # strafe noise (omni only)
+    # Ref tuning: low base noise, but alpha1/alpha4 kept higher so particles
+    # spread during spin (where odom drift is worst).
+    alpha1: 0.05  # rotation noise from rotation
+    alpha2: 0.02  # rotation noise from translation
+    alpha3: 0.02  # translation noise from translation
+    alpha4: 0.05  # translation noise from rotation
+    alpha5: 0.02  # strafe noise (omni only)
 
     # --- Particle filter ---
-    min_particles: 500
-    max_particles: 2000
-    pf_err: 0.05
-    pf_z: 0.99
+    # Ref: more particles for stability during fast motion.
+    min_particles: 2000
+    max_particles: 5000
+    pf_err: 0.02
+    pf_z: 0.85
     resample_interval: 1
-    recovery_alpha_slow: 0.0   # e.g. 0.001 to enable random-pose recovery
-    recovery_alpha_fast: 0.0   # e.g. 0.1 to enable random-pose recovery
+    recovery_alpha_slow: 0.001  # ref: enable random-pose recovery
+    recovery_alpha_fast: 0.1    # ref: enable random-pose recovery
 
     # --- Update thresholds ---
-    update_min_d: 0.25         # meters of translation before an update
-    update_min_a: 0.2          # radians of rotation before an update
+    # Ref: update very frequently (critical for fast spin).
+    update_min_d: 0.05         # meters of translation before an update
+    update_min_a: 0.05         # radians of rotation before an update
 
     # --- Laser sensor model ---
     # laser_model_type: "likelihood_field", "beam", or "likelihood_field_prob"
-    laser_model_type: "likelihood_field"
-    laser_min_range: -1.0      # -1.0 -> use scan's reported min
-    laser_max_range: 100.0     # -1.0 -> use scan's reported max
-    max_beams: 60
+    laser_model_type: "likelihood_field_prob"   # ref
+    laser_min_range: 0.12      # ref
+    # Ref uses 25.0, but our merged /robot01/scan is capped at 10 m by
+    # pointcloud_to_laserscan (range_max), so cap here to match the real scan.
+    laser_max_range: 10.0
+    max_beams: 240             # ref: more beams = better scan match while spinning
     laser_likelihood_max_dist: 2.0
     sigma_hit: 0.2
     lambda_short: 0.1
-    z_hit: 0.5
+    # Ref: trust laser matching more (z_hit up, z_rand down). Sums to 1.0.
+    z_hit: 0.8
     z_short: 0.05
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.1
     # beam-skip (likelihood_field_prob only)
     do_beamskip: false
     beam_skip_distance: 0.5
@@ -53,7 +60,7 @@ amcl:
 
     # --- TF / output ---
     tf_broadcast: true
-    transform_tolerance: 1.0
+    transform_tolerance: 0.2   # ref
     save_pose_rate: 0.5
 
     # --- Map / initialization ---

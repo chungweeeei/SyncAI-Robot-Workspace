@@ -1,0 +1,39 @@
+# Parameters for the syncai_bt_navigator "bt_navigator" node — the BT action
+# server that exposes the NavigateToPose action and ticks the behavior tree.
+#
+# The /**/ wildcard key matches the node name in any namespace, so the same
+# file works with the launch `namespace` argument (default robot01). Topic
+# values are RELATIVE names — they get the namespace prefix automatically
+# (e.g. odom -> /robot01/odom). TF frame names are NOT namespaced by ROS, so
+# robot_base_frame keeps its explicit robot01/ prefix.
+/**/bt_navigator:
+  ros__parameters:
+    use_sim_time: true
+
+    # Frames / topics
+    global_frame: map
+    robot_base_frame: robot01/base_link
+    odom_topic: odom
+    transform_tolerance: 0.1
+
+    # BT engine loop: 10 ms => the whole tree is ticked at 100 Hz.
+    bt_loop_duration: 10
+    # How long (ms) a BT action/service client waits on its server per goal.
+    default_server_timeout: 20
+    # How long (ms) to wait for an action/service server to appear before failing.
+    wait_for_service_timeout: 1000
+    # Reload the XML from disk on every goal (handy while editing trees).
+    always_reload_bt_xml: false
+
+    # BT node plugins (shared libraries) to load into the factory. Only the
+    # nodes ported so far are listed — extend as recovery/condition/control
+    # nodes are added. XML tag names must match what each plugin registers.
+    plugin_lib_names:
+      - syncai_compute_path_to_pose_action_bt_node
+      - syncai_follow_path_action_bt_node
+      - syncai_navigate_to_pose_action_bt_node
+
+    # default_nav_to_pose_bt_xml is left unset on purpose: the node defaults it
+    # to <install>/share/syncai_bt_navigator/behavior_trees/navigate_to_pose.xml.
+    # To use a different tree, set an absolute path here, e.g.:
+    # default_nav_to_pose_bt_xml: /abs/path/to/my_tree.xml

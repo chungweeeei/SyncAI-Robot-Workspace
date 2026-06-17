@@ -9,7 +9,10 @@
   ros__parameters:
     use_sim_time: true
 
-    controller_frequency: 20.0
+    # Lowered from 20.0: Isaac Sim publishes /clock at only ~35 Hz (~0.58x
+    # real-time) with coarse steps, so a 20 Hz sim-time loop constantly
+    # overran and logged "missed its desired rate". 10 Hz is sustainable.
+    controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
@@ -23,8 +26,10 @@
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # Loosened (was 0.5 m / 10 s) so slow sim motion isn't flagged as
+      # "Failed to make progress": require only 0.1 m of movement within 30 s.
+      required_movement_radius: 0.1
+      movement_time_allowance: 30.0
 
     goal_checker:
       plugin: "syncai_controller::SimpleGoalChecker"
@@ -81,8 +86,11 @@
     height: 3
     resolution: 0.05
 
-    # Robot footprint (circular)
-    robot_radius: 0.22
+    # Robot footprint: rectangular MiR250 chassis at scale 0.7 (half-extents
+    # 0.28 x 0.20). Matches the global_costmap footprint in
+    # planner_server_params.yaml; rescale both together if the sim scale
+    # changes, else RPP spam-rejects valid paths ("collision ahead!").
+    footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
     footprint_padding: 0.01
 
     # Layer stack — order matters: obstacle(mark/clear) -> inflation
@@ -96,10 +104,10 @@
       combination_method: 1            # 0=Overwrite, 1=Maximum
       observation_sources: scan
       scan:
-        # Relative topic: resolves to /<namespace>/scan_front
-        topic: scan_front
+        # Merged 360deg scan from ros2_laser_scan_merger (-> /robot01/scan)
+        topic: scan
         # TF frame (not affected by the node namespace)
-        sensor_frame: robot01/scan_front
+        sensor_frame: robot01/scan
         data_type: "LaserScan"
         marking: true
         clearing: true
@@ -114,5 +122,5 @@
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true
-      inflation_radius: 0.55
+      inflation_radius: 0.15     # ref local_costmap (tight; global uses 0.5)
       cost_scaling_factor: 3.0
