@@ -80,7 +80,9 @@ public:
     createActionClient(action_name_);
 
     // Give the derive class a chance to do any initialization
-    RCLCPP_INFO(node_->get_logger(), "\"%s\" BtActionNode initialized", xml_tag_name.c_str());
+    RCLCPP_INFO(
+      node_->get_logger(), "[BtActionNode][%s] \"%s\" BtActionNode initialized", __func__,
+      xml_tag_name.c_str());
   }
 
   // 禁止無參數 construct 這個 object。也就是若寫 BtActionNode<X> node(不給參數)的話，compile會直接報錯。
@@ -102,10 +104,13 @@ public:
     action_client_ = rclcpp_action::create_client<ActionT>(node_, action_name, callback_group_);
 
     // Make sure the server is actually there before continuing
-    RCLCPP_DEBUG(node_->get_logger(), "Waiting for \"%s\" action server", action_name.c_str());
+    RCLCPP_DEBUG(
+      node_->get_logger(), "[BtActionNode][%s] Waiting for \"%s\" action server", __func__,
+      action_name.c_str());
     if (!action_client_->wait_for_action_server(wait_for_service_timeout_)) {
       RCLCPP_ERROR(
-        node_->get_logger(), "\"%s\" action server not available after waiting for %.2fs",
+        node_->get_logger(),
+        "[BtActionNode][%s] \"%s\" action server not available after waiting for %.2fs", __func__,
         action_name.c_str(), wait_for_service_timeout_.count() / 1000.0);
       throw std::runtime_error(
         std::string("Action server ") + action_name + std::string(" not available"));
@@ -189,7 +194,7 @@ public:
       should_send_goal_ = true;
 
       // "user defined" callback, may modify "should_send_goal_".
-      // on_tick() 簡單來說是一個 base class 用於定義 「interface」、subclass 填內容」的典型template function。
+      // on_tick() 就是讓 subclass 填寫 goal 內容的地方
       on_tick();
 
       if (!should_send_goal_) {
@@ -384,9 +389,10 @@ protected:
         if (future_goal_handle_) {
           RCLCPP_DEBUG(
             node_->get_logger(),
-            "Goal result for %s available, but it hasn't received the goal response yet. "
+            "[BtActionNode][%s] Goal result for %s available, but it hasn't received the goal "
+            "response yet. "
             "It's probably a goal result for the last goal request",
-            action_name_.c_str());
+            __func__, action_name_.c_str());
           return;
         }
 

@@ -56,7 +56,7 @@ BtStatus BehaviorTreeEngine::run(
       // 1. NodeStatus::SUCCESS => 馬上tick下一個child node
       // 2. NodeStatus::RUNNING => 下次engine tick 還是會tick相同的child node
       // 3. NodeStatus::FAILURE => halt 所有 child node。
-      result = tree->tickRoot();  // 不管回覆 RUNNING 還是 SUCCESS 都會繼續往下執行。
+      result = tree->tickRoot();
 
       onLoop();
 

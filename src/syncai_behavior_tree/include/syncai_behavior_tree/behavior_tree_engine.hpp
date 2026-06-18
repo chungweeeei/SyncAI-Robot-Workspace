@@ -20,7 +20,6 @@ namespace syncai_behavior_tree
 enum class BtStatus { SUCCEEDED, FAILED, CANCELED };
 
 /**
- * @class syncai_behavior_tree::BehaviorTreeEngine
  * @brief A class to create and handle behavior trees
  */
 class BehaviorTreeEngine
@@ -29,8 +28,13 @@ public:
   /**
    * @brief A constructor for syncai_behavior_tree::BehaviorTreeEngine
    * @param plugin_libraries vector of BT plugin library names to load
+   * @details Constructor - 把 plugin libraries 註冊進 BT::BehaviorTreeFactory裡，建立 string -> class 的 unordered_map
    */
   explicit BehaviorTreeEngine(const std::vector<std::string> & plugin_libraries);
+
+  /**
+   * @brief A destructor for syncai_behavior_tree::BehaviorTreeEngine
+   */
   virtual ~BehaviorTreeEngine() {}
 
   /**
@@ -40,6 +44,7 @@ public:
    * @param cancelRequested Function to check if cancel was requested during BT execution
    * @param loopTimeout Time period for each iteration of BT execution
    * @return syncai_behavior_tree::BtStatus Status of BT execution
+   * @details Run() - 固定頻率 tick 整顆樹的迴圈，直到整顆樹回傳 SUCCESS/FAILURE 或者 cancelRequested() 回傳 true。
    */
   BtStatus run(
     BT::Tree * tree, std::function<void()> onLoop, std::function<bool()> cancelRequested,
@@ -64,6 +69,7 @@ public:
   /**
    * @brief Function to explicitly reset all BT nodes to initial state
    * @param root_node Pointer to BT root node
+   * @details 把整顆樹 reset 回初始狀態，方便重跑
    */
   void haltAllActions(BT::TreeNode * root_node);
 

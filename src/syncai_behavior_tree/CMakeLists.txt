@@ -50,12 +50,6 @@ target_include_directories(${library_name} PUBLIC
 
 ament_target_dependencies(${library_name} ${dependencies})
 
-# Example showing how to drive the BehaviorTreeEngine
-# (ros2 run syncai_behavior_tree engine_demo)
-add_executable(engine_demo examples/engine_demo.cpp)
-target_link_libraries(engine_demo ${library_name})
-ament_target_dependencies(engine_demo ${dependencies})
-
 # Behavior Tree action node plugins
 add_library(syncai_compute_path_to_pose_action_bt_node SHARED
   plugins/action/compute_path_to_pose_action.cpp)
@@ -86,8 +80,21 @@ install(
   RUNTIME DESTINATION bin
 )
 
+# Example executables
+add_executable(sync_action_demo examples/sync_action_demo.cpp)
+target_link_libraries(sync_action_demo ${library_name})
+ament_target_dependencies(sync_action_demo ${dependencies})
+
+add_executable(stateful_action_demo examples/stateful_action_demo.cpp)
+target_link_libraries(stateful_action_demo ${library_name})
+ament_target_dependencies(stateful_action_demo ${dependencies})
+
+add_executable(async_action_demo examples/async_action_demo.cpp)
+target_link_libraries(async_action_demo ${library_name})
+ament_target_dependencies(async_action_demo ${dependencies})
+
 install(
-  TARGETS engine_demo
+  TARGETS sync_action_demo stateful_action_demo async_action_demo
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
