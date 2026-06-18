@@ -12,11 +12,6 @@
             <AllowMulticast>spdp</AllowMulticast>
         </General>
         <Discovery>
-            <!-- 'auto' probes participant indices 0..MaxAutoParticipantIndex.
-                 The CycloneDDS default cap is 9 (~10 participants per host on a
-                 domain); with the full sim + nav stack + rviz on domain 0 that
-                 runs out and new nodes die with "rcl node's rmw handle is
-                 invalid". Raise the cap to give plenty of headroom. -->
             <ParticipantIndex>auto</ParticipantIndex>
             <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
         </Discovery>

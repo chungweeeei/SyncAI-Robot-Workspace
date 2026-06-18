@@ -4,8 +4,6 @@ install/
 log/
 .colcon/
 
-# Third-party source checkouts (cloned, not tracked here)
-src/third-party/behaviortree_cpp_v3
 
 # rosdep / ament
 *.deb
