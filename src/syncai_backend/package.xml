@@ -1,22 +1,24 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>syncai_test_bt_action</name>
+  <name>syncai_backend</name>
   <version>0.0.0</version>
-  <description>Python test node exercising syncai behavior tree actions</description>
+  <description>Robot backend node exposing a RESTful API (FastAPI) bridged to ROS 2</description>
   <maintainer email="chungweeeei@gmail.com">ros</maintainer>
   <license>Apache-2.0</license>
 
-  <depend>rclpy</depend>
-  <depend>syncai_test_bt_action_msgs</depend>
+  <exec_depend>rclpy</exec_depend>
+
+  <!--
+    Web stack (FastAPI + uvicorn) is installed via pip / requirements.txt, not
+    rosdep, because Ubuntu 22.04 (jammy) has no reliable apt/rosdep key for
+    fastapi. See requirements.txt and the README for setup.
+  -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
-
-  <exec_depend>python3-google-genai</exec_depend>
-  <exec_depend>python3-dotenv</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

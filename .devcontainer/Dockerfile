@@ -43,6 +43,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
 
+# Python web stack for syncai_backend (no reliable apt key on jammy; installed
+# via pip). Keep in sync with src/syncai_backend/requirements.txt.
+RUN pip3 install --no-cache-dir fastapi "uvicorn[standard]"
+
 RUN if id -u ubuntu >/dev/null 2>&1 && [ "$USERNAME" != "ubuntu" ]; then \
     userdel -r ubuntu 2>/dev/null || true; \
     fi \

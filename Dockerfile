@@ -27,11 +27,14 @@ RUN apt-get update && apt-get install -y \
     ros-humble-pcl-conversions \
     ros-humble-pointcloud-to-laserscan \
     ros-humble-angles \
+    ros-humble-teleop-twist-keyboard \
     python3-colcon-common-extensions \
     python3-rosdep \
     python3-dotenv \
+    python3-pip \
     byobu \
     net-tools \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # System deps for workspace packages that have no ament/CMake config:
@@ -42,6 +45,10 @@ RUN apt-get update && apt-get install -y \
     libzmq3-dev \
     libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Python web stack for syncai_backend (no reliable apt key on jammy; installed
+# via pip). Keep in sync with src/syncai_backend/requirements.txt.
+RUN pip3 install --no-cache-dir fastapi "uvicorn[standard]"
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble

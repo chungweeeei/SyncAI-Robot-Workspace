@@ -16,7 +16,6 @@ find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(syncai_test_bt_action_msgs REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -32,7 +31,6 @@ set(dependencies
   rclcpp_lifecycle
   std_msgs
   std_srvs
-  syncai_test_bt_action_msgs
   syncai_util
   tf2
   tf2_ros
@@ -70,14 +68,6 @@ list(APPEND plugin_libs syncai_follow_path_action_bt_node)
 add_library(syncai_navigate_to_pose_action_bt_node SHARED
   plugins/action/navigate_to_pose_action.cpp)
 list(APPEND plugin_libs syncai_navigate_to_pose_action_bt_node)
-
-add_library(syncai_askmodel_action_bt_node SHARED
-  plugins/action/askmodel_action.cpp)
-list(APPEND plugin_libs syncai_askmodel_action_bt_node)
-
-add_library(syncai_printout_service_bt_node SHARED
-  plugins/action/printout_service.cpp)
-list(APPEND plugin_libs syncai_printout_service_bt_node)
 
 foreach(bt_plugin ${plugin_libs})
   target_include_directories(${bt_plugin} PUBLIC

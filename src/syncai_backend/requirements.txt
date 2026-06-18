@@ -1,0 +1,4 @@
+# Web stack for the syncai_backend REST API.
+# Install inside the container:  pip install -r src/syncai_backend/requirements.txt
+fastapi
+uvicorn[standard]

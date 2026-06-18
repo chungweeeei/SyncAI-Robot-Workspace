@@ -4,8 +4,7 @@ A ROS 2 Humble navigation stack for the SyncAI robot. The core packages are a
 **non-lifecycle port of Navigation2** — the nav2 servers (AMCL, map server,
 costmap, planner, controller, BT navigator) have been re-implemented as plain
 `rclcpp::Node`s instead of lifecycle nodes, so the stack starts and runs without
-a lifecycle manager. Navigation is driven by a Behavior Tree, and an
-experimental test node queries Google Gemini from inside a BT action.
+a lifecycle manager. Navigation is driven by a Behavior Tree.
 
 > Built and run inside a Docker container (`ubuntu:22.04` + ROS 2 Humble).
 > RMW is CycloneDDS configured via `config/cyclonedds.xml`.
@@ -52,8 +51,7 @@ The navigation pipeline mirrors nav2's action-server topology:
 | `syncai_regulated_pure_pursuit_controller` | Regulated Pure Pursuit controller plugin |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_bt_navigator` | BT navigator action server (`NavigateToPose`) |
-| `syncai_test_bt_action` | Python test node exercising BT actions (queries Google Gemini) |
-| `syncai_test_bt_action_msgs` | Action / srv interfaces for `syncai_test_bt_action` |
+| `syncai_backend` | Robot backend node exposing a RESTful API (FastAPI) bridged to ROS 2 |
 | `syncai_task_runner` | Task runner nodes (scaffold) |
 
 ### Third-party packages (`src/third-party/`)
@@ -81,7 +79,7 @@ cd - && git add src/third-party/behaviortree_cpp_v3 && git commit -m "chore: bum
 ├── Dockerfile               # ubuntu:22.04 + ROS 2 Humble + nav deps
 ├── docker-compose.yml       # `robot` service (host networking, X11, workspace mount)
 ├── .devcontainer/           # VS Code "Reopen in Container" config
-└── .env                     # GEMINI_API_KEY etc. (gitignored — never commit)
+└── .env                     # local env vars / secrets (gitignored — never commit)
 ```
 
 ## Getting started
@@ -99,7 +97,7 @@ git submodule update --init --recursive
 ### 2. Start the container
 
 ```bash
-# .env supplies UID/GID, ROS_DOMAIN_ID, DISPLAY, GEMINI_API_KEY, etc.
+# .env supplies UID/GID, ROS_DOMAIN_ID, DISPLAY, etc.
 docker compose up -d robot
 docker compose exec robot bash
 ```
@@ -161,4 +159,4 @@ colcon test-result --verbose
 - **CycloneDDS** is the RMW; the container points `CYCLONEDDS_URI` at
   `config/cyclonedds.xml`. Host networking is used so DDS discovery reaches other
   hosts on the LAN.
-- **Secrets** — `.env` holds `GEMINI_API_KEY` and is gitignored. Do not commit it.
+- **Secrets** — `.env` holds local secrets and is gitignored. Do not commit it.
