@@ -66,4 +66,22 @@ std::string Layer::getFullName(const std::string & param_name)
   return std::string(name_ + "." + param_name);
 }
 
+std::string Layer::joinWithParentNamespace(const std::string & topic)
+{
+  if (!node_) {
+    throw std::runtime_error{"Failed to get node in Layer::joinWithParentNamespace"};
+  }
+
+  // Absolute topics are used as-is.
+  if (!topic.empty() && topic.front() == '/') {
+    return topic;
+  }
+
+  // The costmap node namespace is e.g. "/robot01/global_costmap"; strip the last
+  // segment (the costmap name) to get the parent namespace "/robot01", then join.
+  std::string node_namespace = node_->get_namespace();
+  std::string parent_namespace = node_namespace.substr(0, node_namespace.find_last_of('/'));
+  return parent_namespace + "/" + topic;
+}
+
 }  // namespace syncai_costmap_2d

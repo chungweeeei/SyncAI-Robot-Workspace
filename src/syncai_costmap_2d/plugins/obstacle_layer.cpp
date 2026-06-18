@@ -105,6 +105,10 @@ void ObstacleLayer::onInitialize()
     declareParameter(source + "." + "raytrace_min_range", rclcpp::ParameterValue(0.0));
 
     node_->get_parameter(name_ + "." + source + "." + "topic", topic);
+    // The costmap node lives in its own sub-namespace; resolve a relative sensor
+    // topic against the PARENT namespace so it still points at /<parent>/<topic>
+    // (e.g. /robot01/scan) rather than under the costmap's own namespace.
+    topic = joinWithParentNamespace(topic);
     node_->get_parameter(name_ + "." + source + "." + "sensor_frame", sensor_frame);
     node_->get_parameter(
       name_ + "." + source + "." + "observation_persistence", observation_keep_time);

@@ -85,7 +85,11 @@
         obstacle_min_range: 0.0
         raytrace_max_range: 3.0
         raytrace_min_range: 0.0
-        inf_is_valid: false
+        # true: laser rays that return no hit (inf, e.g. open warehouse space)
+        # are treated as range_max so they still raytrace-clear up to
+        # raytrace_max_range. With false those rays are dropped, so a removed
+        # obstacle whose ray now reads inf never gets cleared -> residual cost.
+        inf_is_valid: true
 
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"

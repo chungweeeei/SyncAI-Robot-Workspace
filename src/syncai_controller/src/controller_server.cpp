@@ -510,9 +510,15 @@ bool ControllerServer::isGoalReached()
 
   geometry_msgs::msg::Twist velocity = getThresholdedTwist(odom_sub_->getTwist());
 
+  // Use the latest available map->global_frame transform (Time(0)) instead of the
+  // path's original (and now stale) stamp; otherwise long paths hit an
+  // "extrapolation into the past" TF error and isGoalReached never returns true.
+  geometry_msgs::msg::PoseStamped end_pose_latest = end_pose_;
+  end_pose_latest.header.stamp = rclcpp::Time(0);
+
   geometry_msgs::msg::PoseStamped transformed_end_pose;
   syncai_util::transformPoseInTargetFrame(
-    end_pose_, transformed_end_pose, *costmap_ros_->getTfBuffer(),
+    end_pose_latest, transformed_end_pose, *costmap_ros_->getTfBuffer(),
     costmap_ros_->getGlobalFrameID(), costmap_ros_->getTransformTolerance());
 
   return goal_checkers_[current_goal_checker_]->isGoalReached(

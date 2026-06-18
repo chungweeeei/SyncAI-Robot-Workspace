@@ -100,6 +100,9 @@ void StaticLayer::getParameters()
   } else {
     map_topic_ = global_map_topic;
   }
+  // The costmap node lives in its own sub-namespace; resolve a relative map
+  // topic against the PARENT namespace so it still points at /<parent>/map.
+  map_topic_ = joinWithParentNamespace(map_topic_);
   node_->get_parameter(
     name_ + "." + "map_subscribe_transient_local", map_subscribe_transient_local_);
   node_->get_parameter("track_unknown_space", track_unknown_space_);

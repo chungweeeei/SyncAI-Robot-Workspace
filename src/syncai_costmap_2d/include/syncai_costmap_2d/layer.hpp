@@ -107,6 +107,17 @@ public:
   /** @brief Convenience functions for declaring ROS parameters */
   std::string getFullName(const std::string & param_name);
 
+  /**
+   * @brief Joins a relative topic with the costmap node's PARENT namespace.
+   *
+   * The costmap node lives in its own sub-namespace (e.g. /robot01/global_costmap),
+   * so a plain relative topic would resolve under that sub-namespace. Input topics
+   * shared with the rest of the robot (map, scan) must instead resolve to the
+   * parent namespace (/robot01). Absolute topics (leading '/') are returned
+   * unchanged. Mirrors nav2_costmap_2d::Layer::joinWithParentNamespace.
+   */
+  std::string joinWithParentNamespace(const std::string & topic);
+
 protected:
   LayeredCostmap * layered_costmap_;
   std::string name_;

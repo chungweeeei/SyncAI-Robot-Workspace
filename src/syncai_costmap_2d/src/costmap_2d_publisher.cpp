@@ -26,8 +26,12 @@ Costmap2DPublisher::Costmap2DPublisher(
   costmap_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>(topic_name_, custom_qos);
   costmap_raw_pub_ =
     node->create_publisher<nav2_msgs::msg::Costmap>(topic_name_ + "/raw", custom_qos);
-  costmap_update_pub_ =
-    node->create_publisher<map_msgs::msg::OccupancyGridUpdate>(topic_name_ + "/update", custom_qos);
+  // nav2 convention: incremental updates are published on "<topic>_updates"
+  // (e.g. /robot01/costmap_updates). RViz2's Map/Costmap display auto-derives
+  // this same "<topic>_updates" name, so using "/update" here left RViz
+  // subscribing to a topic nobody published -> the display never updated.
+  costmap_update_pub_ = node->create_publisher<map_msgs::msg::OccupancyGridUpdate>(
+    topic_name_ + "_updates", custom_qos);
 
   // Create a service that will use the callback function to handle requests.
   costmap_service_ = node->create_service<nav2_msgs::srv::GetCostmap>(

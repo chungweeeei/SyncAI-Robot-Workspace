@@ -12,7 +12,7 @@
     # Lowered from 20.0: Isaac Sim publishes /clock at only ~35 Hz (~0.58x
     # real-time) with coarse steps, so a 20 Hz sim-time loop constantly
     # overran and logged "missed its desired rate". 10 Hz is sustainable.
-    controller_frequency: 10.0
+    controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
@@ -33,13 +33,13 @@
 
     goal_checker:
       plugin: "syncai_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.08
       stateful: true
 
     FollowPath:
       plugin: "syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.26
+      desired_linear_vel: 0.50
       lookahead_dist: 0.6
       min_lookahead_dist: 0.3
       max_lookahead_dist: 0.9

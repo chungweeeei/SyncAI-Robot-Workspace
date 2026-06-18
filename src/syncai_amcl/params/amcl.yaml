@@ -1,4 +1,10 @@
-amcl:
+# The /**/ wildcard key matches the node name in any namespace, so the same file
+# works with the launch `namespace` argument (default robot01). Topic values are
+# RELATIVE and get the namespace prefix (scan -> /robot01/scan, map ->
+# /robot01/map, plus amcl_pose / initialpose / particle_cloud). TF frame names
+# are NOT namespaced by ROS, so base/odom keep their explicit robot01/ prefix to
+# match what Isaac Sim publishes; the global frame stays "map".
+/**/amcl:
   ros__parameters:
     use_sim_time: true
     # --- Frames ---
@@ -6,9 +12,9 @@ amcl:
     odom_frame_id: "robot01/odom"
     global_frame_id: "map"
 
-    # --- Topics ---
-    scan_topic: "robot01/scan"
-    map_topic: "robot01/map"
+    # --- Topics (relative; namespaced at launch) ---
+    scan_topic: "scan"
+    map_topic: "map"
 
     # --- Motion model (odometry noise) ---
     # robot_model_type: "differential" or "omni"

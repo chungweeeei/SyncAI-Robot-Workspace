@@ -31,13 +31,26 @@ Costmap2DROS::Costmap2DROS(const std::string & name) : Costmap2DROS(name, "/", n
 Costmap2DROS::Costmap2DROS(
   const std::string & name, const std::string & parent_namespace,
   const std::string & local_namespace)
-: rclcpp::Node(name),
+: rclcpp::Node(
+    name, "",
+    // Place this costmap node in its own sub-namespace
+    // (<parent_namespace>/<local_namespace>, e.g. /robot01/global_costmap) so its
+    // topics and services (costmap, costmap/raw, costmap_updates,
+    // published_footprint, get_costmap, ...) do not collide with another costmap
+    // living in the same parent namespace (e.g. the controller's local_costmap).
+    // NodeOptions arguments take precedence over the process-level command-line
+    // remaps. Mirrors nav2_costmap_2d::Costmap2DROS. Input topics that must stay
+    // in the parent namespace (map, scan) are handled via joinWithParentNamespace
+    // in the layers.
+    rclcpp::NodeOptions().arguments(
+      {"--ros-args", "-r",
+       std::string("__ns:=") + syncai_util::add_namespaces(parent_namespace, local_namespace),
+       "--ros-args", "-r", name + ":" + std::string("__node:=") + name})),
   name_(name),
   parent_namespace_(parent_namespace),
   default_plugins_{"static_layer"},
   default_types_{"syncai_costmap_2d::StaticLayer"}
 {
-  (void)local_namespace;  // TODO(syncai): wire namespace handling in configure() (Step 2)
   RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] Creating Costmap", __func__);
 
   this->declare_parameter("always_send_full_costmap", rclcpp::ParameterValue(false));
