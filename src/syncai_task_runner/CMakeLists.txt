@@ -41,6 +41,16 @@ target_include_directories(syncai_navigate_to_pose_navigator PUBLIC
 )
 ament_target_dependencies(syncai_navigate_to_pose_navigator ${dependencies})
 
+# NavigateThroughPoses navigator
+add_library(syncai_navigate_through_poses_navigator SHARED
+  src/navigators/navigate_through_poses.cpp
+)
+target_include_directories(syncai_navigate_through_poses_navigator PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(syncai_navigate_through_poses_navigator ${dependencies})
+
 # TaskRunner host node library
 add_library(${PROJECT_NAME} SHARED
   src/syncai_task_runner.cpp
@@ -49,7 +59,10 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(${PROJECT_NAME} syncai_navigate_to_pose_navigator)
+target_link_libraries(${PROJECT_NAME}
+  syncai_navigate_to_pose_navigator
+  syncai_navigate_through_poses_navigator
+)
 ament_target_dependencies(${PROJECT_NAME} ${dependencies})
 
 # TaskRunner executable entry point
@@ -58,7 +71,10 @@ target_link_libraries(task_runner ${PROJECT_NAME})
 ament_target_dependencies(task_runner ${dependencies})
 
 install(
-  TARGETS syncai_navigate_to_pose_navigator ${PROJECT_NAME}
+  TARGETS
+    syncai_navigate_to_pose_navigator
+    syncai_navigate_through_poses_navigator
+    ${PROJECT_NAME}
   EXPORT export_syncai_task_runner
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -88,7 +104,11 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_include_directories(include)
-ament_export_libraries(syncai_navigate_to_pose_navigator ${PROJECT_NAME})
+ament_export_libraries(
+  syncai_navigate_to_pose_navigator
+  syncai_navigate_through_poses_navigator
+  ${PROJECT_NAME}
+)
 ament_export_targets(export_syncai_task_runner)
 ament_export_dependencies(${dependencies})
 

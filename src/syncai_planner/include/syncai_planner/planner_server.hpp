@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "pluginlib/class_loader.hpp"
@@ -38,6 +39,8 @@ class PlannerServer : public rclcpp::Node
 public:
   using ActionToPose = nav2_msgs::action::ComputePathToPose;
   using ActionServerToPose = syncai_util::SimpleActionServer<ActionToPose>;
+  using ActionThroughPoses = nav2_msgs::action::ComputePathThroughPoses;
+  using ActionServerThroughPoses = syncai_util::SimpleActionServer<ActionThroughPoses>;
   using PlannerMap = std::unordered_map<std::string, syncai_nav_core::GlobalPlanner::Ptr>;
 
   /**
@@ -133,6 +136,13 @@ protected:
   void computePlan();
 
   /**
+   * @brief The action server callback which calls planner to get a path through
+   * an ordered set of goals (start -> goal[0] -> goal[1] -> ...), concatenating
+   * each segment into a single path.
+   */
+  void computePlanThroughPoses();
+
+  /**
    * @brief Publish a path for visualization purposes
    * @param path Reference to Global Path
    */
@@ -147,6 +157,9 @@ protected:
 
   // Our action server implements the ComputePathToPose action
   std::unique_ptr<ActionServerToPose> action_server_pose_;
+
+  // Our action server implements the ComputePathThroughPoses action
+  std::unique_ptr<ActionServerThroughPoses> action_server_poses_;
 
   // Planner
   PlannerMap planners_;
