@@ -15,6 +15,7 @@ NavigateToPoseAction::NavigateToPoseAction(
 
 void NavigateToPoseAction::on_tick()
 {
+  // Set input value into action goal
   if (!getInput("goal", goal_.pose)) {
     RCLCPP_ERROR(node_->get_logger(), "NavigateToPoseAction: goal not provided");
     return;

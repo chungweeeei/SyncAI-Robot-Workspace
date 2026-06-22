@@ -1,7 +1,7 @@
-# Launch the non-lifecycle bt_navigator node — the BT action server that
-# exposes the NavigateToPose action and ticks the behavior tree. It talks to
+# Launch the non-lifecycle task_runner node — the BT action server that
+# exposes the navigate_to_pose action and ticks the behavior tree. It talks to
 # the planner (compute_path_to_pose) and controller (follow_path) action
-# servers, so those must be running for a NavigateToPose goal to succeed.
+# servers, so those must be running for a goal to succeed.
 
 import os
 
@@ -14,8 +14,8 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    pkg_share = get_package_share_directory('syncai_bt_navigator')
-    default_params_file = os.path.join(pkg_share, 'params', 'bt_navigator_params.yaml')
+    pkg_share = get_package_share_directory('syncai_task_runner')
+    default_params_file = os.path.join(pkg_share, 'params', 'task_runner_params.yaml')
 
     namespace = LaunchConfiguration('namespace')
     params_file = LaunchConfiguration('params_file')
@@ -29,15 +29,15 @@ def generate_launch_description():
     declare_params_file = DeclareLaunchArgument(
         'params_file',
         default_value=default_params_file,
-        description='Full path to the bt_navigator parameters YAML file',
+        description='Full path to the task_runner parameters YAML file',
     )
 
-    # No `name=` here: the params file uses the /**/bt_navigator wildcard key so
+    # No `name=` here: the params file uses the /**/task_runner wildcard key so
     # it matches in any namespace. use_sim_time comes ONLY from the params file —
     # a launch override placed after the file would silently win over the YAML.
-    bt_navigator_node = Node(
-        package='syncai_bt_navigator',
-        executable='bt_navigator',
+    task_runner_node = Node(
+        package='syncai_task_runner',
+        executable='task_runner',
         namespace=namespace,
         output='screen',
         parameters=[params_file],
@@ -46,5 +46,5 @@ def generate_launch_description():
     return LaunchDescription([
         declare_namespace,
         declare_params_file,
-        bt_navigator_node,
+        task_runner_node,
     ])

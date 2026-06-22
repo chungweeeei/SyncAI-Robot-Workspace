@@ -5,25 +5,80 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(behaviortree_cpp_v3 REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(syncai_behavior_tree REQUIRED)
+find_package(syncai_util REQUIRED)
+find_package(tf2_ros REQUIRED)
 
-# --- Scaffold ---------------------------------------------------------------
-# Add dependencies and targets here as the task runner takes shape. Typical setup:
-#
-# find_package(rclcpp REQUIRED)
-# find_package(rclcpp_action REQUIRED)
-#
-# set(dependencies rclcpp rclcpp_action)
-#
-# add_executable(task_runner src/task_runner.cpp)
-# target_include_directories(task_runner PUBLIC
-#   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-#   $<INSTALL_INTERFACE:include>
-# )
-# ament_target_dependencies(task_runner ${dependencies})
-# install(TARGETS task_runner DESTINATION lib/${PROJECT_NAME})
-# install(DIRECTORY include/ DESTINATION include)
-# ----------------------------------------------------------------------------
+set(dependencies
+  ament_index_cpp
+  behaviortree_cpp_v3
+  geometry_msgs
+  nav2_msgs
+  nav_msgs
+  rclcpp
+  rclcpp_action
+  syncai_behavior_tree
+  syncai_util
+  tf2_ros
+)
+
+# NavigateToPose navigator
+add_library(syncai_navigate_to_pose_navigator SHARED
+  src/navigators/navigate_to_pose.cpp
+)
+target_include_directories(syncai_navigate_to_pose_navigator PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(syncai_navigate_to_pose_navigator ${dependencies})
+
+# TaskRunner host node library
+add_library(${PROJECT_NAME} SHARED
+  src/syncai_task_runner.cpp
+)
+target_include_directories(${PROJECT_NAME} PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(${PROJECT_NAME} syncai_navigate_to_pose_navigator)
+ament_target_dependencies(${PROJECT_NAME} ${dependencies})
+
+# TaskRunner executable entry point
+add_executable(task_runner src/main.cpp)
+target_link_libraries(task_runner ${PROJECT_NAME})
+ament_target_dependencies(task_runner ${dependencies})
+
+install(
+  TARGETS syncai_navigate_to_pose_navigator ${PROJECT_NAME}
+  EXPORT export_syncai_task_runner
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(
+  TARGETS task_runner
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
+
+install(
+  DIRECTORY behavior_trees launch params
+  DESTINATION share/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -31,5 +86,10 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
+
+ament_export_include_directories(include)
+ament_export_libraries(syncai_navigate_to_pose_navigator ${PROJECT_NAME})
+ament_export_targets(export_syncai_task_runner)
+ament_export_dependencies(${dependencies})
 
 ament_package()

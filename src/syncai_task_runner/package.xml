@@ -3,11 +3,22 @@
 <package format="3">
   <name>syncai_task_runner</name>
   <version>0.0.0</version>
-  <description>Task runner nodes for the syncai stack (scaffold)</description>
+  <description>Behavior Tree task runner node hosting BT-based navigators</description>
   <maintainer email="chungweeeei@gmail.com">ros</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>ament_index_cpp</depend>
+  <depend>behaviortree_cpp_v3</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>syncai_behavior_tree</depend>
+  <depend>syncai_util</depend>
+  <depend>tf2_ros</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

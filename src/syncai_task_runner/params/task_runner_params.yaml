@@ -1,12 +1,12 @@
-# Parameters for the syncai_bt_navigator "bt_navigator" node — the BT action
-# server that exposes the NavigateToPose action and ticks the behavior tree.
+# Parameters for the syncai_task_runner "task_runner" node — the BT action
+# server that exposes the navigate_to_pose action and ticks the behavior tree.
 #
 # The /**/ wildcard key matches the node name in any namespace, so the same
 # file works with the launch `namespace` argument (default robot01). Topic
 # values are RELATIVE names — they get the namespace prefix automatically
 # (e.g. odom -> /robot01/odom). TF frame names are NOT namespaced by ROS, so
 # robot_base_frame keeps its explicit robot01/ prefix.
-/**/bt_navigator:
+/**/task_runner:
   ros__parameters:
     use_sim_time: true
 
@@ -32,8 +32,3 @@
       - syncai_compute_path_to_pose_action_bt_node
       - syncai_follow_path_action_bt_node
       - syncai_navigate_to_pose_action_bt_node
-
-    # default_nav_to_pose_bt_xml is left unset on purpose: the node defaults it
-    # to <install>/share/syncai_bt_navigator/behavior_trees/navigate_to_pose.xml.
-    # To use a different tree, set an absolute path here, e.g.:
-    # default_nav_to_pose_bt_xml: /abs/path/to/my_tree.xml

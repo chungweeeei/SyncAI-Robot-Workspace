@@ -1,4 +1,4 @@
-#include "syncai_bt_navigator/navigators/navigate_to_pose.hpp"
+#include "syncai_task_runner/navigators/navigate_to_pose.hpp"
 
 #include <limits>
 #include <memory>
@@ -10,42 +10,30 @@
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/robot_utils.hpp"
 
-namespace syncai_bt_navigator
+namespace syncai_task_runner
 {
-
 bool NavigateToPoseNavigator::configure(
   rclcpp::Node::WeakPtr parent_node, std::shared_ptr<syncai_util::OdomSmoother> odom_smoother)
 {
   start_time_ = rclcpp::Time(0);
   auto node = parent_node.lock();
 
-  // XML 裡面用的是 {goal} 和 {path}，正好對上參數的預設值 "goal" / "path"
-  // goal_blackboard_id_ 和 path_blackboard_id_ 是兩個字串，內容是「navigator 要都寫哪個 blackboard key」
-  // 為何需要做成「 ROS 參數」而不是寫死
-  // 原因：如果哪天換了一顆自訂的 BT XML，裡面 port 寫的是 {goal_pose} 而不是 {goal}，不用重新 compile -- 只需要在 params檔把參數改成對應的名字：
-  // bt_navigator:
-  //    ros__parameters:
-  //        goal_blackboard_id: "goal_pose"
-  //        path_blackboard_id: "path"
   if (!node->has_parameter("goal_blackboard_id")) {
     node->declare_parameter("goal_blackboard_id", std::string("goal"));
   }
-
   goal_blackboard_id_ = node->get_parameter("goal_blackboard_id").as_string();
 
   if (!node->has_parameter("path_blackboard_id")) {
     node->declare_parameter("path_blackboard_id", std::string("path"));
   }
-
   path_blackboard_id_ = node->get_parameter("path_blackboard_id").as_string();
 
-  // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
 
   // register action client
   self_client_ = rclcpp_action::create_client<ActionT>(node, getName());
 
-  // register subscription for receiving goal pose from rviz
+  // register subscription  to receiving goal pose from rviz
   goal_sub_ = node->create_subscription<geometry_msgs::msg::PoseStamped>(
     "goal_pose", rclcpp::SystemDefaultsQoS(),
     std::bind(&NavigateToPoseNavigator::onGoalPoseReceived, this, std::placeholders::_1));
@@ -57,15 +45,13 @@ std::string NavigateToPoseNavigator::getDefaultBTFilepath(rclcpp::Node::WeakPtr 
   std::string default_bt_xml_filename;
   auto node = parent_node.lock();
 
-  // 找出 default_nav_to_pose_bt_xml 參數，如果沒有宣告
-  // 就宣告一個，內容是「從 share 目錄底下的 behavior_trees/navigate_to_pose.xml」。
-  if (!node->has_parameter("default_nav_to_pose_bt_xml")) {
-    std::string pkg_share_dir = ament_index_cpp::get_package_share_directory("syncai_bt_navigator");
+  if (!node->has_parameter("default_bt_xml")) {
+    std::string pkg_share_dir = ament_index_cpp::get_package_share_directory("syncai_task_runner");
     node->declare_parameter<std::string>(
-      "default_nav_to_pose_bt_xml", pkg_share_dir + "/behavior_trees/navigate_to_pose.xml");
+      "default_bt_xml", pkg_share_dir + "/behavior_trees/simple_move.xml");
   }
 
-  node->get_parameter("default_nav_to_pose_bt_xml", default_bt_xml_filename);
+  node->get_parameter("default_bt_xml", default_bt_xml_filename);
 
   return default_bt_xml_filename;
 }
@@ -79,15 +65,12 @@ bool NavigateToPoseNavigator::cleanup()
 
 bool NavigateToPoseNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
 {
-  // subclass 中主要負責載入 XML + 寫 goal
-  // 而 behavior_tree 是 nav2_msgs/action/NavigateTOPose 的自訂 action message
   auto bt_xml_filename = goal->behavior_tree;
 
-  // 在 BT.CPP v3裡面， loadBehaviorTree 有個 guard
-  // 真正的「重載」（讀檔 + 解析 + 建立behavior tree）只有在BT真正換了後才做。
-  // 同名就直接 early return。 樹直接被重用
   if (!bt_action_server_->loadBehaviorTree(bt_xml_filename)) {
-    RCLCPP_ERROR(logger_, "BT file not found: %s. Navigation canceled.", bt_xml_filename.c_str());
+    RCLCPP_ERROR(
+      logger_, "[NavigateToPoseNavigator][%s] BT file not found: %s. Navigation canceled.",
+      __func__, bt_xml_filename.c_str());
     return false;
   }
 
@@ -102,9 +85,6 @@ void NavigateToPoseNavigator::goalCompleted(
 {
 }
 
-/**
- * @brief A callback to be called when bt_->run() 的 tick loop裡，每 tick 一次、反覆執行，直到tree finished。
- */
 void NavigateToPoseNavigator::onLoop()
 {
   // action server feedback (pose, duration of task,
@@ -117,15 +97,6 @@ void NavigateToPoseNavigator::onLoop()
     feedback_utils_.transform_tolerance);
 
   auto blackboard = bt_action_server_->getBlackboard();
-
-  /**
-   * NavigateToPose 所定義的 action result有
-   * geometry_msgs/PostStamped current_pose
-   * builtin_interfaces/Duration navigation_time
-   * builtin_interfaces/Duration estimated_time_remaining
-   * int16 number_of_recoveries
-   * float32 distance_remaining
-   */
   try {
     // Get current path points
     nav_msgs::msg::Path current_path;
@@ -146,21 +117,15 @@ void NavigateToPoseNavigator::onLoop()
       return closest_pose_idx;
     };
 
-    // Calculate distance on the path
-    // 沿著path的路徑總長而不是到終點的直線距離
     double distance_remaining =
       syncai_util::geometry_utils::calculate_path_length(current_path, find_closest_pose_idx());
 
     // Default value for time remaining
     rclcpp::Duration estimated_time_remaining = rclcpp::Duration::from_seconds(0.0);
 
-    // Get current speed
-    // odom smoother 裡已經平滑過 twist的資訊，避免 jitter的產生，odom_smoother_主要負責平均一段時間內的twist資訊
     geometry_msgs::msg::Twist current_odom = odom_smoother_->getTwist();
     double current_linear_speed = std::hypot(current_odom.linear.x, current_odom.linear.y);
 
-    // Calculate estimated time taken to goal if speed is higher than 1cm/s
-    // and at least 10cm to go
     if ((std::abs(current_linear_speed) > 0.01) && (distance_remaining > 0.1)) {
       estimated_time_remaining =
         rclcpp::Duration::from_seconds(distance_remaining / std::abs(current_linear_speed));
@@ -169,7 +134,6 @@ void NavigateToPoseNavigator::onLoop()
     feedback_msg->distance_remaining = distance_remaining;
     feedback_msg->estimated_time_remaining = estimated_time_remaining;
   } catch (...) {
-    // Ignore
   }
 
   int recovery_count = 0;
@@ -183,7 +147,7 @@ void NavigateToPoseNavigator::onLoop()
 
 void NavigateToPoseNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
 {
-  RCLCPP_INFO(logger_, "Received goal preemption request");
+  RCLCPP_INFO(logger_, "[NavigateToPoseNavigator][%s] Received goal preemption request", __func__);
 
   if (
     goal->behavior_tree == bt_action_server_->getCurrentBTFilename() ||
@@ -196,11 +160,13 @@ void NavigateToPoseNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
   } else {
     RCLCPP_WARN(
       logger_,
-      "Preemption request was rejected since the requested BT XML file is not the same "
+      "[NavigateToPoseNavigator][%s] Preemption request was rejected since the requested BT XML "
+      "file is not the same "
       "as the one that the current goal is executing. Preemption with a new BT is invalid "
       "since it would require cancellation of the previous goal instead of true preemption."
       "\nCancel the current goal and send a new action request if you want to use a "
-      "different BT XML file. For now, continuing to track the last goal until completion.");
+      "different BT XML file. For now, continuing to track the last goal until completion.",
+      __func__);
     bt_action_server_->terminatePendingGoal();
   }
 }
@@ -231,7 +197,9 @@ void NavigateToPoseNavigator::onGoalPoseReceived(
 {
   ActionT::Goal goal;
   goal.pose = *pose;
+
+  // subscribe the goal pose topic and send the goal to the action server
   self_client_->async_send_goal(goal);
 }
 
-}  // namespace syncai_bt_navigator
+}  // namespace syncai_task_runner
