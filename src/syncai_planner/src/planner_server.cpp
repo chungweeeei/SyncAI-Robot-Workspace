@@ -24,16 +24,16 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   default_ids_{"GridBased"},
   default_types_{"syncai_planner/NavfnPlanner"}
 {
-  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Creating PlannerServer", __func__);
+  RCLCPP_INFO(this->get_logger(), "[PlannerServer][%s] Creating PlannerServer", __func__);
 
   // Declare this node's parameters
-  declare_parameter("planner_plugins", default_ids_);
-  declare_parameter("expected_planner_frequency", 1.0);
+  this->declare_parameter("planner_plugins", default_ids_);
+  this->declare_parameter("expected_planner_frequency", 1.0);
 
-  get_parameter("planner_plugins", planner_ids_);
+  this->get_parameter("planner_plugins", planner_ids_);
   if (planner_ids_ == default_ids_) {
     for (size_t i = 0; i < default_ids_.size(); ++i) {
-      declare_parameter(default_ids_[i] + ".plugin", default_types_[i]);
+      this->declare_parameter(default_ids_[i] + ".plugin", default_types_[i]);
     }
   }
 
@@ -58,7 +58,7 @@ PlannerServer::~PlannerServer()
 
 void PlannerServer::configure()
 {
-  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Configuring PlannerServer", __func__);
+  RCLCPP_INFO(this->get_logger(), "[PlannerServer][%s] Configuring PlannerServer", __func__);
 
   costmap_ros_->init();
   costmap_ = costmap_ros_->getCostmap();
@@ -67,14 +67,14 @@ void PlannerServer::configure()
   costmap_thread_ = std::make_unique<syncai_util::NodeThread>(costmap_ros_);
 
   RCLCPP_DEBUG(
-    get_logger(), "[PlannerServer][%s] Costmap size: %d,%d", __func__, costmap_->getSizeInCellsX(),
-    costmap_->getSizeInCellsY());
+    this->get_logger(), "[PlannerServer][%s] Costmap size: %d,%d", __func__,
+    costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
 
   tf_ = costmap_ros_->getTfBuffer();
 
   planner_types_.resize(planner_ids_.size());
 
-  auto node = shared_from_this();
+  auto node = this->shared_from_this();
 
   for (size_t i = 0; i != planner_ids_.size(); i++) {
     try {
@@ -82,13 +82,13 @@ void PlannerServer::configure()
       syncai_nav_core::GlobalPlanner::Ptr planner =
         gp_loader_.createUniqueInstance(planner_types_[i]);
       RCLCPP_INFO(
-        get_logger(), "[PlannerServer][%s] Created global planner plugin %s of type %s", __func__,
-        planner_ids_[i].c_str(), planner_types_[i].c_str());
+        this->get_logger(), "[PlannerServer][%s] Created global planner plugin %s of type %s",
+        __func__, planner_ids_[i].c_str(), planner_types_[i].c_str());
       planner->initialize(node, planner_ids_[i], tf_, costmap_ros_);
       planners_.insert({planner_ids_[i], planner});
     } catch (const pluginlib::PluginlibException & ex) {
       RCLCPP_FATAL(
-        get_logger(), "[PlannerServer][%s] Failed to create global planner. Exception: %s",
+        this->get_logger(), "[PlannerServer][%s] Failed to create global planner. Exception: %s",
         __func__, ex.what());
       exit(-1);
     }
@@ -99,7 +99,7 @@ void PlannerServer::configure()
   }
 
   RCLCPP_INFO(
-    get_logger(), "[PlannerServer][%s] Planner Server has %s planners available.", __func__,
+    this->get_logger(), "[PlannerServer][%s] Planner Server has %s planners available.", __func__,
     planner_ids_concat_.c_str());
 
   double expected_planner_frequency;
@@ -108,26 +108,27 @@ void PlannerServer::configure()
     max_planner_duration_ = 1 / expected_planner_frequency;
   } else {
     RCLCPP_WARN(
-      get_logger(),
-      "The expected planner frequency parameter is %.4f Hz. The value should to be greater"
+      this->get_logger(),
+      "[PlannerServer][%s] The expected planner frequency parameter is %.4f Hz. The value should "
+      "to be greater"
       " than 0.0 to turn on duration overrrun warning messages",
-      expected_planner_frequency);
+      __func__, expected_planner_frequency);
     max_planner_duration_ = 0.0;
   }
 
   // Initialize pubs & subs
-  plan_publisher_ = create_publisher<nav_msgs::msg::Path>("plan", 1);
+  plan_publisher_ = this->create_publisher<nav_msgs::msg::Path>("plan", 1);
 
   // Create the action server for path planning to a pose. spin_thread=true
   // gives the server its own callback group and executor thread, so the
   // (blocking) execute callback never starves this node's main executor.
   action_server_pose_ = std::make_unique<ActionServerToPose>(
-    shared_from_this(), "compute_path_to_pose", std::bind(&PlannerServer::computePlan, this),
+    this->shared_from_this(), "compute_path_to_pose", std::bind(&PlannerServer::computePlan, this),
     nullptr, std::chrono::milliseconds(500), true);
 
   // Create the action server for path planning through an ordered set of poses.
   action_server_poses_ = std::make_unique<ActionServerThroughPoses>(
-    shared_from_this(), "compute_path_through_poses",
+    this->shared_from_this(), "compute_path_through_poses",
     std::bind(&PlannerServer::computePlanThroughPoses, this), nullptr,
     std::chrono::milliseconds(500), true);
 
@@ -137,8 +138,8 @@ void PlannerServer::configure()
   costmap_ros_->activate();
 
   // Add callback for dynamic parameters
-  dyn_params_handler_ =
-    add_on_set_parameters_callback(std::bind(&PlannerServer::dynamicParametersCallback, this, _1));
+  dyn_params_handler_ = this->add_on_set_parameters_callback(
+    std::bind(&PlannerServer::dynamicParametersCallback, this, _1));
 }
 
 bool PlannerServer::isServerInactive()
@@ -302,19 +303,21 @@ void PlannerServer::computePlanThroughPoses()
   // Initialize the ComputePathThroughPoses goal and result
   auto goal = action_server_poses_->get_current_goal();
   auto result = std::make_shared<ActionThroughPoses::Result>();
+
+  // an empty path
   nav_msgs::msg::Path concat_path;
 
   try {
     if (action_server_poses_ == nullptr || !action_server_poses_->is_server_active()) {
       RCLCPP_DEBUG(
-        get_logger(), "[PlannerServer][%s] Action server unavailable or inactive. Stopping.",
+        this->get_logger(), "[PlannerServer][%s] Action server unavailable or inactive. Stopping.",
         __func__);
       return;
     }
 
     if (action_server_poses_->is_cancel_requested()) {
       RCLCPP_INFO(
-        get_logger(), "[PlannerServer][%s] Goal was canceled. Canceling planning action.",
+        this->get_logger(), "[PlannerServer][%s] Goal was canceled. Canceling planning action.",
         __func__);
       action_server_poses_->terminate_all();
       return;
@@ -328,7 +331,7 @@ void PlannerServer::computePlanThroughPoses()
 
     if (goal->goals.empty()) {
       RCLCPP_WARN(
-        get_logger(),
+        this->get_logger(),
         "[PlannerServer][%s] Compute path through poses requested a plan with no viapoint poses,"
         " returning.",
         __func__);
@@ -356,7 +359,7 @@ void PlannerServer::computePlanThroughPoses()
         !costmap_ros_->transformPoseToGlobalFrame(curr_start, curr_start) ||
         !costmap_ros_->transformPoseToGlobalFrame(curr_goal, curr_goal)) {
         RCLCPP_WARN(
-          get_logger(),
+          this->get_logger(),
           "[PlannerServer][%s] Could not transform the start or goal pose in the costmap frame",
           __func__);
         action_server_poses_->terminate_current();
@@ -367,7 +370,7 @@ void PlannerServer::computePlanThroughPoses()
 
       if (curr_path.poses.empty()) {
         RCLCPP_WARN(
-          get_logger(),
+          this->get_logger(),
           "[PlannerServer][%s] Planning algorithm %s failed to generate a valid path to"
           " (%.2f, %.2f)",
           __func__, goal->planner_id.c_str(), curr_goal.pose.position.x, curr_goal.pose.position.y);
@@ -397,7 +400,7 @@ void PlannerServer::computePlanThroughPoses()
 
     if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
       RCLCPP_WARN(
-        get_logger(),
+        this->get_logger(),
         "[PlannerServer][%s] Planner loop missed its desired rate of %.4f Hz. Current loop rate is "
         "%.4f Hz",
         __func__, 1 / max_planner_duration_, 1 / cycle_duration.seconds());
@@ -406,8 +409,8 @@ void PlannerServer::computePlanThroughPoses()
     action_server_poses_->succeeded_current(result);
   } catch (std::exception & ex) {
     RCLCPP_WARN(
-      get_logger(),
-      "[PlannerServer][%s] Failed to compute path through poses: \"%s\"", __func__, ex.what());
+      get_logger(), "[PlannerServer][%s] Failed to compute path through poses: \"%s\"", __func__,
+      ex.what());
     action_server_poses_->terminate_current();
   }
 }

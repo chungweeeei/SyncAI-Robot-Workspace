@@ -72,6 +72,11 @@ add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)
 list(APPEND plugin_libs syncai_pipeline_sequence_bt_node)
 
+# Behavior Tree condition node plugins
+add_library(syncai_initial_pose_received_condition_bt_node SHARED
+  plugins/condition/initial_pose_received_condition.cpp)
+list(APPEND plugin_libs syncai_initial_pose_received_condition_bt_node)
+
 # Behavior Tree decorator node plugins
 add_library(syncai_rate_controller_bt_node SHARED
   plugins/decorator/rate_controller.cpp)

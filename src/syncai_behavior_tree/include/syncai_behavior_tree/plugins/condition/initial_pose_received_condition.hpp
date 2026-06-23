@@ -1,0 +1,11 @@
+#ifndef SYNCAI_BEHAVIOR_TREE__PLUGINS__CONDITION__INITIAL_POSE_RECEIVED_CONDITION_HPP_
+#define SYNCAI_BEHAVIOR_TREE__PLUGINS__CONDITION__INITIAL_POSE_RECEIVED_CONDITION_HPP_
+
+#include "behaviortree_cpp_v3/behavior_tree.h"
+
+namespace syncai_behavior_tree
+{
+BT::NodeStatus initialPoseReceived(BT::TreeNode & tree_node);
+}
+
+#endif  // SYNCAI_BEHAVIOR_TREE__PLUGINS__CONDITION__INITIAL_POSE_RECEIVED_CONDITION_HPP_
