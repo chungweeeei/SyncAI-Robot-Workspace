@@ -1,7 +1,7 @@
+#include "syncai_behavior_tree/plugins/action/compute_path_to_pose_action.hpp"
+
 #include <memory>
 #include <string>
-
-#include "syncai_behavior_tree/plugins/action/compute_path_to_pose_action.hpp"
 
 namespace syncai_behavior_tree
 {

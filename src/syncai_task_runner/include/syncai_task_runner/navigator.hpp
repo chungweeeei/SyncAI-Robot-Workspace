@@ -96,8 +96,10 @@ public:
     std::shared_ptr<syncai_util::OdomSmoother> odom_smoother)
   {
     auto node = parent_node.lock();
+
     logger_ = node->get_logger();
     clock_ = node->get_clock();
+
     feedback_utils_ = feedback_utils;
     plugin_mutex_ = plugin_mutex;
 
@@ -120,12 +122,14 @@ public:
       return false;
     }
 
+    // Set basic values into the BT::Blackboard
     BT::Blackboard::Ptr blackboard = bt_action_server_->getBlackboard();
     blackboard->set<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer", feedback_utils.tf);
     blackboard->set<bool>("initial_pose_received", false);
     blackboard->set<int>("number_recoveries", 0);
     blackboard->set<std::shared_ptr<syncai_util::OdomSmoother>>("odom_smoother", odom_smoother);
 
+    // initialize the navigator-specific objects
     return configure(node, odom_smoother);
   }
 

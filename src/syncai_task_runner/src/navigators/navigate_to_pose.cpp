@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
+#include "syncai_Navigatorutil/robot_utils.hpp"
 #include "syncai_util/geometry_utils.hpp"
-#include "syncai_util/robot_utils.hpp"
 
 namespace syncai_task_runner
 {
@@ -37,14 +37,15 @@ bool NavigateToPoseNavigator::configure(
   goal_sub_ = node->create_subscription<geometry_msgs::msg::PoseStamped>(
     "goal_pose", rclcpp::SystemDefaultsQoS(),
     std::bind(&NavigateToPoseNavigator::onGoalPoseReceived, this, std::placeholders::_1));
+
   return true;
 }
 
 std::string NavigateToPoseNavigator::getDefaultBTFilepath(rclcpp::Node::WeakPtr parent_node)
 {
-  std::string default_bt_xml_filename;
   auto node = parent_node.lock();
 
+  std::string default_bt_xml_filename;
   if (!node->has_parameter("default_bt_xml")) {
     std::string pkg_share_dir = ament_index_cpp::get_package_share_directory("syncai_task_runner");
     node->declare_parameter<std::string>(

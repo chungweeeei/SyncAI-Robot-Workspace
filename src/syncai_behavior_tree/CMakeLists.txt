@@ -67,6 +67,10 @@ add_library(syncai_remove_passed_goals_action_bt_node SHARED
   plugins/action/remove_passed_goals_action.cpp)
 list(APPEND plugin_libs syncai_remove_passed_goals_action_bt_node)
 
+add_library(syncai_say_something_action_bt_node SHARED
+  plugins/action/say_something_action.cpp)
+list(APPEND plugin_libs syncai_say_something_action_bt_node)
+
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)

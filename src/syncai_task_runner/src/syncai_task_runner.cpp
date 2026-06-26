@@ -9,12 +9,8 @@
 namespace syncai_task_runner
 {
 TaskRunner::TaskRunner(rclcpp::NodeOptions options)
-: rclcpp::Node(
-    "task_runner", "",
-    options.automatically_declare_parameters_from_overrides(true))
+: rclcpp::Node("task_runner", "", options.automatically_declare_parameters_from_overrides(true))
 {
-  RCLCPP_INFO(this->get_logger(), "[TaskRunner][%s] Creating", __func__);
-
   // BT node plugins ported so far. Extend this list as more nodes
   // (recovery, condition, control, decorator) are added.
   const std::vector<std::string> plugin_libs = {
@@ -24,6 +20,7 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
     "syncai_remove_passed_goals_action_bt_node",
     "syncai_pipeline_sequence_bt_node",
     "syncai_rate_controller_bt_node",
+    "syncai_say_something_action_bt_node",
   };
 
   syncai_util::declare_parameter_if_not_declared(
@@ -33,7 +30,7 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
   syncai_util::declare_parameter_if_not_declared(
     this, "global_frame", rclcpp::ParameterValue(std::string("map")));
   syncai_util::declare_parameter_if_not_declared(
-    this, "robot_base_frame", rclcpp::ParameterValue(std::string("base_link")));
+    this, "base_frame", rclcpp::ParameterValue(std::string("base_link")));
   syncai_util::declare_parameter_if_not_declared(
     this, "odom_topic", rclcpp::ParameterValue(std::string("odom")));
 }
@@ -58,7 +55,7 @@ bool TaskRunner::initialize()
   RCLCPP_INFO(
     this->get_logger(), "[TaskRunner][%s] Global frame: %s", __func__, global_frame_.c_str());
 
-  robot_frame_ = this->get_parameter("robot_base_frame").as_string();
+  robot_frame_ = this->get_parameter("base_frame").as_string();
   RCLCPP_INFO(
     this->get_logger(), "[TaskRunner][%s] Robot base frame: %s", __func__, robot_frame_.c_str());
 

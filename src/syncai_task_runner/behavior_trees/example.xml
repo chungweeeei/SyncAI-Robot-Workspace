@@ -1,0 +1,20 @@
+<!--
+  Minimal example tree exercising the custom SaySomething BT node.
+
+  - message="literal text"   -> prints that text
+  - message="{goal}"         -> reads the value from the blackboard key "goal"
+                                (goal is a PoseStamped, shown here only to
+                                demonstrate blackboard remapping)
+
+  Load it by passing this file as the goal's behavior_tree field, or set it as
+  the navigator's default BT via the default_bt_xml parameter.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="root">
+      <SaySomething message="task runner starting"/>
+      <SaySomething message="doing the thing"/>
+      <SaySomething message="task runner done"/>
+    </Sequence>
+  </BehaviorTree>
+</root>
