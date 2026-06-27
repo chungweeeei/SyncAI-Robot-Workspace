@@ -32,9 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # CycloneDDS RMW (selected via RMW_IMPLEMENTATION + CYCLONEDDS_URI in devcontainer.json)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-rmw-cyclonedds-cpp \
-    ros-humble-nav2-msgs \ 
-    ros-humble-map-msgs \ 
+    ros-humble-nav2-msgs \
+    ros-humble-map-msgs \
     ros-humble-laser-geometry \
+    ros-humble-pcl-conversions \
     ros-humble-angles \
     && rm -rf /var/lib/apt/lists/*
 

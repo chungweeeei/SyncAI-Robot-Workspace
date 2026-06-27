@@ -67,10 +67,6 @@ add_library(syncai_remove_passed_goals_action_bt_node SHARED
   plugins/action/remove_passed_goals_action.cpp)
 list(APPEND plugin_libs syncai_remove_passed_goals_action_bt_node)
 
-add_library(syncai_say_something_action_bt_node SHARED
-  plugins/action/say_something_action.cpp)
-list(APPEND plugin_libs syncai_say_something_action_bt_node)
-
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)
@@ -104,20 +100,12 @@ install(
 )
 
 # Example executables
-add_executable(sync_action_demo examples/sync_action_demo.cpp)
-target_link_libraries(sync_action_demo ${library_name})
-ament_target_dependencies(sync_action_demo ${dependencies})
-
-add_executable(stateful_action_demo examples/stateful_action_demo.cpp)
-target_link_libraries(stateful_action_demo ${library_name})
-ament_target_dependencies(stateful_action_demo ${dependencies})
-
-add_executable(async_action_demo examples/async_action_demo.cpp)
-target_link_libraries(async_action_demo ${library_name})
-ament_target_dependencies(async_action_demo ${dependencies})
+add_executable(demo examples/demo.cpp)
+target_link_libraries(demo ${library_name})
+ament_target_dependencies(demo ${dependencies})
 
 install(
-  TARGETS sync_action_demo stateful_action_demo async_action_demo
+  TARGETS demo
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
