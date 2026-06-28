@@ -8,15 +8,10 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-# Declare shared interfaces here. Drop files under msg/ srv/ action/, list them
-# below, and uncomment. Add any message dependencies via DEPENDENCIES. Example:
-#
-# rosidl_generate_interfaces(${PROJECT_NAME}
-#   "msg/Example.msg"
-#   "srv/Example.srv"
-#   "action/Example.action"
-#   DEPENDENCIES builtin_interfaces geometry_msgs
-# )
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/ExecuteTask.action"
+  DEPENDENCIES builtin_interfaces
+)
 
 ament_export_dependencies(rosidl_default_runtime)
 

@@ -17,35 +17,35 @@ namespace syncai_behavior_tree
 
 template <class ActionT>
 BtActionServer<ActionT>::BtActionServer(
-  const rclcpp::Node::SharedPtr & node, const std::string & action_name,
+  const rclcpp::Node::WeakPtr & parent_node, const std::string & action_name,
   const std::vector<std::string> & plugin_lib_names, const std::string & default_bt_xml_filename,
   OnGoalReceivedCallback on_goal_received_callback, OnLoopCallback on_loop_callback,
   OnPreemptCallback on_preempt_callback, OnCompletionCallback on_completion_callback)
 : action_name_(action_name),
   default_bt_xml_filename_(default_bt_xml_filename),
   plugin_lib_names_(plugin_lib_names),
-  node_(node),
+  node_(parent_node),
   on_goal_received_callback_(on_goal_received_callback),
   on_loop_callback_(on_loop_callback),
   on_preempt_callback_(on_preempt_callback),
   on_completion_callback_(on_completion_callback)
 {
+  auto node = node_.lock();
+  if (!node) {
+    throw std::runtime_error{"Failed to lock node"};
+  }
+
   logger_ = node->get_logger();
   clock_ = node->get_clock();
 
-  // Declare this node's parameters
-  if (!node->has_parameter("bt_loop_duration")) {
-    node->declare_parameter("bt_loop_duration", 10);
-  }
-  if (!node->has_parameter("default_server_timeout")) {
-    node->declare_parameter("default_server_timeout", 20);
-  }
-  if (!node->has_parameter("always_reload_bt_xml")) {
-    node->declare_parameter("always_reload_bt_xml", false);
-  }
-  if (!node->has_parameter("wait_for_service_timeout")) {
-    node->declare_parameter("wait_for_service_timeout", 1000);
-  }
+  syncai_util::declare_parameter_if_not_declared(
+    node, "bt_loop_duration", rclcpp::ParameterValue(10));
+  syncai_util::declare_parameter_if_not_declared(
+    node, "default_server_timeout", rclcpp::ParameterValue(20));
+  syncai_util::declare_parameter_if_not_declared(
+    node, "always_reload_bt_xml", rclcpp::ParameterValue(false));
+  syncai_util::declare_parameter_if_not_declared(
+    node, "wait_for_service_timeout", rclcpp::ParameterValue(1000));
 
   initialize();
 }
@@ -82,11 +82,12 @@ void BtActionServer<ActionT>::initialize()
   syncai_util::declare_parameter_if_not_declared(
     node, "global_frame", rclcpp::ParameterValue(std::string("map")));
   syncai_util::declare_parameter_if_not_declared(
-    node, "robot_base_frame", rclcpp::ParameterValue(std::string("base_link")));
+    node, "base_frame", rclcpp::ParameterValue(std::string("base_link")));
   syncai_util::declare_parameter_if_not_declared(
     node, "transform_tolerance", rclcpp::ParameterValue(0.1));
   syncai_util::copy_all_parameters(node, client_node_);
 
+  // register the action server
   action_server_ = std::make_shared<ActionServer>(
     node->get_node_base_interface(), node->get_node_clock_interface(),
     node->get_node_logging_interface(), node->get_node_waitables_interface(), action_name_,
@@ -104,15 +105,16 @@ void BtActionServer<ActionT>::initialize()
   node->get_parameter("always_reload_bt_xml", always_reload_bt_xml_);
 
   // Create the class that registers our custom nodes and executes the BT
+  // bt factory is used to register bt action plugins
   bt_ = std::make_unique<syncai_behavior_tree::BehaviorTreeEngine>(plugin_lib_names_);
 
   // Create the blackboard that will be shared by all of the nodes in the tree
   blackboard_ = BT::Blackboard::create();
 
   // Put items on the blackboard
-  blackboard_->set<rclcpp::Node::SharedPtr>("node", client_node_);                         // NOLINT
-  blackboard_->set<std::chrono::milliseconds>("server_timeout", default_server_timeout_);  // NOLINT
-  blackboard_->set<std::chrono::milliseconds>("bt_loop_duration", bt_loop_duration_);      // NOLINT
+  blackboard_->set<rclcpp::Node::SharedPtr>("node", client_node_);
+  blackboard_->set<std::chrono::milliseconds>("server_timeout", default_server_timeout_);
+  blackboard_->set<std::chrono::milliseconds>("bt_loop_duration", bt_loop_duration_);
   blackboard_->set<std::chrono::milliseconds>(
     "wait_for_service_timeout", wait_for_service_timeout_);
 
@@ -120,6 +122,8 @@ void BtActionServer<ActionT>::initialize()
   if (!loadBehaviorTree(default_bt_xml_filename_)) {
     throw std::runtime_error{"Error loading XML file: " + default_bt_xml_filename_};
   }
+
+  // activate the action server after the BT is loaded to avoid receiving a goal before the BT is ready
   action_server_->activate();
 }
 
@@ -131,7 +135,9 @@ bool BtActionServer<ActionT>::loadBehaviorTree(const std::string & bt_xml_filena
 
   // Use previous BT if it is the existing one and always reload flag is not set to true
   if (!always_reload_bt_xml_ && current_bt_xml_filename_ == filename) {
-    RCLCPP_DEBUG(logger_, "BT will not be reloaded as the given xml is already loaded");
+    RCLCPP_DEBUG(
+      logger_, "[BtActionServer][%s] BT will not be reloaded as the given xml is already loaded",
+      __func__);
     return true;
   }
 
@@ -139,7 +145,8 @@ bool BtActionServer<ActionT>::loadBehaviorTree(const std::string & bt_xml_filena
   std::ifstream xml_file(filename);
 
   if (!xml_file.good()) {
-    RCLCPP_ERROR(logger_, "Couldn't open input XML file: %s", filename.c_str());
+    RCLCPP_ERROR(
+      logger_, "[BtActionServer][%s] Couldn't open input XML file: %s", __func__, filename.c_str());
     return false;
   }
 
@@ -157,7 +164,7 @@ bool BtActionServer<ActionT>::loadBehaviorTree(const std::string & bt_xml_filena
         "wait_for_service_timeout", wait_for_service_timeout_);
     }
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger_, "Exception when loading BT: %s", e.what());
+    RCLCPP_ERROR(logger_, "[BtActionServer][%s] Exception when loading BT: %s", __func__, e.what());
     return false;
   }
 
@@ -175,11 +182,11 @@ void BtActionServer<ActionT>::executeCallback()
 
   auto is_canceling = [&]() {
     if (action_server_ == nullptr) {
-      RCLCPP_DEBUG(logger_, "Action server unavailable. Canceling.");
+      RCLCPP_DEBUG(logger_, "[BtActionServer][%s] Action server unavailable. Canceling.", __func__);
       return true;
     }
     if (!action_server_->is_server_active()) {
-      RCLCPP_DEBUG(logger_, "Action server is inactive. Canceling.");
+      RCLCPP_DEBUG(logger_, "[BtActionServer][%s] Action server is inactive. Canceling.", __func__);
       return true;
     }
     return action_server_->is_cancel_requested();
@@ -207,17 +214,17 @@ void BtActionServer<ActionT>::executeCallback()
   switch (rc) {
     case syncai_behavior_tree::BtStatus::SUCCEEDED:
       action_server_->succeeded_current(result);
-      RCLCPP_INFO(logger_, "Goal succeeded");
+      RCLCPP_INFO(logger_, "[BtActionServer][%s] Goal succeeded", __func__);
       break;
 
     case syncai_behavior_tree::BtStatus::FAILED:
       action_server_->terminate_current(result);
-      RCLCPP_ERROR(logger_, "Goal failed");
+      RCLCPP_ERROR(logger_, "[BtActionServer][%s] Goal failed", __func__);
       break;
 
     case syncai_behavior_tree::BtStatus::CANCELED:
       action_server_->terminate_all(result);
-      RCLCPP_INFO(logger_, "Goal canceled");
+      RCLCPP_INFO(logger_, "[BtActionServer][%s] Goal canceled", __func__);
       break;
   }
 }

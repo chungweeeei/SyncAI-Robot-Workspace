@@ -17,7 +17,7 @@
 namespace syncai_behavior_tree
 {
 
-using namespace std::chrono_literals;  // NOLINT
+using namespace std::chrono_literals;
 
 /**
  * @brief Abstract class representing an action based BT node

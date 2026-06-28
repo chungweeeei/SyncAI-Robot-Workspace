@@ -1,27 +1,88 @@
 services:
-  robot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
-    container_name: robot
-    # Run as the host user so files created in the mounted workspace
-    # keep the right ownership. HOME is world-writable in the image.
-    user: "${UID:-1000}:${GID:-1000}"
-    # Bridge networking: container sits on an isolated docker network.
-    network_mode: host
+  # robot:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   image: syncai-test-robot
+  #   container_name: robot
+  #   # Run as the host user so files created in the mounted workspace
+  #   # keep the right ownership. HOME is world-writable in the image.
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   # Bridge networking: container sits on an isolated docker network.
+  #   network_mode: host
+  #   environment:
+  #     - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+  #     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  #     # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
+  #     - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
+  #   volumes:
+  #     # Mount the colcon workspace (src/ lives here) into the container.
+  #     - .:/home/ubuntu/robot_ws
+  #   working_dir: /home/ubuntu/robot_ws
+  #   stdin_open: true
+  #   tty: true
+  #   command: [ "bash" ]
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      - DISPLAY=${DISPLAY:-:0}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-default}
+    ports:
+      - "5432:5432"
     volumes:
-      # Mount the colcon workspace (src/ lives here) into the container.
-      - .:/home/ubuntu/robot_ws
-      # X11 forwarding so GUI tools like rviz2 can display on the host.
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
+      # Bind mount: postgres data lives in ./data/postgres on the host.
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD:-admin}
+    ports:
+      # pgAdmin web UI on the host at http://localhost:5050
+      - "5050:80"
+    volumes:
+      # Bind mount: pgAdmin stores its config in ./data/pgadmin on the host.
+      # The host folder must be owned by uid:gid 5050 (the pgadmin user):
+      #   mkdir -p ./data/pgadmin && sudo chown -R 5050:5050 ./data/pgadmin
+      - ./data/pgadmin:/var/lib/pgadmin
+    depends_on:
+      - postgres
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1
+    container_name: temporal
+    environment:
+      # Reuse the shared postgres instance; auto-setup creates the
+      # temporal / temporal_visibility databases on first start.
+      - DB=${TEMPORAL_DB:-postgres12}
+      - DB_PORT=${TEMPORAL_DB_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_SEEDS=${TEMPORAL_POSTGRES_SEEDS:-postgres}
+    ports:
+      # Temporal frontend gRPC endpoint (SDK clients connect here)
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal_ui:
+    image: temporalio/ui:2.42.1
+    container_name: temporal_ui
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_CORS_ORIGINS=${TEMPORAL_CORS_ORIGINS:-http://localhost:3000}
+    ports:
+      - "8081:8080"
+    depends_on:
+      - temporal

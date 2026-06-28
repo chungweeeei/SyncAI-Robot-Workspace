@@ -5,17 +5,12 @@
 #include <string>
 #include <vector>
 
-#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "syncai_behavior_tree/behavior_tree_engine.hpp"
 #include "syncai_util/simple_action_server.hpp"
 
 namespace syncai_behavior_tree
 {
-/**
- * @class syncai_behavior_tree::BtActionServer
- * @brief An action server that uses behavior tree to execute an action goal.
- */
 
 template <class ActionT>
 class BtActionServer
@@ -33,13 +28,13 @@ public:
    * @brief A constructor for syncai_behavior_tree::BtActionServer class
    */
   explicit BtActionServer(
-    const rclcpp::Node::SharedPtr & node, const std::string & action_name,
+    const rclcpp::Node::WeakPtr & parent_node, const std::string & action_name,
     const std::vector<std::string> & plugin_lib_names, const std::string & default_bt_xml_filename,
     OnGoalReceivedCallback on_goal_received_callback, OnLoopCallback on_loop_callback,
     OnPreemptCallback on_preempt_callback, OnCompletionCallback on_completion_callback);
 
   /**
-   * @brief A destructor for nav2_behavior_tree::BtActionServer class
+   * @brief A destructor for syncai_behavior_tree::BtActionServer class
    */
   ~BtActionServer();
 
