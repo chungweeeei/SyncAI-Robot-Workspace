@@ -1,19 +1,17 @@
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from exceptions import (
     BadRequestError,
     InternalServerError,
     NotFoundError,
-    RobotGatewayError,
     UnauthorizedError,
 )
 
-def register_exception_handlers(
-    app: FastAPI, 
-    logger: structlog.stdlib.BoundLogger
-) -> None:
+
+def register_exception_handlers(app: FastAPI) -> None:
     """Map domain exceptions to HTTP responses so routers don't have to."""
 
     def _json(status_code: int, detail: str) -> JSONResponse:
@@ -32,20 +30,8 @@ def register_exception_handlers(
         return _json(status.HTTP_401_UNAUTHORIZED, str(exc))
 
     @app.exception_handler(InternalServerError)
-    async def _internal_server(
-        _: Request, exc: InternalServerError
-    ) -> JSONResponse:
+    async def _internal_server(_: Request, exc: InternalServerError) -> JSONResponse:
         return _json(status.HTTP_502_BAD_GATEWAY, str(exc))
-
-    @app.exception_handler(RobotGatewayError)
-    async def _robot_gateway(_: Request, exc: RobotGatewayError) -> JSONResponse:
-        logger.error(
-            "Robot gateway error", component="rest_server", error=str(exc)
-        )
-        return _json(
-            status.HTTP_502_BAD_GATEWAY,
-            f"Robot gateway error: {exc}",
-        )
 
 
 def init_rest_server(logger: structlog.stdlib.BoundLogger) -> FastAPI:
@@ -55,9 +41,7 @@ def init_rest_server(logger: structlog.stdlib.BoundLogger) -> FastAPI:
     """
 
     app = FastAPI(
-        title="SyncAI Robot backend Server", 
-        description=description, 
-        version="1.0.0"
+        title="SyncAI Robot backend Server", description=description, version="1.0.0"
     )
 
     app.add_middleware(
@@ -68,4 +52,6 @@ def init_rest_server(logger: structlog.stdlib.BoundLogger) -> FastAPI:
         allow_headers=["Content-Type", "Content-Length", "Authorization"],
     )
 
-    register_exception_handlers(app=app, logger=logger)
+    register_exception_handlers(app=app)
+
+    # app.include_router(init_task_router(logger=logger))

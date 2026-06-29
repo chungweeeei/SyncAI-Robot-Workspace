@@ -12,15 +12,11 @@ setup_log_handler()
 logger = structlog.get_logger()
 
 if __name__ == "__main__":
-    
     rclpy.init(args=None)
 
     try:
-        pg_engine = connect_to_postgres(logger=logger)
+        db_engine = connect_to_postgres(logger=logger)
     except Exception as e:
         logger.error("Failed to connect to PostgreSQL", error=str(e))
         rclpy.shutdown()
         sys.exit(1)
-
-
-    

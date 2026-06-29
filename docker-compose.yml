@@ -1,27 +1,27 @@
 services:
-  # robot:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   image: syncai-test-robot
-  #   container_name: robot
-  #   # Run as the host user so files created in the mounted workspace
-  #   # keep the right ownership. HOME is world-writable in the image.
-  #   user: "${UID:-1000}:${GID:-1000}"
-  #   # Bridge networking: container sits on an isolated docker network.
-  #   network_mode: host
-  #   environment:
-  #     - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-  #     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-  #     # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
-  #     - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-  #   volumes:
-  #     # Mount the colcon workspace (src/ lives here) into the container.
-  #     - .:/home/ubuntu/robot_ws
-  #   working_dir: /home/ubuntu/robot_ws
-  #   stdin_open: true
-  #   tty: true
-  #   command: [ "bash" ]
+  robot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: syncai-test-robot
+    container_name: robot
+    # Run as the host user so files created in the mounted workspace
+    # keep the right ownership. HOME is world-writable in the image.
+    user: "${UID:-1000}:${GID:-1000}"
+    # Bridge networking: container sits on an isolated docker network.
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
+      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
+    volumes:
+      # Mount the colcon workspace (src/ lives here) into the container.
+      - .:/home/ubuntu/robot_ws
+    working_dir: /home/ubuntu/robot_ws
+    stdin_open: true
+    tty: true
+    command: [ "bash" ]
 
   postgres:
     image: postgres:16
