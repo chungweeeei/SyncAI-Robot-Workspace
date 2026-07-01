@@ -15,9 +15,20 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
       - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
+      # X11 GUI (rviz2 etc.) forwarding. DISPLAY comes from the host; with
+      # SSH X11 forwarding it looks like "localhost:10.0" and, because this
+      # service uses host networking, the SSH TCP proxy (127.0.0.1:60xx) is
+      # directly reachable. The xauth cookie is provided via XAUTHORITY below.
+      - DISPLAY=${DISPLAY}
+      - XAUTHORITY=/tmp/.docker.xauth
     volumes:
       # Mount the colcon workspace (src/ lives here) into the container.
       - .:/home/ubuntu/robot_ws
+      # X11 auth cookie. Regenerate per SSH session with a wildcard family so
+      # it matches the localhost TCP display (see notes below / host .bashrc):
+      #   xauth nlist "$DISPLAY" | sed -e 's/^..../ffff/' \
+      #     | xauth -f /tmp/.docker.xauth nmerge -
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
     working_dir: /home/ubuntu/robot_ws
     stdin_open: true
     tty: true
@@ -50,11 +61,6 @@ services:
     ports:
       # pgAdmin web UI on the host at http://localhost:5050
       - "5050:80"
-    volumes:
-      # Bind mount: pgAdmin stores its config in ./data/pgadmin on the host.
-      # The host folder must be owned by uid:gid 5050 (the pgadmin user):
-      #   mkdir -p ./data/pgadmin && sudo chown -R 5050:5050 ./data/pgadmin
-      - ./data/pgadmin:/var/lib/pgadmin
     depends_on:
       - postgres
 

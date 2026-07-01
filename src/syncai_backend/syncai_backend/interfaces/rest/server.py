@@ -1,14 +1,20 @@
+import threading
+import uvicorn
 import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from exceptions import (
+from syncai_backend.exceptions import (
     BadRequestError,
     InternalServerError,
     NotFoundError,
     UnauthorizedError,
 )
+
+from syncai_backend.interfaces.rest.routers.task import init_task_router
+
+from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -34,7 +40,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _json(status.HTTP_502_BAD_GATEWAY, str(exc))
 
 
-def init_rest_server(logger: structlog.stdlib.BoundLogger) -> FastAPI:
+def init_rest_server(
+    logger: structlog.stdlib.BoundLogger, workflow_gw: WorkflowGateway
+) -> FastAPI:
 
     description = """
     This is the backend for the SyncAI Robotic System. It provides APIs for controlling and monitoring the robot, as well as managing data and workflows.
@@ -54,4 +62,21 @@ def init_rest_server(logger: structlog.stdlib.BoundLogger) -> FastAPI:
 
     register_exception_handlers(app=app)
 
-    # app.include_router(init_task_router(logger=logger))
+    app.include_router(init_task_router(logger=logger, workflow_gw=workflow_gw))
+
+    return app
+
+
+def start_rest_server(
+    logger: structlog.stdlib.BoundLogger,
+    workflow_gw: WorkflowGateway,
+):
+
+    app = init_rest_server(logger=logger, workflow_gw=workflow_gw)
+
+    def _run():
+        logger.info("[RESTServer] Starting server on http://:3000")
+        uvicorn.run(app, host="0.0.0.0", port=3000)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()

@@ -2,15 +2,14 @@ import structlog
 
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.client import Client
+from temporalio.service import RPCError, RPCStatusCode
 
-from exceptions import InternalServerError
+from syncai_backend.exceptions import InternalServerError, NotFoundError
 
-from gateways.workflow.schema import (
-    Step,
-    StepRequest,
-    TaskRequest,
-    WorkflowTask,
-    WorkflowTaskDefinition,
+from syncai_backend.gateways.workflow.schema import WorkflowTask
+from syncai_backend.gateways.workflow.config import (
+    WORKFLOW_TASK_QUEUE,
+    WORKFLOW_TYPE_NAME,
 )
 
 
@@ -23,7 +22,6 @@ class WorkflowGateway:
         if self._client is not None:
             return self._client
 
-        # try to connect to the Temporal server
         try:
             self._client = await Client.connect(
                 target_host="127.0.0.1:7233", data_converter=pydantic_data_converter
@@ -33,23 +31,42 @@ class WorkflowGateway:
 
         return self._client
 
-    # async def start_task(self, request: TaskRequest):
+    async def start_task(self, request: WorkflowTask):
 
-    #     try:
-    #         client = await self._get_client()
-    #     except Exception as err:
-    #         self._logger.error("Failed to connect to Temporal server", error=str(err))
-    #         raise InternalServerError("Failed to connect to Temporal server")
+        try:
+            client = await self._get_client()
+        except Exception as err:
+            self._logger.error("Failed to connect to Temporal server", error=str(err))
+            raise InternalServerError("Failed to connect to Temporal server")
 
-    #     workflow_steps = [
-    #         Step(id=s.id, type=s.type, params=s.params) for s in request.steps
-    #     ]
-    #     workflow_task = WorkflowTask(
-    #         id=request.id,
-    #         definition=WorkflowTaskDefinition(
-    #             steps=workflow_steps, settings={"repeat": 0}
-    #         ),
-    #     )
+        try:
+            await client.start_workflow(
+                workflow=WORKFLOW_TYPE_NAME,
+                id=request.id,
+                args=[request],
+                task_queue=WORKFLOW_TASK_QUEUE,
+            )
+        except Exception as err:
+            self._logger.error("Failed to start workflow", error=str(err))
+            raise InternalServerError("Start workflow failed")
+
+    async def cancel_task(self, task_id: str):
+
+        try:
+            client = await self._get_client()
+        except Exception as err:
+            self._logger.error("Failed to connect to Temporal server", error=str(err))
+            raise InternalServerError("Failed to connect to Temporal server")
+
+        handle = client.get_workflow_handle(task_id)
+
+        try:
+            await handle.cancel()
+        except RPCError as err:
+            if err.status == RPCStatusCode.NOT_FOUND:
+                raise NotFoundError(f"Task {task_id} not found")
+            self._logger.error("Failed to cancel workflow", error=str(err))
+            raise InternalServerError("Cancel workflow failed")
 
 
 def init_workflow_gateway(

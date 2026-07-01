@@ -48,7 +48,15 @@ RUN apt-get update && apt-get install -y \
 
 # Python web stack for syncai_backend (no reliable apt key on jammy; installed
 # via pip). Keep in sync with src/syncai_backend/requirements.txt.
-RUN pip3 install --no-cache-dir fastapi "uvicorn[standard]"
+RUN pip3 install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    structlog \
+    dotenv \
+    sqlalchemy \
+    sqlalchemy-utils \
+    psycopg2 \
+    temporalio
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble

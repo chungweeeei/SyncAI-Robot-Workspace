@@ -25,7 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             # ros2 run syncai_backend backend
-            'backend = syncai_backend.backend_node:main',
+            'backend = syncai_backend.main:main',
         ],
     },
 )

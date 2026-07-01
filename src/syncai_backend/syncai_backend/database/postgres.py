@@ -2,19 +2,13 @@ import os
 import time
 import structlog
 
-from sqlalchemy import (
-    Engine,
-    create_engine,
-    text
-)
+from sqlalchemy import Engine, create_engine, text
 
-from sqlalchemy_utils import (
-    create_database,
-    database_exists
-)
+from sqlalchemy_utils import create_database, database_exists
 
-MAX_RETRIES=20
+MAX_RETRIES = 20
 RETRY_INTERVAL = 5
+
 
 def _execute(engine: Engine, clause: str, raise_error: bool = True):
 
@@ -23,22 +17,23 @@ def _execute(engine: Engine, clause: str, raise_error: bool = True):
             conn.execute(text(clause))
             conn.commit()
         except Exception as e:
-            if 'psycopg2.errors.DuplicateColumn' in str(e):
+            if "psycopg2.errors.DuplicateColumn" in str(e):
                 return
 
             if raise_error:
                 raise e
 
+
 def connect_to_postgres(logger: structlog.stdlib.BoundLogger) -> Engine:
-    pg_user=os.getenv("POSTGRES_USER", "syncrobotic")
-    pg_password=os.getenv("POSTGRES_PASSWORD", "syncrobotic")
-    pg_host=os.getenv("POSTGRES_HOST", "localhost")
-    pg_port=int(os.getenv("POSTGRES_PORT", 5432))
+    pg_user = os.getenv("POSTGRES_USER", "syncrobotic")
+    pg_password = os.getenv("POSTGRES_PASSWORD", "syncrobotic")
+    pg_host = os.getenv("POSTGRES_HOST", "localhost")
+    pg_port = int(os.getenv("POSTGRES_PORT", 5432))
 
     engine = create_engine(
-        f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/robot",
+        f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/robot_db",
         pool_size=5,
-        max_overflow=10
+        max_overflow=10,
     )
 
     # attempt to connect to the database, retrying if it fails

@@ -7,7 +7,7 @@
     <Domain Id="any">
         <General>
             <Interfaces>
-                <NetworkInterface name="lo" multicast="true" />
+                <NetworkInterface name="enP2p1s0" multicast="true" />
             </Interfaces>
             <AllowMulticast>spdp</AllowMulticast>
         </General>

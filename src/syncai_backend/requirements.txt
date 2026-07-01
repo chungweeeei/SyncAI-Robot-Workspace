@@ -2,5 +2,5 @@
 # Install inside the container:  pip install -r src/syncai_backend/requirements.txt
 fastapi
 uvicorn[standard]
-pydantic>=2
+pydantic>=2.11  # validate_by_name / validate_by_alias 需 2.11+
 temporalio
