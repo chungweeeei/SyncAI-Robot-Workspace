@@ -97,17 +97,17 @@ path = "/opt/ros/humble/share/lifecycle_msgs/rust"
 [patch.crates-io.builtin_interfaces]
 path = "/opt/ros/humble/share/builtin_interfaces/rust"
 
+[patch.crates-io.rosbag2_interfaces]
+path = "/opt/ros/humble/share/rosbag2_interfaces/rust"
+
 [patch.crates-io.nav2_msgs]
 path = "/opt/ros/humble/share/nav2_msgs/rust"
-
-[patch.crates-io.tf2_msgs]
-path = "/opt/ros/humble/share/tf2_msgs/rust"
 
 [patch.crates-io.map_msgs]
 path = "/opt/ros/humble/share/map_msgs/rust"
 
-[patch.crates-io.rosbag2_interfaces]
-path = "/opt/ros/humble/share/rosbag2_interfaces/rust"
+[patch.crates-io.tf2_msgs]
+path = "/opt/ros/humble/share/tf2_msgs/rust"
 
 [patch.crates-io.pcl_msgs]
 path = "/opt/ros/humble/share/pcl_msgs/rust"

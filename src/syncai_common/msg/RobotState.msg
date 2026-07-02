@@ -1,0 +1,6 @@
+uint64 timestamp 
+string map
+RobotMode mode
+RobotLocalizationStatus localization_status
+RobotNetworkStatus network_status
+

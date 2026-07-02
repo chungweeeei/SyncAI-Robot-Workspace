@@ -9,6 +9,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/RobotBatteryStatus.msg"
+  "msg/RobotLocalizationStatus.msg"
+  "msg/RobotMode.msg"
+  "msg/RobotNetworkStatus.msg"
+  "msg/RobotPose.msg"
+  "msg/RobotState.msg"
   "action/ExecuteTask.action"
   DEPENDENCIES builtin_interfaces
 )

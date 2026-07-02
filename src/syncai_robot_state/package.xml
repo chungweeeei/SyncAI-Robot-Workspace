@@ -12,6 +12,7 @@
   <depend>rclrs</depend>
   <depend>rosidl_runtime_rs</depend>
   <depend>std_msgs</depend>
+  <depend>syncai_common</depend>
 
   <export>
     <build_type>ament_cargo</build_type>
