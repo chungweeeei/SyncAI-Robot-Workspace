@@ -39,7 +39,7 @@
 
     FollowPath:
       plugin: "syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.5
+      desired_linear_vel: 1.0
       lookahead_dist: 0.6
       min_lookahead_dist: 0.3
       max_lookahead_dist: 0.9
@@ -56,7 +56,7 @@
       regulated_linear_scaling_min_speed: 0.25
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.785
-      rotate_to_heading_angular_vel: 1.8
+      rotate_to_heading_angular_vel: 1.3
       max_angular_accel: 3.2
       allow_reversing: false
       use_interpolation: true

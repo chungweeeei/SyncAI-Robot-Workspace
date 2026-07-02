@@ -142,8 +142,6 @@ class RobotGateway:
             return {
                 "goal_id": goal.goal_id,
                 "state": goal.state.value,
-                "feedback": goal.feedback,
-                "result": goal.result,
             }
 
     def cancel_move(self, goal_id: str) -> Tuple[bool, str]:

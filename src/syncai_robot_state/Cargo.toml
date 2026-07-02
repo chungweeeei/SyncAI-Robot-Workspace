@@ -1,0 +1,16 @@
+[package]
+name = "syncai_robot_state"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "publisher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+rclrs = "0.7"
+std_msgs = "*"
+
+# Pin backtrace to a version compatible with the toolchain used by the overlay.
+backtrace = "=0.3.74"

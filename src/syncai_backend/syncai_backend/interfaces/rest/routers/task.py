@@ -7,6 +7,7 @@ from enum import Enum
 from syncai_backend.gateways.workflow.schema import (
     Step,
     StepType,
+    StepStatus,
     StepParams,
     WorkflowTask,
     WorkflowTaskDefinition,
@@ -59,12 +60,35 @@ class TaskResponse(BaseModel):
     )
 
 
+class StepState(BaseModel):
+    id: str = Field(
+        ..., description="Unique identifier of the step", examples=["step1"]
+    )
+    status: StepStatus = Field(
+        ..., description="Current status of the step", examples=["IN_PROGRESS"]
+    )
+    error_msg: str = Field(
+        default="",
+        description="Error message if the step failed",
+    )
+
+
+class TaskStateResponse(BaseModel):
+    id: str = Field(
+        ..., description="Unique identifier of the task", examples=["robot01-task-001"]
+    )
+    status: TaskStatus = Field(
+        ..., description="Overall status of the task", examples=["IN_PROGRESS"]
+    )
+    steps: List[StepState] = Field(..., description="Per-step state of the task")
+
+
 def init_task_router(
     logger: structlog.stdlib.BoundLogger, workflow_gw: WorkflowGateway
 ) -> APIRouter:
     task_router = APIRouter(prefix="", tags=["Task"])
 
-    @task_router.post("/api/v1/tasks")
+    @task_router.post("/api/v1/tasks", response_model=TaskResponse)
     async def trigger_task(req: TaskRequest):
 
         workflow_task = WorkflowTask(
@@ -78,7 +102,6 @@ def init_task_router(
                     )
                     for step in req.steps
                 ],
-                settings={"repeat": 0},
             ),
         )
 
@@ -90,11 +113,24 @@ def init_task_router(
             message=f"Task {req.id} is already in the queue for execution.",
         )
 
-    @task_router.get("/api/v1/tasks/{id}")
+    @task_router.get("/api/v1/tasks/{id}", response_model=TaskStateResponse)
     async def get_task_state(id: str):
-        return
+        state = await workflow_gw.get_task_state(task_id=id)
 
-    @task_router.delete("/api/v1/tasks/{id}")
+        return TaskStateResponse(
+            id=state.id,
+            status=TaskStatus(state.status),
+            steps=[
+                StepState(
+                    id=step.id,
+                    status=step.status,
+                    error_msg=step.error_msg or "",
+                )
+                for step in state.steps
+            ],
+        )
+
+    @task_router.delete("/api/v1/tasks/{id}", response_model=TaskResponse)
     async def cancel_task(id: str):
         await workflow_gw.cancel_task(task_id=id)
 

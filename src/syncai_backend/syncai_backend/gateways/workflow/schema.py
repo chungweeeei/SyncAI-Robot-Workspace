@@ -1,4 +1,5 @@
-from typing import List, Dict, Any, Union, Optional
+from datetime import datetime
+from typing import List, Union, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from enum import Enum
@@ -66,14 +67,53 @@ class Step(BaseSchema):
 
 class WorkflowTaskDefinition(BaseSchema):
     steps: List[Step] = Field(..., description="Ordered list of steps to execute")
-    settings: Dict[str, Any] = Field(
-        ...,
-        description="Workflow-level settings (e.g., repeat count)",
-    )
 
 
 class WorkflowTask(BaseSchema):
     id: str = Field(..., description="Unique identifier of the workflow task")
     definition: WorkflowTaskDefinition = Field(
         ..., description="Definition of the workflow task"
+    )
+
+
+class TaskState(BaseSchema):
+    id: str = Field(..., description="Unique identifier of the task")
+    status: str = Field(..., description="Overall task status")
+    steps: List[Step] = Field(..., description="Per-step state")
+
+
+class ScheduleTrigger(BaseSchema):
+    cron: Optional[str] = Field(
+        default=None,
+        description="Cron expression, e.g. '0 9 * * 1-5'. Mutually exclusive with intervalSeconds.",
+        examples=["*/3 * * * *"],
+    )
+    interval_seconds: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Fire every N seconds. Mutually exclusive with cron.",
+        examples=[1800],
+    )
+    timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone applied to cron, e.g. 'Asia/Taipei'. Ignored for interval.",
+        examples=["Asia/Taipei"],
+    )
+
+
+class ScheduleTask(BaseSchema):
+    id: str = Field(..., description="Unique identifier of the schedule")
+    trigger: ScheduleTrigger = Field(..., description="When the schedule fires")
+    definition: WorkflowTaskDefinition = Field(
+        ..., description="Task definition executed on each trigger"
+    )
+
+
+class ScheduleView(BaseSchema):
+    id: str = Field(..., description="Unique identifier of the schedule")
+    trigger: ScheduleTrigger = Field(..., description="When the schedule fires")
+    paused: bool = Field(False, description="Whether the schedule is currently paused")
+    next_run_times: List[datetime] = Field(
+        default_factory=list,
+        description="Upcoming trigger times (UTC)",
     )

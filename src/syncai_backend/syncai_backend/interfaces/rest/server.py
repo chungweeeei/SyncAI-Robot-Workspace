@@ -13,8 +13,10 @@ from syncai_backend.exceptions import (
 )
 
 from syncai_backend.interfaces.rest.routers.task import init_task_router
+from syncai_backend.interfaces.rest.routers.schedule import init_schedule_router
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
+from syncai_backend.gateways.robot.robot import RobotGateway
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -63,6 +65,7 @@ def init_rest_server(
     register_exception_handlers(app=app)
 
     app.include_router(init_task_router(logger=logger, workflow_gw=workflow_gw))
+    app.include_router(init_schedule_router(logger=logger, workflow_gw=workflow_gw))
 
     return app
 

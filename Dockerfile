@@ -3,6 +3,7 @@ FROM ubuntu:22.04
 # Install pre-requisites
 RUN apt-get update && apt-get install -y \
     curl \
+    git \
     gnupg \
     lsb-release \
     build-essential \
@@ -58,6 +59,39 @@ RUN pip3 install --no-cache-dir \
     psycopg2 \
     temporalio
 
+# rclrs (ros2_rust) toolchain: Rust + bindgen deps + colcon cargo plugins.
+# libclang-dev is required by bindgen; python3-vcstool imports the aux repos.
+RUN apt-get update && apt-get install -y \
+    libclang-dev \
+    python3-vcstool \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust into system-wide dirs so both root (image build) and the ubuntu
+# user share one toolchain. cargo-ament-build lets colcon build cargo packages.
+ENV RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo \
+    PATH=/opt/rust/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
+    && cargo install cargo-ament-build
+
+RUN pip3 install --no-cache-dir \
+    git+https://github.com/colcon/colcon-cargo.git \
+    git+https://github.com/colcon/colcon-ros-cargo.git
+
+# Build ros2_rust as a standalone overlay on top of /opt/ros/humble so rclrs is
+# available image-wide without vendoring it into the ~/robot_ws workspace.
+RUN mkdir -p /opt/ros2_rust_ws/src \
+    && git clone https://github.com/ros2-rust/ros2_rust.git /opt/ros2_rust_ws/src/ros2_rust \
+    && cd /opt/ros2_rust_ws \
+    && vcs import src < src/ros2_rust/ros2_rust_humble.repos \
+    && . /opt/ros/humble/setup.sh \
+    && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf /opt/ros2_rust_ws/build /opt/ros2_rust_ws/log \
+    # Make the shared Rust toolchain + crate cache readable/writable for the
+    # non-root user so they can build cargo packages in their workspace. Must
+    # run AFTER the overlay build, which populates the registry as root.
+    && chmod -R a+rwX /opt/rust
+
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble
 
@@ -80,6 +114,7 @@ RUN rosdep update --rosdistro humble
 
 # Auto-source ROS 2 and workspace in every shell
 RUN echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && \
+    echo 'source /opt/ros2_rust_ws/install/setup.bash' >> ~/.bashrc && \
     echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
 
 CMD ["bash"]

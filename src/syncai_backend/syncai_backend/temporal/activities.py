@@ -4,7 +4,7 @@ import structlog
 from pydantic import BaseModel
 
 from temporalio import activity
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ApplicationError, CancelledError
 
 
 from syncai_backend.gateways.workflow.schema import StepParams
@@ -32,22 +32,33 @@ class RobotActivities:
         self._logger.info("[RobotActivity] Move accepted", goal_id=goal_id)
 
         # polling move state
-        while True:
-            status = self._robot_gw.get_move_status(goal_id=goal_id)
-            state = status["state"] if status else None
+        #
+        # NOTE: this is a synchronous (threaded) activity. On cancellation
+        # Temporal *throws* a CancelledError into this thread at whatever point
+        # it is currently executing (e.g. inside time.sleep), so we can't rely
+        # on polling activity.is_cancelled() at the top of the loop -- we must
+        # catch the injected exception to run cleanup.
+        try:
+            while True:
+                status = self._robot_gw.get_move_status(goal_id=goal_id)
+                state = status["state"] if status else None
 
-            # send heartbeat, tell temporal server worker still alive
-            activity.heartbeat(state)
+                # send heartbeat, tell temporal server worker still alive
+                activity.heartbeat(state)
 
-            if activity.is_cancelled():
-                self._logger.warn("[RobotActivity] Move activity has been cancelled")
+                if state in ["succeeded", "aborted", "canceled"]:
+                    break
+
+                time.sleep(1.0)
+
+        except CancelledError:
+            # shield so the cancel_move RPC finishes before the CancelledError
+            # is re-raised, then propagate to mark the activity as cancelled.
+            with activity.shield_thread_cancel_exception():
                 self._robot_gw.cancel_move(goal_id=goal_id)
-                raise activity.CompleteAsyncError
 
-            if state in ["succeeded", "aborted", "canceled"]:
-                break
-
-            time.sleep(1.0)
+            self._logger.warn("[RobotActivity] Move activity has been cancelled")
+            raise
 
         if state != "succeeded":
             raise ApplicationError(f"move ended in {state}", non_retryable=False)
