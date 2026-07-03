@@ -1,0 +1,4 @@
+# Parameters for the syncai_backend node. The /**/ wildcard key matches the
+# node in any namespace (the node is constructed as "syncai_backend_node").
+/**/syncai_backend_node:
+  ros__parameters:

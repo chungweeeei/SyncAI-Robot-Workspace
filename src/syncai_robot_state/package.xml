@@ -1,20 +1,28 @@
 <?xml version="1.0"?>
-<?xml-model
-   href="http://download.ros.org/schema/package_format3.xsd"
-   schematypens="http://www.w3.org/2001/XMLSchema"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>syncai_robot_state</name>
-  <version>0.0.1</version>
-  <description>Robot state publisher for the SyncAI workspace, implemented with rclrs (ROS 2 Rust).</description>
+  <version>0.0.0</version>
+  <description>Robot state publisher for the SyncAI workspace, implemented with rclcpp (ROS 2 C++).</description>
   <maintainer email="chungweeeei@gmail.com">andy_tseng</maintainer>
-  <license>Apache License 2.0</license>
+  <license>Apache-2.0</license>
 
-  <depend>rclrs</depend>
-  <depend>rosidl_runtime_rs</depend>
-  <depend>std_msgs</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
   <depend>syncai_common</depend>
+  <depend>syncai_util</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <build_type>ament_cargo</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

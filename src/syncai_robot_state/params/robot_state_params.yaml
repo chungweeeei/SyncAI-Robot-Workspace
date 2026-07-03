@@ -1,0 +1,14 @@
+# Parameters for the syncai_robot_state node. The /**/ wildcard key matches the
+# node in any namespace (the node is constructed as "syncai_robot_state").
+/**/syncai_robot_state:
+  ros__parameters:
+    robot_id: "robot01"
+    # Map name stamped into RobotState.map. Usually overridden from the launch file.
+    map: "warehouse"
+    # TF frames used for the position lookup (global_frame -> base_frame).
+    global_frame: "map"
+    base_frame: "robot01/base_link"
+    # TF lookup tolerance in seconds.
+    transform_tolerance: 0.1
+    # Odometry topic the forward velocity is read from.
+    odom_topic: "odom"

@@ -14,6 +14,9 @@ from syncai_backend.exceptions import (
 
 from syncai_backend.interfaces.rest.routers.task import init_task_router
 from syncai_backend.interfaces.rest.routers.schedule import init_schedule_router
+from syncai_backend.interfaces.rest.routers.robot import init_robot_router
+
+from syncai_backend.repositories.robot.robot import RobotRepo
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
@@ -43,7 +46,9 @@ def register_exception_handlers(app: FastAPI) -> None:
 
 
 def init_rest_server(
-    logger: structlog.stdlib.BoundLogger, workflow_gw: WorkflowGateway
+    logger: structlog.stdlib.BoundLogger,
+    workflow_gw: WorkflowGateway,
+    robot_repo: RobotRepo,
 ) -> FastAPI:
 
     description = """
@@ -66,6 +71,7 @@ def init_rest_server(
 
     app.include_router(init_task_router(logger=logger, workflow_gw=workflow_gw))
     app.include_router(init_schedule_router(logger=logger, workflow_gw=workflow_gw))
+    app.include_router(init_robot_router(logger=logger, robot_repo=robot_repo))
 
     return app
 
@@ -73,12 +79,14 @@ def init_rest_server(
 def start_rest_server(
     logger: structlog.stdlib.BoundLogger,
     workflow_gw: WorkflowGateway,
+    robot_repo: RobotRepo,
 ):
 
-    app = init_rest_server(logger=logger, workflow_gw=workflow_gw)
+    app = init_rest_server(
+        logger=logger, workflow_gw=workflow_gw, robot_repo=robot_repo
+    )
 
     def _run():
-        logger.info("[RESTServer] Starting server on http://:3000")
         uvicorn.run(app, host="0.0.0.0", port=3000)
 
     thread = threading.Thread(target=_run, daemon=True)

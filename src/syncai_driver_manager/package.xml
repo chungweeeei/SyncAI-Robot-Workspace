@@ -1,17 +1,16 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>syncai_bringup</name>
+  <name>syncai_driver_manager</name>
   <version>0.0.0</version>
-  <description>Launch files, parameters, and configuration for bringing up the SyncAI navigation stack</description>
-  <maintainer email="chungweeeei@gmail.com">ros</maintainer>
+  <description>Hardware driver manager for the SyncAI workspace, implemented with rclcpp (ROS 2 C++).</description>
+  <maintainer email="chungweeeei@gmail.com">andy_tseng</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
-  <exec_depend>ros2_laser_scan_merger</exec_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

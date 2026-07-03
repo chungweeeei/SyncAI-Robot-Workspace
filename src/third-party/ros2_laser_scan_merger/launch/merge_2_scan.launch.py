@@ -6,9 +6,8 @@
 #   Adapted for SyncAI: the two merger nodes run under the `namespace` arg
 #   (default robot01) so the params file's RELATIVE topics resolve to
 #   /<ns>/scan_front, /<ns>/scan_rear, /<ns>/cloud_in and the merged /<ns>/scan.
-#   A static_transform_publisher places the merged-scan frame (<ns>/scan) over
-#   the robot base (<ns>/base_link) at the lidar mount height. It is left on the
-#   GLOBAL /tf (no namespace) so it joins the same TF tree the sim publishes.
+#   The <ns>/base_link -> <ns>/scan static TF is published by the top-level
+#   bringup launch (syncai_bringup), not here.
 #
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -58,34 +57,6 @@ def generate_launch_description():
                 executable="pointcloud_to_laserscan_node",
                 namespace=namespace,
                 parameters=[params_file],
-            ),
-            # Static TF: <ns>/base_link -> <ns>/scan at the lidar mount height
-            # (0.175 * 0.7 = 0.1225 m). No namespace on the node so it publishes
-            # to the GLOBAL /tf shared with the sim's odom->base_link tree.
-            launch_ros.actions.Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="base_link_to_scan_tf",
-                arguments=[
-                    "--x",
-                    "0.0",
-                    "--y",
-                    "0.0",
-                    "--z",
-                    "0.1225",
-                    "--qx",
-                    "0.0",
-                    "--qy",
-                    "0.0",
-                    "--qz",
-                    "0.0",
-                    "--qw",
-                    "1.0",
-                    "--frame-id",
-                    [namespace, "/base_link"],
-                    "--child-frame-id",
-                    [namespace, "/scan"],
-                ],
             ),
         ]
     )
