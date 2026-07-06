@@ -43,10 +43,12 @@ RUN apt-get update && apt-get install -y \
 # System deps for workspace packages that have no ament/CMake config:
 #   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
+#   - nlohmann-json3-dev: header-only JSON library (found via find_package(nlohmann_json))
 RUN apt-get update && apt-get install -y \
     libgraphicsmagick++1-dev \
     libzmq3-dev \
     libncurses-dev \
+    nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Python web stack for syncai_backend (no reliable apt key on jammy; installed

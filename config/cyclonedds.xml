@@ -6,14 +6,18 @@
 >
     <Domain Id="any">
         <General>
-            <Interfaces>
-                <NetworkInterface name="enP2p1s0" multicast="true" />
-            </Interfaces>
             <AllowMulticast>spdp</AllowMulticast>
+            <Interfaces>
+                <NetworkInterface name="enP2p1s0" multicast="true" priority="10"/>
+                <NetworkInterface name="lo" multicast="true" priority="0"/>
+            </Interfaces>
         </General>
         <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
             <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+            <Peers>
+              <Peer address="192.168.0.3"/>
+            </Peers>
         </Discovery>
         <Tracing>
             <Verbosity>config</Verbosity>
