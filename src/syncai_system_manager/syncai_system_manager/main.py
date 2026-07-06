@@ -1,11 +1,16 @@
 import sys
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+
+from syncai_system_manager.wifi_manager import init_wifi_manager
 
 
 class SystemManager(Node):
     def __init__(self):
         super().__init__("syncai_system_manager")
+
+        wifi_manager = init_wifi_manager(node=self)
 
 
 def main():
@@ -13,9 +18,11 @@ def main():
 
     try:
         node = SystemManager()
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor()
+        executor.add_node(node)
+        executor.spin()
     except Exception as err:
-        rclpy.get_logger().error(f"{str(err)}")
+        rclpy.logging.get_logger("syncai_system_manager").error(f"{str(err)}")
     finally:
         rclpy.shutdown()
         sys.exit(1)

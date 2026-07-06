@@ -15,6 +15,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotNetworkStatus.msg"
   "msg/RobotPose.msg"
   "msg/RobotState.msg"
+  "msg/WifiNetwork.msg"
+  "msg/WifiStatus.msg"
+  "srv/ConnectWifiNetwork.srv"
+  "srv/ScanWifiNetworks.srv"
   "action/ExecuteTask.action"
   DEPENDENCIES builtin_interfaces
 )

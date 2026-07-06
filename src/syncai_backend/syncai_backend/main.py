@@ -44,7 +44,12 @@ class SyncAIBackend(Node):
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
 
         start_temporal_worker(logger=logger, robot_gw=robot_gw)
-        start_rest_server(logger=logger, workflow_gw=workflow_gw, robot_repo=robot_repo)
+        start_rest_server(
+            logger=logger,
+            workflow_gw=workflow_gw,
+            robot_repo=robot_repo,
+            robot_gw=robot_gw,
+        )
 
 
 def main():

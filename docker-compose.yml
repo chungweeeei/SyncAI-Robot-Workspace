@@ -10,6 +10,10 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     # Bridge networking: container sits on an isolated docker network.
     network_mode: host
+    # The default docker-default AppArmor profile blocks D-Bus, which nmcli
+    # needs to reach the host's NetworkManager via the socket mounted below.
+    security_opt:
+      - apparmor=unconfined
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
@@ -29,6 +33,9 @@ services:
       #   xauth nlist "$DISPLAY" | sed -e 's/^..../ffff/' \
       #     | xauth -f /tmp/.docker.xauth nmerge -
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+      # Host D-Bus system bus so nmcli inside the container talks to the
+      # host's NetworkManager daemon (there is no NM daemon in the container).
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
     working_dir: /home/ubuntu/robot_ws
     stdin_open: true
     tty: true

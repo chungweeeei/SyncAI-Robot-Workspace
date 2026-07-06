@@ -8,6 +8,7 @@
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>syncai_common</depend>
   <exec_depend>python3-netifaces</exec_depend>
 
   <!-- structlog is installed via pip (no reliable rosdep key on jammy). -->

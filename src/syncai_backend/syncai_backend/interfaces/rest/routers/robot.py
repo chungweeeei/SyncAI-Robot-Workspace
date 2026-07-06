@@ -1,3 +1,4 @@
+import json
 import math
 import structlog
 from fastapi import APIRouter
@@ -21,6 +22,20 @@ def _mode_to_str(mode: int) -> str:
     return _ROBOT_MODE_TO_STR.get(mode, "UNKNOWN")
 
 
+def _parse_wifi_info(wifi_info: str) -> "RobotNetworkStatus":
+    # wifi_info is a JSON string published by syncai_robot_state; it is
+    # "null" until the first wifi_status message arrives.
+    try:
+        data = json.loads(wifi_info)
+    except (json.JSONDecodeError, TypeError):
+        data = None
+
+    if not isinstance(data, dict):
+        data = {}
+
+    return RobotNetworkStatus(**data)
+
+
 class RobotPose(BaseModel):
     x: float = Field(..., description="The x-coordinate of the robot's position.")
     y: float = Field(..., description="The y-coordinate of the robot's position.")
@@ -34,7 +49,15 @@ class RobotLocalizationStatus(BaseModel):
 
 
 class RobotNetworkStatus(BaseModel):
-    wifi_info: str = Field(..., description="The Wi-Fi information of the robot.")
+    ssid: str = Field("", description="The SSID of the connected WiFi network.")
+    bssid: str = Field("", description="The BSSID of the connected WiFi access point.")
+    rssi: int = Field(0, description="The WiFi signal strength of the robot, in dBm.")
+    ip_address: str = Field(
+        "", description="The IP address of the robot's WiFi interface."
+    )
+    mac_address: str = Field(
+        "", description="The MAC address of the robot's WiFi interface."
+    )
 
 
 class RobotBatteryStatus(BaseModel):
@@ -86,9 +109,7 @@ def init_robot_router(
                 ),
                 velocity=state.localization_status.velocity,
             ),
-            network_status=RobotNetworkStatus(
-                wifi_info=state.network_status.wifi_info,
-            ),
+            network_status=_parse_wifi_info(state.network_status.wifi_info),
             battery_status=RobotBatteryStatus(
                 battery_percentage=state.battery_status.battery_percentage,
             ),

@@ -1,5 +1,7 @@
 #include "syncai_robot_state/syncai_robot_state.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <chrono>
 #include <functional>
 
@@ -28,6 +30,10 @@ RobotStateNode::RobotStateNode() : Node("syncai_robot_state")
   battery_sub_ = this->create_subscription<sensor_msgs::msg::BatteryState>(
     "battery_state", rclcpp::SensorDataQoS(),
     std::bind(&RobotStateNode::batteryCallback, this, _1));
+
+  wifi_sub_ = this->create_subscription<syncai_common::msg::WifiStatus>(
+    "wifi_status", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile(),
+    std::bind(&RobotStateNode::wifiStatusCallback, this, _1));
 
   timer_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ = this->create_wall_timer(
@@ -77,6 +83,12 @@ void RobotStateNode::batteryCallback(const sensor_msgs::msg::BatteryState::Share
   latest_battery_ = msg;
 }
 
+void RobotStateNode::wifiStatusCallback(const syncai_common::msg::WifiStatus::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  latest_wifi_status_ = msg;
+}
+
 void RobotStateNode::onTimer()
 {
   syncai_common::msg::RobotState msg;
@@ -105,11 +117,22 @@ void RobotStateNode::onTimer()
     std::lock_guard<std::mutex> lock(mutex_);
     msg.localization_status.velocity = latest_odom_ ? latest_odom_->twist.twist.linear.x : 0.0;
     msg.battery_status.battery_percentage = latest_battery_ ? latest_battery_->percentage : 0.0;
+
+    // Flatten the latest WifiStatus into a JSON string; "N/A" until the
+    // first wifi_status message arrives.
+    nlohmann::json wifi_json;
+    if (latest_wifi_status_) {
+      wifi_json = {
+        {"ssid", latest_wifi_status_->ssid},
+        {"bssid", latest_wifi_status_->bssid},
+        {"rssi", latest_wifi_status_->rssi},
+        {"ip_address", latest_wifi_status_->ip_address},
+        {"mac_address", latest_wifi_status_->mac_address},
+      };
+    }
+    msg.network_status.wifi_info = wifi_json.dump();
   }
 
-  msg.network_status.wifi_info = "N/A";
-
-  // network_status left at default for now.
   robot_state_pub_->publish(msg);
 };
 }  // namespace syncai_robot_state

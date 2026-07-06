@@ -36,6 +36,8 @@ RUN apt-get update && apt-get install -y \
     byobu \
     net-tools \
     iputils-ping \
+    network-manager \
+    bluez \
     && rm -rf /var/lib/apt/lists/*
 
 # System deps for workspace packages that have no ament/CMake config:

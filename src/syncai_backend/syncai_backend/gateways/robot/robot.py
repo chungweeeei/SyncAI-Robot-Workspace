@@ -4,12 +4,15 @@ import threading
 import structlog
 from enum import Enum
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
+
+from syncai_common.msg import WifiNetwork
+from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import Point, Quaternion, Pose, PoseStamped
@@ -48,6 +51,9 @@ class RobotGateway:
         self._action_clients: Dict[str, ActionClient] = {}
         self.register_action_clients()
 
+        self._service_clients: Dict[str, Any] = {}
+        self.register_service_clients()
+
         self._lock = threading.Lock()
         self._goals: Dict[str, MoveGoal] = {}
 
@@ -60,6 +66,57 @@ class RobotGateway:
         )
 
         self._action_clients.update({"move": move_client})
+
+    def register_service_clients(self):
+
+        scan_wifi_client = self._node.create_client(
+            srv_type=ScanWifiNetworks,
+            srv_name="/robot01/scan_wifi",
+        )
+
+        connect_wifi_client = self._node.create_client(
+            srv_type=ConnectWifiNetwork,
+            srv_name="/robot01/connect_wifi",
+        )
+
+        self._service_clients.update(
+            {"scan_wifi": scan_wifi_client, "connect_wifi": connect_wifi_client}
+        )
+
+    def scan_wifi_networks(self) -> Tuple[bool, str, List[WifiNetwork]]:
+        scan_client = self._service_clients.get("scan_wifi")
+        if not scan_client.wait_for_service(timeout_sec=5.0):
+            return False, "scan_wifi service is not available", []
+
+        self._logger.info("[RobotGateway] Scanning WiFi networks")
+
+        future = scan_client.call_async(ScanWifiNetworks.Request())
+        # The service rescans (10s) then lists (30s); leave headroom on top.
+        if not _wait_for_future(future, timeout=45.0):
+            return False, "Timeout waiting for scan_wifi response", []
+
+        response = future.result()
+        if not response.success:
+            return False, response.message, []
+
+        return True, "", list(response.networks)
+
+    def connect_wifi(self, ssid: str, password: str) -> Tuple[bool, str]:
+        connect_client = self._service_clients.get("connect_wifi")
+        if not connect_client.wait_for_service(timeout_sec=5.0):
+            return False, "connect_wifi service is not available"
+
+        self._logger.info("[RobotGateway] Connecting to WiFi network", ssid=ssid)
+
+        future = connect_client.call_async(
+            ConnectWifiNetwork.Request(ssid=ssid, password=password)
+        )
+        # The service itself waits up to 60s for nmcli; leave headroom on top.
+        if not _wait_for_future(future, timeout=70.0):
+            return False, "Timeout waiting for connect_wifi response"
+
+        response = future.result()
+        return response.success, response.message
 
     def move(self, x: float, y: float, yaw: float) -> Tuple[bool, str, Optional[str]]:
         move_client = self._action_clients.get("move")

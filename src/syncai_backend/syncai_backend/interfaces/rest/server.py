@@ -15,6 +15,7 @@ from syncai_backend.exceptions import (
 from syncai_backend.interfaces.rest.routers.task import init_task_router
 from syncai_backend.interfaces.rest.routers.schedule import init_schedule_router
 from syncai_backend.interfaces.rest.routers.robot import init_robot_router
+from syncai_backend.interfaces.rest.routers.network import init_network_router
 
 from syncai_backend.repositories.robot.robot import RobotRepo
 
@@ -49,6 +50,7 @@ def init_rest_server(
     logger: structlog.stdlib.BoundLogger,
     workflow_gw: WorkflowGateway,
     robot_repo: RobotRepo,
+    robot_gw: RobotGateway,
 ) -> FastAPI:
 
     description = """
@@ -72,6 +74,7 @@ def init_rest_server(
     app.include_router(init_task_router(logger=logger, workflow_gw=workflow_gw))
     app.include_router(init_schedule_router(logger=logger, workflow_gw=workflow_gw))
     app.include_router(init_robot_router(logger=logger, robot_repo=robot_repo))
+    app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
 
     return app
 
@@ -80,10 +83,11 @@ def start_rest_server(
     logger: structlog.stdlib.BoundLogger,
     workflow_gw: WorkflowGateway,
     robot_repo: RobotRepo,
+    robot_gw: RobotGateway,
 ):
 
     app = init_rest_server(
-        logger=logger, workflow_gw=workflow_gw, robot_repo=robot_repo
+        logger=logger, workflow_gw=workflow_gw, robot_repo=robot_repo, robot_gw=robot_gw
     )
 
     def _run():

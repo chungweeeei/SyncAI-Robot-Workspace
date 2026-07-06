@@ -16,6 +16,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(syncai_common REQUIRED)
 find_package(syncai_util REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 add_executable(robot_state_node src/main.cpp src/syncai_robot_state.cpp)
 target_include_directories(robot_state_node PUBLIC
@@ -34,6 +35,7 @@ ament_target_dependencies(
   "syncai_common"
   "syncai_util"
 )
+target_link_libraries(robot_state_node nlohmann_json::nlohmann_json)
 
 install(TARGETS robot_state_node
   DESTINATION lib/${PROJECT_NAME})
