@@ -5,9 +5,10 @@ from unittest import mock
 from assertpy import assert_that
 from pytest_mock import MockerFixture
 
-from syncai_system_manager.wifi_manager import (
+from syncai_common.msg import WifiNetwork
+
+from syncai_system_manager.managers.wifi_manager import (
     WifiStatus,
-    AvailableNetwork,
     WifiManager,
     WifiNetworkInfo,
 )
@@ -344,14 +345,14 @@ class TestWifiManager:
         networks = mock_wifi_manager.scan_wifi_networks()
 
         assert_that(networks).is_length(2)
-        assert_that(networks[0]).is_type_of(AvailableNetwork)
-        assert_that(networks[0].SSID).is_equal_to("Test1")
-        assert_that(networks[0].BSSID).is_equal_to("34:3A:20:0C:4C:D3")
-        assert_that(networks[0].RSSI).is_equal_to(-58)
-        assert_that(networks[1]).is_type_of(AvailableNetwork)
-        assert_that(networks[1].SSID).is_equal_to("Test2")
-        assert_that(networks[1].BSSID).is_equal_to("34:3A:20:0C:4C:D2")
-        assert_that(networks[1].RSSI).is_equal_to(-59)
+        assert_that(networks[0]).is_type_of(WifiNetwork)
+        assert_that(networks[0].ssid).is_equal_to("Test1")
+        assert_that(networks[0].bssid).is_equal_to("34:3A:20:0C:4C:D3")
+        assert_that(networks[0].rssi).is_equal_to(-58)
+        assert_that(networks[1]).is_type_of(WifiNetwork)
+        assert_that(networks[1].ssid).is_equal_to("Test2")
+        assert_that(networks[1].bssid).is_equal_to("34:3A:20:0C:4C:D2")
+        assert_that(networks[1].rssi).is_equal_to(-59)
 
         mock_popen.assert_has_calls(
             calls=[

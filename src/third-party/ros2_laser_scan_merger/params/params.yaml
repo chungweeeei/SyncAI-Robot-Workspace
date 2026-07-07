@@ -1,18 +1,20 @@
 # Merge the two diagonal MiR250 lidars from Isaac Sim (SyncAI-Omniverse) into a
 # single 360deg LaserScan for amcl + costmaps.
 #
-#   /robot01/scan_front ─┐
-#                        ├─ ros2_laser_scan_merger ─(PointCloud2 /robot01/cloud_in)─┐
-#   /robot01/scan_rear  ─┘                                                          │
-#                                          pointcloud_to_laserscan ◀────────────────┘
-#                                                  └─▶ merged /robot01/scan
+#   /<robot_id>/scan_front ─┐
+#                           ├─ ros2_laser_scan_merger ─(PointCloud2 /<robot_id>/cloud_in)─┐
+#   /<robot_id>/scan_rear  ─┘                                                             │
+#                                             pointcloud_to_laserscan ◀───────────────────┘
+#                                                     └─▶ merged /<robot_id>/scan
 #
-# Both nodes run under the `robot01` namespace (launch arg), so RELATIVE topics
-# resolve to /robot01/*. The /**/ key prefix matches the node in any namespace.
-# Frame ids are NOT namespaced by ROS, so they keep the explicit robot01/ tf
-# prefix that the sim publishes.
+# Both nodes run under the `namespace` launch arg (supplied by syncai_bringup
+# from the config/system.ini robot_id), so RELATIVE topics resolve to
+# /<robot_id>/*. The /**/ key prefix matches the node in any namespace.
+# Frame ids are NOT namespaced by ROS, so the launch file overrides
+# pointCloudFrameId / target_frame with the <robot_id>/ prefix — the values
+# below are only fallbacks when the nodes are run without the launch file.
 #
-# The merged cloud/scan lives in a dedicated `robot01/scan` frame whose pose is
+# The merged cloud/scan lives in a dedicated `<robot_id>/scan` frame whose pose is
 # published by a static_transform_publisher (base_link -> scan) in the launch
 # file at z = 0.1225 (the lidar mount height). So the per-lidar XOff/YOff below
 # are the in-plane diagonal positions and ZOff is 0 (height lives in the TF).
@@ -26,7 +28,7 @@
     use_sim_time: true
 
     # laser1 = FRONT lidar (front-left mount, sensor rot 0deg)
-    scanTopic1: scan_front          # -> /robot01/scan_front
+    scanTopic1: scan_front          # -> /<robot_id>/scan_front
     laser1XOff: 0.266
     laser1YOff: 0.182
     laser1ZOff: 0.0                 # height carried by the base_link->scan TF
@@ -41,7 +43,7 @@
     show1: true
 
     # laser2 = REAR lidar (rear-right mount, sensor rot 180deg)
-    scanTopic2: scan_rear           # -> /robot01/scan_rear
+    scanTopic2: scan_rear           # -> /<robot_id>/scan_rear
     laser2XOff: -0.266
     laser2YOff: -0.182
     laser2ZOff: 0.0
@@ -55,19 +57,22 @@
     laser2B: 255
     show2: true
 
-    # Merged PointCloud2 output (relative -> /robot01/cloud_in), expressed in
+    # Merged PointCloud2 output (relative -> /<robot_id>/cloud_in), expressed in
     # the dedicated scan frame (positioned over base_link by the static TF).
+    # pointCloudFrameId is overridden by the launch file with <robot_id>/ prefix.
     pointCloudTopic: cloud_in
-    pointCloudFrameId: robot01/scan
+    pointCloudFrameId: scan
 
 
 /**/pointcloud_to_laserscan:
   ros__parameters:
     use_sim_time: true
 
-    # Subscribes cloud_in (-> /robot01/cloud_in), publishes scan (-> /robot01/scan).
-    # cloud frame == target_frame == robot01/scan, so this needs no TF lookup.
-    target_frame: robot01/scan
+    # Subscribes cloud_in (-> /<robot_id>/cloud_in), publishes scan
+    # (-> /<robot_id>/scan). cloud frame == target_frame == <robot_id>/scan, so
+    # this needs no TF lookup. target_frame is overridden by the launch file
+    # with the <robot_id>/ prefix.
+    target_frame: scan
     transform_tolerance: 0.01
 
     angle_increment: 0.0087         # ~0.5 deg

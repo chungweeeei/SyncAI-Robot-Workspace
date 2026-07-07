@@ -1,31 +1,74 @@
 # Launch the syncai_system_manager node — hosts the WiFi management services
-# (scan_wifi / connect_wifi) that the backend gateway calls on demand.
+# (scan_wifi / connect_wifi) and mDNS publishing.
+#
+# robot_id is read from the system config INI at launch time and is used both
+# as the node namespace and as the `robot_id` node parameter; the node
+# publishes <robot_id>.local over mDNS.
+
+import configparser
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch import logging as launch_logging
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# Same convention as the backend gateways: processes run with the workspace
+# root as their working directory, so a relative path works both inside the
+# robot container and when launching from the workspace root.
+DEFAULT_SYSTEM_INI = "config/system.ini"
+FALLBACK_ROBOT_ID = "default_robot"
 
-def generate_launch_description():
-    namespace = LaunchConfiguration("namespace")
+logger = launch_logging.get_logger("system_manager.launch")
 
-    declare_namespace = DeclareLaunchArgument(
-        "namespace",
-        default_value="robot01",
-        description="Namespace applied to the node (prefixes all relative services)",
-    )
+
+def read_robot_id(config_path: str) -> str:
+    config = configparser.ConfigParser()
+    if not config.read(config_path):
+        logger.warning(
+            f"System config '{config_path}' not found; "
+            f"falling back to robot_id '{FALLBACK_ROBOT_ID}'"
+        )
+        return FALLBACK_ROBOT_ID
+
+    robot_id = config.get("system", "robot_id", fallback="").strip()
+    if not robot_id:
+        logger.warning(
+            f"No [system] robot_id in '{config_path}'; "
+            f"falling back to '{FALLBACK_ROBOT_ID}'"
+        )
+        return FALLBACK_ROBOT_ID
+
+    return robot_id
+
+
+def launch_setup(context, *args, **kwargs):
+    # LaunchConfiguration values only resolve inside an OpaqueFunction, and we
+    # need the resolved path here to parse the INI at launch time.
+    config_path = LaunchConfiguration("system_config").perform(context)
+    robot_id = read_robot_id(config_path)
 
     system_manager_node = Node(
         package="syncai_system_manager",
         executable="system_manager_node",
-        namespace=namespace,
+        namespace=robot_id,
         output="screen",
+        parameters=[{"robot_id": robot_id}],
+    )
+
+    return [system_manager_node]
+
+
+def generate_launch_description():
+    declare_system_config = DeclareLaunchArgument(
+        "system_config",
+        default_value=DEFAULT_SYSTEM_INI,
+        description="Path to the system INI file providing [system] robot_id",
     )
 
     return LaunchDescription(
         [
-            declare_namespace,
-            system_manager_node,
+            declare_system_config,
+            OpaqueFunction(function=launch_setup),
         ]
     )

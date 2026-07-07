@@ -6,5 +6,7 @@
     battery_initial_level: 100.0
     # Battery discharge rate in percent per 30 seconds.
     battery_discharge_rate: 0.1
-    # Frame stamped into the published BatteryState header.
+    # Frame stamped into the published BatteryState header. The launch file
+    # overrides this with the <robot_id>/ prefix; this value is only a
+    # fallback when the node is run without the launch file.
     base_frame: "base_link"

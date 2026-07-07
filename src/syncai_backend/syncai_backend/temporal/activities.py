@@ -9,6 +9,12 @@ from temporalio.exceptions import ApplicationError, CancelledError
 
 from syncai_backend.gateways.workflow.schema import StepParams
 from syncai_backend.gateways.robot.robot import RobotGateway
+from syncai_backend.gateways.artifact.artifact import (
+    ArtifactGateway,
+    ArtifactCommandRejected,
+    ArtifactUnavailable,
+    UnknownArtifactError,
+)
 
 
 class ActivityResult(BaseModel):
@@ -18,9 +24,48 @@ class ActivityResult(BaseModel):
 
 
 class RobotActivities:
-    def __init__(self, logger: structlog.stdlib.BoundLogger, robot_gw: RobotGateway):
+    def __init__(
+        self,
+        logger: structlog.stdlib.BoundLogger,
+        robot_gw: RobotGateway,
+        artifact_gw: ArtifactGateway,
+    ):
         self._logger = logger
         self._robot_gw = robot_gw
+        self._artifact_gw = artifact_gw
+
+    def _wait_for_nav_goal(self, goal_id: str, label: str) -> str:
+        """Poll a navigation goal until it reaches a terminal state.
+
+        NOTE: this runs inside a synchronous (threaded) activity. On
+        cancellation Temporal *throws* a CancelledError into this thread at
+        whatever point it is currently executing (e.g. inside time.sleep), so
+        we can't rely on polling activity.is_cancelled() at the top of the
+        loop -- we must catch the injected exception to run cleanup.
+        """
+        try:
+            while True:
+                status = self._robot_gw.get_move_status(goal_id=goal_id)
+                state = status["state"] if status else None
+
+                # send heartbeat, tell temporal server worker still alive
+                activity.heartbeat(state)
+
+                if state in ["succeeded", "aborted", "canceled"]:
+                    return state
+
+                time.sleep(1.0)
+
+        except CancelledError:
+            # shield so the cancel_move RPC finishes before the CancelledError
+            # is re-raised, then propagate to mark the activity as cancelled.
+            with activity.shield_thread_cancel_exception():
+                self._robot_gw.cancel_move(goal_id=goal_id)
+
+            self._logger.warn(
+                f"[RobotActivity] {label} activity has been cancelled"
+            )
+            raise
 
     @activity.defn
     def execute_move(self, params: StepParams) -> ActivityResult:
@@ -31,36 +76,107 @@ class RobotActivities:
 
         self._logger.info("[RobotActivity] Move accepted", goal_id=goal_id)
 
-        # polling move state
-        #
-        # NOTE: this is a synchronous (threaded) activity. On cancellation
-        # Temporal *throws* a CancelledError into this thread at whatever point
-        # it is currently executing (e.g. inside time.sleep), so we can't rely
-        # on polling activity.is_cancelled() at the top of the loop -- we must
-        # catch the injected exception to run cleanup.
-        try:
-            while True:
-                status = self._robot_gw.get_move_status(goal_id=goal_id)
-                state = status["state"] if status else None
-
-                # send heartbeat, tell temporal server worker still alive
-                activity.heartbeat(state)
-
-                if state in ["succeeded", "aborted", "canceled"]:
-                    break
-
-                time.sleep(1.0)
-
-        except CancelledError:
-            # shield so the cancel_move RPC finishes before the CancelledError
-            # is re-raised, then propagate to mark the activity as cancelled.
-            with activity.shield_thread_cancel_exception():
-                self._robot_gw.cancel_move(goal_id=goal_id)
-
-            self._logger.warn("[RobotActivity] Move activity has been cancelled")
-            raise
+        state = self._wait_for_nav_goal(goal_id=goal_id, label="Move")
 
         if state != "succeeded":
             raise ApplicationError(f"move ended in {state}", non_retryable=False)
 
         return ActivityResult(success=True, goal_id=goal_id, state=state)
+
+    @activity.defn
+    def execute_patrol(self, params: StepParams) -> ActivityResult:
+        poses = [(p.x, p.y, math.radians(p.theta)) for p in params.poses]
+
+        # The navigate_through_poses BT runs a single pass over the waypoint
+        # list; repeat the goal to patrol multiple loops.
+        for loop in range(1, params.loops + 1):
+            accepted, msg, goal_id = self._robot_gw.patrol(poses=poses)
+            if not accepted:
+                raise ApplicationError(f"Patrol rejected: {msg}", non_retryable=False)
+
+            self._logger.info(
+                "[RobotActivity] Patrol accepted",
+                goal_id=goal_id,
+                loop=loop,
+                loops=params.loops,
+            )
+
+            state = self._wait_for_nav_goal(goal_id=goal_id, label="Patrol")
+
+            if state != "succeeded":
+                raise ApplicationError(
+                    f"patrol loop {loop}/{params.loops} ended in {state}",
+                    non_retryable=False,
+                )
+
+        return ActivityResult(success=True, goal_id=goal_id, state=state)
+
+    @activity.defn
+    def execute_artifact(self, params: StepParams) -> ActivityResult:
+        try:
+            ack = self._artifact_gw.send_command(
+                artifact_id=params.artifact_id, command=params.command.model_dump()
+            )
+        except (UnknownArtifactError, ArtifactCommandRejected) as err:
+            raise ApplicationError(str(err), non_retryable=True) from err
+        except ArtifactUnavailable as err:
+            raise ApplicationError(str(err), non_retryable=False) from err
+
+        self._logger.info(
+            "[RobotActivity] Artifact command accepted",
+            artifact_id=params.artifact_id,
+            ack=ack,
+        )
+
+        if params.wait_for is None:
+            return ActivityResult(success=True)
+
+        # The command ack only means the trigger register was written; poll
+        # the artifact state until live_info.phase reaches the expected value.
+        expected_phase = params.wait_for.value
+        deadline = time.monotonic() + params.wait_timeout_seconds
+
+        try:
+            while True:
+                # A transient GET failure must not fail (and thus retry) the
+                # activity: the edge-triggered command already fired and a
+                # retry would re-trigger it. Keep polling until the deadline.
+                try:
+                    state = self._artifact_gw.get_state(params.artifact_id)
+                except (ArtifactUnavailable, ArtifactCommandRejected) as err:
+                    self._logger.warn(
+                        "[RobotActivity] Artifact state poll failed",
+                        artifact_id=params.artifact_id,
+                        error=str(err),
+                    )
+                    state = None
+
+                activity.heartbeat(state)
+
+                if state is not None:
+                    if state.get("error_code", 0) != 0:
+                        raise ApplicationError(
+                            f"artifact reported error_code={state['error_code']}",
+                            non_retryable=True,
+                        )
+
+                    live_info = state.get("live_info") or {}
+                    if live_info.get("phase") == expected_phase:
+                        return ActivityResult(success=True)
+
+                if time.monotonic() >= deadline:
+                    raise ApplicationError(
+                        f"artifact did not reach phase '{expected_phase}' within "
+                        f"{params.wait_timeout_seconds}s",
+                        non_retryable=True,
+                    )
+
+                time.sleep(1.0)
+
+        except CancelledError:
+            # No cancel API on the artifact side; the command already fired.
+            self._logger.warn(
+                "[RobotActivity] Artifact activity has been cancelled",
+                artifact_id=params.artifact_id,
+            )
+            raise

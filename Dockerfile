@@ -44,11 +44,15 @@ RUN apt-get update && apt-get install -y \
 #   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
 #   - nlohmann-json3-dev: header-only JSON library (found via find_package(nlohmann_json))
+#   - avahi-utils: syncai_system_manager spawns avahi-publish; talks to the
+#     HOST avahi-daemon via the mounted /run/dbus/system_bus_socket, so no
+#     avahi-daemon runs inside the container
 RUN apt-get update && apt-get install -y \
     libgraphicsmagick++1-dev \
     libzmq3-dev \
     libncurses-dev \
     nlohmann-json3-dev \
+    avahi-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Python web stack for syncai_backend (no reliable apt key on jammy; installed
@@ -61,7 +65,8 @@ RUN pip3 install --no-cache-dir \
     sqlalchemy \
     sqlalchemy-utils \
     psycopg2 \
-    temporalio
+    temporalio \
+    requests
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble

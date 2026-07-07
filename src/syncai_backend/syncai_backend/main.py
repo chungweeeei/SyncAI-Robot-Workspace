@@ -14,6 +14,7 @@ from syncai_backend.interfaces.rest.server import start_rest_server
 from syncai_backend.repositories.robot.robot import init_robot_repo
 
 from syncai_backend.gateways.robot.robot import init_robot_gateway
+from syncai_backend.gateways.artifact.artifact import init_artifact_gateway
 from syncai_backend.gateways.workflow.workflow import init_workflow_gateway
 
 from syncai_backend.subscribers.robot_state_subscriber import (
@@ -39,11 +40,12 @@ class SyncAIBackend(Node):
         robot_repo = init_robot_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
+        artifact_gw = init_artifact_gateway(logger=logger)
         workflow_gw = init_workflow_gateway(logger=logger)
 
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
 
-        start_temporal_worker(logger=logger, robot_gw=robot_gw)
+        start_temporal_worker(logger=logger, robot_gw=robot_gw, artifact_gw=artifact_gw)
         start_rest_server(
             logger=logger,
             workflow_gw=workflow_gw,

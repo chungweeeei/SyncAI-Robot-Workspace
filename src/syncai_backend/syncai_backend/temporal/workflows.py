@@ -29,6 +29,8 @@ class RobotWorkflow:
 
         activity_map = {
             StepType.MOVE: RobotActivities.execute_move,
+            StepType.PATROL: RobotActivities.execute_patrol,
+            StepType.ARTIFACT: RobotActivities.execute_artifact,
         }
 
         for step in self._steps:
@@ -45,7 +47,7 @@ class RobotWorkflow:
                 result: ActivityResult = await workflow.execute_activity(
                     activity_fn,
                     step.params,
-                    start_to_close_timeout=timedelta(minutes=60),
+                    start_to_close_timeout=timedelta(minutes=3600),
                     heartbeat_timeout=timedelta(seconds=3),
                     cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
                 )

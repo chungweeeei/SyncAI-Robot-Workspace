@@ -1,6 +1,8 @@
 # Parameters for the syncai_map_server "map_saver" node.
-# The top-level key must match the node name (see launch file: name="map_saver_server").
-map_saver_server:
+# The /**/ wildcard key matches the node (constructed as "map_saver_server",
+# see the launch file) in any namespace — the launch file namespaces it with
+# the robot_id from config/system.ini.
+/**/map_saver_server:
   ros__parameters:
     # Timeout (seconds) to wait for a map message on the requested topic before giving up.
     save_map_timeout: 5.0

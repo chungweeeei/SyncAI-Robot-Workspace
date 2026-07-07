@@ -1,9 +1,13 @@
 # Parameters for the syncai_planner "planner_server" node and its internal
 # global costmap node. The /**/ wildcard keys match the node names in any
-# namespace, so the same file works with the launch `namespace` argument
-# (default robot01). Topic values below are RELATIVE names — they get the
-# namespace prefix automatically (e.g. map -> /robot01/map). TF frame names
-# are NOT namespaced by ROS, so they keep their explicit robot01/ prefix.
+# namespace, so the same file works for any robot_id: the launch file reads
+# robot_id from config/system.ini and uses it as the node namespace. Topic
+# values below are RELATIVE names — they get the namespace prefix
+# automatically (e.g. map -> /<robot_id>/map). TF frame names are NOT
+# namespaced by ROS, so the launch file overrides robot_base_frame /
+# sensor_frame with the <robot_id>/ prefix at launch time — the values below
+# are only fallbacks when the node is run without the launch file. The
+# costmap's global_frame stays "map".
 /**/planner_server:
   ros__parameters:
     use_sim_time: true
@@ -28,9 +32,10 @@
   ros__parameters:
     use_sim_time: true
 
-    # Frames
+    # Frames (robot_base_frame is overridden by the launch file with
+    # <robot_id>/ prefix; global_frame stays "map")
     global_frame: map
-    robot_base_frame: robot01/base_link
+    robot_base_frame: base_link
     transform_tolerance: 0.3
 
     # Update / publish rates
@@ -52,8 +57,8 @@
     footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
     footprint_padding: 0.01
 
-    # Relative topic: resolves to /<namespace>/map (matches map_server's
-    # "robot01/map" output when namespace is robot01)
+    # Relative topic: resolves to /<robot_id>/map (matches map_server's
+    # output in the same namespace)
     map_topic: map
 
     # Layer stack — order matters: static -> obstacle(mark/clear) -> inflation
@@ -72,10 +77,10 @@
       combination_method: 1            # 0=Overwrite, 1=Maximum
       observation_sources: scan
       scan:
-        # Merged 360deg scan from ros2_laser_scan_merger (-> /robot01/scan)
+        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan)
         topic: scan
-        # TF frame (not affected by the node namespace)
-        sensor_frame: robot01/scan
+        # TF frame (overridden by the launch file with <robot_id>/ prefix)
+        sensor_frame: scan
         data_type: "LaserScan"
         marking: true
         clearing: true

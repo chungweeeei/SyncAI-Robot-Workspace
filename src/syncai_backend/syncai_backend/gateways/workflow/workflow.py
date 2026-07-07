@@ -22,6 +22,8 @@ from syncai_backend.exceptions import (
     NotFoundError,
 )
 
+from syncai_backend.temporal.shared import TEMPORAL_SERVER_URL
+
 from syncai_backend.gateways.workflow.schema import (
     ScheduleTask,
     ScheduleTrigger,
@@ -126,7 +128,8 @@ class WorkflowGateway:
 
         try:
             self._client = await Client.connect(
-                target_host="127.0.0.1:7233", data_converter=pydantic_data_converter
+                target_host=TEMPORAL_SERVER_URL,
+                data_converter=pydantic_data_converter,
             )
         except Exception as err:
             raise err

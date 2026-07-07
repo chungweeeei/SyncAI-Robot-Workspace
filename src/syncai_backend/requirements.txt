@@ -4,3 +4,4 @@ fastapi
 uvicorn[standard]
 pydantic>=2.11  # validate_by_name / validate_by_alias 需 2.11+
 temporalio
+requests  # ArtifactGateway -> artifact backend REST API

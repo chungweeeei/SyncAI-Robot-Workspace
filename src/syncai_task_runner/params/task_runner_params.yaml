@@ -2,9 +2,10 @@
   ros__parameters:
     use_sim_time: true
 
-    # Frames / topics
+    # Frames / topics (base_frame is overridden by the launch file with the
+    # <robot_id>/ prefix from config/system.ini; global_frame stays "map")
     global_frame: map
-    base_frame: robot01/base_link
+    base_frame: base_link
     odom_topic: odom
     transform_tolerance: 0.1
 

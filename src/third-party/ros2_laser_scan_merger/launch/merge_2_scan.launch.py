@@ -4,10 +4,12 @@
 #   24/2/2022
 #
 #   Adapted for SyncAI: the two merger nodes run under the `namespace` arg
-#   (default robot01) so the params file's RELATIVE topics resolve to
-#   /<ns>/scan_front, /<ns>/scan_rear, /<ns>/cloud_in and the merged /<ns>/scan.
-#   The <ns>/base_link -> <ns>/scan static TF is published by the top-level
-#   bringup launch (syncai_bringup), not here.
+#   (supplied by syncai_bringup from the config/system.ini robot_id) so the
+#   params file's RELATIVE topics resolve to /<ns>/scan_front, /<ns>/scan_rear,
+#   /<ns>/cloud_in and the merged /<ns>/scan. TF frame names are NOT namespaced
+#   by ROS, so pointCloudFrameId / target_frame are overridden below with the
+#   <ns>/ prefix. The <ns>/base_link -> <ns>/scan static TF is published by the
+#   top-level bringup launch (syncai_bringup), not here.
 #
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -40,12 +42,17 @@ def generate_launch_description():
         [
             declare_namespace,
             declare_params_file,
-            # scan_front + scan_rear -> merged PointCloud2 on cloud_in
+            # scan_front + scan_rear -> merged PointCloud2 on cloud_in.
+            # The frame override (substitutions concatenate to "<ns>/scan")
+            # is placed AFTER the params file so it wins over the YAML value.
             launch_ros.actions.Node(
                 package="ros2_laser_scan_merger",
                 executable="ros2_laser_scan_merger",
                 namespace=namespace,
-                parameters=[params_file],
+                parameters=[
+                    params_file,
+                    {"pointCloudFrameId": [namespace, "/scan"]},
+                ],
                 output="screen",
                 respawn=True,
                 respawn_delay=2,
@@ -56,7 +63,10 @@ def generate_launch_description():
                 package="pointcloud_to_laserscan",
                 executable="pointcloud_to_laserscan_node",
                 namespace=namespace,
-                parameters=[params_file],
+                parameters=[
+                    params_file,
+                    {"target_frame": [namespace, "/scan"]},
+                ],
             ),
         ]
     )

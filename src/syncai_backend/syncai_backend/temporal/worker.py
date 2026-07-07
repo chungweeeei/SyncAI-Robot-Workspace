@@ -14,6 +14,7 @@ from syncai_backend.temporal.workflows import RobotWorkflow
 from syncai_backend.temporal.activities import RobotActivities
 
 from syncai_backend.gateways.robot.robot import RobotGateway
+from syncai_backend.gateways.artifact.artifact import ArtifactGateway
 
 
 async def run_worker(
@@ -35,7 +36,11 @@ async def run_worker(
         client,
         task_queue="ROBOT_TASK_QUEUE",
         workflows=[RobotWorkflow],
-        activities=[activities.execute_move],
+        activities=[
+            activities.execute_move,
+            activities.execute_patrol,
+            activities.execute_artifact,
+        ],
         activity_executor=ThreadPoolExecutor(max_workers=1),
     )
 
@@ -48,13 +53,17 @@ async def run_worker(
 
 
 def start_temporal_worker(
-    logger: structlog.stdlib.BoundLogger, robot_gw: RobotGateway
+    logger: structlog.stdlib.BoundLogger,
+    robot_gw: RobotGateway,
+    artifact_gw: ArtifactGateway,
 ) -> threading.Thread:
 
     ready = threading.Event()
 
     def _thread_target() -> None:
-        activities = RobotActivities(logger=logger, robot_gw=robot_gw)
+        activities = RobotActivities(
+            logger=logger, robot_gw=robot_gw, artifact_gw=artifact_gw
+        )
         asyncio.run(run_worker(logger, activities=activities, ready=ready))
 
     thread = threading.Thread(target=_thread_target, daemon=True)

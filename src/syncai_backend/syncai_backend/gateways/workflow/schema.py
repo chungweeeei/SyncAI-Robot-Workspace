@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Union, Optional
+from typing import Annotated, List, Literal, Union, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from enum import Enum
@@ -23,6 +23,8 @@ class StepStatus(str, Enum):
 
 class StepType(str, Enum):
     MOVE = "MOVE"
+    PATROL = "PATROL"
+    ARTIFACT = "ARTIFACT"
 
 
 class MoveParams(BaseSchema):
@@ -41,7 +43,91 @@ class MoveParams(BaseSchema):
     )
 
 
-StepParams = Union[MoveParams]
+class PatrolParams(BaseSchema):
+    poses: List[MoveParams] = Field(
+        ...,
+        min_length=1,
+        description="Ordered waypoints the robot navigates through in one pass",
+        examples=[[{"x": 1.0, "y": 2.0, "theta": 90.0}]],
+    )
+    loops: int = Field(
+        1,
+        ge=1,
+        description="Number of times to repeat the full waypoint sequence",
+        examples=[3],
+    )
+
+
+# Mirrors the artifact backend's command API (SyncAI-Artifact-Workspace
+# routers/artifact.py). Field names/values must stay in sync with it: the
+# command is forwarded verbatim and re-validated there.
+class PickupCommand(BaseSchema):
+    action: Literal["pickup"]
+    robot: Union[Annotated[int, Field(ge=0, le=0xFFFE)], Literal["any"]] = Field(
+        "any", description="Robot index, or 'any' = closest robot in the dock"
+    )
+    box: int = Field(
+        0, ge=0, le=0xFFFE, description="0 = unspecified; N = boxNN", examples=[0]
+    )
+
+
+class DropCommand(BaseSchema):
+    action: Literal["drop"]
+    zone: Union[Annotated[int, Field(ge=0, le=0xFFFE)], Literal["any"]] = Field(
+        "any", description="Drop-zone index, or 'any' = debug bypass"
+    )
+    box: int = Field(
+        0, ge=0, le=0xFFFE, description="0 = unspecified; N = boxNN", examples=[0]
+    )
+
+
+ArtifactCommand = Annotated[
+    Union[PickupCommand, DropCommand], Field(discriminator="action")
+]
+
+
+# Cargo pipeline phase reported in live_info.phase (GET /state). Mirrors the
+# sim's phase codes decoded by syncai_artifact_state: belt -> handoff ->
+# carried -> dropped.
+class ConveyorPhase(str, Enum):
+    BELT = "belt"
+    HANDOFF = "handoff"
+    CARRIED = "carried"
+    DROPPED = "dropped"
+
+
+class ArtifactParams(BaseSchema):
+    artifact_id: str = Field(
+        ...,
+        description="Registry key resolving to the artifact backend base URL",
+        examples=["conveyor01"],
+    )
+    command: ArtifactCommand = Field(
+        ...,
+        description=(
+            "Command sent as the POST /api/v1/artifact/command body, "
+            "discriminated by 'action'"
+        ),
+        examples=[{"action": "pickup", "robot": "any", "box": 0}],
+    )
+    wait_for: Optional[ConveyorPhase] = Field(
+        default=None,
+        description=(
+            "If set, poll the artifact state until live_info.phase reaches "
+            "this value; if omitted the step completes once the command is "
+            "accepted"
+        ),
+        examples=["handoff"],
+    )
+    wait_timeout_seconds: int = Field(
+        60,
+        gt=0,
+        description="Fail the step if wait_for is not reached within this time",
+        examples=[120],
+    )
+
+
+StepParams = Union[MoveParams, PatrolParams, ArtifactParams]
 
 
 class Step(BaseSchema):

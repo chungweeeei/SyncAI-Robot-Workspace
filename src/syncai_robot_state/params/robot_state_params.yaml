@@ -2,12 +2,16 @@
 # node in any namespace (the node is constructed as "syncai_robot_state").
 /**/syncai_robot_state:
   ros__parameters:
-    robot_id: "robot01"
+    # robot_id and base_frame are overridden by the launch file with the
+    # [system] robot_id from config/system.ini; the values below are only
+    # fallbacks when the node is run without the launch file.
+    robot_id: "default_robot"
     # Map name stamped into RobotState.map. Usually overridden from the launch file.
     map: "warehouse"
     # TF frames used for the position lookup (global_frame -> base_frame).
+    # global_frame stays "map"; base_frame gets the <robot_id>/ prefix at launch.
     global_frame: "map"
-    base_frame: "robot01/base_link"
+    base_frame: "base_link"
     # TF lookup tolerance in seconds.
     transform_tolerance: 0.1
     # Odometry topic the forward velocity is read from.

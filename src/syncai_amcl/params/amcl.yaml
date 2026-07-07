@@ -1,15 +1,17 @@
 # The /**/ wildcard key matches the node name in any namespace, so the same file
-# works with the launch `namespace` argument (default robot01). Topic values are
-# RELATIVE and get the namespace prefix (scan -> /robot01/scan, map ->
-# /robot01/map, plus amcl_pose / initialpose / particle_cloud). TF frame names
-# are NOT namespaced by ROS, so base/odom keep their explicit robot01/ prefix to
-# match what Isaac Sim publishes; the global frame stays "map".
+# works for any robot_id: the launch file reads robot_id from config/system.ini
+# and uses it as the node namespace. Topic values are RELATIVE and get the
+# namespace prefix (scan -> /<robot_id>/scan, map -> /<robot_id>/map, plus
+# amcl_pose / initialpose / particle_cloud). TF frame names are NOT namespaced
+# by ROS, so the launch file overrides base_frame_id / odom_frame_id with the
+# <robot_id>/ prefix at launch time — the values below are only fallbacks when
+# the node is run without the launch file. The global frame stays "map".
 /**/amcl:
   ros__parameters:
     use_sim_time: true
-    # --- Frames ---
-    base_frame_id: "robot01/base_link"
-    odom_frame_id: "robot01/odom"
+    # --- Frames (overridden by the launch file with <robot_id>/ prefix) ---
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
     global_frame_id: "map"
 
     # --- Topics (relative; namespaced at launch) ---
@@ -19,12 +21,15 @@
     # --- Motion model (odometry noise) ---
     # robot_model_type: "differential" or "omni"
     robot_model_type: "differential"
-    # Ref tuning: low base noise, but alpha1/alpha4 kept higher so particles
-    # spread during spin (where odom drift is worst).
-    alpha1: 0.05  # rotation noise from rotation
-    alpha2: 0.02  # rotation noise from translation
-    alpha3: 0.02  # translation noise from translation
-    alpha4: 0.05  # translation noise from rotation
+    # Raised from the low ref values (0.05/0.02/0.02/0.05): with noise that
+    # tight the particle cloud can't cover real odom slip, so once the true
+    # pose falls outside the cloud the filter never recovers (robot gets
+    # lost mid-run). Wider spread costs a bit of pose smoothness but keeps
+    # the true pose inside the cloud.
+    alpha1: 0.2   # rotation noise from rotation
+    alpha2: 0.05  # rotation noise from translation
+    alpha3: 0.05  # translation noise from translation
+    alpha4: 0.2   # translation noise from rotation
     alpha5: 0.02  # strafe noise (omni only)
 
     # --- Particle filter ---
@@ -33,7 +38,10 @@
     max_particles: 5000
     pf_err: 0.02
     pf_z: 0.85
-    resample_interval: 1
+    # Resample every 2nd update: resampling on every update (with our very
+    # frequent update thresholds) depletes particle diversity and makes the
+    # filter overconfident.
+    resample_interval: 2
     recovery_alpha_slow: 0.001  # ref: enable random-pose recovery
     recovery_alpha_fast: 0.1    # ref: enable random-pose recovery
 
@@ -53,13 +61,16 @@
     laser_likelihood_max_dist: 2.0
     sigma_hit: 0.2
     lambda_short: 0.1
-    # Ref: trust laser matching more (z_hit up, z_rand down). Sums to 1.0.
-    z_hit: 0.8
+    # z_rand raised (0.1 -> 0.2): with z_hit at 0.8 the filter trusts the
+    # scan so much that unmapped/dynamic obstacles drag the pose off the
+    # map. Weights must sum to 1.0.
+    z_hit: 0.7
     z_short: 0.05
     z_max: 0.05
-    z_rand: 0.1
-    # beam-skip (likelihood_field_prob only)
-    do_beamskip: false
+    z_rand: 0.2
+    # beam-skip (likelihood_field_prob only): ignore beams that disagree
+    # with the map consensus, i.e. beams hitting unmapped obstacles.
+    do_beamskip: true
     beam_skip_distance: 0.5
     beam_skip_threshold: 0.3
     beam_skip_error_threshold: 0.9

@@ -1,0 +1,82 @@
+[
+    {
+        "name": "conveyor01_point",
+        "pose": {
+            "x": 5.95,
+            "y": -2.14,
+            "theta": -87.6
+        }
+    },
+    {
+        "name": "dropoff_b",
+        "pose": {
+            "x": 6.97,
+            "y": 9.0,
+            "theta": 90.0
+        }
+    },
+    {
+        "name": "conveyor02_point",
+        "pose": {
+            "x": -6.0,
+            "y": -2.0,
+            "theta": 0.13
+        }
+    },
+    {
+        "name": "dropoff_a",
+        "pose": {
+            "x": -7.12,
+            "y": 9.74,
+            "theta": 88.0
+        }
+    },
+    {
+        "name": "patrol_a",
+        "pose": {
+            "x": 3.0,
+            "y": 0.0,
+            "theta": 0.0
+        }
+    },
+    {
+        "name": "patrol_b",
+        "pose": {
+            "x": 3.0,
+            "y": 8.86,
+            "theta": 90.0
+        }
+    },
+    {
+        "name": "patrol_c",
+        "pose": {
+            "x": 2.4,
+            "y": 20.0,
+            "theta": 90.0
+        }
+    },
+    {
+        "name": "patrol_d",
+        "pose": {
+            "x": -2.8,
+            "y": 19.5,
+            "theta": -180.0
+        }
+    },
+    {
+        "name": "patrol_e",
+        "pose": {
+            "x": -3.18,
+            "y": 10.5,
+            "theta": 0.0
+        }
+    },
+    {
+        "name": "patrol_f",
+        "pose": {
+            "x": -2.0,
+            "y": 0.0,
+            "theta": 0.0
+        }
+    }
+]

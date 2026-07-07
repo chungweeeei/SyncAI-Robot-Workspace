@@ -1,7 +1,9 @@
 # Parameters for the syncai_map_server "map_server" node.
-# The /**/ wildcard key matches the node name in any namespace, so the same file
-# works with the launch `namespace` argument (default robot01). The relative
-# topic_name below gets the namespace prefix (map -> /robot01/map).
+# The /**/ wildcard key matches the node name in any namespace, so the same
+# file works for any robot_id: the launch file reads robot_id from
+# config/system.ini and uses it as the node namespace. The relative topic_name
+# below gets the namespace prefix (map -> /<robot_id>/map). The frame_id stays
+# "map" (the shared global frame).
 /**/map_server:
   ros__parameters:
     use_sim_time: true

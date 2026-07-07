@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateToPose, NavigateThroughPoses
 from action_msgs.msg import GoalStatus
 
 from syncai_common.msg import WifiNetwork
@@ -26,13 +26,15 @@ class MoveState(str, Enum):
     REJECTED = "rejected"
 
 
+# Tracks any navigation goal (NavigateToPose or NavigateThroughPoses); both
+# share the same state machine, status polling and cancel path.
 @dataclass
 class MoveGoal:
     goal_id: str
     goal_handle: ClientGoalHandle
     state: MoveState = MoveState.EXECUTING
-    feedback: Optional[NavigateToPose.Feedback] = None
-    result: Optional[NavigateToPose.Result] = None
+    feedback: Optional[Any] = None
+    result: Optional[Any] = None
 
 
 def _wait_for_future(future, timeout: Optional[float] = None) -> bool:
@@ -65,7 +67,13 @@ class RobotGateway:
             action_name="/robot01/navigate_to_pose",
         )
 
-        self._action_clients.update({"move": move_client})
+        patrol_client = ActionClient(
+            node=self._node,
+            action_type=NavigateThroughPoses,
+            action_name="/robot01/navigate_through_poses",
+        )
+
+        self._action_clients.update({"move": move_client, "patrol": patrol_client})
 
     def register_service_clients(self):
 
@@ -118,28 +126,23 @@ class RobotGateway:
         response = future.result()
         return response.success, response.message
 
-    def move(self, x: float, y: float, yaw: float) -> Tuple[bool, str, Optional[str]]:
-        move_client = self._action_clients.get("move")
-        if not move_client.wait_for_server(timeout_sec=30.0):
-            return False, "Action server is not available", None
-
-        self._logger.info("[RobotGateway] Sending navigation goal ", x=x, y=y, yaw=yaw)
-
-        goal_msg = NavigateToPose.Goal(
-            pose=PoseStamped(
-                header=Header(
-                    frame_id="map", stamp=self._node.get_clock().now().to_msg()
+    def _make_pose_stamped(self, x: float, y: float, yaw: float) -> PoseStamped:
+        return PoseStamped(
+            header=Header(frame_id="map", stamp=self._node.get_clock().now().to_msg()),
+            pose=Pose(
+                position=Point(x=x, y=y, z=0.0),
+                orientation=Quaternion(
+                    x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)
                 ),
-                pose=Pose(
-                    position=Point(x=x, y=y, z=0.0),
-                    orientation=Quaternion(
-                        x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)
-                    ),
-                ),
-            )
+            ),
         )
 
-        future = move_client.send_goal_async(
+    def _send_nav_goal(self, client_name: str, goal_msg) -> Tuple[bool, str, Optional[str]]:
+        client = self._action_clients.get(client_name)
+        if not client.wait_for_server(timeout_sec=30.0):
+            return False, "Action server is not available", None
+
+        future = client.send_goal_async(
             goal=goal_msg, feedback_callback=self._move_feedback_cb
         )
         if not _wait_for_future(future, timeout=10.0):
@@ -160,6 +163,25 @@ class RobotGateway:
         )
 
         return True, "", goal_id
+
+    def move(self, x: float, y: float, yaw: float) -> Tuple[bool, str, Optional[str]]:
+        self._logger.info("[RobotGateway] Sending navigation goal ", x=x, y=y, yaw=yaw)
+
+        goal_msg = NavigateToPose.Goal(pose=self._make_pose_stamped(x=x, y=y, yaw=yaw))
+
+        return self._send_nav_goal("move", goal_msg)
+
+    def patrol(
+        self, poses: List[Tuple[float, float, float]]
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Send a NavigateThroughPoses goal; poses are (x, y, yaw) tuples."""
+        self._logger.info("[RobotGateway] Sending patrol goal", num_poses=len(poses))
+
+        goal_msg = NavigateThroughPoses.Goal(
+            poses=[self._make_pose_stamped(x=x, y=y, yaw=yaw) for x, y, yaw in poses]
+        )
+
+        return self._send_nav_goal("patrol", goal_msg)
 
     def _move_feedback_cb(self, goal_handle):
 
