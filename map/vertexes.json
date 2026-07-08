@@ -18,9 +18,9 @@
     {
         "name": "conveyor02_point",
         "pose": {
-            "x": -6.0,
+            "x": -6.16,
             "y": -2.0,
-            "theta": 0.13
+            "theta": -93.3
         }
     },
     {

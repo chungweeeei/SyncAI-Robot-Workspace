@@ -64,13 +64,13 @@ class RobotGateway:
         move_client = ActionClient(
             node=self._node,
             action_type=NavigateToPose,
-            action_name="/robot01/navigate_to_pose",
+            action_name="navigate_to_pose",
         )
 
         patrol_client = ActionClient(
             node=self._node,
             action_type=NavigateThroughPoses,
-            action_name="/robot01/navigate_through_poses",
+            action_name="navigate_through_poses",
         )
 
         self._action_clients.update({"move": move_client, "patrol": patrol_client})
@@ -79,12 +79,12 @@ class RobotGateway:
 
         scan_wifi_client = self._node.create_client(
             srv_type=ScanWifiNetworks,
-            srv_name="/robot01/scan_wifi",
+            srv_name="scan_wifi",
         )
 
         connect_wifi_client = self._node.create_client(
             srv_type=ConnectWifiNetwork,
-            srv_name="/robot01/connect_wifi",
+            srv_name="connect_wifi",
         )
 
         self._service_clients.update(
@@ -137,7 +137,9 @@ class RobotGateway:
             ),
         )
 
-    def _send_nav_goal(self, client_name: str, goal_msg) -> Tuple[bool, str, Optional[str]]:
+    def _send_nav_goal(
+        self, client_name: str, goal_msg
+    ) -> Tuple[bool, str, Optional[str]]:
         client = self._action_clients.get(client_name)
         if not client.wait_for_server(timeout_sec=30.0):
             return False, "Action server is not available", None

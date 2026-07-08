@@ -22,6 +22,12 @@
     failure_tolerance: 0.3
     speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
+    # Gate the goal check on path progress: only consult the goal checker once
+    # the remaining path length (from the path pose closest to the robot) is
+    # below this many meters. Without it, a patrol loop whose last waypoint
+    # equals the robot's start position is "reached" on the first control
+    # cycle. <= 0 disables the gate.
+    goal_reached_max_remaining_path: 1.0
 
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]

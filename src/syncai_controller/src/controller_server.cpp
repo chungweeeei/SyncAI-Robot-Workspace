@@ -46,6 +46,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
+  declare_parameter("goal_reached_max_remaining_path", rclcpp::ParameterValue(1.0));
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<syncai_costmap_2d::Costmap2DROS>(
@@ -97,8 +98,7 @@ void ControllerServer::configure()
   if (controller_ids_ == default_ids_) {
     for (size_t i = 0; i < default_ids_.size(); ++i) {
       syncai_util::declare_parameter_if_not_declared(
-        node, default_ids_[i] + ".plugin",
-        rclcpp::ParameterValue(default_types_[i]));
+        node, default_ids_[i] + ".plugin", rclcpp::ParameterValue(default_types_[i]));
     }
   }
 
@@ -115,6 +115,7 @@ void ControllerServer::configure()
   get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("publish_zero_velocity", publish_zero_velocity_);
+  get_parameter("goal_reached_max_remaining_path", goal_reached_max_remaining_path_);
 
   costmap_ros_->init();
   // Launch a thread to run the costmap node
@@ -124,13 +125,11 @@ void ControllerServer::configure()
     progress_checker_type_ = syncai_util::get_plugin_type_param(node, progress_checker_id_);
     progress_checker_ = progress_checker_loader_.createUniqueInstance(progress_checker_type_);
     RCLCPP_INFO(
-      get_logger(), "Created progress_checker : %s of type %s",
-      progress_checker_id_.c_str(), progress_checker_type_.c_str());
+      get_logger(), "Created progress_checker : %s of type %s", progress_checker_id_.c_str(),
+      progress_checker_type_.c_str());
     progress_checker_->initialize(node, progress_checker_id_);
   } catch (const pluginlib::PluginlibException & ex) {
-    RCLCPP_FATAL(
-      get_logger(),
-      "Failed to create progress_checker. Exception: %s", ex.what());
+    RCLCPP_FATAL(get_logger(), "Failed to create progress_checker. Exception: %s", ex.what());
     exit(-1);
   }
 
@@ -140,14 +139,12 @@ void ControllerServer::configure()
       syncai_nav_core::GoalChecker::Ptr goal_checker =
         goal_checker_loader_.createUniqueInstance(goal_checker_types_[i]);
       RCLCPP_INFO(
-        get_logger(), "Created goal checker : %s of type %s",
-        goal_checker_ids_[i].c_str(), goal_checker_types_[i].c_str());
+        get_logger(), "Created goal checker : %s of type %s", goal_checker_ids_[i].c_str(),
+        goal_checker_types_[i].c_str());
       goal_checker->initialize(node, goal_checker_ids_[i], costmap_ros_);
       goal_checkers_.insert({goal_checker_ids_[i], goal_checker});
     } catch (const pluginlib::PluginlibException & ex) {
-      RCLCPP_FATAL(
-        get_logger(),
-        "Failed to create goal checker. Exception: %s", ex.what());
+      RCLCPP_FATAL(get_logger(), "Failed to create goal checker. Exception: %s", ex.what());
       exit(-1);
     }
   }
@@ -157,8 +154,8 @@ void ControllerServer::configure()
   }
 
   RCLCPP_INFO(
-    get_logger(),
-    "Controller Server has %s goal checkers available.", goal_checker_ids_concat_.c_str());
+    get_logger(), "Controller Server has %s goal checkers available.",
+    goal_checker_ids_concat_.c_str());
 
   for (size_t i = 0; i != controller_ids_.size(); i++) {
     try {
@@ -166,16 +163,12 @@ void ControllerServer::configure()
       syncai_nav_core::Controller::Ptr controller =
         lp_loader_.createUniqueInstance(controller_types_[i]);
       RCLCPP_INFO(
-        get_logger(), "Created controller : %s of type %s",
-        controller_ids_[i].c_str(), controller_types_[i].c_str());
-      controller->initialize(
-        node, controller_ids_[i],
-        costmap_ros_->getTfBuffer(), costmap_ros_);
+        get_logger(), "Created controller : %s of type %s", controller_ids_[i].c_str(),
+        controller_types_[i].c_str());
+      controller->initialize(node, controller_ids_[i], costmap_ros_->getTfBuffer(), costmap_ros_);
       controllers_.insert({controller_ids_[i], controller});
     } catch (const pluginlib::PluginlibException & ex) {
-      RCLCPP_FATAL(
-        get_logger(),
-        "Failed to create controller. Exception: %s", ex.what());
+      RCLCPP_FATAL(get_logger(), "Failed to create controller. Exception: %s", ex.what());
       exit(-1);
     }
   }
@@ -185,8 +178,8 @@ void ControllerServer::configure()
   }
 
   RCLCPP_INFO(
-    get_logger(),
-    "Controller Server has %s controllers available.", controller_ids_concat_.c_str());
+    get_logger(), "Controller Server has %s controllers available.",
+    controller_ids_concat_.c_str());
 
   odom_sub_ = std::make_unique<syncai_util::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
@@ -196,12 +189,8 @@ void ControllerServer::configure()
   // thread, so the (blocking) execute callback never starves this node's
   // main executor.
   action_server_ = std::make_unique<ActionServer>(
-    shared_from_this(),
-    "follow_path",
-    std::bind(&ControllerServer::computeControl, this),
-    nullptr,
-    std::chrono::milliseconds(500),
-    true);
+    shared_from_this(), "follow_path", std::bind(&ControllerServer::computeControl, this), nullptr,
+    std::chrono::milliseconds(500), true);
 
   // Set subscribtion to the speed limiting topic
   speed_limit_sub_ = create_subscription<nav2_msgs::msg::SpeedLimit>(
@@ -218,19 +207,21 @@ void ControllerServer::configure()
 }
 
 bool ControllerServer::findControllerId(
-  const std::string & c_name,
-  std::string & current_controller)
+  const std::string & c_name, std::string & current_controller)
 {
   if (controllers_.find(c_name) == controllers_.end()) {
     if (controllers_.size() == 1 && c_name.empty()) {
       RCLCPP_WARN_ONCE(
-        get_logger(), "No controller was specified in action call."
+        get_logger(),
+        "No controller was specified in action call."
         " Server will use only plugin loaded %s. "
-        "This warning will appear once.", controller_ids_concat_.c_str());
+        "This warning will appear once.",
+        controller_ids_concat_.c_str());
       current_controller = controllers_.begin()->first;
     } else {
       RCLCPP_ERROR(
-        get_logger(), "FollowPath called with controller name %s, "
+        get_logger(),
+        "FollowPath called with controller name %s, "
         "which does not exist. Available controllers are: %s.",
         c_name.c_str(), controller_ids_concat_.c_str());
       return false;
@@ -244,19 +235,21 @@ bool ControllerServer::findControllerId(
 }
 
 bool ControllerServer::findGoalCheckerId(
-  const std::string & c_name,
-  std::string & current_goal_checker)
+  const std::string & c_name, std::string & current_goal_checker)
 {
   if (goal_checkers_.find(c_name) == goal_checkers_.end()) {
     if (goal_checkers_.size() == 1 && c_name.empty()) {
       RCLCPP_WARN_ONCE(
-        get_logger(), "No goal checker was specified in parameter 'current_goal_checker'."
+        get_logger(),
+        "No goal checker was specified in parameter 'current_goal_checker'."
         " Server will use only plugin loaded %s. "
-        "This warning will appear once.", goal_checker_ids_concat_.c_str());
+        "This warning will appear once.",
+        goal_checker_ids_concat_.c_str());
       current_goal_checker = goal_checkers_.begin()->first;
     } else {
       RCLCPP_ERROR(
-        get_logger(), "FollowPath called with goal_checker name %s in parameter"
+        get_logger(),
+        "FollowPath called with goal_checker name %s in parameter"
         " 'current_goal_checker', which does not exist. Available goal checkers are: %s.",
         c_name.c_str(), goal_checker_ids_concat_.c_str());
       return false;
@@ -329,8 +322,7 @@ void ControllerServer::computeControl()
 
       if (!loop_rate.sleep()) {
         RCLCPP_WARN(
-          get_logger(), "Control loop missed its desired rate of %.4fHz",
-          controller_frequency_);
+          get_logger(), "Control loop missed its desired rate of %.4fHz", controller_frequency_);
         loop_rate.reset();
       }
     }
@@ -358,9 +350,7 @@ void ControllerServer::computeControl()
 
 void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
 {
-  RCLCPP_DEBUG(
-    get_logger(),
-    "Providing path to the controller %s", current_controller_.c_str());
+  RCLCPP_DEBUG(get_logger(), "Providing path to the controller %s", current_controller_.c_str());
   if (path.poses.empty()) {
     throw syncai_nav_core::PlannerException("Invalid path, Path is empty.");
   }
@@ -371,8 +361,8 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
   goal_checkers_[current_goal_checker_]->reset();
 
   RCLCPP_DEBUG(
-    get_logger(), "Path end point is (%.2f, %.2f)",
-    end_pose_.pose.position.x, end_pose_.pose.position.y);
+    get_logger(), "Path end point is (%.2f, %.2f)", end_pose_.pose.position.x,
+    end_pose_.pose.position.y);
 
   current_path_ = path;
 }
@@ -394,11 +384,8 @@ void ControllerServer::computeAndPublishVelocity()
   geometry_msgs::msg::TwistStamped cmd_vel_2d;
 
   try {
-    cmd_vel_2d =
-      controllers_[current_controller_]->computeVelocityCommands(
-      pose,
-      twist,
-      goal_checkers_[current_goal_checker_].get());
+    cmd_vel_2d = controllers_[current_controller_]->computeVelocityCommands(
+      pose, twist, goal_checkers_[current_goal_checker_].get());
     last_valid_cmd_time_ = now();
   } catch (syncai_nav_core::PlannerException & e) {
     if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
@@ -411,9 +398,9 @@ void ControllerServer::computeAndPublishVelocity()
       cmd_vel_2d.twist.linear.z = 0;
       cmd_vel_2d.header.frame_id = costmap_ros_->getBaseFrameID();
       cmd_vel_2d.header.stamp = now();
-      if ((now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
-        failure_tolerance_ != -1.0)
-      {
+      if (
+        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
+        failure_tolerance_ != -1.0) {
         throw syncai_nav_core::PlannerException("Controller patience exceeded");
       }
     } else {
@@ -426,20 +413,19 @@ void ControllerServer::computeAndPublishVelocity()
 
   // Find the closest pose to current pose on global path
   nav_msgs::msg::Path & current_path = current_path_;
-  auto find_closest_pose_idx =
-    [&pose, &current_path]() {
-      size_t closest_pose_idx = 0;
-      double curr_min_dist = std::numeric_limits<double>::max();
-      for (size_t curr_idx = 0; curr_idx < current_path.poses.size(); ++curr_idx) {
-        double curr_dist = syncai_util::geometry_utils::euclidean_distance(
-          pose, current_path.poses[curr_idx]);
-        if (curr_dist < curr_min_dist) {
-          curr_min_dist = curr_dist;
-          closest_pose_idx = curr_idx;
-        }
+  auto find_closest_pose_idx = [&pose, &current_path]() {
+    size_t closest_pose_idx = 0;
+    double curr_min_dist = std::numeric_limits<double>::max();
+    for (size_t curr_idx = 0; curr_idx < current_path.poses.size(); ++curr_idx) {
+      double curr_dist =
+        syncai_util::geometry_utils::euclidean_distance(pose, current_path.poses[curr_idx]);
+      if (curr_dist < curr_min_dist) {
+        curr_min_dist = curr_dist;
+        closest_pose_idx = curr_idx;
       }
-      return closest_pose_idx;
-    };
+    }
+    return closest_pose_idx;
+  };
 
   feedback->distance_to_goal =
     syncai_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
@@ -521,9 +507,43 @@ bool ControllerServer::isGoalReached()
     end_pose_latest, transformed_end_pose, *costmap_ros_->getTfBuffer(),
     costmap_ros_->getGlobalFrameID(), costmap_ros_->getTransformTolerance());
 
+  // Proximity to the end pose alone cannot decide completion: on a path that
+  // loops back onto its own start (patrol), the robot is within goal tolerance
+  // before it has moved. Only consult the goal checker once the remaining
+  // length from the path pose closest to the robot is short.
+  if (goal_reached_max_remaining_path_ > 0.0 && !current_path_.poses.empty()) {
+    geometry_msgs::msg::PoseStamped robot_pose_latest = pose;
+    robot_pose_latest.header.stamp = rclcpp::Time(0);
+
+    geometry_msgs::msg::PoseStamped robot_in_path_frame;
+    if (!syncai_util::transformPoseInTargetFrame(
+          robot_pose_latest, robot_in_path_frame, *costmap_ros_->getTfBuffer(),
+          current_path_.header.frame_id, costmap_ros_->getTransformTolerance())) {
+      return false;
+    }
+
+    // Strict '<' keeps the earliest pose on ties, so on a closed loop the
+    // robot standing on the shared start/end point resolves to the start.
+    size_t closest_idx = 0;
+    double min_dist = std::numeric_limits<double>::max();
+    for (size_t i = 0; i < current_path_.poses.size(); ++i) {
+      double dist = syncai_util::geometry_utils::euclidean_distance(
+        robot_in_path_frame, current_path_.poses[i]);
+      if (dist < min_dist) {
+        min_dist = dist;
+        closest_idx = i;
+      }
+    }
+
+    double remaining_path_length =
+      syncai_util::geometry_utils::calculate_path_length(current_path_, closest_idx);
+    if (remaining_path_length > goal_reached_max_remaining_path_) {
+      return false;
+    }
+  }
+
   return goal_checkers_[current_goal_checker_]->isGoalReached(
-    pose.pose, transformed_end_pose.pose,
-    velocity);
+    pose.pose, transformed_end_pose.pose, velocity);
 }
 
 bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
@@ -544,8 +564,8 @@ void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::Shar
   }
 }
 
-rcl_interfaces::msg::SetParametersResult
-ControllerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters)
+rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCallback(
+  std::vector<rclcpp::Parameter> parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
 
@@ -580,6 +600,8 @@ ControllerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> param
         min_theta_velocity_threshold_ = parameter.as_double();
       } else if (name == "failure_tolerance") {
         failure_tolerance_ = parameter.as_double();
+      } else if (name == "goal_reached_max_remaining_path") {
+        goal_reached_max_remaining_path_ = parameter.as_double();
       }
     }
 

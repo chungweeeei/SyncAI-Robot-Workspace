@@ -216,6 +216,12 @@ protected:
   double failure_tolerance_;
   bool publish_zero_velocity_;
 
+  // Goal checking is gated on path progress: proximity to the end pose alone
+  // cannot decide completion of a path that loops back onto its own start
+  // (patrol), so the goal checker is only consulted once the remaining path
+  // length drops below this threshold (meters). <= 0 disables the gate.
+  double goal_reached_max_remaining_path_;
+
   geometry_msgs::msg::PoseStamped end_pose_;
 
   // Last time the controller generated a valid command

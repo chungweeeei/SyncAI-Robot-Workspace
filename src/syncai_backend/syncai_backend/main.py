@@ -31,6 +31,11 @@ class SyncAIBackend(Node):
     def __init__(self, logger: structlog.stdlib.BoundLogger):
         super().__init__("syncai_backend_node")
 
+        # The launch file sets the namespace to the robot_id from
+        # config/system.ini; it scopes this robot's Temporal task queue so
+        # another robot's worker never picks up tasks submitted here.
+        robot_id = self.get_namespace().strip("/") or "default_robot"
+
         try:
             _ = connect_to_postgres(logger=logger)
         except Exception as e:
@@ -41,11 +46,13 @@ class SyncAIBackend(Node):
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
         artifact_gw = init_artifact_gateway(logger=logger)
-        workflow_gw = init_workflow_gateway(logger=logger)
+        workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
 
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
 
-        start_temporal_worker(logger=logger, robot_gw=robot_gw, artifact_gw=artifact_gw)
+        start_temporal_worker(
+            logger=logger, robot_id=robot_id, robot_gw=robot_gw, artifact_gw=artifact_gw
+        )
         start_rest_server(
             logger=logger,
             workflow_gw=workflow_gw,

@@ -32,10 +32,7 @@ from syncai_backend.gateways.workflow.schema import (
     TaskState,
     WorkflowTask,
 )
-from syncai_backend.gateways.workflow.config import (
-    WORKFLOW_TASK_QUEUE,
-    WORKFLOW_TYPE_NAME,
-)
+from syncai_backend.gateways.workflow.config import WORKFLOW_TYPE_NAME
 
 
 _WORKFLOW_STATUS_MAP = {
@@ -118,8 +115,12 @@ async def _read_trigger(described) -> ScheduleTrigger:
 
 
 class WorkflowGateway:
-    def __init__(self, logger: structlog.stdlib.BoundLogger):
+    def __init__(self, logger: structlog.stdlib.BoundLogger, robot_id: str):
         self._logger = logger
+        # Tasks are enqueued on this robot's own task queue (must match the
+        # worker's queue name in temporal/worker.py) so its own Temporal
+        # worker — not another robot's — executes them.
+        self._task_queue = f"{robot_id}.ROBOT_TASK_QUEUE"
         self._client: Client | None = None
 
     async def _get_client(self) -> Client:
@@ -151,7 +152,7 @@ class WorkflowGateway:
                 workflow=WORKFLOW_TYPE_NAME,
                 id=request.id,
                 args=[request],
-                task_queue=WORKFLOW_TASK_QUEUE,
+                task_queue=self._task_queue,
             )
         except Exception as err:
             self._logger.error(
@@ -258,7 +259,7 @@ class WorkflowGateway:
                         WORKFLOW_TYPE_NAME,
                         args=[workflow_task],
                         id=schedule.id,
-                        task_queue=WORKFLOW_TASK_QUEUE,
+                        task_queue=self._task_queue,
                     ),
                     spec=spec,
                     # A single robot can only do one thing at a time: never let a
@@ -407,6 +408,7 @@ class WorkflowGateway:
 
 def init_workflow_gateway(
     logger: structlog.stdlib.BoundLogger,
+    robot_id: str,
 ) -> WorkflowGateway:
-    workflow_gw = WorkflowGateway(logger=logger)
+    workflow_gw = WorkflowGateway(logger=logger, robot_id=robot_id)
     return workflow_gw

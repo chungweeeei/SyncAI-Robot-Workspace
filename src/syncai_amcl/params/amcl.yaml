@@ -56,7 +56,7 @@
     laser_min_range: 0.12      # ref
     # Ref uses 25.0, but our merged /robot01/scan is capped at 10 m by
     # pointcloud_to_laserscan (range_max), so cap here to match the real scan.
-    laser_max_range: 10.0
+    laser_max_range: 25.0
     max_beams: 240             # ref: more beams = better scan match while spinning
     laser_likelihood_max_dist: 2.0
     sigma_hit: 0.2

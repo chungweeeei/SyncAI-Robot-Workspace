@@ -114,6 +114,45 @@ services:
     tty: true
     command: [ "bash" ]
 
+  robot03:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: syncai-test-robot
+    container_name: robot03
+    user: "${UID:-1000}:${GID:-1000}"
+    # Same dual-homed layout and rationale as robot01; see the notes there.
+    networks:
+      # See robot01: bridge provides the default route.
+      default:
+        gw_priority: 1
+      syncai-lan:
+        ipv4_address: 192.168.0.36
+    security_opt:
+      - apparmor=unconfined
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - TEMPORAL_ADDRESS=temporal:7233
+      - POSTGRES_HOST=postgres
+      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
+      - DDS_BIND_ADDRESS=192.168.0.36
+      # Local desktop X11; see robot01 notes.
+      - DISPLAY=:1
+      - XAUTHORITY=/tmp/.docker.xauth
+    volumes:
+      - .:/home/ubuntu/robot_ws
+      # Per-instance identity, overlaid on the fixed path the launch files read.
+      - ./config/instances/robot03.ini:/home/ubuntu/robot_ws/config/system.ini:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
+    working_dir: /home/ubuntu/robot_ws
+    stdin_open: true
+    tty: true
+    command: [ "bash" ]
+
   postgres:
     image: postgres:16
     container_name: postgres
@@ -175,7 +214,8 @@ services:
 
 networks:
   # macvlan on the wired factory LAN, shared with the artifact containers
-  # (robot01=.32, conveyor01=.33, conveyor02=.34, robot02=.35). Created externally:
+  # (robot01=.32, conveyor01=.33, conveyor02=.34, robot02=.35, robot03=.36).
+  # Created externally:
   #   docker network create -d macvlan --subnet=192.168.0.0/24 \
   #     --ip-range=192.168.0.32/28 -o parent=enP2p1s0 syncai-lan
   syncai-lan:
