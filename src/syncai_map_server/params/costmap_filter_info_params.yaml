@@ -1,0 +1,40 @@
+# Parameters for the costmap filter info server and the filter mask server
+# (a second map_server instance publishing the keepout mask OccupancyGrid).
+# The /**/ wildcard keys match the node names in any namespace, so the same
+# file works for any robot_id: the launch file reads robot_id from
+# config/system.ini and uses it as the node namespace. Relative topic names
+# get the namespace prefix (costmap_filter_info -> /<robot_id>/costmap_filter_info).
+/**/costmap_filter_info_server:
+  ros__parameters:
+    use_sim_time: true
+
+    # Topic on which the CostmapFilterInfo is published (latched).
+    filter_info_topic: "costmap_filter_info"
+
+    # Filter type: 0 = keepout/lanes filter (see syncai_costmap_2d filter_values.hpp).
+    type: 0
+
+    # Topic carrying the filter mask OccupancyGrid. The KeepoutFilter resolves
+    # this against the costmap node's PARENT namespace, so keep it relative and
+    # matching the filter_mask_server topic_name below.
+    mask_topic: "keepout_filter_mask"
+
+    # OccupancyGrid data -> filter space conversion: space = data * multiplier + base.
+    # For the keepout filter both MUST stay at their defaults (0.0 / 1.0).
+    base: 0.0
+    multiplier: 1.0
+
+/**/filter_mask_server:
+  ros__parameters:
+    use_sim_time: true
+
+    # Absolute path (inside the robot container) to the keepout mask YAML.
+    # Same geometry as the navigation map; black cells = keepout zones.
+    yaml_filename: "/home/ubuntu/robot_ws/map/warehouse_keepout_mask.yaml"
+
+    # Topic on which the mask OccupancyGrid is published (latched). Must match
+    # mask_topic above.
+    topic_name: "keepout_filter_mask"
+
+    # frame_id stamped on the published mask (the shared global frame).
+    frame_id: "map"

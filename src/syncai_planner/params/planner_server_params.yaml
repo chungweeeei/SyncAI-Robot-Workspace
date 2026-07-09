@@ -64,6 +64,20 @@
     # Layer stack — order matters: static -> obstacle(mark/clear) -> inflation
     plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
+    # Costmap filters run AFTER the layer stack on the combined costmap.
+    # The keepout filter needs the costmap_filter_info + filter mask servers
+    # running alongside (otherwise it warns "Filter mask was not received"):
+    #   ros2 launch syncai_map_server costmap_filter_info.launch.py
+    # (mask: map/warehouse_keepout_mask.pgm — black cells = forbidden zones)
+    filters: ["keepout_filter"]
+
+    keepout_filter:
+      plugin: "syncai_costmap_2d::KeepoutFilter"
+      enabled: true
+      # Relative topic: resolves to /<robot_id>/costmap_filter_info (matches
+      # costmap_filter_info_server's output in the same namespace)
+      filter_info_topic: "costmap_filter_info"
+
     static_layer:
       plugin: "syncai_costmap_2d::StaticLayer"
       enabled: true

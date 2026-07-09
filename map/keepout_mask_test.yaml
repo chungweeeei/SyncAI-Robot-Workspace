@@ -1,0 +1,10 @@
+# Test keepout mask for keepout_filter_test.launch.py. Same geometry as
+# testmap.yaml, all free except a ~1x1 m black keepout rectangle covering
+# world coordinates x:[0, 1], y:[0, 1].
+image: keepout_mask_test.pgm
+mode: trinary
+resolution: 0.050
+origin: [-9.749, -15.036, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196

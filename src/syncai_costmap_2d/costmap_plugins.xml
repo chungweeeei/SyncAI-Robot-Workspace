@@ -16,5 +16,11 @@
         Marks and clears obstacles in the costmap from laser scan / point cloud sensor sources.
       </description>
     </class>
+    <class type="syncai_costmap_2d::KeepoutFilter" base_class_type="syncai_costmap_2d::Layer">
+      <description>
+        Costmap filter that marks keepout zones from an OccupancyGrid filter mask
+        into the costmap, preventing planning or control in restricted areas.
+      </description>
+    </class>
   </library>
 </class_libraries>

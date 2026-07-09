@@ -24,6 +24,7 @@
   <depend>laser_geometry</depend>
   <depend>message_filters</depend>
   <depend>tf2_sensor_msgs</depend>
+  <depend>std_srvs</depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rviz2</exec_depend>

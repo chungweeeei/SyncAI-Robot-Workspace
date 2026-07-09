@@ -22,6 +22,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(laser_geometry REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(dependencies
   rclcpp
@@ -39,6 +40,7 @@ set(dependencies
   laser_geometry
   message_filters
   tf2_sensor_msgs
+  std_srvs
 )
 
 add_library(${PROJECT_NAME} SHARED
@@ -58,6 +60,8 @@ add_library(${PROJECT_NAME} SHARED
   plugins/static_layer.cpp
   plugins/inflation_layer.cpp
   plugins/obstacle_layer.cpp
+  plugins/costmap_filters/costmap_filter.cpp
+  plugins/costmap_filters/keepout_filter.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

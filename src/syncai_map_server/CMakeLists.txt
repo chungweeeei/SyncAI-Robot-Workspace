@@ -73,11 +73,24 @@ add_executable(map_saver src/map_saver/main.cpp)
 ament_target_dependencies(map_saver ${dependencies})
 target_link_libraries(map_saver map_saver_core)
 
+# --- costmap_filter_info_server component + executable ---
+add_library(costmap_filter_info_server_core SHARED
+  src/costmap_filter_info/costmap_filter_info_server.cpp
+)
+ament_target_dependencies(costmap_filter_info_server_core ${dependencies})
+rclcpp_components_register_nodes(costmap_filter_info_server_core
+  "syncai_map_server::CostmapFilterInfoServer")
+
+add_executable(costmap_filter_info_server src/costmap_filter_info/main.cpp)
+ament_target_dependencies(costmap_filter_info_server ${dependencies})
+target_link_libraries(costmap_filter_info_server costmap_filter_info_server_core)
+
 # --- install ---
 install(TARGETS
   map_io_core
   map_server_core
   map_saver_core
+  costmap_filter_info_server_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -86,6 +99,7 @@ install(TARGETS
 install(TARGETS
   map_server
   map_saver
+  costmap_filter_info_server
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -107,7 +121,7 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_include_directories(include)
-ament_export_libraries(map_io_core map_server_core map_saver_core)
+ament_export_libraries(map_io_core map_server_core map_saver_core costmap_filter_info_server_core)
 ament_export_dependencies(${dependencies})
 
 ament_package()
