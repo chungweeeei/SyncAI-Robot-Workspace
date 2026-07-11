@@ -5,3 +5,9 @@ uvicorn[standard]
 pydantic>=2.11  # validate_by_name / validate_by_alias 需 2.11+
 temporalio
 requests  # ArtifactGateway -> artifact backend REST API
+sqlalchemy>=2.0  # ORM (declarative models) + engine for robot_db
+sqlalchemy-utils  # create_database / database_exists in database/postgres.py
+psycopg2-binary  # PostgreSQL driver used by SQLAlchemy engine
+numpy  # OccupancyGrid -> image array conversion
+opencv-python-headless  # encode map image to PNG (+ future overlay drawing)
+httpx  # test-only: required by fastapi.testclient.TestClient (see test/)

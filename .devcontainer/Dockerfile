@@ -44,6 +44,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
 
+# uv (fast Python package manager). Installed system-wide as root so the binary
+# lands in /usr/local/bin (already on PATH); a user-level `pip3 install --user`
+# would drop it in ~/.local/bin, which is NOT on PATH -> `uv: command not found`.
+RUN pip3 install --no-cache-dir uv
+
 # Python web stack for syncai_backend (no reliable apt key on jammy; installed
 # via pip). Keep in sync with src/syncai_backend/requirements.txt.
 RUN pip3 install --no-cache-dir \
@@ -61,10 +66,16 @@ RUN if id -u ubuntu >/dev/null 2>&1 && [ "$USERNAME" != "ubuntu" ]; then \
     && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-RUN <<EOF
-echo "export ROS_DOMAIN_ID=0" >> /home/$USERNAME/.bashrc
-echo "source /opt/ros/humble/setup.bash" >> /home/$USERNAME/.bashrc
-EOF
+# Append shell setup to .bashrc. A quoted heredoc (<<'BASHRC') writes the body
+# verbatim, so $HOME/$PATH stay unexpanded in the file and are resolved by bash
+# at runtime. (The previous echo-with-escapes approach was fragile and could end
+# up writing the literal string into PATH, wiping /usr/bin and breaking every
+# command — even `ls`.)
+RUN cat >> /home/$USERNAME/.bashrc <<'BASHRC'
+export ROS_DOMAIN_ID=0
+source /opt/ros/humble/setup.bash
+export PATH="$HOME/.local/bin:$PATH"
+BASHRC
 
 RUN mkdir -p /home/$USERNAME/.claude /workspace \
     && chown -R $USER_UID:$USER_GID /home/$USERNAME/.claude /workspace

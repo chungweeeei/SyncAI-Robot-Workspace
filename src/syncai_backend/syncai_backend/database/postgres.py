@@ -3,8 +3,11 @@ import time
 import structlog
 
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 from sqlalchemy_utils import create_database, database_exists
+
+from syncai_backend.database.models import Base
 
 MAX_RETRIES = 20
 RETRY_INTERVAL = 5
@@ -53,3 +56,13 @@ def connect_to_postgres(logger: structlog.stdlib.BoundLogger) -> Engine:
             if attempt == MAX_RETRIES:
                 raise err
             time.sleep(RETRY_INTERVAL)
+
+
+def init_db(engine: Engine) -> sessionmaker:
+    """Create tables for all ORM models and return a session factory.
+
+    Schema is created directly from the model metadata (no Alembic yet); this
+    is idempotent, so it is safe to call on every startup.
+    """
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)

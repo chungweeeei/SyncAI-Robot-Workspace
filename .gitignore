@@ -62,3 +62,6 @@ Thumbs.db
 
 # docker bind-mount data (postgres / pgadmin)
 data/
+
+# test repo
+src/syncai_test_node

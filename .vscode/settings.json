@@ -12,13 +12,18 @@
   "[c]": {
     "editor.defaultFormatter": "ms-vscode.cpptools"
   },
+  // syncai-ros-mcp 用 uv 管理，venv 在 submodule 底下 (uv sync 產生)。
+  // 根 workspace 的 ${workspaceFolder} 是 /workspace，所以要指到完整相對路徑。
+  // "python.defaultInterpreterPath": "${workspaceFolder}/src/syncai-ros-mcp/.venv/bin/python",
   "python.autoComplete.extraPaths": [
     "/opt/ros/humble/lib/python3.10/site-packages",
-    "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    "/opt/ros/humble/local/lib/python3.10/dist-packages",
+    "${workspaceFolder}/src/syncai-ros-mcp/src"
   ],
   "python.analysis.extraPaths": [
     "/opt/ros/humble/lib/python3.10/site-packages",
-    "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    "/opt/ros/humble/local/lib/python3.10/dist-packages",
+    "${workspaceFolder}/src/syncai-ros-mcp/src"
   ],
   "ROS2.distro": "humble"
 }
