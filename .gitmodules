@@ -8,6 +8,3 @@
 [submodule "src/syncai-ros-mcp"]
 	path = src/syncai-ros-mcp
 	url = git@github.com:chungweeeei/SyncAI-ROS-MCP.git
-[submodule "src/syncai_fast_lio"]
-	path = src/syncai_fast_lio
-	url = git@github.com:chungweeeei/SyncAI-Fast-LIO.git
