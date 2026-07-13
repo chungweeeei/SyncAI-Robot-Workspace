@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>syncai_lio_bridge</name>
+  <version>0.0.0</version>
+  <description>
+    Bridges FAST-LIO2 3D localization onto the wheel-odometry TF chain:
+    consumes map->lio_body (localizer + lio_node) and publishes the
+    AMCL-style map->&lt;robot_id&gt;/odom correction for the nav stack.
+  </description>
+  <maintainer email="chungweeeei@gmail.com">ros</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>python3-numpy</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -131,5 +131,5 @@
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true
-      inflation_radius: 0.15     # ref local_costmap (tight; global uses 0.5)
+      inflation_radius: 0.4 
       cost_scaling_factor: 3.0

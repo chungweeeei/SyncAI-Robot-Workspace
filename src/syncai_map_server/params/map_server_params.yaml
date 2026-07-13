@@ -10,7 +10,11 @@
     # Absolute path to the map YAML file to load on startup.
     # Leave empty ("") to start without a map and load it later via the
     # "/map_server/load_map" service.
-    yaml_filename: "/home/ubuntu/robot_ws/map/warehouse.yaml"
+    #
+    # This is only the fallback default: each robot instance sets its own map
+    # via a [map] map key in config/instances/<robot_id>.ini, which
+    # map_server.launch.py reads and overrides on top of this value.
+    yaml_filename: "/home/ubuntu/robot_ws/map/lio_map/gridmap.yaml"
 
     # Topic on which the OccupancyGrid is published (latched / transient_local QoS).
     topic_name: "map"

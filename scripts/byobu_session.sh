@@ -21,7 +21,7 @@ byobu kill-session -t "$SESSION_NAME" 2>/dev/null
 # ---------- Window 0: bringup (scan merger + static TFs) ----------
 byobu new-session -d -s "$SESSION_NAME" -n "bringup" -c "$WS_DIR"
 byobu send-keys -t "$SESSION_NAME:bringup" \
-  "ros2 launch syncai_bringup bringup.launch.py" Enter
+  "ros2 launch syncai_bringup bringup_2d.launch.py" Enter
 
 # ---------- Window 1: map_server / amcl ----------
 byobu new-window -t "$SESSION_NAME" -n "localization" -c "$WS_DIR"

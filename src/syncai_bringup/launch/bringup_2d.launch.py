@@ -28,7 +28,7 @@ from launch_ros.actions import Node
 DEFAULT_SYSTEM_INI = "config/system.ini"
 FALLBACK_ROBOT_ID = "default_robot"
 
-logger = launch_logging.get_logger("bringup.launch")
+logger = launch_logging.get_logger("bringup_2d.launch")
 
 
 def read_robot_id(config_path: str) -> str:
