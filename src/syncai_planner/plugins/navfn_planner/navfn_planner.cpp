@@ -354,7 +354,7 @@ bool NavfnPlanner::getPlanFromPotential(
   }
 
   auto cost = planner_->getLastPathCost();
-  RCLCPP_INFO(logger_, "Path found, %d steps, %f cost\n", path_len, cost);
+  RCLCPP_DEBUG(logger_, "Path found, %d steps, %f cost\n", path_len, cost);
 
   // extract the plan
   float * x = planner_->getPathX();

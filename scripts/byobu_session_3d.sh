@@ -36,9 +36,9 @@ MAP_PCD="$WS_DIR/map/lio_map/map.pcd"
 # Kill existing session if any
 byobu kill-session -t "$SESSION_NAME" 2>/dev/null
 
-# ---------- Window 0: bringup (scan merger + static TFs, 2D & 3D) ----------
-byobu split-window -v -t "$SESSION_NAME:bringup" -c "$WS_DIR"
-byobu send-keys -t "$SESSION_NAME:bringup.1" \
+# ---------- Window 0: bringup (static TFs for the LIO bridge) ----------
+byobu new-session -d -s "$SESSION_NAME" -n "bringup" -c "$WS_DIR"
+byobu send-keys -t "$SESSION_NAME:bringup" \
   "ros2 launch syncai_bringup bringup_3d.launch.py" Enter
 
 # ---------- Window 1: map_server / LIO localizer / relocalize ----------

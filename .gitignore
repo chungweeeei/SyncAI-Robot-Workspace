@@ -68,3 +68,4 @@ src/syncai_test_node
 
 # LIO map output (pcd / gridmap / poses — regenerated, not tracked)
 map/lio_map/
+map/warehouse01/

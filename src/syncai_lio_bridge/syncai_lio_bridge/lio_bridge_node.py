@@ -38,11 +38,13 @@ def transform_to_matrix(transform):
     q = transform.rotation
     x, y, z, w = q.x, q.y, q.z, q.w
     mat = np.eye(4)
-    mat[:3, :3] = np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ])
+    mat[:3, :3] = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
     mat[:3, 3] = [t.x, t.y, t.z]
     return mat
 
@@ -57,27 +59,26 @@ def invert_rigid(mat):
 
 
 class LioBridgeNode(Node):
-
     def __init__(self):
-        super().__init__('lio_bridge_node')
+        super().__init__("lio_bridge_node")
 
-        self.declare_parameter('map_frame', 'map')
-        self.declare_parameter('lio_body_frame', 'lio_body')
-        self.declare_parameter('base_frame', 'base_link')
-        self.declare_parameter('wheel_odom_frame', 'odom')
-        self.declare_parameter('lidar_frame', 'lidar_top')
-        self.declare_parameter('publish_rate', 20.0)
+        self.declare_parameter("map_frame", "map")
+        self.declare_parameter("lio_body_frame", "lio_body")
+        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("wheel_odom_frame", "odom")
+        self.declare_parameter("lidar_frame", "lidar_top")
+        self.declare_parameter("publish_rate", 20.0)
         # Future-date the stamp (like AMCL's transform_tolerance) so consumers
         # can interpolate between our broadcasts without extrapolation errors.
-        self.declare_parameter('transform_tolerance', 0.1)
+        self.declare_parameter("transform_tolerance", 0.1)
 
-        self.map_frame = self.get_parameter('map_frame').value
-        self.lio_body_frame = self.get_parameter('lio_body_frame').value
-        self.base_frame = self.get_parameter('base_frame').value
-        self.wheel_odom_frame = self.get_parameter('wheel_odom_frame').value
-        self.lidar_frame = self.get_parameter('lidar_frame').value
-        self.transform_tolerance = self.get_parameter('transform_tolerance').value
-        rate = self.get_parameter('publish_rate').value
+        self.map_frame = self.get_parameter("map_frame").value
+        self.lio_body_frame = self.get_parameter("lio_body_frame").value
+        self.base_frame = self.get_parameter("base_frame").value
+        self.wheel_odom_frame = self.get_parameter("wheel_odom_frame").value
+        self.lidar_frame = self.get_parameter("lidar_frame").value
+        self.transform_tolerance = self.get_parameter("transform_tolerance").value
+        rate = self.get_parameter("publish_rate").value
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -87,15 +88,16 @@ class LioBridgeNode(Node):
         self.timer = self.create_timer(1.0 / rate, self.timer_cb)
 
         self.get_logger().info(
-            f'lio_bridge: ({self.map_frame} -> {self.lio_body_frame}) + '
-            f'({self.base_frame} -> {self.lidar_frame}) + '
-            f'({self.wheel_odom_frame} -> {self.base_frame}) => '
-            f'{self.map_frame} -> {self.wheel_odom_frame} @ {rate} Hz')
+            f"lio_bridge: ({self.map_frame} -> {self.lio_body_frame}) + "
+            f"({self.base_frame} -> {self.lidar_frame}) + "
+            f"({self.wheel_odom_frame} -> {self.base_frame}) => "
+            f"{self.map_frame} -> {self.wheel_odom_frame} @ {rate} Hz"
+        )
 
     def lookup(self, target, source):
         return self.tf_buffer.lookup_transform(
-            target, source, rclpy.time.Time(),
-            timeout=Duration(seconds=0.0))
+            target, source, rclpy.time.Time(), timeout=Duration(seconds=0.0)
+        )
 
     def timer_cb(self):
         try:
@@ -104,8 +106,8 @@ class LioBridgeNode(Node):
             t_odom_base = self.lookup(self.wheel_odom_frame, self.base_frame)
         except Exception as ex:  # noqa: BLE001 - tf2 raises several lookup errors
             self.get_logger().info(
-                f'waiting for TF (relocalized yet?): {ex}',
-                throttle_duration_sec=5.0)
+                f"waiting for TF (relocalized yet?): {ex}", throttle_duration_sec=5.0
+            )
             return
 
         m_map_lidar = transform_to_matrix(t_map_liobody.transform)
@@ -113,7 +115,9 @@ class LioBridgeNode(Node):
         m_odom_base = transform_to_matrix(t_odom_base.transform)
 
         # map->base = map->lidar ∘ lidar->base ; map->odom = map->base ∘ base->odom
-        m_map_odom = m_map_lidar @ invert_rigid(m_base_lidar) @ invert_rigid(m_odom_base)
+        m_map_odom = (
+            m_map_lidar @ invert_rigid(m_base_lidar) @ invert_rigid(m_odom_base)
+        )
 
         # project to 2D: keep x, y, yaw only
         yaw = math.atan2(m_map_odom[1, 0], m_map_odom[0, 0])
@@ -135,10 +139,11 @@ class LioBridgeNode(Node):
         if not self.localized:
             self.localized = True
             self.get_logger().info(
-                f'localization bridged: {self.map_frame} -> '
-                f'{self.wheel_odom_frame} = '
-                f'({msg.transform.translation.x:.3f}, '
-                f'{msg.transform.translation.y:.3f}, yaw {yaw:.3f})')
+                f"localization bridged: {self.map_frame} -> "
+                f"{self.wheel_odom_frame} = "
+                f"({msg.transform.translation.x:.3f}, "
+                f"{msg.transform.translation.y:.3f}, yaw {yaw:.3f})"
+            )
 
 
 def main(args=None):
@@ -153,5 +158,5 @@ def main(args=None):
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

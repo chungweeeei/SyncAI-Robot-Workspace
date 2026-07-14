@@ -8,3 +8,13 @@
 [submodule "src/syncai_ros_mcp"]
 	path = src/syncai_ros_mcp
 	url = git@github.com:chungweeeei/SyncAI-ROS-MCP.git
+[submodule "src/third-party/Livox-SDK2"]
+	path = src/third-party/Livox-SDK2
+	url = https://github.com/Livox-SDK/Livox-SDK2.git
+[submodule "src/third-party/livox_ros_driver2"]
+	path = src/third-party/livox_ros_driver2
+	url = https://github.com/Livox-SDK/livox_ros_driver2.git
+[submodule "src/third-party/FASTLIO2_ROS2"]
+	path = src/third-party/FASTLIO2_ROS2
+	url = git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
+	branch = dev
