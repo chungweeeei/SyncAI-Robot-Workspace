@@ -5,6 +5,6 @@
 	path = src/syncai_common
 	url = git@github.com:chungweeeei/SyncAI-Common-Interface.git
 	branch = dev
-[submodule "src/syncai-ros-mcp"]
-	path = src/syncai-ros-mcp
+[submodule "src/syncai_ros_mcp"]
+	path = src/syncai_ros_mcp
 	url = git@github.com:chungweeeei/SyncAI-ROS-MCP.git
