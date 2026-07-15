@@ -125,6 +125,14 @@ RUN pip3 install --no-cache-dir \
     temporalio \
     requests
 
+# Node.js 22 for syncai_frontend (Next.js 16). No Node in ros/ubuntu base and no
+# reliable apt package on jammy, so install from NodeSource. `npm install` and
+# `npm run dev` run at runtime against src/syncai_frontend in the mounted
+# workspace; only the node/npm runtime needs to live in the image.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble
 

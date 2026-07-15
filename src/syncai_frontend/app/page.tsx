@@ -19,21 +19,21 @@ export default function DashboardPage() {
   return (
     <>
       <PageHeader title="Dashboard" />
-      <div className="grid gap-4 p-4 lg:grid-cols-3">
-        <div className="grid content-start gap-4">
+      <div className="flex flex-col gap-4 p-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <RobotStatusCard state={state} />
           <BatteryCard battery={state.battery_status} />
           <MotionCard localization={state.localization_status} />
           <NetworkCard network={state.network_status} />
         </div>
-        <Card className="lg:col-span-2">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium">Map</CardTitle>
             <CardDescription>
               {state.map} · live robot position
             </CardDescription>
           </CardHeader>
-          <CardContent className="h-[560px] lg:h-full lg:min-h-[560px]">
+          <CardContent className="h-[560px]">
             <MapView pose={state.localization_status.position} />
           </CardContent>
         </Card>
