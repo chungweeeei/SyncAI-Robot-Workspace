@@ -5,12 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "nav2_msgs/action/navigate_through_poses.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "syncai_task_runner/navigator.hpp"
-#include "syncai_task_runner/navigators/navigate_through_poses.hpp"
 #include "syncai_task_runner/navigators/navigate_to_pose.hpp"
 #include "syncai_util/odometry_utils.hpp"
 #include "tf2_ros/buffer.h"
@@ -40,8 +38,6 @@ public:
 protected:
   // The navigators hosted on this node and the mutex that keeps only one active.
   std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateToPose>> pose_navigator_;
-  std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateThroughPoses>>
-    poses_navigator_;
   syncai_task_runner::NavigatorMutex plugin_mutex_;
 
   // Odometry smoother object

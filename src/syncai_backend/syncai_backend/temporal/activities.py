@@ -84,34 +84,6 @@ class RobotActivities:
         return ActivityResult(success=True, goal_id=goal_id, state=state)
 
     @activity.defn
-    def execute_patrol(self, params: StepParams) -> ActivityResult:
-        poses = [(p.x, p.y, math.radians(p.theta)) for p in params.poses]
-
-        # The navigate_through_poses BT runs a single pass over the waypoint
-        # list; repeat the goal to patrol multiple loops.
-        for loop in range(1, params.loops + 1):
-            accepted, msg, goal_id = self._robot_gw.patrol(poses=poses)
-            if not accepted:
-                raise ApplicationError(f"Patrol rejected: {msg}", non_retryable=False)
-
-            self._logger.info(
-                "[RobotActivity] Patrol accepted",
-                goal_id=goal_id,
-                loop=loop,
-                loops=params.loops,
-            )
-
-            state = self._wait_for_nav_goal(goal_id=goal_id, label="Patrol")
-
-            if state != "succeeded":
-                raise ApplicationError(
-                    f"patrol loop {loop}/{params.loops} ended in {state}",
-                    non_retryable=False,
-                )
-
-        return ActivityResult(success=True, goal_id=goal_id, state=state)
-
-    @activity.defn
     def execute_artifact(self, params: StepParams) -> ActivityResult:
         try:
             ack = self._artifact_gw.send_command(

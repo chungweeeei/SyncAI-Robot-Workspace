@@ -39,7 +39,6 @@ async def run_worker(
         workflows=[RobotWorkflow],
         activities=[
             activities.execute_move,
-            activities.execute_patrol,
             activities.execute_artifact,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=1),

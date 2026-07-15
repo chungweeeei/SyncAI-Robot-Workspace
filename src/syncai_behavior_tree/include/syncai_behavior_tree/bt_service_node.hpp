@@ -77,8 +77,7 @@ public:
         node_->get_logger(),
         "[BTServiceNode][%s] \"%s\" service server not available after waiting for %.2fs", __func__,
         service_name_.c_str(), wait_for_service_timeout_.count() / 1000.0);
-      throw std::runtime_error(
-        std::string("Service server %s not available", service_node_name.c_str()));
+      throw std::runtime_error("Service server " + service_name_ + " not available");
     }
 
     RCLCPP_DEBUG(

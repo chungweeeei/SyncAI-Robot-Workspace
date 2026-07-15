@@ -23,8 +23,8 @@
     # nodes are added. XML tag names must match what each plugin registers.
     plugin_lib_names:
       - syncai_compute_path_to_pose_action_bt_node
-      - syncai_compute_path_through_poses_action_bt_node
       - syncai_follow_path_action_bt_node
-      - syncai_remove_passed_goals_action_bt_node
+      - syncai_clear_costmap_service_bt_node
       - syncai_pipeline_sequence_bt_node
+      - syncai_recovery_node_bt_node
       - syncai_rate_controller_bt_node

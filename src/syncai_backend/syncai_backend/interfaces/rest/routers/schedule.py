@@ -43,7 +43,7 @@ class ScheduleRequest(BaseModel):
     id: str = Field(
         ...,
         description="Unique identifier of the schedule",
-        examples=["robot01-patrol"],
+        examples=["robot01-daily-move"],
     )
     trigger: ScheduleTriggerRequest = Field(..., description="When the schedule fires")
     steps: List[StepRequest] = Field(

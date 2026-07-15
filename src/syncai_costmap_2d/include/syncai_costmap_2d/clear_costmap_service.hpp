@@ -22,6 +22,30 @@ class Costmap2DROS;
 class ClearCostmapService
 {
 public:
+  /**
+   * @brief A constructor. Creates the clear costmap services on the given node.
+   */
+  ClearCostmapService(const rclcpp::Node::SharedPtr & node, Costmap2DROS & costmap);
+
+  /**
+   * @brief A destructor. Shuts the services down.
+   */
+  ~ClearCostmapService();
+
+  // The ClearCostmapService is not copyable and requires a node/costmap.
+  ClearCostmapService() = delete;
+
+  /**
+   * @brief Clears the region set by a distance around the robot. If invert, clears
+   * all but that region.
+   */
+  void clearRegion(const double reset_distance, bool invert);
+
+  /**
+   * @brief Clears all layers of the costmap entirely.
+   */
+  void clearEntirely();
+
 private:
   // The Logger object for logging
   rclcpp::Logger logger_{rclcpp::get_logger("syncai_costmap_2d")};
@@ -72,7 +96,7 @@ private:
    * @brief Get the robot's position in the costmap using the master costmap
    */
   bool getPosition(double & x, double & y) const;
-}
+};
 
 }  // namespace syncai_costmap_2d
 

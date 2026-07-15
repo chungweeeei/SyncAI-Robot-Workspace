@@ -1,8 +1,9 @@
-"""SQLAlchemy ORM models persisted in the ``robot_db`` PostgreSQL database."""
+"""SQLAlchemy ORM models persisted in the per-robot ``<robot_id>_db`` PostgreSQL database."""
 
+import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String
+from sqlalchemy import DateTime, Float, String, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,11 +23,13 @@ class MapPoint(Base):
     be handed straight to a MOVE step without conversion.
     """
 
-    __tablename__ = "map_point"
+    __tablename__ = "map_vertices"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # Free-form classification, e.g. "waypoint" / "task_point" / "patrol".
+    # Free-form classification, e.g. "waypoint" / "task_point".
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     # Which map this point belongs to; indexed for per-map listing.
     map_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

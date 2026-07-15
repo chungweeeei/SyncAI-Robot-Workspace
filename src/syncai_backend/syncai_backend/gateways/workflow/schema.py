@@ -23,7 +23,6 @@ class StepStatus(str, Enum):
 
 class StepType(str, Enum):
     MOVE = "MOVE"
-    PATROL = "PATROL"
     ARTIFACT = "ARTIFACT"
 
 
@@ -40,21 +39,6 @@ class MoveParams(BaseSchema):
         le=180.0,
         description="Target orientation (in degrees) for the move step",
         examples=[90.0],
-    )
-
-
-class PatrolParams(BaseSchema):
-    poses: List[MoveParams] = Field(
-        ...,
-        min_length=1,
-        description="Ordered waypoints the robot navigates through in one pass",
-        examples=[[{"x": 1.0, "y": 2.0, "theta": 90.0}]],
-    )
-    loops: int = Field(
-        1,
-        ge=1,
-        description="Number of times to repeat the full waypoint sequence",
-        examples=[3],
     )
 
 
@@ -127,7 +111,7 @@ class ArtifactParams(BaseSchema):
     )
 
 
-StepParams = Union[MoveParams, PatrolParams, ArtifactParams]
+StepParams = Union[MoveParams, ArtifactParams]
 
 
 class Step(BaseSchema):

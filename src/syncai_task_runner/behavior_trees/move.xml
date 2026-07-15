@@ -1,10 +1,29 @@
+<!--
+  Navigate-to-pose with periodic replanning (1 Hz) and contextual recovery,
+  based on nav2's navigate_to_pose_w_replanning_and_recovery.xml but without
+  its outer system-level RecoveryNode: a planner / controller failure clears
+  its own costmap and retries once, since stale obstacles in the costmap are
+  the most common cause. nav2's system-level branch (clear both costmaps,
+  Spin/Wait/BackUp via RoundRobin, abort on GoalUpdated) is left out for now;
+  most of its BT nodes and the behavior server are not ported yet.
+
+  Costmap clear services live on the costmap nodes owned by the planner
+  (global_costmap) and controller (local_costmap). Relative service names
+  resolve under the robot namespace because every node in the stack shares it.
+-->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateWithReplanning">
       <RateController hz="1.0">
-        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
+        <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+        </RecoveryNode>
       </RateController>
-      <FollowPath path="{path}" controller_id="FollowPath"/>
+      <RecoveryNode number_of_retries="1" name="FollowPath">
+        <FollowPath path="{path}" controller_id="FollowPath"/>
+        <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+      </RecoveryNode>
     </PipelineSequence>
   </BehaviorTree>
 </root>

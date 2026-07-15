@@ -3,11 +3,8 @@ import time
 import structlog
 
 from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.orm import sessionmaker
 
 from sqlalchemy_utils import create_database, database_exists
-
-from syncai_backend.database.models import Base
 
 MAX_RETRIES = 20
 RETRY_INTERVAL = 5
@@ -27,14 +24,21 @@ def _execute(engine: Engine, clause: str, raise_error: bool = True):
                 raise e
 
 
-def connect_to_postgres(logger: structlog.stdlib.BoundLogger) -> Engine:
+def connect_to_postgres(
+    logger: structlog.stdlib.BoundLogger, robot_id: str
+) -> Engine:
     pg_user = os.getenv("POSTGRES_USER", "syncrobotic")
     pg_password = os.getenv("POSTGRES_PASSWORD", "syncrobotic")
     pg_host = os.getenv("POSTGRES_HOST", "localhost")
     pg_port = int(os.getenv("POSTGRES_PORT", 5432))
+    # Each robot owns its own database so multiple robots can share one
+    # PostgreSQL server without colliding. The name is "<robot_id>_db";
+    # robot_id comes from config/system.ini (mounted by docker-compose)
+    # via the ROS namespace.
+    pg_db = f"{robot_id}_db"
 
     engine = create_engine(
-        f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/robot_db",
+        f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}",
         pool_size=5,
         max_overflow=10,
     )
@@ -56,13 +60,3 @@ def connect_to_postgres(logger: structlog.stdlib.BoundLogger) -> Engine:
             if attempt == MAX_RETRIES:
                 raise err
             time.sleep(RETRY_INTERVAL)
-
-
-def init_db(engine: Engine) -> sessionmaker:
-    """Create tables for all ORM models and return a session factory.
-
-    Schema is created directly from the model metadata (no Alembic yet); this
-    is idempotent, so it is safe to call on every startup.
-    """
-    Base.metadata.create_all(bind=engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)

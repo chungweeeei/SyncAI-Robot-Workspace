@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
-from nav2_msgs.action import NavigateToPose, NavigateThroughPoses
+from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
 
 from syncai_common.msg import WifiNetwork
@@ -26,8 +26,8 @@ class MoveState(str, Enum):
     REJECTED = "rejected"
 
 
-# Tracks any navigation goal (NavigateToPose or NavigateThroughPoses); both
-# share the same state machine, status polling and cancel path.
+# Tracks a NavigateToPose goal through its state machine, status polling and
+# cancel path.
 @dataclass
 class MoveGoal:
     goal_id: str
@@ -67,13 +67,7 @@ class RobotGateway:
             action_name="navigate_to_pose",
         )
 
-        patrol_client = ActionClient(
-            node=self._node,
-            action_type=NavigateThroughPoses,
-            action_name="navigate_through_poses",
-        )
-
-        self._action_clients.update({"move": move_client, "patrol": patrol_client})
+        self._action_clients.update({"move": move_client})
 
     def register_service_clients(self):
 
@@ -172,18 +166,6 @@ class RobotGateway:
         goal_msg = NavigateToPose.Goal(pose=self._make_pose_stamped(x=x, y=y, yaw=yaw))
 
         return self._send_nav_goal("move", goal_msg)
-
-    def patrol(
-        self, poses: List[Tuple[float, float, float]]
-    ) -> Tuple[bool, str, Optional[str]]:
-        """Send a NavigateThroughPoses goal; poses are (x, y, yaw) tuples."""
-        self._logger.info("[RobotGateway] Sending patrol goal", num_poses=len(poses))
-
-        goal_msg = NavigateThroughPoses.Goal(
-            poses=[self._make_pose_stamped(x=x, y=y, yaw=yaw) for x, y, yaw in poses]
-        )
-
-        return self._send_nav_goal("patrol", goal_msg)
 
     def _move_feedback_cb(self, goal_handle):
 

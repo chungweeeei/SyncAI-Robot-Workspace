@@ -10,11 +10,9 @@ import pytest
 import structlog
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from syncai_backend.database.models import Base
-from syncai_backend.repositories.map_point.map_point import MapPointRepo
 
 
 @pytest.fixture
@@ -23,8 +21,8 @@ def logger():
 
 
 @pytest.fixture
-def session_factory():
-    """A sessionmaker bound to a shared in-memory SQLite database.
+def engine():
+    """An SQLAlchemy engine bound to a shared in-memory SQLite database.
 
     ``StaticPool`` keeps a single connection alive so every session sees the
     same in-memory schema/data; the DB is torn down after each test.
@@ -35,17 +33,23 @@ def session_factory():
         poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    yield factory
+    yield engine
 
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
 
 
 @pytest.fixture
-def map_point_repo(logger, session_factory):
-    return MapPointRepo(logger=logger, session_factory=session_factory)
+def map_repo(logger, engine):
+    """A MapRepo backed by the in-memory SQLite engine.
+
+    nav_msgs is imported lazily inside the repo module, so tests that need this
+    fixture should ``importorskip`` it themselves.
+    """
+    from syncai_backend.repositories.map.map import init_map_repo
+
+    return init_map_repo(logger=logger, engine=engine)
 
 
 @pytest.fixture

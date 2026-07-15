@@ -1,6 +1,8 @@
+import uuid
 import structlog
+from enum import Enum
 from typing import List, Optional
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
 
 from nav_msgs.msg import OccupancyGrid
@@ -8,8 +10,28 @@ from nav_msgs.msg import OccupancyGrid
 from syncai_backend.exceptions import NotFoundError
 from syncai_backend.database.models import MapPoint
 from syncai_backend.repositories.map.map import MapRepo
-from syncai_backend.repositories.map_point.map_point import MapPointRepo
 from syncai_backend.helpers.occupancy_grid import occupancy_grid_to_png_base64
+
+
+class VertexType(str, Enum):
+    """Semantic role of a map vertex: what the robot does when it visits.
+
+    Persisted as a plain string in the ``map_vertices`` table; validated at the
+    REST boundary only.
+    """
+
+    # A plain navigation stop (no pure path-only vertices exist in this
+    # system, so every ordinary nav target is GENERAL).
+    GENERAL = "GENERAL"
+    # An IoT device station (pickup/drop/conveyor, etc.); name mirrors
+    # ``StepType.ARTIFACT`` in the workflow schema.
+    ARTIFACT = "ARTIFACT"
+    # A charging dock.
+    CHARGER = "CHARGER"
+    # An idle/park base the robot returns to.
+    HOME = "HOME"
+    # A hold spot for queueing / yielding / waiting on a station to free up.
+    WAITING = "WAITING"
 
 
 class MapOrigin(BaseModel):
@@ -25,7 +47,6 @@ class MapInfoResponse(BaseModel):
     origin: MapOrigin = Field(
         ..., description="World pose of the map's bottom-left cell (map frame)."
     )
-    frame_id: str = Field(..., description="TF frame the map is expressed in.")
 
 
 class MapImageResponse(MapInfoResponse):
@@ -35,31 +56,29 @@ class MapImageResponse(MapInfoResponse):
     )
 
 
-class MapPointRequest(BaseModel):
-    name: str = Field(..., min_length=1, description="Human-readable point name.")
-    type: str = Field(
-        ..., description="Point classification, e.g. waypoint/task_point/patrol."
-    )
-    map_name: str = Field(..., description="Name of the map this point belongs to.")
+class MapVertexRequest(BaseModel):
+    name: str = Field(..., min_length=1, description="Human-readable vertex name.")
+    type: VertexType = Field(..., description="Semantic role of the vertex.")
+    map_name: str = Field(..., description="Name of the map this vertex belongs to.")
     x: float = Field(..., description="World x-coordinate (metres, map frame).")
     y: float = Field(..., description="World y-coordinate (metres, map frame).")
     theta: float = Field(..., description="Yaw angle in degrees (map frame).")
 
 
-class MapPointUpdateRequest(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, description="New point name.")
-    type: Optional[str] = Field(None, description="New point classification.")
+class MapVertexUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, description="New vertex name.")
+    type: Optional[VertexType] = Field(None, description="New vertex role.")
     map_name: Optional[str] = Field(None, description="New owning map name.")
     x: Optional[float] = Field(None, description="New world x-coordinate (metres).")
     y: Optional[float] = Field(None, description="New world y-coordinate (metres).")
     theta: Optional[float] = Field(None, description="New yaw angle in degrees.")
 
 
-class MapPointResponse(BaseModel):
-    id: int = Field(..., description="Unique identifier of the point.")
-    name: str = Field(..., description="Human-readable point name.")
-    type: str = Field(..., description="Point classification.")
-    map_name: str = Field(..., description="Name of the map this point belongs to.")
+class MapVertexResponse(BaseModel):
+    id: uuid.UUID = Field(..., description="Unique identifier of the vertex.")
+    name: str = Field(..., description="Human-readable vertex name.")
+    type: VertexType = Field(..., description="Semantic role of the vertex.")
+    map_name: str = Field(..., description="Name of the map this vertex belongs to.")
     x: float = Field(..., description="World x-coordinate (metres, map frame).")
     y: float = Field(..., description="World y-coordinate (metres, map frame).")
     theta: float = Field(..., description="Yaw angle in degrees (map frame).")
@@ -79,26 +98,24 @@ def _map_info(grid: OccupancyGrid) -> MapInfoResponse:
             y=grid.info.origin.position.y,
             z=grid.info.origin.position.z,
         ),
-        frame_id=grid.header.frame_id,
     )
 
 
-def _point_response(point: MapPoint) -> MapPointResponse:
-    return MapPointResponse(
-        id=point.id,
-        name=point.name,
-        type=point.type,
-        map_name=point.map_name,
-        x=point.x,
-        y=point.y,
-        theta=point.theta,
+def _vertex_response(vertex: MapPoint) -> MapVertexResponse:
+    return MapVertexResponse(
+        id=vertex.id,
+        name=vertex.name,
+        type=vertex.type,
+        map_name=vertex.map_name,
+        x=vertex.x,
+        y=vertex.y,
+        theta=vertex.theta,
     )
 
 
 def init_map_router(
     logger: structlog.stdlib.BoundLogger,
     map_repo: MapRepo,
-    map_point_repo: MapPointRepo,
 ) -> APIRouter:
     map_router = APIRouter(prefix="", tags=["Map"])
 
@@ -110,7 +127,7 @@ def init_map_router(
         return _map_info(grid)
 
     # Plain (non-async) handlers below: OccupancyGrid->PNG encoding is
-    # CPU-bound and the map-point repo blocks on psycopg2, so FastAPI runs
+    # CPU-bound and the vertex repo blocks on psycopg2, so FastAPI runs
     # these in its worker thread pool instead of on the event loop.
 
     @map_router.get("/api/v1/map/image", response_model=MapImageResponse)
@@ -125,44 +142,54 @@ def init_map_router(
             image=occupancy_grid_to_png_base64(grid),
         )
 
-    @map_router.post("/api/v1/map/points", response_model=MapPointResponse)
-    def create_map_point(req: MapPointRequest):
-        point = map_point_repo.create(
-            name=req.name,
-            type=req.type,
-            map_name=req.map_name,
-            x=req.x,
-            y=req.y,
-            theta=req.theta,
+    @map_router.post("/api/v1/map/vertices", response_model=List[MapVertexResponse])
+    def create_map_vertices(reqs: List[MapVertexRequest] = Body(..., min_length=1)):
+        vertices = map_repo.create_vertices(
+            [
+                {
+                    "name": req.name,
+                    "type": req.type.value,
+                    "map_name": req.map_name,
+                    "x": req.x,
+                    "y": req.y,
+                    "theta": req.theta,
+                }
+                for req in reqs
+            ]
         )
-        return _point_response(point)
+        return [_vertex_response(vertex) for vertex in vertices]
 
-    @map_router.get("/api/v1/map/points", response_model=List[MapPointResponse])
-    def list_map_points(
-        map_name: Optional[str] = None, type: Optional[str] = None
+    @map_router.get("/api/v1/map/vertices", response_model=List[MapVertexResponse])
+    def list_map_vertices(
+        map_name: Optional[str] = None, type: Optional[VertexType] = None
     ):
-        points = map_point_repo.list_all(map_name=map_name, type=type)
-        return [_point_response(point) for point in points]
+        vertices = map_repo.list_vertices(
+            map_name=map_name, type=type.value if type else None
+        )
+        return [_vertex_response(vertex) for vertex in vertices]
 
-    @map_router.get("/api/v1/map/points/{id}", response_model=MapPointResponse)
-    def get_map_point(id: int):
-        point = map_point_repo.get(point_id=id)
-        if point is None:
-            raise NotFoundError(f"Map point {id} was not found.")
-        return _point_response(point)
+    @map_router.get("/api/v1/map/vertices/{id}", response_model=MapVertexResponse)
+    def get_map_vertex(id: uuid.UUID):
+        vertex = map_repo.get_vertex(vertex_id=id)
+        if vertex is None:
+            raise NotFoundError(f"Map vertex {id} was not found.")
+        return _vertex_response(vertex)
 
-    @map_router.put("/api/v1/map/points/{id}", response_model=MapPointResponse)
-    def update_map_point(id: int, req: MapPointUpdateRequest):
-        point = map_point_repo.update(id, **req.model_dump(exclude_unset=True))
-        if point is None:
-            raise NotFoundError(f"Map point {id} was not found.")
-        return _point_response(point)
+    @map_router.put("/api/v1/map/vertices/{id}", response_model=MapVertexResponse)
+    def update_map_vertex(id: uuid.UUID, req: MapVertexUpdateRequest):
+        changes = req.model_dump(exclude_unset=True)
+        if "type" in changes and changes["type"] is not None:
+            changes["type"] = changes["type"].value
+        vertex = map_repo.update_vertex(id, **changes)
+        if vertex is None:
+            raise NotFoundError(f"Map vertex {id} was not found.")
+        return _vertex_response(vertex)
 
-    @map_router.delete("/api/v1/map/points/{id}", response_model=DeleteResponse)
-    def delete_map_point(id: int):
-        deleted = map_point_repo.delete(point_id=id)
+    @map_router.delete("/api/v1/map/vertices/{id}", response_model=DeleteResponse)
+    def delete_map_vertex(id: uuid.UUID):
+        deleted = map_repo.delete_vertex(vertex_id=id)
         if not deleted:
-            raise NotFoundError(f"Map point {id} was not found.")
-        return DeleteResponse(message=f"Map point {id} has been deleted.")
+            raise NotFoundError(f"Map vertex {id} was not found.")
+        return DeleteResponse(message=f"Map vertex {id} has been deleted.")
 
     return map_router

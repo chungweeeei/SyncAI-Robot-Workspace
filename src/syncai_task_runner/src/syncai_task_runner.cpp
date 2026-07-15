@@ -15,12 +15,11 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
   // (recovery, condition, control, decorator) are added.
   const std::vector<std::string> plugin_libs = {
     "syncai_compute_path_to_pose_action_bt_node",
-    "syncai_compute_path_through_poses_action_bt_node",
     "syncai_follow_path_action_bt_node",
-    "syncai_remove_passed_goals_action_bt_node",
+    "syncai_clear_costmap_service_bt_node",
     "syncai_pipeline_sequence_bt_node",
+    "syncai_recovery_node_bt_node",
     "syncai_rate_controller_bt_node",
-    "syncai_say_something_action_bt_node",
   };
 
   syncai_util::declare_parameter_if_not_declared(
@@ -68,7 +67,6 @@ bool TaskRunner::initialize()
   auto plugin_lib_names = this->get_parameter("plugin_lib_names").as_string_array();
 
   pose_navigator_ = std::make_unique<syncai_task_runner::NavigateToPoseNavigator>();
-  poses_navigator_ = std::make_unique<syncai_task_runner::NavigateThroughPosesNavigator>();
 
   syncai_task_runner::FeedbackUtils feedback_utils;
   feedback_utils.tf = tf_;
@@ -89,15 +87,6 @@ bool TaskRunner::initialize()
     return false;
   }
 
-  if (!poses_navigator_->on_initialize(
-        this->shared_from_this(), plugin_lib_names, feedback_utils, &plugin_mutex_,
-        odom_smoother_)) {
-    RCLCPP_ERROR(
-      this->get_logger(), "[TaskRunner][%s] Failed to initialize navigate_through_poses navigator",
-      __func__);
-    return false;
-  }
-
   RCLCPP_INFO(this->get_logger(), "[TaskRunner][%s] Initialized", __func__);
   return true;
 }
@@ -114,12 +103,8 @@ bool TaskRunner::cleanup()
   if (pose_navigator_ && !pose_navigator_->on_cleanup()) {
     ok = false;
   }
-  if (poses_navigator_ && !poses_navigator_->on_cleanup()) {
-    ok = false;
-  }
 
   pose_navigator_.reset();
-  poses_navigator_.reset();
   odom_smoother_.reset();
 
   RCLCPP_INFO(this->get_logger(), "[TaskRunner][%s] Completed cleaning up", __func__);

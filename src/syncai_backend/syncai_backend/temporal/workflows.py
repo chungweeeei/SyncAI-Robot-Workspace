@@ -29,7 +29,6 @@ class RobotWorkflow:
 
         activity_map = {
             StepType.MOVE: RobotActivities.execute_move,
-            StepType.PATROL: RobotActivities.execute_patrol,
             StepType.ARTIFACT: RobotActivities.execute_artifact,
         }
 

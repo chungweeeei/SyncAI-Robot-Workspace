@@ -20,7 +20,6 @@ from syncai_backend.interfaces.rest.routers.map import init_map_router
 
 from syncai_backend.repositories.robot.robot import RobotRepo
 from syncai_backend.repositories.map.map import MapRepo
-from syncai_backend.repositories.map_point.map_point import MapPointRepo
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
@@ -55,7 +54,6 @@ def init_rest_server(
     robot_repo: RobotRepo,
     robot_gw: RobotGateway,
     map_repo: MapRepo,
-    map_point_repo: MapPointRepo,
 ) -> FastAPI:
 
     description = """
@@ -80,11 +78,7 @@ def init_rest_server(
     app.include_router(init_schedule_router(logger=logger, workflow_gw=workflow_gw))
     app.include_router(init_robot_router(logger=logger, robot_repo=robot_repo))
     app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
-    app.include_router(
-        init_map_router(
-            logger=logger, map_repo=map_repo, map_point_repo=map_point_repo
-        )
-    )
+    app.include_router(init_map_router(logger=logger, map_repo=map_repo))
 
     return app
 
@@ -95,7 +89,6 @@ def start_rest_server(
     robot_repo: RobotRepo,
     robot_gw: RobotGateway,
     map_repo: MapRepo,
-    map_point_repo: MapPointRepo,
 ):
 
     app = init_rest_server(
@@ -104,7 +97,6 @@ def start_rest_server(
         robot_repo=robot_repo,
         robot_gw=robot_gw,
         map_repo=map_repo,
-        map_point_repo=map_point_repo,
     )
 
     def _run():
