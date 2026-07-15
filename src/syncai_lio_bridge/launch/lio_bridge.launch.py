@@ -1,10 +1,12 @@
-# Launch the syncai_lio_bridge node — bridges FAST-LIO2 3D localization onto
-# the wheel-odom TF chain (publishes map -> <robot_id>/odom, replacing AMCL).
+# Launch the syncai_lio_bridge node — the robot's only odometry source.
+# From FAST-LIO2 (fastlio2/lio_odom + livox/imu) it publishes the planar
+# odom -> <robot_id>/base_link TF, the <robot_id>/odom Odometry topic, and
+# the map -> <robot_id>/odom correction (replacing AMCL). There is no wheel
+# odometry: the Isaac Sim OmniGraph odom publishers are disabled.
 #
 # robot_id is read from the system config INI at launch time and is used as
-# the node namespace and as the TF prefix for both the wheel-odom chain frames
-# and the LIO chain body frame (<robot_id>/lio_body, matching the frames the
-# lio/localizer Isaac launches rewrite at startup). The map frame stays "map".
+# the node namespace and as the TF prefix for the odom chain frames. The map
+# frame stays "map".
 
 import configparser
 
@@ -59,9 +61,8 @@ def launch_setup(context, *args, **kwargs):
             {
                 "use_sim_time": use_sim_time,
                 "map_frame": "map",
-                "lio_body_frame": f"{robot_id}/lio_body",
                 "base_frame": f"{robot_id}/base_link",
-                "wheel_odom_frame": f"{robot_id}/odom",
+                "odom_frame": f"{robot_id}/odom",
                 "lidar_frame": f"{robot_id}/lidar_top",
                 "publish_rate": 20.0,
                 "transform_tolerance": 0.1,

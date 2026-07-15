@@ -12,7 +12,7 @@ Panels:
         - /LaserScan1
         - /LaserScan1/Topic1
       Splitter Ratio: 0.5
-    Tree Height: 720
+    Tree Height: 365
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -63,8 +63,6 @@ Visualization Manager:
         robot01/base_link:
           Value: true
         robot01/lidar_top:
-          Value: true
-        robot01/odom:
           Value: true
         robot02/base_link:
           Value: true
@@ -245,16 +243,16 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 36.096153259277344
+      Distance: 24.5985164642334
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -4.078902244567871
-        Y: 12.650800704956055
-        Z: 3.475019931793213
+        X: -2.395801544189453
+        Y: 14.696300506591797
+        Z: 2.4592740535736084
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -282,4 +280,4 @@ Window Geometry:
     collapsed: true
   Width: 927
   X: 993
-  Y: 32
+  Y: 556
