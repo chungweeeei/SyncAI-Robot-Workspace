@@ -1,7 +1,7 @@
 
 
-#ifndef SYNCAI_REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
-#define SYNCAI_REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
+#ifndef SYNCAI_CONTROLLER__PLUGINS__REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
+#define SYNCAI_CONTROLLER__PLUGINS__REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
 
 #include <algorithm>
 #include <memory>
@@ -17,22 +17,22 @@
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_util/geometry_utils.hpp"
 
-namespace syncai_regulated_pure_pursuit_controller
+namespace syncai_controller
 {
 
 /**
- * @class syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+ * @class syncai_controller::RegulatedPurePursuitController
  */
 class RegulatedPurePursuitController : public syncai_nav_core::Controller
 {
 public:
   /**
-   * @brief Constructor for syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+   * @brief Constructor for syncai_controller::RegulatedPurePursuitController
    */
   RegulatedPurePursuitController() = default;
 
   /**
-   * @brief Destructor for syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+   * @brief Destructor for syncai_controller::RegulatedPurePursuitController
    */
   ~RegulatedPurePursuitController() override = default;
 
@@ -255,6 +255,7 @@ protected:
   double regulated_linear_scaling_min_speed_;
   bool use_rotate_to_heading_;
   double max_angular_accel_;
+  double max_linear_accel_;
   double rotate_to_heading_min_angle_;
   double goal_dist_tol_;
   bool allow_reversing_;
@@ -273,6 +274,6 @@ protected:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 };
 
-}  // namespace syncai_regulated_pure_pursuit_controller
+}  // namespace syncai_controller
 
-#endif  // SYNCAI_REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
+#endif  // SYNCAI_CONTROLLER__PLUGINS__REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_

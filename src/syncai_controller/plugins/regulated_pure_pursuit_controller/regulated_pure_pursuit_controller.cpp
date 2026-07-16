@@ -1,4 +1,4 @@
-#include "syncai_regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.hpp"
+#include "syncai_controller/plugins/regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -22,7 +22,7 @@ using syncai_util::geometry_utils::euclidean_distance;
 using namespace syncai_costmap_2d;  // NOLINT
 using rcl_interfaces::msg::ParameterType;
 
-namespace syncai_regulated_pure_pursuit_controller
+namespace syncai_controller
 {
 
 // nav2_costmap_2d::NO_SPEED_LIMIT from costmap_filters/filter_values.hpp.
@@ -127,6 +127,8 @@ void RegulatedPurePursuitController::initialize(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_angular_accel", rclcpp::ParameterValue(3.2));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(2.5));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".allow_reversing", rclcpp::ParameterValue(false));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_robot_pose_search_dist",
@@ -165,6 +167,7 @@ void RegulatedPurePursuitController::initialize(
   node->get_parameter(plugin_name_ + ".use_rotate_to_heading", use_rotate_to_heading_);
   node->get_parameter(plugin_name_ + ".rotate_to_heading_min_angle", rotate_to_heading_min_angle_);
   node->get_parameter(plugin_name_ + ".max_angular_accel", max_angular_accel_);
+  node->get_parameter(plugin_name_ + ".max_linear_accel", max_linear_accel_);
   node->get_parameter(plugin_name_ + ".allow_reversing", allow_reversing_);
   node->get_parameter("controller_frequency", control_frequency);
   node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist", max_robot_pose_search_dist_);
@@ -297,17 +300,30 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   // 2. 偏離路徑朝向太多，先原地轉向到Local Path上。
   // 3. 正常路徑追蹤。
   double angle_to_heading;
+  bool is_rotating_to_heading = false;
   if (shouldRotateToGoalHeading(carrot_pose)) {
     double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
     rotateToHeading(linear_vel, angular_vel, angle_to_goal, speed);
+    is_rotating_to_heading = true;
   } else if (shouldRotateToPath(carrot_pose, angle_to_heading)) {
     rotateToHeading(linear_vel, angular_vel, angle_to_heading, speed);
+    is_rotating_to_heading = true;
   } else {
     applyConstraints(
       curvature, speed, costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
       linear_vel, sign);
+  }
 
-    // Apply curvature to angular velocity after constraining linear velocity
+  // 線速度加速度限制：這個 stack 的 cmd_vel 沒有經過 velocity smoother，
+  // 必須由 controller 自己保證線速度的 kinematic feasibility
+  // （角速度在 rotateToHeading() 內已有 max_angular_accel 的對應 clamp）。
+  const double min_feasible_linear_speed = speed.linear.x - max_linear_accel_ * control_duration_;
+  const double max_feasible_linear_speed = speed.linear.x + max_linear_accel_ * control_duration_;
+  linear_vel = std::clamp(linear_vel, min_feasible_linear_speed, max_feasible_linear_speed);
+
+  if (!is_rotating_to_heading) {
+    // Apply curvature to angular velocity after constraining linear velocity:
+    // 用 clamp 後的線速度算角速度，維持追蹤弧線的曲率不變。
     angular_vel = linear_vel * curvature;
   }
 
@@ -830,6 +846,8 @@ rcl_interfaces::msg::SetParametersResult RegulatedPurePursuitController::dynamic
         regulated_linear_scaling_min_speed_ = parameter.as_double();
       } else if (name == plugin_name_ + ".max_angular_accel") {
         max_angular_accel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".max_linear_accel") {
+        max_linear_accel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".rotate_to_heading_min_angle") {
         rotate_to_heading_min_angle_ = parameter.as_double();
       }
@@ -866,9 +884,9 @@ rcl_interfaces::msg::SetParametersResult RegulatedPurePursuitController::dynamic
   return result;
 }
 
-}  // namespace syncai_regulated_pure_pursuit_controller
+}  // namespace syncai_controller
 
 // Register this controller as a syncai_nav_core plugin
 PLUGINLIB_EXPORT_CLASS(
-  syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController,
+  syncai_controller::RegulatedPurePursuitController,
   syncai_nav_core::Controller)

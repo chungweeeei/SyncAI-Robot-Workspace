@@ -47,8 +47,7 @@ The navigation pipeline mirrors nav2's action-server topology:
 | `syncai_map_server` | Map server + map saver nodes (non-lifecycle) |
 | `syncai_costmap_2d` | Global / local costmaps with layered plugins |
 | `syncai_planner` | Global planner action server (`compute_path_to_pose`) with the NavFn plugin merged in |
-| `syncai_controller` | Controller action server (`follow_path`) hosting controller plugins |
-| `syncai_regulated_pure_pursuit_controller` | Regulated Pure Pursuit controller plugin |
+| `syncai_controller` | Controller action server (`follow_path`) with the Regulated Pure Pursuit plugin merged in |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_bt_navigator` | BT navigator action server (`NavigateToPose`) |
 | `syncai_backend` | Robot backend node exposing a RESTful API (FastAPI) bridged to ROS 2 |
