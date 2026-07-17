@@ -25,5 +25,6 @@
     "/opt/ros/humble/local/lib/python3.10/dist-packages",
     "${workspaceFolder}/src/syncai_ros_mcp/src"
   ],
-  "ROS2.distro": "humble"
+  "ROS2.distro": "humble",
+  "cmake.sourceDirectory": "/home/syncrobotic/Documents/SyncAI-Robot-Workspace/src/syncai_map_server"
 }

@@ -173,7 +173,20 @@ def convert(xyz, args):
 
     # nav2 pgm convention: 0=occupied(black), 254=free(white), 205=unknown(gray)
     grid = np.full((height, width), 205, dtype=np.uint8)
-    grid[obs_cnt >= args.min_floor_points] = 254
+    free_mask = obs_cnt >= args.min_floor_points
+    if args.free_close > 0:
+        # lidar samples the floor as sparse rings, so per-cell floor hits are
+        # speckled. A morphological closing (dilate then erode by the same disk)
+        # bridges those sub-radius gaps into a solid drivable area WITHOUT growing
+        # the outer boundary — so unknown outside the walls stays unknown.
+        from scipy import ndimage
+        r = args.free_close
+        yy, xx = np.ogrid[-r:r + 1, -r:r + 1]
+        se = (xx * xx + yy * yy) <= r * r
+        closed = ndimage.binary_closing(free_mask, structure=se)
+        print(f"free-close: r={r} cells, added {int(closed.sum() - free_mask.sum())} free cells")
+        free_mask = closed
+    grid[free_mask] = 254
     grid[obst_cnt >= args.min_points] = 0
 
     if args.despeckle:
@@ -234,6 +247,9 @@ def main():
     p.add_argument("--floor-zmax", type=float, default=None, help="floor band upper z (free-mode floor)")
     p.add_argument("--min-points", type=int, default=2, help="points/cell to mark occupied (default 2)")
     p.add_argument("--min-floor-points", type=int, default=1, help="observed points/cell to mark free (default 1)")
+    p.add_argument("--free-close", type=int, default=0,
+                   help="morphological-close the free mask with a disk of this radius (cells) "
+                        "to turn speckled floor sampling into solid free space (needs scipy, 0=off)")
     p.add_argument("--despeckle", action="store_true",
                    help="remove occupied blobs smaller than --min-obstacle-size (needs scipy)")
     p.add_argument("--min-obstacle-size", type=int, default=4,

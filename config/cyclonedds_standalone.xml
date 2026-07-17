@@ -6,13 +6,17 @@
 >
     <Domain Id="any">
         <General>
-            <AllowMulticast>true</AllowMulticast>
+            <AllowMulticast>false</AllowMulticast>
             <Interfaces>
-                <NetworkInterface name="eth0"/>
+                <NetworkInterface name="lo"/>
             </Interfaces>
         </General>
         <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
+            <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+            <Peers>
+              <Peer address="127.0.0.1"/>
+            </Peers>
         </Discovery>
         <Tracing>
             <Verbosity>config</Verbosity>
