@@ -6,7 +6,7 @@ import requests
 import structlog
 
 
-# The workspace is mounted at /home/ubuntu/robot_ws inside the container and
+# The workspace is mounted at /home/syncrobotic/robot_ws inside the container and
 # the node runs with that as its working directory, so a relative path works
 # both in the container and when running from the workspace root.
 DEFAULT_SYSTEM_INI = "config/system.ini"

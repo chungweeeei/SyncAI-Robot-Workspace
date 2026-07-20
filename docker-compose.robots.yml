@@ -1,30 +1,144 @@
-# Robot containers (robot01-03), pulled into the top-level docker-compose.yml
-# via `include:`. Relative paths here resolve against THIS file's directory
+# Robot containers, pulled into the top-level docker-compose.yml via
+# `include:`. Relative paths here resolve against THIS file's directory
 # (the workspace root), so the workspace mount / instance INIs keep working.
-# Infra services (temporal, postgres, ...) stay in docker-compose.yml; the
-# robots reach them by service name over the shared default bridge.
+# Infra services (temporal, postgres, ...) stay in docker-compose.yml.
+#
+# Two mutually exclusive deployment modes, selected via compose profiles:
+#
+#   real  — physical robot on this machine's hardware. host networking
+#           (lidar UDP on the physical NIC, DDS over lo via
+#           cyclonedds_standalone.xml); infra is reached through the
+#           host-published ports on 127.0.0.1 (service names do NOT resolve
+#           under network_mode: host).
+#   sim   — Isaac Sim fleet. Each robot is dual-homed: syncai-lan macvlan on
+#           the wired factory LAN (NAT-free DDS with the Isaac Sim
+#           workstation at 192.168.0.3, unicast-only discovery pinned via
+#           DDS_BIND_ADDRESS + cyclonedds.xml) + the default bridge (macvlan
+#           blocks host<->container traffic, so infra is reached by service
+#           name over the bridge instead).
+#
+# Start explicitly (naming a service auto-enables its profiles):
+#   docker compose up -d robot01                        # real robot
+#   docker compose --profile sim up -d                  # whole sim fleet
+#   docker compose up -d robot02-sim robot03-sim        # subset of the fleet
+# Container names follow the service names (robot01 vs robot01-sim), so a
+# real robot and sim robots can coexist (e.g. real robot01 + sim robot02+).
+# Do NOT run the real and sim variant of the SAME robot together — they share
+# the instance ini, so both would claim the same robot identity on DDS.
+#
+# The sim profile needs the external macvlan network (shared with the
+# conveyor containers: robot01=.32, conveyor01=.33, conveyor02=.34,
+# robot02+=.35...). Create it once:
+#   docker network create -d macvlan --subnet=192.168.0.0/24 \
+#     --ip-range=192.168.0.32/28 -o parent=enP2p1s0 syncai-lan
+#
+# NOTE (X11): DISPLAY=:1 targets the Jetson's local desktop via the unix
+# socket mount. If GUIs fail after a host reboot, check `ls /tmp/.X11-unix`
+# (X0 -> :0) and regenerate the xauth cookie:
+#   XAUTHORITY=/run/user/1000/gdm/Xauthority xauth nlist :1 \
+#     | sed -e 's/^..../ffff/' | xauth -f /tmp/.docker.xauth nmerge -
+
+# Everything the real and sim variants share: dev image, host-uid user (so
+# files created in the mounted workspace keep the right ownership; HOME is
+# world-writable in the image), apparmor off (nmcli needs D-Bus, blocked by
+# the docker-default profile), idle bash (the stack is launched manually via
+# scripts/byobu_session.sh).
+x-robot-common: &robot-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    # The Dockerfile is multi-stage; `dev` is the interactive development
+    # image (rviz2, colcon, byobu, ...). Production images are built from
+    # the nav-runtime / backend-runtime targets, see docker-compose.prod.yml.
+    target: dev
+  image: syncai-robot
+  user: "${UID:-1000}:${GID:-1000}"
+  security_opt:
+    - apparmor=unconfined
+  working_dir: /home/syncrobotic/robot_ws
+  stdin_open: true
+  tty: true
+  command: [ "bash" ]
+
+# Environment shared by both modes (maps merge with <<, lists don't — keep
+# environment as a map here).
+x-robot-env: &robot-env
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  DISPLAY: ":1"
+  XAUTHORITY: /tmp/.docker.xauth
+  # rcl/spdlog per-process logs + `ros2 launch` stdout/stderr capture land
+  # here instead of ~/.ros/log. Points at a size-capped tmpfs (see
+  # x-ros-log-tmpfs) so these ever-growing, non-rotating files can't fill the
+  # container FS; wiped when the container stops.
+  ROS_LOG_DIR: /tmp/ros_log
+  # The byobu scripts tap each pane into multilog via `tmux pipe-pane`, which
+  # captures the *rendered* terminal stream — so strip ANSI colour codes to
+  # keep those log files plain text. Unbuffered Python flushes rclpy stdout
+  # promptly so lines reach the pane/multilog without block-buffering delay.
+  RCUTILS_COLORIZED_OUTPUT: "0"
+  PYTHONUNBUFFERED: "1"
+
+# Environment for the sim (macvlan dual-homed) robots; DDS_BIND_ADDRESS is
+# per-robot. cyclonedds.xml pins DDS to the macvlan IP and peers with the
+# Isaac Sim workstation.
+x-sim-env: &sim-env
+  <<: *robot-env
+  TEMPORAL_ADDRESS: temporal:7233
+  POSTGRES_HOST: postgres
+  CYCLONEDDS_URI: file:///home/syncrobotic/robot_ws/config/cyclonedds.xml
+
+# Size-capped, RAM-backed tmpfs for ROS_LOG_DIR. Long-form mount because the
+# short `tmpfs:` syntax can't set a size. Referenced from each service's
+# volumes (lists don't merge via <<, so this can't live in x-robot-common).
+# NOTE: RAM-backed — this 128 MiB counts against the Jetson's memory budget.
+x-ros-log-tmpfs: &ros-log-tmpfs
+  type: tmpfs
+  target: /tmp/ros_log
+  tmpfs:
+    size: 134217728   # 128 MiB
 
 services:
+  # ---------------------------------------------------------------------
+  # real: physical robot on this machine
+  # ---------------------------------------------------------------------
   robot01:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
+    <<: *robot-common
+    profiles: [ "real" ]
     container_name: robot01
-    # Run as the host user so files created in the mounted workspace
-    # keep the right ownership. HOME is world-writable in the image.
-    user: "${UID:-1000}:${GID:-1000}"
-    # Dual-homed:
-    #  - syncai-lan (macvlan on the wired factory LAN): the container owns
-    #    192.168.0.32, so DDS speaks NAT-free with the Isaac Sim workstation
-    #    (unicast-only discovery; each robot peers ONLY with the workstation).
-    #  - default bridge: macvlan blocks host<->container traffic, so the
-    #    host-side services in docker-compose.yml (temporal, postgres) are
-    #    reached by service name over the bridge instead.
-    # NOTE: without host networking, X11 over SSH forwarding
-    # (DISPLAY=localhost:N) no longer reaches the SSH proxy on the host.
-    # GUI apps instead target the Jetson's local desktop via the X11 unix
-    # socket mounted below (network-independent, works under macvlan).
+    network_mode: host
+    environment:
+      <<: *robot-env
+      # host networking: compose service names don't resolve — use the
+      # host-published ports.
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      POSTGRES_HOST: 127.0.0.1
+      # lo-only unicast DDS; nav/backend/tools all share the host's lo.
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds_standalone.xml
+    volumes:
+      # Size-capped tmpfs backing ROS_LOG_DIR (see x-ros-log-tmpfs).
+      - *ros-log-tmpfs
+      # Mount the colcon workspace (src/ lives here) into the container.
+      - .:/home/syncrobotic/robot_ws
+      # Per-instance identity, overlaid on the fixed path the launch files read.
+      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
+      # X11 unix socket of the host's local desktop (socket connect needs
+      # write access, so no :ro) + auth cookie (see header note).
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+      # Host D-Bus system bus so nmcli inside the container talks to the
+      # host's NetworkManager daemon (there is no NM daemon in the container).
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      # Host avahi legacy socket so libnss-mdns resolves *.local names.
+      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
+
+  # ---------------------------------------------------------------------
+  # sim: Isaac Sim fleet (macvlan dual-homed)
+  # ---------------------------------------------------------------------
+  robot01-sim:
+    <<: *robot-common
+    profiles: [ "sim" ]
+    container_name: robot01-sim
     networks:
       # The bridge must provide the default route (internet via NAT); the
       # macvlan gateway would be the host itself, which macvlan blocks.
@@ -32,255 +146,125 @@ services:
         gw_priority: 1
       syncai-lan:
         ipv4_address: 192.168.0.32
-    # The default docker-default AppArmor profile blocks D-Bus, which nmcli
-    # needs to reach the host's NetworkManager via the socket mounted below.
-    security_opt:
-      - apparmor=unconfined
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      # Reach compose services over the default bridge (macvlan can't hairpin
-      # to host-published ports).
-      - TEMPORAL_ADDRESS=temporal:7233
-      - POSTGRES_HOST=postgres
-      # Workspace is mounted at /home/ubuntu/robot_ws, so config lives there.
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      # DDS bind address consumed by the shared cyclonedds.xml (the dual-homed
-      # container must pin DDS to its macvlan IP, not the bridge).
-      - DDS_BIND_ADDRESS=192.168.0.32
-      # X11 GUI (rviz2 etc.) on the Jetson's LOCAL desktop via the unix
-      # socket volume below. :1 is the current desktop session — if GUIs
-      # fail after a reboot, check `ls /tmp/.X11-unix` on the host (X0 -> :0)
-      # or override per-shell with `docker exec -e DISPLAY=:0 ...`.
-      # The xauth cookie is provided via XAUTHORITY below.
-      - DISPLAY=:1
-      - XAUTHORITY=/tmp/.docker.xauth
+      <<: *sim-env
+      DDS_BIND_ADDRESS: 192.168.0.32
     volumes:
-      # Mount the colcon workspace (src/ lives here) into the container.
-      - .:/home/ubuntu/robot_ws
-      # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot01.ini:/home/ubuntu/robot_ws/config/system.ini:ro
-      # X11 unix socket of the host's local desktop (:1). Socket connect
-      # needs write access, so no :ro.
+      - *ros-log-tmpfs
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
-      # X11 auth cookie for the local desktop. /tmp is wiped on reboot, so
-      # regenerate after each host reboot (wildcard family so the container
-      # hostname doesn't have to match):
-      #   XAUTHORITY=/run/user/1000/gdm/Xauthority xauth nlist :1 \
-      #     | sed -e 's/^..../ffff/' | xauth -f /tmp/.docker.xauth nmerge -
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
-      # Host D-Bus system bus so nmcli inside the container talks to the
-      # host's NetworkManager daemon (there is no NM daemon in the container).
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
-      # Host avahi legacy socket so libnss-mdns resolves *.local names for
-      # anything using system resolution (ping, getaddrinfo, requests, ...).
-      # avahi CLI tools use D-Bus instead and don't need this.
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
 
-  robot02:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
-    container_name: robot02
-    user: "${UID:-1000}:${GID:-1000}"
-    # Same dual-homed layout and rationale as robot01; see the notes there.
+  robot02-sim:
+    <<: *robot-common
+    profiles: [ "sim" ]
+    container_name: robot02-sim
     networks:
-      # See robot01: bridge provides the default route.
       default:
         gw_priority: 1
       syncai-lan:
         ipv4_address: 192.168.0.35
-    security_opt:
-      - apparmor=unconfined
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - TEMPORAL_ADDRESS=temporal:7233
-      - POSTGRES_HOST=postgres
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      - DDS_BIND_ADDRESS=192.168.0.35
-      # Local desktop X11; see robot01 notes.
-      - DISPLAY=:1
-      - XAUTHORITY=/tmp/.docker.xauth
+      <<: *sim-env
+      DDS_BIND_ADDRESS: 192.168.0.35
     volumes:
-      - .:/home/ubuntu/robot_ws
-      # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot02.ini:/home/ubuntu/robot_ws/config/system.ini:ro
+      - *ros-log-tmpfs
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot02.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
 
-  robot03:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
-    container_name: robot03
-    user: "${UID:-1000}:${GID:-1000}"
-    # Same dual-homed layout and rationale as robot01; see the notes there.
+  robot03-sim:
+    <<: *robot-common
+    profiles: [ "sim" ]
+    container_name: robot03-sim
     networks:
-      # See robot01: bridge provides the default route.
       default:
         gw_priority: 1
       syncai-lan:
         ipv4_address: 192.168.0.36
-    security_opt:
-      - apparmor=unconfined
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - TEMPORAL_ADDRESS=temporal:7233
-      - POSTGRES_HOST=postgres
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      - DDS_BIND_ADDRESS=192.168.0.36
-      # Local desktop X11; see robot01 notes.
-      - DISPLAY=:1
-      - XAUTHORITY=/tmp/.docker.xauth
+      <<: *sim-env
+      DDS_BIND_ADDRESS: 192.168.0.36
     volumes:
-      - .:/home/ubuntu/robot_ws
-      # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot03.ini:/home/ubuntu/robot_ws/config/system.ini:ro
+      - *ros-log-tmpfs
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot03.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
 
-  robot04:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
-    container_name: robot04
-    user: "${UID:-1000}:${GID:-1000}"
-    # Same dual-homed layout and rationale as robot01; see the notes there.
+  robot04-sim:
+    <<: *robot-common
+    profiles: [ "sim" ]
+    container_name: robot04-sim
     networks:
-      # See robot01: bridge provides the default route.
       default:
         gw_priority: 1
       syncai-lan:
         ipv4_address: 192.168.0.37
-    security_opt:
-      - apparmor=unconfined
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - TEMPORAL_ADDRESS=temporal:7233
-      - POSTGRES_HOST=postgres
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      - DDS_BIND_ADDRESS=192.168.0.37
-      # Local desktop X11; see robot01 notes.
-      - DISPLAY=:1
-      - XAUTHORITY=/tmp/.docker.xauth
+      <<: *sim-env
+      DDS_BIND_ADDRESS: 192.168.0.37
     volumes:
-      - .:/home/ubuntu/robot_ws
-      # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot04.ini:/home/ubuntu/robot_ws/config/system.ini:ro
+      - *ros-log-tmpfs
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot04.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
 
-  robot05:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
-    container_name: robot05
-    user: "${UID:-1000}:${GID:-1000}"
-    # Same dual-homed layout and rationale as robot01; see the notes there.
+  robot05-sim:
+    <<: *robot-common
+    profiles: [ "sim" ]
+    container_name: robot05-sim
     networks:
-      # See robot01: bridge provides the default route.
       default:
         gw_priority: 1
       syncai-lan:
         ipv4_address: 192.168.0.38
-    security_opt:
-      - apparmor=unconfined
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - TEMPORAL_ADDRESS=temporal:7233
-      - POSTGRES_HOST=postgres
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      - DDS_BIND_ADDRESS=192.168.0.38
-      # Local desktop X11; see robot01 notes.
-      - DISPLAY=:1
-      - XAUTHORITY=/tmp/.docker.xauth
+      <<: *sim-env
+      DDS_BIND_ADDRESS: 192.168.0.38
     volumes:
-      - .:/home/ubuntu/robot_ws
-      # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot05.ini:/home/ubuntu/robot_ws/config/system.ini:ro
+      - *ros-log-tmpfs
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot05.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
 
-  robot06:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: syncai-test-robot
-    container_name: robot06
-    user: "${UID:-1000}:${GID:-1000}"
-    # Same dual-homed layout and rationale as robot01; see the notes there.
+  robot06-sim:
+    <<: *robot-common
+    profiles: [ "sim" ]
+    container_name: robot06-sim
     networks:
-      # See robot01: bridge provides the default route.
       default:
         gw_priority: 1
       syncai-lan:
         ipv4_address: 192.168.0.39
-    security_opt:
-      - apparmor=unconfined
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - TEMPORAL_ADDRESS=temporal:7233
-      - POSTGRES_HOST=postgres
-      - CYCLONEDDS_URI=file:///home/ubuntu/robot_ws/config/cyclonedds.xml
-      - DDS_BIND_ADDRESS=192.168.0.39
-      # Local desktop X11; see robot01 notes.
-      - DISPLAY=:1
-      - XAUTHORITY=/tmp/.docker.xauth
+      <<: *sim-env
+      DDS_BIND_ADDRESS: 192.168.0.39
     volumes:
-      - .:/home/ubuntu/robot_ws
-      # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot06.ini:/home/ubuntu/robot_ws/config/system.ini:ro
+      - *ros-log-tmpfs
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot06.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-    working_dir: /home/ubuntu/robot_ws
-    stdin_open: true
-    tty: true
-    command: [ "bash" ]
 
 networks:
-  # macvlan on the wired factory LAN, shared with the artifact containers
-  # (robot01=.32, conveyor01=.33, conveyor02=.34, robot02=.35, robot03=.36).
-  # Only the robot services use it, so it lives here. Created externally:
-  #   docker network create -d macvlan --subnet=192.168.0.0/24 \
-  #     --ip-range=192.168.0.32/28 -o parent=enP2p1s0 syncai-lan
+  # macvlan on the wired factory LAN, shared with the artifact containers.
+  # Used only by the sim profile; created externally (see header).
   syncai-lan:
     external: true

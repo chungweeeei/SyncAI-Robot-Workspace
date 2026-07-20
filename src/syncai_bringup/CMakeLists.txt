@@ -14,6 +14,8 @@ install(DIRECTORY
   params
   maps
   rviz
+  description
+  meshes
   DESTINATION share/${PROJECT_NAME}
 )
 

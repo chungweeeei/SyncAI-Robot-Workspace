@@ -1,5 +1,5 @@
 import { BatteryCard } from "@/components/dashboard/battery-card";
-import { MapView } from "@/components/dashboard/map-view";
+import { MapPanel } from "@/components/dashboard/map-panel";
 import { MotionCard } from "@/components/dashboard/motion-card";
 import { NetworkCard } from "@/components/dashboard/network-card";
 import { RobotStatusCard } from "@/components/dashboard/robot-status-card";
@@ -34,7 +34,7 @@ export default function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="h-[560px]">
-            <MapView pose={state.localization_status.position} />
+            <MapPanel pose={state.localization_status.position} />
           </CardContent>
         </Card>
       </div>

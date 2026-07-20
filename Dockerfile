@@ -1,13 +1,39 @@
-FROM ubuntu:22.04
+# =============================================================================
+# SyncAI robot workspace — multi-stage build (development).
+#
+#   base            shared runtime floor (ros-base + cyclonedds + uid-1000 user)
+#     ├─ deps-builder  GTSAM / Sophus / Livox-SDK2 → /usr/local  (slow, cached)
+#     └─ dev           the interactive dev image: rviz2, colcon, byobu, Node.js,
+#                      -dev headers. Workspace bind-mounted at ~/robot_ws and
+#                      built by hand (colcon). Compose target: dev.
+#
+# The dev target keeps today's workflow (workspace mounted at ~/robot_ws, build
+# by hand). deps-builder is the expensive stage (GTSAM ~30-60 min on Tegra) —
+# keep it free of anything that changes often so its cache survives.
+#
+#   docker build --target dev -t syncai-robot .
+#   # or, via compose:  docker compose build robot01
+#
+# NOTE: the production stages (ws-builder / nav-runtime / backend-runtime) that
+# baked the colcon install space into slim runtime images were removed while
+# the project is in the dev phase. docker-compose.prod.yml and scripts/release/
+# still reference them and will not work until the stages are re-added. See git
+# history for the removed stages when it's time to ship to the IPC.
+# =============================================================================
 
-# Install pre-requisites
+# ---------------------------------------------------------------------------
+# base: shared by dev and both production runtimes
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     curl \
-    git \
     gnupg \
     lsb-release \
-    build-essential \
-    cmake \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -16,54 +42,61 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
     > /etc/apt/sources.list.d/ros2.list
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install ROS 2 Humble + Navigation2 + dependencies
+# ROS 2 runtime floor. avahi-utils: syncai_system_manager spawns avahi-publish
+# against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
+# in the container. tzdata: containers default to UTC — set local time so log
+# timestamps (ros2 launch, backend, byobu panes) match the host / operators.
 RUN apt-get update && apt-get install -y \
     ros-humble-ros-base \
     ros-humble-tf2-tools \
     ros-humble-rmw-cyclonedds-cpp \
-    ros-humble-rviz2 \
     ros-humble-nav2-msgs \
-    ros-humble-pcl-conversions \
-    ros-humble-pcl-ros \
-    ros-humble-pointcloud-to-laserscan \
     ros-humble-angles \
-    ros-humble-teleop-twist-keyboard \
-    python3-opencv \
-    python3-colcon-common-extensions \
-    python3-rosdep \
-    python3-dotenv \
     python3-pip \
-    byobu \
-    net-tools \
     iputils-ping \
-    network-manager \
-    bluez \
+    avahi-utils \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# System deps for workspace packages that have no ament/CMake config:
-#   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
-#   - libzmq3-dev / libncurses-dev: behaviortree_cpp
-#   - nlohmann-json3-dev: header-only JSON library (found via find_package(nlohmann_json))
-#   - libapr1-dev / libaprutil1-dev: livox_ros_driver2 (found via APR_INCLUDE_DIRS)
-#   - avahi-utils: syncai_system_manager spawns avahi-publish; talks to the
-#     HOST avahi-daemon via the mounted /run/dbus/system_bus_socket, so no
-#     avahi-daemon runs inside the container
+# Local timezone (overridable per-container via the TZ env var in compose).
+# /etc/localtime is linked too so programs that ignore TZ still agree.
+ENV TZ=Asia/Taipei
+RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime && \
+    echo "${TZ}" > /etc/timezone
+
+# Allow any uid (overridden via compose `user:` in dev) to sudo without
+# password — syncai_system_manager needs sudo for nmcli against the host
+# NetworkManager.
+RUN echo "ALL ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# ubuntu:22.04 has no default uid-1000 user, so create the `syncrobotic` user
+# (named after the host user; uid 1000 matches so bind-mounted files keep the
+# right ownership). HOME is world-writable so a runtime-overridden uid can
+# still write ~/.ros, ~/.cache, ~/.bash_history.
+RUN groupadd -g 1000 syncrobotic && \
+    useradd -m -u 1000 -g 1000 -s /bin/bash syncrobotic && \
+    chmod -R 777 /home/syncrobotic && \
+    echo 'source /opt/ros/humble/setup.bash' >> /home/syncrobotic/.bashrc
+
+# ---------------------------------------------------------------------------
+# deps-builder: source-built third-party libs → /usr/local
+# /usr/local is empty in base, so downstream stages pick up everything with a
+# single COPY --from=deps-builder /usr/local /usr/local.
+# ---------------------------------------------------------------------------
+FROM base AS deps-builder
+
 RUN apt-get update && apt-get install -y \
-    libgraphicsmagick++1-dev \
-    libzmq3-dev \
-    libncurses-dev \
-    nlohmann-json3-dev \
-    libapr1-dev \
-    libaprutil1-dev \
-    avahi-utils \
+    build-essential \
+    cmake \
+    git \
+    libboost-all-dev \
+    libtbb-dev \
+    libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Livox-SDK2: livox_ros_driver2 links liblivox_lidar_sdk_shared.so from
-# /usr/local (via find_library). The SDK source lives in the mounted workspace
-# at runtime, so it can't be built from there at image-build time — clone and
-# install it here instead. Pinned to the commit vendored under src/third-party.
+# /usr/local (via find_library). Pinned to the commit vendored under
+# src/third-party.
 RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
     cd /tmp/Livox-SDK2 && \
     git checkout f5d9375f84efe2b15bc0a052d3e18482ed13adf4 && \
@@ -75,60 +108,97 @@ RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
 # GTSAM 4.2.0: pgo + hba (FASTLIO2_ROS2) link libgtsam (find_package(GTSAM)).
 # No apt/PPA GTSAM on arm64, so build from source into /usr/local. Flags follow
 # the LIO-SAM recipe: system Eigen + no march-native to avoid Eigen-alignment
-# crashes when mixed with PCL; TBB on; shared libs. libboost-all-dev / libtbb-dev
-# are GTSAM's own deps; libeigen3-dev backs -DGTSAM_USE_SYSTEM_EIGEN=ON.
-RUN apt-get update && apt-get install -y \
-    libboost-all-dev \
-    libtbb-dev \
-    libeigen3-dev \
-    && rm -rf /var/lib/apt/lists/*
+# crashes when mixed with PCL; TBB on; shared libs.
 RUN git clone --branch 4.2.0 --depth 1 https://github.com/borglab/gtsam.git /tmp/gtsam && \
     cd /tmp/gtsam && \
     mkdir build && cd build && \
     cmake .. \
-        -DGTSAM_USE_SYSTEM_EIGEN=ON \
-        -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
-        -DGTSAM_BUILD_TESTS=OFF \
-        -DGTSAM_BUILD_UNSTABLE=OFF \
-        -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
-        -DGTSAM_WITH_TBB=ON \
-        -DBUILD_SHARED_LIBS=ON && \
+    -DGTSAM_USE_SYSTEM_EIGEN=ON \
+    -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
+    -DGTSAM_BUILD_TESTS=OFF \
+    -DGTSAM_BUILD_UNSTABLE=OFF \
+    -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
+    -DGTSAM_WITH_TBB=ON \
+    -DBUILD_SHARED_LIBS=ON && \
     make -j"$(nproc)" && make install && \
     ldconfig && \
     rm -rf /tmp/gtsam
 
-# Sophus 1.22.10: fastlio2 + hba (FASTLIO2_ROS2) need find_package(Sophus).
-# Header-only Lie-group lib; install into /usr/local. SOPHUS_USE_BASIC_LOGGING=ON
-# drops the fmt dependency (matches the add_compile_definitions in their CMake);
-# tests/examples off to keep the build fast. Uses libeigen3-dev installed above.
+# Sophus 1.22.10: fastlio2 + hba need find_package(Sophus). Header-only;
+# SOPHUS_USE_BASIC_LOGGING=ON drops the fmt dependency (matches the
+# add_compile_definitions in their CMake).
 RUN git clone --branch 1.22.10 --depth 1 https://github.com/strasdat/Sophus.git /tmp/Sophus && \
     cd /tmp/Sophus && \
     mkdir build && cd build && \
     cmake .. \
-        -DSOPHUS_USE_BASIC_LOGGING=ON \
-        -DBUILD_SOPHUS_TESTS=OFF \
-        -DBUILD_SOPHUS_EXAMPLES=OFF && \
+    -DSOPHUS_USE_BASIC_LOGGING=ON \
+    -DBUILD_SOPHUS_TESTS=OFF \
+    -DBUILD_SOPHUS_EXAMPLES=OFF && \
     make -j"$(nproc)" && make install && \
     ldconfig && \
     rm -rf /tmp/Sophus
 
-# Python web stack for syncai_backend (no reliable apt key on jammy; installed
-# via pip). Keep in sync with src/syncai_backend/requirements.txt.
-RUN pip3 install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    structlog \
-    dotenv \
-    sqlalchemy \
-    sqlalchemy-utils \
-    psycopg2 \
-    temporalio \
-    requests
+# ---------------------------------------------------------------------------
+# dev: the interactive development image (compose service robot01,
+# image syncai-test-robot, target: dev). Functionally identical to the old
+# single-stage image: full GUI/tooling, workspace bind-mounted at runtime,
+# colcon build run by hand.
+# ---------------------------------------------------------------------------
+FROM base AS dev
 
-# Node.js 22 for syncai_frontend (Next.js 16). No Node in ros/ubuntu base and no
-# reliable apt package on jammy, so install from NodeSource. `npm install` and
-# `npm run dev` run at runtime against src/syncai_frontend in the mounted
-# workspace; only the node/npm runtime needs to live in the image.
+# GUI, build toolchain, PCL/ROS build deps, and operator conveniences.
+RUN apt-get update && apt-get install -y \
+    ros-humble-rviz2 \
+    ros-humble-pcl-conversions \
+    ros-humble-pcl-ros \
+    ros-humble-pointcloud-to-laserscan \
+    ros-humble-teleop-twist-keyboard \
+    python3-opencv \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    python3-dotenv \
+    byobu \
+    daemontools \
+    net-tools \
+    network-manager \
+    bluez \
+    git \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# System deps for workspace packages that have no ament/CMake config:
+#   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
+#   - libzmq3-dev / libncurses-dev: behaviortree_cpp
+#   - nlohmann-json3-dev: header-only JSON library
+#   - libapr1-dev / libaprutil1-dev: livox_ros_driver2
+#   - libboost-all-dev / libtbb-dev / libeigen3-dev: GTSAM/Sophus headers
+#     (the libs themselves come prebuilt from deps-builder below)
+RUN apt-get update && apt-get install -y \
+    libgraphicsmagick++1-dev \
+    libzmq3-dev \
+    libncurses-dev \
+    nlohmann-json3-dev \
+    libapr1-dev \
+    libaprutil1-dev \
+    libboost-all-dev \
+    libtbb-dev \
+    libeigen3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Prebuilt Livox-SDK2 / GTSAM / Sophus from the cached builder stage.
+COPY --from=deps-builder /usr/local /usr/local
+RUN ldconfig
+
+# Python web stack for syncai_backend. requirements.txt is the single source
+# of truth for the backend's python deps.
+COPY src/syncai_backend/requirements.txt /tmp/syncai_backend_requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/syncai_backend_requirements.txt && \
+    rm /tmp/syncai_backend_requirements.txt
+
+# Node.js 22 for syncai_frontend (Next.js 16). `npm install` / `npm run dev`
+# run at runtime against the mounted workspace; only the node/npm runtime
+# needs to live in the image.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
@@ -136,25 +206,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble
 
-# Allow any uid (overridden via compose `user:`) to sudo without password.
-RUN echo "ALL ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+USER syncrobotic
+WORKDIR /home/syncrobotic
 
-# ubuntu:22.04 has no default uid-1000 user, so create the `ubuntu` user and
-# its home dir. Then make HOME world-writable so a runtime-overridden uid
-# (via compose `user:`) can still write ~/.ros, ~/.cache, ~/.bash_history.
-RUN groupadd -g 1000 ubuntu && \
-    useradd -m -u 1000 -g 1000 -s /bin/bash ubuntu && \
-    chmod -R 777 /home/ubuntu
-
-USER ubuntu
-WORKDIR /home/ubuntu
-
-# Populate rosdep cache for the ubuntu user (the root-level update above does not
-# carry over to ~ubuntu/.ros), so `rosdep install` works at runtime.
+# Populate rosdep cache for the syncrobotic user (the root-level update above
+# does not carry over to ~/.ros), so `rosdep install` works at runtime.
 RUN rosdep update --rosdistro humble
 
-# Auto-source ROS 2 and workspace in every shell
-RUN echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && \
-    echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
+# Auto-source the mounted workspace overlay in every shell.
+RUN echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
 
 CMD ["bash"]

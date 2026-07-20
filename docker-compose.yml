@@ -1,9 +1,5 @@
-# Top-level compose file: infra services (postgres, temporal, ...) plus the
-# robot containers pulled in from docker-compose.robots.yml via include.
-# The robots reach the infra services by service name over the shared
-# default bridge network.
-include:
-  - docker-compose.robots.yml
+# include:
+#   - docker-compose.robots.yml
 
 services:
   postgres:
@@ -37,7 +33,7 @@ services:
       - postgres
 
   temporal:
-    image: temporalio/auto-setup:1.29.1
+    image: temporalio/auto-setup:1.29.7
     container_name: temporal
     environment:
       # Reuse the shared postgres instance; auto-setup creates the
@@ -55,7 +51,7 @@ services:
         condition: service_healthy
 
   temporal_ui:
-    image: temporalio/ui:2.42.1
+    image: temporalio/ui:2.52.1
     container_name: temporal_ui
     environment:
       - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}

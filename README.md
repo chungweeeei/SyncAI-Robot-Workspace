@@ -101,7 +101,7 @@ docker compose up -d robot
 docker compose exec robot bash
 ```
 
-The workspace is mounted at `/home/ubuntu/robot_ws`. ROS 2 and the workspace
+The workspace is mounted at `/home/syncrobotic/robot_ws`. ROS 2 and the workspace
 overlay are auto-sourced in every shell via `~/.bashrc`.
 
 > Alternatively, open the folder in VS Code and **Reopen in Container**

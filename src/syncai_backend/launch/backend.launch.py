@@ -7,6 +7,10 @@ node's relative topics/actions get the /<robot_id> prefix.
 
 import configparser
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
 from launch import logging as launch_logging
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -48,6 +52,12 @@ def launch_setup(context, *args, **kwargs):
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
 
+    params_file = os.path.join(
+        get_package_share_directory("syncai_backend"),
+        "params",
+        "backend_params.yaml",
+    )
+
     # No `name=`: the params file uses the /**/syncai_backend_node wildcard key so it
     # matches the node (constructed as "syncai_backend_node") in any namespace.
     backend_node = Node(
@@ -55,7 +65,7 @@ def launch_setup(context, *args, **kwargs):
         executable="backend",
         namespace=robot_id,
         output="screen",
-        parameters=[],
+        parameters=[params_file],
     )
 
     return [backend_node]

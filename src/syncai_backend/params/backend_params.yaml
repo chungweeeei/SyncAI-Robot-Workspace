@@ -2,3 +2,16 @@
 # node in any namespace (the node is constructed as "syncai_backend_node").
 /**/syncai_backend_node:
   ros__parameters:
+    pointcloud:
+      # Live cloud streamed to the 3D frontend viewer.
+      #
+      # Defaults target the real-Livox pointlio estimator. Alternatives:
+      #   fastlio2 / Isaac : topic "fastlio2/body_cloud" (frame <robot_id>/lio_body)
+      #   raw render test  : target_frame "lidar" (pointlio odom frame) so no
+      #                      saved map / relocalize is required
+      topic: "/pointlio/body_cloud"
+      target_frame: "map"
+      # 0.0 disables extra voxel downsampling (the LIO cloud is already
+      # filtered); the point cap bounds per-frame bandwidth.
+      voxel_size: 0.0
+      max_points: 30000

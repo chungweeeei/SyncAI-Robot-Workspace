@@ -30,7 +30,7 @@
 
     # Absolute path (inside the robot container) to the keepout mask YAML.
     # Same geometry as the navigation map; black cells = keepout zones.
-    yaml_filename: "/home/ubuntu/robot_ws/map/warehouse_keepout_mask.yaml"
+    yaml_filename: "map/warehouse_keepout_mask.yaml"
 
     # Topic on which the mask OccupancyGrid is published (latched). Must match
     # mask_topic above.

@@ -27,8 +27,8 @@ def generate_launch_description():
 
     # Absolute paths inside the robot container; override with map_yaml:= /
     # mask_yaml:= when running elsewhere.
-    default_map = "/home/ubuntu/robot_ws/map/testmap.yaml"
-    default_mask = "/home/ubuntu/robot_ws/map/keepout_mask_test.yaml"
+    default_map = "map/testmap.yaml"
+    default_mask = "map/keepout_mask_test.yaml"
 
     map_yaml = LaunchConfiguration("map_yaml")
     mask_yaml = LaunchConfiguration("mask_yaml")

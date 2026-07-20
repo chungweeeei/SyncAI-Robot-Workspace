@@ -1,6 +1,10 @@
 # Web stack for the syncai_backend REST API.
 # Install inside the container:  pip install -r src/syncai_backend/requirements.txt
+# This file is the single source of truth for the backend's python deps — the
+# Dockerfile dev and backend-runtime stages both install from it.
 fastapi
+structlog  # logger.py / all modules log through structlog
+python-dotenv  # main.py `import dotenv` (.env loading in dev)
 uvicorn[standard]
 pydantic>=2.11  # validate_by_name / validate_by_alias 需 2.11+
 temporalio
