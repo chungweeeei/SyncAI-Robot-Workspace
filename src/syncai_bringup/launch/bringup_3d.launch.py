@@ -29,6 +29,18 @@ from launch_ros.actions import Node
 DEFAULT_SYSTEM_INI = "config/system.ini"
 FALLBACK_ROBOT_ID = "default_robot"
 
+# Livox MID360 driver configuration, mirrored from
+# livox_ros_driver2/launch_ROS2/msg_MID360_launch.py so the 3D lidar publishes
+# alongside the rest of the 3D localization stack.
+LIVOX_XFER_FORMAT = 0  # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
+LIVOX_MULTI_TOPIC = 0  # 0-All LiDARs share the same topic, 1-One LiDAR one topic
+LIVOX_DATA_SRC = 0  # 0-lidar, others-Invalid data src
+LIVOX_PUBLISH_FREQ = 10.0  # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.
+LIVOX_OUTPUT_TYPE = 0
+LIVOX_FRAME_ID = "laser"
+LIVOX_LVX_FILE_PATH = "/home/livox/livox_test.lvx"
+LIVOX_CMDLINE_BD_CODE = "livox0000000001"
+
 logger = launch_logging.get_logger("bringup_3d.launch")
 
 
@@ -86,7 +98,35 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
-    return [robot_state_publisher]
+    # Livox MID360 driver, brought over from
+    # livox_ros_driver2/launch_ROS2/msg_MID360_launch.py. The user config JSON
+    # lives in the livox_ros_driver2 share directory (installed via
+    # INSTALL_TO_SHARE in its CMakeLists).
+    livox_config_path = os.path.join(
+        get_package_share_directory("livox_ros_driver2"),
+        "config",
+        "MID360_config.json",
+    )
+    livox_driver = Node(
+        package="livox_ros_driver2",
+        executable="livox_ros_driver2_node",
+        name="livox_lidar_publisher",
+        namespace=robot_id,
+        output="screen",
+        parameters=[
+            {"xfer_format": LIVOX_XFER_FORMAT},
+            {"multi_topic": LIVOX_MULTI_TOPIC},
+            {"data_src": LIVOX_DATA_SRC},
+            {"publish_freq": LIVOX_PUBLISH_FREQ},
+            {"output_data_type": LIVOX_OUTPUT_TYPE},
+            {"frame_id": f"{robot_id}/{LIVOX_FRAME_ID}"},
+            {"lvx_file_path": LIVOX_LVX_FILE_PATH},
+            {"user_config_path": livox_config_path},
+            {"cmdline_input_bd_code": LIVOX_CMDLINE_BD_CODE},
+        ],
+    )
+
+    return [robot_state_publisher, livox_driver]
 
 
 def generate_launch_description():

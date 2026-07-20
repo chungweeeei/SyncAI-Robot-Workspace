@@ -16,15 +16,12 @@
     # Lowered to match the slow Isaac Sim clock (~35 Hz / 0.58x real-time).
     expected_planner_frequency: 10.0
 
-    planner_plugins: ["GridBased", "StraightLine"]
+    planner_plugins: ["GridBased"]
     GridBased:
       plugin: "syncai_planner/NavfnPlanner"
       tolerance: 0.3        # accept goals within this distance (m) of the requested pose
       use_astar: false      # false = Dijkstra, true = A*
       allow_unknown: true   # allow planning through unknown space
-    StraightLine:
-      plugin: "syncai_planner/StraightLinePlanner"
-      interpolation_resolution: 0.15   # spacing (m) between interpolated poses
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").
@@ -96,19 +93,19 @@
         # obstacle whose ray now reads inf never gets cleared -> residual cost.
         inf_is_valid: true
 
-      # 3D LiDAR obstacle source: FAST-LIO's per-scan cloud, used to catch
+      # 3D LiDAR obstacle source: Point-LIO's per-scan body cloud, used to catch
       # obstacles the 2D scan plane misses (e.g. another robot's chassis).
       pointcloud:
-        # /cloud_registered_body is FAST-LIO's single (undistorted) scan in the
-        # lidar body frame. Its topic is GLOBAL (fast_lio does not namespace it),
-        # so unlike `scan` above this is an ABSOLUTE name, not a relative one.
-        # Multi-robot caveat: every robot's fast_lio publishes to this same
-        # global topic, so if robots share a DDS domain remap fast_lio's output
-        # per robot first, or each robot will mark every robot's cloud.
-        topic: /cloud_registered_body
+        # pointlio_node publishes body_cloud relative to its namespace, so with
+        # the robot_id-namespaced launch this resolves to
+        # /<robot_id>/pointlio/body_cloud. Relative name (like `scan` above):
+        # the planner_server runs in the <robot_id> namespace, so each robot
+        # only marks its own cloud even on a shared DDS domain.
+        topic: pointlio/body_cloud
         # Leave sensor_frame empty on purpose: the observation buffer then uses
-        # the cloud's own header frame_id (<robot_id>/lidar_top) as the raytrace
-        # origin, so this source needs no per-robot launch-file frame override.
+        # the cloud's own header frame_id (<robot_id>/base_link, Point-LIO's
+        # body_frame) as the raytrace origin, so this source needs no per-robot
+        # launch-file frame override.
         sensor_frame: ""
         data_type: "PointCloud2"
         marking: true

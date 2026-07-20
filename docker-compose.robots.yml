@@ -96,7 +96,8 @@ x-ros-log-tmpfs: &ros-log-tmpfs
   type: tmpfs
   target: /tmp/ros_log
   tmpfs:
-    size: 134217728   # 128 MiB
+    size: 134217728 # 128 MiB
+    mode: 1777
 
 services:
   # ---------------------------------------------------------------------
@@ -121,9 +122,9 @@ services:
       # Mount the colcon workspace (src/ lives here) into the container.
       - .:/home/syncrobotic/robot_ws
       # Per-instance identity, overlaid on the fixed path the launch files read.
-      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
-      # X11 unix socket of the host's local desktop (socket connect needs
-      # write access, so no :ro) + auth cookie (see header note).
+      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini
+        # X11 unix socket of the host's local desktop (socket connect needs
+        # write access, so no :ro) + auth cookie (see header note).
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       # Host D-Bus system bus so nmcli inside the container talks to the
@@ -152,7 +153,7 @@ services:
     volumes:
       - *ros-log-tmpfs
       - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
+      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
@@ -173,7 +174,7 @@ services:
     volumes:
       - *ros-log-tmpfs
       - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot02.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
+      - ./config/instances/robot02.ini:/home/syncrobotic/robot_ws/config/system.ini
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
@@ -194,70 +195,7 @@ services:
     volumes:
       - *ros-log-tmpfs
       - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot03.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
-      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-
-  robot04-sim:
-    <<: *robot-common
-    profiles: [ "sim" ]
-    container_name: robot04-sim
-    networks:
-      default:
-        gw_priority: 1
-      syncai-lan:
-        ipv4_address: 192.168.0.37
-    environment:
-      <<: *sim-env
-      DDS_BIND_ADDRESS: 192.168.0.37
-    volumes:
-      - *ros-log-tmpfs
-      - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot04.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
-      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-
-  robot05-sim:
-    <<: *robot-common
-    profiles: [ "sim" ]
-    container_name: robot05-sim
-    networks:
-      default:
-        gw_priority: 1
-      syncai-lan:
-        ipv4_address: 192.168.0.38
-    environment:
-      <<: *sim-env
-      DDS_BIND_ADDRESS: 192.168.0.38
-    volumes:
-      - *ros-log-tmpfs
-      - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot05.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
-      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-
-  robot06-sim:
-    <<: *robot-common
-    profiles: [ "sim" ]
-    container_name: robot06-sim
-    networks:
-      default:
-        gw_priority: 1
-      syncai-lan:
-        ipv4_address: 192.168.0.39
-    environment:
-      <<: *sim-env
-      DDS_BIND_ADDRESS: 192.168.0.39
-    volumes:
-      - *ros-log-tmpfs
-      - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot06.ini:/home/syncrobotic/robot_ws/config/system.ini:ro
+      - ./config/instances/robot03.ini:/home/syncrobotic/robot_ws/config/system.ini
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro

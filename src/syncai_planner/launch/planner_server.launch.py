@@ -78,7 +78,7 @@ def launch_setup(context, *args, **kwargs):
                 # yaml defaults with the robot_id prefix here. Later entries
                 # in this list take precedence over the params file.
                 "robot_base_frame": f"{robot_id}/base_link",
-                "obstacle_layer.scan.sensor_frame": f"{robot_id}/scan",
+                "obstacle_layer.scan.sensor_frame": f"{robot_id}/laser",
             },
         ],
     )
