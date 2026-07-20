@@ -446,4 +446,17 @@
         <child link="HR_FOOT"/>
         <origin xyz="0 0 -0.21012"/>
     </joint>
+
+    <!--!!!!!!!!!!!! Lidar !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
+    <link name="laser">
+        <inertial>
+            <mass value="0.01"/>
+            <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+        </inertial>
+    </link>
+    <joint name="laser_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="laser"/>
+        <origin xyz="0.195 0.00 0.155" rpy="0 0.25 0"/>
+    </joint>
 </robot>

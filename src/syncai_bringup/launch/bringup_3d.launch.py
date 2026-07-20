@@ -56,7 +56,6 @@ def launch_setup(context, *args, **kwargs):
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
 
-    lidar_height = LaunchConfiguration("lidar_height")
     urdf_file = LaunchConfiguration("urdf_file").perform(context)
     use_sim_time = LaunchConfiguration("use_sim_time")
 
@@ -87,40 +86,7 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
-    # Static TF: <robot_id>/base_link -> <robot_id>/lidar_top at the 3D lidar
-    # mount height. No namespace on the node so it publishes to the GLOBAL
-    # /tf_static shared with the sim's odom->base_link tree.
-    # base_link_to_lidar_top_tf = Node(
-    #     package="tf2_ros",
-    #     executable="static_transform_publisher",
-    #     name="base_link_to_lidar_top_tf",
-    #     namespace=robot_id,
-    #     arguments=[
-    #         "--x",
-    #         "0.0",
-    #         "--y",
-    #         "0.0",
-    #         "--z",
-    #         lidar_height,
-    #         "--qx",
-    #         "0.0",
-    #         "--qy",
-    #         "0.0",
-    #         "--qz",
-    #         "0.0",
-    #         "--qw",
-    #         "1.0",
-    #         "--frame-id",
-    #         f"{robot_id}/base_link",
-    #         "--child-frame-id",
-    #         f"{robot_id}/lidar_top",
-    #     ],
-    # )
-
-    return [
-        robot_state_publisher,
-        # base_link_to_lidar_top_tf,
-    ]
+    return [robot_state_publisher]
 
 
 def generate_launch_description():
