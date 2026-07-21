@@ -6,6 +6,7 @@
 #include <functional>
 
 #include "syncai_common/msg/robot_mode.hpp"
+#include "syncai_common/msg/robot_status.hpp"
 #include "syncai_util/robot_utils.hpp"
 #include "tf2/utils.h"
 
@@ -97,6 +98,8 @@ void RobotStateNode::onTimer()
   msg.map = map_name_;
   // {TODO} mode is currently hardcoded to AUTO
   msg.mode = syncai_common::msg::RobotMode::AUTO;  // default for now
+  // {TODO} state derivation not implemented yet; hardcoded to IDLE
+  msg.state = syncai_common::msg::RobotStatus::IDLE;
 
   // position from TF (global_frame -> base_frame)
   geometry_msgs::msg::PoseStamped pose;
