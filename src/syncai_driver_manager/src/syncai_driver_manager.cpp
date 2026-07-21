@@ -555,7 +555,8 @@ void DriverManagerNode::setMotionKeyCallback(
   const std::shared_ptr<syncai_common::srv::SetMotionKey::Request> request,
   std::shared_ptr<syncai_common::srv::SetMotionKey::Response> response)
 {
-  // While the safety lock is engaged, only the recover key ("4") may pass.
+  // While the safety lock is engaged, only the emergency stop ("4") may pass;
+  // control is restored via the reset_safety service, not a motion key.
   if (safe_lock_.load() && request->key != "4") {
     response->success = false;
     response->message = "LOCKED";
@@ -563,7 +564,7 @@ void DriverManagerNode::setMotionKeyCallback(
   }
 
   // Emergency stop bypasses the MODE keymap.
-  if (request->key == "5") {
+  if (request->key == "4") {
     udpSend("ESTOP\n", 6);
     response->success = true;
     response->message = "Emergency stop sent";
@@ -571,11 +572,11 @@ void DriverManagerNode::setMotionKeyCallback(
   }
 
   // Map the motion key to the controller's MODE character.
-  const char motion_key = (request->key == "0")   ? 'Z'
-                          : (request->key == "1") ? 'C'
-                          : (request->key == "2") ? 'X'
-                          : (request->key == "3") ? 'R'
-                          : (request->key == "4") ? 'V'
+  const char motion_key = (request->key == "0")   ? 'Z'   // Stand
+                          : (request->key == "1") ? 'C'   // Locomotion
+                          : (request->key == "2") ? 'X'   // Lie down
+                          : (request->key == "3") ? 'R'   // Damping
+                          : (request->key == "5") ? 'M'   // MPC
                                                   : ' ';
   if (motion_key == ' ') {
     response->success = false;

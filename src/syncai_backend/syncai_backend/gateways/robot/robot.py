@@ -12,7 +12,7 @@ from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
 
 from syncai_common.msg import WifiNetwork
-from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks
+from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks, SetMotionKey
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import Point, Quaternion, Pose, PoseStamped
@@ -81,8 +81,17 @@ class RobotGateway:
             srv_name="connect_wifi",
         )
 
+        set_motion_key_client = self._node.create_client(
+            srv_type=SetMotionKey,
+            srv_name="set_motion_key",
+        )
+
         self._service_clients.update(
-            {"scan_wifi": scan_wifi_client, "connect_wifi": connect_wifi_client}
+            {
+                "scan_wifi": scan_wifi_client,
+                "connect_wifi": connect_wifi_client,
+                "set_motion_key": set_motion_key_client,
+            }
         )
 
     def scan_wifi_networks(self) -> Tuple[bool, str, List[WifiNetwork]]:
@@ -116,6 +125,20 @@ class RobotGateway:
         # The service itself waits up to 60s for nmcli; leave headroom on top.
         if not _wait_for_future(future, timeout=70.0):
             return False, "Timeout waiting for connect_wifi response"
+
+        response = future.result()
+        return response.success, response.message
+
+    def set_motion_key(self, key: str) -> Tuple[bool, str]:
+        motion_key_client = self._service_clients.get("set_motion_key")
+        if not motion_key_client.wait_for_service(timeout_sec=5.0):
+            return False, "set_motion_key service is not available"
+
+        self._logger.info("[RobotGateway] Setting motion key", key=key)
+
+        future = motion_key_client.call_async(SetMotionKey.Request(key=key))
+        if not _wait_for_future(future, timeout=10.0):
+            return False, "Timeout waiting for set_motion_key response"
 
         response = future.result()
         return response.success, response.message
