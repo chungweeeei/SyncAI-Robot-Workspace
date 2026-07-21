@@ -51,7 +51,7 @@ namespace syncai_planner
 Returns length of plan if found, and fills an array with x,y interpolated
 positions at about 1/2 cell resolution; else returns 0.
 */
-int create_nav_plan_astar(
+int createNavPlanAstar(
   const COSTTYPE * costmap, int nx, int ny, int * goal, int * start, float * plan, int nplan);
 
 /**

@@ -97,7 +97,9 @@ x-ros-log-tmpfs: &ros-log-tmpfs
   target: /tmp/ros_log
   tmpfs:
     size: 134217728 # 128 MiB
-    mode: 1777
+    # Octal literal (0o…): a bare `1777` is parsed as decimal and ends up as
+    # the bogus mode `3361`, which is why uid 1000 couldn't write here.
+    mode: 0o1777
 
 services:
   # ---------------------------------------------------------------------

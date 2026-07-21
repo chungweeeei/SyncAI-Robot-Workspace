@@ -232,7 +232,7 @@ bool NavfnPlanner::makePlan(
       p.position.x = goal.position.x - tolerance;
       while (p.position.x <= goal.position.x + tolerance) {
         potential = getPointPotential(p.position);
-        double sdist = squared_distance(p, goal);
+        double sdist = squaredDistance(p, goal);
         if (potential < POT_HIGH && sdist < best_sdist) {
           best_sdist = sdist;
           best_pose = p;
@@ -304,8 +304,8 @@ void NavfnPlanner::smoothApproachToGoal(
     auto second_to_last_pose = plan.poses.end()[-2];
     auto last_pose = plan.poses.back();
     if (
-      squared_distance(last_pose.pose, second_to_last_pose.pose) >
-      squared_distance(goal, second_to_last_pose.pose)) {
+      squaredDistance(last_pose.pose, second_to_last_pose.pose) >
+      squaredDistance(goal, second_to_last_pose.pose)) {
       plan.poses.back().pose = goal;
       return;
     }

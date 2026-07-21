@@ -10,3 +10,11 @@
     # overrides this with the <robot_id>/ prefix; this value is only a
     # fallback when the node is run without the launch file.
     base_frame: "base_link"
+
+    # --- UDP session with the robot controller ---
+    # Local interface/port the node binds to receive telemetry datagrams.
+    telemetry_recv_ip: "0.0.0.0"
+    telemetry_recv_port: 50012
+    # Remote controller endpoint that outbound command datagrams are sent to.
+    command_target_ip: "127.0.0.1"
+    command_target_port: 50051

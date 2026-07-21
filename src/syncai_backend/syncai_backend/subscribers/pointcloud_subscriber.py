@@ -55,7 +55,7 @@ class PointCloudSubscriber:
         # Absolute name: pointlio runs under its own /pointlio namespace, not
         # this node's /<robot_id> namespace.
         self._topic = (
-            node.declare_parameter("pointcloud.topic", "/pointlio/body_cloud")
+            node.declare_parameter("pointcloud.topic", "pointlio/body_cloud")
             .get_parameter_value()
             .string_value
         )
