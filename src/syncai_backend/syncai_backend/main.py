@@ -3,9 +3,8 @@ import dotenv
 import structlog
 
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-
-from tf2_ros import Buffer, TransformListener
 
 from syncai_backend.logger import setup_log_handler
 from syncai_backend.database.postgres import connect_to_postgres
@@ -54,12 +53,7 @@ class SyncAIBackend(Node):
         # init_map_repo creates the ORM schema and builds its own session_maker
         # from the engine (per-repo session convention).
         map_repo = init_map_repo(logger=logger, engine=engine)
-        pc_repo = init_pointcloud_repo(logger=logger)
-
-        # Shared TF buffer for transforming body_cloud into the map frame; the
-        # listener fills it from /tf and /tf_static on this node's executor.
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
+        pointcloud_repo = init_pointcloud_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
         artifact_gw = init_artifact_gateway(logger=logger)
@@ -68,7 +62,7 @@ class SyncAIBackend(Node):
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
         init_map_subscriber(logger=logger, node=self, map_repo=map_repo)
         init_pointcloud_subscriber(
-            logger=logger, node=self, pc_repo=pc_repo, tf_buffer=self._tf_buffer
+            logger=logger, node=self, pointcloud_repo=pointcloud_repo
         )
 
         start_temporal_worker(
@@ -80,7 +74,7 @@ class SyncAIBackend(Node):
             robot_repo=robot_repo,
             robot_gw=robot_gw,
             map_repo=map_repo,
-            pc_repo=pc_repo,
+            pointcloud_repo=pointcloud_repo,
         )
 
 
@@ -89,7 +83,12 @@ def main():
 
     try:
         backend_node = SyncAIBackend(logger=logger)
-        rclpy.spin(backend_node)
+        # MultiThreadedExecutor lets the point-cloud callback group run on a
+        # separate thread from the robot_state/map/TF callbacks, so a busy scan
+        # frame can't starve them.
+        executor = MultiThreadedExecutor()
+        executor.add_node(backend_node)
+        executor.spin()
     except Exception:
         logger.error("Failed to execute SyncAIBackend node", exc_info=True)
     finally:

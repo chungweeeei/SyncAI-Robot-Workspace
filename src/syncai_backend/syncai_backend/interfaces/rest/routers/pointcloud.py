@@ -14,7 +14,7 @@ _STREAM_INTERVAL_S = 0.1
 
 
 def init_pointcloud_router(
-    logger: structlog.stdlib.BoundLogger, pc_repo: PointCloudRepo
+    logger: structlog.stdlib.BoundLogger, pointcloud_repo: PointCloudRepo
 ) -> APIRouter:
     pointcloud_router = APIRouter(prefix="", tags=["PointCloud"])
 
@@ -30,7 +30,7 @@ def init_pointcloud_router(
         last_seq = 0
         try:
             while True:
-                frame = pc_repo.get_latest(after_seq=last_seq)
+                frame = pointcloud_repo.get_latest(after_seq=last_seq)
                 if frame is not None:
                     last_seq = frame.seq
                     header = struct.pack("<I", frame.num_points)

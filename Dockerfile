@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y \
     iputils-ping \
     avahi-utils \
     tzdata \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
 # Local timezone (overridable per-container via the TZ env var in compose).

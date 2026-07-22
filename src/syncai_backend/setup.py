@@ -6,7 +6,7 @@ from glob import glob
 from setuptools import find_packages, setup
 from setuptools.command.install import install
 
-package_name = 'syncai_backend'
+package_name = "syncai_backend"
 
 
 class InstallNoSource(install):
@@ -26,7 +26,7 @@ class InstallNoSource(install):
         target = os.path.join(self.install_lib, package_name)
         if not os.path.isdir(target):
             return
-        py_files = glob(os.path.join(target, '**', '*.py'), recursive=True)
+        py_files = glob(os.path.join(target, "**", "*.py"), recursive=True)
         if any(os.path.islink(p) for p in py_files):
             return
         compileall.compile_dir(target, legacy=True, quiet=1)
@@ -34,32 +34,31 @@ class InstallNoSource(install):
             os.remove(py)
         for root, dirs, _ in os.walk(target):
             for d in dirs:
-                if d == '__pycache__':
+                if d == "__pycache__":
                     shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+
 
 setup(
     name=package_name,
-    version='0.0.0',
-    packages=find_packages(exclude=['test']),
-    cmdclass={'install': InstallNoSource},
+    version="0.0.0",
+    packages=find_packages(exclude=["test"]),
+    cmdclass={"install": InstallNoSource},
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'params'), glob('params/*.yaml')),
+        ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
+        ("share/" + package_name, ["package.xml"]),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ],
-    install_requires=['setuptools'],
+    install_requires=["setuptools"],
     zip_safe=True,
-    maintainer='ros',
-    maintainer_email='chungweeeei@gmail.com',
-    description='Robot backend node exposing a RESTful API (FastAPI) bridged to ROS 2',
-    license='Apache-2.0',
-    tests_require=['pytest'],
+    maintainer="ros",
+    maintainer_email="chungweeeei@gmail.com",
+    description="Robot backend node exposing a RESTful API (FastAPI) bridged to ROS 2",
+    license="Apache-2.0",
+    tests_require=["pytest"],
     entry_points={
-        'console_scripts': [
+        "console_scripts": [
             # ros2 run syncai_backend backend
-            'backend = syncai_backend.main:main',
+            "backend = syncai_backend.main:main",
         ],
     },
 )

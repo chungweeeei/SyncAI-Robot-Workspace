@@ -4,12 +4,7 @@ import * as React from "react";
 import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
-import type {
-  MapMetadata,
-  OccupancyGrid,
-  RobotPose,
-  Vertex,
-} from "@/lib/types/robot";
+import type { MapMetadata, RobotPose, Vertex } from "@/lib/types/robot";
 
 /**
  * ROS world coordinates -> grid pixel coordinates (y flipped: canvas rows
@@ -23,9 +18,6 @@ export function worldToGrid(wx: number, wy: number, meta: MapMetadata) {
 }
 
 interface Palette {
-  free: string;
-  occupied: string;
-  unknown: string;
   robot: string;
   robotHeading: string;
   waypoint: string;
@@ -34,18 +26,12 @@ interface Palette {
 
 const PALETTES: Record<"light" | "dark", Palette> = {
   light: {
-    free: "#ffffff",
-    occupied: "#262626",
-    unknown: "#e5e5e5",
     robot: "#2563eb",
     robotHeading: "#ffffff",
     waypoint: "#d97706",
     label: "#525252",
   },
   dark: {
-    free: "#262626",
-    occupied: "#fafafa",
-    unknown: "#171717",
     robot: "#3b82f6",
     robotHeading: "#ffffff",
     waypoint: "#f59e0b",
@@ -53,50 +39,9 @@ const PALETTES: Record<"light" | "dark", Palette> = {
   },
 };
 
-function hexToRgb(hex: string): [number, number, number] {
-  return [
-    parseInt(hex.slice(1, 3), 16),
-    parseInt(hex.slice(3, 5), 16),
-    parseInt(hex.slice(5, 7), 16),
-  ];
-}
-
-function renderGridImage(
-  grid: OccupancyGrid,
-  meta: MapMetadata,
-  palette: Palette,
-): HTMLCanvasElement {
-  const { width, height } = meta;
-  const offscreen = document.createElement("canvas");
-  offscreen.width = width;
-  offscreen.height = height;
-  const ctx = offscreen.getContext("2d")!;
-  const image = ctx.createImageData(width, height);
-
-  const free = hexToRgb(palette.free);
-  const occupied = hexToRgb(palette.occupied);
-  const unknown = hexToRgb(palette.unknown);
-
-  for (let row = 0; row < height; row++) {
-    // ROS grid row 0 is the bottom of the map; canvas row 0 is the top
-    const canvasRow = height - 1 - row;
-    for (let col = 0; col < width; col++) {
-      const value = grid[row * width + col];
-      const rgb = value === 100 ? occupied : value === -1 ? unknown : free;
-      const i = (canvasRow * width + col) * 4;
-      image.data[i] = rgb[0];
-      image.data[i + 1] = rgb[1];
-      image.data[i + 2] = rgb[2];
-      image.data[i + 3] = 255;
-    }
-  }
-
-  ctx.putImageData(image, 0, 0);
-  return offscreen;
-}
-
 interface MapCanvasProps {
-  grid: OccupancyGrid;
+  /** The occupancy map as a PNG data URI (already rendered upright server-side). */
+  mapImageUrl: string;
   meta: MapMetadata;
   pose: RobotPose;
   vertexes?: Vertex[];
@@ -105,7 +50,7 @@ interface MapCanvasProps {
 }
 
 export function MapCanvas({
-  grid,
+  mapImageUrl,
   meta,
   pose,
   vertexes = [],
@@ -122,9 +67,14 @@ export function MapCanvas({
     if (!container || !canvas) return;
 
     const palette = PALETTES[resolvedTheme === "dark" ? "dark" : "light"];
-    const gridImage = renderGridImage(grid, meta, palette);
+
+    // The map PNG loads asynchronously; draw() no-ops until it's ready, then
+    // onload (and every ResizeObserver tick) repaints with the image in place.
+    const mapImage = new Image();
+    let mapLoaded = false;
 
     const draw = () => {
+      if (!mapLoaded) return;
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.round(rect.width * dpr);
@@ -148,13 +98,7 @@ export function MapCanvas({
       };
 
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(
-        gridImage,
-        ox,
-        oy,
-        meta.width * scale,
-        meta.height * scale,
-      );
+      ctx.drawImage(mapImage, ox, oy, meta.width * scale, meta.height * scale);
 
       // Waypoints
       for (const vertex of vertexes) {
@@ -190,11 +134,17 @@ export function MapCanvas({
       ctx.restore();
     };
 
+    mapImage.onload = () => {
+      mapLoaded = true;
+      draw();
+    };
+    mapImage.src = mapImageUrl;
+
     draw();
     const observer = new ResizeObserver(draw);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [grid, meta, pose, vertexes, showLabels, resolvedTheme]);
+  }, [mapImageUrl, meta, pose, vertexes, showLabels, resolvedTheme]);
 
   return (
     <div

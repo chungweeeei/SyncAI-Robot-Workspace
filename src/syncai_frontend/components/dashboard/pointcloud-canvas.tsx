@@ -173,7 +173,7 @@ export function PointCloudCanvas({
     liveGeom.setDrawRange(0, 0);
     const livePoints = new THREE.Points(
       liveGeom,
-      new THREE.PointsMaterial({ size: 0.05, vertexColors: true }),
+      new THREE.PointsMaterial({ size: 0.08, vertexColors: true }),
     );
     livePoints.frustumCulled = false;
     scene.add(livePoints);
@@ -320,7 +320,7 @@ export function PointCloudCanvas({
         const points = new THREE.Points(
           geom,
           new THREE.PointsMaterial({
-            size: 0.03,
+            size: 0.05,
             vertexColors: true,
             opacity: 0.5,
             transparent: true,
