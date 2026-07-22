@@ -57,6 +57,7 @@ def init_rest_server(
     robot_gw: RobotGateway,
     map_repo: MapRepo,
     pointcloud_repo: PointCloudRepo,
+    map_cloud_repo: PointCloudRepo,
 ) -> FastAPI:
 
     description = """
@@ -88,7 +89,11 @@ def init_rest_server(
         init_robot_router(logger=logger, robot_repo=robot_repo, robot_gw=robot_gw)
     )
     app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
-    app.include_router(init_map_router(logger=logger, map_repo=map_repo))
+    app.include_router(
+        init_map_router(
+            logger=logger, map_repo=map_repo, map_cloud_repo=map_cloud_repo
+        )
+    )
     app.include_router(
         init_pointcloud_router(logger=logger, pointcloud_repo=pointcloud_repo)
     )
@@ -103,6 +108,7 @@ def start_rest_server(
     robot_gw: RobotGateway,
     map_repo: MapRepo,
     pointcloud_repo: PointCloudRepo,
+    map_cloud_repo: PointCloudRepo,
 ):
 
     app = init_rest_server(
@@ -112,6 +118,7 @@ def start_rest_server(
         robot_gw=robot_gw,
         map_repo=map_repo,
         pointcloud_repo=pointcloud_repo,
+        map_cloud_repo=map_cloud_repo,
     )
 
     def _run():

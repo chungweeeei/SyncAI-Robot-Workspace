@@ -64,8 +64,8 @@ interface PointCloudCanvasProps {
   /** Ground-plane texture (base64 PNG data URI from GET /api/v1/map/image). */
   mapImageUrl?: string;
   pose?: RobotPose;
-  /** When set, also fetch and render the static map cloud for this map. */
-  mapCloudName?: string;
+  /** When true, also fetch and render the static localizer map cloud. */
+  showMapCloud?: boolean;
   onStatus?: (status: StreamStatus) => void;
   className?: string;
 }
@@ -74,7 +74,7 @@ export function PointCloudCanvas({
   meta,
   mapImageUrl,
   pose,
-  mapCloudName,
+  showMapCloud,
   onStatus,
   className,
 }: PointCloudCanvasProps) {
@@ -210,39 +210,9 @@ export function PointCloudCanvas({
     };
     raf = requestAnimationFrame(animate);
 
-    // Live stream: write frames straight into the GPU buffers.
-    const color = new THREE.Color();
-    const posAttr = liveGeom.getAttribute("position") as THREE.BufferAttribute;
-    const colAttr = liveGeom.getAttribute("color") as THREE.BufferAttribute;
-    const applyFrame = (frame: PointCloudFrame) => {
-      const n = Math.min(frame.count, MAX_LIVE_POINTS);
-      const src = frame.positions;
-      const dstPos = posAttr.array as Float32Array;
-      const dstCol = colAttr.array as Float32Array;
-      for (let i = 0; i < n; i++) {
-        const j = i * 3;
-        dstPos[j] = src[j];
-        dstPos[j + 1] = src[j + 1];
-        dstPos[j + 2] = src[j + 2];
-        heightColor(src[j + 2], color);
-        dstCol[j] = color.r;
-        dstCol[j + 1] = color.g;
-        dstCol[j + 2] = color.b;
-      }
-      posAttr.needsUpdate = true;
-      colAttr.needsUpdate = true;
-      liveGeom.setDrawRange(0, n);
-    };
-
-    const stream = createPointCloudStream({
-      onFrame: applyFrame,
-      onStatus: (s) => onStatusRef.current?.(s),
-    });
-
     const dispose = () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
-      stream.close();
       controls.dispose();
       renderer.dispose();
       scene.traverse((obj) => {
@@ -274,6 +244,50 @@ export function PointCloudCanvas({
     };
   }, [meta, mapImageUrl, resolvedTheme]);
 
+  // ---- Live body_cloud stream (independent of scene rebuilds) ----------
+  // The WebSocket is opened once on mount and closed on unmount. Each frame is
+  // written into whatever live geometry the scene-setup effect currently owns
+  // (via sceneRef), so map loads and theme changes rebuild the scene without
+  // tearing down the socket. Previously the stream lived in the setup effect,
+  // so an async map load closed the still-connecting WS and logged
+  // "WebSocket is closed before the connection is established".
+  React.useEffect(() => {
+    const color = new THREE.Color();
+    const applyFrame = (frame: PointCloudFrame) => {
+      const ctx = sceneRef.current;
+      if (!ctx) return;
+      const posAttr = ctx.liveGeom.getAttribute(
+        "position",
+      ) as THREE.BufferAttribute;
+      const colAttr = ctx.liveGeom.getAttribute(
+        "color",
+      ) as THREE.BufferAttribute;
+      const n = Math.min(frame.count, MAX_LIVE_POINTS);
+      const src = frame.positions;
+      const dstPos = posAttr.array as Float32Array;
+      const dstCol = colAttr.array as Float32Array;
+      for (let i = 0; i < n; i++) {
+        const j = i * 3;
+        dstPos[j] = src[j];
+        dstPos[j + 1] = src[j + 1];
+        dstPos[j + 2] = src[j + 2];
+        heightColor(src[j + 2], color);
+        dstCol[j] = color.r;
+        dstCol[j + 1] = color.g;
+        dstCol[j + 2] = color.b;
+      }
+      posAttr.needsUpdate = true;
+      colAttr.needsUpdate = true;
+      ctx.liveGeom.setDrawRange(0, n);
+    };
+
+    const stream = createPointCloudStream({
+      onFrame: applyFrame,
+      onStatus: (s) => onStatusRef.current?.(s),
+    });
+    return () => stream.close();
+  }, []);
+
   // ---- Pose updates (no scene rebuild) ---------------------------------
   React.useEffect(() => {
     const ctx = sceneRef.current;
@@ -288,7 +302,7 @@ export function PointCloudCanvas({
     const ctx = sceneRef.current;
     if (!ctx) return;
 
-    if (!mapCloudName) {
+    if (!showMapCloud) {
       if (ctx.mapPoints) {
         ctx.scene.remove(ctx.mapPoints);
         ctx.mapPoints.geometry.dispose();
@@ -299,7 +313,7 @@ export function PointCloudCanvas({
     }
 
     const abort = new AbortController();
-    fetchMapPointCloud(mapCloudName, { signal: abort.signal })
+    fetchMapPointCloud({ signal: abort.signal })
       .then((frame) => {
         if (abort.signal.aborted || !sceneRef.current) return;
         const geom = new THREE.BufferGeometry();
@@ -335,7 +349,7 @@ export function PointCloudCanvas({
       });
 
     return () => abort.abort();
-  }, [mapCloudName]);
+  }, [showMapCloud]);
 
   return (
     <div

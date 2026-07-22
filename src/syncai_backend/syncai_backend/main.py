@@ -53,7 +53,10 @@ class SyncAIBackend(Node):
         # init_map_repo creates the ORM schema and builds its own session_maker
         # from the engine (per-repo session convention).
         map_repo = init_map_repo(logger=logger, engine=engine)
+        # Two single-slot cloud caches: the live body_cloud (drained by the WS
+        # stream) and the static localizer map cloud (served by REST).
         pointcloud_repo = init_pointcloud_repo(logger=logger)
+        map_cloud_repo = init_pointcloud_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
         artifact_gw = init_artifact_gateway(logger=logger)
@@ -62,7 +65,10 @@ class SyncAIBackend(Node):
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
         init_map_subscriber(logger=logger, node=self, map_repo=map_repo)
         init_pointcloud_subscriber(
-            logger=logger, node=self, pointcloud_repo=pointcloud_repo
+            logger=logger,
+            node=self,
+            pointcloud_repo=pointcloud_repo,
+            map_cloud_repo=map_cloud_repo,
         )
 
         start_temporal_worker(
@@ -75,6 +81,7 @@ class SyncAIBackend(Node):
             robot_gw=robot_gw,
             map_repo=map_repo,
             pointcloud_repo=pointcloud_repo,
+            map_cloud_repo=map_cloud_repo,
         )
 
 

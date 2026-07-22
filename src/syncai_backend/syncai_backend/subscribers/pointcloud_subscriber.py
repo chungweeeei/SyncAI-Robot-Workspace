@@ -23,33 +23,48 @@ from syncai_backend.helpers.pointcloud import (
 
 
 class PointCloudSubscriber:
-    """Stream the robot's live lidar scan (body_cloud) to the frontend.
+    """Feed the frontend 3D viewer two clouds from ROS.
 
-    The LIO node publishes a per-scan cloud in the lidar/body frame at lidar
-    rate. To overlay it on the saved map, each frame is transformed into
-    ``target_frame`` (``map`` on the real robot) using the TF tree the
-    localizer/pgo (``map -> odom``) and the LIO node (``odom -> body``)
-    broadcast, then packed and handed to the single-slot repo the WebSocket
-    router drains.
+    1. Live body_cloud: the LIO node publishes a per-scan cloud in the
+       lidar/body frame at lidar rate. To overlay it on the map, each frame is
+       transformed into ``target_frame`` (``map`` on the real robot) using the
+       TF tree the localizer/pgo (``map -> odom``) and the LIO node
+       (``odom -> body``) broadcast, then packed and handed to the single-slot
+       repo the WebSocket router drains. This is the decimated per-scan cloud
+       (~a few thousand points), so the vectorised numpy transform is
+       sub-millisecond.
 
-    Cost note: this is the decimated per-scan cloud (~a few thousand points),
-    so the vectorised numpy transform is sub-millisecond. The large accumulated
-    map cloud is deliberately never transformed here — it is served statically
-    from a saved .pcd by the REST /api/v1/map/pointcloud endpoint.
+    2. Static map cloud: the localizer publishes the accumulated map cloud on
+       ``localizer/map_cloud`` once (latched, transient_local) in the map frame
+       after it loads a map. It is decimated once on receipt and cached in a
+       second single-slot repo the REST /api/v1/map/pointcloud endpoint serves.
+       No TF transform is needed — it is already in the map frame.
     """
 
     def __init__(
         self,
         logger: structlog.stdlib.BoundLogger,
         pointcloud_repo: PointCloudRepo,
+        map_cloud_repo: PointCloudRepo,
     ):
         self._logger = logger
         self._pc_repo = pointcloud_repo
+        self._map_cloud_repo = map_cloud_repo
         self._voxel_size = 0.0
         self._max_points = 30000
-        # Frame the cloud is transformed into before packing, so it overlays the
-        # (also map-frame) static map cloud on the frontend.
+        # The accumulated map cloud is large and static, so it is decimated
+        # harder than the live scan and only once, on receipt.
+        self._map_voxel_size = 0.3
+        self._map_max_points = 300000
+        # Frame the live cloud is transformed into before packing, so it
+        # overlays the (also map-frame) static map cloud on the frontend.
         self._target_frame = "map"
+
+        # Edge-triggered logging for the body_cloud TF lookup: None until the
+        # first frame, then True/False. Lets us log once when the stream starts
+        # dropping (map->odom missing) and once when it recovers, instead of a
+        # silent per-frame debug that hides why the viewer is empty.
+        self._cloud_tf_available = None
 
         # register tf buffer
         self._tf_buffer: Buffer = None
@@ -72,6 +87,22 @@ class PointCloudSubscriber:
                 depth=5,
                 reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
                 durability=rclpy.qos.DurabilityPolicy.VOLATILE,
+                history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            ),
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        # Static map cloud from the localizer. QoS MUST match the publisher
+        # (rclcpp::QoS(1).transient_local(), i.e. RELIABLE + TRANSIENT_LOCAL) or
+        # DDS won't replay the latched sample to this late-joining subscriber.
+        node.create_subscription(
+            msg_type=PointCloud2,
+            topic="localizer/map_cloud",
+            callback=self._map_cloud_cb,
+            qos_profile=QoSProfile(
+                depth=1,
+                reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+                durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
                 history=rclpy.qos.HistoryPolicy.KEEP_LAST,
             ),
             callback_group=MutuallyExclusiveCallbackGroup(),
@@ -102,12 +133,15 @@ class PointCloudSubscriber:
                     self._target_frame, source_frame, rclpy.time.Time()
                 )
             except TransformException as exc:
-                self._logger.debug(
-                    "dropping cloud frame: TF unavailable",
-                    target_frame=self._target_frame,
-                    source_frame=source_frame,
-                    error=str(exc),
-                )
+                if self._cloud_tf_available is not False:
+                    self._logger.warning(
+                        "body_cloud frames dropping: TF unavailable "
+                        "(is the localizer up and map->odom being broadcast?)",
+                        target_frame=self._target_frame,
+                        source_frame=source_frame,
+                        error=str(exc),
+                    )
+                    self._cloud_tf_available = False
                 return
 
             t = tf.transform.translation
@@ -118,16 +152,46 @@ class PointCloudSubscriber:
                 quat_xyzw=np.array([q.x, q.y, q.z, q.w]),
             )
 
+        if self._cloud_tf_available is not True:
+            self._logger.info(
+                "body_cloud streaming to frontend",
+                target_frame=self._target_frame,
+                source_frame=source_frame,
+            )
+            self._cloud_tf_available = True
+
         self._pc_repo.update_frame(
             num_points=points.shape[0], data=pack_xyz_f32(points)
         )
+
+    def _map_cloud_cb(self, msg: PointCloud2):
+        # Already in the map frame (localizer publishes with map_frame), so no
+        # TF transform — just thin and cache. Fires rarely (once per map load).
+        points = point_cloud2.read_points_numpy(
+            msg, field_names=("x", "y", "z"), skip_nans=True
+        )
+        if points.shape[0] == 0:
+            return
+
+        points = voxel_downsample(points=points, voxel_size=self._map_voxel_size)
+        points = cap_points(points=points, max_points=self._map_max_points)
+
+        self._map_cloud_repo.update_frame(
+            num_points=points.shape[0], data=pack_xyz_f32(points)
+        )
+        self._logger.info("cached localizer map cloud", num_points=int(points.shape[0]))
 
 
 def init_pointcloud_subscriber(
     logger: structlog.stdlib.BoundLogger,
     node: Node,
     pointcloud_repo: PointCloudRepo,
+    map_cloud_repo: PointCloudRepo,
 ) -> PointCloudSubscriber:
-    subscriber = PointCloudSubscriber(logger=logger, pointcloud_repo=pointcloud_repo)
+    subscriber = PointCloudSubscriber(
+        logger=logger,
+        pointcloud_repo=pointcloud_repo,
+        map_cloud_repo=map_cloud_repo,
+    )
     subscriber.register(node=node)
     return subscriber

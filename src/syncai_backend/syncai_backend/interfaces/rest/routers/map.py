@@ -1,31 +1,19 @@
-import os
 import struct
 import uuid
 import structlog
 from enum import Enum
 from typing import List, Optional
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from nav_msgs.msg import OccupancyGrid
 
-from syncai_backend.exceptions import BadRequestError, NotFoundError
+from syncai_backend.exceptions import NotFoundError
 from syncai_backend.database.models import MapPoint
 from syncai_backend.repositories.map.map import MapRepo
+from syncai_backend.repositories.pointcloud.pointcloud import PointCloudRepo
 from syncai_backend.helpers.occupancy_grid import occupancy_grid_to_png_base64
-from syncai_backend.helpers.pointcloud import (
-    read_pcd_xyz,
-    voxel_downsample,
-    cap_points,
-    pack_xyz_f32,
-)
-
-
-# Workspace-relative map root; overridable so the same code works in the
-# container (CWD == workspace) and in tests. A saved LIO map lives at
-# <MAP_DIR>/<map_name>/map.pcd.
-_MAP_DIR = os.environ.get("SYNCAI_MAP_DIR", "map")
 
 
 class VertexType(str, Enum):
@@ -131,6 +119,7 @@ def _vertex_response(vertex: MapPoint) -> MapVertexResponse:
 def init_map_router(
     logger: structlog.stdlib.BoundLogger,
     map_repo: MapRepo,
+    map_cloud_repo: PointCloudRepo,
 ) -> APIRouter:
     map_router = APIRouter(prefix="", tags=["Map"])
 
@@ -158,39 +147,23 @@ def init_map_router(
         )
 
     @map_router.get("/api/v1/map/pointcloud")
-    def get_map_pointcloud(
-        map_name: str = Query(..., min_length=1, description="Saved map name."),
-        voxel_size: float = Query(
-            0.3, ge=0.0, description="Voxel leaf size (m); 0 disables downsampling."
-        ),
-        max_points: int = Query(
-            300000, gt=0, description="Hard cap on returned point count."
-        ),
-    ):
-        """Return the static LIO map cloud as packed binary for the 3D viewer.
+    def get_map_pointcloud():
+        """Return the latest localizer map cloud as packed binary for the viewer.
 
-        Wire format matches the live stream: a little-endian uint32 point count
+        Sourced from the ``localizer/map_cloud`` topic (cached by the point-cloud
+        subscriber), not a saved .pcd, so the endpoint needs no map name. Wire
+        format matches the live stream: a little-endian uint32 point count
         followed by ``3 * count`` little-endian float32 xyz values (map frame).
-        The map is static, so the response is cacheable.
         """
-        # Guard against path traversal via map_name before touching the FS.
-        if "/" in map_name or "\\" in map_name or map_name in (".", ".."):
-            raise BadRequestError(f"Invalid map name: {map_name!r}")
+        frame = map_cloud_repo.get_latest()
+        if frame is None:
+            raise NotFoundError("Map cloud is not available yet.")
 
-        pcd_path = os.path.join(_MAP_DIR, map_name, "map.pcd")
-        if not os.path.isfile(pcd_path):
-            raise NotFoundError(f"Map point cloud not found for '{map_name}'.")
-
-        points = read_pcd_xyz(pcd_path)
-        if voxel_size > 0.0:
-            points = voxel_downsample(points, voxel_size)
-        points = cap_points(points, max_points)
-
-        payload = struct.pack("<I", points.shape[0]) + pack_xyz_f32(points)
+        payload = struct.pack("<I", frame.num_points) + frame.data
         return Response(
             content=payload,
             media_type="application/octet-stream",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers={"Cache-Control": "no-store"},
         )
 
     @map_router.post("/api/v1/map/vertices", response_model=List[MapVertexResponse])

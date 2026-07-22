@@ -62,7 +62,7 @@ class RobotNetworkStatus(BaseModel):
 
 
 class RobotBatteryStatus(BaseModel):
-    battery_percentage: float = Field(
+    battery_percentage: int = Field(
         ..., description="The battery percentage of the robot."
     )
 
@@ -130,21 +130,17 @@ def init_robot_router(
             ),
             network_status=_parse_wifi_info(state.network_status.wifi_info),
             battery_status=RobotBatteryStatus(
-                battery_percentage=state.battery_status.battery_percentage,
+                battery_percentage=int(state.battery_status.battery_percentage),
             ),
         )
 
     # Plain (non-async) handler: the gateway call blocks on a ROS service, so
     # FastAPI runs it in its worker thread pool instead of on the event loop.
-    @robot_router.post(
-        "/api/v1/robot/motion_key", response_model=SetMotionKeyResponse
-    )
+    @robot_router.post("/api/v1/robot/motion_key", response_model=SetMotionKeyResponse)
     def set_motion_key(request: SetMotionKeyRequest):
         success, message = robot_gw.set_motion_key(key=request.key)
         if not success:
-            logger.error(
-                "Failed to set motion key", key=request.key, message=message
-            )
+            logger.error("Failed to set motion key", key=request.key, message=message)
             raise BadRequestError(message)
 
         return SetMotionKeyResponse(message=message)

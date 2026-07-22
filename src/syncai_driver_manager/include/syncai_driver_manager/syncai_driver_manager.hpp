@@ -90,7 +90,7 @@ private:
   std::atomic<bool> safe_lock_{false};
 
   // Publishers
-  std::shared_ptr<rclcpp::Publisher<syncai_common::msg::IMUState>> imu_state_pub_;
+  std::shared_ptr<rclcpp::Publisher<syncai_common::msg::IMUState>> imu_pub_;
   std::shared_ptr<rclcpp::Publisher<syncai_common::msg::MotorStates>> motors_state_pub_;
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::BatteryState>> battery_state_pub_;
   std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Int32MultiArray>> mode_pub_;

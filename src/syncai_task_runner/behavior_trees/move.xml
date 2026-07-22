@@ -1,5 +1,6 @@
 <!--
-  Navigate-to-pose with periodic replanning (1 Hz) and contextual recovery,
+  Navigate-to-pose with periodic replanning (~0.333 Hz, every 3 s) and
+  contextual recovery,
   based on nav2's navigate_to_pose_w_replanning_and_recovery.xml but without
   its outer system-level RecoveryNode: a planner / controller failure clears
   its own costmap and retries once, since stale obstacles in the costmap are
@@ -14,7 +15,7 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateWithReplanning">
-      <RateController hz="1.0">
+      <RateController hz="0.333">
         <RecoveryNode number_of_retries="1" name="ComputePathToPose">
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
           <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>

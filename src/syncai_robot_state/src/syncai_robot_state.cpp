@@ -119,7 +119,8 @@ void RobotStateNode::onTimer()
   {
     std::lock_guard<std::mutex> lock(mutex_);
     msg.localization_status.velocity = latest_odom_ ? latest_odom_->twist.twist.linear.x : 0.0;
-    msg.battery_status.battery_percentage = latest_battery_ ? latest_battery_->percentage : 0.0;
+    msg.battery_status.battery_percentage =
+      latest_battery_ ? latest_battery_->percentage * 100.0 : 0.0;
 
     // Flatten the latest WifiStatus into a JSON string; "N/A" until the
     // first wifi_status message arrives.

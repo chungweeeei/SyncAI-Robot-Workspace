@@ -21,6 +21,9 @@ from syncai_backend.interfaces.rest.server import (  # noqa: E402
     register_exception_handlers,
 )
 from syncai_backend.interfaces.rest.routers.map import init_map_router  # noqa: E402
+from syncai_backend.repositories.pointcloud.pointcloud import (  # noqa: E402
+    init_pointcloud_repo,
+)
 
 
 _VERTEX = {
@@ -41,7 +44,12 @@ _MISSING_ID = "00000000-0000-0000-0000-000000000000"
 def client(logger, map_repo):
     app = FastAPI()
     register_exception_handlers(app)
-    app.include_router(init_map_router(logger=logger, map_repo=map_repo))
+    map_cloud_repo = init_pointcloud_repo(logger=logger)
+    app.include_router(
+        init_map_router(
+            logger=logger, map_repo=map_repo, map_cloud_repo=map_cloud_repo
+        )
+    )
     return TestClient(app)
 
 

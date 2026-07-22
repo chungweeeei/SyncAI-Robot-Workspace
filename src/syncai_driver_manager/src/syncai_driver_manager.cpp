@@ -107,13 +107,12 @@ void DriverManagerNode::initParameters()
 
 void DriverManagerNode::initPubSub()
 {
-  imu_state_pub_ =
-    this->create_publisher<syncai_common::msg::IMUState>("imu/state", rclcpp::SensorDataQoS());
+  imu_pub_ = this->create_publisher<syncai_common::msg::IMUState>("imu", rclcpp::SensorDataQoS());
   motors_state_pub_ = this->create_publisher<syncai_common::msg::MotorStates>(
     "motor_states", rclcpp::SensorDataQoS());
   battery_state_pub_ =
-    this->create_publisher<sensor_msgs::msg::BatteryState>("battery/state", rclcpp::QoS(10));
-  mode_pub_ = this->create_publisher<std_msgs::msg::Int32MultiArray>("mode_state", rclcpp::QoS(10));
+    this->create_publisher<sensor_msgs::msg::BatteryState>("battery_state", rclcpp::QoS(10));
+  mode_pub_ = this->create_publisher<std_msgs::msg::Int32MultiArray>("mode", rclcpp::QoS(10));
 
   cmd_vel_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   rclcpp::SubscriptionOptions cmd_vel_sub_options;
@@ -468,7 +467,7 @@ void DriverManagerNode::parseLine(const std::string & line)
       imu_state.quaternion[0] = 1.0f;
     }
     // IMU temperature is not part of the telemetry stream; left at 0.
-    imu_state_pub_->publish(imu_state);
+    imu_pub_->publish(imu_state);
   }
 
   if (pos_ok || vel_ok || tau_ok || temp_ok || err_ok) {
@@ -508,7 +507,7 @@ void DriverManagerNode::cmdVelCallback(geometry_msgs::msg::Twist::SharedPtr msg)
 
   // The controller's turning sign convention is opposite to REP 103 (+z =
   // counter-clockwise), so negate before picking the turn gain.
-  const double wz_raw = -msg->angular.z;
+  const double wz_raw = msg->angular.z;
   const double wz = (wz_raw >= 0) ? (wz_raw * scale_turn_l_) : (wz_raw * scale_turn_r_);
 
   char buf[128];
@@ -572,11 +571,11 @@ void DriverManagerNode::setMotionKeyCallback(
   }
 
   // Map the motion key to the controller's MODE character.
-  const char motion_key = (request->key == "0")   ? 'Z'   // Stand
-                          : (request->key == "1") ? 'C'   // Locomotion
-                          : (request->key == "2") ? 'X'   // Lie down
-                          : (request->key == "3") ? 'R'   // Damping
-                          : (request->key == "5") ? 'M'   // MPC
+  const char motion_key = (request->key == "0")   ? 'Z'  // Stand
+                          : (request->key == "1") ? 'C'  // Locomotion
+                          : (request->key == "2") ? 'X'  // Lie down
+                          : (request->key == "3") ? 'R'  // Damping
+                          : (request->key == "5") ? 'M'  // MPC
                                                   : ' ';
   if (motion_key == ' ') {
     response->success = false;

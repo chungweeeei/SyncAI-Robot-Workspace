@@ -448,15 +448,11 @@
     </joint>
 
     <!--!!!!!!!!!!!! Lidar !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
-    <link name="laser">
-        <inertial>
-            <mass value="0.01"/>
-            <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
-        </inertial>
-    </link>
-    <joint name="laser_joint" type="fixed">
-        <parent link="base_link"/>
-        <child link="laser"/>
-        <origin xyz="0.195 0.00 0.155" rpy="0 0.25 0"/>
-    </joint>
+    <!--
+      The base_link -> laser static extrinsic is intentionally NOT published
+      here. On the live robot the localizer publishes a dynamic map -> laser
+      TF, and TF only allows one parent per child frame; a static base_link ->
+      laser from robot_state_publisher would race the dynamic one and make the
+      costmap scan projection jitter. Removed to leave `laser` single-parented.
+    -->
 </robot>

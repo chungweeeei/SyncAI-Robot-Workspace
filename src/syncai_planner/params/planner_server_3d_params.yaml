@@ -10,7 +10,7 @@
 # costmap's global_frame stays "map".
 /**/planner_server:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
 
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
     # Lowered to match the slow Isaac Sim clock (~35 Hz / 0.58x real-time).

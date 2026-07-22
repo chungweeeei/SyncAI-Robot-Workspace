@@ -66,19 +66,16 @@ export function createPointCloudStream(
 }
 
 /**
- * Fetch the static LIO map cloud once (voxel-downsampled server-side). Only
- * called when the user enables the "map cloud" layer, so weak clients never
- * pay for the 100k+ point download.
+ * Fetch the static LIO map cloud once. The backend serves the latest cloud it
+ * received on the localizer/map_cloud topic (already voxel-downsampled
+ * server-side), so no map name is needed. Only called when the user enables
+ * the "map cloud" layer, so weak clients never pay for the 100k+ point
+ * download.
  */
 export async function fetchMapPointCloud(
-  mapName: string,
-  opts: { voxelSize?: number; maxPoints?: number; signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal } = {},
 ): Promise<PointCloudFrame> {
-  const params = new URLSearchParams({ map_name: mapName });
-  if (opts.voxelSize != null) params.set("voxel_size", String(opts.voxelSize));
-  if (opts.maxPoints != null) params.set("max_points", String(opts.maxPoints));
-
-  const res = await fetch(apiUrl(`/api/v1/map/pointcloud?${params}`), {
+  const res = await fetch(apiUrl("/api/v1/map/pointcloud"), {
     signal: opts.signal,
   });
   if (!res.ok) {

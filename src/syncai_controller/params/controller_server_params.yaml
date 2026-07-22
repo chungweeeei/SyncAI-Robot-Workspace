@@ -65,9 +65,12 @@
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.9
-      # Lowered from 0.25: the floor was overriding curvature regulation right
-      # after rotate-to-heading exits, where the arc is sharpest.
-      regulated_linear_scaling_min_speed: 0.1
+      # Raised to 0.3 to keep the robot from crawling while tracking a path.
+      # Caveat (this floor was previously lowered to 0.1 for this reason): a
+      # value this high overrides curvature regulation right after
+      # rotate-to-heading exits, where the arc is sharpest, so watch for
+      # corner-cutting / weaving on tight turns.
+      regulated_linear_scaling_min_speed: 0.3
       use_rotate_to_heading: true
       # Lowered from 0.785 (45 deg): exiting rotation that far off-heading made
       # the robot drive away from the path and trigger another rotation.

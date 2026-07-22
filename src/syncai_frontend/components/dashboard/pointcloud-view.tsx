@@ -17,7 +17,6 @@ interface MapImagePayload {
 }
 
 interface RobotStatePayload {
-  map: string;
   localization_status: { position: RobotPose };
 }
 
@@ -43,7 +42,6 @@ export function PointCloudView({ className }: { className?: string }) {
   const [pose, setPose] = React.useState<RobotPose | undefined>(undefined);
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
   const [showMapCloud, setShowMapCloud] = React.useState(false);
-  const [mapName, setMapName] = React.useState<string | null>(null);
 
   // Map image + metadata (once).
   React.useEffect(() => {
@@ -81,7 +79,6 @@ export function PointCloudView({ className }: { className?: string }) {
         const data = (await res.json()) as RobotStatePayload;
         if (!active) return;
         setPose(data.localization_status.position);
-        setMapName(data.map);
       } catch {
         /* transient; keep last pose */
       }
@@ -100,7 +97,7 @@ export function PointCloudView({ className }: { className?: string }) {
         meta={map?.meta}
         mapImageUrl={map?.image}
         pose={pose}
-        mapCloudName={showMapCloud ? mapName ?? undefined : undefined}
+        showMapCloud={showMapCloud}
         onStatus={setStatus}
       />
 
@@ -121,10 +118,9 @@ export function PointCloudView({ className }: { className?: string }) {
       <button
         type="button"
         onClick={() => setShowMapCloud((v) => !v)}
-        disabled={!mapName}
         className={cn(
           "absolute bottom-2 right-2 rounded-md border px-2 py-1 text-xs backdrop-blur transition-colors",
-          "bg-background/80 hover:bg-accent disabled:opacity-50",
+          "bg-background/80 hover:bg-accent",
           showMapCloud && "border-primary text-primary",
         )}
       >

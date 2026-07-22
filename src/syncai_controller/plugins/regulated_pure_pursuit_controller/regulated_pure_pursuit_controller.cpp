@@ -303,10 +303,10 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   bool is_rotating_to_heading = false;
   if (shouldRotateToGoalHeading(carrot_pose)) {
     double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
-    rotateToHeading(linear_vel, angular_vel, angle_to_goal, speed);
+    rotateToHeading(linear_vel, angular_vel, angle_to_goal);
     is_rotating_to_heading = true;
   } else if (shouldRotateToPath(carrot_pose, angle_to_heading)) {
-    rotateToHeading(linear_vel, angular_vel, angle_to_heading, speed);
+    rotateToHeading(linear_vel, angular_vel, angle_to_heading);
     is_rotating_to_heading = true;
   } else {
     applyConstraints(
@@ -317,8 +317,16 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   // 線速度加速度限制：這個 stack 的 cmd_vel 沒有經過 velocity smoother，
   // 必須由 controller 自己保證線速度的 kinematic feasibility
   // （角速度在 rotateToHeading() 內已有 max_angular_accel 的對應 clamp）。
-  const double min_feasible_linear_speed = speed.linear.x - max_linear_accel_ * control_duration_;
-  const double max_feasible_linear_speed = speed.linear.x + max_linear_accel_ * control_duration_;
+  //
+  // 基準用「上一個 cycle 的命令速度」last_cmd_vel_，不是量測速度 speed。
+  // speed 來自未平滑的 Point-LIO twist，四足步態讓軀幹前後晃 ±0.2~0.5 m/s，
+  // 若以量測值為基準，命令會被拉著一起晃、甚至在 allow_reversing=false 時被
+  // 壓成負值，形成 命令晃→狗晃更大→量測晃更大 的正回授。以自身上個命令為
+  // 基準則只保證命令軌跡本身的加速度可行，不與步態噪聲耦合。
+  const double min_feasible_linear_speed =
+    last_cmd_vel_.linear.x - max_linear_accel_ * control_duration_;
+  const double max_feasible_linear_speed =
+    last_cmd_vel_.linear.x + max_linear_accel_ * control_duration_;
   linear_vel = std::clamp(linear_vel, min_feasible_linear_speed, max_feasible_linear_speed);
 
   if (!is_rotating_to_heading) {
@@ -340,6 +348,10 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   cmd_vel.header = pose.header;
   cmd_vel.twist.linear.x = linear_vel;
   cmd_vel.twist.angular.z = angular_vel;
+
+  // Remember what we actually commanded so next cycle's accel clamps use it as
+  // their baseline (see the linear clamp above and rotateToHeading()).
+  last_cmd_vel_ = cmd_vel.twist;
   return cmd_vel;
 }
 
@@ -360,17 +372,20 @@ bool RegulatedPurePursuitController::shouldRotateToGoalHeading(
 }
 
 void RegulatedPurePursuitController::rotateToHeading(
-  double & linear_vel, double & angular_vel, const double & angle_to_path,
-  const geometry_msgs::msg::Twist & curr_speed)
+  double & linear_vel, double & angular_vel, const double & angle_to_path)
 {
   // Rotate in place using max angular velocity / acceleration possible
   linear_vel = 0.0;
   const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
   angular_vel = sign * rotate_to_heading_angular_vel_;
 
+  // Baseline is our own last commanded angular velocity, not the measured odom
+  // twist — same reasoning as the linear clamp in computeVelocityCommands():
+  // the raw Point-LIO angular twist jitters with the gait and would make
+  // angular.z chatter if used as the clamp reference.
   const double & dt = control_duration_;
-  const double min_feasible_angular_speed = curr_speed.angular.z - max_angular_accel_ * dt;
-  const double max_feasible_angular_speed = curr_speed.angular.z + max_angular_accel_ * dt;
+  const double min_feasible_angular_speed = last_cmd_vel_.angular.z - max_angular_accel_ * dt;
+  const double max_feasible_angular_speed = last_cmd_vel_.angular.z + max_angular_accel_ * dt;
   angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
 
   // Check if we need to slow down to avoid overshooting
@@ -650,6 +665,10 @@ void RegulatedPurePursuitController::applyConstraints(
 void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
   global_plan_ = path;
+
+  // New goal / plan: zero the accel-clamp baseline so the first command ramps
+  // up from a standstill rather than inheriting the previous goal's velocity.
+  last_cmd_vel_ = geometry_msgs::msg::Twist();
 }
 
 void RegulatedPurePursuitController::setSpeedLimit(

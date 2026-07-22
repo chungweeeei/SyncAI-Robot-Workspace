@@ -135,11 +135,9 @@ protected:
    * @param linear_vel linear velocity
    * @param angular_vel angular velocity
    * @param angle_to_path Angle of robot output relatie to carrot marker
-   * @param curr_speed the current robot speed
    */
   void rotateToHeading(
-    double & linear_vel, double & angular_vel, const double & angle_to_path,
-    const geometry_msgs::msg::Twist & curr_speed);
+    double & linear_vel, double & angular_vel, const double & angle_to_path);
 
   /**
    * @brief Whether collision is imminent
@@ -259,6 +257,16 @@ protected:
   double rotate_to_heading_min_angle_;
   double goal_dist_tol_;
   bool allow_reversing_;
+
+  // Last commanded velocity (the twist we actually returned last cycle), used
+  // as the baseline for the linear/angular acceleration clamps. Deliberately
+  // NOT the measured odom twist: this stack has no OdomSmoother, and the raw
+  // Point-LIO twist carries the quadruped's per-gait body sway (±0.2~0.5 m/s),
+  // which fed back through the clamp caused the cmd_vel to oscillate sign.
+  // Clamping against our own previous command keeps the command trajectory
+  // kinematically feasible without coupling to gait noise. Reset to zero on
+  // setPlan() so each new goal ramps up from a standstill.
+  geometry_msgs::msg::Twist last_cmd_vel_;
   double max_robot_pose_search_dist_;
   bool use_interpolation_;
 
