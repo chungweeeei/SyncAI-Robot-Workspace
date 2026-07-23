@@ -135,6 +135,36 @@ services:
       # Host avahi legacy socket so libnss-mdns resolves *.local names.
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
 
+  robot02:
+    <<: *robot-common
+    profiles: [ "real" ]
+    container_name: robot02
+    network_mode: host
+    environment:
+      <<: *robot-env
+      # host networking: compose service names don't resolve — use the
+      # host-published ports.
+      TEMPORAL_ADDRESS: 127.0.0.1:7233
+      POSTGRES_HOST: 127.0.0.1
+      # lo-only unicast DDS; nav/backend/tools all share the host's lo.
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds_standalone.xml
+    volumes:
+      # Size-capped tmpfs backing ROS_LOG_DIR (see x-ros-log-tmpfs).
+      - *ros-log-tmpfs
+      # Mount the colcon workspace (src/ lives here) into the container.
+      - .:/home/syncrobotic/robot_ws
+      # Per-instance identity, overlaid on the fixed path the launch files read.
+      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini
+        # X11 unix socket of the host's local desktop (socket connect needs
+        # write access, so no :ro) + auth cookie (see header note).
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+      # Host D-Bus system bus so nmcli inside the container talks to the
+      # host's NetworkManager daemon (there is no NM daemon in the container).
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      # Host avahi legacy socket so libnss-mdns resolves *.local names.
+      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
+
   # ---------------------------------------------------------------------
   # sim: Isaac Sim fleet (macvlan dual-homed)
   # ---------------------------------------------------------------------

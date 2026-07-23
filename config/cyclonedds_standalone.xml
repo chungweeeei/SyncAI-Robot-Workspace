@@ -6,17 +6,15 @@
 >
     <Domain Id="any">
         <General>
-            <AllowMulticast>false</AllowMulticast>
+            <AllowMulticast>spdp</AllowMulticast>
             <Interfaces>
-                <NetworkInterface name="wlP1p1s0" priority="10"/>
-                <NetworkInterface name="lo" priority="0"/>
+                <NetworkInterface name="wlP1p1s0" />
             </Interfaces>
         </General>
         <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
             <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
             <Peers>
-              <Peer address="127.0.0.1"/>
               <Peer address="10.8.140.101"/>
             </Peers>
         </Discovery>

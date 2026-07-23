@@ -3,7 +3,10 @@
     "allow": [
       "Bash(docker build *)",
       "Bash(docker exec *)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(find / -type d -iname \"*global_localization*\")",
+      "Bash(find / -type d -iname \"*SyncAI-Robot-3D*\")",
+      "Read(//home/syncrobotic/Documents/**)"
     ]
   }
 }
