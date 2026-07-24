@@ -1,10 +1,6 @@
 [submodule "src/third-party/behaviortree_cpp_v3"]
 	path = src/third-party/behaviortree_cpp_v3
 	url = https://github.com/BehaviorTree/BehaviorTree.CPP.git
-[submodule "src/syncai_common"]
-	path = src/syncai_common
-	url = git@github.com:chungweeeei/SyncAI-Common-Interface.git
-	branch = dev
 [submodule "src/third-party/Livox-SDK2"]
 	path = src/third-party/Livox-SDK2
 	url = https://github.com/Livox-SDK/Livox-SDK2.git
