@@ -4,9 +4,19 @@
       "Bash(docker build *)",
       "Bash(docker exec *)",
       "Bash(echo \"exit: $?\")",
-      "Bash(find / -type d -iname \"*global_localization*\")",
-      "Bash(find / -type d -iname \"*SyncAI-Robot-3D*\")",
-      "Read(//home/syncrobotic/Documents/**)"
+      "Bash(git submodule *)",
+      "Bash(git pull *)",
+      "Bash(git fetch *)",
+      "Bash(git ls-tree *)",
+      "Bash(python3 -c \"import paramiko; print\\('paramiko ok'\\)\")",
+      "Bash(sudo -n true)",
+      "Bash(python3 *)",
+      "Bash(ip -4 addr show)",
+      "Bash(bash -c 'source /opt/ros/humble/setup.bash 2>/dev/null; export ROS_DOMAIN_ID=$\\(printenv ROS_DOMAIN_ID\\); ros2 topic list 2>/dev/null | grep -E \"robot01\" | head -20')",
+      "Bash(bash -c 'source /opt/ros/humble/setup.bash 2>/dev/null; timeout 10 ros2 topic echo /robot01/mode --once')",
+      "Bash(wait)",
+      "Bash(git -C /home/unitree/andy/SyncAI-Robot-Workspace diff src/syncai_bringup/launch/bringup_3d.launch.py)",
+      "Bash(docker cp *)"
     ]
   }
 }

@@ -449,10 +449,16 @@
 
     <!--!!!!!!!!!!!! Lidar !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
     <!--
-      The base_link -> laser static extrinsic is intentionally NOT published
-      here. On the live robot the localizer publishes a dynamic map -> laser
-      TF, and TF only allows one parent per child frame; a static base_link ->
-      laser from robot_state_publisher would race the dynamic one and make the
-      costmap scan projection jitter. Removed to leave `laser` single-parented.
+      Livox MID360 mount extrinsic, consumed by lio_bridge (lidar_frame
+      <robot_id>/lidar_top) to map the Point-LIO body pose onto base_link.
+      Safe to publish statically now that pointlio broadcasts its own
+      pointlio_odom -> pointlio_body branch and no longer parents any frame
+      of the robot tree. The 0.25 rad pitch is the physical lidar tilt.
     -->
+    <link name="lidar_top"/>
+    <joint name="lidar_top_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="lidar_top"/>
+        <origin xyz="0.195 0.00 0.155" rpy="0 0.25 0"/>
+    </joint>
 </robot>

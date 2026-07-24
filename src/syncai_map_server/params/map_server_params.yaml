@@ -14,7 +14,7 @@
     # This is only the fallback default: each robot instance sets its own map
     # via a [map] map key in config/instances/<robot_id>.ini, which
     # map_server.launch.py reads and overrides on top of this value.
-    yaml_filename: "map/lio_map/gridmap.yaml"
+    yaml_filename: "map/dp2f_full/gridmap.yaml"
 
     # Topic on which the OccupancyGrid is published (latched / transient_local QoS).
     topic_name: "map"

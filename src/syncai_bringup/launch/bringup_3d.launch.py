@@ -32,7 +32,7 @@ FALLBACK_ROBOT_ID = "default_robot"
 # Livox MID360 driver configuration, mirrored from
 # livox_ros_driver2/launch_ROS2/msg_MID360_launch.py so the 3D lidar publishes
 # alongside the rest of the 3D localization stack.
-LIVOX_XFER_FORMAT = 0  # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
+LIVOX_XFER_FORMAT = 1  # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
 LIVOX_MULTI_TOPIC = 0  # 0-All LiDARs share the same topic, 1-One LiDAR one topic
 LIVOX_DATA_SRC = 0  # 0-lidar, others-Invalid data src
 LIVOX_PUBLISH_FREQ = 10.0  # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.

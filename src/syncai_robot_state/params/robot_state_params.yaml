@@ -7,7 +7,7 @@
     # fallbacks when the node is run without the launch file.
     robot_id: "default_robot"
     # Map name stamped into RobotState.map. Usually overridden from the launch file.
-    map: "warehouse"
+    map: "dp2f_full"
     # TF frames used for the position lookup (global_frame -> base_frame).
     # global_frame stays "map"; base_frame gets the <robot_id>/ prefix at launch.
     global_frame: "map"

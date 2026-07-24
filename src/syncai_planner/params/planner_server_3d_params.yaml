@@ -27,7 +27,7 @@
 # (constructed as a plain node named "global_costmap").
 /**/global_costmap:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
 
     # Frames (robot_base_frame is overridden by the launch file with
     # <robot_id>/ prefix; global_frame stays "map")
@@ -103,9 +103,10 @@
         # only marks its own cloud even on a shared DDS domain.
         topic: pointlio/body_cloud
         # Leave sensor_frame empty on purpose: the observation buffer then uses
-        # the cloud's own header frame_id (<robot_id>/base_link, Point-LIO's
+        # the cloud's own header frame_id (<robot_id>/pointlio_body, Point-LIO's
         # body_frame) as the raytrace origin, so this source needs no per-robot
-        # launch-file frame override.
+        # launch-file frame override. The TF chain resolves via the localizer's
+        # map -> <robot_id>/pointlio_odom (i.e. only after relocalize).
         sensor_frame: ""
         data_type: "PointCloud2"
         marking: true

@@ -52,6 +52,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-nav2-msgs \
     ros-humble-angles \
+    ros-humble-nav-2d-msgs \
+    ros-humble-dwb-msgs \
     python3-pip \
     iputils-ping \
     avahi-utils \

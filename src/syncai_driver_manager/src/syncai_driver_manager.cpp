@@ -246,6 +246,11 @@ void DriverManagerNode::receiveLoop()
       recvfrom(recv_fd_, buf, sizeof(buf) - 1, 0, reinterpret_cast<sockaddr *>(&src), &slen);
     if (n > 0) {
       buf[n] = '\0';
+      char src_ip[INET_ADDRSTRLEN] = "?";
+      inet_ntop(AF_INET, &src.sin_addr, src_ip, sizeof(src_ip));
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000, "[DriverManagerNode][%s] Received %zd bytes from %s:%u", __func__,
+        n, src_ip, static_cast<unsigned>(ntohs(src.sin_port)));
       parseLine(std::string(buf, static_cast<std::size_t>(n)));
     } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
       RCLCPP_WARN_THROTTLE(

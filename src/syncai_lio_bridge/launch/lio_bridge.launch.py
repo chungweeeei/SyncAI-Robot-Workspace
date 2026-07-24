@@ -1,5 +1,5 @@
 # Launch the syncai_lio_bridge node — the robot's only odometry source.
-# From FAST-LIO2 (fastlio2/lio_odom + livox/imu) it publishes the planar
+# From Point-LIO (pointlio/lio_odom + livox/imu) it publishes the planar
 # odom -> <robot_id>/base_link TF, the <robot_id>/odom Odometry topic, and
 # the map -> <robot_id>/odom correction (replacing AMCL). There is no wheel
 # odometry: the Isaac Sim OmniGraph odom publishers are disabled.

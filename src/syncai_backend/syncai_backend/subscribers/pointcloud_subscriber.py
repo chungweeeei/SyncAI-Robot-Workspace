@@ -26,13 +26,15 @@ class PointCloudSubscriber:
     """Feed the frontend 3D viewer two clouds from ROS.
 
     1. Live body_cloud: the LIO node publishes a per-scan cloud in the
-       lidar/body frame at lidar rate. To overlay it on the map, each frame is
-       transformed into ``target_frame`` (``map`` on the real robot) using the
-       TF tree the localizer/pgo (``map -> odom``) and the LIO node
-       (``odom -> body``) broadcast, then packed and handed to the single-slot
-       repo the WebSocket router drains. This is the decimated per-scan cloud
-       (~a few thousand points), so the vectorised numpy transform is
-       sub-millisecond.
+       LIO body frame (``<robot_id>/pointlio_body``) at lidar rate. To overlay
+       it on the map, each frame is transformed into ``target_frame`` (``map``)
+       using the TF branch the localizer (``map -> <robot_id>/pointlio_odom``,
+       after relocalize) and the LIO node (``pointlio_odom -> pointlio_body``)
+       broadcast — the source frame is taken from the cloud header, so a frame
+       rename upstream needs no change here. The result is packed and handed to
+       the single-slot repo the WebSocket router drains. This is the decimated
+       per-scan cloud (~a few thousand points), so the vectorised numpy
+       transform is sub-millisecond.
 
     2. Static map cloud: the localizer publishes the accumulated map cloud on
        ``localizer/map_cloud`` once (latched, transient_local) in the map frame
@@ -62,8 +64,9 @@ class PointCloudSubscriber:
 
         # Edge-triggered logging for the body_cloud TF lookup: None until the
         # first frame, then True/False. Lets us log once when the stream starts
-        # dropping (map->odom missing) and once when it recovers, instead of a
-        # silent per-frame debug that hides why the viewer is empty.
+        # dropping (map->pointlio_odom missing, i.e. not relocalized) and once
+        # when it recovers, instead of a silent per-frame debug that hides why
+        # the viewer is empty.
         self._cloud_tf_available = None
 
         # register tf buffer
@@ -126,9 +129,10 @@ class PointCloudSubscriber:
         source_frame = msg.header.frame_id
         if source_frame != self._target_frame:
             try:
-                # map->odom is a slowly-varying correction; look up the latest
-                # available transform (Time()) rather than the cloud stamp so a
-                # high-rate cloud isn't dropped by future-extrapolation errors.
+                # map->pointlio_odom is a slowly-varying correction; look up the
+                # latest available transform (Time()) rather than the cloud
+                # stamp so a high-rate cloud isn't dropped by
+                # future-extrapolation errors.
                 tf = self._tf_buffer.lookup_transform(
                     self._target_frame, source_frame, rclpy.time.Time()
                 )
@@ -136,7 +140,8 @@ class PointCloudSubscriber:
                 if self._cloud_tf_available is not False:
                     self._logger.warning(
                         "body_cloud frames dropping: TF unavailable "
-                        "(is the localizer up and map->odom being broadcast?)",
+                        "(relocalized yet? map->pointlio_odom comes from the "
+                        "localizer only after /localizer/relocalize)",
                         target_frame=self._target_frame,
                         source_frame=source_frame,
                         error=str(exc),

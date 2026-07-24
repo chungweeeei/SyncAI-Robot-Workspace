@@ -1,11 +1,11 @@
 // LIO odometry provider — the robot's only odometry source (C++ port).
 //
 // Wheel odometry is gone (the Isaac Sim OmniGraph odom publishers are
-// disabled): the robot relies solely on FAST-LIO2 lidar-inertial odometry.
+// disabled): the robot relies solely on Point-LIO lidar-inertial odometry.
 // This node turns the LIO chain (map -> lio_odom -> lio_body) into the planar
 // chain the nav stack consumes:
 //
-//     odom -> base_link   from /<robot_id>/fastlio2/lio_odom, projected to 2D
+//     odom -> base_link   from /<robot_id>/pointlio/lio_odom, projected to 2D
 //                         (lio_body is physically <robot_id>/lidar_top, so the
 //                         static base_link->lidar_top extrinsic maps it to
 //                         base)
@@ -109,7 +109,7 @@ public:
     // Sensor-data QoS on both subs: best-effort is compatible with either
     // reliable (lio_node) or best-effort publishers.
     lio_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-      "fastlio2/lio_odom", rclcpp::SensorDataQoS(),
+      "pointlio/lio_odom", rclcpp::SensorDataQoS(),
       std::bind(&LioBridgeNode::lio_cb, this, std::placeholders::_1));
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
       "livox/imu", rclcpp::SensorDataQoS(),
@@ -126,7 +126,7 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "lio_bridge: LIO odometry provider — %s -> %s + odom topic from "
-      "fastlio2/lio_odom, %s -> %s from the localizer TF @ %.1f Hz",
+      "pointlio/lio_odom, %s -> %s from the localizer TF @ %.1f Hz",
       odom_frame_.c_str(), base_frame_.c_str(), map_frame_.c_str(), odom_frame_.c_str(), rate);
   }
 
@@ -184,7 +184,7 @@ private:
   {
     if (!lio_pose_) {
       RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 5000, "waiting for fastlio2/lio_odom (LIO initializing?)");
+        get_logger(), *get_clock(), 5000, "waiting for pointlio/lio_odom (LIO initializing?)");
       return;
     }
     tf2::Transform m_base_lidar;
