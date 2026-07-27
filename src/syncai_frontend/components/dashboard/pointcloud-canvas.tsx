@@ -29,6 +29,10 @@ interface Theme {
   robot: number;
   ground: number;
   groundOpacity: number;
+  /** Solid colour for the static map cloud, kept distinct from the
+   *  height-coloured body cloud. White on the dark background; a dark grey on
+   *  the near-white light background so it stays visible in both themes. */
+  mapCloud: number;
 }
 
 const THEMES: Record<"light" | "dark", Theme> = {
@@ -37,20 +41,52 @@ const THEMES: Record<"light" | "dark", Theme> = {
     robot: 0x2563eb,
     ground: 0xffffff,
     groundOpacity: 0.85,
+    mapCloud: 0x333333,
   },
   dark: {
     background: 0x0a0a0a,
     robot: 0x3b82f6,
     ground: 0x404040,
     groundOpacity: 0.6,
+    mapCloud: 0xffffff,
   },
 };
+
+// Point sizes (metres). The body cloud is the live focus; the map cloud sits a
+// touch larger as a static spatial reference.
+const LIVE_POINT_SIZE = 0.12;
+const MAP_POINT_SIZE = 0.14;
 
 /** Map a height to an RGB colour (blue = low, red = high) via an HSL sweep. */
 function heightColor(z: number, out: THREE.Color): THREE.Color {
   const t = Math.min(1, Math.max(0, (z - Z_MIN) / (Z_MAX - Z_MIN)));
   // hue 240deg (blue) -> 0deg (red)
   return out.setHSL(((1 - t) * 240) / 360, 0.9, 0.55);
+}
+
+/**
+ * Wire the OrbitControls buttons for a camera mode.
+ *  - "move":  left-drag pans (moves the view), right-drag orbits.
+ *  - "focus": left-drag orbits around the locked target; panning is disabled
+ *    so the target stays pinned to the robot.
+ * Middle button always dollies (zoom).
+ */
+function applyCameraMode(controls: OrbitControls, mode: "move" | "focus") {
+  if (mode === "focus") {
+    controls.enablePan = false;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE,
+    };
+  } else {
+    controls.enablePan = true;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE,
+    };
+  }
 }
 
 // Fallback world framing when no 2D map is available (e.g. a raw body_cloud
@@ -66,6 +102,12 @@ interface PointCloudCanvasProps {
   pose?: RobotPose;
   /** When true, also fetch and render the static localizer map cloud. */
   showMapCloud?: boolean;
+  /**
+   * Camera interaction mode. "move" = free navigation, left-drag pans the
+   * scene. "focus" = the camera locks onto the robot (target follows its pose
+   * and stays centred), left-drag orbits around it. Defaults to "move".
+   */
+  cameraMode?: "move" | "focus";
   onStatus?: (status: StreamStatus) => void;
   className?: string;
 }
@@ -75,6 +117,7 @@ export function PointCloudCanvas({
   mapImageUrl,
   pose,
   showMapCloud,
+  cameraMode = "move",
   onStatus,
   className,
 }: PointCloudCanvasProps) {
@@ -99,6 +142,11 @@ export function PointCloudCanvas({
   React.useEffect(() => {
     onStatusRef.current = onStatus;
   }, [onStatus]);
+
+  // Camera mode + last pose, read from effects that must not re-run on every
+  // change (scene setup, per-pose follow) without listing them as deps.
+  const cameraModeRef = React.useRef(cameraMode);
+  const poseRef = React.useRef<RobotPose | undefined>(pose);
 
   // ---- Scene setup (rebuilds on map / theme change) --------------------
   React.useEffect(() => {
@@ -130,6 +178,9 @@ export function PointCloudCanvas({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(centerX, centerY, 0);
     controls.enableDamping = true;
+    // Left-button behaviour tracks the camera mode; the dedicated mode effect
+    // keeps this in sync, but seed it here so a scene rebuild preserves it.
+    applyCameraMode(controls, cameraModeRef.current);
     controls.update();
 
     // Ground plane textured with the 2D occupancy grid for spatial context.
@@ -173,7 +224,7 @@ export function PointCloudCanvas({
     liveGeom.setDrawRange(0, 0);
     const livePoints = new THREE.Points(
       liveGeom,
-      new THREE.PointsMaterial({ size: 0.08, vertexColors: true }),
+      new THREE.PointsMaterial({ size: LIVE_POINT_SIZE, vertexColors: true }),
     );
     livePoints.frustumCulled = false;
     scene.add(livePoints);
@@ -295,7 +346,40 @@ export function PointCloudCanvas({
     ctx.robot.visible = true;
     ctx.robot.position.set(pose.x, pose.y, pose.z);
     ctx.robot.rotation.z = (pose.theta * Math.PI) / 180;
+
+    // Focus mode: keep the robot centred. Translate the camera by the robot's
+    // displacement so the viewing offset (and any orbit the user set) is
+    // preserved while the target tracks the pose.
+    if (cameraModeRef.current === "focus") {
+      const prev = poseRef.current;
+      if (prev) {
+        ctx.camera.position.x += pose.x - prev.x;
+        ctx.camera.position.y += pose.y - prev.y;
+        ctx.camera.position.z += pose.z - prev.z;
+      }
+      ctx.controls.target.set(pose.x, pose.y, pose.z);
+      ctx.controls.update();
+    }
+
+    poseRef.current = pose;
   }, [pose]);
+
+  // ---- Camera mode (move / focus) --------------------------------------
+  // Re-runs on a scene rebuild (meta / theme) too, so the mode survives a
+  // renderer teardown.
+  React.useEffect(() => {
+    cameraModeRef.current = cameraMode;
+    const ctx = sceneRef.current;
+    if (!ctx) return;
+    applyCameraMode(ctx.controls, cameraMode);
+    // Entering focus: frame the robot from a fixed offset behind and above it.
+    if (cameraMode === "focus" && poseRef.current) {
+      const p = poseRef.current;
+      ctx.controls.target.set(p.x, p.y, p.z);
+      ctx.camera.position.set(p.x, p.y - 8, p.z + 6);
+    }
+    ctx.controls.update();
+  }, [cameraMode, meta, mapImageUrl, resolvedTheme]);
 
   // ---- Optional static map cloud (toggle) ------------------------------
   React.useEffect(() => {
@@ -312,6 +396,7 @@ export function PointCloudCanvas({
       return;
     }
 
+    const theme = THEMES[resolvedTheme === "dark" ? "dark" : "light"];
     const abort = new AbortController();
     fetchMapPointCloud({ signal: abort.signal })
       .then((frame) => {
@@ -321,22 +406,14 @@ export function PointCloudCanvas({
           "position",
           new THREE.BufferAttribute(frame.positions, 3),
         );
-        const colors = new Float32Array(frame.count * 3);
-        const color = new THREE.Color();
-        for (let i = 0; i < frame.count; i++) {
-          const j = i * 3;
-          heightColor(frame.positions[j + 2], color);
-          colors[j] = color.r;
-          colors[j + 1] = color.g;
-          colors[j + 2] = color.b;
-        }
-        geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+        // Solid map-cloud colour (white on dark, dark-grey on light) keeps it
+        // visually distinct from the height-coloured live body cloud.
         const points = new THREE.Points(
           geom,
           new THREE.PointsMaterial({
-            size: 0.05,
-            vertexColors: true,
-            opacity: 0.5,
+            size: MAP_POINT_SIZE,
+            color: theme.mapCloud,
+            opacity: 0.6,
             transparent: true,
           }),
         );
@@ -349,7 +426,7 @@ export function PointCloudCanvas({
       });
 
     return () => abort.abort();
-  }, [showMapCloud]);
+  }, [showMapCloud, resolvedTheme]);
 
   return (
     <div

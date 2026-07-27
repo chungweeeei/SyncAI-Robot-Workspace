@@ -8,10 +8,21 @@
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!--
+    Generated interfaces this package imports at runtime (syncai_common.msg /
+    .srv). Declaring it also gives colcon a reason to build syncai_common
+    before this package instead of relying on the whole install space being
+    sourced.
+  -->
+  <exec_depend>syncai_common</exec_depend>
 
   <!--
     Web stack (FastAPI + uvicorn) is installed via pip / requirements.txt, not

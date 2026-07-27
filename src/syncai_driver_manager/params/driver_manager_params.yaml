@@ -2,15 +2,6 @@
 # the node in any namespace (the node is constructed as "driver_manager").
 /**/driver_manager:
   ros__parameters:
-    # Initial battery charge level in percent (0-100).
-    battery_initial_level: 100.0
-    # Battery discharge rate in percent per 30 seconds.
-    battery_discharge_rate: 0.1
-    # Frame stamped into the published BatteryState header. The launch file
-    # overrides this with the <robot_id>/ prefix; this value is only a
-    # fallback when the node is run without the launch file.
-    base_frame: "base_link"
-
     # --- UDP session with the robot controller ---
     # Local interface/port the node binds to receive telemetry datagrams.
     telemetry_recv_ip: "192.168.1.103"

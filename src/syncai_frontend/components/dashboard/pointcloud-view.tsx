@@ -42,6 +42,7 @@ export function PointCloudView({ className }: { className?: string }) {
   const [pose, setPose] = React.useState<RobotPose | undefined>(undefined);
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
   const [showMapCloud, setShowMapCloud] = React.useState(false);
+  const [cameraMode, setCameraMode] = React.useState<"move" | "focus">("move");
 
   // Map image + metadata (once).
   React.useEffect(() => {
@@ -98,6 +99,7 @@ export function PointCloudView({ className }: { className?: string }) {
         mapImageUrl={map?.image}
         pose={pose}
         showMapCloud={showMapCloud}
+        cameraMode={cameraMode}
         onStatus={setStatus}
       />
 
@@ -113,6 +115,24 @@ export function PointCloudView({ className }: { className?: string }) {
           )}
         />
         <span className="text-muted-foreground">{STATUS_LABEL[status]}</span>
+      </div>
+
+      <div className="absolute bottom-2 left-2 flex overflow-hidden rounded-md border bg-background/80 text-xs backdrop-blur">
+        {(["move", "focus"] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => setCameraMode(mode)}
+            className={cn(
+              "px-2 py-1 capitalize transition-colors",
+              cameraMode === mode
+                ? "bg-primary text-primary-foreground"
+                : "hover:bg-accent",
+            )}
+          >
+            {mode}
+          </button>
+        ))}
       </div>
 
       <button

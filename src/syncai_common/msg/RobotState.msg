@@ -1,3 +1,7 @@
+# SECONDS since epoch, stamped by the publishing node. Note the unit: the
+# other timestamped interfaces here (ArtifactState, ExecuteTask) use
+# milliseconds. Kept in seconds because it is passed through verbatim to
+# GET /api/v1/robot/state, whose consumers already treat it as seconds.
 uint64 timestamp
 string robot_id
 string map

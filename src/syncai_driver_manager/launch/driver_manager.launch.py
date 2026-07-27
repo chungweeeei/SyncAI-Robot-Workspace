@@ -1,9 +1,9 @@
 # Launch the syncai_driver_manager node — monitors the robot's hardware drivers.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used both as the node namespace and to
-# rewrite the base_frame parameter, since TF frame names are not namespaced
-# by ROS.
+# as system_manager.launch.py) and is used as the node namespace, so all the
+# node's relative topics and services get the /<robot_id> prefix. This node
+# publishes no TF frame names, so it needs no frame-parameter rewriting.
 
 import configparser
 import os
@@ -47,7 +47,7 @@ def read_robot_id(config_path: str) -> str:
 
 def launch_setup(context, *args, **kwargs):
     # LaunchConfiguration values only resolve inside an OpaqueFunction, and we
-    # need the resolved robot_id here to namespace the node and its frames.
+    # need the resolved robot_id here to namespace the node.
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
 
@@ -60,15 +60,7 @@ def launch_setup(context, *args, **kwargs):
         executable="driver_manager_node",
         namespace=robot_id,
         output="screen",
-        parameters=[
-            params_file,
-            {
-                # TF frame names are not namespaced by ROS, so override the
-                # yaml default with the robot_id prefix here. Later entries
-                # in this list take precedence over the params file.
-                "base_frame": f"{robot_id}/base_link",
-            },
-        ],
+        parameters=[params_file],
     )
 
     return [driver_manager_node]

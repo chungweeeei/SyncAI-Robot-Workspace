@@ -17,7 +17,7 @@
             <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
             <Peers>
               <Peer address="127.0.0.1"/>
-              <Peer address="10.8.140.108"/>
+              <Peer address="10.8.140.101"/>
             </Peers>
         </Discovery>
         <Tracing>
