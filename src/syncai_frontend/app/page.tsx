@@ -37,7 +37,10 @@ export default function DashboardPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="h-[560px]">
-              <MapPanel pose={state.localization_status.position} />
+              <MapPanel
+                pose={state.localization_status.position}
+                robotId={state.robot_id}
+              />
             </CardContent>
           </Card>
         </div>

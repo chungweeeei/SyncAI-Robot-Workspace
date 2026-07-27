@@ -16,7 +16,8 @@
       "Bash(bash -c 'source /opt/ros/humble/setup.bash 2>/dev/null; timeout 10 ros2 topic echo /robot01/mode --once')",
       "Bash(wait)",
       "Bash(git -C /home/unitree/andy/SyncAI-Robot-Workspace diff src/syncai_bringup/launch/bringup_3d.launch.py)",
-      "Bash(docker cp *)"
+      "Bash(docker cp *)",
+      "Bash(npx prettier *)"
     ]
   }
 }

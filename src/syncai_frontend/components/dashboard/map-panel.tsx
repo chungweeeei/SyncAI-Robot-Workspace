@@ -14,8 +14,19 @@ type ViewMode = "2d" | "3d";
  * Hosts the map card body with a 2D / 3D toggle. The 2D view is the familiar
  * top-down occupancy grid; the 3D view streams the live point cloud. 2D stays
  * the default so weak clients aren't pushed into WebGL unless asked.
+ *
+ * Both views can dispatch a nav goal, and each owns its own `useGoalTask`
+ * state: switching views unmounts one and mounts the other, so a staged goal
+ * does not survive the toggle. That is deliberate — a goal picked by clicking a
+ * 3D floor point should not silently reappear as a pending goal in the 2D view.
  */
-export function MapPanel({ pose }: { pose: RobotPose }) {
+export function MapPanel({
+  pose,
+  robotId,
+}: {
+  pose: RobotPose;
+  robotId: string;
+}) {
   const [mode, setMode] = React.useState<ViewMode>("2d");
 
   return (
@@ -34,7 +45,11 @@ export function MapPanel({ pose }: { pose: RobotPose }) {
         ))}
       </div>
 
-      {mode === "2d" ? <MapView pose={pose} /> : <PointCloudView />}
+      {mode === "2d" ? (
+        <MapView pose={pose} robotId={robotId} />
+      ) : (
+        <PointCloudView robotId={robotId} />
+      )}
     </div>
   );
 }

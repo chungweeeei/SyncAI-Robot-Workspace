@@ -2,7 +2,9 @@
 
 import * as React from "react";
 
+import { GoalControl } from "@/components/dashboard/goal-control";
 import { MapCanvas } from "@/components/dashboard/map-canvas";
+import { useGoalTask } from "@/hooks/use-goal-task";
 import { apiUrl } from "@/lib/api/config";
 import type { MapMetadata, RobotPose, Vertex } from "@/lib/types/robot";
 
@@ -31,13 +33,24 @@ interface VertexResponse {
  * Data-wiring wrapper for the 2D map: pulls the occupancy map (as a PNG image +
  * metadata) and the waypoint vertices from the backend, then hands them to the
  * pure-rendering MapCanvas. The live pose still comes from the parent.
+ *
+ * The drag-a-goal flow lives in `useGoalTask` (shared with the 3D view); the
+ * canvas only produces a goal pose.
  */
-export function MapView({ pose }: { pose: RobotPose }) {
+export function MapView({
+  pose,
+  robotId,
+}: {
+  pose: RobotPose;
+  robotId: string;
+}) {
   const [map, setMap] = React.useState<{
     meta: MapMetadata;
     image: string;
   } | null>(null);
   const [vertexes, setVertexes] = React.useState<Vertex[]>([]);
+
+  const task = useGoalTask(robotId);
 
   // Map image + metadata (once).
   React.useEffect(() => {
@@ -96,11 +109,18 @@ export function MapView({ pose }: { pose: RobotPose }) {
   }
 
   return (
-    <MapCanvas
-      meta={map.meta}
-      mapImageUrl={map.image}
-      pose={pose}
-      vertexes={vertexes}
-    />
+    <div className="relative h-full w-full">
+      <MapCanvas
+        meta={map.meta}
+        mapImageUrl={map.image}
+        pose={pose}
+        vertexes={vertexes}
+        goal={task.goal}
+        goalMode={task.goalMode}
+        onGoalCommit={task.commitGoal}
+      />
+
+      <GoalControl task={task} className="absolute left-0 top-0" />
+    </div>
   );
 }

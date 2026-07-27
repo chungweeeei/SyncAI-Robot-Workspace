@@ -2,7 +2,9 @@
 
 import * as React from "react";
 
+import { GoalControl } from "@/components/dashboard/goal-control";
 import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
+import { useGoalTask } from "@/hooks/use-goal-task";
 import { apiUrl } from "@/lib/api/config";
 import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
@@ -29,8 +31,18 @@ const STATUS_LABEL: Record<StreamStatus, string> = {
  * once for the ground plane, subscribes the telemetry WebSocket for pose and
  * joint angles, and hosts the map-cloud toggle. The live body_cloud stream
  * itself is owned by PointCloudCanvas.
+ *
+ * Goal dispatch shares `useGoalTask` and `GoalControl` with the 2D view, so a
+ * goal placed here goes out as the same one-step MOVE task; only the picking
+ * (a ground-plane raycast rather than grid pixels) is specific to 3D.
  */
-export function PointCloudView({ className }: { className?: string }) {
+export function PointCloudView({
+  robotId,
+  className,
+}: {
+  robotId: string;
+  className?: string;
+}) {
   const [map, setMap] = React.useState<{
     meta: MapMetadata;
     image: string;
@@ -42,6 +54,8 @@ export function PointCloudView({ className }: { className?: string }) {
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
   const [showMapCloud, setShowMapCloud] = React.useState(false);
   const [cameraMode, setCameraMode] = React.useState<"move" | "focus">("move");
+
+  const task = useGoalTask(robotId);
 
   // Map image + metadata (once).
   React.useEffect(() => {
@@ -92,6 +106,9 @@ export function PointCloudView({ className }: { className?: string }) {
         joints={joints}
         showMapCloud={showMapCloud}
         cameraMode={cameraMode}
+        goal={task.goal}
+        goalMode={task.goalMode}
+        onGoalCommit={task.commitGoal}
         onStatus={setStatus}
       />
 
@@ -108,6 +125,9 @@ export function PointCloudView({ className }: { className?: string }) {
         />
         <span className="text-muted-foreground">{STATUS_LABEL[status]}</span>
       </div>
+
+      {/* Below the stream-status pill, which owns the top-left corner. */}
+      <GoalControl task={task} className="absolute left-2 top-10" />
 
       <div className="absolute bottom-2 left-2 flex overflow-hidden rounded-md border bg-background/80 text-xs backdrop-blur">
         {(["move", "focus"] as const).map((mode) => (

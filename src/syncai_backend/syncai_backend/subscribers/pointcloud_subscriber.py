@@ -1,6 +1,7 @@
 import numpy as np
 import rclpy
 import structlog
+import yaml
 
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
@@ -9,7 +10,7 @@ from rclpy.qos import QoSProfile
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 
-from tf2_ros import TransformException
+from tf2_ros import LookupException, TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
@@ -30,9 +31,14 @@ class PointCloudSubscriber:
        it on the map, each frame is transformed into ``target_frame`` (``map``)
        using the TF branch the localizer (``map -> <robot_id>/pointlio_odom``,
        after relocalize) and the LIO node (``pointlio_odom -> pointlio_body``)
-       broadcast — the source frame is taken from the cloud header, so a frame
-       rename upstream needs no change here. The result is packed and handed to
-       the single-slot repo the WebSocket router drains. This is the decimated
+       broadcast — the source frame (and its TF parent, see
+       ``_resolve_fixed_frame``) is taken from the cloud header, so a frame
+       rename upstream needs no change here. That last part holds only as long
+       as the cloud's frame has exactly ONE TF parent: it briefly did not (the
+       LIO launches named the body frame ``base_link``, which syncai_lio_bridge
+       already parents to ``odom``), and the resulting ambiguity is what the
+       lookup-time comment in ``_cloud_cb`` is about. The result is packed and
+       handed to the single-slot repo the WS router drains. This is the decimated
        per-scan cloud (~a few thousand points), so the vectorised numpy
        transform is sub-millisecond.
 
@@ -69,9 +75,52 @@ class PointCloudSubscriber:
         # the viewer is empty.
         self._cloud_tf_available = None
 
+        # Cache for _resolve_fixed_frame: {cloud source frame: its TF parent}.
+        # Keyed by source frame so an upstream frame rename resolves afresh
+        # rather than reusing the old tree's answer.
+        self._fixed_frames: dict[str, str] = {}
+
         # register tf buffer
         self._tf_buffer: Buffer = None
         self._tf_listener: TransformListener = None
+
+    def _resolve_fixed_frame(self, source_frame: str) -> str:
+        """The TF parent of ``source_frame`` — where _cloud_cb splits the chain.
+
+        Read out of the live TF tree instead of being configured, so this stays
+        as frame-rename-proof as taking the source frame from the cloud header:
+        whatever pointlio calls its odom frame (``pointlio_odom`` today,
+        ``lio_odom`` in the Isaac launches) is picked up automatically. Resolved
+        once per source frame — the tree's shape does not change at runtime,
+        only the transforms in it.
+
+        Raises LookupException (a TransformException, so _cloud_cb's existing
+        handler drops the frame and logs) until the parent is in the buffer.
+        """
+        cached = self._fixed_frames.get(source_frame)
+        if cached is not None:
+            return cached
+
+        # all_frames_as_yaml() is tf2's own tree dump; each entry carries the
+        # frame's parent. There is no public per-frame parent accessor on the
+        # Python Buffer (the C++ _getParent binding is not exposed), so this is
+        # the supported way to ask.
+        frames = yaml.safe_load(self._tf_buffer.all_frames_as_yaml()) or {}
+        entry = frames.get(source_frame) if isinstance(frames, dict) else None
+        parent = entry.get("parent") if isinstance(entry, dict) else None
+        if not parent:
+            raise LookupException(
+                f'cloud frame "{source_frame}" has no TF parent yet '
+                "(is pointlio broadcasting?)"
+            )
+
+        self._fixed_frames[source_frame] = parent
+        self._logger.info(
+            "resolved body_cloud TF split point",
+            source_frame=source_frame,
+            fixed_frame=parent,
+        )
+        return parent
 
     def register(self, node: Node):
         # spin_thread=False: the listener's /tf(/tf_static) subscriptions run on
@@ -129,12 +178,52 @@ class PointCloudSubscriber:
         source_frame = msg.header.frame_id
         if source_frame != self._target_frame:
             try:
-                # map->pointlio_odom is a slowly-varying correction; look up the
-                # latest available transform (Time()) rather than the cloud
-                # stamp so a high-rate cloud isn't dropped by
-                # future-extrapolation errors.
-                tf = self._tf_buffer.lookup_transform(
-                    self._target_frame, source_frame, rclpy.time.Time()
+                # The two halves of map->body need DIFFERENT lookup times, which
+                # is why this is lookup_transform_full and not a plain
+                # lookup_transform. Both single-time variants are wrong:
+                #
+                #  - At the cloud stamp: ALWAYS fails with "extrapolation into
+                #    the future". The localizer stamps map->pointlio_odom with
+                #    the stamp of the last cloud its own message_filters sync
+                #    delivered, and only refreshes it on the next timer tick —
+                #    which is necessarily after we have already handled that
+                #    cloud. Measured on robot01: pointlio_odom->pointlio_body
+                #    lands at the cloud stamp exactly (pointlio broadcasts it
+                #    with the scan, same cloud_end_time), map->pointlio_odom a
+                #    full 10 Hz cycle (~100 ms) behind it. 100/100 frames
+                #    dropped, i.e. an empty viewer.
+                #  - At Time() (latest) for the whole chain: places every scan
+                #    at the robot's CURRENT pose, so a moving robot's cloud
+                #    smears. It also silently resolved through
+                #    syncai_lio_bridge's 2D-projected chain back when base_link
+                #    had two TF parents, delivering a yaw-only pose at z == 0
+                #    (~15 deg of pitch off what rviz2 drew for the same cloud).
+                #
+                # So split at the odom frame and take each half at the time it
+                # is actually valid:
+                #   map <- pointlio_odom  @ Time()          — the ICP correction,
+                #     genuinely slowly varying, and the only lagging link.
+                #   pointlio_odom <- body @ msg.header.stamp — the LIO pose for
+                #     THIS scan, published with it, so always available.
+                #
+                # The timeout is not about the lagging correction — it covers a
+                # delivery race inside THIS process. pointlio broadcasts
+                # odom->body before publishing the scan, but they are separate
+                # topics, so the executor can hand us the cloud before the /tf
+                # callback has filed the matching transform; without a timeout
+                # ~20% of frames lost that race and were dropped. Waiting half a
+                # scan period lets the transform land. Safe to block here: the
+                # cloud callback has its own MutuallyExclusiveCallbackGroup, so
+                # the /tf subscription (the node's default group) is still
+                # serviced by another thread of the MultiThreadedExecutor.
+                fixed_frame = self._resolve_fixed_frame(source_frame)
+                tf = self._tf_buffer.lookup_transform_full(
+                    target_frame=self._target_frame,
+                    target_time=rclpy.time.Time(),
+                    source_frame=source_frame,
+                    source_time=rclpy.time.Time.from_msg(msg.header.stamp),
+                    fixed_frame=fixed_frame,
+                    timeout=rclpy.duration.Duration(seconds=0.05),
                 )
             except TransformException as exc:
                 if self._cloud_tf_available is not False:
