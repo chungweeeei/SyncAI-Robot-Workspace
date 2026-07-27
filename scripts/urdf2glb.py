@@ -71,8 +71,10 @@ def convert(urdf_path: str, out_path: str, pack: bool = True) -> None:
     )
 
     scene = robot.scene
-    print(f"loaded {urdf_path}: {len(scene.graph.nodes)} nodes, "
-          f"{len(scene.geometry)} geometries")
+    print(
+        f"loaded {urdf_path}: {len(scene.graph.nodes)} nodes, "
+        f"{len(scene.geometry)} geometries"
+    )
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
 
@@ -90,8 +92,18 @@ def convert(urdf_path: str, out_path: str, pack: bool = True) -> None:
         scene.export(raw_path)
         raw_size = os.path.getsize(raw_path)
         subprocess.run(
-            ["npx", "-y", "gltfpack", "-i", raw_path, "-o", out_path,
-             "-kn", "-km", "-cc"],
+            [
+                "npx",
+                "-y",
+                "gltfpack",
+                "-i",
+                raw_path,
+                "-o",
+                out_path,
+                "-kn",
+                "-km",
+                "-cc",
+            ],
             check=True,
         )
         print(f"wrote {out_path} ({raw_size} -> {os.path.getsize(out_path)} bytes)")
