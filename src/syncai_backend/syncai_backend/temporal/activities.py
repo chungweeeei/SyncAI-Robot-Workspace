@@ -23,6 +23,13 @@ class ActivityResult(BaseModel):
     state: str | None = None
 
 
+# Motion keys accepted by syncai_driver_manager's set_motion_key service; it
+# maps them to the gait controller's MODE characters (see
+# DriverManagerNode::setMotionKeyCallback).
+MOTION_KEY_STAND = "0"  # MODE Z
+MOTION_KEY_LIE_DOWN = "2"  # MODE X
+
+
 class RobotActivities:
     def __init__(
         self,
@@ -62,9 +69,7 @@ class RobotActivities:
             with activity.shield_thread_cancel_exception():
                 self._robot_gw.cancel_move(goal_id=goal_id)
 
-            self._logger.warn(
-                f"[RobotActivity] {label} activity has been cancelled"
-            )
+            self._logger.warning(f"[RobotActivity] {label} activity has been cancelled")
             raise
 
     @activity.defn
@@ -82,6 +87,41 @@ class RobotActivities:
             raise ApplicationError(f"move ended in {state}", non_retryable=False)
 
         return ActivityResult(success=True, goal_id=goal_id, state=state)
+
+    def _set_motion_key(self, key: str, label: str) -> ActivityResult:
+        """Send a motion key. Fire-and-forget: this does NOT wait for the pose.
+
+        MODE is a one-way UDP command, so a successful service call only means
+        the datagram was sent -- the step completes while the robot is still
+        moving its legs. A step queued right behind this one (e.g. a MOVE) will
+        therefore start against a robot that has not finished standing up.
+
+        We deliberately do not paper over that with a fixed sleep: the driver
+        manager already republishes the controller's MODE_STATE telemetry on
+        the `mode` topic (data[0] = policy state, data[1] = motion state), so
+        the real fix is to subscribe to it and poll the actual motion state
+        here. That is pending the value mapping for data[1], which is defined
+        on the gait controller side, not in this workspace.
+
+        A False from the service means the driver manager rejected the key
+        (unknown key, or the safety lock is engaged) -- retrying will not fix
+        either on its own, hence non_retryable.
+        """
+        accepted, msg = self._robot_gw.set_motion_key(key=key)
+        if not accepted:
+            raise ApplicationError(f"{label} rejected: {msg}", non_retryable=True)
+
+        self._logger.info(f"[RobotActivity] {label} command sent", key=key)
+
+        return ActivityResult(success=True, state="succeeded")
+
+    @activity.defn
+    def execute_stand(self) -> ActivityResult:
+        return self._set_motion_key(key=MOTION_KEY_STAND, label="Stand")
+
+    @activity.defn
+    def execute_lie_down(self) -> ActivityResult:
+        return self._set_motion_key(key=MOTION_KEY_LIE_DOWN, label="LieDown")
 
     @activity.defn
     def execute_artifact(self, params: StepParams) -> ActivityResult:
@@ -116,7 +156,7 @@ class RobotActivities:
                 try:
                     state = self._artifact_gw.get_state(params.artifact_id)
                 except (ArtifactUnavailable, ArtifactCommandRejected) as err:
-                    self._logger.warn(
+                    self._logger.warning(
                         "[RobotActivity] Artifact state poll failed",
                         artifact_id=params.artifact_id,
                         error=str(err),
@@ -147,7 +187,7 @@ class RobotActivities:
 
         except CancelledError:
             # No cancel API on the artifact side; the command already fired.
-            self._logger.warn(
+            self._logger.warning(
                 "[RobotActivity] Artifact activity has been cancelled",
                 artifact_id=params.artifact_id,
             )

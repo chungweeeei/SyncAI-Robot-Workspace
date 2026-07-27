@@ -85,9 +85,7 @@ def init_rest_server(
 
     app.include_router(init_task_router(logger=logger, workflow_gw=workflow_gw))
     app.include_router(init_schedule_router(logger=logger, workflow_gw=workflow_gw))
-    app.include_router(
-        init_robot_router(logger=logger, robot_repo=robot_repo, robot_gw=robot_gw)
-    )
+    app.include_router(init_robot_router(logger=logger, robot_repo=robot_repo))
     app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
     app.include_router(
         init_map_router(

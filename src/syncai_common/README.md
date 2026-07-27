@@ -124,8 +124,9 @@ Notes:
 
 - **`SetMotionKey.key` is a string, not an enum**, because it is forwarded
   verbatim to the gait controller. Values in use: `0` stand, `1` locomotion,
-  `2` lie down, `3` damping, `4` emergency stop, `5` MPC. The backend exposes
-  this as `POST /api/v1/robot/motion_key`.
+  `2` lie down, `3` damping, `4` emergency stop, `5` MPC. The backend no longer
+  exposes this over REST; it is called from the `STANDUP` / `LIEDOWN` task steps
+  (`syncai_backend/temporal/activities.py`).
 - **`SetSpeedScale` has six independent scales** (`fwd`, `back`, `left`, `right`,
   `turn_l`, `turn_r`) because the gait controller tracks commanded velocity
   asymmetrically per direction; the driver manager applies these as a correction

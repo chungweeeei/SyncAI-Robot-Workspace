@@ -40,6 +40,8 @@ async def run_worker(
         activities=[
             activities.execute_move,
             activities.execute_artifact,
+            activities.execute_stand,
+            activities.execute_lie_down,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=1),
     )

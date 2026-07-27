@@ -30,6 +30,8 @@ class RobotWorkflow:
         activity_map = {
             StepType.MOVE: RobotActivities.execute_move,
             StepType.ARTIFACT: RobotActivities.execute_artifact,
+            StepType.STANDUP: RobotActivities.execute_stand,
+            StepType.LIEDOWN: RobotActivities.execute_lie_down,
         }
 
         for step in self._steps:
@@ -41,11 +43,17 @@ class RobotWorkflow:
                     f"Unknown step type: {step.type}", non_retryable=True
                 )
 
+            # The posture activities (STANDUP/LIEDOWN) take no argument, so
+            # they must be invoked with an empty arg list -- handing them a
+            # None would fail the worker's argument-count check. The schema
+            # guarantees params is None for exactly those step types.
+            args = [] if step.params is None else [step.params]
+
             step.status = StepStatus.IN_PROGRESS
             try:
                 result: ActivityResult = await workflow.execute_activity(
                     activity_fn,
-                    step.params,
+                    args=args,
                     start_to_close_timeout=timedelta(minutes=3600),
                     heartbeat_timeout=timedelta(seconds=3),
                     cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,

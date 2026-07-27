@@ -132,8 +132,9 @@ The service contract is a **numeric string**, `"0"`–`"5"`:
 | `"5"` | `MODE M` | MPC |
 
 Any GUI that accepts friendlier aliases (`m`, `mpc`, …) does that translation in
-its own layer; the ROS contract stays numeric. The backend exposes this as
-`POST /api/v1/robot/motion_key`.
+its own layer; the ROS contract stays numeric. There is no REST endpoint for
+this any more — the backend calls the service from its `STANDUP` / `LIEDOWN`
+task steps (keys `0` / `2`).
 
 ### Per-direction speed scaling
 

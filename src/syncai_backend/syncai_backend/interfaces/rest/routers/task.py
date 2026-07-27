@@ -1,7 +1,7 @@
 import structlog
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from enum import Enum
 
 from syncai_backend.gateways.workflow.schema import (
@@ -11,6 +11,7 @@ from syncai_backend.gateways.workflow.schema import (
     StepParams,
     WorkflowTask,
     WorkflowTaskDefinition,
+    validate_step_params,
 )
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 
@@ -28,10 +29,21 @@ class StepRequest(BaseModel):
         ..., description="Unique identifier of the step", examples=["step1"]
     )
     type: StepType = Field(..., description="Type of the step", examples=["MOVE"])
-    params: StepParams = Field(
-        ...,
-        description="Parameters for the step, which vary based on the step type",
+    params: Optional[StepParams] = Field(
+        default=None,
+        description=(
+            "Parameters for the step, which vary based on the step type. "
+            "Omitted for STANDUP/LIEDOWN, required for MOVE/ARTIFACT"
+        ),
     )
+
+    # Same check as Step, repeated here so a mismatched body is rejected at the
+    # request boundary (422) instead of raising a ValidationError inside the
+    # handler when the Step is built (500).
+    @model_validator(mode="after")
+    def _check_params(self) -> "StepRequest":
+        validate_step_params(self.type, self.params)
+        return self
 
 
 class TaskRequest(BaseModel):

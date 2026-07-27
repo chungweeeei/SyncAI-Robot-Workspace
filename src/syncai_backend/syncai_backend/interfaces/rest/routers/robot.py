@@ -6,9 +6,8 @@ from pydantic import BaseModel, Field
 
 from syncai_common.msg import RobotMode, RobotState as RobotStateMsg
 
-from syncai_backend.exceptions import BadRequestError, NotFoundError
+from syncai_backend.exceptions import NotFoundError
 from syncai_backend.repositories.robot.robot import RobotRepo
-from syncai_backend.gateways.robot.robot import RobotGateway
 
 
 # Reverse lookup: RobotMode uint8 constant -> human-readable name.
@@ -85,26 +84,9 @@ class RobotState(BaseModel):
     )
 
 
-class SetMotionKeyRequest(BaseModel):
-    key: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "The motion key to send to the driver: "
-            "'0' stand, '1' locomotion, '2' lie down, '3' damping, "
-            "'4' emergency stop, '5' MPC."
-        ),
-    )
-
-
-class SetMotionKeyResponse(BaseModel):
-    message: str = Field(..., description="Human-readable result of the motion key.")
-
-
 def init_robot_router(
     logger: structlog.stdlib.BoundLogger,
     robot_repo: RobotRepo,
-    robot_gw: RobotGateway,
 ) -> APIRouter:
     robot_router = APIRouter(prefix="", tags=["Robot"])
 
@@ -133,16 +115,5 @@ def init_robot_router(
                 battery_percentage=int(state.battery_status.battery_percentage),
             ),
         )
-
-    # Plain (non-async) handler: the gateway call blocks on a ROS service, so
-    # FastAPI runs it in its worker thread pool instead of on the event loop.
-    @robot_router.post("/api/v1/robot/motion_key", response_model=SetMotionKeyResponse)
-    def set_motion_key(request: SetMotionKeyRequest):
-        success, message = robot_gw.set_motion_key(key=request.key)
-        if not success:
-            logger.error("Failed to set motion key", key=request.key, message=message)
-            raise BadRequestError(message)
-
-        return SetMotionKeyResponse(message=message)
 
     return robot_router

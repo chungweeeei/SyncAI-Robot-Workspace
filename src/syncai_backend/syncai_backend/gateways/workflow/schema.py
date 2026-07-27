@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Annotated, List, Literal, Union, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 from enum import Enum
 
@@ -24,6 +24,8 @@ class StepStatus(str, Enum):
 class StepType(str, Enum):
     MOVE = "MOVE"
     ARTIFACT = "ARTIFACT"
+    STANDUP = "STANDUP"
+    LIEDOWN = "LIEDOWN"
 
 
 class MoveParams(BaseSchema):
@@ -114,14 +116,48 @@ class ArtifactParams(BaseSchema):
 StepParams = Union[MoveParams, ArtifactParams]
 
 
+# Which params model each step type expects; None means the step takes no
+# params at all (STANDUP/LIEDOWN are a single motion key, there is nothing to
+# parameterise). The table exists because StepParams is a plain union with no
+# discriminator: without an explicit check a MOVE step carrying an artifact
+# body -- or, now that params is optional, no body at all -- would validate
+# fine here and only blow up inside the activity, long after the REST call was
+# answered with 200.
+STEP_PARAMS_TYPE: dict[StepType, Optional[type[BaseModel]]] = {
+    StepType.MOVE: MoveParams,
+    StepType.ARTIFACT: ArtifactParams,
+    StepType.STANDUP: None,
+    StepType.LIEDOWN: None,
+}
+
+
+def validate_step_params(
+    step_type: StepType, params: Optional[StepParams]
+) -> Optional[StepParams]:
+    expected = STEP_PARAMS_TYPE[step_type]
+
+    if expected is None:
+        if params is not None:
+            raise ValueError(f"{step_type.value} step takes no params")
+        return params
+
+    if not isinstance(params, expected):
+        raise ValueError(f"{step_type.value} step requires {expected.__name__}")
+
+    return params
+
+
 class Step(BaseSchema):
     id: str = Field(
         ..., description="Unique identifier of the step", examples=["step1"]
     )
     type: StepType = Field(..., description="Type of the step", examples=["MOVE"])
-    params: StepParams = Field(
-        ...,
-        description="Parameters for the step, which vary based on the step type",
+    params: Optional[StepParams] = Field(
+        default=None,
+        description=(
+            "Parameters for the step, which vary based on the step type. "
+            "Omitted for STANDUP/LIEDOWN, required for MOVE/ARTIFACT"
+        ),
     )
     status: StepStatus = Field(
         StepStatus.PENDING,
@@ -133,6 +169,11 @@ class Step(BaseSchema):
         description="Error message if the step failed",
         json_schema_extra={"example": ""},
     )
+
+    @model_validator(mode="after")
+    def _check_params(self) -> "Step":
+        validate_step_params(self.type, self.params)
+        return self
 
 
 class WorkflowTaskDefinition(BaseSchema):
