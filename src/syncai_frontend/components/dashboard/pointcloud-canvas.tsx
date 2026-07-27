@@ -3,6 +3,8 @@
 import * as React from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
@@ -24,9 +26,10 @@ const MAX_LIVE_POINTS = 200_000;
 const Z_MIN = -0.5;
 const Z_MAX = 3.0;
 
+// The robot itself is deliberately absent here: it renders in its own material
+// so the machine looks like the same machine in either theme.
 interface Theme {
   background: number;
-  robot: number;
   ground: number;
   groundOpacity: number;
   /** Solid colour for the static map cloud, kept distinct from the
@@ -38,14 +41,12 @@ interface Theme {
 const THEMES: Record<"light" | "dark", Theme> = {
   light: {
     background: 0xf5f5f5,
-    robot: 0x2563eb,
     ground: 0xffffff,
     groundOpacity: 0.85,
     mapCloud: 0x333333,
   },
   dark: {
     background: 0x0a0a0a,
-    robot: 0x3b82f6,
     ground: 0x404040,
     groundOpacity: 0.6,
     mapCloud: 0xffffff,
@@ -56,6 +57,80 @@ const THEMES: Record<"light" | "dark", Theme> = {
 // touch larger as a static spatial reference.
 const LIVE_POINT_SIZE = 0.12;
 const MAP_POINT_SIZE = 0.14;
+
+// G23 model baked from description/G23.urdf by scripts/urdf2glb.py. It keeps
+// the ROS convention (Z-up, +x forward, metres) rather than glTF's nominal
+// +Y-up, which is exactly what the Z-up world below expects — so it needs no
+// correction rotation. See that script's docstring.
+const ROBOT_MODEL_URL = "/models/g23.glb";
+
+// Height of base_link above the ground with the legs at the rest pose the GLB
+// is baked in: 0.41012 m of link offsets down to FL_FOOT, plus the 22 mm foot
+// collision sphere the URDF uses as the contact point. The pose feed reports a
+// planar pose (lio_bridge projects to x/y/yaw, so z is ~0), so without this the
+// robot renders buried to its knees.
+const ROBOT_BASE_HEIGHT_M = 0.43212;
+
+// Time constant (seconds) of the easing applied to the reported pose. The feed
+// is a 1 Hz snapshot polled over REST, so drawing it raw teleports the robot
+// once a second; easing turns each update into a glide that reads as
+// continuous motion. It is deliberately a filter rather than a replay buffer:
+// smoothing costs a fraction of a second of lag but never renders a pose the
+// robot has already left behind, which a buffer would. Worth lowering once the
+// telemetry WebSocket raises the feed rate.
+const POSE_EASE_TAU_S = 0.25;
+
+/** Pose the robot is actually drawn at, eased toward the reported one. */
+interface SmoothPose {
+  x: number;
+  y: number;
+  z: number;
+  /**
+   * Radians, and deliberately *not* wrapped to [-π, π]: each new target is
+   * unwrapped against this value so easing always takes the short way round.
+   */
+  yaw: number;
+}
+
+/**
+ * Load the robot model once per page load.
+ *
+ * The scene-setup effect below tears down and rebuilds the renderer whenever
+ * the map or the theme changes, and refetching plus reparsing a ~600 kB GLB on
+ * every theme toggle is pure waste. Caching the promise at module scope is the
+ * same move the body_cloud WebSocket already makes for the same reason.
+ *
+ * The GLB carries geometry only — no materials, and no vertex normals (STL has
+ * none to carry over, and generating them would inflate the asset for a
+ * mechanical part that reads fine flat-shaded). Left alone, glTF's default
+ * material is fully metallic and would render pure black in this deliberately
+ * unlit scene, so every mesh gets our own lit material here.
+ */
+let robotModelPromise: Promise<THREE.Object3D> | null = null;
+
+function loadRobotModel(): Promise<THREE.Object3D> {
+  if (!robotModelPromise) {
+    const loader = new GLTFLoader();
+    // scripts/urdf2glb.py runs gltfpack -cc, whose output declares
+    // EXT_meshopt_compression. (KHR_mesh_quantization needs no registration.)
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    robotModelPromise = loader.loadAsync(ROBOT_MODEL_URL).then((gltf) => {
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xb0b4ba,
+        metalness: 0.1,
+        roughness: 0.75,
+        // No NORMAL attribute in the asset, so shade off face derivatives.
+        flatShading: true,
+      });
+      gltf.scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) mesh.material = material;
+      });
+      return gltf.scene;
+    });
+  }
+  return robotModelPromise;
+}
 
 /** Map a height to an RGB colour (blue = low, red = high) via an HSL sweep. */
 function heightColor(z: number, out: THREE.Color): THREE.Color {
@@ -132,7 +207,6 @@ export function PointCloudCanvas({
     camera: THREE.PerspectiveCamera;
     controls: OrbitControls;
     liveGeom: THREE.BufferGeometry;
-    robot: THREE.Object3D;
     mapPoints: THREE.Points | null;
     dispose: () => void;
   } | null>(null);
@@ -143,10 +217,15 @@ export function PointCloudCanvas({
     onStatusRef.current = onStatus;
   }, [onStatus]);
 
-  // Camera mode + last pose, read from effects that must not re-run on every
-  // change (scene setup, per-pose follow) without listing them as deps.
+  // Camera mode + pose easing state, read by the render loop and by effects
+  // that must not re-run on every change without listing them as deps.
+  //
+  // Both pose refs live at component scope rather than inside the scene-setup
+  // effect so a map load or theme toggle rebuilds the renderer without
+  // restarting the animation from the world origin.
   const cameraModeRef = React.useRef(cameraMode);
-  const poseRef = React.useRef<RobotPose | undefined>(pose);
+  const targetPoseRef = React.useRef<SmoothPose | null>(null);
+  const renderedPoseRef = React.useRef<SmoothPose | null>(null);
 
   // ---- Scene setup (rebuilds on map / theme change) --------------------
   React.useEffect(() => {
@@ -229,18 +308,32 @@ export function PointCloudCanvas({
     livePoints.frustumCulled = false;
     scene.add(livePoints);
 
-    // Robot marker: a cone pointing along +x (heading) at pose height.
-    const robot = new THREE.Mesh(
-      new THREE.ConeGeometry(0.18, 0.6, 16),
-      new THREE.MeshBasicMaterial({ color: theme.robot }),
-    );
-    // ConeGeometry points along +y; rotate so it points along +x (yaw 0).
-    robot.rotation.z = -Math.PI / 2;
+    // The robot is the only lit object in the scene — the ground, both clouds
+    // and the old marker are all unlit — so these lights exist solely to give
+    // it readable form. The hemisphere fill keeps its underside off pure black
+    // and the directional key rakes across the body from the default camera
+    // side, which is what makes the leg geometry legible.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.0));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    keyLight.position.set(-1, -1.5, 3);
+    scene.add(keyLight);
+
     const robotGroup = new THREE.Group();
-    robotGroup.add(robot);
     // Hidden until the first pose arrives (a raw cloud test has no /robot/state).
     robotGroup.visible = false;
     scene.add(robotGroup);
+
+    // Attach the shared model once it resolves. `cancelled` guards a scene
+    // rebuild that lands mid-load: Object3D.add() reparents, so a stale
+    // callback would steal the model out of the group the new scene just built.
+    let cancelled = false;
+    loadRobotModel()
+      .then((model) => {
+        if (cancelled) return;
+        model.position.z = ROBOT_BASE_HEIGHT_M;
+        robotGroup.add(model);
+      })
+      .catch((err) => console.error("robot model failed to load", err));
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
@@ -253,8 +346,59 @@ export function PointCloudCanvas({
     const observer = new ResizeObserver(resize);
     observer.observe(container);
 
+    /**
+     * Advance the drawn pose toward the reported one by one frame.
+     *
+     * The exponential factor is derived from dt rather than applied per frame,
+     * so a 120 Hz display converges at the same wall-clock rate as a 60 Hz one
+     * (and a tab restored after minutes in the background lands on a large dt,
+     * i.e. snaps — which is the right answer, the robot really has moved).
+     */
+    const stepPose = (dt: number) => {
+      const target = targetPoseRef.current;
+      if (!target) return;
+
+      let cur = renderedPoseRef.current;
+      if (cur) {
+        const a = 1 - Math.exp(-dt / POSE_EASE_TAU_S);
+        const dx = (target.x - cur.x) * a;
+        const dy = (target.y - cur.y) * a;
+        const dz = (target.z - cur.z) * a;
+        cur.x += dx;
+        cur.y += dy;
+        cur.z += dz;
+        cur.yaw += (target.yaw - cur.yaw) * a;
+
+        // Focus mode: shift the camera by the same delta so the viewing offset
+        // (and any orbit the user set) survives while the robot moves. This
+        // used to run per pose update, which made the 1 Hz jump doubly
+        // obvious — the whole view lurched, not just the robot.
+        if (cameraModeRef.current === "focus") {
+          camera.position.x += dx;
+          camera.position.y += dy;
+          camera.position.z += dz;
+        }
+      } else {
+        // First fix: snap, so the robot does not fly in from the world origin.
+        cur = renderedPoseRef.current = { ...target };
+      }
+
+      robotGroup.position.set(cur.x, cur.y, cur.z);
+      robotGroup.rotation.z = cur.yaw;
+      robotGroup.visible = true;
+      if (cameraModeRef.current === "focus") {
+        controls.target.set(cur.x, cur.y, cur.z);
+      }
+    };
+
     let raf = 0;
+    let prevFrameMs = performance.now();
     const animate = () => {
+      const now = performance.now();
+      const dt = (now - prevFrameMs) / 1000;
+      prevFrameMs = now;
+
+      stepPose(dt);
       controls.update();
       renderer.render(scene, camera);
       raf = requestAnimationFrame(animate);
@@ -262,10 +406,15 @@ export function PointCloudCanvas({
     raf = requestAnimationFrame(animate);
 
     const dispose = () => {
+      cancelled = true;
       cancelAnimationFrame(raf);
       observer.disconnect();
       controls.dispose();
       renderer.dispose();
+      // Detach the robot before the sweep below. The model is cached across
+      // scene rebuilds (theme / map changes), so letting the traverse dispose
+      // its geometry would leave every later mount with an empty group.
+      robotGroup.clear();
       scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh;
         if (mesh.geometry) mesh.geometry.dispose();
@@ -284,7 +433,6 @@ export function PointCloudCanvas({
       camera,
       controls,
       liveGeom,
-      robot: robotGroup,
       mapPoints: null,
       dispose,
     };
@@ -340,28 +488,23 @@ export function PointCloudCanvas({
   }, []);
 
   // ---- Pose updates (no scene rebuild) ---------------------------------
+  // This only records where the robot should be; the render loop above walks
+  // the drawn pose toward it. Nothing here touches the scene, so it is safe to
+  // run while a rebuild is in flight.
   React.useEffect(() => {
-    const ctx = sceneRef.current;
-    if (!ctx || !pose) return;
-    ctx.robot.visible = true;
-    ctx.robot.position.set(pose.x, pose.y, pose.z);
-    ctx.robot.rotation.z = (pose.theta * Math.PI) / 180;
-
-    // Focus mode: keep the robot centred. Translate the camera by the robot's
-    // displacement so the viewing offset (and any orbit the user set) is
-    // preserved while the target tracks the pose.
-    if (cameraModeRef.current === "focus") {
-      const prev = poseRef.current;
-      if (prev) {
-        ctx.camera.position.x += pose.x - prev.x;
-        ctx.camera.position.y += pose.y - prev.y;
-        ctx.camera.position.z += pose.z - prev.z;
-      }
-      ctx.controls.target.set(pose.x, pose.y, pose.z);
-      ctx.controls.update();
-    }
-
-    poseRef.current = pose;
+    if (!pose) return;
+    const yaw = (pose.theta * Math.PI) / 180;
+    const cur = renderedPoseRef.current;
+    targetPoseRef.current = {
+      x: pose.x,
+      y: pose.y,
+      z: pose.z,
+      // Unwrap against the drawn yaw so the ease takes the short way round:
+      // 359deg -> 1deg has to be +2deg, not a -358deg spin in place.
+      yaw: cur
+        ? yaw + Math.round((cur.yaw - yaw) / (2 * Math.PI)) * 2 * Math.PI
+        : yaw,
+    };
   }, [pose]);
 
   // ---- Camera mode (move / focus) --------------------------------------
@@ -373,8 +516,8 @@ export function PointCloudCanvas({
     if (!ctx) return;
     applyCameraMode(ctx.controls, cameraMode);
     // Entering focus: frame the robot from a fixed offset behind and above it.
-    if (cameraMode === "focus" && poseRef.current) {
-      const p = poseRef.current;
+    if (cameraMode === "focus" && renderedPoseRef.current) {
+      const p = renderedPoseRef.current;
       ctx.controls.target.set(p.x, p.y, p.z);
       ctx.camera.position.set(p.x, p.y - 8, p.z + 6);
     }
