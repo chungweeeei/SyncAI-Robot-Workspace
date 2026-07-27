@@ -18,10 +18,12 @@ from syncai_backend.interfaces.rest.routers.robot import init_robot_router
 from syncai_backend.interfaces.rest.routers.network import init_network_router
 from syncai_backend.interfaces.rest.routers.map import init_map_router
 from syncai_backend.interfaces.rest.routers.pointcloud import init_pointcloud_router
+from syncai_backend.interfaces.rest.routers.telemetry import init_telemetry_router
 
 from syncai_backend.repositories.robot.robot import RobotRepo
 from syncai_backend.repositories.map.map import MapRepo
 from syncai_backend.repositories.pointcloud.pointcloud import PointCloudRepo
+from syncai_backend.repositories.telemetry.telemetry import TelemetryRepo
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
@@ -58,6 +60,7 @@ def init_rest_server(
     map_repo: MapRepo,
     pointcloud_repo: PointCloudRepo,
     map_cloud_repo: PointCloudRepo,
+    telemetry_repo: TelemetryRepo,
 ) -> FastAPI:
 
     description = """
@@ -95,6 +98,9 @@ def init_rest_server(
     app.include_router(
         init_pointcloud_router(logger=logger, pointcloud_repo=pointcloud_repo)
     )
+    app.include_router(
+        init_telemetry_router(logger=logger, telemetry_repo=telemetry_repo)
+    )
 
     return app
 
@@ -107,6 +113,7 @@ def start_rest_server(
     map_repo: MapRepo,
     pointcloud_repo: PointCloudRepo,
     map_cloud_repo: PointCloudRepo,
+    telemetry_repo: TelemetryRepo,
 ):
 
     app = init_rest_server(
@@ -117,6 +124,7 @@ def start_rest_server(
         map_repo=map_repo,
         pointcloud_repo=pointcloud_repo,
         map_cloud_repo=map_cloud_repo,
+        telemetry_repo=telemetry_repo,
     )
 
     def _run():

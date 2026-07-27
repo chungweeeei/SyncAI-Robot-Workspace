@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
 import { apiUrl } from "@/lib/api/config";
+import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
 import type { MapMetadata, RobotPose } from "@/lib/types/robot";
 import type { StreamStatus } from "@/lib/types/pointcloud";
@@ -16,12 +17,6 @@ interface MapImagePayload {
   image: string;
 }
 
-interface RobotStatePayload {
-  localization_status: { position: RobotPose };
-}
-
-const POSE_POLL_MS = 500;
-
 const STATUS_LABEL: Record<StreamStatus, string> = {
   connecting: "Connecting…",
   open: "Live",
@@ -31,8 +26,9 @@ const STATUS_LABEL: Record<StreamStatus, string> = {
 
 /**
  * Data-wiring wrapper for the 3D point-cloud viewer: loads the map image/info
- * once for the ground plane, polls the robot pose, and hosts the map-cloud
- * toggle. The live body_cloud stream itself is owned by PointCloudCanvas.
+ * once for the ground plane, subscribes the telemetry WebSocket for pose and
+ * joint angles, and hosts the map-cloud toggle. The live body_cloud stream
+ * itself is owned by PointCloudCanvas.
  */
 export function PointCloudView({ className }: { className?: string }) {
   const [map, setMap] = React.useState<{
@@ -40,6 +36,9 @@ export function PointCloudView({ className }: { className?: string }) {
     image: string;
   } | null>(null);
   const [pose, setPose] = React.useState<RobotPose | undefined>(undefined);
+  const [joints, setJoints] = React.useState<
+    Record<string, number> | undefined
+  >(undefined);
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
   const [showMapCloud, setShowMapCloud] = React.useState(false);
   const [cameraMode, setCameraMode] = React.useState<"move" | "focus">("move");
@@ -70,26 +69,18 @@ export function PointCloudView({ className }: { className?: string }) {
     return () => abort.abort();
   }, []);
 
-  // Robot pose (polled).
+  // Robot pose + joints via the telemetry WebSocket (~20 Hz map-frame pose
+  // from odom, joints at the gait controller's telemetry rate). This replaced
+  // polling GET /api/v1/robot/state every 500 ms: that endpoint's upstream
+  // topic is a 1 Hz aggregate, so no amount of client-side polling or easing
+  // could make the motion continuous — and it is a frozen third-party
+  // contract, so raising its rate was not an option.
   React.useEffect(() => {
-    let active = true;
-    const tick = async () => {
-      try {
-        const res = await fetch(apiUrl("/api/v1/robot/state"));
-        if (!res.ok) return;
-        const data = (await res.json()) as RobotStatePayload;
-        if (!active) return;
-        setPose(data.localization_status.position);
-      } catch {
-        /* transient; keep last pose */
-      }
-    };
-    tick();
-    const id = setInterval(tick, POSE_POLL_MS);
-    return () => {
-      active = false;
-      clearInterval(id);
-    };
+    const stream = createTelemetryStream({
+      onPose: setPose,
+      onJoints: setJoints,
+    });
+    return () => stream.close();
   }, []);
 
   return (
@@ -98,6 +89,7 @@ export function PointCloudView({ className }: { className?: string }) {
         meta={map?.meta}
         mapImageUrl={map?.image}
         pose={pose}
+        joints={joints}
         showMapCloud={showMapCloud}
         cameraMode={cameraMode}
         onStatus={setStatus}

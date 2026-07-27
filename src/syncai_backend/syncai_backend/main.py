@@ -15,6 +15,7 @@ from syncai_backend.interfaces.rest.server import start_rest_server
 from syncai_backend.repositories.robot.robot import init_robot_repo
 from syncai_backend.repositories.map.map import init_map_repo
 from syncai_backend.repositories.pointcloud.pointcloud import init_pointcloud_repo
+from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
 
 from syncai_backend.gateways.robot.robot import init_robot_gateway
 from syncai_backend.gateways.artifact.artifact import init_artifact_gateway
@@ -26,6 +27,9 @@ from syncai_backend.subscribers.robot_state_subscriber import (
 from syncai_backend.subscribers.map_subscriber import init_map_subscriber
 from syncai_backend.subscribers.pointcloud_subscriber import (
     init_pointcloud_subscriber,
+)
+from syncai_backend.subscribers.telemetry_subscriber import (
+    init_telemetry_subscriber,
 )
 
 
@@ -57,6 +61,10 @@ class SyncAIBackend(Node):
         # stream) and the static localizer map cloud (served by REST).
         pointcloud_repo = init_pointcloud_repo(logger=logger)
         map_cloud_repo = init_pointcloud_repo(logger=logger)
+        # Single-slot pose/joints cache feeding the internal telemetry WS
+        # (the high-rate channel the 3D viewer uses instead of the frozen
+        # 1 Hz GET /api/v1/robot/state contract).
+        telemetry_repo = init_telemetry_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
         artifact_gw = init_artifact_gateway(logger=logger)
@@ -70,6 +78,9 @@ class SyncAIBackend(Node):
             pointcloud_repo=pointcloud_repo,
             map_cloud_repo=map_cloud_repo,
         )
+        init_telemetry_subscriber(
+            logger=logger, node=self, telemetry_repo=telemetry_repo
+        )
 
         start_temporal_worker(
             logger=logger, robot_id=robot_id, robot_gw=robot_gw, artifact_gw=artifact_gw
@@ -82,6 +93,7 @@ class SyncAIBackend(Node):
             map_repo=map_repo,
             pointcloud_repo=pointcloud_repo,
             map_cloud_repo=map_cloud_repo,
+            telemetry_repo=telemetry_repo,
         )
 
 

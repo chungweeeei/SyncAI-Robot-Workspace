@@ -8,6 +8,7 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
+import { G23_JOINTS } from "@/lib/robot/g23-joints";
 import type { MapMetadata, RobotPose } from "@/lib/types/robot";
 import type { PointCloudFrame, StreamStatus } from "@/lib/types/pointcloud";
 import {
@@ -71,14 +72,17 @@ const ROBOT_MODEL_URL = "/models/g23.glb";
 // robot renders buried to its knees.
 const ROBOT_BASE_HEIGHT_M = 0.43212;
 
-// Time constant (seconds) of the easing applied to the reported pose. The feed
-// is a 1 Hz snapshot polled over REST, so drawing it raw teleports the robot
-// once a second; easing turns each update into a glide that reads as
-// continuous motion. It is deliberately a filter rather than a replay buffer:
-// smoothing costs a fraction of a second of lag but never renders a pose the
-// robot has already left behind, which a buffer would. Worth lowering once the
-// telemetry WebSocket raises the feed rate.
-const POSE_EASE_TAU_S = 0.25;
+// Time constant (seconds) of the easing applied to the reported pose. The
+// dashboard's feed is now the ~20 Hz telemetry WebSocket, so the filter's job
+// shrank from hiding a 1 Hz snapshot cadence (tau 0.25 then) to bridging the
+// 50 ms gaps between frames — 0.1 s does that while cutting the lag the old
+// value would now just waste. It is deliberately a filter rather than a
+// replay buffer: smoothing costs a fraction of a second of lag but never
+// renders a pose the robot has already left behind, which a buffer would.
+// /model-preview still ticks its fake pose at 500 ms, where the robot eases
+// between updates a touch more stiffly than before — acceptable for a dev
+// tool.
+const POSE_EASE_TAU_S = 0.1;
 
 /** Pose the robot is actually drawn at, eased toward the reported one. */
 interface SmoothPose {
@@ -132,6 +136,15 @@ function loadRobotModel(): Promise<THREE.Object3D> {
   return robotModelPromise;
 }
 
+/**
+ * Joint names seen in a `joints` prop that G23_JOINTS does not know. Warned
+ * once each (module scope, like the model cache): a name mismatch between the
+ * telemetry source and the URDF would otherwise fail silently as a leg that
+ * never moves — and kJointNames in syncai_driver_manager.cpp still carries a
+ * TODO about its ordering, so a mismatch is a live possibility.
+ */
+const warnedUnknownJoints = new Set<string>();
+
 /** Map a height to an RGB colour (blue = low, red = high) via an HSL sweep. */
 function heightColor(z: number, out: THREE.Color): THREE.Color {
   const t = Math.min(1, Math.max(0, (z - Z_MIN) / (Z_MAX - Z_MIN)));
@@ -175,6 +188,13 @@ interface PointCloudCanvasProps {
   /** Ground-plane texture (base64 PNG data URI from GET /api/v1/map/image). */
   mapImageUrl?: string;
   pose?: RobotPose;
+  /**
+   * Joint angles in radians, keyed by URDF joint name (the vocabulary
+   * MotorState.name / the telemetry stream uses, e.g. "FL_Knee_joint").
+   * Applied to the GLB relative to its baked zero configuration. Omitted or
+   * missing joints simply keep their last angle.
+   */
+  joints?: Record<string, number>;
   /** When true, also fetch and render the static localizer map cloud. */
   showMapCloud?: boolean;
   /**
@@ -183,6 +203,12 @@ interface PointCloudCanvasProps {
    * and stays centred), left-drag orbits around it. Defaults to "move".
    */
   cameraMode?: "move" | "focus";
+  /**
+   * Open the live body_cloud WebSocket. Defaults to true; the model-preview
+   * route turns it off so a machine with no backend running doesn't sit in the
+   * stream's 2 s reconnect loop, logging a failed socket forever.
+   */
+  liveStream?: boolean;
   onStatus?: (status: StreamStatus) => void;
   className?: string;
 }
@@ -191,8 +217,10 @@ export function PointCloudCanvas({
   meta,
   mapImageUrl,
   pose,
+  joints,
   showMapCloud,
   cameraMode = "move",
+  liveStream = true,
   onStatus,
   className,
 }: PointCloudCanvasProps) {
@@ -226,6 +254,40 @@ export function PointCloudCanvas({
   const cameraModeRef = React.useRef(cameraMode);
   const targetPoseRef = React.useRef<SmoothPose | null>(null);
   const renderedPoseRef = React.useRef<SmoothPose | null>(null);
+
+  // Joint articulation. The GLB keeps URDF link names as node names, so each
+  // joint resolves to the child-link Object3D it rotates. Nodes belong to the
+  // module-cached model instance, so the resolved map stays valid across scene
+  // rebuilds — resolve once, on first model attach. `latestJointsRef` buffers
+  // the newest joints so angles that arrive while the model is still loading
+  // are applied as soon as it lands (mirrors targetPoseRef for the body pose).
+  const jointNodesRef = React.useRef<Map<
+    string,
+    { node: THREE.Object3D; axis: THREE.Vector3 }
+  > | null>(null);
+  const latestJointsRef = React.useRef<Record<string, number> | undefined>(
+    undefined,
+  );
+
+  const applyJoints = React.useCallback(() => {
+    const nodes = jointNodesRef.current;
+    const target = latestJointsRef.current;
+    if (!nodes || !target) return;
+    for (const [name, q] of Object.entries(target)) {
+      const joint = nodes.get(name);
+      if (!joint) {
+        if (!warnedUnknownJoints.has(name)) {
+          warnedUnknownJoints.add(name);
+          console.warn(`unknown joint "${name}" — not in G23_JOINTS / the GLB`);
+        }
+        continue;
+      }
+      // The GLB is baked at the URDF zero configuration with identity joint
+      // rotations (no rpy on any joint origin), so q is absolute: overwrite
+      // the quaternion, leave the baked position (the joint origin) alone.
+      joint.node.quaternion.setFromAxisAngle(joint.axis, q);
+    }
+  }, []);
 
   // ---- Scene setup (rebuilds on map / theme change) --------------------
   React.useEffect(() => {
@@ -332,6 +394,26 @@ export function PointCloudCanvas({
         if (cancelled) return;
         model.position.z = ROBOT_BASE_HEIGHT_M;
         robotGroup.add(model);
+        // Resolve joint -> child-link nodes once; the map survives scene
+        // rebuilds because the nodes belong to the cached model.
+        if (!jointNodesRef.current) {
+          const nodes = new Map<
+            string,
+            { node: THREE.Object3D; axis: THREE.Vector3 }
+          >();
+          for (const [name, spec] of G23_JOINTS) {
+            const node = model.getObjectByName(spec.childLink);
+            if (node) {
+              nodes.set(name, { node, axis: spec.axis });
+            } else {
+              console.warn(
+                `joint "${name}": link node "${spec.childLink}" missing from GLB`,
+              );
+            }
+          }
+          jointNodesRef.current = nodes;
+        }
+        applyJoints();
       })
       .catch((err) => console.error("robot model failed to load", err));
 
@@ -441,7 +523,7 @@ export function PointCloudCanvas({
       dispose();
       sceneRef.current = null;
     };
-  }, [meta, mapImageUrl, resolvedTheme]);
+  }, [meta, mapImageUrl, resolvedTheme, applyJoints]);
 
   // ---- Live body_cloud stream (independent of scene rebuilds) ----------
   // The WebSocket is opened once on mount and closed on unmount. Each frame is
@@ -451,6 +533,8 @@ export function PointCloudCanvas({
   // so an async map load closed the still-connecting WS and logged
   // "WebSocket is closed before the connection is established".
   React.useEffect(() => {
+    if (!liveStream) return;
+
     const color = new THREE.Color();
     const applyFrame = (frame: PointCloudFrame) => {
       const ctx = sceneRef.current;
@@ -485,7 +569,7 @@ export function PointCloudCanvas({
       onStatus: (s) => onStatusRef.current?.(s),
     });
     return () => stream.close();
-  }, []);
+  }, [liveStream]);
 
   // ---- Pose updates (no scene rebuild) ---------------------------------
   // This only records where the robot should be; the render loop above walks
@@ -506,6 +590,14 @@ export function PointCloudCanvas({
         : yaw,
     };
   }, [pose]);
+
+  // ---- Joint updates (no scene rebuild) ---------------------------------
+  // Applied directly, no easing: the telemetry feed runs at ~20 Hz, fast
+  // enough that legs read as continuous — unlike the 1 Hz body pose above.
+  React.useEffect(() => {
+    latestJointsRef.current = joints;
+    applyJoints();
+  }, [joints, applyJoints]);
 
   // ---- Camera mode (move / focus) --------------------------------------
   // Re-runs on a scene rebuild (meta / theme) too, so the mode survives a
