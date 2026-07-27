@@ -8,7 +8,7 @@ from temporalio.exceptions import ApplicationError, CancelledError
 
 
 from syncai_backend.gateways.workflow.schema import StepParams
-from syncai_backend.gateways.robot.robot import RobotGateway
+from syncai_backend.gateways.robot.robot import MotionKey, RobotGateway
 from syncai_backend.gateways.artifact.artifact import (
     ArtifactGateway,
     ArtifactCommandRejected,
@@ -21,13 +21,6 @@ class ActivityResult(BaseModel):
     success: bool
     goal_id: str | None = None
     state: str | None = None
-
-
-# Motion keys accepted by syncai_driver_manager's set_motion_key service; it
-# maps them to the gait controller's MODE characters (see
-# DriverManagerNode::setMotionKeyCallback).
-MOTION_KEY_STAND = "0"  # MODE Z
-MOTION_KEY_LIE_DOWN = "2"  # MODE X
 
 
 class RobotActivities:
@@ -88,7 +81,7 @@ class RobotActivities:
 
         return ActivityResult(success=True, goal_id=goal_id, state=state)
 
-    def _set_motion_key(self, key: str, label: str) -> ActivityResult:
+    def _set_motion_key(self, key: MotionKey, label: str) -> ActivityResult:
         """Send a motion key. Fire-and-forget: this does NOT wait for the pose.
 
         MODE is a one-way UDP command, so a successful service call only means
@@ -111,17 +104,17 @@ class RobotActivities:
         if not accepted:
             raise ApplicationError(f"{label} rejected: {msg}", non_retryable=True)
 
-        self._logger.info(f"[RobotActivity] {label} command sent", key=key)
+        self._logger.info(f"[RobotActivity] {label} command sent", key=key.value)
 
         return ActivityResult(success=True, state="succeeded")
 
     @activity.defn
     def execute_stand(self) -> ActivityResult:
-        return self._set_motion_key(key=MOTION_KEY_STAND, label="Stand")
+        return self._set_motion_key(key=MotionKey.STAND, label="Stand")
 
     @activity.defn
     def execute_lie_down(self) -> ActivityResult:
-        return self._set_motion_key(key=MOTION_KEY_LIE_DOWN, label="LieDown")
+        return self._set_motion_key(key=MotionKey.LIE_DOWN, label="LieDown")
 
     @activity.defn
     def execute_artifact(self, params: StepParams) -> ActivityResult:

@@ -18,6 +18,23 @@ from std_msgs.msg import Header
 from geometry_msgs.msg import Point, Quaternion, Pose, PoseStamped
 
 
+class MotionKey(str, Enum):
+    """Keys accepted by the driver manager's `set_motion_key` service.
+
+    The driver maps each one to a gait-controller MODE character (see
+    DriverManagerNode::setMotionKeyCallback) -- except ESTOP, which bypasses
+    the MODE keymap and goes out as its own datagram. Kept as strings because
+    the service field is a string that is forwarded verbatim.
+    """
+
+    STAND = "0"  # MODE Z
+    LOCOMOTION = "1"  # MODE C
+    LIE_DOWN = "2"  # MODE X
+    DAMPING = "3"  # MODE R
+    ESTOP = "4"  # ESTOP datagram, not a MODE character
+    MPC = "5"  # MODE M
+
+
 class MoveState(str, Enum):
     EXECUTING = "executing"
     SUCCEEDED = "succeeded"
@@ -129,14 +146,16 @@ class RobotGateway:
         response = future.result()
         return response.success, response.message
 
-    def set_motion_key(self, key: str) -> Tuple[bool, str]:
+    def set_motion_key(self, key: MotionKey) -> Tuple[bool, str]:
         motion_key_client = self._service_clients.get("set_motion_key")
         if not motion_key_client.wait_for_service(timeout_sec=5.0):
             return False, "set_motion_key service is not available"
 
-        self._logger.info("[RobotGateway] Setting motion key", key=key)
+        self._logger.info("[RobotGateway] Setting motion key", key=key.value)
 
-        future = motion_key_client.call_async(SetMotionKey.Request(key=key))
+        # .value, not the enum member: the srv field is a plain string and
+        # rosidl stores whatever it is handed.
+        future = motion_key_client.call_async(SetMotionKey.Request(key=key.value))
         if not _wait_for_future(future, timeout=10.0):
             return False, "Timeout waiting for set_motion_key response"
 
