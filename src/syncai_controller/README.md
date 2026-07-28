@@ -319,7 +319,7 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
   loop stalls there with the goal still active rather than failing.
 - **A plugin load failure calls `exit(-1)`.** A typo in a `.plugin` type string
   takes the whole process down at startup rather than degrading.
-- **`byobu_session_3d.sh` launches this server with the default (2D) params
+- **`byobu_session.sh` launches this server with the default (2D) params
   file** — it passes `params_file:=` for the planner but not for the controller,
   so the 3D session runs with `use_sim_time: true` and no pointcloud observation
   source. Pass `controller_server_3d_params.yaml` explicitly on the real robot.

@@ -259,8 +259,7 @@ ros2 launch syncai_backend backend.launch.py system_config:=config/instances/rob
 ros2 run syncai_backend backend                                  # no namespace -> default_robot
 ```
 
-In practice the byobu scripts (`scripts/byobu_session.sh`,
-`scripts/byobu_session_3d.sh`) start it in the `state_backend` window.
+In practice `scripts/byobu_session.sh` starts it in the `state_backend` window.
 
 > `setup.py` installs **compiled bytecode only** (`InstallNoSource`): after a
 > normal install it byte-compiles the package and deletes the `.py` sources from

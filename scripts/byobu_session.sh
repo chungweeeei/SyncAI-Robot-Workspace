@@ -3,9 +3,23 @@
 # SyncAI Robot Byobu Session
 # Usage: bash scripts/byobu_session.sh   (inside the robot container)
 #
-# Brings up the whole nav stack, one launch per pane. Startup order matters
-# (no lifecycle manager): map_server -> amcl -> planner/controller ->
-# task_runner, so the later windows prefix a sleep before launching.
+# Brings up the whole nav stack, one launch per pane. Localization comes from
+# the FAST-LIO2 chain; AMCL is not used:
+#   bringup (robot_state_publisher: base_link -> lidar_top TF for the LIO
+#            bridge; plus the MID360 driver)
+#   localizer_isaac (lio_node + localizer, frames <robot_id>/lio_odom|lio_body)
+#   lio_bridge (map -> <robot_id>/odom, the AMCL replacement)
+#   planner uses planner_server_3d_params.yml (no keepout filter yet, so there
+#   is no costmap_filter_info window).
+#
+# This replaces the old 2D/AMCL session of the same name, which started
+# syncai_amcl plus the bringup_2d.launch.py scan merger — both retired.
+#
+# Startup order matters (no lifecycle manager): map_server / LIO ->
+# bridge -> planner/controller -> task_runner, so later windows prefix a
+# sleep before launching. NOTE: localization is NOT active until you run the
+# pre-typed relocalize service call in the "localization" window (pane 2) —
+# hit Enter there once the robot is at its known start pose.
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
 # starts in the workspace root so the relative config/system.ini resolves.
 # =============================================================================
@@ -15,11 +29,12 @@ SESSION_NAME="syncai"
 # Workspace root = parent of this script's directory
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# robot_id from the system INI (namespaces the per-pane log dirs so sim robots
-# sharing the same workspace bind mount don't clobber each other's logs).
+# robot_id from the system INI (for the pre-typed relocalize service path).
 # INI style is "robot_id: robot06" (configparser accepts ':' or '=').
 ROBOT_ID="$(awk -F'[:=]' '/^robot_id/ {gsub(/[ \t]/, "", $2); print $2}' "$WS_DIR/config/system.ini" 2>/dev/null)"
 ROBOT_ID="${ROBOT_ID:-default_robot}"
+
+MAP_PCD="$WS_DIR/map/warehouse01/map.pcd"
 
 # Persistent, size-capped log capture. Each pane's rendered output is tapped
 # (copied, so the live pane view is untouched) into its own multilog dir:
@@ -36,32 +51,38 @@ pipe_log() {  # $1 = pane target (window[.pane]), $2 = log name
 # Kill existing session if any
 byobu kill-session -t "$SESSION_NAME" 2>/dev/null
 
-# ---------- Window 0: bringup (scan merger + static TFs) ----------
+# ---------- Window 0: bringup (static TFs for the LIO bridge) ----------
 byobu new-session -d -s "$SESSION_NAME" -n "bringup" -c "$WS_DIR"
 byobu send-keys -t "$SESSION_NAME:bringup" \
-  "ros2 launch syncai_bringup bringup_2d.launch.py" Enter
+  "ros2 launch syncai_bringup bringup.launch.py" Enter
 pipe_log "bringup" "bringup"
 
-# ---------- Window 1: map_server / amcl ----------
+# ---------- Window 1: map_server / LIO localizer / relocalize ----------
 byobu new-window -t "$SESSION_NAME" -n "localization" -c "$WS_DIR"
 byobu send-keys -t "$SESSION_NAME:localization" \
   "ros2 launch syncai_map_server map_server.launch.py" Enter
 pipe_log "localization.0" "map_server"
 byobu split-window -v -t "$SESSION_NAME:localization" -c "$WS_DIR"
 byobu send-keys -t "$SESSION_NAME:localization.1" \
-  "sleep 2 && ros2 launch syncai_amcl amcl.launch.py" Enter
-pipe_log "localization.1" "amcl"
+  "sleep 2 && ros2 launch localizer localizer_isaac_launch.py rviz:=false" Enter
+pipe_log "localization.1" "localizer"
+# Pre-typed (NOT executed): hit Enter here to (re)localize once the stack is
+# up. Adjust x/y/yaw to the robot's coarse pose in the map if it is not at
+# the mapping start pose.
+byobu split-window -v -t "$SESSION_NAME:localization" -c "$WS_DIR"
+byobu send-keys -t "$SESSION_NAME:localization.2" \
+  "ros2 service call /$ROBOT_ID/localizer/relocalize interface/srv/Relocalize \"{pcd_path: '$MAP_PCD', x: 0.0, y: 0.0, z: 0.0, yaw: 0.0, pitch: 0.0, roll: 0.0}\""
 
-# ---------- Window 2: costmap filter info + keepout mask servers ----------
-byobu new-window -t "$SESSION_NAME" -n "filter_info" -c "$WS_DIR"
-byobu send-keys -t "$SESSION_NAME:filter_info" \
-  "ros2 launch syncai_map_server costmap_filter_info.launch.py" Enter
-pipe_log "filter_info" "filter_info"
+# ---------- Window 2: lio_bridge (map -> <robot_id>/odom, replaces amcl) ----------
+byobu new-window -t "$SESSION_NAME" -n "lio_bridge" -c "$WS_DIR"
+byobu send-keys -t "$SESSION_NAME:lio_bridge" \
+  "sleep 4 && ros2 launch syncai_lio_bridge lio_bridge.launch.py" Enter
+pipe_log "lio_bridge" "lio_bridge"
 
 # ---------- Window 3: planner / controller ----------
 byobu new-window -t "$SESSION_NAME" -n "plan_ctrl" -c "$WS_DIR"
 byobu send-keys -t "$SESSION_NAME:plan_ctrl" \
-  "sleep 4 && ros2 launch syncai_planner planner_server.launch.py" Enter
+  "sleep 4 && ros2 launch syncai_planner planner_server.launch.py params_file:=$WS_DIR/src/syncai_planner/params/planner_server_3d_params.yml" Enter
 pipe_log "plan_ctrl.0" "planner"
 byobu split-window -v -t "$SESSION_NAME:plan_ctrl" -c "$WS_DIR"
 byobu send-keys -t "$SESSION_NAME:plan_ctrl.1" \
@@ -96,7 +117,8 @@ pipe_log "state_backend.1" "backend"
 
 # ---------- Window 7: rviz (pre-typed, hit Enter to start) / spare shell ----------
 byobu new-window -t "$SESSION_NAME" -n "rviz" -c "$WS_DIR"
-byobu send-keys -t "$SESSION_NAME:rviz" "rviz2"
+byobu send-keys -t "$SESSION_NAME:rviz" \
+  "rviz2 -d config/rviz2/${ROBOT_ID}.rviz"
 byobu split-window -v -t "$SESSION_NAME:rviz" -c "$WS_DIR"
 
 # Go back to window 0 and attach

@@ -239,8 +239,9 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
   in the 2D params; do not select it via `planner_id` on hardware.
 - **The launch file overrides `obstacle_layer.scan.sensor_frame` to
   `<robot_id>/laser`, but the 2D scan lives in `<robot_id>/scan`.**
-  `bringup_2d` publishes `base_link → scan` and the merger stamps its output
-  with `<robot_id>/scan`; `syncai_controller`'s launch file overrides the same
+  the merger stamps its output with `<robot_id>/scan` (and the `base_link →
+  scan` TF came from the now-removed `bringup_2d`, so on the 3D stack nothing
+  publishes it at all); `syncai_controller`'s launch file overrides the same
   parameter to `<robot_id>/scan`. Nothing in the workspace broadcasts a
   `<robot_id>/laser` frame (the Livox driver only *stamps* messages with it in
   the 3D path). If that is right, the global costmap's scan observation source

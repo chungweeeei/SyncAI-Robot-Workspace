@@ -153,8 +153,8 @@ ros2 launch syncai_lio_bridge lio_bridge.launch.py \
     system_config:=config/instances/robot02.ini
 ```
 
-Window 2 of `scripts/byobu_session_3d.sh`, after `sleep 4` — it needs the
-localizer and `bringup_3d`'s static TF up first.
+Window 2 of `scripts/byobu_session.sh`, after `sleep 4` — it needs the
+localizer and `bringup`'s static TF up first.
 
 Checking it:
 
@@ -171,7 +171,7 @@ throttled message:
 | Log line | Missing |
 |---|---|
 | `waiting for pointlio/lio_odom (LIO initializing?)` | Point-LIO is not publishing |
-| `waiting for <id>/base_link -> <id>/lidar_top` | `bringup_3d` / `robot_state_publisher` is not running |
+| `waiting for <id>/base_link -> <id>/lidar_top` | `bringup` / `robot_state_publisher` is not running |
 | `waiting for TF (relocalized yet?)` | `/localizer/relocalize` has not been called |
 
 ## Gotchas
@@ -182,7 +182,7 @@ throttled message:
   default — while the planner and controller 3D params set `use_sim_time: false`.
   Pass `use_sim_time:=false` explicitly on hardware.
 - **`lidar_frame` must name a real frame.** It comes from the URDF's
-  `lidar_top_joint`, published by `bringup_3d`. Without it the node publishes
+  `lidar_top_joint`, published by `bringup`. Without it the node publishes
   *nothing at all* — not even the odom chain — because the extrinsic lookup gates
   the whole timer body.
 - **The odom pose is a planar projection**, so `position.z` is always 0 and the

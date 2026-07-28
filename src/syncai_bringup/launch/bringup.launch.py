@@ -1,17 +1,28 @@
-# Bringup for the 3D (FAST-LIO2) localization stack.
+# Bringup for the FAST-LIO2 localization stack: the sensing / TF layer every
+# other node assumes is already running. This is window 0 of
+# scripts/byobu_session.sh — there is no lifecycle manager, so it must be up
+# before syncai_lio_bridge.
 #
 # Publishes:
 #   * The G23 body TF tree via robot_state_publisher (reads the URDF under
 #     description/). The URDF root link is base_link, so with frame_prefix the
 #     legs hang directly off <robot_id>/base_link (odom->base_link comes from
-#     LIO). Fixed joints (the 4 *_Ankle) go to /tf_static; the revolute leg
-#     joints only appear on /tf once /joint_states is published by the robot
-#     controller.
-#   * Static TF <robot_id>/base_link -> <robot_id>/lidar_top (the 3D lidar mount
-#     pose) needed to bridge the LIO pose onto the odom TF chain.
+#     LIO). The fixed joints (the 4 *_Ankle plus lidar_top_joint) go to
+#     /tf_static; the 12 revolute leg joints would only appear on /tf once
+#     /joint_states is published, and nothing does that on purpose — live joint
+#     angles reach their only consumer (the frontend 3D model) over
+#     syncai_driver_manager's motor_states instead.
+#   * lidar_top_joint carries the MID360 mount extrinsic (including the 0.25 rad
+#     physical tilt), which syncai_lio_bridge looks up as
+#     <robot_id>/base_link -> <robot_id>/lidar_top to map the LIO body pose onto
+#     the odom TF chain. It used to be a separate static_transform_publisher
+#     here, driven by a lidar_height launch argument; both were dropped when the
+#     extrinsic moved into the URDF, because a height-only argument could not
+#     carry the pitch.
+#   * The Livox MID360 point cloud, via the livox_ros_driver2 node.
 #
 # robot_id is read from the system config INI at launch time, same convention as
-# bringup_2d.launch.py.
+# every other launch file in the stack.
 
 import configparser
 import os
@@ -41,7 +52,7 @@ LIVOX_FRAME_ID = "laser"
 LIVOX_LVX_FILE_PATH = "/home/livox/livox_test.lvx"
 LIVOX_CMDLINE_BD_CODE = "livox0000000001"
 
-logger = launch_logging.get_logger("bringup_3d.launch")
+logger = launch_logging.get_logger("bringup.launch")
 
 
 def read_robot_id(config_path: str) -> str:
@@ -80,9 +91,12 @@ def launch_setup(context, *args, **kwargs):
     with open(urdf_path, "r") as f:
         robot_description = f.read()
 
-    # Body TF tree from the URDF. No node namespace so /tf and /tf_static stay
-    # global (shared with the sim/LIO tree); frame_prefix namespaces the frames
-    # to "<robot_id>/..." to match the rest of the stack.
+    # Body TF tree from the URDF. The namespace only moves this node's name and
+    # its relative topics (-> /<robot_id>/robot_description); it does NOT move
+    # /tf or /tf_static, which tf2_ros always publishes on absolute names, so
+    # the frames land in the one global tree shared with LIO. That is exactly
+    # why frame_prefix is needed: a namespace does not prefix frame ids, so
+    # without it two robots on one DDS domain would both claim "base_link".
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -136,13 +150,6 @@ def generate_launch_description():
         description="Path to the system INI file providing [system] robot_id",
     )
 
-    declare_lidar_height = DeclareLaunchArgument(
-        "lidar_height",
-        default_value="0.196",
-        description="3D lidar mount height (m) for the <robot_id>/base_link -> "
-        "<robot_id>/lidar_top TF (matches the current sim-published value)",
-    )
-
     declare_urdf_file = DeclareLaunchArgument(
         "urdf_file",
         default_value="G23.urdf",
@@ -160,7 +167,6 @@ def generate_launch_description():
     return LaunchDescription(
         [
             declare_system_config,
-            declare_lidar_height,
             declare_urdf_file,
             declare_use_sim_time,
             OpaqueFunction(function=launch_setup),

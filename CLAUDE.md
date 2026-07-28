@@ -59,7 +59,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 | Package | Role |
 |---|---|
 | `syncai_lio_bridge` | **The only odometry source.** Wheel odom is retired. Converts the FAST-LIO2 chain (`map → lio_odom → lio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro because LIO leaves `twist.angular` empty. |
-| `syncai_bringup` | `bringup_2d.launch.py` (laser scan merger) / `bringup_3d.launch.py` (robot_state_publisher over `description/G23.urdf` + Livox MID360 driver) |
+| `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` (carries the `lidar_top` mount extrinsic the LIO bridge needs) + the Livox MID360 driver. The old 2D/AMCL `bringup_2d.launch.py` (laser scan merger) was removed. |
 
 ### Hardware & system
 
@@ -143,11 +143,12 @@ plus any manual deps (Sophus / GTSAM are built from source for `FASTLIO2_ROS2`).
 
 ## Running the stack
 
-`scripts/byobu_session.sh` (2D / AMCL) and `scripts/byobu_session_3d.sh`
-(3D / FAST-LIO2) are the real entrypoints. They build a byobu session with one
-window per subsystem, encode the required startup ordering as `sleep` offsets,
-and tap each pane's output into a size-capped `multilog` directory under
-`log/stack/<robot_id>/<name>/`. Read logs back with `scripts/tailog.sh`.
+`scripts/byobu_session.sh` (FAST-LIO2) is the real entrypoint. It builds a byobu
+session with one window per subsystem, encodes the required startup ordering as
+`sleep` offsets, and taps each pane's output into a size-capped `multilog`
+directory under `log/stack/<robot_id>/<name>/`. Read logs back with
+`scripts/tailog.sh`. The 2D / AMCL variant of this script was retired along with
+`bringup_2d.launch.py`.
 
 Two panes are **pre-typed but not executed** — you hit Enter yourself:
 the `localizer/relocalize` service call (3D localization is not active until you
