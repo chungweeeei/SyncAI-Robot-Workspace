@@ -45,8 +45,8 @@
       # cannot creep in slowly to satisfy a tight tolerance and would overshoot
       # / stall short of a 5 cm window. 0.2 m gives it room to declare the goal
       # reached at its floor speed.
-      xy_goal_tolerance: 0.1
-      yaw_goal_tolerance: 0.08
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 0.1
       stateful: true
 
     FollowPath:

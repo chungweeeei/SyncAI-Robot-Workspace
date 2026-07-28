@@ -1,24 +1,39 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Archivo, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
-import { AppSidebar } from "@/components/app-sidebar";
+import { NavRail } from "@/components/console/nav-rail";
+import { RobotStateProvider } from "@/components/console/robot-state-context";
+import { StatusStrip } from "@/components/console/status-strip";
 import { ThemeProvider } from "@/components/theme-provider";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// `axes: ["wdth"]` is what makes the condensed instrument labels possible —
+// without it next/font ships the wght-only subset and `instrument-label` in
+// globals.css silently renders at normal width.
+const archivo = Archivo({
+  variable: "--font-archivo",
   subsets: ["latin"],
+  axes: ["wdth"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const plexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
   title: "SyncAI Robot Console",
-  description: "Robot status dashboard and settings",
+  description: "Live telemetry, map and navigation control for one robot",
+};
+
+// The console is a fixed-frame instrument panel: no page zoom-scroll, and the
+// viewport is sized in dvh so mobile browser chrome does not clip the rail.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#e9eef2" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b1014" },
+  ],
 };
 
 export default function RootLayout({
@@ -29,20 +44,35 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${archivo.variable} ${plexMono.variable} antialiased`}
       suppressHydrationWarning
     >
-      <body className="min-h-full">
+      <body className="overflow-hidden">
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
           enableSystem
           disableTransitionOnChange
         >
-          <SidebarProvider>
-            <AppSidebar />
-            <SidebarInset>{children}</SidebarInset>
-          </SidebarProvider>
+          {/*
+           * One poll for the whole console. The status strip and whichever page
+           * is mounted read the same RobotState snapshot, so the header clock
+           * can never disagree with the pose in the rail — which it would if
+           * each of them called useRobotState() on its own interval.
+           */}
+          <RobotStateProvider>
+            <div className="flex h-dvh flex-col lg:flex-row">
+              <NavRail />
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <StatusStrip />
+                {/* Pages own their own scrolling: the dashboard must not scroll
+                 * (the viewport is sized to what is left), settings must. */}
+                <main className="min-h-0 flex-1 overflow-hidden">
+                  {children}
+                </main>
+              </div>
+            </div>
+          </RobotStateProvider>
         </ThemeProvider>
       </body>
     </html>

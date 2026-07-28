@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { Segmented, overlayPanel } from "@/components/console/instrument";
 import { GoalControl } from "@/components/dashboard/goal-control";
 import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
 import { useGoalTask } from "@/hooks/use-goal-task";
@@ -20,11 +21,16 @@ interface MapImagePayload {
 }
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
-  connecting: "Connecting…",
-  open: "Live",
-  closed: "Disconnected",
-  error: "Error",
+  connecting: "Connecting",
+  open: "Cloud live",
+  closed: "Cloud down",
+  error: "Cloud error",
 };
+
+const CAMERA_OPTIONS = [
+  { value: "move" as const, label: "Move" },
+  { value: "focus" as const, label: "Focus" },
+];
 
 /**
  * Data-wiring wrapper for the 3D point-cloud viewer: loads the map image/info
@@ -112,52 +118,56 @@ export function PointCloudView({
         onStatus={setStatus}
       />
 
-      <div className="absolute left-2 top-2 flex items-center gap-2 rounded-md bg-background/80 px-2 py-1 text-xs backdrop-blur">
-        <span
-          className={cn(
-            "inline-block h-2 w-2 rounded-full",
-            status === "open"
-              ? "bg-green-500"
-              : status === "connecting"
-                ? "bg-amber-500"
-                : "bg-red-500",
-          )}
-        />
-        <span className="text-muted-foreground">{STATUS_LABEL[status]}</span>
-      </div>
-
-      {/* Below the stream-status pill, which owns the top-left corner. */}
-      <GoalControl task={task} className="absolute left-2 top-10" />
-
-      <div className="absolute bottom-2 left-2 flex overflow-hidden rounded-md border bg-background/80 text-xs backdrop-blur">
-        {(["move", "focus"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => setCameraMode(mode)}
-            className={cn(
-              "px-2 py-1 capitalize transition-colors",
-              cameraMode === mode
-                ? "bg-primary text-primary-foreground"
-                : "hover:bg-accent",
-            )}
-          >
-            {mode}
-          </button>
-        ))}
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setShowMapCloud((v) => !v)}
+      {/* Stream health for the cloud itself. The status strip's sweep covers the
+        * 1 Hz state poll; this WebSocket is a separate link that can fail on its
+        * own, so it gets its own indicator — in the same three tones. */}
+      <div
         className={cn(
-          "absolute bottom-2 right-2 rounded-md border px-2 py-1 text-xs backdrop-blur transition-colors",
-          "bg-background/80 hover:bg-accent",
-          showMapCloud && "border-primary text-primary",
+          overlayPanel,
+          "absolute top-3 right-3 flex items-center gap-2 px-2 py-1.5",
         )}
       >
-        {showMapCloud ? "Hide map cloud" : "Show map cloud"}
-      </button>
+        <span
+          className={cn(
+            "inline-block size-2 rounded-full",
+            status === "open"
+              ? "bg-signal-live"
+              : status === "connecting"
+                ? "bg-signal-caution"
+                : "bg-signal-warn",
+          )}
+        />
+        <span className="instrument-label text-muted-foreground">
+          {STATUS_LABEL[status]}
+        </span>
+      </div>
+
+      <GoalControl task={task} className="absolute top-3 left-3" />
+
+      {/* Viewport controls sit along the bottom edge, out of the way of the
+        * goal readback and of the robot, which the camera keeps centred. */}
+      <div className="absolute bottom-3 left-3 flex items-center gap-2">
+        <Segmented
+          value={cameraMode}
+          options={CAMERA_OPTIONS}
+          onChange={setCameraMode}
+          className={overlayPanel}
+        />
+        <button
+          type="button"
+          aria-pressed={showMapCloud}
+          onClick={() => setShowMapCloud((v) => !v)}
+          className={cn(
+            overlayPanel,
+            "instrument-label h-6 px-2 transition-colors",
+            showMapCloud
+              ? "border-signal-cmd/50 bg-signal-cmd/12 text-signal-cmd"
+              : "text-muted-foreground hover:bg-elevated hover:text-foreground",
+          )}
+        >
+          Map cloud
+        </button>
+      </div>
     </div>
   );
 }

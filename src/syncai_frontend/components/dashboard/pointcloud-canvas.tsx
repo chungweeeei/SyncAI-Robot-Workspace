@@ -38,28 +38,32 @@ interface Theme {
    *  height-coloured body cloud. White on the dark background; a dark grey on
    *  the near-white light background so it stays visible in both themes. */
   mapCloud: number;
-  /** Committed / being-dragged goal marker. Same greens as the 2D canvas so a
-   *  goal reads as the same thing in either view. */
+  /** Committed / being-dragged goal marker. `signal-cmd` cyan from globals.css:
+   *  a goal is a commanded value, and it is the same cyan in the 2D canvas, in
+   *  the goal readback, and on the Send button. */
   goal: number;
   goalDraft: number;
 }
 
+// Scene colours track the console surfaces so the viewport reads as a recessed
+// well in the panel rather than a pasted-in canvas. Keep these in sync with the
+// --background / --elevated / --signal-cmd values in globals.css.
 const THEMES: Record<"light" | "dark", Theme> = {
   light: {
-    background: 0xf5f5f5,
+    background: 0xe9eef2,
     ground: 0xffffff,
     groundOpacity: 0.85,
-    mapCloud: 0x333333,
-    goal: 0x059669,
-    goalDraft: 0x10b981,
+    mapCloud: 0x54646f,
+    goal: 0x0a6d94,
+    goalDraft: 0x4aa6c6,
   },
   dark: {
-    background: 0x0a0a0a,
-    ground: 0x404040,
+    background: 0x0b1014,
+    ground: 0x1b252d,
     groundOpacity: 0.6,
-    mapCloud: 0xffffff,
-    goal: 0x10b981,
-    goalDraft: 0x34d399,
+    mapCloud: 0xa7b6c1,
+    goal: 0x45c8f0,
+    goalDraft: 0x8adcf7,
   },
 };
 

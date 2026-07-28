@@ -62,8 +62,17 @@ x-robot-common: &robot-common
 
 # Environment shared by both modes (maps merge with <<, lists don't — keep
 # environment as a map here).
+#
+# ROS_DOMAIN_ID is a literal, NOT ${ROS_DOMAIN_ID:-1}: compose interpolation
+# gives the invoking shell precedence over .env, and the Jetson host's
+# ~/.bashrc exports ROS_DOMAIN_ID=69 — so an overridable default silently
+# resolved to 69 instead of the value written here. Hardcoding makes this file
+# the single source of truth regardless of which shell runs `docker compose`.
+# Both cyclonedds*.xml use <Domain Id="any">, so they follow whatever is set
+# here. Note the flip side: anything started on the HOST (rviz2, ros2 CLI)
+# inherits 69 and will NOT see the containers until that export is changed.
 x-robot-env: &robot-env
-  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  ROS_DOMAIN_ID: "1"
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
   DISPLAY: ":1"
   XAUTHORITY: /tmp/.docker.xauth

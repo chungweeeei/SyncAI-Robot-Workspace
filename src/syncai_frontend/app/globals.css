@@ -4,12 +4,46 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Design language: glass cockpit.
+ *
+ * The console borrows the colour semantics of an aircraft EFIS because they map
+ * onto a nav stack almost one-to-one, and because "one accent hue on a dark
+ * surface" says nothing about what the operator is looking at:
+ *
+ *   signal-live     green    a measured, valid value  (pose, link up)
+ *   signal-cmd      cyan     a commanded value        (goal pose, primary action)
+ *   signal-active   magenta  active guidance          (a task in progress)
+ *   signal-caution  amber    degraded, still flying   (stale link, MANUAL, low batt)
+ *   signal-warn     red      faulted                  (MAINTENANCE, failed task)
+ *
+ * Anything drawn on the map or the point cloud uses the same five, so a colour
+ * means the same thing in the chrome and in the viewport. See the PALETTES /
+ * THEMES tables in map-canvas.tsx and pointcloud-canvas.tsx.
+ *
+ * Dark is "night", light is "day" — both are first-class; an operator outdoors
+ * needs the daylight one.
+ */
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+
+  /* Console surfaces. `panel` is the chrome (strip, rails), `background` the
+   * viewport well, `elevated` hover/active states. */
+  --color-panel: var(--panel);
+  --color-elevated: var(--elevated);
+  --color-hairline: var(--hairline);
+
+  --color-signal-live: var(--signal-live);
+  --color-signal-cmd: var(--signal-cmd);
+  --color-signal-active: var(--signal-active);
+  --color-signal-caution: var(--signal-caution);
+  --color-signal-warn: var(--signal-warn);
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,83 +82,166 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Day. Cool paper rather than white — the viewport well has to read as recessed
+ * from the panels, which pure white cannot do. Signal hues are darkened to
+ * clear 4.5:1 against it. */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --background: #e9eef2;
+  --panel: #ffffff;
+  --elevated: #e2e9ee;
+  --hairline: #ccd6de;
+
+  --foreground: #0e161c;
+  --muted-foreground: #566772;
+
+  --signal-live: #12784a;
+  --signal-cmd: #0a6d94;
+  --signal-active: #a13a86;
+  --signal-caution: #93600e;
+  --signal-warn: #c02f34;
+
+  --card: var(--panel);
+  --card-foreground: var(--foreground);
+  --popover: var(--panel);
+  --popover-foreground: var(--foreground);
+  --primary: var(--signal-cmd);
+  --primary-foreground: #ffffff;
+  --secondary: var(--elevated);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--elevated);
+  --accent: var(--elevated);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--signal-warn);
+  --border: var(--hairline);
+  --input: var(--hairline);
+  --ring: var(--signal-cmd);
+
+  --chart-1: var(--signal-cmd);
+  --chart-2: var(--signal-live);
+  --chart-3: var(--signal-caution);
+  --chart-4: var(--signal-active);
+  --chart-5: var(--signal-warn);
+
+  /* Instrument faces are rectilinear; 4px is the most rounding a readout gets. */
+  --radius: 0.25rem;
+
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--signal-cmd);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--elevated);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--hairline);
+  --sidebar-ring: var(--signal-cmd);
 }
 
+/* Night. Hull graphite, not near-black: a blue-cool ground keeps the amber and
+ * magenta signals from going muddy, and gives the viewport somewhere to sit. */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: #0b1014;
+  --panel: #121a20;
+  --elevated: #1b252d;
+  --hairline: #24313b;
+
+  --foreground: #dbe4ea;
+  --muted-foreground: #7f929e;
+
+  --signal-live: #4fd98d;
+  --signal-cmd: #45c8f0;
+  --signal-active: #e56ec6;
+  --signal-caution: #f0b23c;
+  --signal-warn: #f4595e;
+
+  --card: var(--panel);
+  --card-foreground: var(--foreground);
+  --popover: var(--panel);
+  --popover-foreground: var(--foreground);
+  --primary: var(--signal-cmd);
+  --primary-foreground: #06121a;
+  --secondary: var(--elevated);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--elevated);
+  --accent: var(--elevated);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--signal-warn);
+  --border: var(--hairline);
+  --input: var(--hairline);
+  --ring: var(--signal-cmd);
+
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--signal-cmd);
+  --sidebar-primary-foreground: #06121a;
+  --sidebar-accent: var(--elevated);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--hairline);
+  --sidebar-ring: var(--signal-cmd);
+}
+
+/*
+ * Typography: one industrial grotesque at two widths.
+ *
+ * Archivo ships a `wdth` axis (62–125), so the condensed instrument label and
+ * the normal-width UI text are the same typeface — the width change alone is
+ * what separates "what this is" from "what it says". A second display family
+ * would have been one accessory too many.
+ *
+ * Every measured quantity is set in IBM Plex Mono with tabular figures: a
+ * readout that reflows as digits change is unreadable at a glance, which is the
+ * only way an operator reads this screen.
+ */
+@utility instrument-label {
+  font-family: var(--font-sans);
+  font-variation-settings:
+    "wdth" 70,
+    "wght" 600;
+  font-size: 0.6875rem;
+  line-height: 1;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+@utility readout {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "ss02";
+  letter-spacing: -0.01em;
+}
+
+/* The status strip's bottom edge, swept once per telemetry frame. */
+@keyframes strip-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+@utility strip-sweep {
+  animation: strip-sweep 1s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strip-sweep {
+    animation: none;
+    transform: translateX(300%);
+  }
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    @apply font-sans;
+  }
   body {
     @apply bg-background text-foreground;
   }
-  html {
-    @apply font-sans;
+  /* Keyboard focus has to survive on top of a canvas, so it is a ring in the
+   * commanded hue rather than a shadow that the viewport would swallow. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
   }
 }

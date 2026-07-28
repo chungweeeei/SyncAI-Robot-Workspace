@@ -52,22 +52,32 @@ interface Palette {
   goalDraft: string;
 }
 
+/*
+ * Console signal semantics (see globals.css): the robot is a measured value, so
+ * it is `signal-live` green; a goal is commanded, so it is `signal-cmd` cyan;
+ * waypoints are neither — they are static references and get muted ink.
+ *
+ * Both variants stay dark-ish because the substrate does not follow the theme:
+ * the occupancy grid arrives as a server-rendered PNG that is white free space
+ * and black obstacles in night mode too. A marker picked to look right against
+ * the dark panel would be invisible where it is actually drawn.
+ */
 const PALETTES: Record<"light" | "dark", Palette> = {
   light: {
-    robot: "#2563eb",
+    robot: "#12784a",
     robotHeading: "#ffffff",
-    waypoint: "#d97706",
-    label: "#525252",
-    goal: "#059669",
-    goalDraft: "#10b981",
+    waypoint: "#54646f",
+    label: "#54646f",
+    goal: "#0a6d94",
+    goalDraft: "#3f9dbe",
   },
   dark: {
-    robot: "#3b82f6",
+    robot: "#1a9a5e",
     robotHeading: "#ffffff",
-    waypoint: "#f59e0b",
-    label: "#a3a3a3",
-    goal: "#10b981",
-    goalDraft: "#34d399",
+    waypoint: "#697985",
+    label: "#7f929e",
+    goal: "#0f88b4",
+    goalDraft: "#45c8f0",
   },
 };
 

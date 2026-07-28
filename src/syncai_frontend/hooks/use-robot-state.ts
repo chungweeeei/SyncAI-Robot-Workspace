@@ -17,6 +17,13 @@ export interface UseRobotState {
    * recent fetch. On a transient error the last good `state` is kept.
    */
   status: RobotStateStatus;
+  /**
+   * Client clock (ms) at the last successful fetch, null before the first one.
+   * A fresh value on every frame is what drives the status strip's 1 Hz sweep,
+   * so this changes even when the payload itself is identical — `state` alone
+   * cannot say "a frame just arrived".
+   */
+  updatedAt: number | null;
 }
 
 /**
@@ -27,6 +34,7 @@ export interface UseRobotState {
 export function useRobotState(pollMs: number = DEFAULT_POLL_MS): UseRobotState {
   const [state, setState] = React.useState<RobotState | null>(null);
   const [status, setStatus] = React.useState<RobotStateStatus>("loading");
+  const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -42,6 +50,7 @@ export function useRobotState(pollMs: number = DEFAULT_POLL_MS): UseRobotState {
         if (!active) return;
         setState(data);
         setStatus("ok");
+        setUpdatedAt(Date.now());
       } catch {
         // Transient (network blip, backend restart): keep the last good state.
         if (active) setStatus("error");
@@ -55,5 +64,5 @@ export function useRobotState(pollMs: number = DEFAULT_POLL_MS): UseRobotState {
     };
   }, [pollMs]);
 
-  return { state, status };
+  return { state, status, updatedAt };
 }

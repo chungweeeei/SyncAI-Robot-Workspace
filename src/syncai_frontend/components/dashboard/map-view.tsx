@@ -102,8 +102,12 @@ export function MapView({
 
   if (!map) {
     return (
-      <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
-        Loading map…
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-6 text-center">
+        <p className="instrument-label text-muted-foreground">No grid map</p>
+        <p className="max-w-xs text-sm text-muted-foreground">
+          Waiting on GET /api/v1/map/image. Switch to the 3D cloud to drive
+          without a saved map.
+        </p>
       </div>
     );
   }
@@ -120,7 +124,7 @@ export function MapView({
         onGoalCommit={task.commitGoal}
       />
 
-      <GoalControl task={task} className="absolute left-0 top-0" />
+      <GoalControl task={task} className="absolute top-3 left-3" />
     </div>
   );
 }

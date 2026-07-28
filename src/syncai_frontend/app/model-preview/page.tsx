@@ -2,16 +2,13 @@
 
 import * as React from "react";
 
-import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
-import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  InstrumentGroup,
+  Readout,
+  Segmented,
+} from "@/components/console/instrument";
+import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
+import { cn } from "@/lib/utils";
 import type { MapMetadata, RobotPose } from "@/lib/types/robot";
 
 /**
@@ -60,10 +57,15 @@ type Motion = "static" | "spin" | "circle" | "walk";
 
 const MOTION_LABEL: Record<Motion, string> = {
   static: "Static",
-  spin: "Spin in place",
-  circle: "Drive a circle",
-  walk: "Walk (trot)",
+  spin: "Spin",
+  circle: "Circle",
+  walk: "Trot",
 };
+
+const CAMERA_OPTIONS = [
+  { value: "move" as const, label: "Move" },
+  { value: "focus" as const, label: "Focus" },
+];
 
 // Trot-gait parameters. Amplitudes sit comfortably inside the URDF limits
 // (HipY [-2.67, 0.314], Knee [0.524, 2.792] — note the knee's zero pose is
@@ -143,65 +145,72 @@ export default function ModelPreviewPage() {
   const joints = React.useMemo(() => jointsAt(motion, t), [motion, t]);
 
   return (
-    <>
-      <PageHeader title="Model preview" />
-      <div className="flex flex-col gap-4 p-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              G23 model · public/models/g23.glb
-            </CardTitle>
-            <CardDescription>
-              No robot required — synthetic pose, live point-cloud stream
-              disabled.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-1">
-                {(Object.keys(MOTION_LABEL) as Motion[]).map((m) => (
-                  <Button
-                    key={m}
-                    size="sm"
-                    variant={motion === m ? "default" : "outline"}
-                    className="h-7 px-3 text-xs"
-                    onClick={() => setMotion(m)}
-                  >
-                    {MOTION_LABEL[m]}
-                  </Button>
-                ))}
-              </div>
-              <div className="flex items-center gap-1">
-                {(["move", "focus"] as const).map((mode) => (
-                  <Button
-                    key={mode}
-                    size="sm"
-                    variant={cameraMode === mode ? "default" : "outline"}
-                    className="h-7 px-3 text-xs capitalize"
-                    onClick={() => setCameraMode(mode)}
-                  >
-                    {mode}
-                  </Button>
-                ))}
-              </div>
-              <span className="font-mono text-xs text-muted-foreground">
-                x {pose.x.toFixed(2)} · y {pose.y.toFixed(2)} · θ{" "}
-                {pose.theta.toFixed(0)}°
-              </span>
-            </div>
+    <div className="flex h-full flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+      <section
+        aria-label="Model viewport"
+        className="relative h-[55vh] shrink-0 lg:h-full lg:flex-1"
+      >
+        <PointCloudCanvas
+          meta={PREVIEW_MAP}
+          pose={pose}
+          joints={joints}
+          cameraMode={cameraMode}
+          liveStream={false}
+        />
+      </section>
 
-            <div className="h-[560px] w-full overflow-hidden rounded-md border">
-              <PointCloudCanvas
-                meta={PREVIEW_MAP}
-                pose={pose}
-                joints={joints}
-                cameraMode={cameraMode}
-                liveStream={false}
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </>
+      <aside
+        aria-label="Preview controls"
+        className="w-full shrink-0 border-t border-hairline bg-panel lg:h-full lg:w-72 lg:overflow-y-auto lg:border-t-0 lg:border-l"
+      >
+        <InstrumentGroup
+          label="Model"
+          caption="Developer tool. Synthetic pose, live cloud stream disabled."
+        >
+          <Readout label="Asset" value="public/models/g23.glb" />
+        </InstrumentGroup>
+
+        <InstrumentGroup label="Motion">
+          <div className="grid grid-cols-2 gap-1.5">
+            {(Object.keys(MOTION_LABEL) as Motion[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={motion === m}
+                onClick={() => setMotion(m)}
+                className={cn(
+                  "instrument-label h-7 rounded-sm border px-2 transition-colors",
+                  motion === m
+                    ? "border-signal-cmd/50 bg-signal-cmd/12 text-signal-cmd"
+                    : "border-hairline text-muted-foreground hover:bg-elevated hover:text-foreground",
+                )}
+              >
+                {MOTION_LABEL[m]}
+              </button>
+            ))}
+          </div>
+        </InstrumentGroup>
+
+        <InstrumentGroup label="Camera">
+          <Segmented
+            value={cameraMode}
+            options={CAMERA_OPTIONS}
+            onChange={setCameraMode}
+            className="w-full **:flex-1"
+          />
+        </InstrumentGroup>
+
+        <InstrumentGroup label="Synthetic pose">
+          <Readout label="X" value={pose.x.toFixed(2)} unit="m" tone="live" />
+          <Readout label="Y" value={pose.y.toFixed(2)} unit="m" tone="live" />
+          <Readout
+            label="Heading"
+            value={pose.theta.toFixed(0)}
+            unit="°"
+            tone="live"
+          />
+        </InstrumentGroup>
+      </aside>
+    </div>
   );
 }

@@ -71,8 +71,13 @@ RUN if id -u ubuntu >/dev/null 2>&1 && [ "$USERNAME" != "ubuntu" ]; then \
 # at runtime. (The previous echo-with-escapes approach was fragile and could end
 # up writing the literal string into PATH, wiping /usr/bin and breaking every
 # command — even `ls`.)
+#
+# ROS_DOMAIN_ID must match the robot containers (docker-compose.robots.yml sets
+# a literal 1 in x-robot-env) — otherwise nodes started in here are on a
+# different domain and silently see nothing from the robot stack. It was 0,
+# which stopped matching once the robot containers moved to 1.
 RUN cat >> /home/$USERNAME/.bashrc <<'BASHRC'
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID=1
 source /opt/ros/humble/setup.bash
 export PATH="$HOME/.local/bin:$PATH"
 BASHRC
