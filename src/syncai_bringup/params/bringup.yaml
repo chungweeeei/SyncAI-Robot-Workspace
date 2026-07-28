@@ -1,0 +1,45 @@
+# Parameters for the two nodes bringup.launch.py starts: robot_state_publisher
+# (G23 body TF tree) and the Livox MID360 driver.
+#
+# The /**/ wildcard keys match the node names in any namespace, so the same file
+# works for any robot_id: the launch file reads robot_id from config/system.ini
+# and uses it as the node namespace.
+#
+# What is NOT here, and why — these three are computed at launch time and are
+# appended AFTER this file in the Node's parameters list, so they win:
+#   * robot_description  - the URDF text, read off disk from description/
+#   * frame_prefix       - needs the resolved robot_id
+#   * frame_id           - same; TF frame names are NOT namespaced by ROS, so
+#                          the fallback below is overridden with <robot_id>/laser
+#   * user_config_path   - resolved from the livox_ros_driver2 share directory
+/**/robot_state_publisher:
+  ros__parameters:
+    # Real robot: there is no /clock. Set ONLY here — a launch-level override
+    # placed after this file would silently win over the YAML value.
+    use_sim_time: false
+
+/**/livox_lidar_publisher:
+  ros__parameters:
+    use_sim_time: false
+
+    # Mirrored from livox_ros_driver2/launch_ROS2/msg_MID360_launch.py.
+    # 0 = PointCloud2 (PointXYZRTL), 1 = Livox CustomMsg. Must stay 1: the
+    # FAST-LIO2 chain consumes CustomMsg, and switching to 0 for some tool that
+    # wants standard messages breaks LIO silently.
+    xfer_format: 1
+    # 0 = all lidars share one topic, 1 = one topic per lidar.
+    multi_topic: 0
+    # 0 = live lidar; anything else is an invalid data source.
+    data_src: 0
+    publish_freq: 10.0
+    output_data_type: 0
+
+    # Fallback only. TF frame names are not namespaced by ROS, so the launch
+    # file overrides this with "<robot_id>/laser". This is the raw sensor frame
+    # and nothing parents it — the mount extrinsic lives on the URDF's
+    # lidar_top_joint, which is what syncai_lio_bridge actually looks up.
+    frame_id: laser
+
+    # Only read when data_src selects an .lvx replay, which we never do.
+    lvx_file_path: "/home/livox/livox_test.lvx"
+    cmdline_input_bd_code: "livox0000000001"

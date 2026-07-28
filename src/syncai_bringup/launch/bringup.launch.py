@@ -23,6 +23,12 @@
 #
 # robot_id is read from the system config INI at launch time, same convention as
 # every other launch file in the stack.
+#
+# Node parameters live in params/bringup.yaml under /**/ wildcard keys. Only the
+# values that cannot be static are set here, appended after the file so they win:
+# the URDF text, frame_prefix, the <robot_id>/-prefixed frame_id, and the path to
+# the livox user config. use_sim_time is set ONLY in the YAML, per the workspace
+# rule — a launch-level override placed after the file silently beats it.
 
 import configparser
 import os
@@ -40,17 +46,10 @@ from launch_ros.actions import Node
 DEFAULT_SYSTEM_INI = "config/system.ini"
 FALLBACK_ROBOT_ID = "default_robot"
 
-# Livox MID360 driver configuration, mirrored from
-# livox_ros_driver2/launch_ROS2/msg_MID360_launch.py so the 3D lidar publishes
-# alongside the rest of the 3D localization stack.
-LIVOX_XFER_FORMAT = 1  # 0-Pointcloud2(PointXYZRTL), 1-customized pointcloud format
-LIVOX_MULTI_TOPIC = 0  # 0-All LiDARs share the same topic, 1-One LiDAR one topic
-LIVOX_DATA_SRC = 0  # 0-lidar, others-Invalid data src
-LIVOX_PUBLISH_FREQ = 10.0  # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.
-LIVOX_OUTPUT_TYPE = 0
+# The lidar's raw sensor frame. Kept here rather than in the params file
+# because it is the one livox setting the launch has to rewrite: TF frame names
+# are not namespaced by ROS, so it ships as "<robot_id>/laser".
 LIVOX_FRAME_ID = "laser"
-LIVOX_LVX_FILE_PATH = "/home/livox/livox_test.lvx"
-LIVOX_CMDLINE_BD_CODE = "livox0000000001"
 
 logger = launch_logging.get_logger("bringup.launch")
 
@@ -80,7 +79,7 @@ def launch_setup(context, *args, **kwargs):
     robot_id = read_robot_id(config_path)
 
     urdf_file = LaunchConfiguration("urdf_file").perform(context)
-    use_sim_time = LaunchConfiguration("use_sim_time")
+    params_file = LaunchConfiguration("params_file")
 
     # Load the URDF. robot_state_publisher only parses the kinematic tree for
     # TF; meshes (referenced with relative ../meshes/ paths) are never loaded
@@ -104,11 +103,14 @@ def launch_setup(context, *args, **kwargs):
         namespace=robot_id,
         output="screen",
         parameters=[
+            params_file,
             {
+                # Computed here, so appended after the params file to win over
+                # it: the URDF text read off disk, and the frame prefix which
+                # needs the resolved robot_id.
                 "robot_description": robot_description,
                 "frame_prefix": f"{robot_id}/",
-                "use_sim_time": use_sim_time,
-            }
+            },
         ],
     )
 
@@ -128,15 +130,13 @@ def launch_setup(context, *args, **kwargs):
         namespace=robot_id,
         output="screen",
         parameters=[
-            {"xfer_format": LIVOX_XFER_FORMAT},
-            {"multi_topic": LIVOX_MULTI_TOPIC},
-            {"data_src": LIVOX_DATA_SRC},
-            {"publish_freq": LIVOX_PUBLISH_FREQ},
-            {"output_data_type": LIVOX_OUTPUT_TYPE},
-            {"frame_id": f"{robot_id}/{LIVOX_FRAME_ID}"},
-            {"lvx_file_path": LIVOX_LVX_FILE_PATH},
-            {"user_config_path": livox_config_path},
-            {"cmdline_input_bd_code": LIVOX_CMDLINE_BD_CODE},
+            params_file,
+            {
+                # Both need the resolved robot_id / share dir, so they are
+                # appended after the params file and take precedence over it.
+                "frame_id": f"{robot_id}/{LIVOX_FRAME_ID}",
+                "user_config_path": livox_config_path,
+            },
         ],
     )
 
@@ -144,10 +144,21 @@ def launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
+    default_params_file = os.path.join(
+        get_package_share_directory("syncai_bringup"), "params", "bringup.yaml"
+    )
+
     declare_system_config = DeclareLaunchArgument(
         "system_config",
         default_value=DEFAULT_SYSTEM_INI,
         description="Path to the system INI file providing [system] robot_id",
+    )
+
+    declare_params_file = DeclareLaunchArgument(
+        "params_file",
+        default_value=default_params_file,
+        description="Full path to the parameters YAML for robot_state_publisher "
+        "and the MID360 driver",
     )
 
     declare_urdf_file = DeclareLaunchArgument(
@@ -158,17 +169,11 @@ def generate_launch_description():
         "urdfdom can parse it; TF-only, collision fidelity not needed)",
     )
 
-    declare_use_sim_time = DeclareLaunchArgument(
-        "use_sim_time",
-        default_value="false",
-        description="Use /clock (set true when driving from Isaac Sim)",
-    )
-
     return LaunchDescription(
         [
             declare_system_config,
+            declare_params_file,
             declare_urdf_file,
-            declare_use_sim_time,
             OpaqueFunction(function=launch_setup),
         ]
     )

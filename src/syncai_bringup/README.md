@@ -2,7 +2,7 @@
 
 The sensing / TF layer that everything else in the navigation stack assumes is
 already running. It contains **no source code** — an `ament_cmake` package whose
-only job is to install the robot description and one launch file:
+only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
@@ -11,18 +11,17 @@ only job is to install the robot description and one launch file:
 ```
 share/syncai_bringup/
   launch/       bringup.launch.py
+  params/       bringup.yaml
   description/  G23.urdf
   meshes/       body / hip / thigh / shank STLs (visual only)
-  params/       (empty placeholder)
   maps/         (empty placeholder)
   rviz/         (empty placeholder)
 ```
 
-`params/`, `maps/` and `rviz/` hold nothing but `.gitkeep`. Params live with the
-package that owns them (`syncai_planner/params/…`), maps live in the repo-root
+`maps/` and `rviz/` hold nothing but `.gitkeep` — maps live in the repo-root
 `map/` directory referenced from `config/instances/robotNN.ini`, and there is no
-checked-in RViz config. The directories are installed anyway, so dropping a file
-in works without touching `CMakeLists.txt`.
+checked-in RViz config. Both are installed anyway, so dropping a file in works
+without touching `CMakeLists.txt`.
 
 ## robot_id
 
@@ -73,18 +72,18 @@ uses it to map the Point-LIO body pose onto `base_link`. Without this TF the LIO
 bridge produces no odometry and the whole 3D stack is dead — so `bringup`
 must be running before the bridge.
 
-**`livox_ros_driver2_node`** drives the MID360. Its settings are Python constants
-at the top of the launch file, mirrored from
+**`livox_ros_driver2_node`** drives the MID360. Its settings live in
+`params/bringup.yaml`, mirrored from
 `livox_ros_driver2/launch_ROS2/msg_MID360_launch.py`:
 
-| Setting | Value | Note |
-|---|---|---|
-| `xfer_format` | `1` | Livox **CustomMsg**, not `PointCloud2` — this is what the FAST-LIO2 chain expects |
-| `multi_topic` | `0` | all lidars share one topic |
-| `data_src` | `0` | live lidar |
-| `publish_freq` | `10.0` Hz | |
-| `frame_id` | `<robot_id>/laser` | prefixed explicitly, since frames aren't namespaced |
-| `user_config_path` | `<share>/livox_ros_driver2/config/MID360_config.json` | **the IP / broadcast-code config lives there**, not here |
+| Setting | Value | Set in | Note |
+|---|---|---|---|
+| `xfer_format` | `1` | YAML | Livox **CustomMsg**, not `PointCloud2` — this is what the FAST-LIO2 chain expects |
+| `multi_topic` | `0` | YAML | all lidars share one topic |
+| `data_src` | `0` | YAML | live lidar |
+| `publish_freq` | `10.0` Hz | YAML | |
+| `frame_id` | `<robot_id>/laser` | launch | prefixed explicitly, since frames aren't namespaced; the YAML carries the unprefixed fallback |
+| `user_config_path` | `<share>/livox_ros_driver2/config/MID360_config.json` | launch | resolved from the share dir — **the IP / broadcast-code config lives there**, not here |
 
 Note the frame naming: the driver publishes in `<robot_id>/laser`, while the
 mount extrinsic in the URDF is `<robot_id>/lidar_top`. The LIO chain broadcasts
@@ -97,18 +96,35 @@ them), and the bridge reconciles that branch onto the robot tree through
 | Argument | Default | Meaning |
 |---|---|---|
 | `system_config` | `config/system.ini` | INI providing `[system] robot_id` |
+| `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for both nodes |
 | `urdf_file` | `G23.urdf` | File name under `description/` |
-| `use_sim_time` | `false` | Set true when driving from Isaac Sim |
 
 To move the lidar, edit `lidar_top_joint` in the URDF. There used to be a
 `lidar_height` argument feeding a `static_transform_publisher` here; it was
 removed along with that node when the extrinsic moved into the URDF, which can
 also carry the 0.25 rad pitch that a height-only argument could not.
 
-`use_sim_time` as a launch argument is an exception to the workspace rule that
-`use_sim_time` is only ever set in a params YAML. The rule exists because a
-launch override silently beats the YAML value; this package has no params YAML
-for these nodes, so there is nothing to conflict with.
+## Parameters
+
+`params/bringup.yaml` uses `/**/<node_name>:` wildcard keys, so the same file
+works at any namespace. It covers the two node names the launch file assigns:
+`robot_state_publisher` and `livox_lidar_publisher`.
+
+Four values are **not** in the file, because they cannot be static. The launch
+file appends them after `params_file` in each `Node`'s parameter list, so they
+take precedence:
+
+| Parameter | Why it is computed |
+|---|---|
+| `robot_description` | the URDF text, read off disk |
+| `frame_prefix` | needs the resolved `robot_id` |
+| `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/laser` |
+| `user_config_path` | resolved from the `livox_ros_driver2` share directory |
+
+`use_sim_time` is set **only** in the YAML (`false` — there is no `/clock` on
+the robot), per the workspace rule: a launch-level override placed after the
+params file would silently win over the YAML value. There is deliberately no
+`use_sim_time` launch argument for that reason.
 
 ## The URDF
 
@@ -134,7 +150,7 @@ Window 0 of `scripts/byobu_session.sh`, before everything else:
 ros2 launch syncai_bringup bringup.launch.py
 
 ros2 launch syncai_bringup bringup.launch.py \
-    system_config:=config/instances/robot02.ini use_sim_time:=true
+    system_config:=config/instances/robot02.ini
 ```
 
 Check the result:
