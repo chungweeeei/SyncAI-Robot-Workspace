@@ -2,24 +2,16 @@
 
 import * as React from "react";
 
+import { useTaskTracker } from "@/hooks/use-task-tracker";
 import {
-  TERMINAL_TASK_STATUSES,
   cancelTask,
-  fetchTaskState,
   normalizeTheta,
   sendMoveTask,
   type GoalPose,
   type TaskStatus,
 } from "@/lib/api/task";
 
-// The MOVE workflow reports through a Temporal query, which is only as fresh as
-// the poll; 1 Hz matches the robot-state poll and is plenty for a nav goal.
-const TASK_POLL_MS = 1000;
-
 export interface GoalTask {
-  /** True while the view should turn a drag into a goal (RViz "2D Nav Goal"). */
-  goalMode: boolean;
-  toggleGoalMode: () => void;
   /** Staged goal, not yet submitted. */
   goal: GoalPose | null;
   /** Called by the view when a drag produces a goal. */
@@ -38,84 +30,44 @@ export interface GoalTask {
 }
 
 /**
- * The drag-a-goal state machine, shared by the 2D map and the 3D point-cloud
- * view: stage a goal, submit it as a one-step MOVE task, then track that task
- * until it is terminal.
+ * The drag-a-goal state machine: stage a goal, submit it as a one-step MOVE
+ * task, then track that task until it is terminal.
  *
  * Staging (rather than firing on pointer-up) is deliberate -- the goal moves a
  * real robot, so the operator gets to read the coordinates and confirm.
  *
- * This lives in a hook rather than in either view because both views need the
- * identical flow: only the *picking* differs (grid pixels vs a ground-plane
- * raycast), and that stays in the respective canvas.
+ * Which drag the viewport is currently collecting is NOT owned here: a goal and
+ * an initial-pose estimate are two things one drag gesture can produce, and only
+ * one of them can be armed at a time. The view owns that single pick mode (see
+ * PointCloudView) and hands the finished pose to whichever flow asked for it.
  */
 export function useGoalTask(robotId: string): GoalTask {
-  const [goalMode, setGoalMode] = React.useState(false);
   const [goal, setGoal] = React.useState<GoalPose | null>(null);
-  const [taskId, setTaskId] = React.useState<string | null>(null);
-  const [taskStatus, setTaskStatus] = React.useState<TaskStatus | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const task = useTaskTracker();
 
-  // Track the submitted task until it reaches a terminal state.
-  React.useEffect(() => {
-    if (!taskId) return;
-    const abort = new AbortController();
-    let active = true;
+  const { track, setError, reset, taskId } = task;
 
-    const tick = async () => {
-      try {
-        const state = await fetchTaskState(taskId, abort.signal);
-        if (!active) return;
-        setTaskStatus(state.status);
-        const failed = state.steps.find((step) => step.error_msg);
-        setError(failed?.error_msg || null);
-        // Terminal: drop the id so this effect tears the interval down. The
-        // status (and the goal marker) stay on screen until the operator clears
-        // them, so they can see where the robot was sent and how it ended.
-        if (TERMINAL_TASK_STATUSES.includes(state.status)) setTaskId(null);
-      } catch {
-        // The workflow query fails while Temporal is starting the workflow, and
-        // once the task ages out of Temporal's retention. Neither is worth
-        // surfacing: keep the last known status.
-      }
-    };
-
-    tick();
-    const id = setInterval(tick, TASK_POLL_MS);
-    return () => {
-      active = false;
-      abort.abort();
-      clearInterval(id);
-    };
-  }, [taskId]);
-
-  const running =
-    taskStatus !== null && !TERMINAL_TASK_STATUSES.includes(taskStatus);
-
-  const commitGoal = React.useCallback((next: GoalPose) => {
-    setGoal({ ...next, theta: normalizeTheta(next.theta) });
-    // Single-shot, like RViz's "2D Nav Goal": one drag, one goal.
-    setGoalMode(false);
-    setError(null);
-  }, []);
-
-  const toggleGoalMode = React.useCallback(() => setGoalMode((on) => !on), []);
+  const commitGoal = React.useCallback(
+    (next: GoalPose) => {
+      setGoal({ ...next, theta: normalizeTheta(next.theta) });
+      setError(null);
+    },
+    [setError],
+  );
 
   const send = React.useCallback(async () => {
     if (!goal) return;
     setBusy(true);
     setError(null);
     try {
-      const id = await sendMoveTask(robotId, goal);
-      setTaskId(id);
-      setTaskStatus("PENDING");
+      track(await sendMoveTask(robotId, goal));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [goal, robotId]);
+  }, [goal, robotId, track, setError]);
 
   const cancel = React.useCallback(async () => {
     if (!taskId) return;
@@ -127,24 +79,23 @@ export function useGoalTask(robotId: string): GoalTask {
     } finally {
       setBusy(false);
     }
-  }, [taskId]);
+  }, [taskId, setError]);
 
   const clear = React.useCallback(() => {
+    // The goal marker goes with the status: both describe the same finished
+    // task, so leaving one on the map without the other is a lie.
     setGoal(null);
-    setTaskStatus(null);
-    setError(null);
-  }, []);
+    reset();
+  }, [reset]);
 
   return {
-    goalMode,
-    toggleGoalMode,
     goal,
     commitGoal,
-    taskStatus,
-    running,
+    taskStatus: task.taskStatus,
+    running: task.running,
     busy,
-    error,
-    cancelable: taskId !== null,
+    error: task.error,
+    cancelable: task.cancelable,
     send,
     cancel,
     clear,

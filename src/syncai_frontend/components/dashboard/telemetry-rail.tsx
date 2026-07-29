@@ -4,11 +4,11 @@ import {
   InstrumentGroup,
   PrimaryReadout,
   Readout,
-  Segmented,
   SignalBars,
 } from "@/components/console/instrument";
+import { MotorStatus } from "@/components/dashboard/motor-status";
+import { PostureControl } from "@/components/dashboard/posture-control";
 import type { RobotState } from "@/lib/types/robot";
-import type { ViewMode } from "@/components/dashboard/map-panel";
 
 function rssiToBars(rssi: number): number {
   if (rssi >= -50) return 4;
@@ -17,13 +17,8 @@ function rssiToBars(rssi: number): number {
   return 1;
 }
 
-const VIEW_OPTIONS = [
-  { value: "2d" as const, label: "2D grid" },
-  { value: "3d" as const, label: "3D cloud" },
-];
-
 /**
- * The instrument rail beside the viewport: pose, link, view state.
+ * The instrument rail beside the viewport: pose, link, posture, motors.
  *
  * These were four equal-weight cards above the map, which put the two numbers
  * an operator watches continuously (x/y and heading) at the same size as the
@@ -33,24 +28,13 @@ const VIEW_OPTIONS = [
  * Battery, mode and map name are *not* here — they live in the status strip,
  * because they qualify the whole console rather than this screen.
  */
-export function TelemetryRail({
-  state,
-  viewMode,
-  onViewModeChange,
-}: {
-  state: RobotState;
-  viewMode: ViewMode;
-  onViewModeChange: (mode: ViewMode) => void;
-}) {
+export function TelemetryRail({ state }: { state: RobotState }) {
   const { position, velocity } = state.localization_status;
   const network = state.network_status;
 
   return (
     <div className="divide-y divide-hairline">
-      <InstrumentGroup
-        label="Pose"
-        caption="map frame, from FAST-LIO2 via the LIO bridge"
-      >
+      <InstrumentGroup label="Pose">
         <div className="mb-3 grid grid-cols-2 gap-3">
           <PrimaryReadout
             label="X"
@@ -94,17 +78,11 @@ export function TelemetryRail({
         <Readout label="BSSID" value={network.bssid} />
       </InstrumentGroup>
 
-      <InstrumentGroup
-        label="View"
-        caption="3D streams the live point cloud over WebGL; 2D is the saved occupancy grid."
-      >
-        <Segmented
-          value={viewMode}
-          options={VIEW_OPTIONS}
-          onChange={onViewModeChange}
-          className="w-full **:flex-1"
-        />
-      </InstrumentGroup>
+      <PostureControl robotId={state.robot_id} />
+
+      {/* Last: it is the longest group and the one an operator consults, rather
+        * than watches. Pose and link stay above the fold on a short rail. */}
+      <MotorStatus motors={state.motor_status} />
     </div>
   );
 }

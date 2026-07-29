@@ -1,10 +1,9 @@
 "use client";
 
-import * as React from "react";
 import { RadarIcon } from "lucide-react";
 
 import { useConsoleRobotState } from "@/components/console/robot-state-context";
-import { MapPanel, type ViewMode } from "@/components/dashboard/map-panel";
+import { PointCloudView } from "@/components/dashboard/pointcloud-view";
 import { TelemetryRail } from "@/components/dashboard/telemetry-rail";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +17,6 @@ import { cn } from "@/lib/utils";
  */
 export default function DashboardPage() {
   const { state, status } = useConsoleRobotState();
-  const [viewMode, setViewMode] = React.useState<ViewMode>("2d");
 
   if (!state) {
     return <AwaitingTelemetry connecting={status === "loading"} />;
@@ -30,27 +28,22 @@ export default function DashboardPage() {
     <div className="flex h-full flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
       <section
         aria-label="Map viewport"
-        // A definite height at every breakpoint: both canvases size themselves
-        // from the container, and a flex item sized only by min-height leaves
-        // their h-full children resolving against nothing.
+        // A definite height at every breakpoint: the canvas sizes itself from
+        // the container, and a flex item sized only by min-height leaves its
+        // h-full children resolving against nothing.
         className="relative h-[55vh] shrink-0 lg:h-full lg:flex-1"
       >
-        <MapPanel
-          mode={viewMode}
-          pose={state.localization_status.position}
-          robotId={state.robot_id}
-        />
+        {/* The pose the viewport draws does not come from here: the canvas has
+          * its own ~20 Hz telemetry WebSocket. This page's 1 Hz state is what
+          * the rail and the strip read. */}
+        <PointCloudView robotId={state.robot_id} />
       </section>
 
       <aside
         aria-label="Telemetry"
         className="w-full shrink-0 border-t border-hairline bg-panel lg:h-full lg:w-72 lg:overflow-y-auto lg:border-t-0 lg:border-l"
       >
-        <TelemetryRail
-          state={state}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-        />
+        <TelemetryRail state={state} />
       </aside>
     </div>
   );

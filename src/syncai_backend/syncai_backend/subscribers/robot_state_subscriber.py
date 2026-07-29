@@ -12,10 +12,11 @@ class RobotStateSubscriber:
     """Feeds RobotRepo, and therefore GET /api/v1/robot/state, from the
     ``robot_state`` topic.
 
-    ``RobotState`` carries more than that REST payload exposes — per-joint
-    temperatures and motor error codes are in ``motor_status`` for operators.
-    The router names its response fields explicitly and must keep doing so; this
-    subscriber hands the whole message through unfiltered.
+    ``RobotState`` carries more than that REST payload exposes — ``motor_status``
+    reaches it trimmed to name/temperature/error, and motor_timestamp /
+    localization_valid not at all. The router names its response fields
+    explicitly and must keep doing so; this subscriber hands the whole message
+    through unfiltered.
     """
 
     def __init__(self, logger: structlog.stdlib.BoundLogger, robot_repo: RobotRepo):

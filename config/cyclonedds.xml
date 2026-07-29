@@ -4,20 +4,20 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd"
 >
-    <Domain Id="0">
+    <Domain Id="1">
         <General>
-            <AllowMulticast>spdp</AllowMulticast>
+            <AllowMulticast>false</AllowMulticast>
             <Interfaces>
                 <NetworkInterface name="lo"/>
             </Interfaces>
         </General>
-        <!-- <Discovery>
+        <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
             <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
             <Peers>
               <Peer address="127.0.0.1"/>
             </Peers>
-        </Discovery> -->
+        </Discovery>
         <Tracing>
             <Verbosity>config</Verbosity>
             <OutputFile>stdout</OutputFile>

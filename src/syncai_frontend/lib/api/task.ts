@@ -2,10 +2,12 @@
 // (src/syncai_backend/syncai_backend/interfaces/rest/routers/task.py).
 //
 // Only the single-step MOVE case is wired here: the operator drags a goal on
-// the 2D map and we submit it as a one-step Temporal workflow. Multi-step task
-// authoring stays a backend/API concern for now.
+// the point-cloud viewport and we submit it as a one-step Temporal workflow.
+// Multi-step task authoring stays a backend/API concern for now.
 
 import { apiUrl } from "@/lib/api/config";
+import { errorDetail } from "@/lib/api/http";
+import type { PlanarPose } from "@/lib/types/robot";
 
 export type TaskStatus =
   | "PENDING"
@@ -20,12 +22,12 @@ export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = [
   "CANCELED",
 ];
 
-/** A navigation goal in map coordinates; theta in degrees, CCW from +x. */
-export interface GoalPose {
-  x: number;
-  y: number;
-  theta: number;
-}
+/**
+ * A navigation goal in map coordinates. Structurally the same planar pose the
+ * viewport produces for any drag (an initial pose is the other one), so it is an
+ * alias rather than a second declaration — the name is what carries the meaning.
+ */
+export type GoalPose = PlanarPose;
 
 export interface TaskStepState {
   id: string;
@@ -54,29 +56,22 @@ export function normalizeTheta(deg: number): number {
   return wrapped > 180 ? wrapped - 360 : wrapped;
 }
 
-/** FastAPI reports errors as {detail: string} (or a 422 validation array). */
-async function errorDetail(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-    if (body?.detail) return JSON.stringify(body.detail);
-  } catch {
-    /* non-JSON body (proxy error page); fall back to the status line */
-  }
-  return `${res.status} ${res.statusText}`;
-}
-
 /**
- * Submit a one-step MOVE task. The task id doubles as the Temporal workflow id,
- * so it must be unique per submission and is scoped by robot to match the
- * `robotNN-task-NNN` convention used elsewhere.
+ * Submit a one-step task and return its id. The id doubles as the Temporal
+ * workflow id, so it must be unique per submission and is scoped by robot to
+ * match the `robotNN-task-NNN` convention used elsewhere. `kind` only shapes
+ * that id — the step's `type` is what the workflow dispatches on.
+ *
+ * Second granularity is enough for uniqueness here because every submission
+ * path in the console is a deliberate operator action, not a loop.
  */
-export async function sendMoveTask(
+async function submitOneStepTask(
   robotId: string,
-  goal: GoalPose,
+  kind: string,
+  step: { type: string; params?: unknown },
 ): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
-  const id = `${robotId}-goal-${timestamp}`;
+  const id = `${robotId}-${kind}-${timestamp}`;
 
   const res = await fetch(apiUrl("/api/v1/tasks"), {
     method: "POST",
@@ -84,17 +79,7 @@ export async function sendMoveTask(
     body: JSON.stringify({
       id,
       timestamp,
-      steps: [
-        {
-          id: "move",
-          type: "MOVE",
-          params: {
-            x: goal.x,
-            y: goal.y,
-            theta: normalizeTheta(goal.theta),
-          },
-        },
-      ],
+      steps: [{ id: kind, ...step }],
     }),
   });
 
@@ -102,6 +87,29 @@ export async function sendMoveTask(
 
   const ack = (await res.json()) as TaskAckResponse;
   return ack.id;
+}
+
+/** Submit a one-step MOVE task for a dragged nav goal. */
+export function sendMoveTask(robotId: string, goal: GoalPose): Promise<string> {
+  return submitOneStepTask(robotId, "goal", {
+    type: "MOVE",
+    params: { x: goal.x, y: goal.y, theta: normalizeTheta(goal.theta) },
+  });
+}
+
+/**
+ * The two posture commands the backend exposes as step types. Each is a single
+ * gait-controller motion key with nothing to parameterise, so the step carries
+ * no params at all — sending one would be rejected at the request boundary.
+ */
+export type Posture = "STANDUP" | "LIEDOWN";
+
+/** Submit a one-step posture task (STANDUP / LIEDOWN). */
+export function sendPostureTask(
+  robotId: string,
+  posture: Posture,
+): Promise<string> {
+  return submitOneStepTask(robotId, posture.toLowerCase(), { type: posture });
 }
 
 export async function fetchTaskState(

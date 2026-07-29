@@ -145,6 +145,32 @@ Recreating a robot container wipes hand-installed build dependencies (the ones
 not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
 plus any manual deps (Sophus / GTSAM are built from source for `FASTLIO2_ROS2`).
 
+`colcon.meta` at the workspace root carries per-package cmake args. colcon only
+finds it because its `--metas` default is the relative `./colcon.meta` — same
+cwd-is-the-workspace-root assumption as the launch files. Today its only entry is
+`livox_ros_driver2`, which needs `-DROS_EDITION=ROS2 -DDISTRO_ROS=humble`: since
+the Mid-360s/Jazzy commit, its `CMakeLists.txt` branches on `DISTRO_ROS`, and
+without it the pre-Humble branch resolves the message-typesupport include dirs
+off a target name that no longer exists and configure dies with `NOTFOUND`. The
+flags belong here rather than in the submodule because upstream only ever
+configures itself through its own `build.sh`, which passes them; the submodule
+stays pinned and unmodified.
+
+**After updating the `livox_ros_driver2` submodule, regenerate its
+`package.xml`** — the repo ships only `package_ROS1.xml` / `package_ROS2.xml`,
+`build.sh` is what copies one into place, and `package.xml` is in the submodule's
+`.gitignore`, so a submodule update deletes it and every ament package in the
+workspace fails to configure:
+
+```bash
+cp -f src/third-party/livox_ros_driver2/package_ROS2.xml \
+      src/third-party/livox_ros_driver2/package.xml
+```
+
+`Livox-SDK2` deliberately has **no** `package.xml` — colcon picks it up as a
+plain CMake package via `project(livox_sdk2)`. Adding one would turn it into an
+ament package and require a build type and dependency list it does not have.
+
 ## Running the stack
 
 `scripts/byobu_session.sh` (FAST-LIO2) is the real entrypoint. It builds a byobu

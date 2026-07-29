@@ -15,7 +15,13 @@ from syncai_common.msg import WifiNetwork
 from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks, SetMotionKey
 
 from std_msgs.msg import Header
-from geometry_msgs.msg import Point, Quaternion, Pose, PoseStamped
+from geometry_msgs.msg import (
+    Point,
+    Quaternion,
+    Pose,
+    PoseStamped,
+    PoseWithCovarianceStamped,
+)
 
 
 class MotionKey(str, Enum):
@@ -73,6 +79,9 @@ class RobotGateway:
         self._service_clients: Dict[str, Any] = {}
         self.register_service_clients()
 
+        self._publishers: Dict[str, Any] = {}
+        self.register_publishers()
+
         self._lock = threading.Lock()
         self._goals: Dict[str, MoveGoal] = {}
 
@@ -110,6 +119,21 @@ class RobotGateway:
                 "set_motion_key": set_motion_key_client,
             }
         )
+
+    def register_publishers(self):
+
+        # Relative name, so it resolves under this node's robot_id namespace and
+        # reaches that robot's localizer only. Default QoS (reliable, volatile,
+        # depth 10) matches both consumers of the topic: the FAST-LIO2 localizer
+        # (depth 10) on the 3D path and syncai_amcl (SystemDefaultsQoS) on the
+        # 2D one.
+        initial_pose_pub = self._node.create_publisher(
+            msg_type=PoseWithCovarianceStamped,
+            topic="initialpose",
+            qos_profile=10,
+        )
+
+        self._publishers.update({"initial_pose": initial_pose_pub})
 
     def scan_wifi_networks(self) -> Tuple[bool, str, List[WifiNetwork]]:
         scan_client = self._service_clients.get("scan_wifi")
@@ -172,6 +196,37 @@ class RobotGateway:
                 ),
             ),
         )
+
+    def set_initial_pose(self, x: float, y: float, yaw: float) -> Tuple[bool, str]:
+        """Seed localization with an operator-supplied map-frame pose.
+
+        Fire-and-forget: `initialpose` is a plain topic, so there is no ack and
+        no way to learn here whether the guess converged — the localizer applies
+        it as an ICP initial guess on its next cycle. Only the consumers that
+        are already discovered will see this sample (the topic is volatile, not
+        latched), which is why a missing subscriber is worth a log line: an
+        initialpose that nobody receives is indistinguishable from one that was
+        received and ignored, and that has cost debugging time before.
+        """
+        initial_pose_pub = self._publishers.get("initial_pose")
+
+        if initial_pose_pub.get_subscription_count() == 0:
+            self._logger.warning(
+                "[RobotGateway] Publishing initialpose with no subscriber; "
+                "is the localizer running?"
+            )
+
+        self._logger.info("[RobotGateway] Publishing initial pose", x=x, y=y, yaw=yaw)
+
+        pose_stamped = self._make_pose_stamped(x=x, y=y, yaw=yaw)
+        # Covariance is left at zero: the localizer reads x/y/yaw only (it
+        # refills roll/pitch/z from the current estimate, see applyPlanarGuess)
+        # and a REST caller has no meaningful uncertainty to report.
+        msg = PoseWithCovarianceStamped(header=pose_stamped.header)
+        msg.pose.pose = pose_stamped.pose
+        initial_pose_pub.publish(msg)
+
+        return True, ""
 
     def _send_nav_goal(
         self, client_name: str, goal_msg

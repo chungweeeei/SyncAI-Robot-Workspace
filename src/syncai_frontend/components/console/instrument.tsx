@@ -14,7 +14,9 @@ import { cn } from "@/lib/utils";
  */
 export type Tone = "neutral" | "live" | "cmd" | "active" | "caution" | "warn";
 
-const TONE_TEXT: Record<Tone, string> = {
+/** Text colour per tone. Exported for surfaces that colour a value themselves
+ *  (the motor grid) instead of going through Readout. */
+export const TONE_TEXT: Record<Tone, string> = {
   neutral: "text-foreground",
   live: "text-signal-live",
   cmd: "text-signal-cmd",

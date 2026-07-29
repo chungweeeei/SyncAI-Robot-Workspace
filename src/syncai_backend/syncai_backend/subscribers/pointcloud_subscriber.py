@@ -149,7 +149,7 @@ class PointCloudSubscriber:
         # DDS won't replay the latched sample to this late-joining subscriber.
         node.create_subscription(
             msg_type=PointCloud2,
-            topic="localizer/map_cloud",
+            topic="map_cloud",
             callback=self._map_cloud_cb,
             qos_profile=QoSProfile(
                 depth=1,

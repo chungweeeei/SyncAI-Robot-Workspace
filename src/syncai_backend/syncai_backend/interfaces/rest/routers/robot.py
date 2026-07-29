@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 
 from syncai_common.msg import RobotMode, RobotState as RobotStateMsg
 
-from syncai_backend.exceptions import NotFoundError
+from syncai_backend.exceptions import InternalServerError, NotFoundError
+from syncai_backend.gateways.robot.robot import RobotGateway
 from syncai_backend.repositories.robot.robot import RobotRepo
 
 
@@ -66,6 +67,22 @@ class RobotBatteryStatus(BaseModel):
     )
 
 
+class RobotMotorStatus(BaseModel):
+    """One joint's health, as exposed outward.
+
+    A deliberate SUBSET of syncai_common/MotorState: only the fields that say
+    whether a motor is in trouble. q / dq / ddq / tau_est stay behind, because
+    RobotState.motor_status is a 10 Hz diagnostic snapshot whose samples cannot
+    even be ordered (see the comment on that field) — publishing kinematics from
+    it would invite consumers to derive motion from a channel that cannot carry
+    it. The high-rate joint channel is the telemetry WebSocket.
+    """
+
+    name: str = Field(..., description="The URDF joint name of the motor.")
+    temperature: int = Field(..., description="The motor temperature, in Celsius.")
+    error: int = Field(..., description="The motor error code; 0 when healthy.")
+
+
 class RobotState(BaseModel):
     timestamp: int = Field(..., description="The timestamp of the robot state.")
     robot_id: str = Field(..., description="The unique identifier of the robot.")
@@ -82,11 +99,31 @@ class RobotState(BaseModel):
     battery_status: RobotBatteryStatus = Field(
         ..., description="The battery status of the robot."
     )
+    motor_status: list[RobotMotorStatus] = Field(
+        default_factory=list,
+        description=(
+            "Per-joint motor health (name/temperature/error). Empty while "
+            "syncai_driver_manager is not publishing motor_states."
+        ),
+    )
+
+
+class SetInitialPoseRequest(BaseModel):
+    x: float = Field(..., description="The x-coordinate of the pose, in the map frame.")
+    y: float = Field(..., description="The y-coordinate of the pose, in the map frame.")
+    theta: float = Field(
+        ..., description="The yaw angle of the pose, in degrees (map frame)."
+    )
+
+
+class SetInitialPoseResponse(BaseModel):
+    message: str = Field(..., description="Human-readable result of the request.")
 
 
 def init_robot_router(
     logger: structlog.stdlib.BoundLogger,
     robot_repo: RobotRepo,
+    robot_gw: RobotGateway,
 ) -> APIRouter:
     robot_router = APIRouter(prefix="", tags=["Robot"])
 
@@ -94,10 +131,13 @@ def init_robot_router(
     async def get_robot_state():
         # This response body is a frozen third-party contract, so the fields are
         # named one by one below rather than serialised wholesale. That is the
-        # ONLY thing keeping the operator-facing parts of RobotState —
-        # motor_status (per-joint temperatures, torques, error codes),
-        # motor_timestamp, localization_valid — out of a public payload. Adding a
-        # field to the message must not add one here.
+        # ONLY thing keeping the internal parts of RobotState — motor_timestamp,
+        # localization_valid, and the kinematic half of each MotorState — out of
+        # a public payload. Adding a field to the message must not add one here.
+        #
+        # motor_status IS exposed, but re-projected through RobotMotorStatus:
+        # name / temperature / error only. Copy the fields explicitly for the
+        # same reason as above — a widened MotorState must not widen this.
         #
         # A None here means no sample with localization_valid has arrived yet;
         # the subscriber drops the invalid ones so this endpoint keeps 404-ing
@@ -124,6 +164,47 @@ def init_robot_router(
             battery_status=RobotBatteryStatus(
                 battery_percentage=int(state.battery_status.battery_percentage),
             ),
+            motor_status=[
+                RobotMotorStatus(
+                    name=motor.name,
+                    # int8 / uint16 on the wire; int() is what keeps numpy
+                    # scalars from rclpy's array fields out of the JSON encoder.
+                    temperature=int(motor.temperature),
+                    error=int(motor.error),
+                )
+                for motor in state.motor_status
+            ],
+        )
+
+    @robot_router.post(
+        "/api/v1/robot/set_initial_pose", response_model=SetInitialPoseResponse
+    )
+    def set_initial_pose(request: SetInitialPoseRequest):
+        # Plain (non-async) handler for the same reason as the network router:
+        # the gateway call touches rclpy, so it belongs on FastAPI's worker
+        # thread pool rather than the event loop.
+        #
+        # Degrees in, radians out — the REST vocabulary is degrees everywhere
+        # (RobotPose.theta, the map vertices), the ROS side is radians, and this
+        # boundary is where that conversion happens.
+        success, message = robot_gw.set_initial_pose(
+            x=request.x, y=request.y, yaw=math.radians(request.theta)
+        )
+        if not success:
+            logger.error(
+                "Failed to set initial pose",
+                x=request.x,
+                y=request.y,
+                theta=request.theta,
+                message=message,
+            )
+            raise InternalServerError(message)
+
+        return SetInitialPoseResponse(
+            message=(
+                f"Published initial pose x={request.x}, y={request.y}, "
+                f"theta={request.theta}"
+            )
         )
 
     return robot_router

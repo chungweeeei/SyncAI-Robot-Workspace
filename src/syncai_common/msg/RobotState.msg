@@ -50,10 +50,12 @@ bool localization_valid
 # MotorState is reused rather than trimmed: it already carries exactly the fields
 # this exists for (temperature, tau_est, error), and q/dq come along for free.
 #
-# NOT PART OF THE REST PAYLOAD. GET /api/v1/robot/state names its fields
-# explicitly and must keep doing so — per-joint temperatures and motor error
-# codes are for operators, not for third-party integrators, and there is no
-# longer a separate message type stopping them from leaking.
+# ONLY PARTLY PART OF THE REST PAYLOAD. GET /api/v1/robot/state re-projects each
+# entry through its own RobotMotorStatus model — name / temperature / error, the
+# fields that say whether a motor is in trouble. q / dq / ddq / tau_est stay
+# internal. The router names its fields explicitly and must keep doing so: there
+# is no longer a separate message type stopping a widened MotorState from
+# leaking.
 #
 # Do NOT build motion from q/dq here — this is a 10 Hz diagnostic snapshot and
 # `timestamp` has whole-second resolution, so the samples cannot even be ordered.

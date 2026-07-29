@@ -30,7 +30,16 @@
       "Bash(npm run *)",
       "Read(//home/unitree/.nvm/versions/**)",
       "Read(//usr/local/n/versions/**)",
-      "Bash(node ./css-check.mjs)"
+      "Bash(node ./css-check.mjs)",
+      "Bash(cd *)",
+      "Bash(git stash *)",
+      "Bash(git -C ../.. diff --stat -- src/syncai_frontend)",
+      "Bash(awk 'length>80 {print FILENAME\": \"FNR\": \"length}' components/dashboard/motor-status.tsx components/dashboard/telemetry-rail.tsx)",
+      "Bash(node *)",
+      "Bash(awk 'length>80 {print FILENAME\": \"FNR}' components/dashboard/posture-control.tsx hooks/use-posture.ts hooks/use-task-tracker.ts components/dashboard/task-chip.tsx lib/api/task.ts hooks/use-goal-task.ts)",
+      "Bash(awk 'length>80 && $0 !~ /className/ {print FILENAME\": \"FNR\": \"$0}' components/dashboard/posture-control.tsx hooks/use-posture.ts lib/api/task.ts hooks/use-goal-task.ts)",
+      "Bash(git -C ../.. status --short -- src/syncai_frontend)",
+      "Bash(awk 'length>80 && $0 !~ /className/ {print FILENAME\": \"FNR}' components/dashboard/posture-control.tsx hooks/use-posture.ts)"
     ]
   }
 }

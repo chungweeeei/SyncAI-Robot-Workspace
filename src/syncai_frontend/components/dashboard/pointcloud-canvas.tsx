@@ -9,8 +9,7 @@ import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
 import { G23_JOINTS } from "@/lib/robot/g23-joints";
-import type { GoalPose } from "@/lib/api/task";
-import type { MapMetadata, RobotPose } from "@/lib/types/robot";
+import type { MapMetadata, PlanarPose, RobotPose } from "@/lib/types/robot";
 import type { PointCloudFrame, StreamStatus } from "@/lib/types/pointcloud";
 import {
   createPointCloudStream,
@@ -39,10 +38,15 @@ interface Theme {
    *  the near-white light background so it stays visible in both themes. */
   mapCloud: number;
   /** Committed / being-dragged goal marker. `signal-cmd` cyan from globals.css:
-   *  a goal is a commanded value, and it is the same cyan in the 2D canvas, in
-   *  the goal readback, and on the Send button. */
+   *  a goal is a commanded value, and it is the same cyan in the goal readback
+   *  and on the Send button. */
   goal: number;
   goalDraft: number;
+  /** Staged initial-pose marker. `signal-caution` amber, matching its control:
+   *  it asserts where the robot *is*, not where it should go, and the two must
+   *  never be misread for each other on the floor. */
+  initialPose: number;
+  initialPoseDraft: number;
 }
 
 // Scene colours track the console surfaces so the viewport reads as a recessed
@@ -56,6 +60,8 @@ const THEMES: Record<"light" | "dark", Theme> = {
     mapCloud: 0x54646f,
     goal: 0x0a6d94,
     goalDraft: 0x4aa6c6,
+    initialPose: 0x93600e,
+    initialPoseDraft: 0xc08c33,
   },
   dark: {
     background: 0x0b1014,
@@ -64,6 +70,8 @@ const THEMES: Record<"light" | "dark", Theme> = {
     mapCloud: 0xa7b6c1,
     goal: 0x45c8f0,
     goalDraft: 0x8adcf7,
+    initialPose: 0xf0b23c,
+    initialPoseDraft: 0xf6cd7e,
   },
 };
 
@@ -169,18 +177,18 @@ function heightColor(z: number, out: THREE.Color): THREE.Color {
   return out.setHSL(((1 - t) * 240) / 360, 0.9, 0.55);
 }
 
-// Goal marker, in metres. The 2D canvas draws its arrow in screen-space pixels
-// because a metric arrow is a couple of pixels long at map scale; here the
-// opposite holds — the marker sits on the ground in a perspective view, so it
-// has to be a real object of roughly robot size or it stops reading as a place
-// on the floor. Lifted off z=0 to keep it out of a z-fight with the ground.
-const GOAL_RING_INNER_M = 0.26;
-const GOAL_RING_OUTER_M = 0.34;
-const GOAL_SHAFT_LEN_M = 0.5;
-const GOAL_SHAFT_RADIUS_M = 0.035;
-const GOAL_HEAD_LEN_M = 0.26;
-const GOAL_HEAD_RADIUS_M = 0.1;
-const GOAL_MARKER_Z_M = 0.05;
+// Pose marker (goal / initial pose), in metres. The marker sits on the ground in
+// a perspective view, so it has to be a real object of roughly robot size or it
+// stops reading as a place on the floor — a screen-space arrow of fixed pixel
+// length would grow into the horizon. Lifted off z=0 to keep it out of a
+// z-fight with the ground.
+const MARKER_RING_INNER_M = 0.26;
+const MARKER_RING_OUTER_M = 0.34;
+const MARKER_SHAFT_LEN_M = 0.5;
+const MARKER_SHAFT_RADIUS_M = 0.035;
+const MARKER_HEAD_LEN_M = 0.26;
+const MARKER_HEAD_RADIUS_M = 0.1;
+const MARKER_Z_M = 0.05;
 
 /** Drag distance (CSS px) below which the heading is not taken from the drag. */
 const HEADING_DEADZONE_PX = 8;
@@ -196,12 +204,16 @@ const HEADING_DEADZONE_PX = 8;
 const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 
 /**
- * Ring + arrow marking a goal pose, built pointing down +x so the group's
- * rotation.z is the goal heading. Unlit (MeshBasicMaterial) like everything
+ * Ring + arrow marking a pose on the floor, built pointing down +x so the
+ * group's rotation.z is the heading. Unlit (MeshBasicMaterial) like everything
  * else in the scene except the robot itself, so it keeps its colour whichever
  * way it faces.
+ *
+ * One material for all three meshes, which is also what lets `setMarkerColor`
+ * recolour a marker in place — the draft marker changes hue with the pick mode
+ * and must not force a scene rebuild to do it.
  */
-function createGoalMarker(color: number, opacity: number): THREE.Group {
+function createPoseMarker(color: number, opacity: number): THREE.Group {
   const material = new THREE.MeshBasicMaterial({
     color,
     transparent: opacity < 1,
@@ -214,7 +226,7 @@ function createGoalMarker(color: number, opacity: number): THREE.Group {
   // RingGeometry is already in the XY plane, i.e. flat on this z-up world.
   group.add(
     new THREE.Mesh(
-      new THREE.RingGeometry(GOAL_RING_INNER_M, GOAL_RING_OUTER_M, 32),
+      new THREE.RingGeometry(MARKER_RING_INNER_M, MARKER_RING_OUTER_M, 32),
       material,
     ),
   );
@@ -222,35 +234,42 @@ function createGoalMarker(color: number, opacity: number): THREE.Group {
   // Cylinder / cone run along +y by default; -90deg about z aims them down +x.
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(
-      GOAL_SHAFT_RADIUS_M,
-      GOAL_SHAFT_RADIUS_M,
-      GOAL_SHAFT_LEN_M,
+      MARKER_SHAFT_RADIUS_M,
+      MARKER_SHAFT_RADIUS_M,
+      MARKER_SHAFT_LEN_M,
       12,
     ),
     material,
   );
   shaft.rotation.z = -Math.PI / 2;
-  shaft.position.x = GOAL_RING_OUTER_M + GOAL_SHAFT_LEN_M / 2;
+  shaft.position.x = MARKER_RING_OUTER_M + MARKER_SHAFT_LEN_M / 2;
   group.add(shaft);
 
   const head = new THREE.Mesh(
-    new THREE.ConeGeometry(GOAL_HEAD_RADIUS_M, GOAL_HEAD_LEN_M, 16),
+    new THREE.ConeGeometry(MARKER_HEAD_RADIUS_M, MARKER_HEAD_LEN_M, 16),
     material,
   );
   head.rotation.z = -Math.PI / 2;
-  head.position.x = GOAL_RING_OUTER_M + GOAL_SHAFT_LEN_M + GOAL_HEAD_LEN_M / 2;
+  head.position.x =
+    MARKER_RING_OUTER_M + MARKER_SHAFT_LEN_M + MARKER_HEAD_LEN_M / 2;
   group.add(head);
 
   group.visible = false;
   return group;
 }
 
-/** Move a goal marker to a pose (degrees), or hide it when there is none. */
-function placeGoalMarker(marker: THREE.Group, goal: GoalPose | null) {
-  marker.visible = goal !== null;
-  if (!goal) return;
-  marker.position.set(goal.x, goal.y, GOAL_MARKER_Z_M);
-  marker.rotation.z = (goal.theta * Math.PI) / 180;
+/** Move a marker to a pose (theta in degrees), or hide it when there is none. */
+function placePoseMarker(marker: THREE.Group, pose: PlanarPose | null) {
+  marker.visible = pose !== null;
+  if (!pose) return;
+  marker.position.set(pose.x, pose.y, MARKER_Z_M);
+  marker.rotation.z = (pose.theta * Math.PI) / 180;
+}
+
+/** Recolour a marker built by `createPoseMarker` (shared material). */
+function setMarkerColor(marker: THREE.Group, color: number) {
+  const mesh = marker.children[0] as THREE.Mesh;
+  (mesh.material as THREE.MeshBasicMaterial).color.setHex(color);
 }
 
 /**
@@ -260,21 +279,21 @@ function placeGoalMarker(marker: THREE.Group, goal: GoalPose | null) {
  *    so the target stays pinned to the robot.
  * Middle button always dollies (zoom).
  *
- * `goalMode` overrides the left button entirely: a left-drag then has to
- * produce a goal, not move the camera. Mapping it to null (OrbitControls falls
+ * An armed pick mode overrides the left button entirely: a left-drag then has to
+ * produce a pose, not move the camera. Mapping it to null (OrbitControls falls
  * through to its no-action default) rather than disabling the controls outright
  * keeps right-drag orbit and wheel zoom live, so the operator can still look
- * around while placing a goal.
+ * around while placing a pose.
  */
 function applyCameraMode(
   controls: OrbitControls,
   mode: "move" | "focus",
-  goalMode: boolean,
+  picking: boolean,
 ) {
   const orbit = mode === "focus";
   controls.enablePan = !orbit;
   controls.mouseButtons = {
-    LEFT: goalMode ? null : orbit ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
+    LEFT: picking ? null : orbit ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
     MIDDLE: THREE.MOUSE.DOLLY,
     RIGHT: THREE.MOUSE.ROTATE,
   };
@@ -284,6 +303,9 @@ function applyCameraMode(
 // render test with no map_server running). Points arrive near the LIO odom
 // origin, so a modest span centred on the origin frames them sensibly.
 const DEFAULT_SPAN_M = 20;
+
+/** The two kinds of pose a drag on the viewport can produce. */
+export type PickMode = "goal" | "initial-pose";
 
 interface PointCloudCanvasProps {
   /** 2D map metadata; when omitted the cloud renders with no ground plane. */
@@ -313,15 +335,22 @@ interface PointCloudCanvasProps {
    */
   liveStream?: boolean;
   /** Committed goal, drawn on the ground until the caller clears it. */
-  goal?: GoalPose | null;
+  goal?: PlanarPose | null;
+  /** Staged initial-pose estimate, drawn in the caution hue until cleared. */
+  initialPose?: PlanarPose | null;
   /**
-   * When true, a press-drag-release on the ground produces a goal (RViz style):
-   * the press point is projected onto the z=0 map plane and the drag direction
-   * gives the heading. Left-button camera motion is suspended for the duration.
+   * What a press-drag-release on the ground currently produces, or null for
+   * none (RViz style either way): the press point is projected onto the z=0 map
+   * plane and the drag direction gives the heading. Left-button camera motion is
+   * suspended while a mode is armed.
+   *
+   * One mode at a time — the gesture is identical for both, so the only thing
+   * telling the operator (and this canvas) which pose they are placing is which
+   * mode is armed. The view owns that choice.
    */
-  goalMode?: boolean;
-  /** Fired once on release with the dragged goal. */
-  onGoalCommit?: (goal: GoalPose) => void;
+  pickMode?: PickMode | null;
+  /** Fired once on release with the dragged pose, for whichever mode is armed. */
+  onPickCommit?: (pose: PlanarPose) => void;
   onStatus?: (status: StreamStatus) => void;
   className?: string;
 }
@@ -335,18 +364,19 @@ export function PointCloudCanvas({
   cameraMode = "move",
   liveStream = true,
   goal = null,
-  goalMode = false,
-  onGoalCommit,
+  initialPose = null,
+  pickMode = null,
+  onPickCommit,
   onStatus,
   className,
 }: PointCloudCanvasProps) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
 
-  // Goal being dragged right now. Kept in state (not a ref) so the marker
+  // Pose being dragged right now. Kept in state (not a ref) so the marker
   // effect below runs on every pointer move; the scene itself is untouched, so
   // this costs a marker transform per frame, not a rebuild.
-  const [draft, setDraft] = React.useState<GoalPose | null>(null);
+  const [draft, setDraft] = React.useState<PlanarPose | null>(null);
 
   // All mutable three.js objects live here so the pose / map-cloud effects can
   // reach into the scene without tearing it down.
@@ -358,6 +388,7 @@ export function PointCloudCanvas({
     liveGeom: THREE.BufferGeometry;
     mapPoints: THREE.Points | null;
     goalMarker: THREE.Group;
+    initialPoseMarker: THREE.Group;
     draftMarker: THREE.Group;
     dispose: () => void;
   } | null>(null);
@@ -375,7 +406,7 @@ export function PointCloudCanvas({
   // effect so a map load or theme toggle rebuilds the renderer without
   // restarting the animation from the world origin.
   const cameraModeRef = React.useRef(cameraMode);
-  const goalModeRef = React.useRef(goalMode);
+  const pickModeRef = React.useRef(pickMode);
   const targetPoseRef = React.useRef<SmoothPose | null>(null);
   const renderedPoseRef = React.useRef<SmoothPose | null>(null);
 
@@ -445,7 +476,11 @@ export function PointCloudCanvas({
     controls.enableDamping = true;
     // Left-button behaviour tracks the camera mode; the dedicated mode effect
     // keeps this in sync, but seed it here so a scene rebuild preserves it.
-    applyCameraMode(controls, cameraModeRef.current, goalModeRef.current);
+    applyCameraMode(
+      controls,
+      cameraModeRef.current,
+      pickModeRef.current !== null,
+    );
     controls.update();
 
     // Ground plane textured with the 2D occupancy grid for spatial context.
@@ -504,12 +539,15 @@ export function PointCloudCanvas({
     keyLight.position.set(-1, -1.5, 3);
     scene.add(keyLight);
 
-    // Goal markers: the committed one and the lighter one that follows the
-    // drag. Both start hidden; the goal effect below places them and re-runs
-    // after a scene rebuild, so a rebuild mid-goal does not lose the marker.
-    const goalMarker = createGoalMarker(theme.goal, 1);
-    const draftMarker = createGoalMarker(theme.goalDraft, 0.55);
+    // Pose markers: the committed goal, the staged initial pose, and the
+    // lighter one that follows the drag (recoloured per pick mode). All start
+    // hidden; the marker effect below places them and re-runs after a scene
+    // rebuild, so a rebuild mid-drag does not lose them.
+    const goalMarker = createPoseMarker(theme.goal, 1);
+    const initialPoseMarker = createPoseMarker(theme.initialPose, 1);
+    const draftMarker = createPoseMarker(theme.goalDraft, 0.55);
     scene.add(goalMarker);
+    scene.add(initialPoseMarker);
     scene.add(draftMarker);
 
     const robotGroup = new THREE.Group();
@@ -649,6 +687,7 @@ export function PointCloudCanvas({
       liveGeom,
       mapPoints: null,
       goalMarker,
+      initialPoseMarker,
       draftMarker,
       dispose,
     };
@@ -740,7 +779,7 @@ export function PointCloudCanvas({
     cameraModeRef.current = cameraMode;
     const ctx = sceneRef.current;
     if (!ctx) return;
-    applyCameraMode(ctx.controls, cameraMode, goalModeRef.current);
+    applyCameraMode(ctx.controls, cameraMode, pickModeRef.current !== null);
     // Entering focus: frame the robot from a fixed offset behind and above it.
     if (cameraMode === "focus" && renderedPoseRef.current) {
       const p = renderedPoseRef.current;
@@ -750,26 +789,36 @@ export function PointCloudCanvas({
     ctx.controls.update();
   }, [cameraMode, meta, mapImageUrl, resolvedTheme]);
 
-  // ---- Goal mode: hand the left button over ----------------------------
+  // ---- Pick mode: hand the left button over ----------------------------
   // Separate from the effect above (which also re-frames the camera when focus
-  // mode is entered — arming goal mode must not jolt the view). `cameraMode` is
-  // a dep so the button mapping is re-asserted after that effect rewrites it.
+  // mode is entered — arming a pick must not jolt the view). `cameraMode` is a
+  // dep so the button mapping is re-asserted after that effect rewrites it.
   React.useEffect(() => {
-    goalModeRef.current = goalMode;
+    pickModeRef.current = pickMode;
     const ctx = sceneRef.current;
     if (!ctx) return;
-    applyCameraMode(ctx.controls, cameraModeRef.current, goalMode);
-  }, [goalMode, cameraMode, meta, mapImageUrl, resolvedTheme]);
+    applyCameraMode(ctx.controls, cameraModeRef.current, pickMode !== null);
+  }, [pickMode, cameraMode, meta, mapImageUrl, resolvedTheme]);
 
-  // ---- Goal markers (no scene rebuild) ---------------------------------
+  // ---- Pose markers (no scene rebuild) ---------------------------------
   React.useEffect(() => {
     const ctx = sceneRef.current;
     if (!ctx) return;
-    placeGoalMarker(ctx.goalMarker, goal);
-    // The draft is only meaningful while goal mode is on: leaving the mode
-    // mid-drag must not strand a marker on the map.
-    placeGoalMarker(ctx.draftMarker, goalMode ? draft : null);
-  }, [goal, draft, goalMode, meta, mapImageUrl, resolvedTheme]);
+    const theme = THEMES[resolvedTheme === "dark" ? "dark" : "light"];
+
+    placePoseMarker(ctx.goalMarker, goal);
+    placePoseMarker(ctx.initialPoseMarker, initialPose);
+
+    // The draft belongs to whichever mode is armed, in that mode's hue — the
+    // arrow has to say which pose is being placed while it is being placed, not
+    // once it lands in a readback panel. Leaving the mode mid-drag must not
+    // strand a marker on the map, hence the null.
+    setMarkerColor(
+      ctx.draftMarker,
+      pickMode === "initial-pose" ? theme.initialPoseDraft : theme.goalDraft,
+    );
+    placePoseMarker(ctx.draftMarker, pickMode ? draft : null);
+  }, [goal, initialPose, draft, pickMode, meta, mapImageUrl, resolvedTheme]);
 
   // ---- Optional static map cloud (toggle) ------------------------------
   React.useEffect(() => {
@@ -818,7 +867,7 @@ export function PointCloudCanvas({
     return () => abort.abort();
   }, [showMapCloud, resolvedTheme]);
 
-  // ---- Goal picking -----------------------------------------------------
+  // ---- Pose picking -----------------------------------------------------
   // The anchor is the ground point the press landed on, kept alongside the raw
   // pointer position so the heading deadzone can be measured in screen pixels:
   // a metric deadzone would be enormous at the far end of a perspective view
@@ -854,10 +903,10 @@ export function PointCloudCanvas({
   };
 
   /**
-   * The planner can only plan inside the occupancy grid, so a press that lands
-   * on floor beyond the map must not become a goal — the 2D canvas rejects the
-   * letterbox margin for the same reason. With no 2D map loaded there is
-   * nothing to bound against, so any ground point is accepted.
+   * The planner can only plan inside the occupancy grid, and the localizer can
+   * only match against the map it loaded, so a press that lands on floor beyond
+   * the map must not become a pose. With no 2D map loaded there is nothing to
+   * bound against, so any ground point is accepted.
    */
   const insideMap = (wx: number, wy: number) => {
     if (!meta) return true;
@@ -871,7 +920,7 @@ export function PointCloudCanvas({
   };
 
   const handlePointerDown = (event: React.PointerEvent) => {
-    if (!goalMode || event.button !== 0) return;
+    if (!pickMode || event.button !== 0) return;
     const hit = pickGround(event);
     if (!hit || !insideMap(hit.wx, hit.wy)) return;
     anchorRef.current = { ...hit, cx: event.clientX, cy: event.clientY };
@@ -880,13 +929,13 @@ export function PointCloudCanvas({
     // would steal it and strand OrbitControls' pointerup handler.
     sceneRef.current?.renderer.domElement.setPointerCapture(event.pointerId);
     // Until the pointer moves, inherit the robot's current heading so a plain
-    // click still yields a sane goal instead of snapping to 0deg.
+    // click still yields a sane pose instead of snapping to 0deg.
     setDraft({ x: hit.wx, y: hit.wy, theta: pose?.theta ?? 0 });
   };
 
   const handlePointerMove = (event: React.PointerEvent) => {
     const anchor = anchorRef.current;
-    if (!anchor || !goalMode) return;
+    if (!anchor || !pickMode) return;
 
     // Keep whatever heading the draft already has inside the deadzone.
     let theta = draft?.theta ?? pose?.theta ?? 0;
@@ -896,9 +945,9 @@ export function PointCloudCanvas({
     );
     if (dragPx >= HEADING_DEADZONE_PX) {
       // World-space angle from the anchor to wherever the drag now points at
-      // the floor. Unlike the 2D canvas this cannot come from the screen delta:
-      // the camera may be looking at the map from any azimuth (or from below),
-      // so screen-right is not world +x.
+      // the floor. This cannot come from the screen delta: the camera may be
+      // looking at the map from any azimuth (or from below), so screen-right is
+      // not world +x.
       const hit = pickGround(event);
       if (hit) {
         const dx = hit.wx - anchor.wx;
@@ -916,7 +965,7 @@ export function PointCloudCanvas({
     if (canvas?.hasPointerCapture(event.pointerId)) {
       canvas.releasePointerCapture(event.pointerId);
     }
-    if (draft && goalMode) onGoalCommit?.(draft);
+    if (draft && pickMode) onPickCommit?.(draft);
     setDraft(null);
   };
 
@@ -925,7 +974,7 @@ export function PointCloudCanvas({
       ref={containerRef}
       className={cn(
         "relative h-full w-full overflow-hidden",
-        goalMode && "cursor-crosshair touch-none",
+        pickMode && "cursor-crosshair touch-none",
         className,
       )}
       onPointerDown={handlePointerDown}

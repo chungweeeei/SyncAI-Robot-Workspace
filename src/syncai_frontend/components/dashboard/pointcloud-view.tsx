@@ -4,12 +4,17 @@ import * as React from "react";
 
 import { Segmented, overlayPanel } from "@/components/console/instrument";
 import { GoalControl } from "@/components/dashboard/goal-control";
-import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
+import { InitialPoseControl } from "@/components/dashboard/initial-pose-control";
+import {
+  PointCloudCanvas,
+  type PickMode,
+} from "@/components/dashboard/pointcloud-canvas";
 import { useGoalTask } from "@/hooks/use-goal-task";
+import { useInitialPose } from "@/hooks/use-initial-pose";
 import { apiUrl } from "@/lib/api/config";
 import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
-import type { MapMetadata, RobotPose } from "@/lib/types/robot";
+import type { MapMetadata, PlanarPose, RobotPose } from "@/lib/types/robot";
 import type { StreamStatus } from "@/lib/types/pointcloud";
 
 interface MapImagePayload {
@@ -33,14 +38,17 @@ const CAMERA_OPTIONS = [
 ];
 
 /**
- * Data-wiring wrapper for the 3D point-cloud viewer: loads the map image/info
- * once for the ground plane, subscribes the telemetry WebSocket for pose and
- * joint angles, and hosts the map-cloud toggle. The live body_cloud stream
- * itself is owned by PointCloudCanvas.
+ * Data-wiring wrapper for the 3D point-cloud viewer — the console's only
+ * viewport since the 2D grid canvas was removed. Loads the map image/info once
+ * for the ground plane, subscribes the telemetry WebSocket for pose and joint
+ * angles, and hosts the map-cloud toggle. The live body_cloud stream itself is
+ * owned by PointCloudCanvas.
  *
- * Goal dispatch shares `useGoalTask` and `GoalControl` with the 2D view, so a
- * goal placed here goes out as the same one-step MOVE task; only the picking
- * (a ground-plane raycast rather than grid pixels) is specific to 3D.
+ * It also owns the pick mode. A drag on the ground can mean two things — a nav
+ * goal or an initial-pose estimate — and the gesture is the same for both, so
+ * exactly one may be armed at a time. Keeping that in one piece of state here
+ * (rather than a boolean inside each flow's hook) is what makes arming one
+ * disarm the other by construction; two booleans would eventually both be true.
  */
 export function PointCloudView({
   robotId,
@@ -60,8 +68,32 @@ export function PointCloudView({
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
   const [showMapCloud, setShowMapCloud] = React.useState(false);
   const [cameraMode, setCameraMode] = React.useState<"move" | "focus">("move");
+  const [pickMode, setPickMode] = React.useState<PickMode | null>(null);
 
   const task = useGoalTask(robotId);
+  const estimate = useInitialPose();
+
+  const armPick = React.useCallback(
+    (mode: PickMode) => setPickMode((cur) => (cur === mode ? null : mode)),
+    [],
+  );
+
+  // Destructured because they are the stable parts of the hooks' return objects
+  // (the objects themselves are fresh every render, so depending on those would
+  // rebuild the callback on every telemetry frame).
+  const { commitPose } = estimate;
+  const { commitGoal } = task;
+
+  // Single-shot, like RViz's nav-goal / pose-estimate tools: one drag, one pose,
+  // then the mode disarms so a stray click on the map cannot restage it.
+  const commitPick = React.useCallback(
+    (picked: PlanarPose) => {
+      if (pickMode === "initial-pose") commitPose(picked);
+      else commitGoal(picked);
+      setPickMode(null);
+    },
+    [pickMode, commitPose, commitGoal],
+  );
 
   // Map image + metadata (once).
   React.useEffect(() => {
@@ -112,8 +144,9 @@ export function PointCloudView({
         showMapCloud={showMapCloud}
         cameraMode={cameraMode}
         goal={task.goal}
-        goalMode={task.goalMode}
-        onGoalCommit={task.commitGoal}
+        initialPose={estimate.pose}
+        pickMode={pickMode}
+        onPickCommit={commitPick}
         onStatus={setStatus}
       />
 
@@ -141,7 +174,20 @@ export function PointCloudView({
         </span>
       </div>
 
-      <GoalControl task={task} className="absolute top-3 left-3" />
+      {/* Both pose tools in one column, goal first: it is the one used on every
+        * run, while an initial pose is a recovery action. */}
+      <div className="absolute top-3 left-3 flex w-56 flex-col gap-2">
+        <GoalControl
+          task={task}
+          armed={pickMode === "goal"}
+          onArm={() => armPick("goal")}
+        />
+        <InitialPoseControl
+          estimate={estimate}
+          armed={pickMode === "initial-pose"}
+          onArm={() => armPick("initial-pose")}
+        />
+      </div>
 
       {/* Viewport controls sit along the bottom edge, out of the way of the
         * goal readback and of the robot, which the camera keeps centred. */}

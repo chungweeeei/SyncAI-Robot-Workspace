@@ -18,7 +18,7 @@
     # operators watching joint temperatures or chasing a localization dropout.
     # Raising it does not make the message more orderable — RobotState.timestamp
     # has whole-second resolution.
-    publish_rate: 10.0
+    publish_rate: 1.0
     # Low-battery hysteresis, in percent (0-100), driving state = WARNING.
     #
     # 20% is the number already used elsewhere for the same condition: the

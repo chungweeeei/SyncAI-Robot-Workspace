@@ -2,31 +2,14 @@
 
 import { CrosshairIcon, SendIcon, XIcon } from "lucide-react";
 
-import {
-  Chip,
-  Readout,
-  overlayPanel,
-  type Tone,
-} from "@/components/console/instrument";
+import { Readout, overlayPanel } from "@/components/console/instrument";
+import { TaskStatusChip } from "@/components/dashboard/task-chip";
 import { cn } from "@/lib/utils";
 import type { GoalTask } from "@/hooks/use-goal-task";
-import type { TaskStatus } from "@/lib/api/task";
-
-// A goal in flight is active guidance, which is what magenta means everywhere
-// else in the console; a finished one is just a measured outcome.
-const STATUS_TONE: Record<TaskStatus, Tone> = {
-  PENDING: "cmd",
-  IN_PROGRESS: "active",
-  COMPLETED: "live",
-  FAILED: "warn",
-  CANCELED: "neutral",
-};
 
 /**
  * Operator controls for the drag-a-goal flow: arm goal mode, read back the
- * staged pose, submit / cancel / clear. Shared by the 2D map and the 3D
- * point-cloud view so a nav goal is dispatched the same way (and reads the
- * same) in both, with only the positioning left to the caller.
+ * staged pose, submit / cancel / clear.
  *
  * It floats on the viewport rather than living in the instrument rail because
  * the gesture that produces a goal happens on the map: moving the readback away
@@ -34,33 +17,40 @@ const STATUS_TONE: Record<TaskStatus, Tone> = {
  * sides of the screen. The staged pose is set in the commanded hue — the same
  * cyan the arrow is drawn in on the canvas.
  *
- * All state lives in `useGoalTask`; this component is presentation only.
+ * Task state lives in `useGoalTask` and the armed flag in the view (one pick
+ * mode is shared with the initial-pose control); this component is presentation
+ * only.
  */
 export function GoalControl({
   task,
+  armed,
+  onArm,
   className,
 }: {
   task: GoalTask;
+  /** True while a drag on the viewport will produce a goal. */
+  armed: boolean;
+  onArm: () => void;
   className?: string;
 }) {
   const { goal, taskStatus, error, running, busy } = task;
 
   return (
-    <div className={cn("flex w-56 flex-col items-start gap-2", className)}>
+    <div className={cn("flex flex-col items-start gap-2", className)}>
       <button
         type="button"
         disabled={running}
-        onClick={task.toggleGoalMode}
+        onClick={onArm}
         className={cn(
           overlayPanel,
           "instrument-label flex h-7 items-center gap-1.5 px-2 transition-colors disabled:opacity-50",
-          task.goalMode
+          armed
             ? "border-signal-cmd/50 bg-signal-cmd/12 text-signal-cmd"
             : "hover:bg-elevated",
         )}
       >
         <CrosshairIcon className="size-3.5" />
-        {task.goalMode ? "Drag on the map" : "Set goal"}
+        {armed ? "Drag on the map" : "Set goal"}
       </button>
 
       {(goal || taskStatus || error) && (
@@ -83,9 +73,7 @@ export function GoalControl({
               <span className="instrument-label text-muted-foreground">
                 Task
               </span>
-              <Chip tone={STATUS_TONE[taskStatus]}>
-                {taskStatus.replace("_", " ")}
-              </Chip>
+              <TaskStatusChip status={taskStatus} />
             </div>
           )}
 

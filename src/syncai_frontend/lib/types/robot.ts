@@ -12,6 +12,17 @@ export interface RobotPose {
   theta: number;
 }
 
+/**
+ * A pose on the map floor: what a drag on the viewport produces and what the
+ * backend takes for both a nav goal and an initial-pose estimate. Theta is in
+ * degrees, CCW from +x — the whole REST vocabulary is degrees.
+ */
+export interface PlanarPose {
+  x: number;
+  y: number;
+  theta: number;
+}
+
 export interface RobotLocalizationStatus {
   position: RobotPose;
   /** linear velocity in m/s */
@@ -31,6 +42,20 @@ export interface RobotBatteryStatus {
   battery_percentage: number;
 }
 
+/**
+ * One joint's health. A subset of the ROS MotorState — q/dq/ddq/tau_est are not
+ * exposed over REST, because robot_state is a 10 Hz snapshot whose samples
+ * cannot be ordered. Live joint kinematics come from the telemetry WebSocket.
+ */
+export interface RobotMotorStatus {
+  /** URDF joint name, matching the keys in lib/robot/g23-joints.ts */
+  name: string;
+  /** degrees Celsius */
+  temperature: number;
+  /** motor error code; 0 when healthy */
+  error: number;
+}
+
 export interface RobotState {
   timestamp: number;
   robot_id: string;
@@ -39,6 +64,8 @@ export interface RobotState {
   localization_status: RobotLocalizationStatus;
   network_status: RobotNetworkStatus;
   battery_status: RobotBatteryStatus;
+  /** empty while syncai_driver_manager is not publishing motor_states */
+  motor_status: RobotMotorStatus[];
 }
 
 // Mirrors the ROS map_server YAML (map/warehouse.yaml)
