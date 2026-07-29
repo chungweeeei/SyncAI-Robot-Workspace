@@ -6,10 +6,12 @@ import requests
 import structlog
 
 
-# The workspace is mounted at /home/syncrobotic/robot_ws inside the container and
-# the node runs with that as its working directory, so a relative path works
-# both in the container and when running from the workspace root.
-DEFAULT_SYSTEM_INI = "config/system.ini"
+# Absolute path so the INI resolves no matter what cwd the process is started
+# from — the old relative path only worked because every entrypoint happened to
+# run from the workspace root. ~/robot_ws is the workspace inside the robot
+# container, where docker-compose bind-mounts the per-robot instance INI over
+# config/system.ini.
+DEFAULT_SYSTEM_INI = os.path.expanduser("~/robot_ws/config/system.ini")
 
 REQUEST_TIMEOUT_S = 5.0
 

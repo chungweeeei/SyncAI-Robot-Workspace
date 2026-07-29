@@ -25,7 +25,9 @@
 # laserNAlpha matches each sensor's rotation_z; mount height 0.175*0.7 = 0.1225.
 /**/ros2_laser_scan_merger:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
 
     # laser1 = FRONT lidar (front-left mount, sensor rot 0deg)
     scanTopic1: scan_front          # -> /<robot_id>/scan_front
@@ -66,7 +68,9 @@
 
 /**/pointcloud_to_laserscan:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
 
     # Subscribes cloud_in (-> /<robot_id>/cloud_in), publishes scan
     # (-> /<robot_id>/scan). cloud frame == target_frame == <robot_id>/scan, so

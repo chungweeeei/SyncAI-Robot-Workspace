@@ -6,7 +6,9 @@
 # "map" (the shared global frame).
 /**/map_server:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
     # Absolute path to the map YAML file to load on startup.
     # Leave empty ("") to start without a map and load it later via the
     # "/map_server/load_map" service.

@@ -8,7 +8,9 @@
 # the node is run without the launch file. The global frame stays "map".
 /**/amcl:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
     # --- Frames (overridden by the launch file with <robot_id>/ prefix) ---
     base_frame_id: "base_link"
     odom_frame_id: "odom"

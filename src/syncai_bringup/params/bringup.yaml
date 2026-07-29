@@ -11,7 +11,9 @@
 #   * frame_prefix       - needs the resolved robot_id
 #   * frame_id           - same; TF frame names are NOT namespaced by ROS, so
 #                          the fallback below is overridden with <robot_id>/laser
-#   * user_config_path   - resolved from the livox_ros_driver2 share directory
+#   * user_config_path   - the livox network JSON, generated per robot_id at
+#                          launch time from host_ip below + the [sensor.lidar]
+#                          ip in the system INI
 /**/robot_state_publisher:
   ros__parameters:
     # Real robot: there is no /clock. Set ONLY here — a launch-level override
@@ -33,6 +35,19 @@
     data_src: 0
     publish_freq: 10.0
     output_data_type: 0
+
+    # This machine's IP on the lidar's subnet. NOT a livox_ros_driver2 ROS
+    # parameter — the driver never reads it (it declares a fixed parameter set,
+    # so this override is simply ignored by the node). It is here because the
+    # launch file reads it back out of this file to render the livox user config
+    # JSON, whose host_net_info.*_ip fields are the addresses the driver binds
+    # its receive sockets to. Wrong value = sockets bound to the wrong interface
+    # = zero point clouds, with no error from the driver.
+    #
+    # Check with `ip -4 addr` on the machine the driver runs on (host networking,
+    # so that is the Jetson itself). The lidar's own IP is NOT here: it is
+    # per-robot identity, read from [sensor.lidar] ip in config/system.ini.
+    host_ip: "192.168.1.103"
 
     # Fallback only. TF frame names are not namespaced by ROS, so the launch
     # file overrides this with "<robot_id>/laser". This is the raw sensor frame

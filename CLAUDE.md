@@ -59,7 +59,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 | Package | Role |
 |---|---|
 | `syncai_lio_bridge` | **The only odometry source.** Wheel odom is retired. Converts the FAST-LIO2 chain (`map → lio_odom → lio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro because LIO leaves `twist.angular` empty. |
-| `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` (carries the `lidar_top` mount extrinsic the LIO bridge needs) + the Livox MID360 driver. The old 2D/AMCL `bringup_2d.launch.py` (laser scan merger) was removed. |
+| `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` (carries the `lidar_top` mount extrinsic the LIO bridge needs) + the Livox MID360 driver. The driver's network JSON is **generated** per `robot_id` into `/tmp/syncai_bringup/` from `[sensor.lidar] ip` (INI) + `host_ip` (params YAML) — the vendor `MID360_config.json` in the submodule's share dir is not read. The old 2D/AMCL `bringup_2d.launch.py` (laser scan merger) was removed. |
 
 ### Hardware & system
 
@@ -94,7 +94,9 @@ resolved value is used as the **node namespace**.
 `config/system.ini` is tracked but **empty**. Per-robot identity comes from
 `config/instances/robotNN.ini`, which docker-compose bind-mounts over
 `config/system.ini` inside the container. That file also carries
-`[artifacts]` endpoints, `[initial_pose]`, and `[map]` pcd/gridmap paths.
+`[artifacts]` endpoints, `[initial_pose]`, `[map]` pcd/gridmap paths, and
+`[sensor.lidar] ip` (the MID360's address — `syncai_bringup` renders the livox
+driver's config JSON from it).
 
 Launch files use the relative path `config/system.ini`, which works because
 **processes are expected to run with the workspace root as their cwd** — the

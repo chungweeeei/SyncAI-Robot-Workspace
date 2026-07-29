@@ -6,7 +6,9 @@
 # get the namespace prefix (costmap_filter_info -> /<robot_id>/costmap_filter_info).
 /**/costmap_filter_info_server:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
 
     # Topic on which the CostmapFilterInfo is published (latched).
     filter_info_topic: "costmap_filter_info"
@@ -26,7 +28,9 @@
 
 /**/filter_mask_server:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
 
     # Absolute path (inside the robot container) to the keepout mask YAML.
     # Same geometry as the navigation map; black cells = keepout zones.

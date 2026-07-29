@@ -18,7 +18,10 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
-add_executable(lio_bridge_node src/lio_bridge_node.cpp)
+add_executable(lio_bridge_node src/main.cpp src/lio_bridge_node.cpp)
+target_include_directories(lio_bridge_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(lio_bridge_node
   rclcpp
   geometry_msgs
@@ -34,6 +37,10 @@ install(TARGETS lio_bridge_node
 
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
+)
+
+install(DIRECTORY include/
+  DESTINATION include
 )
 
 if(BUILD_TESTING)

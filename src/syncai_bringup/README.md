@@ -14,14 +14,13 @@ share/syncai_bringup/
   params/       bringup.yaml
   description/  G23.urdf
   meshes/       body / hip / thigh / shank STLs (visual only)
-  maps/         (empty placeholder)
-  rviz/         (empty placeholder)
 ```
 
-`maps/` and `rviz/` hold nothing but `.gitkeep` — maps live in the repo-root
-`map/` directory referenced from `config/instances/robotNN.ini`, and there is no
-checked-in RViz config. Both are installed anyway, so dropping a file in works
-without touching `CMakeLists.txt`.
+There is deliberately no `maps/` or `rviz/` here. Both existed as empty
+`.gitkeep` placeholders inherited from the `nav2_bringup` skeleton and were
+removed: maps live in the repo-root `map/` directory referenced from
+`config/instances/robotNN.ini` (a path resolved against the workspace cwd, not a
+package share), and no RViz config is checked in.
 
 ## robot_id
 
@@ -83,7 +82,36 @@ must be running before the bridge.
 | `data_src` | `0` | YAML | live lidar |
 | `publish_freq` | `10.0` Hz | YAML | |
 | `frame_id` | `<robot_id>/laser` | launch | prefixed explicitly, since frames aren't namespaced; the YAML carries the unprefixed fallback |
-| `user_config_path` | `<share>/livox_ros_driver2/config/MID360_config.json` | launch | resolved from the share dir — **the IP / broadcast-code config lives there**, not here |
+| `user_config_path` | `/tmp/syncai_bringup/<robot_id>_MID360_config.json` | launch | **generated** — see below |
+
+### The MID360 network config
+
+The driver takes its network wiring from a JSON file rather than ROS params, and
+that file needs two addresses. Both are per-deployment, so the launch file
+renders the JSON itself (`write_livox_config`) instead of pointing at the vendor
+`MID360_config.json` in the `livox_ros_driver2` share directory:
+
+| Address | Read from | What it is |
+|---|---|---|
+| lidar IP → `lidar_configs[0].ip` | `[sensor.lidar] ip` in `config/system.ini` | the MID360's own address — per-robot hardware identity, so it sits next to `robot_id` in the instance INI |
+| host IP → `host_net_info.*_ip` | `host_ip` under `/**/livox_lidar_publisher` in `params/bringup.yaml` | this machine's address on the lidar subnet; the driver **binds its receive sockets** to it |
+
+Everything else in the rendered file (UDP ports, `lidar_type: 8`,
+`pcl_data_type: 1`, `pattern_mode: 0`) is fixed by the MID360 protocol and lives
+as constants in the launch file. `extrinsic_parameter` stays all-zero on
+purpose — the mount extrinsic is the URDF's `lidar_top_joint`, and setting it
+here too would apply the rotation twice.
+
+Why not just edit the vendor JSON? `livox_ros_driver2` is an unmodified
+submodule: an in-place edit is a local change that no submodule update survives,
+and it hardcodes one lidar IP for a repo that runs several robots. The rendered
+file is keyed by `robot_id` so two robots on one host cannot clobber each other,
+and it goes under `/tmp` because it is derived state with no value once the
+process exits.
+
+Both reads **raise** rather than fall back — unlike `robot_id`, a wrong or
+missing IP produces no error from the driver, just silence on the point cloud
+topic, which is much more expensive to debug than a failed launch.
 
 Note the frame naming: the driver publishes in `<robot_id>/laser`, while the
 mount extrinsic in the URDF is `<robot_id>/lidar_top`. The LIO chain broadcasts
@@ -95,7 +123,7 @@ them), and the bridge reconciles that branch onto the robot tree through
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `system_config` | `config/system.ini` | INI providing `[system] robot_id` |
+| `system_config` | `config/system.ini` | INI providing `[system] robot_id` and `[sensor.lidar] ip` |
 | `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for both nodes |
 | `urdf_file` | `G23.urdf` | File name under `description/` |
 
@@ -119,7 +147,12 @@ take precedence:
 | `robot_description` | the URDF text, read off disk |
 | `frame_prefix` | needs the resolved `robot_id` |
 | `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/laser` |
-| `user_config_path` | resolved from the `livox_ros_driver2` share directory |
+| `user_config_path` | points at the MID360 JSON the launch file generates per `robot_id` |
+
+One value in the file is **not** a driver parameter at all: `host_ip`. The livox
+node declares a fixed parameter set and never reads it (the override is simply
+ignored), but the launch file reads it back out of this file to render the MID360
+JSON. It lives here because that is where every other livox setting already is.
 
 `use_sim_time` is set **only** in the YAML (`false` — there is no `/clock` on
 the robot), per the workspace rule: a launch-level override placed after the
@@ -177,9 +210,13 @@ are symlinked, and edits take effect on the next launch with no rebuild at all.
   `frame_prefix` exists: without it, two robots on a shared DDS domain would
   both broadcast a frame called `base_link`. The namespace still matters for
   the node's *relative* names (here, `/<robot_id>/robot_description`).
-- **The MID360's IP and broadcast code are not here** — they live in
-  `MID360_config.json` inside the `livox_ros_driver2` share directory. A lidar
-  that never publishes is usually that file, not this launch file.
+- **A lidar that never publishes is almost always the two IPs.** Check the
+  rendered config, which the launch logs on startup:
+  `cat /tmp/syncai_bringup/<robot_id>_MID360_config.json`. The lidar IP comes
+  from the instance INI, the host IP from `params/bringup.yaml`; a host IP that
+  is not on an interface of this machine binds the sockets nowhere and the driver
+  reports nothing. Editing the vendor `MID360_config.json` in the
+  `livox_ros_driver2` share directory has **no effect** — it is not read.
 - **`xfer_format: 1` is required** by the FAST-LIO2 chain, which consumes Livox
   `CustomMsg`. Switching to `0` (`PointCloud2`) for a tool that wants standard
   messages will silently break LIO.

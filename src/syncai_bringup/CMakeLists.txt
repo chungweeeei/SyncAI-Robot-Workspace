@@ -10,8 +10,13 @@ find_package(ament_cmake REQUIRED)
 
 # install shared resources
 #
-# maps/ and rviz/ hold nothing but .gitkeep — they are installed anyway so that
-# dropping a map or an rviz config in works without touching this file.
+# maps/ and rviz/ used to be installed here as empty .gitkeep placeholders, a
+# leftover of the nav2_bringup skeleton this package started from. They were
+# removed: maps live in the repo-root map/ directory referenced from
+# config/instances/robotNN.ini (resolved against the workspace cwd, never a
+# package share dir), and no RViz config is checked in. Don't re-add them
+# speculatively — a map that belongs to a robot instance does not belong in a
+# package share.
 #
 # __pycache__ is excluded because install(DIRECTORY) copies launch/ wholesale:
 # running a launch file leaves a .pyc behind in the source tree (gitignored, so
@@ -21,8 +26,6 @@ find_package(ament_cmake REQUIRED)
 install(DIRECTORY
   launch
   params
-  maps
-  rviz
   description
   meshes
   DESTINATION share/${PROJECT_NAME}

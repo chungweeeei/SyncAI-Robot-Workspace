@@ -13,15 +13,18 @@
   <exec_depend>launch_ros</exec_depend>
 
   <!-- bringup.launch.py: robot_state_publisher over description/G23.urdf, plus
-       the MID360 driver. livox_ros_driver2 is depended on twice over - the
-       launch file starts livox_ros_driver2_node AND reads MID360_config.json
-       out of its share directory, so a missing dep here means colcon may order
-       the build wrong and get_package_share_directory() raises at launch time.
+       the MID360 driver. The launch file no longer touches the
+       livox_ros_driver2 share directory (it generates its own MID360 config
+       JSON), so this is now a plain runtime dep on the node executable.
+
+       python3-yaml is used by the launch file itself, to read host_ip back out
+       of params/bringup.yaml when rendering that JSON.
 
        ros2_laser_scan_merger / tf2_ros used to be listed here for the removed
        bringup_2d.launch.py (scan merger + base_link -> scan static TF). -->
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
