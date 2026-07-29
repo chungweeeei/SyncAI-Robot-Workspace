@@ -9,6 +9,15 @@ from syncai_backend.repositories.robot.robot import RobotRepo
 
 
 class RobotStateSubscriber:
+    """Feeds RobotRepo, and therefore GET /api/v1/robot/state, from the
+    ``robot_state`` topic.
+
+    ``RobotState`` carries more than that REST payload exposes — per-joint
+    temperatures and motor error codes are in ``motor_status`` for operators.
+    The router names its response fields explicitly and must keep doing so; this
+    subscriber hands the whole message through unfiltered.
+    """
+
     def __init__(self, logger: structlog.stdlib.BoundLogger, robot_repo: RobotRepo):
         self._logger = logger
         self._robot_repo = robot_repo
@@ -28,6 +37,14 @@ class RobotStateSubscriber:
         )
 
     def _robot_state_cb(self, msg: RobotStateMsg):
+        # syncai_robot_state publishes on every tick now, including the window
+        # before the localizer has been relocalized, where localization_status
+        # is zeroed rather than a real pose. Dropping those keeps
+        # GET /api/v1/robot/state answering 404 ("no state yet") instead of
+        # 200 with the robot apparently parked on the map origin — the frontend
+        # gates its whole dashboard on that 404.
+        if not msg.localization_valid:
+            return
         self._robot_repo.update_robot_state(state=msg)
 
 

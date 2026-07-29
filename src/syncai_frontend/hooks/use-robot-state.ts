@@ -3,8 +3,10 @@ import * as React from "react";
 import { apiUrl } from "@/lib/api/config";
 import type { RobotState } from "@/lib/types/robot";
 
-// syncai_robot_state publishes at 1 Hz, so polling faster than that only
-// re-fetches the same snapshot.
+// The upstream detailed topic runs at 10 Hz, but RobotState.timestamp has only
+// whole-second resolution and this endpoint is a frozen third-party contract, so
+// 1 Hz is the useful poll rate: faster only re-fetches an indistinguishable
+// snapshot. The 3D viewer uses the telemetry WebSocket for real motion.
 const DEFAULT_POLL_MS = 1000;
 
 export type RobotStateStatus = "loading" | "ok" | "error";

@@ -126,7 +126,7 @@ services:
       TEMPORAL_ADDRESS: 127.0.0.1:7233
       POSTGRES_HOST: 127.0.0.1
       # lo-only unicast DDS; nav/backend/tools all share the host's lo.
-      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds_standalone.xml
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
     volumes:
       # Size-capped tmpfs backing ROS_LOG_DIR (see x-ros-log-tmpfs).
       - *ros-log-tmpfs

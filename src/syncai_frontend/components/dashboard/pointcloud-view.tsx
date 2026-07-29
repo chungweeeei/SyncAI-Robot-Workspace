@@ -91,10 +91,9 @@ export function PointCloudView({
 
   // Robot pose + joints via the telemetry WebSocket (~20 Hz map-frame pose
   // from odom, joints at the gait controller's telemetry rate). This replaced
-  // polling GET /api/v1/robot/state every 500 ms: that endpoint's upstream
-  // topic is a 1 Hz aggregate, so no amount of client-side polling or easing
-  // could make the motion continuous — and it is a frozen third-party
-  // contract, so raising its rate was not an option.
+  // polling GET /api/v1/robot/state every 500 ms: that endpoint's timestamp has
+  // whole-second resolution and it is a polled, frozen third-party contract, so
+  // no amount of client-side polling or easing could make the motion continuous.
   React.useEffect(() => {
     const stream = createTelemetryStream({
       onPose: setPose,

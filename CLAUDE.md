@@ -66,7 +66,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 | Package | Role |
 |---|---|
 | `syncai_driver_manager` | **UDP bridge to the gait controller.** Sends `cmd_vel` (with per-direction velocity-scale correction — the gait controller tracks commands asymmetrically), receives ASCII telemetry, and owns the safe-shutdown path (engages a safety lock and commands MODE X / lie down). |
-| `syncai_robot_state` | Aggregates odom / battery / wifi / TF into `syncai_common/RobotState` at 1 Hz |
+| `syncai_robot_state` | Aggregates odom / battery / wifi / motor_states / TF into `syncai_common/RobotState` at 10 Hz. Also derives the `state` field: `UNINITIALIZED` (no pose) / `WARNING` (battery <20%, latched with hysteresis) / `IDLE`. Reports only — no threshold here commands the robot. |
 | `syncai_system_manager` | Python: wifi, mDNS, map, and system managers behind ROS services |
 
 ### Application layer
@@ -107,7 +107,9 @@ Three rules follow from namespacing:
   (`map`, `scan`, `pointlio/body_cloud`), so they inherit the namespace
   automatically. Never hardcode `/<robot_id>/…` in a subscriber — a backend
   subscriber that used an absolute topic name is a bug that has already been
-  fixed once.
+  fixed once. There are **no** exceptions: an absolute, fleet-wide `/robot_state`
+  was tried and reverted, because a single DDS domain hosts several robots and
+  every per-robot consumer (the backend included) is scoped to exactly one.
 - **TF frame names are NOT namespaced by ROS.** Launch files therefore override
   frame parameters explicitly (`robot_base_frame: <robot_id>/base_link`,
   `sensor_frame: <robot_id>/laser`). The values in the YAML are only fallbacks

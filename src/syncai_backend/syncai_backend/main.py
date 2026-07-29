@@ -62,8 +62,8 @@ class SyncAIBackend(Node):
         pointcloud_repo = init_pointcloud_repo(logger=logger)
         map_cloud_repo = init_pointcloud_repo(logger=logger)
         # Single-slot pose/joints cache feeding the internal telemetry WS
-        # (the high-rate channel the 3D viewer uses instead of the frozen
-        # 1 Hz GET /api/v1/robot/state contract).
+        # (the high-rate channel the 3D viewer uses instead of the frozen,
+        # whole-second-resolution GET /api/v1/robot/state contract).
         telemetry_repo = init_telemetry_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)

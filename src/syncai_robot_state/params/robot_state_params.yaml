@@ -14,5 +14,22 @@
     base_frame: "base_link"
     # TF lookup tolerance in seconds.
     transform_tolerance: 0.1
-    # Odometry topic the forward velocity is read from.
-    odom_topic: "odom"
+    # Publish rate for robot_state, in Hz. 10 Hz because the readers are
+    # operators watching joint temperatures or chasing a localization dropout.
+    # Raising it does not make the message more orderable — RobotState.timestamp
+    # has whole-second resolution.
+    publish_rate: 10.0
+    # Low-battery hysteresis, in percent (0-100), driving state = WARNING.
+    #
+    # 20% is the number already used elsewhere for the same condition: the
+    # unwired "soc < 20%" safety TODO in syncai_driver_manager, the reference
+    # GaitMPC bridge that acts on it, and the frontend status strip's battery
+    # colour. This node is where the judgement now lives — but it only reports,
+    # it does not lie the robot down.
+    #
+    # The two values must differ: entering at 20% and only clearing above 25%
+    # stops a pack sitting on the threshold from flipping the state ten times a
+    # second at the 10 Hz publish rate. A clear value <= the warn value is
+    # rejected at startup and both fall back to 20/25.
+    low_battery_warn_percentage: 20.0
+    low_battery_clear_percentage: 25.0

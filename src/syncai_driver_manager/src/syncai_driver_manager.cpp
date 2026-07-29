@@ -305,6 +305,11 @@ void DriverManagerNode::parseLine(const std::string & line)
     battery_state.present = true;
     battery_state_pub_->publish(battery_state);
     // TODO: trigger safety shutdown when soc < 20%.
+    // Detecting the condition is no longer the missing piece — syncai_robot_state
+    // watches this topic and reports RobotStatus::WARNING below 20% (latched,
+    // clearing above 25%). What is still missing is the actuation: that node only
+    // reports, and this one exposes no service for it to call, so nothing lies
+    // the robot down. See "The safety lock — currently inert" in the README.
 
     RCLCPP_DEBUG(
       this->get_logger(), "[DriverManagerNode][%s] BMS soc=%.1f%% V=%.2f I=%.2f T=%.1f", __func__,

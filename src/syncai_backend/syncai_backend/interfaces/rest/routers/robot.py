@@ -92,6 +92,16 @@ def init_robot_router(
 
     @robot_router.get("/api/v1/robot/state", response_model=RobotState)
     async def get_robot_state():
+        # This response body is a frozen third-party contract, so the fields are
+        # named one by one below rather than serialised wholesale. That is the
+        # ONLY thing keeping the operator-facing parts of RobotState —
+        # motor_status (per-joint temperatures, torques, error codes),
+        # motor_timestamp, localization_valid — out of a public payload. Adding a
+        # field to the message must not add one here.
+        #
+        # A None here means no sample with localization_valid has arrived yet;
+        # the subscriber drops the invalid ones so this endpoint keeps 404-ing
+        # rather than reporting a zeroed pose as real.
         state: RobotStateMsg = robot_repo.get_robot_state()
         if state is None:
             raise NotFoundError("Robot state is not available yet.")

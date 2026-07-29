@@ -9,8 +9,8 @@ these crossed a boundary.
 
 ```
 syncai_driver_manager ──IMUState / MotorStates──►  (telemetry consumers)
-        ▲  SetMotionKey / SetPolicyMode / SetSpeedScale
-        │
+        ▲  SetMotionKey / SetPolicyMode / SetSpeedScale       │ MotorStates
+        │                                                     ▼
 syncai_backend ─────────┼──────────► syncai_robot_state ──RobotState──► syncai_backend
         │  ScanWifiNetworks / ConnectWifiNetwork              ▲
         ▼                                                     │ WifiStatus
@@ -21,14 +21,14 @@ syncai_system_manager ───────────────────�
 
 ### Robot state aggregate
 
-`RobotState` is published at 1 Hz by `syncai_robot_state` on the relative topic
+`RobotState` is published at 10 Hz by `syncai_robot_state` on the relative topic
 `robot_state` (BEST_EFFORT, KeepLast(1)) and consumed by `syncai_backend`, which
-re-serialises it for `GET /api/v1/robot/state`. It nests four of the other
-messages:
+re-serialises **a subset** of it for `GET /api/v1/robot/state`. It nests five of
+the other messages:
 
 ```
 RobotState
-├─ uint64 timestamp
+├─ uint64 timestamp                 SECONDS (whole seconds — see the gotcha)
 ├─ string robot_id, map
 ├─ uint8  mode                    ← constants from RobotMode
 ├─ uint8  state                   ← constants from RobotStatus
@@ -37,9 +37,21 @@ RobotState
 │    └─ float64 velocity          (forward linear speed from odom)
 ├─ RobotNetworkStatus network_status
 │    └─ string wifi_info          ← a JSON object, see below
-└─ RobotBatteryStatus battery_status
-     └─ float64 battery_percentage
+├─ RobotBatteryStatus battery_status
+│    └─ float64 battery_percentage
+├─ bool          localization_valid   false ⇒ localization_status is ZEROED
+├─ MotorState[]  motor_status         per-joint temperature / tau_est / error
+└─ uint64        motor_timestamp      NANOSECONDS (from MotorStates, unconverted)
 ```
+
+The last three are **operator-facing and must not reach the REST payload**. That
+payload is a frozen third-party contract and the router names its fields one by
+one; nothing else stops joint temperatures and motor error codes from leaking into
+a public response. Adding a field here must not add one there.
+
+An outward-facing variant on an absolute, fleet-wide `/robot_state` was built and
+then reverted: a single DDS domain hosts several robots, so a shared root topic
+interleaves them, and every per-robot consumer here is scoped to exactly one.
 
 | Message | Fields | Notes |
 |---|---|---|
@@ -48,11 +60,29 @@ RobotState
 | `RobotNetworkStatus` | `wifi_info` | Deliberately a JSON string, not a typed field — see below |
 | `RobotBatteryStatus` | `battery_percentage` | 0–100, already scaled from `sensor_msgs/BatteryState.percentage` |
 | `RobotMode` | `MAINTENANCE=0`, `MANUAL=1`, `AUTO=2` | **Constants only** — no data fields. Never published on its own; it exists so `RobotState.mode` has named values. |
-| `RobotStatus` | `IDLE=0`, `RUNNING=1`, `WARNING=2`, `ERROR=3`, `CHARGING=4` | Same pattern, for `RobotState.state`. |
+| `RobotStatus` | `UNINITIALIZED=0`, `IDLE=1`, `RUNNING=2`, `WARNING=3`, `ERROR=4`, `CHARGING=5` | Same pattern, for `state`. `UNINITIALIZED` holds `0` on purpose, so a default-constructed message does not claim to be `IDLE`. |
 
-Two fields are placeholders today: `syncai_robot_state` hardcodes `mode = AUTO`
-and `state = IDLE` (both marked `{TODO}` in the source). The REST layer surfaces
-`mode` and ignores `state` entirely.
+`mode` is still a placeholder: `syncai_robot_state` hardcodes `AUTO` (`{TODO}` in
+the source), and the REST layer surfaces it.
+
+`state` carries three of the six values, evaluated most-severe-first by
+`syncai_robot_state`:
+
+- `UNINITIALIZED` — the `map → base_link` TF did not resolve, so
+  `localization_status` is zeroed. It outranks `WARNING` because "we do not know
+  where the robot is" is the more fundamental fact: a low battery is worth
+  reporting, but not at the cost of hiding that the pose in the same message is a
+  placeholder. `localization_valid` is the precise answer for consumers that only
+  care about pose trust; `state` is the coarse rollup, and the two are derived
+  from one lookup so they cannot disagree.
+- `WARNING` — battery below 20%, latched with hysteresis (clears above 25%).
+- `IDLE` — otherwise.
+
+`RUNNING` and `ERROR` are never emitted yet. **`CHARGING` cannot be derived at
+all**: `syncai_driver_manager` hardcodes `BatteryState.power_supply_status` to
+`UNKNOWN`, and the only other candidate is the sign of `current`, whose convention
+is undocumented. The REST layer does not expose `state`, so none of this reaches
+the UI.
 
 **Why `wifi_info` is a JSON string.** `syncai_robot_state` flattens the latest
 `WifiStatus` into `{"ssid", "bssid", "rssi", "ip_address", "mac_address"}` and
@@ -213,11 +243,23 @@ ros2 interface list | grep syncai_common
   the message must be rebuilt *and restarted*; a mismatched pair fails at the
   type-hash level with no useful error. On a live robot, rebuild the whole
   workspace rather than one package.
+- **Renumbering a constant is an ABI break with no type-hash warning.**
+  `RobotStatus` gained `UNINITIALIZED = 0` and everything else shifted up by one.
+  Constants are compiled into consumers, so the wire format is unchanged and
+  nothing fails loudly — but `state` values in bags recorded before the change
+  now decode to the wrong name. It was safe to do because no consumer read the
+  numeric value; that will not be true forever.
 - **Timestamp units are not uniform.** `ArtifactState` and `ExecuteTask` are in
   milliseconds; `RobotState.timestamp` is in **seconds** (`now().seconds()` cast
   to `uint64`), because it is passed through verbatim to
-  `GET /api/v1/robot/state` and the frontend already multiplies by 1000. Each
-  `.msg` states its unit — check it before doing arithmetic across two of them.
+  `GET /api/v1/robot/state` and the frontend already multiplies by 1000. Worse,
+  `RobotState` mixes units *within one message*: `timestamp` in seconds and
+  `motor_timestamp` in nanoseconds, the latter copied unconverted from
+  `MotorStates` so it can be compared against that topic directly. Each `.msg`
+  states its unit — check it before doing arithmetic across two of them.
+- **`RobotState.timestamp` cannot order samples.** Whole seconds at a 10 Hz
+  publish rate means ten consecutive messages carry the same value. It is a wall
+  clock for display; use `motor_timestamp` if you need sub-second resolution.
 - **No message carries a `std_msgs/Header`.** Timestamps are bare `uint64`
   fields and there is no `frame_id` anywhere — these are status messages, not
   sensor data to be transformed. Anything needing TF uses a `geometry_msgs` type

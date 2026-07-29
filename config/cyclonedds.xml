@@ -4,44 +4,20 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd"
 >
-    <!--
-      macvlan config: the robot container owns 192.168.0.32 on the factory
-      LAN (docker network syncai-lan, parent enP2p1s0), so DDS peers see it
-      NAT-free and SPDP multicast works across the physical switch. The
-      container is dual-homed (macvlan + default bridge for host services),
-      so the DDS interface is pinned by ADDRESS — interface names (eth0/eth1)
-      depend on network attach order and are not stable. The address comes
-      from the DDS_BIND_ADDRESS env var set per service in docker-compose.yml
-      (robot01=192.168.0.32, robot02=192.168.0.35), so one config serves all
-      robot instances. Running outside compose requires exporting it first.
-    -->
-    <Domain Id="any">
+    <Domain Id="0">
         <General>
-            <!-- Multicast fully disabled: each robot must ONLY discover the
-                 Isaac Sim workstation, never the other robot or the conveyor
-                 containers. Discovery is unicast to the explicit Peers below;
-                 DDS discovery is not transitive, so peers of the workstation
-                 stay invisible to each other. -->
-            <AllowMulticast>false</AllowMulticast>
+            <AllowMulticast>spdp</AllowMulticast>
             <Interfaces>
-                <NetworkInterface address="${DDS_BIND_ADDRESS}" priority="10"/>
-                <NetworkInterface name="lo" priority="0"/>
+                <NetworkInterface name="lo"/>
             </Interfaces>
         </General>
-        <Discovery>
+        <!-- <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
-            <!-- One DDS participant per ROS process; this caps how many can
-                 run in the container AND how many indices are probed per
-                 peer. Keep it well above the full nav stack. -->
             <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
             <Peers>
-              <!-- Isaac Sim workstation -->
-              <Peer address="192.168.0.3"/>
-              <!-- With multicast off, nodes inside this container discover
-                   each other by probing loopback unicast ports. -->
               <Peer address="127.0.0.1"/>
             </Peers>
-        </Discovery>
+        </Discovery> -->
         <Tracing>
             <Verbosity>config</Verbosity>
             <OutputFile>stdout</OutputFile>

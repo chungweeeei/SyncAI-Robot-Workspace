@@ -180,9 +180,19 @@ logs, and sends `MODE X` to lie the robot down. While the lock is held,
 **But nothing calls `triggerSafeShutdown()` yet.** The two intended triggers are
 still `TODO`s in `parseLine`:
 
-- battery `soc < 20%` — deliberately left unwired, because BMS/state-of-charge
-  monitoring is going to live somewhere other than this node (where is undecided);
-- `JOINT_TEMP` overheat — undecided.
+- battery `soc < 20%` — the *judgement* has since moved out of this node:
+  `syncai_robot_state` watches `battery_state` and reports
+  `RobotStatus::WARNING` below 20% (latched, clearing above 25%). That resolves
+  the "monitoring will live somewhere other than this node, where is undecided"
+  question this README used to leave open. **The *actuation* is still
+  unassigned** — `syncai_robot_state` deliberately only reports, and there is no
+  service on this node for anything to call, so lying the robot down on low
+  battery still happens nowhere. Wiring it needs a new inbound service here;
+  `reset_safety` is the release, not the trigger.
+- `JOINT_TEMP` overheat — undecided, and unlike the battery case the judgement
+  has not moved anywhere either. The reference implementation's thresholds
+  (≥75 °C warn, ≥95 °C lie down, ≥115 °C ESTOP) are the sanctioned numbers when
+  someone does it.
 
 So today `safe_lock_` is never set, `set_motion_key` never rejects, and
 `reset_safety` always answers "System was not locked."

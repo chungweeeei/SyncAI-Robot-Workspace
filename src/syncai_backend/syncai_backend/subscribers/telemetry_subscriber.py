@@ -27,11 +27,12 @@ def _yaw_from_quat(x: float, y: float, z: float, w: float) -> float:
 class TelemetrySubscriber:
     """Feed the internal telemetry WebSocket from the raw high-rate topics.
 
-    This deliberately bypasses the 1 Hz aggregated ``robot_state`` topic (and
-    the RobotRepo behind GET /api/v1/robot/state — that REST payload is a
-    frozen third-party contract): the 3D viewer needs pose at a rate a gait
-    actually moves at, and ``robot_state``'s 1 Hz snapshot can't be smoothed
-    into continuous motion client-side.
+    This deliberately bypasses the aggregated ``robot_state`` topic (and the
+    RobotRepo behind GET /api/v1/robot/state — that REST payload is a frozen
+    third-party contract): the 3D viewer needs pose at a rate a gait actually
+    moves at. ``robot_state`` runs at 10 Hz now, but its ``timestamp`` has only
+    whole-second resolution and it is reached over a polled REST endpoint, so it
+    still cannot be smoothed into continuous motion client-side.
 
     1. Pose: ``odom`` (lio_bridge, 20 Hz, odom frame) composed with the
        map->odom correction from TF into a map-frame planar pose. Both inputs
