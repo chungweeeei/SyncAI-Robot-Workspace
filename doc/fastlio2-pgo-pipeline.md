@@ -168,7 +168,7 @@ sendBroadCastTF(...);          // 發 map→local_frame 修正
 publishLoopMarkers(...);       // RViz 視覺化回環邊
 ```
 
-- **服務**:`/pgo/save_maps` 存地圖(見 3.5)。
+- **服務**:`save_maps` 存地圖(見 3.5),namespace 之後是 `/<robot_id>/pgo/save_maps`。
 
 ### 3.2 關鍵幀挑選 `isKeyPose()` / `addKeyPose()` (`simple_pgo.cpp:21`)
 
@@ -198,7 +198,7 @@ publishLoopMarkers(...);       // RViz 視覺化回環邊
 - 把最佳估計寫回每個關鍵幀的 `r_global / t_global`。
 - **重算 offset**:`m_r_offset = r_global · r_localᵀ`、`m_t_offset = t_global − offset·t_local`。這就是下一輪要廣播的 `map→lio_odom` 修正量——回環的效果透過這個 TF **一次性反映到全域**,而不用去動 LIO。
 
-### 3.5 存地圖 `/pgo/save_maps` (`pgo_node.cpp:238`)
+### 3.5 存地圖 `/<robot_id>/pgo/save_maps` (`pgo_node.cpp:238`)
 
 服務參數 `file_path` + `save_patches`,輸出:
 - `map.pcd`:所有關鍵幀 body 點雲用最終 `r_global/t_global` 轉到世界系疊成的完整地圖。
@@ -242,13 +242,15 @@ publishLoopMarkers(...);       // RViz 視覺化回環邊
 ## 5. 啟動與串接(對照 README)
 
 ```bash
-# 前端里程計
-ros2 launch fastlio2 lio_launch.py
-# 後端回環(訂閱 LIO 的 body_cloud + lio_odom)
+# 後端回環;會 include pointlio_launch.py 一起把前端里程計帶起來
 ros2 launch pgo pgo_launch.py
 # 存地圖(要後續 HBA 就 save_patches: true)
-ros2 service call /pgo/save_maps interface/srv/SaveMaps \
+ros2 service call /<robot_id>/pgo/save_maps interface/srv/SaveMaps \
   "{file_path: 'your_dir', save_patches: true}"
 ```
 
-> 本 workspace 的 Isaac Sim 串接用 `lio_isaac.yaml` / `pgo_isaac_launch.py`,topic/frame 會加上 `<robot_id>/` 前綴,frame 鏈為 `map → lio_odom → body`。
+> `pgo_launch.py` 從 `config/system.ini` 讀 `robot_id`,node namespace 為
+> `/<robot_id>/pgo`(pointlio 則是 `/<robot_id>/pointlio`),topic/frame 都會加上
+> `<robot_id>/` 前綴,frame 鏈為 `map → <robot_id>/pointlio_odom →
+> <robot_id>/pointlio_body`。pgo_node 仍自己用 yaml-cpp 解 config,所以那些
+> 前綴是 launch 改寫到 `/tmp/syncai_pgo/pgo_<robot_id>.yaml` 後傳進去的。
