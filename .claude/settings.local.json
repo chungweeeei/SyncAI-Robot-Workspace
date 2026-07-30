@@ -39,7 +39,9 @@
       "Bash(awk 'length>80 {print FILENAME\": \"FNR}' components/dashboard/posture-control.tsx hooks/use-posture.ts hooks/use-task-tracker.ts components/dashboard/task-chip.tsx lib/api/task.ts hooks/use-goal-task.ts)",
       "Bash(awk 'length>80 && $0 !~ /className/ {print FILENAME\": \"FNR\": \"$0}' components/dashboard/posture-control.tsx hooks/use-posture.ts lib/api/task.ts hooks/use-goal-task.ts)",
       "Bash(git -C ../.. status --short -- src/syncai_frontend)",
-      "Bash(awk 'length>80 && $0 !~ /className/ {print FILENAME\": \"FNR}' components/dashboard/posture-control.tsx hooks/use-posture.ts)"
+      "Bash(awk 'length>80 && $0 !~ /className/ {print FILENAME\": \"FNR}' components/dashboard/posture-control.tsx hooks/use-posture.ts)",
+      "Bash(chmod +x scripts/byobu_session_dev.sh)",
+      "Bash(bash -n scripts/byobu_session_dev.sh)"
     ]
   }
 }
