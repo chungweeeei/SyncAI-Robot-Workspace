@@ -153,7 +153,7 @@ ros2 launch syncai_lio_bridge lio_bridge.launch.py \
     system_config:=config/instances/robot02.ini
 ```
 
-Window 2 of `scripts/byobu_session.sh`, after `sleep 4` — it needs the
+Window 2 of `config/sessions/stack.yaml`, after `sleep: 4` — it needs the
 localizer and `bringup`'s static TF up first.
 
 Checking it:

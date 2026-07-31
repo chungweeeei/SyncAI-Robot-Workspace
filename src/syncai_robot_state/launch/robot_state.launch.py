@@ -2,7 +2,7 @@
 # with position from TF (map -> base_link) and forward velocity from the odom topic.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used as the node namespace, as the
+# as sys_manager.launch.py) and is used as the node namespace, as the
 # `robot_id` node parameter, and to rewrite the base_frame parameter, since TF
 # frame names are not namespaced by ROS. The global_frame stays "map".
 #

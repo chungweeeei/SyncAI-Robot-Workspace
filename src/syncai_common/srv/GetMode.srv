@@ -1,0 +1,25 @@
+# Report which operating mode is live.
+#
+# Served by syncai_sys_manager on the relative name `get_mode`, so it lands on
+# <robot_id>/get_mode.
+#
+# The answer is DERIVED, not remembered: it comes from asking byobu which
+# session actually exists. That way it stays correct across a sys_manager
+# restart, and it cannot drift from reality if someone builds or kills a session
+# by hand.
+#
+# mode values are defined as constants in RobotMode (MAINTENANCE/MANUAL/AUTO).
+# MAINTENANCE means no session is running at all — the stack is down.
+#
+# success is false only when the answer is ambiguous, i.e. both the navigation
+# and mapping sessions exist at once (possible only if they were built by hand;
+# switch_mode always kills every known session before building one). `mode` then
+# holds the first match and `message` names both.
+#
+# session is the byobu session name backing the reported mode, empty in
+# MAINTENANCE. Useful for `byobu attach -t <session>`.
+---
+bool success
+string message
+uint8 mode
+string session

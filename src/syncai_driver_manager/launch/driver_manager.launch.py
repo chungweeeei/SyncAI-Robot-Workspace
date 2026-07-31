@@ -1,7 +1,7 @@
 # Launch the syncai_driver_manager node — monitors the robot's hardware drivers.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used as the node namespace, so all the
+# as sys_manager.launch.py) and is used as the node namespace, so all the
 # node's relative topics and services get the /<robot_id> prefix. This node
 # publishes no TF frame names, so it needs no frame-parameter rewriting.
 

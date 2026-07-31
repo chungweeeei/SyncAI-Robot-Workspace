@@ -14,7 +14,7 @@ syncai_driver_manager ──IMUState / MotorStates──►  (telemetry consumer
 syncai_backend ─────────┼──────────► syncai_robot_state ──RobotState──► syncai_backend
         │  ScanWifiNetworks / ConnectWifiNetwork              ▲
         ▼                                                     │ WifiStatus
-syncai_system_manager ────────────────────────────────────────┘
+syncai_sys_manager ───────────────────────────────────────────┘
 ```
 
 ## Messages
@@ -96,7 +96,7 @@ the aggregate stable while wifi reporting is still in flux.
 | Message | Fields | Used by |
 |---|---|---|
 | `WifiNetwork` | `bssid`, `ssid`, `rssi` | A scan result. Returned in bulk by `ScanWifiNetworks`. |
-| `WifiStatus` | `bssid`, `ssid`, `rssi`, `ip_address`, `mac_address` | Published at 1 Hz on `wifi_status` by `syncai_system_manager`'s wifi manager; consumed only by `syncai_robot_state`. |
+| `WifiStatus` | `bssid`, `ssid`, `rssi`, `ip_address`, `mac_address` | Published at 1 Hz on `wifi_status` by `syncai_sys_manager`'s wifi manager; consumed only by `syncai_robot_state`. |
 
 `WifiStatus` is `WifiNetwork` plus the two local-interface fields. `rssi` is
 `int8` in both (dBm, so roughly −100…0).
@@ -144,8 +144,8 @@ a conveyor's `live_info.phase`.
 
 | Service | Request | Response | Served by |
 |---|---|---|---|
-| `ScanWifiNetworks` | *(empty)* | `success`, `message`, `WifiNetwork[] networks` | `syncai_system_manager` on `scan_wifi` |
-| `ConnectWifiNetwork` | `ssid`, `password` | `success`, `message` | `syncai_system_manager` on `connect_wifi` |
+| `ScanWifiNetworks` | *(empty)* | `success`, `message`, `WifiNetwork[] networks` | `syncai_sys_manager` on `scan_wifi` |
+| `ConnectWifiNetwork` | `ssid`, `password` | `success`, `message` | `syncai_sys_manager` on `connect_wifi` |
 | `SetMotionKey` | `key` | `success`, `message` | `syncai_driver_manager` on `set_motion_key` |
 | `SetPolicyMode` | `uint8 mode` | `success`, `message` | `syncai_driver_manager` on `set_policy_mode` |
 | `SetSpeedScale` | six `float64` scales | `success` | `syncai_driver_manager` on `set_speed_scale` |

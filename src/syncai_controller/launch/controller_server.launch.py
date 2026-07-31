@@ -2,7 +2,7 @@
 # internal local costmap and the RPP controller plugin.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used both as the node namespace and to
+# as sys_manager.launch.py) and is used both as the node namespace and to
 # rewrite the local costmap TF frame parameters (global_frame /
 # robot_base_frame / sensor_frame), since TF frame names are not namespaced
 # by ROS.

@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>syncai_sys_manager</name>
+  <version>0.0.0</version>
+  <description>System manager node coordinating SyncAI robot subsystems</description>
+  <maintainer email="chungweeeei@gmail.com">ros</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>syncai_common</depend>
+  <exec_depend>python3-netifaces</exec_depend>
+
+  <!-- psutil: memory / disk figures for monitor_manager.
+       yaml: node_manager reads config/sessions/*.yaml.
+       Both have real rosdep keys on jammy, so a container recreated from the
+       image picks them up with the usual rosdep install over src/.
+       (Careful: no double hyphens in an XML comment — they make package.xml
+       unparseable, which silently demotes this from an ament_python package to
+       a plain python one and drops it out of AMENT_PREFIX_PATH.) -->
+  <exec_depend>python3-psutil</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <!-- structlog is installed via pip (no reliable rosdep key on jammy). -->
+  <exec_depend>python3-structlog</exec_depend>
+
+  <test_depend>python3-pytest-mock</test_depend>
+  <test_depend>python3-assertpy-pip</test_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

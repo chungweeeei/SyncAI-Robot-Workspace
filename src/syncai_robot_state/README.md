@@ -231,7 +231,7 @@ All names relative, so they inherit the `<robot_id>` namespace.
 | Subscribe | `motor_states` | `syncai_common/MotorStates` | SensorData |
 
 `odom` comes from `syncai_lio_bridge`, `battery_state` and `motor_states` from
-`syncai_driver_manager`, `wifi_status` from `syncai_system_manager`. The
+`syncai_driver_manager`, `wifi_status` from `syncai_sys_manager`. The
 backend's subscriber matches the BEST_EFFORT publisher — and so must any new one:
 a best-effort publisher cannot satisfy a RELIABLE subscriber, so subscribing with
 default QoS receives nothing at all.

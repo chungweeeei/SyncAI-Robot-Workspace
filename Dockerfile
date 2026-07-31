@@ -42,7 +42,7 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
     > /etc/apt/sources.list.d/ros2.list
 
-# ROS 2 runtime floor. avahi-utils: syncai_system_manager spawns avahi-publish
+# ROS 2 runtime floor. avahi-utils: syncai_sys_manager spawns avahi-publish
 # against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
 # in the container. tzdata: containers default to UTC — set local time so log
 # timestamps (ros2 launch, backend, byobu panes) match the host / operators.
@@ -68,7 +68,7 @@ RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime && \
     echo "${TZ}" > /etc/timezone
 
 # Allow any uid (overridden via compose `user:` in dev) to sudo without
-# password — syncai_system_manager needs sudo for nmcli against the host
+# password — syncai_sys_manager needs sudo for nmcli against the host
 # NetworkManager.
 RUN echo "ALL ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 

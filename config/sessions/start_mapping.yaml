@@ -1,0 +1,119 @@
+# =============================================================================
+# SyncAI Robot stack — mapping session (build a NEW map)
+# Schema: see the docstring of NodeManager in
+#         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
+#
+# This is the counterpart to start_nav.yaml, not a variant of it. start_nav.yaml
+# is a *localization* stack: map_server and the FAST-LIO2 localizer both load an
+# existing map during construction and die without one, so it cannot be used to
+# create the map it needs. This spec is the other half of that loop.
+#
+# The pipeline (doc/fastlio2-pgo-pipeline.md §5):
+#
+#   bringup (MID360 + lidar_top static TF)
+#     -> pgo_launch.py      # include()s pointlio_launch.py, the LIO front end
+#     -> drive by hand      # teleop -> driver_manager -> gait controller
+#     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt
+#     -> tools/pcd_to_gridmap.py     =>  gridmap.pgm + gridmap.yaml
+#
+# The last step is offline and run later, by hand — which is why a map directory
+# spends time holding a map.pcd with no gridmap yet.
+#
+# pgo_node is the ONLY thing that can save a map: it accumulates keyframes in RAM
+# and save_maps serialises them. If pgo is not running for the whole drive there
+# is nothing to save, and no way to recover it afterwards except by replaying a
+# bag. That single fact is why the "lio" window is not optional and why the
+# bag-record pane below is worth using.
+#
+# Deliberately NOT here, all for the same reason — they need a finished map:
+#   * map_server  — loads [map] map in its constructor and throws if absent
+#   * localizer   — its launch returns [] and starts nothing without [map] pcd
+#   * lio_bridge  — its map->odom stage waits on a TF only the localizer emits
+#                   after relocalize; nothing in a mapping run consumes odom
+#   * planner / controller / task_runner — the robot is teleoperated here. Their
+#                   absence also removes the "teleop races the controller"
+#                   hazard that the old byobu_session_dev.sh warned about.
+#   * hba         — offline refinement, and shelved (see the pipeline doc §3.5)
+#   * robot_state / backend / frontend — nav-oriented. robot_state would report
+#                   UNINITIALIZED all run (its pose needs the localizer's TF),
+#                   and backend hard-requires postgres.
+#
+# ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
+# starts in the workspace root so the relative config/system.ini resolves. In
+# the container that path is the bind-mount of config/instances/robotNN.ini, so
+# no system_config:= argument is needed (start_nav.yaml passes none either).
+#
+# Logs go to log/stack/<robot_id>/mapping/ — a subtree of its own, so this spec
+# and start_nav.yaml cannot interleave two multilogs into one directory the way
+# two flat specs would.
+# =============================================================================
+
+# Distinct from start_nav.yaml's `syncai-dev` on purpose: launch_session() opens
+# with `byobu kill-session`, so sharing a name would make starting one tear the
+# other down.
+session: syncai-mapping
+
+# Not `teleop`: a stray keypress in that pane is a real motion command, so the
+# session must not come up focused on it.
+select: bringup
+
+windows:
+  # ---------- Window 0: bringup (MID360 driver + lidar_top static TF) ---------
+  # Mandatory and first: the only source of /<robot_id>/livox/{lidar,imu} that
+  # the FAST-LIO2 chain consumes, and the publisher of the lidar_top mount
+  # extrinsic (including the physical tilt) that the LIO solution depends on.
+  - name: bringup
+    panes:
+      - cmd: ros2 launch syncai_bringup bringup.launch.py
+        log: mapping/bringup
+
+  # ---------- Window 1: LIO front end + loop closure -------------------------
+  # One pane brings up both: pgo_launch.py include()s pointlio_launch.py, which
+  # is the single definition of how pointlio_node is configured. pgo also
+  # broadcasts map -> <robot_id>/pointlio_odom itself, so no localizer is needed
+  # to have a complete TF chain while mapping.
+  #
+  # Nothing is published until the builder reaches its MAPPING state (IMU init +
+  # first map frame), and the LIO publishers are gated on having subscribers —
+  # so silence here right after launch is normal, not a fault.
+  - name: lio
+    panes:
+      - cmd: ros2 launch pgo pgo_launch.py
+        sleep: 3
+        log: mapping/pgo
+
+  # ---------- Window 2: driver_manager (own window: shutdown path is manual) --
+  # Same reasoning as start_nav.yaml: this is the pane you Ctrl-C by hand, so it
+  # must not be one half of a split where it is easy to hit the wrong one.
+  # Note the safe-shutdown path is not wired up yet — triggerSafeShutdown() is
+  # never called, so Ctrl-C just closes the sockets and stops sending AXES. Lie
+  # the robot down explicitly (key '2', see below) before killing this.
+  - name: driver_manager
+    panes:
+      - cmd: ros2 launch syncai_driver_manager driver_manager.launch.py
+        log: mapping/driver_manager
+
+  # ---------- Window 3: posture + teleop + spare shell -----------------------
+  # Pane 0 is pre-typed (NOT executed): the robot has to be standing before it
+  # will go anywhere. '0' is Stand, '1' is Locomotion (RL), '2' is Lie down.
+  # Which mode actually accepts AXES velocity is not documented anywhere — if
+  # keys do nothing after '0', try '1'. Verify on hardware.
+  #
+  # Pane 1 publishes the namespaced relative topic `cmd_vel`, i.e. the one
+  # driver_manager consumes, so keys pressed *while this pane is focused* drive
+  # the robot. It only emits on a keypress, but that also means a stray key here
+  # is a real motion command: leave the session on another window unless you
+  # mean to drive.
+  #
+  # Pane 2 is a deliberate spare shell (no cmd, no log) for `ros2 topic hz`
+  # style pokes — tapping an interactive pane would only record your keystrokes.
+  - name: teleop
+    panes:
+      - cmd: >-
+          RID=$(awk -F':[[:space:]]*' '/^robot_id:/{print $2}' config/system.ini)
+          && ros2 service call "/$RID/set_motion_key" syncai_common/srv/SetMotionKey "{key: '0'}"
+        enter: false
+      - cmd: >-
+          RID=$(awk -F':[[:space:]]*' '/^robot_id:/{print $2}' config/system.ini)
+          && ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r __ns:=/$RID
+      - {}

@@ -42,7 +42,7 @@
 # files created in the mounted workspace keep the right ownership; HOME is
 # world-writable in the image), apparmor off (nmcli needs D-Bus, blocked by
 # the docker-default profile), idle bash (the stack is launched manually via
-# scripts/byobu_session.sh).
+# scripts/byobu_session.py).
 x-robot-common: &robot-common
   build:
     context: .

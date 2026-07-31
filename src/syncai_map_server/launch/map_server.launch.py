@@ -1,7 +1,7 @@
 # Launch the syncai_map_server "map_server" node.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used as the node namespace, prefixing
+# as sys_manager.launch.py) and is used as the node namespace, prefixing
 # the relative map topic (topic_name "map" -> /<robot_id>/map). The published
 # OccupancyGrid's frame_id stays "map" (the shared global frame), so no frame
 # parameters are rewritten here.

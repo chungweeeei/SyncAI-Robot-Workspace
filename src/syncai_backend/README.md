@@ -125,7 +125,7 @@ gates its dashboard on.
 activity can poll status and cancel.
 
 **Service clients:** `scan_wifi`, `connect_wifi` (`syncai_common/srv`, served by
-`syncai_system_manager`) and `set_motion_key` (`syncai_common/srv`, served by
+`syncai_sys_manager`) and `set_motion_key` (`syncai_common/srv`, served by
 `syncai_driver_manager`).
 
 **TF:** a `TransformListener` with `spin_thread=False` (it rides the node's own
@@ -273,7 +273,7 @@ ros2 launch syncai_backend backend.launch.py system_config:=config/instances/rob
 ros2 run syncai_backend backend                                  # no namespace -> default_robot
 ```
 
-In practice `scripts/byobu_session.sh` starts it in the `state_backend` window.
+In practice `scripts/byobu_session.py` starts it in the `state_backend` window.
 
 > `setup.py` installs **compiled bytecode only** (`InstallNoSource`): after a
 > normal install it byte-compiles the package and deletes the `.py` sources from

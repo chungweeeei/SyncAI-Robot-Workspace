@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { RadarIcon, SlidersHorizontalIcon } from "lucide-react";
+import { MapIcon, RadarIcon, SlidersHorizontalIcon } from "lucide-react";
 
 import { ModeToggle } from "@/components/mode-toggle";
 import {
@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 // the GLB, not an operator screen. Open it by hand. (See its page comment.)
 const navItems = [
   { title: "Dashboard", href: "/", icon: RadarIcon },
+  { title: "Maps", href: "/maps", icon: MapIcon },
   { title: "Settings", href: "/settings", icon: SlidersHorizontalIcon },
 ];
 
@@ -79,7 +80,10 @@ export function NavRail() {
 
       <TooltipProvider delay={200}>
         {navItems.map((item) => {
-          const active = pathname === item.href;
+          // Prefix match, so /maps/<name>/edit keeps the Maps tick lit. "/" has to
+          // be exact or it would match every route.
+          const active =
+            item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
           return (
             <Tooltip key={item.href}>
               <TooltipTrigger

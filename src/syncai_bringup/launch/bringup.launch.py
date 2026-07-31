@@ -14,7 +14,7 @@
 
 # Bringup for the FAST-LIO2 localization stack: the sensing / TF layer every
 # other node assumes is already running. This is window 0 of
-# scripts/byobu_session.sh — there is no lifecycle manager, so it must be up
+# config/sessions/stack.yaml — there is no lifecycle manager, so it must be up
 # before syncai_lio_bridge.
 #
 # Publishes:

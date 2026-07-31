@@ -239,17 +239,28 @@ export function Segmented<T extends string>({
   value,
   options,
   onChange,
+  stretch = false,
   className,
 }: {
   value: T;
   options: readonly { value: T; label: string }[];
   onChange: (value: T) => void;
+  /**
+   * Fill the container, splitting it into equal segments.
+   *
+   * The default hugs its labels, which is right for a control sized by its
+   * content. Inside a fixed-width panel it is wrong: the row does not wrap, so a
+   * set of long labels (FREE / UNKNOWN / OBSTACLE in the gridmap editor) simply
+   * overflows the panel's border.
+   */
+  stretch?: boolean;
   className?: string;
 }) {
   return (
     <div
       className={cn(
-        "inline-flex overflow-hidden rounded-sm border border-hairline",
+        "overflow-hidden rounded-sm border border-hairline",
+        stretch ? "flex w-full" : "inline-flex",
         className,
       )}
     >
@@ -264,6 +275,11 @@ export function Segmented<T extends string>({
             className={cn(
               "instrument-label h-6 px-2 transition-colors",
               "border-l border-hairline first:border-l-0",
+              // min-w-0 so a segment can shrink below its label; truncate rather
+              // than let one long label push the row past the container. The
+              // padding drops to px-1 because flex-1 is already doing the spacing,
+              // and px-2 on four segments is what pushes the last label over.
+              stretch && "min-w-0 flex-1 truncate px-1",
               active
                 ? "bg-signal-cmd/12 text-signal-cmd"
                 : "text-muted-foreground hover:bg-elevated hover:text-foreground",

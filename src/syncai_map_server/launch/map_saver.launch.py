@@ -1,7 +1,7 @@
 # Launch the syncai_map_server "map_saver" node.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used as the node namespace, so the
+# as sys_manager.launch.py) and is used as the node namespace, so the
 # save_map service resolves to /<robot_id>/map_saver_server/save_map and
 # relative map topics in SaveMap requests resolve under the same namespace.
 

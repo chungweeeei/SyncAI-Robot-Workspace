@@ -2,7 +2,7 @@
 # internal global costmap.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used both as the node namespace and to
+# as sys_manager.launch.py) and is used both as the node namespace and to
 # rewrite the global costmap TF frame parameters (robot_base_frame /
 # sensor_frame), since TF frame names are not namespaced by ROS. The costmap's
 # global_frame stays "map" (the shared global frame) and is not rewritten.

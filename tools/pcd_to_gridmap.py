@@ -26,6 +26,26 @@ Typical use:
   #    mount height of the mapping start pose, so the floor is negative)
   python3 tools/pcd_to_gridmap.py map.pcd -o maps/warehouse \
       --zmin -0.3 --zmax 1.5 --floor-zmin -0.7 --floor-zmax -0.4
+
+A pgo map.pcd is voxel-downsampled, so at the 0.05 m the costmaps run at, the
+median hit cell holds about 2 points and walls come out as DASHED lines that
+NavFn will thread a path through. On a large site the cleanup flags are not
+optional — this is the recipe that produced map/dp1f/gridmap.pgm (80 x 77 m,
+1.3 M points):
+
+  python3 tools/pcd_to_gridmap.py map/dp1f/map.pcd -o map/dp1f/gridmap \\
+      --zmin -0.3 --zmax 1.5 \\
+      --free-mode floor --floor-zmin -0.95 --floor-zmax -0.25 \\
+      --min-points 2 --obstacle-close 2 --free-close 5 \\
+      --despeckle --min-obstacle-size 12 --fill-holes --max-hole-size 20000 \\
+      --preview
+
+Two choices there are worth keeping: --free-mode floor rather than the `any`
+default, because on an open site `any` marks the outdoor ground/roof returns
+beyond the walls as free and the planner will route through them; and
+--min-points 2 rather than 1, because dropping to 1 doubles the occupied cells
+with noise instead of wall (bridge the gaps with --obstacle-close, do not lower
+the threshold).
 """
 
 import argparse
@@ -171,6 +191,28 @@ def convert(xyz, args):
     obst_cnt = bincount2d(obst)
     obs_cnt = bincount2d(observed[:, :2]) if len(observed) else np.zeros((height, width), np.int64)
 
+    occ_mask = obst_cnt >= args.min_points
+    if args.obstacle_close > 0:
+        # A pgo map.pcd is voxel-downsampled (LIO scan_resolution), so at 0.05 m
+        # cells a wall is sampled as a DASHED line: on the dp1f map the median
+        # hit cell holds 2 points and only half the cells hit at all. Dashes are
+        # worse than a thick wall — NavFn happily threads a path through a
+        # one-cell hole, so the planner returns paths straight through walls.
+        # Closing (dilate then erode by the same disk) bridges gaps up to ~2*r
+        # cells along the wall without thickening it, because the erode undoes
+        # the dilation everywhere the gap was not filled.
+        #
+        # Keep r small: the same operation also seals real openings narrower
+        # than ~2*r cells. At r=2 (0.05 m/px) that is 0.2 m, well below any
+        # doorway the robot could drive through anyway.
+        from scipy import ndimage
+        r = args.obstacle_close
+        yy, xx = np.ogrid[-r:r + 1, -r:r + 1]
+        se = (xx * xx + yy * yy) <= r * r
+        closed = ndimage.binary_closing(occ_mask, structure=se)
+        print(f"obstacle-close: r={r} cells, added {int(closed.sum() - occ_mask.sum())} occupied cells")
+        occ_mask = closed
+
     # nav2 pgm convention: 0=occupied(black), 254=free(white), 205=unknown(gray)
     grid = np.full((height, width), 205, dtype=np.uint8)
     free_mask = obs_cnt >= args.min_floor_points
@@ -187,7 +229,7 @@ def convert(xyz, args):
         print(f"free-close: r={r} cells, added {int(closed.sum() - free_mask.sum())} free cells")
         free_mask = closed
     grid[free_mask] = 254
-    grid[obst_cnt >= args.min_points] = 0
+    grid[occ_mask] = 0
 
     if args.despeckle:
         grid = despeckle(grid, args.min_obstacle_size)
@@ -250,6 +292,10 @@ def main():
     p.add_argument("--free-close", type=int, default=0,
                    help="morphological-close the free mask with a disk of this radius (cells) "
                         "to turn speckled floor sampling into solid free space (needs scipy, 0=off)")
+    p.add_argument("--obstacle-close", type=int, default=0,
+                   help="morphological-close the occupied mask with a disk of this radius (cells) "
+                        "to bridge the dashes a voxel-downsampled pcd leaves in walls; also seals "
+                        "openings narrower than ~2*r cells (needs scipy, 0=off)")
     p.add_argument("--despeckle", action="store_true",
                    help="remove occupied blobs smaller than --min-obstacle-size (needs scipy)")
     p.add_argument("--min-obstacle-size", type=int, default=4,

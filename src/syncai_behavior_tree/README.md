@@ -95,7 +95,7 @@ Step 6 is the reason startup order matters: a `BtActionNode`/`BtServiceNode`
 constructor **throws if its action/service server is not up** within
 `wait_for_service_timeout`. Loading `move.xml` therefore requires the planner,
 the controller, and both costmap clear services to already be running. This is
-what the `sleep` offsets in `scripts/byobu_session*.sh` are for.
+what the `sleep:` offsets in `config/sessions/*.yaml` are for.
 
 **Per goal** (`executeCallback`):
 

@@ -67,7 +67,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 |---|---|
 | `syncai_driver_manager` | **UDP bridge to the gait controller.** Sends `cmd_vel` (with per-direction velocity-scale correction — the gait controller tracks commands asymmetrically), receives ASCII telemetry, and owns the safe-shutdown path (engages a safety lock and commands MODE X / lie down). |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motor_states / TF into `syncai_common/RobotState` at 10 Hz. Also derives the `state` field: `UNINITIALIZED` (no pose) / `WARNING` (battery <20%, latched with hysteresis) / `IDLE`. Reports only — no threshold here commands the robot. |
-| `syncai_system_manager` | Python: wifi, mDNS, map, and system managers behind ROS services |
+| `syncai_sys_manager` | Python: wifi, mDNS, map, and system managers behind ROS services |
 
 ### Application layer
 
@@ -173,16 +173,28 @@ ament package and require a build type and dependency list it does not have.
 
 ## Running the stack
 
-`scripts/byobu_session.sh` (FAST-LIO2) is the real entrypoint. It builds a byobu
-session with one window per subsystem, encodes the required startup ordering as
-`sleep` offsets, and taps each pane's output into a size-capped `multilog`
-directory under `log/stack/<robot_id>/<name>/`. Read logs back with
-`scripts/tailog.sh`. The 2D / AMCL variant of this script was retired along with
-`bringup_2d.launch.py`.
+`scripts/byobu_session.py` is the real entrypoint. It builds a byobu session
+with one window per subsystem, encodes the required startup ordering as `sleep`
+offsets, and taps each pane's output into a size-capped `multilog` directory
+under `log/stack/<robot_id>/<name>/`. Read logs back with `scripts/tailog.sh`.
 
-Two panes are **pre-typed but not executed** — you hit Enter yourself:
-the `localizer/relocalize` service call (3D localization is not active until you
-run it, with the robot at its known start pose) and `rviz2`.
+```bash
+scripts/byobu_session.py            # config/sessions/stack.yaml   (operational)
+scripts/byobu_session.py dev        # config/sessions/stack_dev.yaml
+scripts/byobu_session.py --dry-run  # print the byobu commands, run nothing
+```
+
+The window list is **data**: `config/sessions/*.yaml` holds windows / panes /
+commands / `sleep` offsets / `multilog` names, and the runner holds the byobu
+plumbing (the two `byobu_session*.sh` scripts it replaced shared ~85 lines of
+identical bash). Schema is documented in the runner's docstring; `stack_dev.yaml`
+is the hands-on variant (Next.js dev server + `teleop_twist_keyboard`, no rviz).
+Both specs write the same log tree, so do not run them at once. The 2D / AMCL
+session was retired along with `bringup_2d.launch.py`.
+
+Two panes are **pre-typed but not executed** (`enter: false`) — you hit Enter
+yourself: the `localizer/relocalize` service call (3D localization is not active
+until you run it, with the robot at its known start pose) and `rviz2`.
 
 Logging is deliberately split: `ROS_LOG_DIR` points at a tmpfs (ephemeral), while
 the byobu `pipe-pane` capture is the persistent, gzip-rotated record.
@@ -260,7 +272,7 @@ breaking changes relative to model training data — read the relevant guide in
 ## Tests
 
 There is no meaningful test suite yet — only the ament linter tests that come
-with the Python package templates (`syncai_system_manager` also has
+with the Python package templates (`syncai_sys_manager` also has
 `test_wifi_manager.py`).
 
 ```bash

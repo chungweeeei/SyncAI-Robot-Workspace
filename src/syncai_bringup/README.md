@@ -6,7 +6,7 @@ only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
-| `bringup.launch.py` | `scripts/byobu_session.sh` | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic) plus the Livox MID360 driver |
+| `bringup.launch.py` | `scripts/byobu_session.py` | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic) plus the Livox MID360 driver |
 
 ```
 share/syncai_bringup/
@@ -177,7 +177,7 @@ being folded into the shank links.
 
 ## Running
 
-Window 0 of `scripts/byobu_session.sh`, before everything else:
+Window 0 of `config/sessions/stack.yaml`, before everything else:
 
 ```bash
 ros2 launch syncai_bringup bringup.launch.py

@@ -1,0 +1,115 @@
+# =============================================================================
+# SyncAI Robot stack — dev / hands-on session
+# Run with: scripts/byobu_session.py dev    (inside the robot container)
+# Schema:   see the docstring of scripts/byobu_session.py
+#
+# Snapshot of the session that is actually being run by hand on robot01 during
+# development. Same stack as stack.yaml (FAST-LIO2 localization, no AMCL, no
+# lifecycle manager) with two additions that the operational spec deliberately
+# leaves out:
+#
+#   * frontend  — `npm run dev` (Next.js dev server on 3001) instead of a
+#                 pre-built `npm start`, so UI edits hot-reload.
+#
+# It also drops the rviz2 window: on the robot itself there is no display, and
+# the operator console on 3001 covers the same ground. Use stack.yaml when you
+# want the rviz pane.
+#
+# It is a separate file rather than a profile overlay on stack.yaml because the
+# differences are structural, not additive — driver_manager and sys_manager
+# share a window there and get one each here (see below) — and an overlay
+# expressive enough to move a pane between windows would be harder to read than
+# the duplicated window list.
+#
+# Startup order matters (there is no lifecycle manager): map_server / LIO ->
+# lio_bridge -> planner/controller -> task_runner, which is what the `sleep:`
+# fields encode.
+#
+# LOCALIZATION: the localizer applies [initial_pose] from the INI as its boot
+# guess on the first odom sample, so a robot standing at that pose localizes
+# itself with no further action. The relocalize call pre-typed in the
+# "localization" window (pane 2) is the fallback for when it is standing
+# somewhere else — edit x/y/yaw to its coarse pose and hit Enter.
+#
+# ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
+# starts in the workspace root so the relative config/system.ini resolves. The
+# frontend pane is the one exception — it starts in src/syncai_frontend, which
+# is where its package.json lives.
+#
+# NOTE: this writes the same log/stack/<robot_id>/ tree as stack.yaml, so do not
+# run both sessions at once — two multilogs in one dir interleave.
+# =============================================================================
+
+session: syncai-dev
+select: bringup
+
+windows:
+  # ---------- Window 0: bringup (static TFs for the LIO bridge + MID360) ------
+  - name: bringup
+    panes:
+      - cmd: ros2 launch syncai_bringup bringup.launch.py
+        log: bringup
+
+  # ---------- Window 1: map_server / LIO localizer / relocalize ----------
+  - name: localization
+    panes:
+      - cmd: ros2 launch syncai_map_server map_server.launch.py
+        log: map_server
+      - cmd: ros2 launch localizer localizer_launch.py
+        sleep: 2
+        log: localizer
+
+  # ---------- Window 2: lio_bridge (map -> <robot_id>/odom) ----
+  - name: lio_bridge
+    panes:
+      - cmd: ros2 launch syncai_lio_bridge lio_bridge.launch.py
+        sleep: 4
+        log: lio_bridge
+
+  # ---------- Window 3: planner / controller ----------
+  - name: plan_ctrl
+    panes:
+      - cmd: ros2 launch syncai_planner planner_server.launch.py
+        sleep: 4
+        log: planner
+      - cmd: ros2 launch syncai_controller controller_server.launch.py
+        sleep: 4
+        log: controller
+
+  # ---------- Window 4: task_runner (needs planner/controller action servers) --
+  - name: task_runner
+    panes:
+      - cmd: ros2 launch syncai_task_runner task_runner.launch.py
+        sleep: 10
+        log: task_runner
+
+  # ---------- Window 5: driver_manager (own window: shutdown path is manual) --
+  # Kept on a window of its own rather than split with sys_manager, because
+  # this is the pane you Ctrl-C by hand when you want the safe-shutdown path
+  # (safety lock + MODE X / lie down) to run — easy to hit the wrong pane in a
+  # split.
+  - name: driver_manager
+    panes:
+      - cmd: ros2 launch syncai_driver_manager driver_manager.launch.py
+        log: driver_manager
+
+
+  # ---------- Window 7: robot_state / backend ----------
+  - name: backend
+    panes:
+      - cmd: ros2 launch syncai_robot_state robot_state.launch.py
+        log: robot_state
+      - cmd: ros2 launch syncai_backend backend.launch.py
+        sleep: 2
+        log: backend
+
+  # ---------- Window 8: frontend dev server (Next.js, 3001) ----------
+  # cwd is the package dir, not the workspace root — npm needs its package.json.
+  # `npm run dev` (not `start`): this variant exists for UI work, so hot reload
+  # is the point. First start after a fresh container is slow while Next
+  # compiles.
+  - name: frontend
+    cwd: src/syncai_frontend
+    panes:
+      - cmd: npm run dev
+        log: frontend

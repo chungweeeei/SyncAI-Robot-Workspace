@@ -319,10 +319,12 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
   loop stalls there with the goal still active rather than failing.
 - **A plugin load failure calls `exit(-1)`.** A typo in a `.plugin` type string
   takes the whole process down at startup rather than degrading.
-- **`byobu_session.sh` launches this server with the default (2D) params
-  file** — it passes `params_file:=` for the planner but not for the controller,
-  so the 3D session runs with `use_sim_time: true` and no pointcloud observation
-  source. Pass `controller_server_3d_params.yaml` explicitly on the real robot.
+- **The byobu session launches this server on its default params file** —
+  `config/sessions/stack.yaml` passes no `params_file:=` override, for either
+  the planner or the controller. That is correct now that the separate
+  `*_3d_params.yaml` variants have been merged back into the defaults; it was a
+  bug while they were separate (the 3D session silently ran with
+  `use_sim_time: true` and no pointcloud observation source).
 - **Dynamic parameter changes are refused mid-goal**, with a warning rather than
   an error. Set them while idle.
 

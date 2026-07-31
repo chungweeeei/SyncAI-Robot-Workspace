@@ -3,7 +3,7 @@
 # Launch the non-lifecycle AMCL localization node.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used both as the node namespace and to
+# as sys_manager.launch.py) and is used both as the node namespace and to
 # rewrite the TF frame parameters (base_frame_id / odom_frame_id), since TF
 # frame names are not namespaced by ROS.
 #

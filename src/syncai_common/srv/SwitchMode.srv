@@ -1,0 +1,23 @@
+# Switch the robot's operating mode by rebuilding the byobu session that
+# implements it: AUTO tears down the mapping session and brings up
+# config/sessions/start_nav.yaml (navigation), MANUAL does the reverse and brings
+# up config/sessions/start_mapping.yaml (FAST-LIO2 + PGO mapping).
+#
+# Served by syncai_sys_manager on the relative name `switch_mode`, so it lands on
+# <robot_id>/switch_mode. This restarts most of the stack — it is not a cheap
+# call, and it takes as long as tearing down and re-sending ~40 byobu commands.
+#
+# mode values are defined as constants in RobotMode (MAINTENANCE/MANUAL/AUTO),
+# reused rather than redeclared here so RobotState.mode and this request speak
+# the same vocabulary.
+#
+# MAINTENANCE is REJECTED: there is no session spec for it. It is what get_mode
+# reports when no session is running at all, not a mode you can switch into.
+#
+# Asking for the mode that is already live is a no-op that reports success —
+# rebuilding would tear down a working stack (and, in MANUAL, lose an unsaved
+# map, since pgo_node holds its keyframes in RAM).
+uint8 mode
+---
+bool success
+string message

@@ -23,10 +23,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WifiNetwork.msg"
   "msg/WifiStatus.msg"
   "srv/ConnectWifiNetwork.srv"
+  "srv/GetMode.srv"
   "srv/ScanWifiNetworks.srv"
   "srv/SetMotionKey.srv"
   "srv/SetPolicyMode.srv"
   "srv/SetSpeedScale.srv"
+  "srv/SwitchMode.srv"
   "action/ExecuteTask.action"
   DEPENDENCIES builtin_interfaces
 )
