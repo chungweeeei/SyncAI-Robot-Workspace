@@ -14,6 +14,7 @@ from syncai_backend.interfaces.rest.server import start_rest_server
 
 from syncai_backend.repositories.robot.robot import init_robot_repo
 from syncai_backend.repositories.map.map import init_map_repo
+from syncai_backend.repositories.map.catalog import init_map_catalog_repo
 from syncai_backend.repositories.pointcloud.pointcloud import init_pointcloud_repo
 from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
 
@@ -57,6 +58,9 @@ class SyncAIBackend(Node):
         # init_map_repo creates the ORM schema and builds its own session_maker
         # from the engine (per-repo session convention).
         map_repo = init_map_repo(logger=logger, engine=engine)
+        # The maps on disk, as opposed to the one that is loaded. Reads the
+        # filesystem only; no engine, no ROS.
+        map_catalog_repo = init_map_catalog_repo(logger=logger)
         # Two single-slot cloud caches: the live body_cloud (drained by the WS
         # stream) and the static localizer map cloud (served by REST).
         pointcloud_repo = init_pointcloud_repo(logger=logger)
@@ -91,6 +95,7 @@ class SyncAIBackend(Node):
             robot_repo=robot_repo,
             robot_gw=robot_gw,
             map_repo=map_repo,
+            map_catalog_repo=map_catalog_repo,
             pointcloud_repo=pointcloud_repo,
             map_cloud_repo=map_cloud_repo,
             telemetry_repo=telemetry_repo,

@@ -53,6 +53,78 @@ def map_repo(logger, engine):
 
 
 @pytest.fixture
+def make_pgm():
+    """Factory writing a binary PGM, with hooks for the malformed cases.
+
+    ``comment`` inserts a ``# ...`` line after the magic (what GIMP does);
+    ``body_bytes`` overrides the pixel body so a truncated file can be built.
+    """
+    def _make(path, width, height, fill=254, comment=None, maxval=255,
+              magic=b"P5", body_bytes=None):
+        header = magic + b"\n"
+        if comment is not None:
+            header += b"# " + comment.encode("ascii") + b"\n"
+        header += f"{width} {height}\n{maxval}\n".encode("ascii")
+        body = bytes([fill]) * (width * height) if body_bytes is None else body_bytes
+        path.write_bytes(header + body)
+        return path
+
+    return _make
+
+
+@pytest.fixture
+def make_gridmap_yaml():
+    """Factory writing a map YAML in the shape pcd_to_gridmap.py emits."""
+    def _make(path, resolution=0.05, origin=(-1.0, -2.0, 0.0)):
+        path.write_text(
+            "image: gridmap.pgm\n"
+            "mode: trinary\n"
+            f"resolution: {resolution}\n"
+            f"origin: [{origin[0]}, {origin[1]}, {origin[2]}]\n"
+            "negate: 0\n"
+            "occupied_thresh: 0.65\n"
+            "free_thresh: 0.196\n"
+        )
+        return path
+
+    return _make
+
+
+@pytest.fixture
+def maps_dir(tmp_path, make_pgm, make_gridmap_yaml):
+    """A maps root laid out the way the robot's ``map/`` directory is.
+
+    ``full`` is a converted map (pcd + gridmap), ``rawonly`` is one straight out
+    of pgo/save_maps with no gridmap yet, and a loose file sits at the root to
+    prove only directories are listed.
+    """
+    root = tmp_path / "map"
+    root.mkdir()
+
+    full = root / "full"
+    full.mkdir()
+    (full / "map.pcd").write_bytes(b"x" * 2048)
+    make_pgm(full / "gridmap.pgm", 6, 4)
+    make_gridmap_yaml(full / "gridmap.yaml", origin=(-6.94, -11.09, 0.0))
+
+    rawonly = root / "rawonly"
+    rawonly.mkdir()
+    (rawonly / "map.pcd").write_bytes(b"x" * 1024)
+
+    (root / "stray.pgm").write_bytes(b"not a map directory")
+
+    return root
+
+
+@pytest.fixture
+def catalog_repo(logger, maps_dir):
+    """A MapCatalogRepo rooted at the fake maps tree."""
+    from syncai_backend.repositories.map.catalog import init_map_catalog_repo
+
+    return init_map_catalog_repo(logger=logger, maps_dir=str(maps_dir))
+
+
+@pytest.fixture
 def make_occupancy_grid():
     """Factory building a nav_msgs/OccupancyGrid from raw cell values.
 

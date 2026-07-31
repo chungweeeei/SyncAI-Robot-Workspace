@@ -66,7 +66,12 @@ data/
 # test repo
 src/syncai_test_node
 
-# LIO map output (pcd / gridmap / poses — regenerated, not tracked)
-map/
+# LIO map output (pcd / gridmap / poses — regenerated, not tracked).
+# Anchored with a leading slash: a bare `map/` matches a directory of that name at
+# any depth, and it was silently swallowing
+# src/syncai_backend/syncai_backend/repositories/map/. Files already tracked there
+# stayed visible, so nothing looked wrong until a new module in it went missing
+# from a commit.
+/map/
 
 record/
