@@ -17,7 +17,6 @@ from syncai_backend.interfaces.rest.routers.schedule import init_schedule_router
 from syncai_backend.interfaces.rest.routers.robot import init_robot_router
 from syncai_backend.interfaces.rest.routers.network import init_network_router
 from syncai_backend.interfaces.rest.routers.map import init_map_router
-from syncai_backend.interfaces.rest.routers.maps import init_maps_router
 from syncai_backend.interfaces.rest.routers.pointcloud import init_pointcloud_router
 from syncai_backend.interfaces.rest.routers.telemetry import init_telemetry_router
 
@@ -62,7 +61,6 @@ def init_rest_server(
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
     pointcloud_repo: PointCloudRepo,
-    map_cloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
 ) -> FastAPI:
 
@@ -95,14 +93,10 @@ def init_rest_server(
         init_robot_router(logger=logger, robot_repo=robot_repo, robot_gw=robot_gw)
     )
     app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
+    # Serves /api/v1/maps/...: the catalogue on disk plus the vertex table.
     app.include_router(
         init_map_router(
-            logger=logger, map_repo=map_repo, map_cloud_repo=map_cloud_repo
-        )
-    )
-    app.include_router(
-        init_maps_router(
-            logger=logger, catalog_repo=map_catalog_repo, map_repo=map_repo
+            logger=logger, map_repo=map_repo, map_catalog_repo=map_catalog_repo
         )
     )
     app.include_router(
@@ -123,7 +117,6 @@ def start_rest_server(
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
     pointcloud_repo: PointCloudRepo,
-    map_cloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
 ):
 
@@ -135,7 +128,6 @@ def start_rest_server(
         map_repo=map_repo,
         map_catalog_repo=map_catalog_repo,
         pointcloud_repo=pointcloud_repo,
-        map_cloud_repo=map_cloud_repo,
         telemetry_repo=telemetry_repo,
     )
 

@@ -15,6 +15,7 @@ import numpy as np  # noqa: E402
 
 from syncai_backend.helpers.pgm import (  # noqa: E402
     read_pgm_size,
+    render_png,
     render_thumbnail,
 )
 
@@ -74,6 +75,35 @@ def test_read_size_rejects_non_numeric_extent(tmp_path):
 
     with pytest.raises(ValueError):
         read_pgm_size(str(path))
+
+
+# --- render_png -------------------------------------------------------------
+
+
+def test_png_keeps_native_size(tmp_path, make_pgm):
+    data = make_pgm(tmp_path / "gridmap.pgm", 400, 200).read_bytes()
+
+    assert _decode(render_png(data)).shape == (200, 400)
+
+
+def test_png_is_byte_for_byte_lossless(tmp_path, make_pgm):
+    """The editor reads cell *kinds* off these values.
+
+    205 is unknown and 254 is free, one apart from the 204/255 a lossy or
+    colour-managed path would hand back — and a map with every cell shifted by
+    one still looks like a map, so this is the check that would catch it.
+    """
+    body = bytes([0, 205, 254, 255, 100, 89]) * 4
+    data = make_pgm(tmp_path / "gridmap.pgm", 6, 4, body_bytes=body).read_bytes()
+
+    decoded = _decode(render_png(data))
+
+    assert decoded.tobytes() == body
+
+
+def test_png_rejects_undecodable_data():
+    with pytest.raises(ValueError):
+        render_png(b"not an image at all")
 
 
 # --- render_thumbnail -------------------------------------------------------

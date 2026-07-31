@@ -1,8 +1,9 @@
 // Types for the 3D point-cloud viewer. The wire format (both the live
-// WebSocket stream and the static GET /api/v1/map/pointcloud) is:
+// WebSocket stream and the static GET /api/v1/maps/{name}/pointcloud) is:
 //   [uint32 point_count][float32 x, y, z] * point_count   (little-endian)
-// See src/syncai_backend/.../helpers/pointcloud.py (pack_xyz_f32) and
-// routers/pointcloud.py for the producers.
+// See src/syncai_backend/.../helpers/pointcloud.py (pack_xyz_f32),
+// routers/pointcloud.py for the live producer, and routers/map.py for the
+// stored one — the two share the format so the clouds overlay.
 
 /** A decoded point-cloud frame: xyz triplets in the map frame. */
 export interface PointCloudFrame {

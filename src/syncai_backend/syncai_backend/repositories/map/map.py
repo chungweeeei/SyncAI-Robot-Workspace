@@ -1,10 +1,8 @@
 import uuid
-import threading
 import structlog
 
 from typing import Optional
 
-from nav_msgs.msg import OccupancyGrid
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -12,18 +10,22 @@ from syncai_backend.database.models import MapPoint
 
 
 class MapRepo:
-    """The map's in-memory OccupancyGrid cache plus PostgreSQL-backed vertex CRUD.
+    """PostgreSQL-backed CRUD for map vertices.
 
-    The cache methods (``update_map``/``get_map``) only need the logger. The
-    vertex methods block on psycopg2, so the REST handlers that call them are
+    Every method blocks on psycopg2, so the REST handlers that call them are
     declared with plain ``def`` for FastAPI's worker thread pool.
 
     An SQLAlchemy ``Engine`` is passed in and the repo builds its own
     ``session_maker`` from it (same convention as CoreManager's TaskRepo).
     ``expire_on_commit=False`` keeps returned ORM instances readable after the
-    session closes, so the router can serialise them. The engine is optional:
-    cache-only callers (e.g. the map subscriber, cache tests) omit it, and the
-    vertex methods raise if it is absent.
+    session closes, so the router can serialise them.
+
+    This repo used to also cache the live ``map`` topic's OccupancyGrid, for two
+    REST endpoints that reported the loaded map. Those are served per map name
+    off the filesystem now, so the cache, its only writer (``map_subscriber.py``)
+    and this repo's dependency on ROS message types all went with them. The
+    engine stays ``Optional`` because it is threaded through the same wiring as
+    before; the methods raise if it is absent.
     """
 
     def __init__(
@@ -32,10 +34,6 @@ class MapRepo:
         engine: Optional[Engine] = None,
     ):
         self.logger = logger
-
-        # In-Process memory cache for the latest map (OccupancyGrid).
-        self._map_lock = threading.Lock()
-        self._map: Optional[OccupancyGrid] = None
 
         # Register database session factory (None when no engine was given).
         self.session_maker: Optional[sessionmaker] = (
@@ -48,18 +46,6 @@ class MapRepo:
             if engine is not None
             else None
         )
-
-    # --- Map cache ----------------------------------------------------------
-
-    def update_map(self, grid: OccupancyGrid):
-        with self._map_lock:
-            self._map = grid
-
-    def get_map(self) -> Optional[OccupancyGrid]:
-        with self._map_lock:
-            return self._map
-
-    # --- Vertex CRUD --------------------------------------------------------
 
     def _sessions(self) -> sessionmaker:
         if self.session_maker is None:

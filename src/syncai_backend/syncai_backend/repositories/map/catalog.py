@@ -100,6 +100,16 @@ class MapCatalogRepo:
         path = os.path.join(self.resolve_dir(name), GRIDMAP_PGM)
         return path if os.path.isfile(path) else None
 
+    def pointcloud_path(self, name: str) -> Optional[str]:
+        """Return the path of the map's ``map.pcd``, or None if absent.
+
+        The same file ``has_pointcloud`` reports on — this hands back the path
+        so the REST layer can parse it, rather than making the caller rebuild it
+        from ``resolve_dir`` and re-do the containment checks.
+        """
+        path = os.path.join(self.resolve_dir(name), MAP_PCD)
+        return path if os.path.isfile(path) else None
+
     # --- Listing ------------------------------------------------------------
 
     def list_maps(self) -> List[StoredMap]:

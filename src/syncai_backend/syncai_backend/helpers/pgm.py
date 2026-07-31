@@ -117,12 +117,44 @@ def read_pgm_size(path: str) -> Tuple[int, int]:
     return width, height
 
 
+def _decode_pgm(data: bytes) -> np.ndarray:
+    """Decode PGM bytes to a greyscale array.
+
+    Takes bytes rather than a path because every caller has already read the
+    file to hash it for the ETag, and re-reading 2.3 MB to hand OpenCV a
+    filename would double the I/O for nothing.
+    """
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise ValueError("Failed to decode PGM data")
+    return image
+
+
+def _encode_png(image: np.ndarray) -> bytes:
+    ok, buffer = cv2.imencode(".png", image)
+    if not ok:
+        raise ValueError("Failed to encode PNG")
+
+    return np.asarray(buffer).tobytes()
+
+
+def render_png(data: bytes) -> bytes:
+    """Re-encode a gridmap as a PNG at its native size, no resampling.
+
+    For consumers that need every cell: the 3D view's ground texture, which is
+    stretched over the grid's world extent and would show resampling artefacts
+    at wall edges if it were scaled first.
+
+    PNG rather than the raw .pgm because browsers cannot decode P5, and the
+    format is lossless either way — a gridmap's three-value histogram
+    compresses hard, so this is typically a fraction of the .pgm's size rather
+    than a bloat.
+    """
+    return _encode_png(_decode_pgm(data))
+
+
 def render_thumbnail(data: bytes, max_edge: int = DEFAULT_MAX_EDGE) -> bytes:
     """Downscale a gridmap to a PNG for the catalogue card.
-
-    Takes bytes rather than a path because the caller has already read the file
-    to hash it for the ETag, and re-reading 2.3 MB to hand OpenCV a filename
-    would double the I/O for nothing.
 
     INTER_AREA because this is always a downscale and it is the only
     interpolation that averages the cells it drops — nearest sampling at ~0.3x
@@ -131,9 +163,7 @@ def render_thumbnail(data: bytes, max_edge: int = DEFAULT_MAX_EDGE) -> bytes:
     tiles are built around the .pgm convention (white free, black obstacle, 205
     unknown) in both light and dark themes.
     """
-    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        raise ValueError("Failed to decode PGM data")
+    image = _decode_pgm(data)
 
     height, width = image.shape[:2]
     longest = max(width, height)
@@ -145,8 +175,4 @@ def render_thumbnail(data: bytes, max_edge: int = DEFAULT_MAX_EDGE) -> bytes:
             interpolation=cv2.INTER_AREA,
         )
 
-    ok, buffer = cv2.imencode(".png", image)
-    if not ok:
-        raise ValueError("Failed to encode thumbnail PNG")
-
-    return np.asarray(buffer).tobytes()
+    return _encode_png(image)

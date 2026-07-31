@@ -1,6 +1,10 @@
-// The map catalogue shape. Written against an endpoint that does not exist yet
-// (see lib/api/map.ts) and kept snake_case for the same reason lib/types/robot.ts
-// is: when GET /api/v1/maps lands, wiring it must be a drop-in fetch.
+// The map catalogue shape, as GET /api/v1/maps returns it. snake_case for the
+// same reason lib/types/robot.ts is: it mirrors the backend's field names, so
+// the client in lib/api/map.ts is a spread rather than a rename table.
+//
+// Two fields are *not* verbatim, and lib/api/map.ts is where they are fixed up:
+// `grid.origin` arrives as {x, y, yaw} and becomes MapMetadata's tuple, and
+// `thumbnail` arrives as a path and is made absolute against the backend's host.
 //
 // One map is one directory under the workspace's `map/`, as produced by the
 // FAST-LIO2 PGO save (`map.pcd` + `poses.txt` + `patches/`) and then, separately,

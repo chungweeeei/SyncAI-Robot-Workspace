@@ -11,19 +11,12 @@ import {
 } from "@/components/dashboard/pointcloud-canvas";
 import { useGoalTask } from "@/hooks/use-goal-task";
 import { useInitialPose } from "@/hooks/use-initial-pose";
+import { useActiveMap } from "@/hooks/use-maps";
 import { apiUrl } from "@/lib/api/config";
 import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
-import type { MapMetadata, PlanarPose, RobotPose } from "@/lib/types/robot";
+import type { PlanarPose, RobotPose } from "@/lib/types/robot";
 import type { StreamStatus } from "@/lib/types/pointcloud";
-
-interface MapImagePayload {
-  resolution: number;
-  width: number;
-  height: number;
-  origin: { x: number; y: number; z: number };
-  image: string;
-}
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
   connecting: "Connecting",
@@ -39,10 +32,10 @@ const CAMERA_OPTIONS = [
 
 /**
  * Data-wiring wrapper for the 3D point-cloud viewer — the console's only
- * viewport since the 2D grid canvas was removed. Loads the map image/info once
- * for the ground plane, subscribes the telemetry WebSocket for pose and joint
- * angles, and hosts the map-cloud toggle. The live body_cloud stream itself is
- * owned by PointCloudCanvas.
+ * viewport since the 2D grid canvas was removed. Resolves the active map from
+ * the catalogue for the ground plane, subscribes the telemetry WebSocket for
+ * pose and joint angles, and hosts the map-cloud toggle. The live body_cloud
+ * stream itself is owned by PointCloudCanvas.
  *
  * It also owns the pick mode. A drag on the ground can mean two things — a nav
  * goal or an initial-pose estimate — and the gesture is the same for both, so
@@ -57,10 +50,17 @@ export function PointCloudView({
   robotId: string;
   className?: string;
 }) {
-  const [map, setMap] = React.useState<{
-    meta: MapMetadata;
-    image: string;
-  } | null>(null);
+  // Which map the stack loaded, and therefore which one's raster to lay under
+  // the cloud. A failure or an unconverted map leaves activeMap.grid null and
+  // the canvas renders the cloud with no ground plane, same as before.
+  const { map: activeMap } = useActiveMap();
+  const mapImageUrl = React.useMemo(
+    () =>
+      activeMap?.grid
+        ? apiUrl(`/api/v1/maps/${encodeURIComponent(activeMap.name)}/image`)
+        : undefined,
+    [activeMap],
+  );
   const [pose, setPose] = React.useState<RobotPose | undefined>(undefined);
   const [joints, setJoints] = React.useState<
     Record<string, number> | undefined
@@ -95,32 +95,6 @@ export function PointCloudView({
     [pickMode, commitPose, commitGoal],
   );
 
-  // Map image + metadata (once).
-  React.useEffect(() => {
-    const abort = new AbortController();
-    fetch(apiUrl("/api/v1/map/image"), { signal: abort.signal })
-      .then((res) => {
-        if (!res.ok) throw new Error(`map image: ${res.status}`);
-        return res.json() as Promise<MapImagePayload>;
-      })
-      .then((data) => {
-        setMap({
-          meta: {
-            resolution: data.resolution,
-            width: data.width,
-            height: data.height,
-            origin: [data.origin.x, data.origin.y, 0],
-          },
-          image: data.image,
-        });
-      })
-      .catch(() => {
-        // No 2D map (e.g. a raw cloud test with no map_server): the canvas
-        // still renders the point cloud without a ground plane.
-      });
-    return () => abort.abort();
-  }, []);
-
   // Robot pose + joints via the telemetry WebSocket (~20 Hz map-frame pose
   // from odom, joints at the gait controller's telemetry rate). This replaced
   // polling GET /api/v1/robot/state every 500 ms: that endpoint's timestamp has
@@ -137,8 +111,9 @@ export function PointCloudView({
   return (
     <div className={cn("relative h-full w-full", className)}>
       <PointCloudCanvas
-        meta={map?.meta}
-        mapImageUrl={map?.image}
+        meta={activeMap?.grid ?? undefined}
+        mapImageUrl={mapImageUrl}
+        mapName={activeMap?.name}
         pose={pose}
         joints={joints}
         showMapCloud={showMapCloud}

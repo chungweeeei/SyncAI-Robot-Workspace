@@ -55,3 +55,26 @@ export function useMaps(): UseMaps {
 
   return { maps, status, refresh };
 }
+
+/**
+ * The map the running stack loaded, or null until the catalogue answers.
+ *
+ * The `active` flag is the only way to ask this question: the backend resolves
+ * it from the INI, and dropping the live `map` topic left no endpoint that
+ * means "the current one". Wrapped in a hook rather than left as a `.find()` at
+ * each call site so the answer has one definition — the same reason the flag is
+ * server-derived instead of the UI parsing `RobotState.map`'s path.
+ *
+ * Inherits useMaps' fetch-once-per-mount policy, so a map swapped underneath a
+ * long-open dashboard is not picked up until something calls `refresh()`. That
+ * is the trade the disk-sourced endpoints already made; a swap means restarting
+ * the stack, which drops the telemetry socket next to this anyway.
+ */
+export function useActiveMap(): { map: MapSummary | null; status: MapsStatus } {
+  const { maps, status } = useMaps();
+  const map = React.useMemo(
+    () => maps?.find((entry) => entry.active) ?? null,
+    [maps],
+  );
+  return { map, status };
+}

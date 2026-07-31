@@ -91,7 +91,36 @@ def make_gridmap_yaml():
 
 
 @pytest.fixture
-def maps_dir(tmp_path, make_pgm, make_gridmap_yaml):
+def make_pcd():
+    """Factory writing a minimal ``DATA ascii`` PCD with xyz fields.
+
+    Real enough for read_pcd_xyz: the map catalogue's pointcloud endpoint parses
+    the file it serves, so a fixture of filler bytes would only ever exercise
+    the failure path.
+    """
+    def _make(path, points=((0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (2.0, 2.0, 2.0))):
+        rows = "\n".join(f"{x} {y} {z}" for x, y, z in points)
+        path.write_text(
+            "# .PCD v0.7 - Point Cloud Data file format\n"
+            "VERSION 0.7\n"
+            "FIELDS x y z\n"
+            "SIZE 4 4 4\n"
+            "TYPE F F F\n"
+            "COUNT 1 1 1\n"
+            f"WIDTH {len(points)}\n"
+            "HEIGHT 1\n"
+            "VIEWPOINT 0 0 0 1 0 0 0\n"
+            f"POINTS {len(points)}\n"
+            "DATA ascii\n"
+            f"{rows}\n"
+        )
+        return path
+
+    return _make
+
+
+@pytest.fixture
+def maps_dir(tmp_path, make_pgm, make_gridmap_yaml, make_pcd):
     """A maps root laid out the way the robot's ``map/`` directory is.
 
     ``full`` is a converted map (pcd + gridmap), ``rawonly`` is one straight out
@@ -103,13 +132,13 @@ def maps_dir(tmp_path, make_pgm, make_gridmap_yaml):
 
     full = root / "full"
     full.mkdir()
-    (full / "map.pcd").write_bytes(b"x" * 2048)
+    make_pcd(full / "map.pcd")
     make_pgm(full / "gridmap.pgm", 6, 4)
     make_gridmap_yaml(full / "gridmap.yaml", origin=(-6.94, -11.09, 0.0))
 
     rawonly = root / "rawonly"
     rawonly.mkdir()
-    (rawonly / "map.pcd").write_bytes(b"x" * 1024)
+    make_pcd(rawonly / "map.pcd", points=((0.0, 0.0, 0.0),))
 
     (root / "stray.pgm").write_bytes(b"not a map directory")
 

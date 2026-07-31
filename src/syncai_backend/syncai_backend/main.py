@@ -25,7 +25,6 @@ from syncai_backend.gateways.workflow.workflow import init_workflow_gateway
 from syncai_backend.subscribers.robot_state_subscriber import (
     init_robot_state_subscriber,
 )
-from syncai_backend.subscribers.map_subscriber import init_map_subscriber
 from syncai_backend.subscribers.pointcloud_subscriber import (
     init_pointcloud_subscriber,
 )
@@ -61,10 +60,10 @@ class SyncAIBackend(Node):
         # The maps on disk, as opposed to the one that is loaded. Reads the
         # filesystem only; no engine, no ROS.
         map_catalog_repo = init_map_catalog_repo(logger=logger)
-        # Two single-slot cloud caches: the live body_cloud (drained by the WS
-        # stream) and the static localizer map cloud (served by REST).
+        # Single-slot cache for the live body_cloud, drained by the WS stream.
+        # The static map cloud used to have a second one; it is read from the
+        # saved .pcd on request now, so there is nothing to cache between calls.
         pointcloud_repo = init_pointcloud_repo(logger=logger)
-        map_cloud_repo = init_pointcloud_repo(logger=logger)
         # Single-slot pose/joints cache feeding the internal telemetry WS
         # (the high-rate channel the 3D viewer uses instead of the frozen,
         # whole-second-resolution GET /api/v1/robot/state contract).
@@ -75,12 +74,8 @@ class SyncAIBackend(Node):
         workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
 
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
-        init_map_subscriber(logger=logger, node=self, map_repo=map_repo)
         init_pointcloud_subscriber(
-            logger=logger,
-            node=self,
-            pointcloud_repo=pointcloud_repo,
-            map_cloud_repo=map_cloud_repo,
+            logger=logger, node=self, pointcloud_repo=pointcloud_repo
         )
         init_telemetry_subscriber(
             logger=logger, node=self, telemetry_repo=telemetry_repo
@@ -97,7 +92,6 @@ class SyncAIBackend(Node):
             map_repo=map_repo,
             map_catalog_repo=map_catalog_repo,
             pointcloud_repo=pointcloud_repo,
-            map_cloud_repo=map_cloud_repo,
             telemetry_repo=telemetry_repo,
         )
 

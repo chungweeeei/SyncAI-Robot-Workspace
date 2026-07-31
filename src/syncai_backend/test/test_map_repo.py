@@ -1,45 +1,16 @@
-"""Unit tests for MapRepo: the in-memory grid cache and vertex CRUD.
+"""Unit tests for MapRepo: vertex CRUD against the SQLite-backed fixture.
 
-The cache tests only need a logger; the vertex-CRUD tests use the SQLite-backed
-``map_repo`` fixture from conftest.
+The repo used to also cache the live map topic's OccupancyGrid; that went with
+the endpoints that read it, and with it this module's need for nav_msgs.
 """
 
 import uuid
 
 import pytest
 
-pytest.importorskip("nav_msgs")
-
-from syncai_backend.repositories.map.map import init_map_repo  # noqa: E402
+from syncai_backend.repositories.map.map import init_map_repo
 
 _MISSING_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
-
-
-# --- Map cache --------------------------------------------------------------
-
-def test_empty_repo_returns_none(logger):
-    repo = init_map_repo(logger)
-    assert repo.get_map() is None
-
-
-def test_update_then_get_returns_same_grid(logger, make_occupancy_grid):
-    repo = init_map_repo(logger)
-    grid = make_occupancy_grid(1, 1, [0])
-
-    repo.update_map(grid)
-
-    assert repo.get_map() is grid
-
-
-def test_update_overwrites_previous_grid(logger, make_occupancy_grid):
-    repo = init_map_repo(logger)
-    first = make_occupancy_grid(1, 1, [0])
-    second = make_occupancy_grid(2, 1, [0, 100])
-
-    repo.update_map(first)
-    repo.update_map(second)
-
-    assert repo.get_map() is second
 
 
 def test_vertex_ops_without_engine_raise(logger):
@@ -47,8 +18,6 @@ def test_vertex_ops_without_engine_raise(logger):
     with pytest.raises(RuntimeError):
         repo.list_vertices()
 
-
-# --- Vertex CRUD ------------------------------------------------------------
 
 def _create(repo, name="v", type="GENERAL", map_name="warehouse", x=1.0, y=2.0,
             theta=0.0):

@@ -310,8 +310,18 @@ export type PickMode = "goal" | "initial-pose";
 interface PointCloudCanvasProps {
   /** 2D map metadata; when omitted the cloud renders with no ground plane. */
   meta?: MapMetadata;
-  /** Ground-plane texture (base64 PNG data URI from GET /api/v1/map/image). */
+  /**
+   * Ground-plane texture URL — GET /api/v1/maps/{name}/image, absolute, from
+   * apiUrl(). A plain URL rather than the base64 data URI the removed
+   * /api/v1/map/image returned: TextureLoader takes either, and a real URL is
+   * the one the browser can cache and revalidate against the endpoint's ETag.
+   */
   mapImageUrl?: string;
+  /**
+   * Name of the map to load the static cloud for; required for showMapCloud to
+   * do anything, since that cloud is now read per map from its saved map.pcd.
+   */
+  mapName?: string;
   pose?: RobotPose;
   /**
    * Joint angles in radians, keyed by URDF joint name (the vocabulary
@@ -358,6 +368,7 @@ interface PointCloudCanvasProps {
 export function PointCloudCanvas({
   meta,
   mapImageUrl,
+  mapName,
   pose,
   joints,
   showMapCloud,
@@ -825,7 +836,7 @@ export function PointCloudCanvas({
     const ctx = sceneRef.current;
     if (!ctx) return;
 
-    if (!showMapCloud) {
+    if (!showMapCloud || !mapName) {
       if (ctx.mapPoints) {
         ctx.scene.remove(ctx.mapPoints);
         ctx.mapPoints.geometry.dispose();
@@ -837,7 +848,7 @@ export function PointCloudCanvas({
 
     const theme = THEMES[resolvedTheme === "dark" ? "dark" : "light"];
     const abort = new AbortController();
-    fetchMapPointCloud({ signal: abort.signal })
+    fetchMapPointCloud(mapName, { signal: abort.signal })
       .then((frame) => {
         if (abort.signal.aborted || !sceneRef.current) return;
         const geom = new THREE.BufferGeometry();
@@ -865,7 +876,7 @@ export function PointCloudCanvas({
       });
 
     return () => abort.abort();
-  }, [showMapCloud, resolvedTheme]);
+  }, [showMapCloud, mapName, resolvedTheme]);
 
   // ---- Pose picking -----------------------------------------------------
   // The anchor is the ground point the press landed on, kept alongside the raw
