@@ -44,8 +44,8 @@ def engine():
 def map_repo(logger, engine):
     """A MapRepo backed by the in-memory SQLite engine.
 
-    nav_msgs is imported lazily inside the repo module, so tests that need this
-    fixture should ``importorskip`` it themselves.
+    The engine is not optional — MapRepo cannot be constructed without one — so
+    there is no engine-less variant of this fixture to pair with.
     """
     from syncai_backend.repositories.map.map import init_map_repo
 
@@ -147,10 +147,17 @@ def maps_dir(tmp_path, make_pgm, make_gridmap_yaml, make_pcd):
 
 @pytest.fixture
 def catalog_repo(logger, maps_dir):
-    """A MapCatalogRepo rooted at the fake maps tree."""
+    """A MapCatalogRepo re-pointed at the fake maps tree.
+
+    Constructed and then re-pointed, rather than told where to look: the repo
+    hardcodes ``~/robot_ws/map``, and the alternative was a constructor argument
+    plus an environment variable that existed only for these tests.
+    """
     from syncai_backend.repositories.map.catalog import init_map_catalog_repo
 
-    return init_map_catalog_repo(logger=logger, maps_dir=str(maps_dir))
+    repo = init_map_catalog_repo(logger=logger)
+    repo.maps_dir = str(maps_dir)
+    return repo
 
 
 @pytest.fixture

@@ -11,12 +11,11 @@ import pytest
 
 pytest.importorskip("yaml")
 
-from syncai_backend.exceptions import BadRequestError  # noqa: E402
+from syncai_backend.exceptions import BadRequestError, NotFoundError  # noqa: E402
 from syncai_backend.helpers.system_config import (  # noqa: E402
     SYSTEM_INI_ENV,
 )
 from syncai_backend.repositories.map.catalog import (  # noqa: E402
-    MAPS_DIR_ENV,
     init_map_catalog_repo,
 )
 
@@ -68,7 +67,8 @@ def test_missing_map_returns_none(catalog_repo):
 
 
 def test_missing_maps_dir_lists_empty(logger, tmp_path):
-    repo = init_map_catalog_repo(logger=logger, maps_dir=str(tmp_path / "absent"))
+    repo = init_map_catalog_repo(logger=logger)
+    repo.maps_dir = str(tmp_path / "absent")
 
     assert repo.list_maps() == []
 
@@ -124,6 +124,17 @@ def test_gridmap_path_is_none_without_a_gridmap(catalog_repo):
     assert catalog_repo.gridmap_path("full").endswith("full/gridmap.pgm")
 
 
+def test_gridmap_yaml_path_is_none_without_a_yaml(catalog_repo):
+    assert catalog_repo.gridmap_yaml_path("rawonly") is None
+
+    path = catalog_repo.gridmap_yaml_path("full")
+    assert path.endswith("full/gridmap.yaml")
+    # What map_server's LoadMap needs: it resolves the yaml's relative image key
+    # against dirname() of the string it was handed, unexpanded.
+    assert os.path.isabs(path)
+    assert "~" not in path
+
+
 # --- active_name ------------------------------------------------------------
 
 
@@ -161,20 +172,69 @@ def test_active_name_is_none_without_a_map_section(catalog_repo, tmp_path,
     assert catalog_repo.active_name() is None
 
 
-# --- init factory -----------------------------------------------------------
+# --- write_gridmap ----------------------------------------------------------
 
 
-def test_env_overrides_the_default_maps_dir(logger, maps_dir, monkeypatch):
-    monkeypatch.setenv(MAPS_DIR_ENV, str(maps_dir))
+def test_write_gridmap_replaces_the_cells(catalog_repo, maps_dir):
+    path = maps_dir / "full" / "gridmap.pgm"
 
-    repo = init_map_catalog_repo(logger=logger)
+    catalog_repo.write_gridmap("full", b"\x00" * 24)
 
-    assert _names(repo.list_maps()) == ["full", "rawonly"]
+    assert path.read_bytes() == b"P5\n6 4\n255\n" + b"\x00" * 24
+    assert catalog_repo.get_map("full").grid.width == 6
 
 
-def test_explicit_maps_dir_wins_over_env(logger, maps_dir, tmp_path, monkeypatch):
-    monkeypatch.setenv(MAPS_DIR_ENV, str(tmp_path / "ignored"))
+def test_write_gridmap_returns_the_file_contents(catalog_repo, maps_dir):
+    """The REST layer hashes this for the ETag."""
+    written = catalog_repo.write_gridmap("full", b"\x00" * 24)
 
-    repo = init_map_catalog_repo(logger=logger, maps_dir=str(maps_dir))
+    assert written == (maps_dir / "full" / "gridmap.pgm").read_bytes()
 
-    assert _names(repo.list_maps()) == ["full", "rawonly"]
+
+def test_write_gridmap_creates_the_raw_backup_once(catalog_repo, maps_dir):
+    """gridmap_raw.pgm must keep holding the pcd_to_gridmap.py output.
+
+    Re-taking it on every save would, on the second save, replace the pristine
+    conversion output with the first save's edit — losing the only way back.
+    """
+    pristine = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+    raw = maps_dir / "full" / "gridmap_raw.pgm"
+
+    catalog_repo.write_gridmap("full", b"\x00" * 24)
+    assert raw.read_bytes() == pristine
+
+    catalog_repo.write_gridmap("full", b"\xfe" * 24)
+    assert raw.read_bytes() == pristine
+
+
+def test_write_gridmap_rejects_a_wrong_length_body(catalog_repo, maps_dir):
+    path = maps_dir / "full" / "gridmap.pgm"
+    before = path.read_bytes()
+
+    with pytest.raises(BadRequestError):
+        catalog_repo.write_gridmap("full", b"\x00" * 23)
+
+    assert path.read_bytes() == before
+
+
+def test_write_gridmap_without_a_gridmap_raises_not_found(catalog_repo, maps_dir):
+    """And must not create one: a pgm with no yaml is an invisible half-map."""
+    with pytest.raises(NotFoundError):
+        catalog_repo.write_gridmap("rawonly", b"\x00" * 24)
+
+    assert not (maps_dir / "rawonly" / "gridmap.pgm").exists()
+
+
+def test_write_gridmap_rejects_an_unsafe_name(catalog_repo):
+    with pytest.raises(BadRequestError):
+        catalog_repo.write_gridmap("../etc", b"\x00" * 24)
+
+
+def test_write_gridmap_leaves_gridmap_yaml_untouched(catalog_repo, maps_dir):
+    """The geometry is a property of the conversion, never of a save."""
+    yaml_path = maps_dir / "full" / "gridmap.yaml"
+    before = yaml_path.read_bytes()
+
+    catalog_repo.write_gridmap("full", b"\x00" * 24)
+
+    assert yaml_path.read_bytes() == before

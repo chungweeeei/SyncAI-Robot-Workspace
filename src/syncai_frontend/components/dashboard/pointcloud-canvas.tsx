@@ -193,6 +193,13 @@ const MARKER_Z_M = 0.05;
 /** Drag distance (CSS px) below which the heading is not taken from the drag. */
 const HEADING_DEADZONE_PX = 8;
 
+// Height (metres) the robot model floats at while it is being carried on the
+// pointer, before a press plants it on the floor. Purely an affordance: held and
+// placed have to look different, or a carried robot reads as a pose that is
+// already set. Small enough that the shadowless model still lines up with the
+// marker ring below it, which stays on the floor throughout.
+const CARRY_LIFT_M = 0.35;
+
 /**
  * The z=0 map plane the pointer is projected onto to pick a goal.
  *
@@ -346,13 +353,21 @@ interface PointCloudCanvasProps {
   liveStream?: boolean;
   /** Committed goal, drawn on the ground until the caller clears it. */
   goal?: PlanarPose | null;
-  /** Staged initial-pose estimate, drawn in the caution hue until cleared. */
+  /**
+   * The initial pose the operator last placed, drawn in the caution hue until
+   * cleared. It stays on the floor after publication on purpose: it is the
+   * reference the reported pose is read against while the localizer converges.
+   */
   initialPose?: PlanarPose | null;
   /**
    * What a press-drag-release on the ground currently produces, or null for
    * none (RViz style either way): the press point is projected onto the z=0 map
    * plane and the drag direction gives the heading. Left-button camera motion is
    * suspended while a mode is armed.
+   *
+   * In "initial-pose" mode the robot model is picked up as soon as the mode is
+   * armed: it floats under the bare pointer until a press plants it, so the
+   * preview is the machine itself rather than only the draft arrow.
    *
    * One mode at a time — the gesture is identical for both, so the only thing
    * telling the operator (and this canvas) which pose they are placing is which
@@ -384,10 +399,21 @@ export function PointCloudCanvas({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
 
-  // Pose being dragged right now. Kept in state (not a ref) so the marker
-  // effect below runs on every pointer move; the scene itself is untouched, so
-  // this costs a marker transform per frame, not a rebuild.
+  // Pose being carried / dragged right now. Kept in state (not a ref) so the
+  // marker effect below runs on every pointer move; the scene itself is
+  // untouched, so this costs a marker transform per frame, not a rebuild.
   const [draft, setDraft] = React.useState<PlanarPose | null>(null);
+
+  /**
+   * True while the draft is being *carried* — following the bare pointer with no
+   * button down — as opposed to planted by a press and being turned by a drag.
+   *
+   * Only initial-pose mode carries. Arming it takes the robot out of the pose
+   * feed's hands and puts it in the pointer's, so the operator sees the machine
+   * itself track the cursor and can read the fit against the cloud before
+   * committing to a spot; a press then pins that spot and the drag aims it.
+   */
+  const [carrying, setCarrying] = React.useState(false);
 
   // All mutable three.js objects live here so the pose / map-cloud effects can
   // reach into the scene without tearing it down.
@@ -420,6 +446,15 @@ export function PointCloudCanvas({
   const pickModeRef = React.useRef(pickMode);
   const targetPoseRef = React.useRef<SmoothPose | null>(null);
   const renderedPoseRef = React.useRef<SmoothPose | null>(null);
+
+  /**
+   * Where the robot model is drawn *instead of* the reported pose, while an
+   * initial-pose drag is in flight. Null the rest of the time.
+   *
+   * A ref rather than state because the render loop reads it every frame; the
+   * pointer handlers already hold the same drag in `draft` for the marker.
+   */
+  const posePreviewRef = React.useRef<SmoothPose | null>(null);
 
   // Joint articulation. The GLB keeps URDF link names as node names, so each
   // joint resolves to the child-link Object3D it rotates. Nodes belong to the
@@ -619,39 +654,51 @@ export function PointCloudCanvas({
      */
     const stepPose = (dt: number) => {
       const target = targetPoseRef.current;
-      if (!target) return;
-
       let cur = renderedPoseRef.current;
-      if (cur) {
-        const a = 1 - Math.exp(-dt / POSE_EASE_TAU_S);
-        const dx = (target.x - cur.x) * a;
-        const dy = (target.y - cur.y) * a;
-        const dz = (target.z - cur.z) * a;
-        cur.x += dx;
-        cur.y += dy;
-        cur.z += dz;
-        cur.yaw += (target.yaw - cur.yaw) * a;
 
-        // Focus mode: shift the camera by the same delta so the viewing offset
-        // (and any orbit the user set) survives while the robot moves. This
-        // used to run per pose update, which made the 1 Hz jump doubly
-        // obvious — the whole view lurched, not just the robot.
-        if (cameraModeRef.current === "focus") {
-          camera.position.x += dx;
-          camera.position.y += dy;
-          camera.position.z += dz;
+      if (target) {
+        if (cur) {
+          const a = 1 - Math.exp(-dt / POSE_EASE_TAU_S);
+          const dx = (target.x - cur.x) * a;
+          const dy = (target.y - cur.y) * a;
+          const dz = (target.z - cur.z) * a;
+          cur.x += dx;
+          cur.y += dy;
+          cur.z += dz;
+          cur.yaw += (target.yaw - cur.yaw) * a;
+
+          // Focus mode: shift the camera by the same delta so the viewing offset
+          // (and any orbit the user set) survives while the robot moves. This
+          // used to run per pose update, which made the 1 Hz jump doubly
+          // obvious — the whole view lurched, not just the robot.
+          if (cameraModeRef.current === "focus") {
+            camera.position.x += dx;
+            camera.position.y += dy;
+            camera.position.z += dz;
+          }
+        } else {
+          // First fix: snap, so the robot does not fly in from the world origin.
+          cur = renderedPoseRef.current = { ...target };
         }
-      } else {
-        // First fix: snap, so the robot does not fly in from the world origin.
-        cur = renderedPoseRef.current = { ...target };
       }
 
-      robotGroup.position.set(cur.x, cur.y, cur.z);
-      robotGroup.rotation.z = cur.yaw;
-      robotGroup.visible = true;
-      if (cameraModeRef.current === "focus") {
+      // Focus mode tracks the *reported* pose even mid-drag: the camera follows
+      // the machine, not the estimate being placed. Easing above also keeps
+      // running through a drag, so releasing it hands the model back to a
+      // current pose rather than to wherever the robot was when the drag began.
+      if (cur && cameraModeRef.current === "focus") {
         controls.target.set(cur.x, cur.y, cur.z);
       }
+
+      // An initial-pose drag draws the robot at the dragged pose instead — no
+      // easing, so the model tracks the pointer 1:1 the way a dragged object
+      // has to. Until either exists there is nothing to draw (a raw cloud test
+      // with no pose feed).
+      const drawn = posePreviewRef.current ?? cur;
+      if (!drawn) return;
+      robotGroup.position.set(drawn.x, drawn.y, drawn.z);
+      robotGroup.rotation.z = drawn.yaw;
+      robotGroup.visible = true;
     };
 
     let raf = 0;
@@ -831,6 +878,32 @@ export function PointCloudCanvas({
     placePoseMarker(ctx.draftMarker, pickMode ? draft : null);
   }, [goal, initialPose, draft, pickMode, meta, mapImageUrl, resolvedTheme]);
 
+  // ---- Initial-pose pick: the robot itself is the preview ----------------
+  // An initial pose asserts where the machine *is*, so the machine is what
+  // moves: arming the mode takes the robot off the reported pose and hands it to
+  // the pointer, a press plants it, the drag turns it to face where it faces.
+  // That makes the gesture self-describing — what stands on the floor at release
+  // is exactly what gets published — which is why this flow needs no confirm.
+  //
+  // A goal pick deliberately does not do this. A goal is somewhere to go, not a
+  // claim about the present, and moving the robot to preview one would state
+  // something false; the arrow marker is the whole of that preview.
+  React.useEffect(() => {
+    if (pickMode !== "initial-pose" || !draft) {
+      posePreviewRef.current = null;
+      return;
+    }
+    posePreviewRef.current = {
+      x: draft.x,
+      y: draft.y,
+      // Whatever height the robot is already drawn at — the pose feed is planar
+      // (lio_bridge reports z ~ 0), so this keeps it on the same floor rather
+      // than guessing a new one — plus the lift while it is still in hand.
+      z: (renderedPoseRef.current?.z ?? 0) + (carrying ? CARRY_LIFT_M : 0),
+      yaw: (draft.theta * Math.PI) / 180,
+    };
+  }, [draft, carrying, pickMode]);
+
   // ---- Optional static map cloud (toggle) ------------------------------
   React.useEffect(() => {
     const ctx = sceneRef.current;
@@ -939,15 +1012,39 @@ export function PointCloudCanvas({
     // same pointer on the canvas itself, and capturing further up the tree
     // would steal it and strand OrbitControls' pointerup handler.
     sceneRef.current?.renderer.domElement.setPointerCapture(event.pointerId);
-    // Until the pointer moves, inherit the robot's current heading so a plain
-    // click still yields a sane pose instead of snapping to 0deg.
-    setDraft({ x: hit.wx, y: hit.wy, theta: pose?.theta ?? 0 });
+    // The press plants what was being carried: same spot, on the floor now.
+    setCarrying(false);
+    // Until the pointer moves, keep the heading it was carried at (the robot's
+    // own, on the first press) so a plain click still yields a sane pose
+    // instead of snapping to 0deg.
+    setDraft({ x: hit.wx, y: hit.wy, theta: draft?.theta ?? pose?.theta ?? 0 });
   };
 
   const handlePointerMove = (event: React.PointerEvent) => {
+    if (!pickMode) return;
     const anchor = anchorRef.current;
-    if (!anchor || !pickMode) return;
 
+    // No press yet: carry the pose under the pointer, keeping the heading. Only
+    // initial-pose mode does this — see the preview effect above. A cursor over
+    // ground outside the map carries nothing, for the same reason a press there
+    // does not plant: it could not be published.
+    if (!anchor) {
+      if (pickMode !== "initial-pose") return;
+      const hit = pickGround(event);
+      if (!hit || !insideMap(hit.wx, hit.wy)) {
+        setDraft(null);
+        return;
+      }
+      setCarrying(true);
+      setDraft({
+        x: hit.wx,
+        y: hit.wy,
+        theta: draft?.theta ?? pose?.theta ?? 0,
+      });
+      return;
+    }
+
+    // Planted: the position is fixed at the anchor and the drag only aims.
     // Keep whatever heading the draft already has inside the deadzone.
     let theta = draft?.theta ?? pose?.theta ?? 0;
     const dragPx = Math.hypot(
@@ -978,6 +1075,22 @@ export function PointCloudCanvas({
     }
     if (draft && pickMode) onPickCommit?.(draft);
     setDraft(null);
+    setCarrying(false);
+  };
+
+  // The pointer leaving the viewport takes the carried robot with it, rather
+  // than stranding it wherever it was last seen — the operator moving onto the
+  // control panel has not chosen that spot. A press in flight is unaffected:
+  // the canvas holds the pointer capture, so the drag survives.
+  //
+  // This is also what clears the draft on disarm, and why no effect watches
+  // pickMode to do it: the disarm button is off-canvas, so reaching it means
+  // passing through here first. Both the marker and preview effects gate on
+  // pickMode anyway, so a draft left in state is never drawn.
+  const handlePointerLeave = () => {
+    if (anchorRef.current) return;
+    setDraft(null);
+    setCarrying(false);
   };
 
   return (
@@ -992,6 +1105,7 @@ export function PointCloudCanvas({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onPointerLeave={handlePointerLeave}
     />
   );
 }

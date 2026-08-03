@@ -5,6 +5,8 @@ back through cv2.imdecode rather than trusting the encoder, the same way
 test_occupancy_grid.py does.
 """
 
+import os
+
 import pytest
 
 pytest.importorskip("cv2")
@@ -17,6 +19,7 @@ from syncai_backend.helpers.pgm import (  # noqa: E402
     read_pgm_size,
     render_png,
     render_thumbnail,
+    write_pgm,
 )
 
 
@@ -75,6 +78,78 @@ def test_read_size_rejects_non_numeric_extent(tmp_path):
 
     with pytest.raises(ValueError):
         read_pgm_size(str(path))
+
+
+# --- write_pgm --------------------------------------------------------------
+
+
+def test_write_round_trips_through_read_pgm_size(tmp_path):
+    path = tmp_path / "gridmap.pgm"
+
+    write_pgm(str(path), 7, 3, b"\xfe" * 21)
+
+    assert read_pgm_size(str(path)) == (7, 3)
+
+
+def test_write_emits_the_canonical_header(tmp_path):
+    """Byte-identical to tools/pcd_to_gridmap.py, comment line included: none."""
+    path = tmp_path / "gridmap.pgm"
+
+    write_pgm(str(path), 7, 3, b"\xfe" * 21)
+
+    assert path.read_bytes().startswith(b"P5\n7 3\n255\n")
+
+
+def test_write_keeps_the_body_verbatim(tmp_path):
+    """The three legal editor values, plus the 255s real hand-edited maps carry."""
+    body = bytes([0, 205, 254, 255, 89, 90]) * 4
+    path = tmp_path / "gridmap.pgm"
+
+    written = write_pgm(str(path), 6, 4, body)
+
+    assert path.read_bytes().endswith(body)
+    assert _decode(render_png(written)).tobytes() == body
+
+
+def test_write_returns_the_bytes_it_wrote(tmp_path):
+    """This is what the router hashes for the ETag.
+
+    A return value that drifted from the file — the body without its header,
+    say — would still look fine here and would silently mean the ETag a save
+    reports never matches the one GET .../image computes.
+    """
+    path = tmp_path / "gridmap.pgm"
+
+    written = write_pgm(str(path), 4, 2, bytes(range(8)))
+
+    assert written == path.read_bytes()
+
+
+@pytest.mark.parametrize("body", [b"\xfe" * 20, b"\xfe" * 22])
+def test_write_rejects_a_wrong_length_body(tmp_path, body):
+    with pytest.raises(ValueError):
+        write_pgm(str(tmp_path / "gridmap.pgm"), 7, 3, body)
+
+
+def test_write_leaves_the_old_map_intact_when_the_body_is_wrong(tmp_path, make_pgm):
+    """A refused write must not be a destroyed map."""
+    path = make_pgm(tmp_path / "gridmap.pgm", 6, 4)
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError):
+        write_pgm(str(path), 6, 4, b"\x00" * 23)
+
+    assert path.read_bytes() == before
+    assert read_pgm_size(str(path)) == (6, 4)
+
+
+def test_write_leaves_no_temp_files(tmp_path, make_pgm):
+    """The temp file lives in the map directory, so it must not survive."""
+    path = make_pgm(tmp_path / "gridmap.pgm", 6, 4)
+
+    write_pgm(str(path), 6, 4, b"\x00" * 24)
+
+    assert os.listdir(tmp_path) == ["gridmap.pgm"]
 
 
 # --- render_png -------------------------------------------------------------

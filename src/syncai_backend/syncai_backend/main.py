@@ -19,6 +19,7 @@ from syncai_backend.repositories.pointcloud.pointcloud import init_pointcloud_re
 from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
 
 from syncai_backend.gateways.robot.robot import init_robot_gateway
+from syncai_backend.gateways.map.map import init_map_gateway
 from syncai_backend.gateways.artifact.artifact import init_artifact_gateway
 from syncai_backend.gateways.workflow.workflow import init_workflow_gateway
 
@@ -70,6 +71,12 @@ class SyncAIBackend(Node):
         telemetry_repo = init_telemetry_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
+        # LoadMap client, so an edited gridmap can be pushed into the running
+        # map_server. Its own gateway rather than a method on RobotGateway: that
+        # one is the driver / sys_manager / nav surface (motion keys, wifi,
+        # initialpose, NavigateToPose), and the map router has no business
+        # holding a handle that can command the robot to move.
+        map_gw = init_map_gateway(logger=logger, node=self)
         artifact_gw = init_artifact_gateway(logger=logger)
         workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
 
@@ -91,6 +98,7 @@ class SyncAIBackend(Node):
             robot_gw=robot_gw,
             map_repo=map_repo,
             map_catalog_repo=map_catalog_repo,
+            map_gw=map_gw,
             pointcloud_repo=pointcloud_repo,
             telemetry_repo=telemetry_repo,
         )

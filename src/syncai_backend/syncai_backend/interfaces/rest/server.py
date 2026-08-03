@@ -28,6 +28,7 @@ from syncai_backend.repositories.telemetry.telemetry import TelemetryRepo
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
+from syncai_backend.gateways.map.map import MapGateway
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -60,6 +61,7 @@ def init_rest_server(
     robot_gw: RobotGateway,
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
+    map_gw: MapGateway,
     pointcloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
 ) -> FastAPI:
@@ -93,10 +95,15 @@ def init_rest_server(
         init_robot_router(logger=logger, robot_repo=robot_repo, robot_gw=robot_gw)
     )
     app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
-    # Serves /api/v1/maps/...: the catalogue on disk plus the vertex table.
+    # Serves /api/v1/maps/...: the catalogue on disk plus the vertex table. The
+    # gateway is here for the save path only — writing a gridmap has to tell the
+    # running map_server to re-read it.
     app.include_router(
         init_map_router(
-            logger=logger, map_repo=map_repo, map_catalog_repo=map_catalog_repo
+            logger=logger,
+            map_repo=map_repo,
+            map_catalog_repo=map_catalog_repo,
+            map_gw=map_gw,
         )
     )
     app.include_router(
@@ -116,6 +123,7 @@ def start_rest_server(
     robot_gw: RobotGateway,
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
+    map_gw: MapGateway,
     pointcloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
 ):
@@ -127,6 +135,7 @@ def start_rest_server(
         robot_gw=robot_gw,
         map_repo=map_repo,
         map_catalog_repo=map_catalog_repo,
+        map_gw=map_gw,
         pointcloud_repo=pointcloud_repo,
         telemetry_repo=telemetry_repo,
     )

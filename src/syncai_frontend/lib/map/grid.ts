@@ -16,7 +16,15 @@ export interface GridSize {
  * in lib/map/view.ts, so nothing here has to think about y.
  */
 export interface MapGrid extends GridSize {
-  data: Uint8Array;
+  /**
+   * Narrowed to `<ArrayBuffer>` rather than left as a bare `Uint8Array`, whose
+   * default `ArrayBufferLike` also admits SharedArrayBuffer and is therefore not
+   * a `BodyInit`: this buffer is handed to `PUT .../grid` as the request body
+   * with no copy. The one construction site (`decodeGrid`) already produces
+   * exactly this type, so the narrowing states what was always true instead of
+   * asserting it at the call site.
+   */
+  data: Uint8Array<ArrayBuffer>;
 }
 
 export interface Cell {

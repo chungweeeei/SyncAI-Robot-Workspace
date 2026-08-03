@@ -2,7 +2,13 @@
 
 import { MaximizeIcon, Redo2Icon, Undo2Icon } from "lucide-react";
 
-import { Chip, Segmented, overlayPanel } from "@/components/console/instrument";
+import {
+  Chip,
+  Segmented,
+  TONE_TEXT,
+  overlayPanel,
+  type Tone,
+} from "@/components/console/instrument";
 import { cn } from "@/lib/utils";
 import { BRUSH_SIZES, FREE, OCCUPIED, UNKNOWN, type GridValue } from "@/lib/map/grid";
 import type { EditTool } from "@/components/maps/grid-canvas";
@@ -31,6 +37,49 @@ const SIZES = BRUSH_SIZES.map((size) => ({
   label: `${size}`,
 }));
 
+/**
+ * What the last save attempt did, as a state rather than an event.
+ *
+ * The two things an operator must not miss — "not saved" and "saved but the
+ * robot is still on the old map" — are properties of the editor as it stands,
+ * so they are rendered in place next to the Unsaved chip. A toast is the wrong
+ * container for them (and there is none in this app): anything that
+ * auto-dismisses is guaranteed to dismiss the one message that matters.
+ */
+export type SaveState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  /** Written to disk. `reloaded` is whether the running stack picked it up. */
+  | { kind: "saved"; active: boolean; reloaded: boolean; message: string }
+  | { kind: "failed"; message: string };
+
+/**
+ * `active` is what keeps this from crying wolf: `reloaded: false` covers both
+ * "this isn't the map the stack is running, so of course nothing reloaded"
+ * (benign, and shouting at it teaches operators to ignore the shout) and "it IS
+ * the running map and load_map failed" (the case this whole surface exists for).
+ */
+function saveNote(
+  save: SaveState,
+): { tone: Tone; headline: string; detail?: string; alert: boolean } | null {
+  if (save.kind === "failed") {
+    return { tone: "warn", headline: "Not saved", detail: save.message, alert: true };
+  }
+  if (save.kind !== "saved") return null;
+  if (save.reloaded) {
+    return { tone: "live", headline: "Saved · map reloaded", alert: false };
+  }
+  if (!save.active) {
+    return { tone: "neutral", headline: "Saved", detail: save.message, alert: false };
+  }
+  return {
+    tone: "caution",
+    headline: "Saved to disk — the robot is still using the old map.",
+    detail: save.message,
+    alert: false,
+  };
+}
+
 export interface GridToolbarProps {
   tool: EditTool;
   onToolChange: (tool: EditTool) => void;
@@ -44,7 +93,7 @@ export interface GridToolbarProps {
   onRedo: () => void;
   onFit: () => void;
   dirty: boolean;
-  saving: boolean;
+  save: SaveState;
   onSave: () => void;
   className?: string;
 }
@@ -87,11 +136,12 @@ export function GridToolbar({
   onRedo,
   onFit,
   dirty,
-  saving,
+  save,
   onSave,
   className,
 }: GridToolbarProps) {
   const shapeTool = tool === "brush" || tool === "line";
+  const note = saveNote(save);
 
   return (
     // w-56 matches the dashboard's overlay controls, and is what "FREE / UNKNOWN /
@@ -137,12 +187,27 @@ export function GridToolbar({
 
       <button
         type="button"
-        disabled={!dirty || saving}
+        disabled={!dirty || save.kind === "saving"}
         onClick={onSave}
         className="instrument-label h-7 rounded-sm border border-signal-cmd/50 bg-signal-cmd/12 text-signal-cmd transition-colors hover:bg-signal-cmd/20 disabled:border-hairline disabled:bg-transparent disabled:text-muted-foreground"
       >
-        {saving ? "Saving…" : "Save"}
+        {save.kind === "saving" ? "Saving…" : "Save"}
       </button>
+
+      {note && (
+        <p
+          role={note.alert ? "alert" : "status"}
+          className={cn(
+            "text-[11px] leading-tight",
+            note.tone === "neutral" ? "text-muted-foreground" : TONE_TEXT[note.tone],
+          )}
+        >
+          {note.headline}
+          {note.detail && (
+            <span className="mt-0.5 block text-muted-foreground">{note.detail}</span>
+          )}
+        </p>
+      )}
     </div>
   );
 }

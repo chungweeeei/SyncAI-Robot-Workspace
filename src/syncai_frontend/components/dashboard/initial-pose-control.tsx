@@ -8,8 +8,7 @@ import type { InitialPoseEstimate } from "@/hooks/use-initial-pose";
 
 /**
  * Operator controls for the drag-an-initial-pose flow (RViz's "2D Pose
- * Estimate"): arm the mode, read back the staged pose, publish it to the
- * localizer.
+ * Estimate"): arm the mode, then read back what the drag published.
  *
  * Sits under the goal control and mirrors its shape, because it is the same
  * gesture producing a different kind of pose — but everything it draws is in the
@@ -19,6 +18,13 @@ import type { InitialPoseEstimate } from "@/hooks/use-initial-pose";
  * somewhere unintended, it makes the whole map frame wrong, which is worse and
  * quieter. Amber, and a separate button, keep the two from being confused
  * mid-drag.
+ *
+ * Unlike the goal control there is no Send: arming picks the robot model up onto
+ * the pointer, and putting it down where the machine stands *is* the
+ * confirmation — `useInitialPose` posts on release. So this
+ * panel is a readback of what already went out, and the amber button below it is
+ * a retry for when it did not — the ordinary way to correct a pose is to drag
+ * again, not to press a button here.
  *
  * All state lives in `useInitialPose` (plus the view's pick mode); this
  * component is presentation only.
@@ -51,7 +57,7 @@ export function InitialPoseControl({
         )}
       >
         <LocateFixedIcon className="size-3.5" />
-        {armed ? "Drag where the robot is" : "Set initial pose"}
+        {armed ? "Aim and drop the robot" : "Set initial pose"}
       </button>
 
       {(pose || error) && (
@@ -82,13 +88,23 @@ export function InitialPoseControl({
           {/* "Published", not "Localized": the topic has no ack and the
             * localizer only takes this as an ICP seed, so the honest claim is
             * that the sample went out. Whether it converged is answered by the
-            * robot in the viewport moving to the marker. */}
-          {published && (
+            * robot in the viewport moving to the marker.
+            *
+            * Now that release posts on its own, this row is the only thing
+            * saying the POST happened — so it also has to show the in-flight
+            * and failed states, which the removed Send button used to imply. */}
+          {(busy || published || error) && (
             <div className="mt-2.5 flex items-center justify-between gap-2">
               <span className="instrument-label text-muted-foreground">
                 Estimate
               </span>
-              <Chip tone="live">PUBLISHED</Chip>
+              {busy ? (
+                <Chip tone="caution">SENDING</Chip>
+              ) : error ? (
+                <Chip tone="warn">FAILED</Chip>
+              ) : (
+                <Chip tone="live">PUBLISHED</Chip>
+              )}
             </div>
           )}
 
@@ -99,15 +115,22 @@ export function InitialPoseControl({
           )}
 
           <div className="mt-2.5 flex gap-1.5">
-            <button
-              type="button"
-              disabled={busy || !pose}
-              onClick={estimate.publish}
-              className="instrument-label flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm border border-signal-caution/50 bg-signal-caution/12 text-signal-caution transition-colors hover:bg-signal-caution/20 disabled:opacity-50"
-            >
-              <RadioTowerIcon className="size-3.5" />
-              {published ? "Publish again" : "Publish"}
-            </button>
+            {/* Only ever a retry. Dropping the robot is what publishes, so a
+              * button standing there the rest of the time reads as a step still
+              * owed — which is exactly how the old Publish button was read. It
+              * appears when there is a failure to retry and not otherwise; to
+              * re-seed a pose that went out fine, drop the robot again. */}
+            {error && (
+              <button
+                type="button"
+                disabled={busy || !pose}
+                onClick={estimate.publish}
+                className="instrument-label flex h-7 flex-1 items-center justify-center gap-1.5 rounded-sm border border-signal-caution/50 bg-signal-caution/12 text-signal-caution transition-colors hover:bg-signal-caution/20 disabled:opacity-50"
+              >
+                <RadioTowerIcon className="size-3.5" />
+                Retry
+              </button>
+            )}
             <button
               type="button"
               disabled={busy}

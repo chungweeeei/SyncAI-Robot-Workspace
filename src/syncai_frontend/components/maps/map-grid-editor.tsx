@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { GridCanvas, type CellProbe, type EditTool } from "@/components/maps/grid-canvas";
 import { GridStatus } from "@/components/maps/grid-status";
-import { GridToolbar } from "@/components/maps/grid-toolbar";
+import { GridToolbar, type SaveState } from "@/components/maps/grid-toolbar";
 import { useMapGrid } from "@/hooks/use-map-grid";
 import { saveMapGrid } from "@/lib/api/map";
 import { FREE, countValues, type GridValue, type ValueCounts } from "@/lib/map/grid";
@@ -87,7 +87,16 @@ function EditorSurface({
   const [canUndo, setCanUndo] = React.useState(false);
   const [canRedo, setCanRedo] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
-  const [saving, setSaving] = React.useState(false);
+  const [save, setSaveState] = React.useState<SaveState>({ kind: "idle" });
+
+  /**
+   * Bumped by every edit, so a save can tell whether the buffer moved under it.
+   *
+   * `fetch` copies a BufferSource body synchronously at the call, so a stroke
+   * painted while the request is in flight is *not* in what reached disk —
+   * clearing `dirty` on that response would mark unsaved cells saved.
+   */
+  const revisionRef = React.useRef(0);
 
   const [hover, setHover] = React.useState<CellProbe | null>(null);
   const [scale, setScale] = React.useState(1);
@@ -110,6 +119,11 @@ function EditorSurface({
     setCanUndo(true);
     setCanRedo(false);
     setDirty(true);
+    revisionRef.current += 1;
+    // The note describes the buffer as it was saved; once the buffer moves on it
+    // is stale, and "Saved" next to a lit Unsaved chip is the one genuinely
+    // confusing pair this panel can show.
+    setSaveState({ kind: "idle" });
     setCounts((current) => applyCountsDelta(current, patch, "after"));
   }, []);
 
@@ -128,6 +142,8 @@ function EditorSurface({
       // Still dirty after undoing to the start: the stack is byte-capped, so an
       // empty undo stack does not prove the buffer matches what was loaded.
       setDirty(true);
+      revisionRef.current += 1;
+      setSaveState({ kind: "idle" });
     },
     [session],
   );
@@ -136,13 +152,39 @@ function EditorSurface({
   const redo = React.useCallback(() => step("redo"), [step]);
   const fit = React.useCallback(() => setFitNonce((n) => n + 1), []);
 
-  const save = React.useCallback(async () => {
-    setSaving(true);
+  /**
+   * Write the buffer back, and report what the running stack made of it.
+   *
+   * Nothing is refetched afterwards, deliberately: the local buffer *is* what was
+   * written, byte for byte, so a refetch would re-download and re-decode ~2.4 MB
+   * to arrive back where we are — and it would need a new GridSession (patches
+   * index into a specific buffer), which means a remount, which would throw away
+   * the operator's undo history as the reward for saving.
+   */
+  const onSave = React.useCallback(async () => {
+    const sent = revisionRef.current;
+    setSaveState({ kind: "saving" });
+
     try {
-      await saveMapGrid(session.name, session.grid);
-      setDirty(false);
-    } finally {
-      setSaving(false);
+      const result = await saveMapGrid(session.name, session.grid);
+
+      // Only the bytes as of `sent` are on disk; anything painted since is not.
+      if (revisionRef.current === sent) setDirty(false);
+      setSaveState({
+        kind: "saved",
+        active: result.active,
+        reloaded: result.reloaded,
+        message: result.message,
+      });
+    } catch (cause) {
+      // Caught here rather than by the caller: this is wired straight to onClick,
+      // so a rejection would be an unhandled one — and `dirty` has to stay true
+      // so the button re-enables for a retry.
+      setSaveState({
+        kind: "failed",
+        message:
+          cause instanceof Error ? cause.message : "The gridmap could not be saved.",
+      });
     }
   }, [session]);
 
@@ -245,8 +287,8 @@ function EditorSurface({
         onRedo={redo}
         onFit={fit}
         dirty={dirty}
-        saving={saving}
-        onSave={save}
+        save={save}
+        onSave={onSave}
       />
       <GridStatus
         className="absolute bottom-3 left-3"

@@ -10,8 +10,13 @@
 // /image, which is the same cells losslessly encoded, a third smaller than the
 // P5 on the wire, and decodable by the browser instead of by a parser we would
 // have to write and keep tolerant of GIMP's `#` comment line.
+//
+// The write direction is asymmetric on purpose — `saveMapGrid` PUTs raw cell
+// bytes rather than a PNG. Read needs a format the browser can decode; write
+// needs no encoder at all, and the raw path cannot be colour-managed.
 
 import { apiUrl } from "@/lib/api/config";
+import { errorDetail } from "@/lib/api/http";
 import type { MapGrid } from "@/lib/map/grid";
 import type { MapSummary } from "@/lib/types/map";
 
@@ -157,15 +162,56 @@ export async function fetchMapGrid(
   return { summary, grid: await decodeGrid(await image.blob()) };
 }
 
+/** `SaveGridmapResponse`. Every field is already the app's type. */
+export interface SaveGridResult {
+  name: string;
+  /** Of the gridmap now on disk — the same tag /image will answer with. */
+  etag: string;
+  /** Whether this is the map the stack was launched with. */
+  active: boolean;
+  /** Whether the running map_server re-read it. False for any inactive map. */
+  reloaded: boolean;
+  /** Operator-facing sentence; render it verbatim. */
+  message: string;
+}
+
 /**
  * Persist an edited grid.
  *
- * Still a stub: there is no endpoint, and there cannot be one built on the
- * existing ROS services — `SaveMap` re-reads a topic instead of accepting an
- * array. The catalogue is read-only on the backend for the same reason. Wiring
- * this up is a backend round's job, together with the `_raw` backup convention
- * already visible on disk.
+ * The body is the cell buffer itself — `width * height` bytes, .pgm row order —
+ * not a PNG and not base64 in JSON. It goes out with no copy and the backend
+ * writes it into a P5 body verbatim, so nothing in the round trip can shift a
+ * 205 to a 204 the way a colour-managed image path can (see `decodeGrid`, which
+ * needed `colorSpaceConversion: "none"` for exactly that reason). ~1.6 MB per
+ * save on a robot LAN, once per operator edit.
+ *
+ * `Content-Type` is set explicitly because a BufferSource body makes `fetch`
+ * send none at all, and the endpoint's `Body(..., media_type=...)` needs it —
+ * without it FastAPI falls back to parsing the bytes as JSON.
+ *
+ * Deliberately takes no `AbortSignal`, unlike everything else in this file:
+ * aborting a PUT mid-flight is how you get a torn `gridmap.pgm`. If the operator
+ * navigates away the write should still land; React 19 makes the orphaned
+ * setState a no-op.
+ *
+ * Note `fetch` snapshots a BufferSource body synchronously at the call, so
+ * painting during an in-flight save cannot corrupt the payload — but it does
+ * mean the result describes the buffer as it was when Save was pressed, which is
+ * what the editor's revision guard is for.
  */
-export async function saveMapGrid(name: string, grid: MapGrid): Promise<void> {
-  console.log("save gridmap (stub)", name, grid.width, "x", grid.height);
+export async function saveMapGrid(
+  name: string,
+  grid: MapGrid,
+): Promise<SaveGridResult> {
+  const response = await fetch(
+    apiUrl(`/api/v1/maps/${encodeURIComponent(name)}/grid`),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: grid.data,
+    },
+  );
+  if (!response.ok) throw new Error(await errorDetail(response));
+
+  return (await response.json()) as SaveGridResult;
 }

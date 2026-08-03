@@ -1,13 +1,18 @@
 """The maps stored on the robot's disk, as opposed to the one that is loaded.
 
-``MapRepo`` next door caches the live ``map`` topic and owns vertex CRUD. This
-repo never touches ROS: it reads ``map/<name>/`` — the directories
-``pgo/save_maps`` and ``tools/pcd_to_gridmap.py`` write — and reports what is
-there.
+``MapRepo`` next door owns vertex CRUD in Postgres. This repo never touches ROS:
+it reads — and, since the editor's save path landed, writes — ``map/<name>/``,
+the directories ``pgo/save_maps`` and ``tools/pcd_to_gridmap.py`` produce.
+
+Writing is deliberately narrow: ``write_gridmap`` replaces the *cells* of an
+existing gridmap and nothing else. It cannot create a map, cannot change a map's
+extent, and never rewrites ``gridmap.yaml``. Everything about the grid's
+geometry stays a property of the pcd → grid conversion.
 """
 
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -15,23 +20,10 @@ from typing import List, Optional, Tuple
 import structlog
 import yaml
 
-from syncai_backend.exceptions import BadRequestError
-from syncai_backend.helpers.pgm import read_pgm_size
+from syncai_backend.exceptions import BadRequestError, NotFoundError
+from syncai_backend.helpers.pgm import read_pgm_size, write_pgm
 from syncai_backend.helpers.system_config import active_map_name
 
-# Same convention as the artifact gateway's INI constant: an absolute default
-# pointing into the container's workspace, overridable by environment so tests
-# (and a differently laid out host) can point somewhere else. This package has no
-# ROS parameters at all, so a param would have meant introducing a params file, a
-# launch change and a restart-to-reconfigure story for one path.
-DEFAULT_MAPS_DIR = os.path.expanduser("~/robot_ws/map")
-
-MAPS_DIR_ENV = "SYNCAI_MAPS_DIR"
-
-# The files a map directory is made of.
-GRIDMAP_YAML = "gridmap.yaml"
-GRIDMAP_PGM = "gridmap.pgm"
-MAP_PCD = "map.pcd"
 
 # Deliberately strict. This is the only thing standing between a URL path
 # segment and the filesystem, and it also has to hold when the write endpoint
@@ -71,9 +63,13 @@ class MapCatalogRepo:
     pool rather than the event loop.
     """
 
-    def __init__(self, logger: structlog.stdlib.BoundLogger, maps_dir: str):
+    def __init__(self, logger: structlog.stdlib.BoundLogger):
         self.logger = logger
-        self.maps_dir = maps_dir
+        self.maps_dir = os.path.expanduser("~/robot_ws/map")
+        # Logged because the path is neither a parameter nor an env var: an empty
+        # catalogue on a robot whose HOME is not what the container expects would
+        # otherwise leave no breadcrumb at all about where we looked.
+        self.logger.info("[MapCatalogRepo] Serving maps", path=self.maps_dir)
 
     # --- Paths --------------------------------------------------------------
 
@@ -97,7 +93,24 @@ class MapCatalogRepo:
 
     def gridmap_path(self, name: str) -> Optional[str]:
         """Return the path of the map's ``gridmap.pgm``, or None if absent."""
-        path = os.path.join(self.resolve_dir(name), GRIDMAP_PGM)
+        path = os.path.join(self.resolve_dir(name), "gridmap.pgm")
+        return path if os.path.isfile(path) else None
+
+    def gridmap_yaml_path(self, name: str) -> Optional[str]:
+        """Return the path of the map's ``gridmap.yaml``, or None if absent.
+
+        Absolute and free of ``~`` by construction — ``maps_dir`` is already
+        expanded and ``resolve_dir`` returns a realpath — which is exactly what
+        the consumer needs. ``syncai_map_server``'s ``loadMapYaml`` expands
+        ``~/`` only to open the yaml, then resolves the yaml's *relative*
+        ``image:`` key against ``dirname()`` of the string it was handed
+        unexpanded, so a ``~``-prefixed url loads the metadata and then fails on
+        the image with ``RESULT_INVALID_MAP_DATA`` — which reads like a corrupt
+        map rather than a path bug. Deriving the path from here instead of from
+        the INI's ``[map] map`` also sidesteps a second trap: that value is
+        *relative* to the workspace root.
+        """
+        path = os.path.join(self.resolve_dir(name), "gridmap.yaml")
         return path if os.path.isfile(path) else None
 
     def pointcloud_path(self, name: str) -> Optional[str]:
@@ -107,7 +120,7 @@ class MapCatalogRepo:
         so the REST layer can parse it, rather than making the caller rebuild it
         from ``resolve_dir`` and re-do the containment checks.
         """
-        path = os.path.join(self.resolve_dir(name), MAP_PCD)
+        path = os.path.join(self.resolve_dir(name), "map.pcd")
         return path if os.path.isfile(path) else None
 
     # --- Listing ------------------------------------------------------------
@@ -145,6 +158,79 @@ class MapCatalogRepo:
     def active_name(self) -> Optional[str]:
         return active_map_name(self.logger)
 
+    # --- Writing ------------------------------------------------------------
+
+    def write_gridmap(self, name: str, data: bytes) -> bytes:
+        """Replace an existing gridmap's cells with ``data``; return the file.
+
+        ``data`` is one byte per cell in .pgm row order (row 0 is the top of the
+        map, max y) and must be exactly ``width * height`` long — the extent is
+        read back off the file being replaced, so this cannot resize a map. That
+        check lives here rather than in the REST layer so "you cannot change a
+        map's extent through this repo" is a property of the repo, true for any
+        future caller, and not of one endpoint.
+
+        Returns the whole file as written, for the REST layer's ETag.
+
+        **``gridmap.yaml`` is never touched**, and that is not an omission. The
+        body length pins the extent; ``resolution`` and ``origin`` are properties
+        of the pcd → grid conversion, not of cell values; ``mode`` and the two
+        thresholds are how the loader *interprets* bytes, and the editor writes
+        values already in range for the existing ones. Rewriting it would be all
+        downside: ``yaml.safe_dump`` reformats, losing the ``image: gridmap.pgm``
+        spelling and the inline ``origin: [x, y, 0.0]`` that
+        ``tools/pcd_to_gridmap.py`` writes, and ``image:`` *must* stay relative
+        because map_server resolves it against the yaml's own directory. A torn
+        yaml is also the one failure the .pgm's atomic write cannot rescue — the
+        map stops loading entirely.
+        """
+        directory = self.resolve_dir(name)
+        path = os.path.join(directory, "gridmap.pgm")
+
+        # Re-checked here even though the router already 404'd on a map without a
+        # grid. Without it a race would *create* a gridmap.pgm in a directory that
+        # has none, i.e. a pgm with no yaml — which _read_grid reports as having no
+        # grid at all, so the map would look untouched while holding the edit.
+        if not os.path.isfile(path):
+            raise NotFoundError(f"Map '{name}' has no gridmap to overwrite.")
+
+        # Only when absent, so gridmap_raw.pgm always holds the pristine
+        # pcd_to_gridmap.py output. Copying on every save would, on the *second*
+        # save, overwrite that with the first save's edit and destroy the only way
+        # back to the conversion tool's result. copy2 rather than copy to keep the
+        # original mtime: otherwise the backup becomes the newest file under
+        # _walk_stats and drags the card's modified_at forward to now.
+        raw_path = os.path.join(directory, "gridmap_raw.pgm")
+        if not os.path.exists(raw_path):
+            shutil.copy2(path, raw_path)
+            self.logger.info(
+                "[MapCatalogRepo] Kept the pre-edit gridmap", map=name, path=raw_path
+            )
+
+        try:
+            width, height = read_pgm_size(path)
+        except ValueError as exc:
+            # Only reachable on a race: the router got its geometry from
+            # _read_grid, which calls this same function.
+            self.logger.warning(
+                "[MapCatalogRepo] Refusing to overwrite an unreadable gridmap",
+                map=name,
+                error=str(exc),
+            )
+            raise NotFoundError(f"Map '{name}' has no readable gridmap.")
+
+        if len(data) != width * height:
+            raise BadRequestError(
+                f"Gridmap body is {len(data)} bytes; '{name}' is "
+                f"{width}x{height} = {width * height} cells."
+            )
+
+        written = write_pgm(path=path, width=width, height=height, body=data)
+        self.logger.info(
+            "[MapCatalogRepo] Wrote gridmap", map=name, width=width, height=height
+        )
+        return written
+
     # --- Internals ----------------------------------------------------------
 
     def _read(self, name: str, path: str) -> Optional[StoredMap]:
@@ -157,7 +243,7 @@ class MapCatalogRepo:
         return StoredMap(
             name=name,
             grid=self._read_grid(name, path),
-            has_pointcloud=os.path.isfile(os.path.join(path, MAP_PCD)),
+            has_pointcloud=os.path.isfile(os.path.join(path, "map.pcd")),
             size_bytes=size_bytes,
             modified_at=datetime.fromtimestamp(newest_mtime, tz=timezone.utc),
         )
@@ -170,8 +256,8 @@ class MapCatalogRepo:
         catalogue listing down with it. The reason is logged, because "the card
         says no 2D grid but the files are right there" is otherwise a mystery.
         """
-        yaml_path = os.path.join(path, GRIDMAP_YAML)
-        pgm_path = os.path.join(path, GRIDMAP_PGM)
+        yaml_path = os.path.join(path, "gridmap.yaml")
+        pgm_path = os.path.join(path, "gridmap.pgm")
         if not os.path.isfile(yaml_path) or not os.path.isfile(pgm_path):
             return None
 
@@ -222,8 +308,6 @@ def _walk_stats(path: str) -> Tuple[int, float]:
 
 
 def init_map_catalog_repo(
-    logger: structlog.stdlib.BoundLogger, maps_dir: Optional[str] = None
+    logger: structlog.stdlib.BoundLogger
 ) -> MapCatalogRepo:
-    resolved = maps_dir or os.environ.get(MAPS_DIR_ENV) or DEFAULT_MAPS_DIR
-    logger.info("[MapCatalogRepo] Serving maps", path=resolved)
-    return MapCatalogRepo(logger=logger, maps_dir=resolved)
+    return MapCatalogRepo(logger=logger)

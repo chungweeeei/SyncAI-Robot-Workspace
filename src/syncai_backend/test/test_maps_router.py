@@ -31,8 +31,29 @@ from syncai_backend.interfaces.rest.server import (  # noqa: E402
 )
 
 
+class _StubMapGateway:
+    """Records reload_map calls instead of making a ROS service call.
+
+    The one thing this suite cannot make real: a LoadMap client needs a live
+    map_server on a DDS graph. The repos either side of it stay real.
+    """
+
+    def __init__(self):
+        self.calls = []
+        self.result = (True, "")
+
+    def reload_map(self, yaml_path):
+        self.calls.append(yaml_path)
+        return self.result
+
+
 @pytest.fixture
-def client(logger, catalog_repo, map_repo, tmp_path, monkeypatch):
+def map_gw():
+    return _StubMapGateway()
+
+
+@pytest.fixture
+def client(logger, catalog_repo, map_repo, map_gw, tmp_path, monkeypatch):
     """A client whose active map is 'full', set through the INI env override."""
     ini = tmp_path / "system.ini"
     ini.write_text("[system]\nrobot_id: robot01\n\n[map]\nname: full\n")
@@ -42,10 +63,16 @@ def client(logger, catalog_repo, map_repo, tmp_path, monkeypatch):
     register_exception_handlers(app)
     app.include_router(
         init_map_router(
-            logger=logger, map_repo=map_repo, map_catalog_repo=catalog_repo
+            logger=logger,
+            map_repo=map_repo,
+            map_catalog_repo=catalog_repo,
+            map_gw=map_gw,
         )
     )
     return TestClient(app)
+
+
+_OCTET = {"Content-Type": "application/octet-stream"}
 
 
 def _by_name(body):
@@ -231,6 +258,143 @@ def test_image_etag_follows_content_not_mtime(client, maps_dir, make_pgm):
     assert path.stat().st_size == size_before
     assert after.headers["etag"] != before
     assert after.status_code == 200
+
+
+# --- PUT /api/v1/maps/{name}/grid -------------------------------------------
+
+
+def _put_grid(client, name, body):
+    return client.put(f"/api/v1/maps/{name}/grid", content=body, headers=_OCTET)
+
+
+def _image_cells(client, name):
+    response = client.get(f"/api/v1/maps/{name}/image")
+    return cv2.imdecode(
+        np.frombuffer(response.content, np.uint8), cv2.IMREAD_GRAYSCALE
+    )
+
+
+def test_save_grid_writes_the_cells(client, maps_dir):
+    response = _put_grid(client, "full", b"\x00" * 24)
+
+    assert response.status_code == 200
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes().startswith(b"P5\n6 4\n255\n")
+    assert not _image_cells(client, "full").any()
+
+
+def test_save_grid_reloads_the_active_map(client, map_gw):
+    body = _put_grid(client, "full", b"\x00" * 24).json()
+
+    assert body["active"] is True
+    assert body["reloaded"] is True
+    assert len(map_gw.calls) == 1
+
+    # map_server resolves the yaml's relative image key against dirname() of the
+    # string it was handed, unexpanded — so this must be absolute and ~-free.
+    called = map_gw.calls[0]
+    assert called.endswith("full/gridmap.yaml")
+    assert called.startswith("/")
+    assert "~" not in called
+
+
+def test_save_grid_does_not_reload_an_inactive_map(
+    client, map_gw, maps_dir, make_pgm, make_gridmap_yaml
+):
+    # Converted here rather than in the maps_dir fixture: a third gridmap there
+    # would break the listing tests that assert exactly which maps have one.
+    make_pgm(maps_dir / "rawonly" / "gridmap.pgm", 3, 2)
+    make_gridmap_yaml(maps_dir / "rawonly" / "gridmap.yaml")
+
+    body = _put_grid(client, "rawonly", b"\x00" * 6).json()
+
+    assert body["active"] is False
+    assert body["reloaded"] is False
+    assert map_gw.calls == []
+
+
+def test_save_grid_reports_a_failed_reload_without_failing_the_save(client, map_gw):
+    """The bytes are on disk, so a 5xx would be a lie the operator acts on."""
+    map_gw.result = (False, "map_server/load_map is not available")
+
+    response = _put_grid(client, "full", b"\x00" * 24)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active"] is True
+    assert body["reloaded"] is False
+    assert "map_server/load_map is not available" in body["message"]
+    assert not _image_cells(client, "full").any()
+
+
+def test_save_grid_rejects_a_wrong_length_body(client, maps_dir, map_gw):
+    before = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+
+    response = _put_grid(client, "full", b"\x00" * 23)
+
+    assert response.status_code == 400
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes() == before
+    assert map_gw.calls == []
+
+
+def test_save_grid_404_for_a_missing_map(client):
+    assert _put_grid(client, "nosuchmap", b"\x00" * 24).status_code == 404
+
+
+def test_save_grid_404_when_the_map_has_no_gridmap(client, maps_dir):
+    assert _put_grid(client, "rawonly", b"\x00" * 24).status_code == 404
+    assert not (maps_dir / "rawonly" / "gridmap.pgm").exists()
+
+
+def test_save_grid_400_for_an_unsafe_name(client):
+    assert _put_grid(client, "with%20space", b"\x00" * 24).status_code == 400
+
+
+def test_save_grid_creates_the_raw_backup_once(client, maps_dir):
+    pristine = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+    raw = maps_dir / "full" / "gridmap_raw.pgm"
+
+    _put_grid(client, "full", b"\x00" * 24)
+    assert raw.read_bytes() == pristine
+
+    _put_grid(client, "full", b"\xfe" * 24)
+    assert raw.read_bytes() == pristine
+
+
+def test_save_grid_etag_matches_the_image_etag(client):
+    """The tag hashes the whole file, header included, on both sides."""
+    body = _put_grid(client, "full", b"\x00" * 24)
+
+    assert body.headers["etag"] == body.json()["etag"]
+    assert client.get("/api/v1/maps/full/image").headers["etag"] == body.json()["etag"]
+
+
+def test_save_grid_updates_the_thumbnail_without_an_eviction(client):
+    """The write path deliberately does not touch the caches.
+
+    _png_response re-reads and re-hashes the .pgm before consulting them, so a
+    stale entry can never be served — this is the test that keeps that true.
+    """
+    before = client.get("/api/v1/maps/full/thumbnail")
+
+    _put_grid(client, "full", b"\x00" * 24)
+    after = client.get("/api/v1/maps/full/thumbnail")
+
+    assert after.headers["etag"] != before.headers["etag"]
+    assert after.content != before.content
+
+
+def test_save_grid_needs_an_octet_stream_content_type(client, maps_dir):
+    """Without the header FastAPI falls back to parsing the body as JSON.
+
+    Documents the contract the frontend has to satisfy: a BufferSource body makes
+    fetch() send no Content-Type at all unless it is set explicitly.
+    """
+    before = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+
+    response = client.put("/api/v1/maps/full/grid", content=b"\x00" * 24)
+
+    assert response.status_code != 200
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes() == before
 
 
 # --- /api/v1/maps/{name}/pointcloud -----------------------------------------

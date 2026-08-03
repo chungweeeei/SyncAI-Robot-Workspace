@@ -85,7 +85,10 @@ export function PointCloudView({
   const { commitGoal } = task;
 
   // Single-shot, like RViz's nav-goal / pose-estimate tools: one drag, one pose,
-  // then the mode disarms so a stray click on the map cannot restage it.
+  // then the mode disarms so a stray click on the map cannot restage it. That
+  // disarm carries more weight for an initial pose than it used to — that flow
+  // publishes on release now, so a second click would re-seed the localizer, not
+  // just move a marker.
   const commitPick = React.useCallback(
     (picked: PlanarPose) => {
       if (pickMode === "initial-pose") commitPose(picked);

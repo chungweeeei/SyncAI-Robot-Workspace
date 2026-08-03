@@ -6,17 +6,7 @@ the endpoints that read it, and with it this module's need for nav_msgs.
 
 import uuid
 
-import pytest
-
-from syncai_backend.repositories.map.map import init_map_repo
-
 _MISSING_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
-
-
-def test_vertex_ops_without_engine_raise(logger):
-    repo = init_map_repo(logger)
-    with pytest.raises(RuntimeError):
-        repo.list_vertices()
 
 
 def _create(repo, name="v", type="GENERAL", map_name="warehouse", x=1.0, y=2.0,

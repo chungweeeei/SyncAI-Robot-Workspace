@@ -14,10 +14,10 @@ Retiring it also retired its only producers — ``map_subscriber.py`` and the
 ``map_cloud`` half of the point-cloud subscriber — so the backend no longer
 subscribes to ``map`` or ``localizer/map_cloud`` at all.
 
-What that trades away, on purpose: disk is now the only answer. If an operator
-saves an edited gridmap while the stack is running, these endpoints show the
-edit and the robot keeps navigating on what map_server loaded at startup. Only a
-live topic could tell those apart, and nothing asked to.
+Disk is the only answer these endpoints give, which used to mean a saved edit was
+invisible to the running stack. It no longer does: ``PUT /{name}/grid`` writes the
+cells back and, when the edited map is the active one, asks map_server to re-read
+them and re-publish ``map``, so the robot plans on the same grid the UI shows.
 
 This file used to be ``map.py`` and ``maps.py``, one character apart, which was
 a standing invitation to edit the wrong one. Merged because at the REST boundary
@@ -28,10 +28,11 @@ one OpenAPI tag, so ``/docs`` shows a single "Map" section.
 The **repositories** stay split, deliberately: ``MapRepo`` is the vertex table,
 ``MapCatalogRepo`` is the filesystem. Neither needs the other's dependency.
 
-The catalogue's map files are read-only here. Writing an edited gridmap back
-needs a new endpoint *and* a decision about the running stack
-(``nav2_msgs/SaveMap`` takes a topic name, not grid data, so it cannot persist
-an edited array at all); that is a separate round.
+``PUT /{name}/grid`` is the only write into a map's *files*; everything else
+about the catalogue is read-only. It takes the cells as a raw octet-stream and
+writes them itself rather than going through ``nav2_msgs/SaveMap``, which cannot
+help: that service takes a *topic name*, subscribes to it and saves whatever it
+receives, so it has no way to persist an array the browser edited.
 """
 
 import hashlib
@@ -46,8 +47,9 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from syncai_backend.exceptions import NotFoundError
+from syncai_backend.exceptions import BadRequestError, NotFoundError
 from syncai_backend.database.models import MapPoint
+from syncai_backend.gateways.map.map import MapGateway
 from syncai_backend.helpers.pgm import render_png, render_thumbnail
 from syncai_backend.helpers.pointcloud import (
     cap_points,
@@ -188,6 +190,29 @@ class MapSummaryResponse(BaseModel):
     )
 
 
+class SaveGridmapResponse(BaseModel):
+    name: str = Field(..., description="The map that was written.")
+    etag: str = Field(
+        ...,
+        description=(
+            "Strong ETag of the gridmap now on disk — the same value a "
+            "subsequent GET of /image or /thumbnail answers with."
+        ),
+    )
+    active: bool = Field(
+        ..., description="Whether this is the map the stack was launched with."
+    )
+    reloaded: bool = Field(
+        ...,
+        description=(
+            "Whether the running map_server re-read the map and re-published it. "
+            "False for any map that is not the active one, and for an active map "
+            "whose reload failed — the save itself succeeded either way."
+        ),
+    )
+    message: str = Field(..., description="What happened, for the operator to read.")
+
+
 # --- Helpers ----------------------------------------------------------------
 
 
@@ -269,6 +294,7 @@ def init_map_router(
     logger: structlog.stdlib.BoundLogger,
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
+    map_gw: MapGateway,
 ) -> APIRouter:
     # One router, one OpenAPI tag: /docs shows a single "Map" section covering
     # both URL families. Do not re-add a per-route tag for the catalogue half —
@@ -471,6 +497,128 @@ def init_map_router(
     def get_map_thumbnail(name: str, request: Request):
         return _png_response(
             name, request, thumbnail_cache, render_thumbnail, "thumbnail"
+        )
+
+    @map_router.put("/api/v1/maps/{name}/grid", response_model=SaveGridmapResponse)
+    def save_map_grid(
+        name: str,
+        response: Response,
+        payload: bytes = Body(..., media_type="application/octet-stream"),
+    ):
+        """Write an edited gridmap back, and reload it if it is the live one.
+
+        The body is the cells themselves: exactly ``width * height`` bytes in
+        .pgm row order (row 0 is the top of the map, max y). Raw rather than a
+        PNG or base64-in-JSON because it is what the editor already holds — the
+        client's buffer goes out as a memcpy and the server writes it into a P5
+        body verbatim, so there is no encode, no decode, and no chance of a
+        colour-managed round trip shifting 205 to 204. (The GET side had to pass
+        ``colorSpaceConversion: "none"`` to stop exactly that.) The cost is ~1.6
+        MB on the wire per save, on a robot LAN, once per operator edit.
+
+        A plain ``def``, like everything else here, and that is load-bearing: this
+        handler fsyncs a multi-megabyte write and then parks on
+        ``MapGateway.reload_map`` for up to 25 s. On the event loop that would
+        stall every other request in the process, the telemetry WebSocket
+        included. ``bytes = Body(...)`` is what makes it possible — FastAPI reads
+        the body in its async layer and hands the finished bytes to the
+        threadpool. The alternative (``async def`` + ``await request.body()`` +
+        ``run_in_threadpool`` twice) buys only tolerance of a missing
+        Content-Type, and needs two threadpool hops a later edit can silently
+        drop.
+
+        Cell *values* are deliberately not validated. map_io.cpp classifies by
+        range (occupied <= 89, unknown 90..205, free >= 206) under the
+        ``negate: 0 / 0.65 / 0.196`` every gridmap.yaml here carries, and two of
+        the real maps already contain 255s from a round of hand-editing in GIMP.
+        A ``{0, 205, 254}`` whitelist would refuse to save a map this same round
+        trip just handed the client. The length is the only thing that can make a
+        file map_server would misread.
+
+        No body-size cap either: the payload is already in memory by the time
+        this runs, so rejecting on Content-Length would mean streaming, and this
+        whole API is unauthenticated on a robot LAN — a cap is middleware's job.
+        """
+        stored = _require(name)
+
+        # stored.grid rather than a fresh read: _read_grid has already parsed the
+        # .pgm header *and* gridmap.yaml, so one None test covers "no pgm", "no
+        # yaml" and "torn pgm" — and it makes "the two agree" a precondition of
+        # saving, which matters because map_server re-reads both a few lines down.
+        if stored.grid is None:
+            raise NotFoundError(
+                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py "
+                "over its map.pcd first."
+            )
+
+        expected = stored.grid.width * stored.grid.height
+        if len(payload) != expected:
+            raise BadRequestError(
+                f"Gridmap body is {len(payload)} bytes; '{name}' is "
+                f"{stored.grid.width}x{stored.grid.height} = {expected} cells."
+            )
+
+        written = map_catalog_repo.write_gridmap(name, payload)
+
+        # No cache eviction here, and that is the design rather than an oversight.
+        # thumbnail_cache and image_cache are in this same closure, so reaching
+        # them is trivial — but _png_response re-reads the file and re-hashes it
+        # *before* consulting the cache, so a stale entry can never be served.
+        # Evicting would add a second place that has to remember the caches exist,
+        # making /image's correctness look like it depends on this handler; and
+        # popping before the write would be actively wrong, throwing away a valid
+        # rendering if the write then failed. There is no thumbnail file on disk
+        # to update either: /thumbnail renders from these bytes on demand.
+        tag = _content_tag(written)
+        response.headers["ETag"] = tag
+
+        active = name == map_catalog_repo.active_name()
+        if not active:
+            return SaveGridmapResponse(
+                name=name,
+                etag=tag,
+                active=False,
+                reloaded=False,
+                message=(
+                    f"Saved {name}"
+                ),
+            )
+
+        # None only if gridmap.yaml vanished since stored.grid was read — the same
+        # race the repo's own isfile check covers. Handled as a failed reload
+        # rather than left to hand the gateway a None it would abspath().
+        yaml_path = map_catalog_repo.gridmap_yaml_path(name)
+        if yaml_path is None:
+            reloaded, detail = False, "gridmap.yaml is missing"
+        else:
+            reloaded, detail = map_gw.reload_map(yaml_path)
+
+        if not reloaded:
+            # Still a 200. The bytes are on disk and every GET now returns them,
+            # so a 5xx would tell the operator the save failed when it did not —
+            # and they would either press save again or re-edit a grid they
+            # believe was lost. `reloaded` is the machine-readable half of the
+            # answer, `message` the human one. 202/207 were considered and
+            # dropped: no client here understands them, and nothing is partial or
+            # queued — the request completed, one of its two effects did not.
+            logger.error("Saved gridmap but map_server did not reload", map=name,
+                         error=detail)
+            return SaveGridmapResponse(
+                name=name,
+                etag=tag,
+                active=True,
+                reloaded=False,
+                message=(
+                    f"Saved '{name}', but system did not reload."
+                ),
+            )
+
+        return SaveGridmapResponse(
+            name=name,
+            etag=tag,
+            active=True,
+            reloaded=True,
+            message=f"Saved '{name}' and reloaded.",
         )
 
     @map_router.get("/api/v1/maps/{name}/pointcloud")

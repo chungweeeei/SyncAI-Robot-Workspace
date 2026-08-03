@@ -1,5 +1,11 @@
 """Binary PGM (P5) helpers for the stored gridmaps under ``map/<name>/``.
 
+The readers and the writer are deliberately asymmetric: ``_read_header``
+tolerates the ``#`` comment line GIMP writes, ``write_pgm`` never emits one. A
+gridmap that has been through this stack therefore comes out with a normalised
+header regardless of what authored it, which is what makes a saved map
+byte-indistinguishable from a freshly converted one.
+
 Two readers live here on purpose:
 
 * ``read_pgm_size`` parses **only the header**. The catalogue needs every map's
@@ -19,6 +25,7 @@ neither reliable nor small.
 """
 
 import os
+import tempfile
 from typing import List, Tuple
 
 import cv2
@@ -115,6 +122,85 @@ def read_pgm_size(path: str) -> Tuple[int, int]:
         )
 
     return width, height
+
+
+def write_pgm(path: str, width: int, height: int, body: bytes) -> bytes:
+    """Replace ``path`` with a binary PGM of ``body``, atomically.
+
+    The header is byte-identical to what ``tools/pcd_to_gridmap.py`` emits —
+    ``P5\\n{w} {h}\\n255\\n``, no comment line — so an edited map is
+    indistinguishable from a converted one and ``read_pgm_size`` agrees about
+    where the body starts.
+
+    **Atomic because three readers can arrive mid-write, and all three are
+    live in this stack:**
+
+    1. ``read_pgm_size`` rejects a body shorter than ``width * height``, and it
+       runs on *every* ``GET /api/v1/maps`` through ``_read_grid``. A plain
+       ``open(path, "wb")`` truncates and then streams; a listing landing in
+       that window sees a short file, the catalogue degrades that map to
+       ``grid: None``, and its card loses both its geometry and its thumbnail
+       link. With ``os.replace`` a reader sees the old inode or the new one.
+    2. ``syncai_map_server`` reads the .pgm through GraphicsMagick
+       (``map_io.cpp``'s ``loadMapFromFile``) inside the ``LoadMap`` call the
+       save endpoint makes milliseconds later — a guaranteed race without this.
+       A torn P5 either throws (``RESULT_INVALID_MAP_DATA``) or, far worse,
+       decodes with a shorter height and hands nav2 a grid whose ``origin`` and
+       ``resolution`` no longer match its extent: a silently mis-registered map
+       the robot then plans on.
+    3. ``_content_tag`` in the map router would otherwise cache a PNG under the
+       hash of bytes that never existed on disk as a whole file.
+
+    Returns the exact file contents (header *and* body). The router's ETag is a
+    hash of the whole file, so a tag taken over ``body`` alone would never match
+    the one ``GET .../image`` computes, and every conditional request after a
+    save would miss. Returning the bytes keeps the header format in this one
+    place instead of duplicating it into the REST layer.
+    """
+    if len(body) != width * height:
+        raise ValueError(
+            f"PGM body is {len(body)} bytes for {width}x{height} "
+            f"({width * height} cells expected): {path}"
+        )
+
+    blob = f"P5\n{width} {height}\n255\n".encode("ascii") + body
+
+    directory = os.path.dirname(path) or "."
+    # Same directory as the target, because os.replace is only atomic within a
+    # filesystem — a temp file under /tmp would fall back to a copy on a robot
+    # where map/ is a bind mount.
+    handle = tempfile.NamedTemporaryFile(
+        dir=directory, prefix=".gridmap-", suffix=".tmp", delete=False
+    )
+    try:
+        with handle:
+            handle.write(blob)
+            handle.flush()
+            # fsync before the rename, not after: the rename is what publishes
+            # the file, and a power loss between the two would otherwise leave a
+            # correctly named map full of zeroes. This is a battery robot.
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    except BaseException:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
+
+    # And fsync the directory so the rename itself survives the same power loss.
+    # Best effort: some filesystems refuse an O_DIRECTORY open, and a map that
+    # is durable but whose rename is not is still strictly better than nothing.
+    try:
+        dir_fd = os.open(directory, os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+    return blob
 
 
 def _decode_pgm(data: bytes) -> np.ndarray:
