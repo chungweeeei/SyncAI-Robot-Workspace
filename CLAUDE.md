@@ -183,28 +183,74 @@ ament package and require a build type and dependency list it does not have.
 
 ## Running the stack
 
-`scripts/byobu_session.py` is the real entrypoint. It builds a byobu session
-with one window per subsystem, encodes the required startup ordering as `sleep`
-offsets, and taps each pane's output into a size-capped `multilog` directory
-under `log/stack/<robot_id>/<name>/`. Read logs back with `scripts/tailog.sh`.
+The stack comes up as a **byobu session, one per operating mode**, built by
+`NodeManager` in
+`src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py`. There is no
+launcher script any more — `scripts/byobu_session*.sh` and the
+`scripts/byobu_session.py` that replaced them are both gone, and so is
+`scripts/tailog.sh`. A ROS node is the entrypoint instead, which is what lets the
+operator console bring the stack up and switch modes remotely.
+
+An operating mode **is** a session:
+
+| `RobotMode` | Session spec | byobu session | Log subtree |
+|---|---|---|---|
+| `AUTO` = 2 (default) | `config/sessions/start_nav.yaml` | `syncai-dev` | `log/stack/<robot_id>/<name>/` |
+| `MANUAL` = 1 | `config/sessions/start_mapping.yaml` | `syncai-mapping` | `log/stack/<robot_id>/mapping/<name>/` |
+| `MAINTENANCE` = 0 | — | none | — |
+
+`MAINTENANCE` is not a mode you switch *into*; it is what `get_mode` reports when
+neither session exists. The live mode is never stored — it is derived on demand
+from which session byobu actually has, so it stays correct across a `sys_manager`
+restart and does not drift when someone builds or kills a session by hand.
+`setup_session()` adopts a running session rather than rebuilding it, which is
+what makes restarting `sys_manager` mid-mapping-run harmless.
+
+Two services, namespaced under `robot_id`:
 
 ```bash
-scripts/byobu_session.py            # config/sessions/stack.yaml   (operational)
-scripts/byobu_session.py dev        # config/sessions/stack_dev.yaml
-scripts/byobu_session.py --dry-run  # print the byobu commands, run nothing
+ros2 service call /<robot_id>/get_mode    syncai_common/srv/GetMode
+ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode "{mode: 2}"
 ```
 
-The window list is **data**: `config/sessions/*.yaml` holds windows / panes /
-commands / `sleep` offsets / `multilog` names, and the runner holds the byobu
-plumbing (the two `byobu_session*.sh` scripts it replaced shared ~85 lines of
-identical bash). Schema is documented in the runner's docstring; `stack_dev.yaml`
-is the hands-on variant (Next.js dev server + `teleop_twist_keyboard`, no rviz).
-Both specs write the same log tree, so do not run them at once. The 2D / AMCL
-session was retired along with `bringup_2d.launch.py`.
+`switch_mode` kills *every* known session before building the target one (if both
+were somehow up, leaving one behind would leave `get_mode` ambiguous), and
+refuses to rebuild the mode that is already live — in `MANUAL` that would drop an
+unsaved map on the floor, because `pgo_node` accumulates its keyframes in RAM and
+`save_maps` is the only thing that serialises them. `sys_manager` itself runs
+**outside** both specs (start it separately, `ros2 launch syncai_sys_manager
+sys_manager.launch.py`); add it back as a window in a spec and `kill_session`
+would kill the pane it is running in.
 
-Two panes are **pre-typed but not executed** (`enter: false`) — you hit Enter
-yourself: the `localizer/relocalize` service call (3D localization is not active
-until you run it, with the robot at its known start pose) and `rviz2`.
+The window list is **data**: `config/sessions/*.yaml` holds windows / panes /
+commands / `sleep` offsets / `multilog` names, and `NodeManager` holds the byobu
+plumbing (the two shell scripts it descends from shared ~85 lines of identical
+bash). The schema is documented in the `NodeManager` docstring. `sleep` is where
+the startup ordering lives, since there is no lifecycle manager: map_server / LIO
+→ lio_bridge → planner/controller → task_runner. Sessions are built **detached**
+— no `attach-session`, because the caller is a ROS node with no TTY.
+
+The two specs are counterparts, not variants. `start_nav.yaml` *localizes*
+against an existing map — map_server and the FAST-LIO2 localizer both load one
+during construction and die without it — so it cannot build the map it needs;
+`start_mapping.yaml` is the other half of that loop (bringup + pgo + teleop, and
+deliberately no planner / controller / backend). Their logs go to separate
+subtrees, which is what stops the two from interleaving two multilogs into one
+directory. The 2D / AMCL session was retired along with `bringup_2d.launch.py`.
+
+There is no log-reading helper. Read a subsystem back by hand — multilog writes
+`current` plus gzipped rotations (16 MiB × 10):
+
+```bash
+tail -f log/stack/<robot_id>/planner/current
+zcat log/stack/<robot_id>/planner/@*.s | less
+```
+
+One pane is **pre-typed but not executed** (`enter: false`): the
+`set_motion_key` call in `start_mapping.yaml`'s teleop window. That window's next
+pane publishes the namespaced `cmd_vel` that driver_manager consumes, so a stray
+keypress there is a real motion command — which is why both specs set `select:`
+to `bringup` rather than coming up focused on teleop.
 
 Logging is deliberately split: `ROS_LOG_DIR` points at a tmpfs (ephemeral), while
 the byobu `pipe-pane` capture is the persistent, gzip-rotated record.

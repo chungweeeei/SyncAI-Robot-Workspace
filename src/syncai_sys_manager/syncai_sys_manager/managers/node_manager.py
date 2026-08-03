@@ -41,7 +41,9 @@ MODE_NAMES = {
 }
 
 # Same log tree the deleted scripts/byobu_session*.sh wrote, so the multilog
-# dirs stay where the docs (and scripts/tailog.sh) expect them.
+# dirs stay where the docs expect them. (Its companion reader, scripts/tailog.sh,
+# is gone as well — read a subsystem back with `tail -f <dir>/current` and
+# `zcat <dir>/@*.s`.)
 LOG_ROOT_TEMPLATE = "log/stack/{robot_id}"
 
 # 16 MiB per file x 10 rotated files, gzipped — lifted verbatim from the deleted

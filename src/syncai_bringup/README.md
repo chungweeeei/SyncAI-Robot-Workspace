@@ -6,7 +6,7 @@ only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
-| `bringup.launch.py` | `scripts/byobu_session.py` | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic) plus the Livox MID360 driver |
+| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window) | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic) plus the Livox MID360 driver |
 
 ```
 share/syncai_bringup/

@@ -1,25 +1,22 @@
 # =============================================================================
-# SyncAI Robot stack — dev / hands-on session
-# Run with: scripts/byobu_session.py dev    (inside the robot container)
-# Schema:   see the docstring of scripts/byobu_session.py
+# SyncAI Robot stack — navigation session (AUTO mode)
+# Schema: see the docstring of NodeManager in
+#         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
 #
-# Snapshot of the session that is actually being run by hand on robot01 during
-# development. Same stack as stack.yaml (FAST-LIO2 localization, no AMCL, no
-# lifecycle manager) with two additions that the operational spec deliberately
-# leaves out:
+# The spec for RobotMode.AUTO, and the default the stack boots into: FAST-LIO2
+# localization, no AMCL, no lifecycle manager. Built by NodeManager, either on
+# sys_manager startup (setup_session) or on a switch_mode call — there is no
+# launcher script, so nothing here is run by hand.
 #
-#   * frontend  — `npm run dev` (Next.js dev server on 3001) instead of a
-#                 pre-built `npm start`, so UI edits hot-reload.
+# This is a *localization* stack, the counterpart to start_mapping.yaml rather
+# than a variant of it: map_server and the localizer both load an existing map
+# during construction and die without one, so this spec cannot build the map it
+# needs. See start_mapping.yaml for the other half of that loop.
 #
-# It also drops the rviz2 window: on the robot itself there is no display, and
-# the operator console on 3001 covers the same ground. Use stack.yaml when you
-# want the rviz pane.
-#
-# It is a separate file rather than a profile overlay on stack.yaml because the
-# differences are structural, not additive — driver_manager and sys_manager
-# share a window there and get one each here (see below) — and an overlay
-# expressive enough to move a pane between windows would be harder to read than
-# the duplicated window list.
+# The frontend pane runs `npm run dev` (Next.js dev server on 3001) rather than a
+# pre-built `npm start`, so UI edits hot-reload — this is still the spec being
+# driven during development. There is no rviz2 window: on the robot itself there
+# is no display, and the operator console on 3001 covers the same ground.
 #
 # Startup order matters (there is no lifecycle manager): map_server / LIO ->
 # lio_bridge -> planner/controller -> task_runner, which is what the `sleep:`
@@ -27,17 +24,20 @@
 #
 # LOCALIZATION: the localizer applies [initial_pose] from the INI as its boot
 # guess on the first odom sample, so a robot standing at that pose localizes
-# itself with no further action. The relocalize call pre-typed in the
-# "localization" window (pane 2) is the fallback for when it is standing
-# somewhere else — edit x/y/yaw to its coarse pose and hit Enter.
+# itself with no further action. When it is standing somewhere else, call
+# relocalize by hand with its coarse pose — the operator console's initial-pose
+# control is the usual route, and
+# `ros2 service call /<robot_id>/localizer/relocalize ...` the manual one.
 #
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
 # starts in the workspace root so the relative config/system.ini resolves. The
 # frontend pane is the one exception — it starts in src/syncai_frontend, which
 # is where its package.json lives.
 #
-# NOTE: this writes the same log/stack/<robot_id>/ tree as stack.yaml, so do not
-# run both sessions at once — two multilogs in one dir interleave.
+# Logs go to log/stack/<robot_id>/<name>/. start_mapping.yaml writes the
+# mapping/ subtree instead, so the two specs cannot interleave two multilogs
+# into one directory — but switch_mode kills either before building the other
+# anyway, so they are never up at once.
 # =============================================================================
 
 session: syncai-dev
@@ -50,7 +50,7 @@ windows:
       - cmd: ros2 launch syncai_bringup bringup.launch.py
         log: bringup
 
-  # ---------- Window 1: map_server / LIO localizer / relocalize ----------
+  # ---------- Window 1: map_server / LIO localizer ----------
   - name: localization
     panes:
       - cmd: ros2 launch syncai_map_server map_server.launch.py

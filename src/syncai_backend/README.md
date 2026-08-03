@@ -285,7 +285,9 @@ ros2 launch syncai_backend backend.launch.py system_config:=config/instances/rob
 ros2 run syncai_backend backend                                  # no namespace -> default_robot
 ```
 
-In practice `scripts/byobu_session.py` starts it in the `state_backend` window.
+In practice `NodeManager` starts it from `config/sessions/start_nav.yaml`, in the
+`backend` window (pane 2, behind `robot_state`). `start_mapping.yaml` leaves it
+out entirely — it is nav-oriented and hard-requires postgres.
 
 > `setup.py` installs **compiled bytecode only** (`InstallNoSource`): after a
 > normal install it byte-compiles the package and deletes the `.py` sources from
