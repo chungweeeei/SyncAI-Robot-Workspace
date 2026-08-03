@@ -52,6 +52,7 @@ The navigation pipeline mirrors nav2's action-server topology:
 | `syncai_bt_navigator` | BT navigator action server (`NavigateToPose`) |
 | `syncai_backend` | Robot backend node exposing a RESTful API (FastAPI) bridged to ROS 2 |
 | `syncai_task_runner` | Task runner nodes (scaffold) |
+| `syncai_ros_mcp` | MCP server running as a ROS 2 node — exposes topics / services / tasks / maps as MCP tools over HTTP (port 8000) |
 
 ### Third-party packages (`src/third-party/`)
 

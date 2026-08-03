@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# colcon (when building this package standalone)
+build/
+install/
+log/

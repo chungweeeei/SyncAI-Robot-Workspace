@@ -75,6 +75,16 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 |---|---|
 | `syncai_backend` | Python. FastAPI **and** rclpy in one process (`MultiThreadedExecutor`), port **3000**. Temporal worker for task orchestration. |
 | `syncai_frontend` | Next.js + shadcn/ui + raw three.js, port **3001** |
+| `syncai_ros_mcp` | Python (`ament_python`). MCP server exposing the ROS 2 graph as MCP tools over HTTP, port **8000**. One process: `rclpy.spin()` owns the main thread, FastMCP runs on a background daemon thread. The topic/service tools read the live graph through the node; the task/map tools are thin REST clients for `syncai_backend` (`SYNCAI_BACKEND_BASE_URL`, default `http://localhost:3000`). |
+
+`syncai_ros_mcp` is **vendored** (source committed here), unlike `syncai_common`
+and everything under `src/third-party/`. It started as the submodule
+`chungweeeei/SyncAI-ROS-MCP` and was folded in on purpose: it is developed only
+against this workspace, and the submodule indirection meant every change needed
+two commits and left the workspace pinning a stale pointer. `FastMCP` is a
+pip-only dependency (no rosdep key), so `rosdep install` does not cover it —
+`python3 -m pip install "fastmcp>=3.4.4"` into the same interpreter `ros2 run`
+uses.
 
 ### Third-party (`src/third-party/`)
 

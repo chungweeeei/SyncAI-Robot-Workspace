@@ -66,6 +66,13 @@ data/
 # test repo
 src/syncai_test_node
 
+# Stale standalone clone of the MCP server, kept only as a local scratch copy.
+# The package now lives vendored in-tree at src/syncai_ros_mcp (same project, same
+# git lineage — this copy's HEAD 599526f is an ancestor of the vendored 828cf71).
+# Two working copies of one ament package would give colcon a duplicate
+# `syncai_ros_mcp`, so the directory also carries a COLCON_IGNORE marker.
+src/syncai-ros-mcp/
+
 # LIO map output (pcd / gridmap / poses — regenerated, not tracked).
 # Anchored with a leading slash: a bare `map/` matches a directory of that name at
 # any depth, and it was silently swallowing
