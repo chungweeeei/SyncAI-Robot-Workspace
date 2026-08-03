@@ -64,6 +64,29 @@ RobotStateNode::RobotStateNode() : Node("syncai_robot_state")
     "motor_states", rclcpp::SensorDataQoS(),
     std::bind(&RobotStateNode::motorStatesCallback, this, _1));
 
+  // The gait controller's own state machine, as it reports it back. RELIABLE,
+  // depth 10 — a deliberate exception to the SensorDataQoS above, and an exact
+  // mirror of the publisher in syncai_driver_manager.
+  //
+  // Reliability is REQUESTED rather than merely tolerated because this topic is
+  // edge-triggered, not a periodic stream: the driver publishes only when a
+  // telemetry datagram happens to carry a MODE_STATE section, with no periodic
+  // republish and no TRANSIENT_LOCAL latch. A dropped sample is therefore not made
+  // good by the next one — it can be the only announcement of a state change. (A
+  // reliable publisher does satisfy a best-effort subscriber, so SensorDataQoS
+  // would have matched; it would just have thrown samples away for nothing.)
+  //
+  // The cost of the choice, stated so it is not a surprise later: if that
+  // publisher is ever relaxed to best-effort this subscription stops matching and
+  // receives NOTHING, silently — the same trap the robot_state publisher comment
+  // above describes, pointing the other way. `ros2 topic info /<robot_id>/mode
+  // --verbose` is how you see it.
+  //
+  // No dedicated callback group: this callback is a bounds check and two stores.
+  // The timer has its own group because of the blocking TF work.
+  low_level_mode_sub_ = this->create_subscription<std_msgs::msg::Int32MultiArray>(
+    "mode", rclcpp::QoS(10), std::bind(&RobotStateNode::lowLevelModeCallback, this, _1));
+
   timer_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ = this->create_wall_timer(
     periodFromRate(publish_rate_), std::bind(&RobotStateNode::onTimer, this), timer_cb_group_);
@@ -160,6 +183,46 @@ void RobotStateNode::motorStatesCallback(const syncai_common::msg::MotorStates::
   latest_motor_states_ = msg;
 }
 
+void RobotStateNode::lowLevelModeCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg)
+{
+  // data[0] = policy state, data[1] = motion state. Anything shorter is REJECTED,
+  // not padded.
+  //
+  // Padding would be worse than dropping: 0 is a legitimate value on both indices
+  // (PPO / Stand), so a padded element is indistinguishable from a real reading
+  // and would let a malformed packet claim the robot is standing. There is no
+  // in-band way for a consumer to tell the difference.
+  //
+  // The real publisher cannot produce a short array — parseIntValues() in
+  // syncai_driver_manager demands two tokens and publishes nothing at all
+  // otherwise — so this guard is for a malformed or third-party publisher on the
+  // same topic. It is also the only thing keeping msg->data[1] from being an
+  // out-of-bounds read.
+  //
+  // A rejected sample leaves the previous reading in place. Note that nothing
+  // downstream can tell that happened: low_level_mode carries no freshness field,
+  // so a malformed publisher that talks over the real one is silent from the
+  // consumer's side and visible only in this warning.
+  if (msg->data.size() < 2) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "[RobotStateNode][%s] Ignoring `mode` sample with %zu element(s); expected at least 2 "
+      "(data[0] policy state, data[1] motion state). Holding the previous low_level_mode.",
+      __func__, msg->data.size());
+    return;
+  }
+
+  // size() > 2 is NOT an error: the MODE_STATE telemetry section runs until the
+  // next keyword, so a controller that starts reporting a third value widens this
+  // array additively. Read the two we understand, ignore the rest, warn about
+  // nothing. `layout` is ignored too — the driver never populates it (data.assign
+  // only), so the positional meaning of data[] is convention, not something the
+  // message declares.
+  std::lock_guard<std::mutex> lock(mutex_);
+  low_level_policy_state_ = msg->data[0];
+  low_level_motion_state_ = msg->data[1];
+}
+
 void RobotStateNode::updateHealthLatches()
 {
   // Hysteresis rather than a bare comparison: at the 10 Hz publish rate a pack
@@ -221,8 +284,9 @@ syncai_common::msg::RobotState RobotStateNode::buildState()
   // Whole SECONDS, because this field is passed verbatim to
   // GET /api/v1/robot/state. At 10 Hz that means ten consecutive messages carry
   // the same value — it is a wall clock for the UI, not a sequence number, and
-  // cannot be used to order or rate-check samples. Use motor_timestamp
-  // (nanoseconds) if you need sub-second resolution.
+  // cannot be used to order or rate-check samples -- and motor_status.timestamp is
+  // no help either, it is seconds too. Subscribe motor_states directly for
+  // sub-second resolution, which is what the backend's telemetry WebSocket does.
   msg.timestamp = static_cast<uint64_t>(this->now().seconds());
   msg.robot_id = robot_id_;
   msg.map = map_name_;
@@ -321,12 +385,39 @@ syncai_common::msg::RobotState RobotStateNode::buildState()
     msg.network_status.wifi_info = wifi_json.dump();
 
     // Operator-facing detail; must not be forwarded into the REST payload — see
-    // RobotState.msg. Left empty (and motor_timestamp at 0) while
+    // RobotState.msg. Left at an empty `states` and a 0 `timestamp` while
     // syncai_driver_manager is down, which is itself the useful signal.
+    //
+    // The whole message, not its two halves picked apart: motor_status IS a
+    // MotorStates now, so the array and the instant it describes cannot be copied
+    // independently or get out of step.
+    //
+    // The one thing that is NOT verbatim is the unit. MotorStates.timestamp is
+    // nanoseconds on the topic (driver_manager stamps now().nanoseconds()), and
+    // RobotState reports seconds everywhere else, so it is scaled here — see the
+    // trap note on RobotState.motor_status. Integer division, deliberately: the
+    // field is a uint64 and this message's other timestamp is whole seconds too,
+    // so truncating is consistent rather than lossy in a new way. The sub-second
+    // joint channel is the backend telemetry WebSocket, which reads the topic
+    // directly and still gets nanoseconds.
     if (latest_motor_states_) {
-      msg.motor_status = latest_motor_states_->states;
-      msg.motor_timestamp = latest_motor_states_->timestamp;
+      msg.motor_status = *latest_motor_states_;
+      msg.motor_status.timestamp = latest_motor_states_->timestamp / 1000000000ULL;
     }
+
+    // Straight through, no branch: these members default to 0 / 0, which is what a
+    // consumer sees before the first sample — and is indistinguishable from a
+    // genuine "PPO / Stand", because this field carries no freshness information
+    // (see RobotLowLevelMode.msg). The four inputs above each need a null check;
+    // these do not, because there is no pointer to be missing.
+    //
+    // Nothing here judges freshness, and nothing here touches msg.state:
+    // RobotStatus has no STALE value, UNINITIALIZED belongs to localization, and
+    // WARNING still carries no reason field — a third cause folded into it would be
+    // unreadable. Same split as localization_valid vs state, where the precise
+    // field answers the precise question and state stays the coarse rollup.
+    msg.low_level_mode.policy_state = low_level_policy_state_;
+    msg.low_level_mode.motion_state = low_level_motion_state_;
   }
 
   return msg;

@@ -246,10 +246,11 @@ export function Segmented<T extends string>({
   /**
    * `null` lights no segment.
    *
-   * For a control whose state is *commanded* rather than measured: the console
-   * cannot read back which locomotion controller is live, so before the operator
-   * has picked one there is no honest segment to light. A default-lit segment
-   * would be a claim about the robot.
+   * For a control whose current value can be something none of the options
+   * represents. The locomotion policy row is the motivating case: it lights what
+   * the robot *reports*, and the robot can report a policy the command surface
+   * deliberately does not expose (CHAMP / ISSAC), or none at all. Lighting the
+   * nearest option instead would be a claim about the robot.
    */
   value: T | null;
   options: readonly { value: T; label: string }[];

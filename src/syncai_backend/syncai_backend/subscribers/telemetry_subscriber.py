@@ -140,8 +140,15 @@ class TelemetrySubscriber:
     def _motor_states_cb(self, msg: MotorStates):
         self._repo.update_joints(
             joints={m.name: float(m.q) for m in msg.states},
-            # MotorStates.timestamp is nanoseconds (stamped from now() by
-            # driver_manager); the wire format uses seconds like the pose.
+            # MotorStates.timestamp is nanoseconds ON THIS TOPIC (stamped from
+            # now() by driver_manager); the wire format uses seconds like the
+            # pose, hence the scale.
+            #
+            # Do not "fix" this against RobotState.motor_status.timestamp, which
+            # is the same message type carrying SECONDS: syncai_robot_state
+            # rescales it on the way into that aggregate. The topic deliberately
+            # keeps nanoseconds because this is the high-rate joint channel and
+            # whole seconds cannot order samples at 20 Hz.
             stamp=msg.timestamp * 1e-9,
         )
 

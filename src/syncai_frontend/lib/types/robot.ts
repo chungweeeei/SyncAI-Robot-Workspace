@@ -4,6 +4,25 @@
 
 export type RobotMode = "MAINTENANCE" | "MANUAL" | "AUTO";
 
+/**
+ * What the gait controller reports it is doing — not `RobotState.mode`, which is
+ * which byobu session is up.
+ *
+ * `policy` and `motion` are open strings rather than unions on purpose: the
+ * backend decodes the controller's integers through a lookup with an `"UNKNOWN"`
+ * fallback, and it will legitimately hit that fallback — CHAMP/ISSAC are real
+ * policies the REST command surface does not expose, and MPC's motion code is
+ * genuinely unknown. That is exactly why the raw integers come along: `"UNKNOWN"`
+ * beside a `motion_state` of 6 is how somebody eventually works out what MPC
+ * reports.
+ */
+export interface RobotLowLevelMode {
+  policy: string;
+  policy_state: number;
+  motion: string;
+  motion_state: number;
+}
+
 export interface RobotPose {
   x: number;
   y: number;
@@ -61,6 +80,7 @@ export interface RobotState {
   robot_id: string;
   map: string;
   mode: RobotMode;
+  low_level_mode: RobotLowLevelMode;
   localization_status: RobotLocalizationStatus;
   network_status: RobotNetworkStatus;
   battery_status: RobotBatteryStatus;

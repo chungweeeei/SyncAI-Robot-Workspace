@@ -13,10 +13,17 @@ class RobotStateSubscriber:
     ``robot_state`` topic.
 
     ``RobotState`` carries more than that REST payload exposes — ``motor_status``
-    reaches it trimmed to name/temperature/error, and motor_timestamp /
-    localization_valid not at all. The router names its response fields
-    explicitly and must keep doing so; this subscriber hands the whole message
-    through unfiltered.
+    reaches it flattened to its ``states`` array and trimmed to
+    name/temperature/error, while that field's own ``timestamp`` and
+    ``localization_valid`` do not reach it at all. The router's field list is a
+    whitelist and must stay one; this subscriber hands the whole message through
+    unfiltered.
+
+    Note the consequence of the drop below for ``low_level_mode``, which IS
+    exposed: the gait controller's state is unreadable over REST until the
+    localizer has been relocalized, because the whole sample is discarded until
+    then. That is precisely the window in which an operator wants to know whether
+    the robot is standing.
     """
 
     def __init__(self, logger: structlog.stdlib.BoundLogger, robot_repo: RobotRepo):

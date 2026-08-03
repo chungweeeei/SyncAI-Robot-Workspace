@@ -24,6 +24,44 @@ def _mode_to_str(mode: int) -> str:
     return _ROBOT_MODE_TO_STR.get(mode, "UNKNOWN")
 
 
+# Reverse lookups for the gait controller's own state machine, which arrives on
+# RobotState.low_level_mode as two bare integers.
+#
+# PLAIN DICTS WITH A FALLBACK, NOT THE PolicyMode ENUM BELOW, and that is not a
+# style choice. PolicyMode is the *command* vocabulary and deliberately admits
+# only 0 and 1; a robot actually running CHAMP (2) or ISSAC (3) — or MPC, whose
+# code nobody here knows — would fail pydantic validation and take the whole
+# state endpoint down with a 500. Reporting has to survive values commanding
+# refuses, so it degrades to "UNKNOWN" the way _mode_to_str does.
+#
+# The vocabularies themselves are the controller's, transcribed from the
+# reference implementation's Readme and unverified against current firmware; see
+# syncai_common/msg/RobotLowLevelMode.msg, which is where they are documented.
+_POLICY_STATE_TO_STR = {0: "PPO", 1: "HIMLOCO"}
+
+# 8 is the controller's own startup sentinel ("I have not entered a state yet").
+# Note what is NOT in here: MPC. This workspace added the `MODE M` command
+# without knowing what the controller reports for it, so an out-of-table integer
+# is expected rather than a bug — which is exactly why the raw value is exposed
+# alongside the label.
+_MOTION_STATE_TO_STR = {
+    0: "STAND",
+    1: "LOCOMOTION",
+    2: "LIE_DOWN",
+    3: "DAMPING",
+    4: "ESTOP",
+    8: "UNKNOWN",
+}
+
+
+def _policy_state_to_str(policy_state: int) -> str:
+    return _POLICY_STATE_TO_STR.get(policy_state, "UNKNOWN")
+
+
+def _motion_state_to_str(motion_state: int) -> str:
+    return _MOTION_STATE_TO_STR.get(motion_state, "UNKNOWN")
+
+
 def _parse_wifi_info(wifi_info: str) -> "RobotNetworkStatus":
     # wifi_info is a JSON string published by syncai_robot_state; it is
     # "null" until the first wifi_status message arrives.
@@ -73,7 +111,7 @@ class RobotMotorStatus(BaseModel):
 
     A deliberate SUBSET of syncai_common/MotorState: only the fields that say
     whether a motor is in trouble. q / dq / ddq / tau_est stay behind, because
-    RobotState.motor_status is a 10 Hz diagnostic snapshot whose samples cannot
+    RobotState.motor_status.states is a 10 Hz diagnostic snapshot whose samples cannot
     even be ordered (see the comment on that field) — publishing kinematics from
     it would invite consumers to derive motion from a channel that cannot carry
     it. The high-rate joint channel is the telemetry WebSocket.
@@ -84,12 +122,65 @@ class RobotMotorStatus(BaseModel):
     error: int = Field(..., description="The motor error code; 0 when healthy.")
 
 
+class RobotLowLevelMode(BaseModel):
+    """What the gait controller says it is doing, as opposed to what we asked.
+
+    Every other view of "which mode is the robot in" on this API is a command
+    echo: `set_motion_key` and `set_policy_mode` are one-way UDP that nothing
+    acknowledges, so a 200 from either means a datagram was written. This is the
+    only field that reports the controller's own answer.
+
+    **Not** `RobotState.mode`, which is MAINTENANCE / MANUAL / AUTO — which byobu
+    session is up. Three unrelated things in this stack are called "mode"; the
+    disambiguation lives in syncai_common/msg/RobotLowLevelMode.msg.
+
+    Both a label and the raw integer are exposed on purpose. The integer
+    vocabularies are the controller's, they are documented from a third-party
+    Readme rather than a spec, and MPC's code is genuinely unknown — so
+    `"UNKNOWN"` next to a raw `6` is the only thing that lets an operator work
+    out what MPC actually reports. A label alone would throw that away.
+
+    NO FRESHNESS INFORMATION. `policy_state: 0, motion_state: 0` is what this
+    carries before the controller has ever been heard from AND a genuine
+    "PPO / STAND" reading; nothing here tells the two apart. The message this
+    comes from used to carry a receipt timestamp and no longer does.
+    """
+
+    policy: str = Field(
+        ...,
+        description=(
+            "The controller's RL policy: PPO / HIMLOCO, or "
+            "UNKNOWN for an index this backend has no name for."
+        ),
+    )
+    motion: str = Field(
+        ...,
+        description=(
+            "The controller's motion state: STAND / LOCOMOTION / LIE_DOWN / "
+            "DAMPING / ESTOP, or UNKNOWN — which is both the controller's own "
+            "startup sentinel (8) and this backend's fallback for an unmapped "
+            "index. MPC has no known code, so it lands here."
+        ),
+    )
+
+
 class RobotState(BaseModel):
     timestamp: int = Field(..., description="The timestamp of the robot state.")
     robot_id: str = Field(..., description="The unique identifier of the robot.")
     map: str = Field(..., description="The name of the map the robot is on.")
     mode: str = Field(
-        ..., description="The mode of the robot (MAINTENANCE/MANUAL/AUTO)."
+        ...,
+        description=(
+            "Which byobu session is up (MAINTENANCE/MANUAL/AUTO). NOT the gait "
+            "controller's state machine — that is `low_level_mode`."
+        ),
+    )
+    low_level_mode: RobotLowLevelMode = Field(
+        ...,
+        description=(
+            "What the gait controller reports it is doing, as opposed to what "
+            "was commanded. See the model for why it carries raw integers too."
+        ),
     )
     localization_status: RobotLocalizationStatus = Field(
         ..., description="The localization status of the robot."
@@ -191,8 +282,13 @@ class PolicyMode(int, Enum):
     non-REST caller can still send an unexposed index.
 
     Not to be confused with ``RobotMode`` (MAINTENANCE / MANUAL / AUTO), the
-    ``mode`` field of ``GET /api/v1/robot/state``. Two unrelated things called
+    ``mode`` field of ``GET /api/v1/robot/state``. Three unrelated things called
     "mode" now live in this file; they merely share the uint8 type.
+
+    Nor with ``RobotLowLevelMode.policy_state`` in the same response, which is the
+    *reported* value from the same vocabulary. That one is decoded through a plain
+    dict with an UNKNOWN fallback rather than this enum, precisely because a robot
+    running an index this enum refuses must not 500 the state endpoint.
     """
 
     PPO = 0
@@ -228,13 +324,23 @@ def init_robot_router(
     async def get_robot_state():
         # This response body is a frozen third-party contract, so the fields are
         # named one by one below rather than serialised wholesale. That is the
-        # ONLY thing keeping the internal parts of RobotState — motor_timestamp,
-        # localization_valid, and the kinematic half of each MotorState — out of
-        # a public payload. Adding a field to the message must not add one here.
+        # ONLY thing keeping the internal parts of RobotState —
+        # motor_status.timestamp, localization_valid, and the kinematic half of
+        # each MotorState — out of a public payload.
         #
-        # motor_status IS exposed, but re-projected through RobotMotorStatus:
-        # name / temperature / error only. Copy the fields explicitly for the
-        # same reason as above — a widened MotorState must not widen this.
+        # So this list is a WHITELIST, not a mirror: a field added to the message
+        # does not appear here until somebody decides it should. `low_level_mode`
+        # is the one field that decision has been made for, because the console
+        # has no other way to show what the gait controller is actually doing —
+        # every other view of that is a command echo. Widening it again is the
+        # same deliberate act, not a mechanical follow-on.
+        #
+        # motor_status IS exposed, but flattened and re-projected: the message
+        # field is a MotorStates (its `states` array plus a source `timestamp`),
+        # and only the array reaches the response, one entry at a time through
+        # RobotMotorStatus — name / temperature / error. Copy the fields
+        # explicitly for the same reason as above: a widened MotorState must not
+        # widen this.
         #
         # A None here means no sample with localization_valid has arrived yet;
         # the subscriber drops the invalid ones so this endpoint keeps 404-ing
@@ -248,6 +354,12 @@ def init_robot_router(
             robot_id=state.robot_id,
             map=state.map,
             mode=_mode_to_str(state.mode),
+            # Decoded through the fallback dicts, never through PolicyMode — see
+            # the comment on those dicts for the 500 this avoids.
+            low_level_mode=RobotLowLevelMode(
+                policy=_policy_state_to_str(state.low_level_mode.policy_state),
+                motion=_motion_state_to_str(state.low_level_mode.motion_state),
+            ),
             localization_status=RobotLocalizationStatus(
                 position=RobotPose(
                     x=state.localization_status.position.x,
@@ -269,7 +381,7 @@ def init_robot_router(
                     temperature=int(motor.temperature),
                     error=int(motor.error),
                 )
-                for motor in state.motor_status
+                for motor in state.motor_status.states
             ],
         )
 

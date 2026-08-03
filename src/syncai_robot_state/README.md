@@ -11,7 +11,8 @@ that decides what the operator UI can show.
         odom          (nav_msgs/Odometry) ───┤
         battery_state (BatteryState)  ───────┼──►  syncai_robot_state
         wifi_status   (WifiStatus)    ───────┤            (10 Hz)
-        motor_states  (MotorStates)   ───────┘               │
+        motor_states  (MotorStates)   ───────┤               │
+        mode          (Int32MultiArray) ─────┘               │
                                                              │ robot_state
                                                              ▼
                                                       syncai_backend
@@ -21,14 +22,16 @@ that decides what the operator UI can show.
 ```
 
 **The message carries more than that REST payload exposes.** `motor_status`
-(per-joint temperatures, torques, error codes), `motor_timestamp` and
-`localization_valid` exist for operators; `routers/robot.py` names its response
-fields one by one, and that is the only thing keeping them out of a frozen
-third-party contract.
+(per-joint temperatures, torques, error codes) and its source `timestamp`,
+`localization_valid` and `low_level_mode` exist for operators;
+`routers/robot.py` names its response fields one by one, and that is the only
+thing keeping them out of a frozen third-party contract.
 
 It aggregates and derives very little: a yaw extraction, a unit conversion, the
 localization-validity flag, and one latched threshold (low battery → `WARNING`).
-It holds no state beyond the latest sample of each input and that one latch.
+It holds no state beyond the latest sample of each input and that one latch —
+`low_level_mode` is carried through untouched — two integers, no verdict, no
+freshness field — precisely so that stays true.
 
 > An outward-facing variant on an absolute, fleet-wide `/robot_state` topic was
 > built here and then reverted. A single DDS domain hosts several robots, so a
@@ -51,6 +54,7 @@ Exposed through `GET /api/v1/robot/state`:
 | `localization_status.velocity` | `odom.twist.twist.linear.x` | Forward speed only |
 | `battery_status.battery_percentage` | `battery_state.percentage × 100` | `BatteryState` is 0–1, this field is 0–100 |
 | `network_status.wifi_info` | `wifi_status`, flattened to JSON | See below |
+| `low_level_mode` | `mode` topic (`std_msgs/Int32MultiArray`), verbatim | The **gait controller's** state machine — not `mode` above. `policy_state` = `data[0]`, `motion_state` = `data[1]`, and nothing else: no freshness field, so `0 / 0` before the first sample is **indistinguishable** from a real "PPO / Stand". No staleness verdict here, and it does not feed `state`. The REST layer decodes both integers to labels and passes the raw values through as well |
 
 On the topic but **not** in the REST payload:
 
@@ -58,8 +62,8 @@ On the topic but **not** in the REST payload:
 |---|---|---|
 | `state` | TF validity + battery | `UNINITIALIZED` / `WARNING` / `IDLE`, most-severe-first — see below. `RUNNING` and `ERROR` still `{TODO}`; `CHARGING` is not derivable |
 | `localization_valid` | TF lookup result | `false` ⇒ `localization_status` is zeroed, not a real pose |
-| `motor_status` | `motor_states.states`, verbatim | `MotorState[]`: per-joint `temperature`, `tau_est`, `error` (plus `q`/`dq`). Empty while `syncai_driver_manager` is down |
-| `motor_timestamp` | `motor_states.timestamp`, verbatim | **Nanoseconds** — unconverted, unlike `timestamp` above. `0` if no sample ever arrived |
+| `motor_status` | the whole `motor_states` message, timestamp rescaled | A `MotorStates`: `states` is the `MotorState[]` (per-joint `temperature`, `tau_est`, `error`, plus `q`/`dq`), `timestamp` is its source instant — the only field this node alters, see the row below. `states` empty while `syncai_driver_manager` is down |
+| `motor_status.timestamp` | `motor_states.timestamp`, **scaled to seconds** | The topic carries nanoseconds; this node divides, so the copy matches `timestamp` above. Same `MotorStates` type, different unit depending on where you read it — do not compare the two unscaled. `0` if no sample ever arrived |
 
 That second table is a convention, not a type guarantee: the router names its
 response fields explicitly, and nothing else stops a future field from leaking into
@@ -163,6 +167,23 @@ which the subscription callbacks write from other threads.
   (`status-strip.tsx:27-31`, `< 20 → warn`, `< 40 → caution`, no hysteresis). It
   cannot read `state` — the REST payload does not expose the field — so this
   duplication is knowingly left in place.
+- **`low_level_mode` has no freshness information at all**, and this node
+  republishes whatever it last heard on every tick, forever.
+  `syncai_driver_manager` publishes `mode` only when a telemetry datagram happens
+  to carry a `MODE_STATE` section — event-driven, no periodic republish, no
+  `TRANSIENT_LOCAL` latch — so a frozen value is equally consistent with a dead
+  driver, a controller that stopped sending the section, and nothing having
+  changed. Worse, `0 / 0` before the first sample reads exactly like a genuine
+  "PPO / Stand". A receipt timestamp used to make that difference visible and was
+  removed on request; the only hint left is `motion_state == 8` (UNKNOWN), which
+  comes from the controller rather than from us and exists on that index only.
+  `motor_status.timestamp` advancing is the nearest available proxy for
+  "`syncai_driver_manager` is alive", though it says nothing about `MODE_STATE`.
+- **`low_level_mode` is reported, never validated.** Out-of-table integers are
+  passed through unchanged (MPC's code is unknown — see the gotcha), and a `data[]`
+  shorter than two elements is dropped with a throttled warning rather than padded,
+  because `0` is a legitimate value on both indices and a padded `0` would be
+  indistinguishable from a real "standing".
 
 ## Missing TF is published, not suppressed
 
@@ -191,15 +212,17 @@ So: a `robot_state` topic with no data now really does mean the node is dead.
 Check for `TF map-><id>/base_link unavailable` in the log to distinguish
 "not localized" from "not running".
 
-The other four inputs are not gated either: a missing odom, battery, wifi or
-motor message just leaves that field at its zero / `"null"` / empty default.
+The other five inputs are not gated either: a missing odom, battery, wifi, motor
+or mode message just leaves that field at its zero / `"null"` / empty default —
+and for `low_level_mode` that default is `0 / 0`, which no consumer can tell apart
+from a real reading.
 
 ## Threading
 
 `main.cpp` uses a `MultiThreadedExecutor`, and the 10 Hz timer gets its **own
 `MutuallyExclusive` callback group** so the latch update, TF lookup and message
-build run independently of the four (lightweight) subscription callbacks. The four
-cached samples are guarded by one mutex, taken briefly in each callback and twice
+build run independently of the five (lightweight) subscription callbacks. The five
+cached inputs are guarded by one mutex, taken briefly in each callback and twice
 per tick (once in `updateHealthLatches()`, once in `buildState()`).
 
 **The TF lookup is gated by a non-blocking `canTransform()`.** This is load
@@ -229,12 +252,21 @@ All names relative, so they inherit the `<robot_id>` namespace.
 | Subscribe | `battery_state` | `sensor_msgs/BatteryState` | SensorData |
 | Subscribe | `wifi_status` | `syncai_common/WifiStatus` | BEST_EFFORT, VOLATILE, KeepLast(1) |
 | Subscribe | `motor_states` | `syncai_common/MotorStates` | SensorData |
+| Subscribe | `mode` | `std_msgs/Int32MultiArray` | RELIABLE, VOLATILE, KeepLast(10) |
 
-`odom` comes from `syncai_lio_bridge`, `battery_state` and `motor_states` from
-`syncai_driver_manager`, `wifi_status` from `syncai_sys_manager`. The
+`odom` comes from `syncai_lio_bridge`, `battery_state`, `motor_states` and `mode`
+from `syncai_driver_manager`, `wifi_status` from `syncai_sys_manager`. The
 backend's subscriber matches the BEST_EFFORT publisher — and so must any new one:
 a best-effort publisher cannot satisfy a RELIABLE subscriber, so subscribing with
 default QoS receives nothing at all.
+
+`mode` is **the only RELIABLE endpoint in this node** — everything else here is
+best-effort, and mirroring the publisher was deliberate. That topic is
+edge-triggered rather than periodic: the driver publishes only when a datagram
+carries `MODE_STATE`, so a dropped sample is not made good by the next one and can
+be the only announcement of a state change. The flip side is that a driver relaxed
+to best-effort would stop matching this subscription **silently**; check it with
+`ros2 topic info /<robot_id>/mode --verbose`.
 
 ## Parameters
 
@@ -245,7 +277,7 @@ default QoS receives nothing at all.
 | `global_frame` | `map` | — (stays unprefixed) |
 | `base_frame` | `base_link` | `<robot_id>/base_link` |
 | `transform_tolerance` | `0.1` | — |
-| `publish_rate` | `10.0` Hz | — (params file only) |
+| `publish_rate` | `10.0` Hz | — (params file only). **The shipped params file says `1.0`** (`params/robot_state_params.yaml`), and the launch file always passes it, so a launched node runs at 1 Hz despite this default and every "10 Hz" in these docs |
 | `low_battery_warn_percentage` | `20.0` % | — (params file only) |
 | `low_battery_clear_percentage` | `25.0` % | — (params file only) |
 
@@ -296,7 +328,20 @@ ros2 topic pub -r 2 /<robot_id>/battery_state sensor_msgs/msg/BatteryState \
 
 - **`mode` is hardcoded.** Every message says `AUTO` regardless of what the
   robot is doing, and the REST layer surfaces it, so the UI always shows AUTO.
-  Marked `{TODO}`.
+  Marked `{TODO}`. This is `RobotMode`, **not** the gait controller's state — see
+  the next bullet.
+- **Three different things are now called "mode", two of them in one message.**
+  In a single `RobotState`: `mode` is `RobotMode` (MAINTENANCE / MANUAL / AUTO —
+  which byobu session is up, hardcoded to `AUTO`, shared with `SwitchMode` /
+  `GetMode`); `low_level_mode.policy_state` is the gait controller's RL policy
+  index (0 PPO / 1 HIMLOCO / 2 CHAMP / 3 ISSAC — the vocabulary of
+  `SetPolicyMode.mode`); `low_level_mode.motion_state` is its motion state
+  (0 Stand / 1 Locomotion / 2 LieDown / 3 Damping / 4 ESTOP / 8 UNKNOWN — the
+  vocabulary of `SetMotionKey.key`, which is a *string* there). They share nothing
+  but the word, and the ROS topic the last two arrive on is *also* called `mode`.
+  **`motion_state` has no known code for MPC**: the reference Readme lists none and
+  this workspace's `"5"` → `MODE M` mapping was added locally, so an out-of-table
+  integer here is expected, not a bug.
 - **`state` distinguishes three values**, `UNINITIALIZED` / `WARNING` / `IDLE` —
   and **the REST layer does not expose the field at all**, so a low-battery
   `WARNING` is visible only via `ros2 topic echo`, not in the UI. `RUNNING` /
@@ -317,12 +362,16 @@ ros2 topic pub -r 2 /<robot_id>/battery_state sensor_msgs/msg/BatteryState \
   backend parses defensively against.
 - **`timestamp` is seconds**, unlike `ArtifactState` / `ExecuteTask` which are
   milliseconds. The frontend multiplies by 1000; see `syncai_common`'s README.
-  `motor_timestamp` in the same message is **nanoseconds** — two units in one
-  message, the latter inherited unconverted from `MotorStates`.
+  `motor_status.timestamp` is **also seconds here**, scaled down by this node from
+  the nanoseconds the `motor_states` topic carries. So the same `MotorStates` type
+  means two different units depending on where you read it — the topic keeps
+  nanoseconds because the backend's telemetry WebSocket needs sub-second ordering.
 - **At 10 Hz `timestamp` repeats.** Whole seconds means ten consecutive messages
   carry the same value, so it cannot order samples or measure the rate. It stays
-  seconds because it is passed verbatim to the frozen REST payload; use
-  `motor_timestamp` for sub-second resolution.
+  seconds because it is passed verbatim to the frozen REST payload — and
+  `motor_status.timestamp` is no help either now that it is seconds too. Subscribe
+  `motor_states` directly if you need sub-second resolution, which is exactly what
+  the backend's telemetry WebSocket does.
 - **The battery scaling round-trips.** `driver_manager` divides the BMS's 0–100
   SoC by 100 for `BatteryState`, this node multiplies it back by 100. Changing
   one side without the other gives a battery reading off by 100×.

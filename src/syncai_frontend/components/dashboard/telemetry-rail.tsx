@@ -82,10 +82,10 @@ export function TelemetryRail({ state }: { state: RobotState }) {
       <PostureControl robotId={state.robot_id} />
 
       {/* Under Posture, because that is the order they are used in: the robot has
-        * to be standing before a controller choice means anything. Both groups are
-        * commanded-not-measured, so they belong together rather than among the
-        * readouts above. */}
-      <LocomotionControl />
+        * to be standing before a controller choice means anything. Posture is still
+        * commanded-only; this one is half measured, which is why it reads the state
+        * frame rather than holding everything locally. */}
+      <LocomotionControl lowLevelMode={state.low_level_mode} />
 
       {/* Last: it is the longest group and the one an operator consults, rather
         * than watches. Pose and link stay above the fold on a short rail. */}

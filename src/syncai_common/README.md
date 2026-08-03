@@ -1,6 +1,6 @@
 # syncai_common
 
-The stack's shared ROS 2 interface definitions — 13 messages, 5 services, 1
+The stack's shared ROS 2 interface definitions — 14 messages, 7 services, 1
 action. No code, no nodes: `rosidl_generate_interfaces` and nothing else.
 
 Everything here exists because two or more packages need to agree on a wire
@@ -23,7 +23,7 @@ syncai_sys_manager ────────────────────�
 
 `RobotState` is published at 10 Hz by `syncai_robot_state` on the relative topic
 `robot_state` (BEST_EFFORT, KeepLast(1)) and consumed by `syncai_backend`, which
-re-serialises **a subset** of it for `GET /api/v1/robot/state`. It nests five of
+re-serialises **a subset** of it for `GET /api/v1/robot/state`. It nests seven of
 the other messages:
 
 ```
@@ -40,11 +40,17 @@ RobotState
 ├─ RobotBatteryStatus battery_status
 │    └─ float64 battery_percentage
 ├─ bool          localization_valid   false ⇒ localization_status is ZEROED
-├─ MotorState[]  motor_status         per-joint temperature / tau_est / error
-└─ uint64        motor_timestamp      NANOSECONDS (from MotorStates, unconverted)
+├─ MotorStates   motor_status         the whole motor_states message (timestamp rescaled)
+│    ├─ uint64        timestamp       SECONDS here (the topic carries NANOSECONDS)
+│    └─ MotorState[]  states          per-joint temperature / tau_est / error
+└─ RobotLowLevelMode low_level_mode   the GAIT CONTROLLER's state machine — not `mode` above
+     ├─ int32  policy_state           0 PPO / 1 HIMLOCO / 2 CHAMP / 3 ISSAC (no sentinel)
+     ├─ int32  motion_state           0 Stand / 1 Locomotion / 2 LieDown / 3 Damping /
+     │                                4 ESTOP / 8 UNKNOWN (MPC's code is unknown)
 ```
 
-The last three are **operator-facing and must not reach the REST payload**. That
+`localization_valid` and `motor_status.timestamp` are **operator-facing and must
+not reach the REST payload** (`low_level_mode` is exposed, deliberately). That
 payload is a frozen third-party contract and the router names its fields one by
 one; nothing else stops joint temperatures and motor error codes from leaking into
 a public response. Adding a field here must not add one there.
@@ -61,6 +67,7 @@ interleaves them, and every per-robot consumer here is scoped to exactly one.
 | `RobotBatteryStatus` | `battery_percentage` | 0–100, already scaled from `sensor_msgs/BatteryState.percentage` |
 | `RobotMode` | `MAINTENANCE=0`, `MANUAL=1`, `AUTO=2` | **Constants only** — no data fields. Never published on its own; it exists so `RobotState.mode` has named values. |
 | `RobotStatus` | `UNINITIALIZED=0`, `IDLE=1`, `RUNNING=2`, `WARNING=3`, `ERROR=4`, `CHARGING=5` | Same pattern, for `state`. `UNINITIALIZED` holds `0` on purpose, so a default-constructed message does not claim to be `IDLE`. |
+| `RobotLowLevelMode` | `policy_state`, `motion_state` | The gait controller's own state machine, from the `mode` topic. Both indices are the **controller's** vocabularies, not ours, and carry **no constants** for the same reason `SetPolicyMode.mode` does not — see the note there. It carries **no freshness field**, so `0 / 0` before the first sample is indistinguishable from a real `PPO / Stand`. |
 
 `mode` is still a placeholder: `syncai_robot_state` hardcodes `AUTO` (`{TODO}` in
 the source), and the REST layer surfaces it.
@@ -109,7 +116,7 @@ its UDP link to the gait controller.
 | Message | Topic | Fields |
 |---|---|---|
 | `IMUState` | `imu` (SensorDataQoS) | `timestamp`, `quaternion[4]`, `gyroscope[3]`, `accelerometer[3]`, `rpy[3]`, `temperature` |
-| `MotorStates` | `motor_states` (SensorDataQoS) | `timestamp` + `MotorState[] states` |
+| `MotorStates` | `motor_states` (SensorDataQoS) | `timestamp` (**nanoseconds here**) + `MotorState[] states`. Also nested as `RobotState.motor_status` — which is why that message has no flat `motor_timestamp` beside a bare array any more, and where `timestamp` is scaled to **seconds** |
 | `MotorState` | — | `name`, `q`, `dq`, `ddq`, `tau_est`, `temperature`, `error` — generalized position / velocity / acceleration / estimated torque |
 
 These are the robot's own formats rather than `sensor_msgs/Imu` and
@@ -149,6 +156,8 @@ a conveyor's `live_info.phase`.
 | `SetMotionKey` | `key` | `success`, `message` | `syncai_driver_manager` on `set_motion_key` |
 | `SetPolicyMode` | `uint8 mode` | `success`, `message` | `syncai_driver_manager` on `set_policy_mode` |
 | `SetSpeedScale` | six `float64` scales | `success` | `syncai_driver_manager` on `set_speed_scale` |
+| `SwitchMode` | `uint8 mode` | `success`, `message` | `syncai_sys_manager` on `switch_mode` |
+| `GetMode` | *(empty)* | `success`, `message`, `uint8 mode`, `string session` | `syncai_sys_manager` on `get_mode` |
 
 Notes:
 
@@ -177,7 +186,10 @@ Notes:
   vocabulary only**: this field stays a bare `uint8` and
   `RobotGateway.set_policy_mode()` stays `int`, so a non-REST caller can still
   send `2` (CHAMP) or `3` (ISSAC). Those names come from the reference
-  implementation's Readme and are defined nowhere in this workspace.
+  implementation's Readme, and the only place they are written down in this
+  workspace is a comment in `msg/RobotLowLevelMode.msg` — which documents the same
+  policy vocabulary for `RobotState.low_level_mode.policy_state` and explains why
+  neither place declares constants for it.
 
 The `success`/`message` pair is the convention for everything here: callers check
 `success` and surface `message` verbatim (the backend maps a failed wifi connect
@@ -265,18 +277,24 @@ ros2 interface list | grep syncai_common
 - **Timestamp units are not uniform.** `ArtifactState` and `ExecuteTask` are in
   milliseconds; `RobotState.timestamp` is in **seconds** (`now().seconds()` cast
   to `uint64`), because it is passed through verbatim to
-  `GET /api/v1/robot/state` and the frontend already multiplies by 1000. Worse,
-  `RobotState` mixes units *within one message*: `timestamp` in seconds and
-  `motor_timestamp` in nanoseconds, the latter copied unconverted from
-  `MotorStates` so it can be compared against that topic directly. Each `.msg`
-  states its unit — check it before doing arithmetic across two of them.
+  `GET /api/v1/robot/state` and the frontend already multiplies by 1000. Both of
+  `RobotState`'s timestamps are seconds — but `motor_status.timestamp` only because
+  `syncai_robot_state` scales it on the way in, while the **same `MotorStates`
+  message on the `motor_states` topic carries nanoseconds** (the topic keeps them
+  because the backend's telemetry WebSocket needs sub-second ordering at 20 Hz).
+  So a `MotorStates`' unit depends on where you found it. Each `.msg` states its
+  unit — check it before doing arithmetic across two of them.
 - **`RobotState.timestamp` cannot order samples.** Whole seconds at a 10 Hz
   publish rate means ten consecutive messages carry the same value. It is a wall
-  clock for display; use `motor_timestamp` if you need sub-second resolution.
+  clock for display, and `motor_status.timestamp` is no better now that it is
+  seconds too — subscribe `motor_states` directly for sub-second resolution.
 - **No message carries a `std_msgs/Header`.** Timestamps are bare `uint64`
   fields and there is no `frame_id` anywhere — these are status messages, not
   sensor data to be transformed. Anything needing TF uses a `geometry_msgs` type
-  instead.
+  instead. `RobotLowLevelMode` is the extreme case: its upstream
+  `std_msgs/Int32MultiArray` has no header either and the telemetry link carries no
+  clock, so there is no timestamp available anywhere on that path — which is why
+  that message can say what the controller reports but never when.
 - **`syncai_backend` imports `syncai_common` but does not declare it** in its
   `package.xml`. It works because both live in the same workspace and the install
   space is sourced as a whole, but colcon has no reason to build this package

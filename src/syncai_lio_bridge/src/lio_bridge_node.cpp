@@ -55,10 +55,6 @@ LioBridgeNode::LioBridgeNode() : rclcpp::Node("lio_bridge_node")
   base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
   odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
   lidar_frame_ = declare_parameter<std::string>("lidar_frame", "lidar_top");
-  // The base_link twin this node hangs off Point-LIO's body frame. Only the
-  // child is a parameter: the parent is read from the odom message's
-  // child_frame_id, same rule as lio_odom_frame_.
-  lio_base_frame_ = declare_parameter<std::string>("lio_base_frame", "pointlio_base");
   const double rate = declare_parameter<double>("publish_rate", 20.0);
 
   transform_tolerance_ = declare_parameter<double>("transform_tolerance", 0.1);
@@ -66,7 +62,6 @@ LioBridgeNode::LioBridgeNode() : rclcpp::Node("lio_bridge_node")
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-  static_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
 
   // Sensor-data QoS on both subs: best-effort is compatible with either
   // reliable (lio_node) or best-effort publishers.
@@ -88,17 +83,14 @@ LioBridgeNode::LioBridgeNode() : rclcpp::Node("lio_bridge_node")
   RCLCPP_INFO(
     get_logger(),
     "lio_bridge: LIO odometry provider — %s -> %s + odom topic from "
-    "pointlio/lio_odom, %s -> %s from the localizer TF @ %.1f Hz, "
-    "static <lio_body> -> %s for 6-DOF consumers",
-    odom_frame_.c_str(), base_frame_.c_str(), map_frame_.c_str(), odom_frame_.c_str(), rate,
-    lio_base_frame_.c_str());
+    "pointlio/lio_odom, %s -> %s from the localizer TF @ %.1f Hz",
+    odom_frame_.c_str(), base_frame_.c_str(), map_frame_.c_str(), odom_frame_.c_str(), rate);
 }
 
 void LioBridgeNode::lio_cb(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
   lio_pose_ = pose_to_transform(msg->pose.pose);
   lio_odom_frame_ = msg->header.frame_id;
-  lio_body_frame_ = msg->child_frame_id;
   lio_linear_x_ = msg->twist.twist.linear.x;
   lio_linear_y_ = msg->twist.twist.linear.y;
 }
@@ -125,52 +117,6 @@ bool LioBridgeNode::base_lidar(tf2::Transform & out)
   }
   out = *base_lidar_;
   return true;
-}
-
-void LioBridgeNode::publish_lio_base_tf(const tf2::Transform & base_lidar)
-{
-  if (lio_base_published_) {
-    return;
-  }
-  if (lio_body_frame_.empty()) {
-    // Upstream left child_frame_id unset; a static TF with an empty parent
-    // would poison the tree, so skip it rather than guess a name.
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 10000,
-      "pointlio/lio_odom has no child_frame_id; cannot publish %s — 3D consumers "
-      "have no 6-DOF base frame",
-      lio_base_frame_.c_str());
-    return;
-  }
-
-  // lio_body is physically the lidar and lio_base is physically base_link, so
-  // the transform between them is just the mount extrinsic, inverted — the same
-  // inv(base_link->lidar_top) the odom chain uses below, only broadcast instead
-  // of composed. Hanging it off lio_body puts a base_link-equivalent frame on
-  // the un-projected branch, so map -> lio_base is the 6-DOF robot pose.
-  const tf2::Transform lidar_base = base_lidar.inverse();
-  const tf2::Vector3 & o = lidar_base.getOrigin();
-  const tf2::Quaternion q = lidar_base.getRotation();
-
-  geometry_msgs::msg::TransformStamped msg;
-  // Static transforms are valid for all time regardless of stamp; now() is the
-  // convention.
-  msg.header.stamp = this->now();
-  msg.header.frame_id = lio_body_frame_;
-  msg.child_frame_id = lio_base_frame_;
-  msg.transform.translation.x = o.x();
-  msg.transform.translation.y = o.y();
-  msg.transform.translation.z = o.z();
-  msg.transform.rotation.x = q.x();
-  msg.transform.rotation.y = q.y();
-  msg.transform.rotation.z = q.z();
-  msg.transform.rotation.w = q.w();
-  static_tf_broadcaster_->sendTransform(msg);
-
-  lio_base_published_ = true;
-  RCLCPP_INFO(
-    get_logger(), "static %s -> %s = (%.3f, %.3f, %.3f) — 6-DOF pose branch",
-    lio_body_frame_.c_str(), lio_base_frame_.c_str(), o.x(), o.y(), o.z());
 }
 
 geometry_msgs::msg::TransformStamped LioBridgeNode::make_tf(
@@ -200,11 +146,6 @@ void LioBridgeNode::timer_cb()
   if (!base_lidar(m_base_lidar)) {
     return;
   }
-
-  // Needs lio_body_frame_, hence its place after the first odom message. No
-  // loss: lio_base hangs off lio_body, which does not exist as a frame until
-  // Point-LIO is publishing anyway.
-  publish_lio_base_tf(m_base_lidar);
 
   // lio_body is physically the lidar frame, so
   // lio_odom->base = lio_odom->lio_body * lidar->base.

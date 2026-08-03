@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotorStates.msg"
   "msg/RobotBatteryStatus.msg"
   "msg/RobotLocalizationStatus.msg"
+  "msg/RobotLowLevelMode.msg"
   "msg/RobotMode.msg"
   "msg/RobotNetworkStatus.msg"
   "msg/RobotPose.msg"

@@ -11,7 +11,6 @@
 #include "sensor_msgs/msg/imu.hpp"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2_ros/buffer.h"
-#include "tf2_ros/static_transform_broadcaster.h"
 #include "tf2_ros/transform_broadcaster.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -51,26 +50,8 @@ struct Pose2D
 //                         map -> lio_odom TF:
 //                         map->odom = P2D(map->base) * inv(P2D(odom->base))
 //
-// Everything in that chain is projected to 2D (x, y, yaw; z/roll/pitch zeroed)
-// before broadcasting so the planar nav stack never sees a tilted frame.
-//
-// One output escapes the projection, for consumers that need the full 6-DOF
-// pose (the 3D frontend):
-//
-//     lio_body -> lio_base   static, = inv(base_link->lidar_top)
-//
-// lio_base is base_link's twin on the un-projected LIO branch: same physical
-// point on the robot, but reached via map -> lio_odom -> lio_body, so a lookup
-// of map -> lio_base keeps z, roll and pitch. It exists because a consumer
-// cannot get there by asking for map -> base_link — tf2 would route that
-// through the planar map -> odom -> base_link chain and hand back z = 0. The
-// transform is derived from the URDF extrinsic this node already caches rather
-// than hardcoded in a launch file, so the mount geometry stays defined in
-// exactly one place.
-//
-// Like lio_odom, the lio_body parent is taken from the odom message (its
-// child_frame_id) rather than a parameter, so an upstream frame rename needs no
-// change here.
+// Everything is projected to 2D (x, y, yaw; z/roll/pitch zeroed) before
+// broadcasting so the planar nav stack never sees a tilted frame.
 //
 // This is a straight port of the original Python node; the numpy 4x4
 // homogeneous-matrix math is replaced with tf2::Transform to avoid the Python
@@ -87,9 +68,6 @@ private:
   // Cached static base_link -> lidar_top mount extrinsic.
   bool base_lidar(tf2::Transform & out);
 
-  // Broadcast lio_body -> lio_base once, as soon as the extrinsic resolves.
-  void publish_lio_base_tf(const tf2::Transform & base_lidar);
-
   geometry_msgs::msg::TransformStamped make_tf(
     const rclcpp::Time & stamp, const std::string & frame_id, const std::string & child_frame_id,
     const Pose2D & p) const;
@@ -101,14 +79,12 @@ private:
   std::string base_frame_;
   std::string odom_frame_;
   std::string lidar_frame_;
-  std::string lio_base_frame_;
   double transform_tolerance_{0.1};
 
   // TF.
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
-  std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
 
   // ROS I/O.
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr lio_sub_;
@@ -119,14 +95,12 @@ private:
   // Latest LIO state (set in callbacks, consumed by the timer).
   std::optional<tf2::Transform> lio_pose_;    // lio_odom -> lio_body
   std::string lio_odom_frame_;                // from the msg header
-  std::string lio_body_frame_;                // from the msg child_frame_id
   double lio_linear_x_{0.0};                  // body-frame linear velocity x
   double lio_linear_y_{0.0};                  // body-frame linear velocity y
   double yaw_rate_{0.0};                      // from the lidar IMU gyro
   std::optional<tf2::Transform> base_lidar_;  // base_link -> lidar_top (cached)
 
   bool localized_{false};
-  bool lio_base_published_{false};
 };
 
 }  // namespace syncai_lio_bridge

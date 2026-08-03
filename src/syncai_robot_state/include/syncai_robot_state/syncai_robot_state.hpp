@@ -8,6 +8,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/battery_state.hpp"
+#include "std_msgs/msg/int32_multi_array.hpp"
 #include "syncai_common/msg/motor_states.hpp"
 #include "syncai_common/msg/robot_state.hpp"
 #include "syncai_common/msg/wifi_status.hpp"
@@ -32,6 +33,13 @@ namespace syncai_robot_state
 //   UNINITIALIZED   the map -> base_link TF is unavailable
 //   WARNING         battery below the low-battery threshold (latched)
 //   IDLE            otherwise
+//
+// It also carries the gait controller's own low-level state machine through from
+// the `mode` topic onto RobotState.low_level_mode, and NOTHING ELSE: no staleness
+// verdict, no latch, no contribution to `state`, and no freshness field. That
+// field is the stack's only measured counterpart to the one-way SetPolicyMode /
+// SetMotionKey commands, and keeping it dumb is what keeps this node's "holds no
+// state beyond the latest sample" property true.
 //
 // It only ever reports. No threshold here commands the robot to do anything.
 class RobotStateNode : public rclcpp::Node
@@ -70,6 +78,11 @@ private:
   // from the motor_states topic.
   void motorStatesCallback(const syncai_common::msg::MotorStates::SharedPtr msg);
 
+  // Caches the gait controller's low-level state machine from the `mode` topic
+  // (data[0] = policy state, data[1] = motion state). Samples with fewer than two
+  // elements are REJECTED here, not padded.
+  void lowLevelModeCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
+
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -84,14 +97,35 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_sub_;
   rclcpp::Subscription<syncai_common::msg::WifiStatus>::SharedPtr wifi_sub_;
   rclcpp::Subscription<syncai_common::msg::MotorStates>::SharedPtr motor_states_sub_;
+  // The TOPIC is `mode`; the FIELD it feeds is `low_level_mode`. RobotState.mode
+  // is a different thing entirely (RobotMode, hardcoded to AUTO).
+  rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr low_level_mode_sub_;
 
-  // Latest odom / battery / wifi / motor samples, guarded because they are
-  // written from their subscription callbacks and read from the timer callback.
+  // Latest odom / battery / wifi / motor / low-level-mode samples, guarded because
+  // they are written from their subscription callbacks and read from the timer
+  // callback.
   std::mutex mutex_;
   nav_msgs::msg::Odometry::SharedPtr latest_odom_;
   sensor_msgs::msg::BatteryState::SharedPtr latest_battery_;
   syncai_common::msg::WifiStatus::SharedPtr latest_wifi_status_;
   syncai_common::msg::MotorStates::SharedPtr latest_motor_states_;
+
+  // Decoded, rather than cached as a SharedPtr like the four above: the payload is
+  // two ints, so there is nothing to keep alive by holding the message, and
+  // validating in the callback means a short data[] never lands here — buildState()
+  // is a two-line copy with no branch and no bounds check.
+  //
+  // Both are written together under mutex_ and read together under mutex_, so the
+  // pair is always internally consistent.
+  //
+  // These carry NO indication of whether anything has ever been heard: 0 / 0 is
+  // both the initial value and a genuine "PPO / Stand". A receipt timestamp used
+  // to sit here and make the difference visible; it was removed on request. If it
+  // comes back, the one invariant that mattered was that a REJECTED sample must
+  // not refresh it, or a stream of malformed messages makes a frozen reading look
+  // live.
+  int32_t low_level_policy_state_{0};
+  int32_t low_level_motion_state_{0};
 
   // Health latches. Written ONLY by updateHealthLatches(), read by buildState().
   //
