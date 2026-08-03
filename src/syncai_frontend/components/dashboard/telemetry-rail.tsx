@@ -6,6 +6,7 @@ import {
   Readout,
   SignalBars,
 } from "@/components/console/instrument";
+import { LocomotionControl } from "@/components/dashboard/locomotion-control";
 import { MotorStatus } from "@/components/dashboard/motor-status";
 import { PostureControl } from "@/components/dashboard/posture-control";
 import type { RobotState } from "@/lib/types/robot";
@@ -18,7 +19,7 @@ function rssiToBars(rssi: number): number {
 }
 
 /**
- * The instrument rail beside the viewport: pose, link, posture, motors.
+ * The instrument rail beside the viewport: pose, link, posture, locomotion, motors.
  *
  * These were four equal-weight cards above the map, which put the two numbers
  * an operator watches continuously (x/y and heading) at the same size as the
@@ -79,6 +80,12 @@ export function TelemetryRail({ state }: { state: RobotState }) {
       </InstrumentGroup>
 
       <PostureControl robotId={state.robot_id} />
+
+      {/* Under Posture, because that is the order they are used in: the robot has
+        * to be standing before a controller choice means anything. Both groups are
+        * commanded-not-measured, so they belong together rather than among the
+        * readouts above. */}
+      <LocomotionControl />
 
       {/* Last: it is the longest group and the one an operator consults, rather
         * than watches. Pose and link stay above the fold on a short rail. */}

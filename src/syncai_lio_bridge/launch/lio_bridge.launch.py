@@ -4,6 +4,10 @@
 # the map -> <robot_id>/odom correction (replacing AMCL). There is no wheel
 # odometry: the Isaac Sim OmniGraph odom publishers are disabled.
 #
+# It also broadcasts the static <robot_id>/pointlio_body -> pointlio_base, the
+# base_link twin on the un-projected LIO branch that 3D consumers look up
+# through instead of base_link (whose chain is planar).
+#
 # robot_id is read from the system config INI at launch time and is used as
 # the node namespace and as the TF prefix for the odom chain frames. The map
 # frame stays "map".
@@ -67,6 +71,9 @@ def launch_setup(context, *args, **kwargs):
                 "base_frame": f"{robot_id}/base_link",
                 "odom_frame": f"{robot_id}/odom",
                 "lidar_frame": f"{robot_id}/lidar_top",
+                # Only the child is configured; the parent (pointlio_body) is
+                # read from the odom message's child_frame_id.
+                "lio_base_frame": f"{robot_id}/pointlio_base",
                 "publish_rate": 20.0,
                 "transform_tolerance": 0.1,
             }

@@ -132,9 +132,12 @@ The service contract is a **numeric string**, `"0"`–`"5"`:
 | `"5"` | `MODE M` | MPC |
 
 Any GUI that accepts friendlier aliases (`m`, `mpc`, …) does that translation in
-its own layer; the ROS contract stays numeric. There is no REST endpoint for
-this any more — the backend calls the service from its `STANDUP` / `LIEDOWN`
-task steps (keys `0` / `2`).
+its own layer; the ROS contract stays numeric. Two callers in the backend: the
+`STANDUP` / `LIEDOWN` task steps (keys `0` / `2`) and
+`POST /api/v1/robot/set_motion_key`. That REST endpoint was added, removed in
+favour of the task steps, then re-added for manual control; it exposes all six
+keys but refuses to forward `"4"`, answering 200 with `sent: false` rather than
+emitting `ESTOP`.
 
 ### Per-direction speed scaling
 
@@ -202,7 +205,9 @@ implementation:
 
 - **`cmd_vel` is not gated by `safe_lock_`.** Even once a trigger is wired, the
   controller's velocity commands would keep flowing through.
-- **`set_policy_mode` is not gated either.**
+- **`set_policy_mode` is not gated either** — and it is now reachable over REST
+  (`POST /api/v1/robot/set_policy_mode`), so once a trigger is wired a policy
+  switch will still pass while motion keys are being rejected.
 
 ## Parameters
 

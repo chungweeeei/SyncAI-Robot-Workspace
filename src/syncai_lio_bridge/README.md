@@ -15,10 +15,13 @@ the same time.
                                ┌─────────────────┐
                     livox/imu ─►   lio_bridge    │
                                 └────────┬────────┘
-                    ┌────────────────────┼────────────────────┐
-                    ▼                    ▼                    ▼
-          map ──► <id>/odom     <id>/odom ──► <id>/base_link   /<id>/odom
-        (TF, AMCL replacement)        (TF, the odom chain)   (nav_msgs/Odometry)
+          ┌──────────────────┬───────────┼───────────────┬──────────────────┐
+          ▼                  ▼           ▼               ▼
+ map ──► <id>/odom  <id>/odom ──► <id>/base_link   /<id>/odom   <id>/pointlio_body
+(TF, AMCL replacement)   (TF, the odom chain)  (nav_msgs/Odometry)      │
+                                                                        ▼
+                                                            <id>/pointlio_base
+                                                          (static TF, 6-DOF branch)
 ```
 
 Wheel odometry is gone — the Isaac Sim OmniGraph odom publishers are deliberately
@@ -41,10 +44,12 @@ tf2-Python-binding cost.
 Both subscriptions use SensorData (best-effort) QoS, which is compatible with
 either a reliable or a best-effort publisher.
 
-The LIO odom frame is **not** a parameter: it is read from the incoming message's
-`header.frame_id`. Point-LIO's `world_frame` is configured per-setup
-(`pointlio_odom` on the Isaac config, `lio_odom` upstream), so taking it from the
-header means a rename upstream needs no change here.
+The LIO odom and body frames are **not** parameters: they are read from the
+incoming message's `header.frame_id` and `child_frame_id`. Point-LIO's
+`world_frame` / `body_frame` are configured per-setup (`pointlio_odom` /
+`pointlio_body` on the Isaac config, `lio_odom` / `body` upstream), so taking
+them from the message means a rename upstream needs no change here — and no risk
+of this node's idea of the frame names drifting from `pointlio_launch.py`'s.
 
 ## Outputs
 
@@ -53,10 +58,12 @@ header means a rename upstream needs no change here.
 | `<odom_frame> → <base_frame>` | TF broadcast |
 | `<map_frame> → <odom_frame>` | TF broadcast |
 | `odom` | `nav_msgs/Odometry` |
+| `<lio_body_frame> → <lio_base_frame>` | **static** TF broadcast, once |
 
-All three are produced by a single timer at `publish_rate` (20 Hz by default),
-independent of the ~10 Hz rate at which LIO actually updates — the timer
-republishes the latest cached state.
+The first three are produced by a single timer at `publish_rate` (20 Hz by
+default), independent of the ~10 Hz rate at which LIO actually updates — the
+timer republishes the latest cached state. The static one goes out once, on the
+first tick where the lidar extrinsic resolves.
 
 ### The math
 
@@ -82,7 +89,17 @@ map→odom  =  P2D(map→base) · P2D(odom→base)⁻¹
 Both operands are projected to 2D *before* the composition, so the result stays
 planar and consistent with the `odom → base_link` that was just broadcast.
 
-### Everything is projected to 2D
+**lio_body → lio_base.** The mount extrinsic again, this time broadcast rather
+than composed:
+
+```
+lio_body→lio_base  =  (base_link→lidar_top)⁻¹
+```
+
+`lio_body` is physically the lidar and `lio_base` is physically `base_link`, so
+this hangs a `base_link`-equivalent frame off the LIO branch. See below.
+
+### Everything in the nav chain is projected to 2D
 
 `project_2d()` keeps `x`, `y` and `yaw = atan2(R[1][0], R[0][0])`, and zeroes
 `z`, roll and pitch. This happens before every broadcast so the planar nav stack
@@ -90,6 +107,42 @@ never sees a tilted frame — which matters here more than on a wheeled robot,
 because the quadruped's body pitches and rolls with every gait cycle and the
 lidar itself is mounted at a 0.25 rad tilt. A costmap fed a tilted `base_link`
 would smear obstacles.
+
+### …which is why `pointlio_base` exists
+
+The projection makes `map → base_link` useless to anything that needs the real
+3D pose — a 3D frontend, say. Measured on robot01:
+
+```
+map → <id>/base_link       xyz [-1.767,  0.798,  0.000]   rpy [0.000, 0.000, 0.969]
+map → <id>/pointlio_body   xyz [-1.652,  0.980, -0.173]   rpy [0.009, 0.266, 0.976]
+map → <id>/pointlio_base   xyz [-1.764,  0.817, -0.325]   rpy [0.009, 0.016, 0.974]
+```
+
+`base_link` is exactly planar because both TFs on its chain were projected.
+`pointlio_body` has the full 6 DOF but is the *lidar*: 19.5 cm forward, 15.5 cm
+up, and pitched by the 0.25 rad mount tilt — note its 0.266 rad pitch is almost
+entirely mount, not robot. `pointlio_base` is the useful one: same x/y/yaw as
+`base_link` (to ~2 cm), but with a real `z` and the mount tilt removed, leaving
+the 0.016 rad the body is actually pitched at.
+
+**You cannot get there by asking for `map → base_link`.** `base_link` and
+`pointlio_base` are the same physical point on two disjoint TF branches, and
+tf2 will always route a `base_link` lookup through the planar
+`map → odom → base_link` and hand back `z = 0`. 3D consumers must name
+`pointlio_base` explicitly.
+
+The transform is derived at runtime from the URDF extrinsic this node already
+caches, not hardcoded in a launch file. That is deliberate: the inverse is
+`xyz [-0.150590, 0, -0.198425] rpy [0, -0.25, 0]` — the translation is not just
+the URDF values negated (it is `-Rᵀt`), so a hand-written
+`static_transform_publisher` would be both a second copy of the mount geometry
+and an easy place to get the sign convention subtly wrong. Retuning
+`lidar_top_joint` now moves both branches together.
+
+Note that `map → pointlio_base` still requires the localizer, exactly like
+`map → odom`: the static transform is published early, but the `map →
+pointlio_odom` link above it only appears after relocalize.
 
 ### Angular velocity comes from the IMU
 
@@ -110,8 +163,9 @@ odom chain, mirroring AMCL, where `odom → base_link` exists before an initial
 pose is given:
 
 1. As soon as `pointlio/lio_odom` and the lidar extrinsic are available, it
-   broadcasts `odom → base_link` and publishes the `odom` topic. The robot can be
-   driven; the costmaps' `odom`-frame local costmap works.
+   broadcasts `odom → base_link`, publishes the `odom` topic, and sends the
+   one-shot static `lio_body → lio_base`. The robot can be driven; the costmaps'
+   `odom`-frame local costmap works.
 2. `map → odom` additionally requires `map → <lio_odom frame>` from the
    localizer, which **only exists after `/localizer/relocalize` has been called**.
    Until then the timer logs a throttled "waiting for TF (relocalized yet?)" and
@@ -132,6 +186,7 @@ There is no params YAML; the launch file passes everything inline.
 | `base_frame` | `base_link` | `<robot_id>/base_link` | |
 | `odom_frame` | `odom` | `<robot_id>/odom` | |
 | `lidar_frame` | `lidar_top` | `<robot_id>/lidar_top` | Must match the URDF's `lidar_top` link |
+| `lio_base_frame` | `pointlio_base` | `<robot_id>/pointlio_base` | The 6-DOF frame this node creates |
 | `publish_rate` | `20.0` | `20.0` | Hz |
 | `transform_tolerance` | `0.1` | `0.1` | Seconds the TF stamp is future-dated |
 | `use_sim_time` | — | **`true`** | See the gotcha below |
@@ -163,6 +218,7 @@ ros2 topic hz /<robot_id>/odom
 ros2 run tf2_ros tf2_echo map <robot_id>/odom          # zero-ish until relocalize
 ros2 run tf2_ros tf2_echo <robot_id>/odom <robot_id>/base_link
 ros2 topic echo /<robot_id>/pointlio/lio_odom --once   # is LIO producing at all?
+ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_base # 6-DOF pose: z must vary
 ```
 
 The node's own log is the fastest diagnosis — each failure mode has a distinct
@@ -173,6 +229,10 @@ throttled message:
 | `waiting for pointlio/lio_odom (LIO initializing?)` | Point-LIO is not publishing |
 | `waiting for <id>/base_link -> <id>/lidar_top` | `bringup` / `robot_state_publisher` is not running |
 | `waiting for TF (relocalized yet?)` | `/localizer/relocalize` has not been called |
+| `pointlio/lio_odom has no child_frame_id` | Upstream stopped stamping the body frame; `pointlio_base` is not published |
+
+The one-shot `static <id>/pointlio_body -> <id>/pointlio_base = (…)` line
+confirms the 6-DOF branch is up.
 
 ## Gotchas
 
@@ -187,7 +247,12 @@ throttled message:
   the whole timer body.
 - **The odom pose is a planar projection**, so `position.z` is always 0 and the
   orientation only has a yaw component. Do not use this topic as a 3D pose
-  source; `pointlio/lio_odom` is the full 6-DOF estimate.
+  source; look up `map → <id>/pointlio_base` (or read `pointlio/lio_odom`, which
+  is the raw 6-DOF estimate, in the *lidar* frame).
+- **`map → base_link` is planar and always will be.** Anything rendering the
+  robot in 3D must name `pointlio_base` explicitly — asking tf2 for `base_link`
+  silently returns `z = 0` rather than failing, which is the kind of bug that
+  looks like a frontend problem for a day.
 - **Odometry covariance is never populated** — the pose and twist covariance
   arrays stay all-zero. Anything doing proper uncertainty propagation would need
   them filled in.

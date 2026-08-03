@@ -12,7 +12,12 @@ from nav2_msgs.action import NavigateToPose
 from action_msgs.msg import GoalStatus
 
 from syncai_common.msg import WifiNetwork
-from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks, SetMotionKey
+from syncai_common.srv import (
+    ConnectWifiNetwork,
+    ScanWifiNetworks,
+    SetMotionKey,
+    SetPolicyMode,
+)
 
 from std_msgs.msg import Header
 from geometry_msgs.msg import (
@@ -112,11 +117,20 @@ class RobotGateway:
             srv_name="set_motion_key",
         )
 
+        # Relative, like every other client here, so it resolves under this
+        # node's robot_id namespace and reaches this robot's driver_manager only.
+        # An absolute, fleet-wide name has been a bug in this backend before.
+        set_policy_mode_client = self._node.create_client(
+            srv_type=SetPolicyMode,
+            srv_name="set_policy_mode",
+        )
+
         self._service_clients.update(
             {
                 "scan_wifi": scan_wifi_client,
                 "connect_wifi": connect_wifi_client,
                 "set_motion_key": set_motion_key_client,
+                "set_policy_mode": set_policy_mode_client,
             }
         )
 
@@ -182,6 +196,43 @@ class RobotGateway:
         future = motion_key_client.call_async(SetMotionKey.Request(key=key.value))
         if not _wait_for_future(future, timeout=10.0):
             return False, "Timeout waiting for set_motion_key response"
+
+        response = future.result()
+        return response.success, response.message
+
+    def set_policy_mode(self, mode: int) -> Tuple[bool, str]:
+        """Switch the gait controller's policy (`MODE <uint>` over UDP).
+
+        Takes a plain int rather than an enum: `SetPolicyMode.mode` is a bare
+        uint8 whose legal set is the gait controller's policy index -- a
+        namespace this workspace does not own (see syncai_common/README.md). The
+        REST layer narrows it to the indices we are willing to expose, and
+        keeping this signature an int means a caller that needs an unexposed one
+        does not have to widen an enum that lives in the REST layer.
+
+        Same fire-and-forget caveat as set_motion_key, and worse: the driver's
+        callback formats one string and hands it to sendto(), whose return it
+        ignores, and unlike set_motion_key it validates nothing and is not gated
+        by the safety lock. A True here means the datagram was written -- not
+        that the controller switched policy.
+        """
+        policy_mode_client = self._service_clients.get("set_policy_mode")
+        if not policy_mode_client.wait_for_service(timeout_sec=5.0):
+            return False, "set_policy_mode service is not available"
+
+        self._logger.info("[RobotGateway] Setting policy mode", mode=mode)
+
+        future = policy_mode_client.call_async(SetPolicyMode.Request(mode=mode))
+        # The same 10.0 as set_motion_key, deliberately rather than a third
+        # number: the driver's callback is one snprintf plus one sendto on a
+        # datagram socket and cannot block, so the only latency is the DDS round
+        # trip plus its turn on the driver's shared services callback group. The
+        # 45.0 / 70.0 above are large because those service *implementations*
+        # sleep (a rescan, nmcli); nothing here does. Not shrunk to ~1 s either:
+        # a discovery hiccup, or an executor thread briefly starved by telemetry
+        # parsing, would then surface as a spurious 502.
+        if not _wait_for_future(future, timeout=10.0):
+            return False, "Timeout waiting for set_policy_mode response"
 
         response = future.result()
         return response.success, response.message

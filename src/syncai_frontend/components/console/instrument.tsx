@@ -240,9 +240,18 @@ export function Segmented<T extends string>({
   options,
   onChange,
   stretch = false,
+  disabled = false,
   className,
 }: {
-  value: T;
+  /**
+   * `null` lights no segment.
+   *
+   * For a control whose state is *commanded* rather than measured: the console
+   * cannot read back which locomotion controller is live, so before the operator
+   * has picked one there is no honest segment to light. A default-lit segment
+   * would be a claim about the robot.
+   */
+  value: T | null;
   options: readonly { value: T; label: string }[];
   onChange: (value: T) => void;
   /**
@@ -254,6 +263,8 @@ export function Segmented<T extends string>({
    * overflows the panel's border.
    */
   stretch?: boolean;
+  /** Dim the whole control and refuse every segment. */
+  disabled?: boolean;
   className?: string;
 }) {
   return (
@@ -261,6 +272,7 @@ export function Segmented<T extends string>({
       className={cn(
         "overflow-hidden rounded-sm border border-hairline",
         stretch ? "flex w-full" : "inline-flex",
+        disabled && "opacity-40",
         className,
       )}
     >
@@ -271,10 +283,14 @@ export function Segmented<T extends string>({
             key={option.value}
             type="button"
             aria-pressed={active}
+            disabled={disabled}
             onClick={() => onChange(option.value)}
             className={cn(
               "instrument-label h-6 px-2 transition-colors",
               "border-l border-hairline first:border-l-0",
+              // The dimming lives on the container, so a disabled segment only
+              // has to stop reacting — two stacked opacities would be muddy.
+              disabled && "hover:bg-transparent hover:text-muted-foreground",
               // min-w-0 so a segment can shrink below its label; truncate rather
               // than let one long label push the row past the container. The
               // padding drops to px-1 because flex-1 is already doing the spacing,

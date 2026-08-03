@@ -154,9 +154,16 @@ Notes:
 
 - **`SetMotionKey.key` is a string, not an enum**, because it is forwarded
   verbatim to the gait controller. Values in use: `0` stand, `1` locomotion,
-  `2` lie down, `3` damping, `4` emergency stop, `5` MPC. The backend no longer
-  exposes this over REST; it is called from the `STANDUP` / `LIEDOWN` task steps
-  (`syncai_backend/temporal/activities.py`).
+  `2` lie down, `3` damping, `4` emergency stop, `5` MPC. Two callers in the
+  backend: the `STANDUP` / `LIEDOWN` task steps
+  (`syncai_backend/temporal/activities.py`, keys `0` / `2`) and
+  `POST /api/v1/robot/set_motion_key`. REST exposure has been round-tripped —
+  added in `daca318`, removed in `191b484` when the task steps took over, and
+  re-added since for manual operator control alongside them. The endpoint accepts
+  all six keys but **does not forward `"4"`**: it answers 200 with
+  `sent: false` and produces no `ESTOP` datagram, because an emergency stop over
+  unauthenticated HTTP on an unacknowledged one-way link is not a safety claim
+  the REST layer can honour.
 - **`SetSpeedScale` has six independent scales** (`fwd`, `back`, `left`, `right`,
   `turn_l`, `turn_r`) because the gait controller tracks commanded velocity
   asymmetrically per direction; the driver manager applies these as a correction
@@ -164,7 +171,13 @@ Notes:
   field.
 - `SetPolicyMode.mode` is a bare `uint8` and does **not** reuse `RobotMode`'s
   constants — it is the gait controller's policy index, a different namespace
-  that happens to share the type.
+  that happens to share the type. Exposed as
+  `POST /api/v1/robot/set_policy_mode`, which narrows the accepted values to `0`
+  (PPO) and `1` (HIMLOCO) through a router-level enum. That constrains the **REST
+  vocabulary only**: this field stays a bare `uint8` and
+  `RobotGateway.set_policy_mode()` stays `int`, so a non-REST caller can still
+  send `2` (CHAMP) or `3` (ISSAC). Those names come from the reference
+  implementation's Readme and are defined nowhere in this workspace.
 
 The `success`/`message` pair is the convention for everything here: callers check
 `success` and surface `message` verbatim (the backend maps a failed wifi connect
