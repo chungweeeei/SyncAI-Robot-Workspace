@@ -40,10 +40,10 @@ def _mode_to_str(mode: int) -> str:
 _POLICY_STATE_TO_STR = {0: "PPO", 1: "HIMLOCO"}
 
 # 8 is the controller's own startup sentinel ("I have not entered a state yet").
-# Note what is NOT in here: MPC. This workspace added the `MODE M` command
-# without knowing what the controller reports for it, so an out-of-table integer
-# is expected rather than a bug — which is exactly why the raw value is exposed
-# alongside the label.
+# Note what is NOT in here: MPC. This workspace added the `MODE M` command without
+# knowing what the controller reports for it, so an out-of-table integer is
+# expected rather than a bug. The response carries labels only, so that integer is
+# not recoverable from REST — read it off the `robot_state` topic instead.
 _MOTION_STATE_TO_STR = {
     0: "STAND",
     1: "LOCOMOTION",
@@ -134,16 +134,19 @@ class RobotLowLevelMode(BaseModel):
     session is up. Three unrelated things in this stack are called "mode"; the
     disambiguation lives in syncai_common/msg/RobotLowLevelMode.msg.
 
-    Both a label and the raw integer are exposed on purpose. The integer
-    vocabularies are the controller's, they are documented from a third-party
-    Readme rather than a spec, and MPC's code is genuinely unknown — so
-    `"UNKNOWN"` next to a raw `6` is the only thing that lets an operator work
-    out what MPC actually reports. A label alone would throw that away.
+    LABELS ONLY, and know what that costs. The underlying message carries two raw
+    integers from the controller's own vocabularies, which are documented from a
+    third-party Readme rather than a spec — and MPC's motion code is genuinely
+    unknown, so an unmapped value is expected rather than exceptional. Here it
+    collapses to `"UNKNOWN"` with no way to tell 5 from 6 from 99. When that
+    matters, the integers are still on the ROS topic:
+    `ros2 topic echo /<robot_id>/robot_state --field low_level_mode`.
 
-    NO FRESHNESS INFORMATION. `policy_state: 0, motion_state: 0` is what this
-    carries before the controller has ever been heard from AND a genuine
-    "PPO / STAND" reading; nothing here tells the two apart. The message this
-    comes from used to carry a receipt timestamp and no longer does.
+    NO FRESHNESS INFORMATION either. `"PPO" / "STAND"` is what this reports before
+    the controller has ever been heard from AND a genuine reading; nothing here
+    tells the two apart, because the message it comes from carries no receipt
+    timestamp. In practice the endpoint 404s until localization is valid, so the
+    ambiguity only shows on a robot that is localized but whose driver is silent.
     """
 
     policy: str = Field(

@@ -2,7 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MapIcon, RadarIcon, SlidersHorizontalIcon } from "lucide-react";
+import {
+  ListChecksIcon,
+  MapIcon,
+  RadarIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
 
 import { ModeToggle } from "@/components/mode-toggle";
 import {
@@ -18,6 +23,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { title: "Dashboard", href: "/", icon: RadarIcon },
   { title: "Maps", href: "/maps", icon: MapIcon },
+  { title: "Tasks", href: "/tasks", icon: ListChecksIcon },
   { title: "Settings", href: "/settings", icon: SlidersHorizontalIcon },
 ];
 

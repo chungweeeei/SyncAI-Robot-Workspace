@@ -14,6 +14,7 @@ from syncai_backend.exceptions import (
 
 from syncai_backend.interfaces.rest.routers.task import init_task_router
 from syncai_backend.interfaces.rest.routers.schedule import init_schedule_router
+from syncai_backend.interfaces.rest.routers.saved_task import init_saved_task_router
 from syncai_backend.interfaces.rest.routers.robot import init_robot_router
 from syncai_backend.interfaces.rest.routers.network import init_network_router
 from syncai_backend.interfaces.rest.routers.map import init_map_router
@@ -25,6 +26,7 @@ from syncai_backend.repositories.map.map import MapRepo
 from syncai_backend.repositories.map.catalog import MapCatalogRepo
 from syncai_backend.repositories.pointcloud.pointcloud import PointCloudRepo
 from syncai_backend.repositories.telemetry.telemetry import TelemetryRepo
+from syncai_backend.repositories.task.saved_task import SavedTaskRepo
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
@@ -64,6 +66,7 @@ def init_rest_server(
     map_gw: MapGateway,
     pointcloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
+    saved_task_repo: SavedTaskRepo,
 ) -> FastAPI:
 
     description = """
@@ -106,6 +109,24 @@ def init_rest_server(
             map_gw=map_gw,
         )
     )
+    # Serves /api/v1/saved_tasks: the operator's library of re-dispatchable step
+    # lists. It needs map_repo to resolve a saved MOVE step's vertex reference
+    # against that vertex's *current* pose, map_catalog_repo to answer "is this
+    # task's map the one the robot is on", and workflow_gw for the one route that
+    # freezes a saved task into a Temporal schedule.
+    #
+    # Included after the task router, though nothing depends on the order: the
+    # /api/v1/saved_tasks prefix cannot collide with /api/v1/tasks/{id}, which is
+    # precisely why that prefix was chosen over /api/v1/tasks/saved.
+    app.include_router(
+        init_saved_task_router(
+            logger=logger,
+            saved_task_repo=saved_task_repo,
+            map_repo=map_repo,
+            map_catalog_repo=map_catalog_repo,
+            workflow_gw=workflow_gw,
+        )
+    )
     app.include_router(
         init_pointcloud_router(logger=logger, pointcloud_repo=pointcloud_repo)
     )
@@ -126,6 +147,7 @@ def start_rest_server(
     map_gw: MapGateway,
     pointcloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
+    saved_task_repo: SavedTaskRepo,
 ):
 
     app = init_rest_server(
@@ -138,6 +160,7 @@ def start_rest_server(
         map_gw=map_gw,
         pointcloud_repo=pointcloud_repo,
         telemetry_repo=telemetry_repo,
+        saved_task_repo=saved_task_repo,
     )
 
     def _run():

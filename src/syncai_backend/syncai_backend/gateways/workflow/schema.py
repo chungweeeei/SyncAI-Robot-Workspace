@@ -219,6 +219,24 @@ class ScheduleTask(BaseSchema):
         ..., description="Task definition executed on each trigger"
     )
 
+    # Provenance, stashed in the schedule memo rather than anywhere Temporal
+    # interprets. The memo is the established channel for "keep something so it
+    # survives a round trip" (see _trigger_to_memo) and, crucially, unlike the
+    # start-workflow args it IS readable on the *list* path -- which is what lets
+    # the collection endpoint flag a schedule whose map is no longer the active
+    # one without an extra describe per row.
+    map_name: Optional[str] = Field(
+        default=None,
+        description="Map whose frame this schedule's MOVE coordinates are in.",
+    )
+    saved_task_id: Optional[str] = Field(
+        default=None,
+        description="The saved task this schedule was frozen from, if any.",
+    )
+    saved_task_name: Optional[str] = Field(
+        default=None, description="That saved task's name at registration time."
+    )
+
 
 class ScheduleView(BaseSchema):
     id: str = Field(..., description="Unique identifier of the schedule")
@@ -227,4 +245,17 @@ class ScheduleView(BaseSchema):
     next_run_times: List[datetime] = Field(
         default_factory=list,
         description="Upcoming trigger times (UTC)",
+    )
+    map_name: Optional[str] = Field(default=None)
+    saved_task_id: Optional[str] = Field(default=None)
+    saved_task_name: Optional[str] = Field(default=None)
+    steps: List[Step] = Field(
+        default_factory=list,
+        description=(
+            "The frozen step list, decoded from the schedule's start-workflow "
+            "args. Populated by describe() only -- always empty from "
+            "list_schedules(), whose ScheduleListActionStartWorkflow carries the "
+            "workflow type name and nothing else. Frozen at registration: later "
+            "vertex edits do not reach a scheduled run."
+        ),
     )

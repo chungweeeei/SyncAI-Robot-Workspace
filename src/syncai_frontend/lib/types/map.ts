@@ -43,3 +43,36 @@ export interface MapSummary {
   /** Rows in `map_vertices` naming this map. */
   vertex_count: number;
 }
+
+/**
+ * What the robot does when it visits a vertex — the router's `VertexType`.
+ *
+ * A closed union rather than a string, because the backend validates it at the
+ * REST boundary and an unknown value comes back as a 422 whose `detail` is a
+ * validation *array*, not a sentence an operator can read. Keeping the UI's
+ * choices a fixed set is what stops that from ever being rendered.
+ *
+ * The DB column is still called `MapPoint.type` and the table `map_vertices`;
+ * "vertex" is the REST vocabulary. That mismatch is deliberate upstream — see
+ * the backend's CLAUDE.md — and this file follows the wire, not the table.
+ */
+export type VertexType = "GENERAL" | "ARTIFACT" | "CHARGER" | "HOME" | "WAITING";
+
+/** `MapVertexResponse`, verbatim. */
+export interface MapVertex {
+  /** Server-assigned uuid, serialised as a string. Unique across all maps. */
+  id: string;
+  name: string;
+  type: VertexType;
+  /** The bare directory name, the same spelling `MapSummary.name` uses. */
+  map_name: string;
+  /** Map frame, metres. */
+  x: number;
+  y: number;
+  /**
+   * Heading in **degrees**, CCW from +x — the same convention as `PlanarPose`
+   * and the whole REST vocabulary. Not radians, despite the grid origin's third
+   * component (`MapMetadata.origin[2]`) being one.
+   */
+  theta: number;
+}

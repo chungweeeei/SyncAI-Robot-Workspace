@@ -11,7 +11,12 @@ import {
 } from "@/components/console/instrument";
 import { cn } from "@/lib/utils";
 import { BRUSH_SIZES, FREE, OCCUPIED, UNKNOWN, type GridValue } from "@/lib/map/grid";
-import type { EditTool } from "@/components/maps/grid-canvas";
+import type { EditMode, EditTool } from "@/components/maps/grid-canvas";
+
+const MODES: readonly { value: EditMode; label: string }[] = [
+  { value: "grid", label: "Grid" },
+  { value: "vertex", label: "Vertex" },
+];
 
 const TOOLS: readonly { value: EditTool; label: string }[] = [
   { value: "brush", label: "Brush" },
@@ -81,6 +86,8 @@ function saveNote(
 }
 
 export interface GridToolbarProps {
+  mode: EditMode;
+  onModeChange: (mode: EditMode) => void;
   tool: EditTool;
   onToolChange: (tool: EditTool) => void;
   value: GridValue;
@@ -124,6 +131,8 @@ function IconButton({
 }
 
 export function GridToolbar({
+  mode,
+  onModeChange,
   tool,
   onToolChange,
   value,
@@ -147,32 +156,44 @@ export function GridToolbar({
     // w-56 matches the dashboard's overlay controls, and is what "FREE / UNKNOWN /
     // OBSTACLE" needs: eight condensed caps plus padding, three times over.
     <div className={cn(overlayPanel, "flex w-56 flex-col gap-2 p-2.5", className)}>
-      <Row label="Tool">
-        <Segmented stretch value={tool} options={TOOLS} onChange={onToolChange} />
+      <Row label="Mode">
+        <Segmented stretch value={mode} options={MODES} onChange={onModeChange} />
       </Row>
 
-      <Row label="Paint">
-        <Segmented
-          stretch
-          value={`${value}` as `${GridValue}`}
-          options={VALUES}
-          onChange={(next) => onValueChange(Number(next) as GridValue)}
-        />
-      </Row>
+      {/* The paint controls describe a stroke, and vertex mode makes none. The
+       * block below them stays in both modes, deliberately: the grid can be
+       * dirty while the operator is placing vertices, and hiding Save because a
+       * mode toggle moved is how unsaved cells get lost. */}
+      {mode === "grid" && (
+        <>
+          <Row label="Tool">
+            <Segmented stretch value={tool} options={TOOLS} onChange={onToolChange} />
+          </Row>
 
-      {/* Cells, not pixels — the number is the count of cells across, which is what
-       * you are actually deciding about. Discrete sizes rather than a slider: no
-       * slider exists in components/ui, and knowing you are painting exactly 7
-       * cells is worth more here than continuous control. */}
-      <Row label={`Size · ${brush} cell${brush === 1 ? "" : "s"}`}>
-        <Segmented
-          stretch
-          value={`${brush}` as (typeof SIZES)[number]["value"]}
-          options={SIZES}
-          onChange={(next) => onBrushChange(Number(next))}
-          className={shapeTool ? undefined : "opacity-40"}
-        />
-      </Row>
+          <Row label="Paint">
+            <Segmented
+              stretch
+              value={`${value}` as `${GridValue}`}
+              options={VALUES}
+              onChange={(next) => onValueChange(Number(next) as GridValue)}
+            />
+          </Row>
+
+          {/* Cells, not pixels — the number is the count of cells across, which is
+           * what you are actually deciding about. Discrete sizes rather than a
+           * slider: no slider exists in components/ui, and knowing you are painting
+           * exactly 7 cells is worth more here than continuous control. */}
+          <Row label={`Size · ${brush} cell${brush === 1 ? "" : "s"}`}>
+            <Segmented
+              stretch
+              value={`${brush}` as (typeof SIZES)[number]["value"]}
+              options={SIZES}
+              onChange={(next) => onBrushChange(Number(next))}
+              className={shapeTool ? undefined : "opacity-40"}
+            />
+          </Row>
+        </>
+      )}
 
       <div className="flex items-center gap-1.5 border-t border-hairline pt-2">
         <IconButton label="Undo" icon={Undo2Icon} disabled={!canUndo} onClick={onUndo} />
@@ -208,7 +229,30 @@ export function GridToolbar({
           )}
         </p>
       )}
+
+      {/*
+       * Right-drag is listed first because it is the one an operator coming from
+       * the dashboard expects to find: there the view moves under a plain drag, and
+       * here the left button is the edit, so the view got its own button.
+       *
+       * The rest were all implemented and mentioned nowhere, which made them
+       * effectively private. That matters most in vertex mode, where the Tool row
+       * above is hidden and these drags are the only way to move the view.
+       */}
+      <p className="border-t border-hairline pt-2 text-[11px] leading-tight text-muted-foreground">
+        Right-drag to move the view · also <Key>Space</Key> or middle-drag ·{" "}
+        <Key>0</Key> to fit · scroll to zoom
+      </p>
     </div>
+  );
+}
+
+/** A key cap, sized to sit inside an 11px line without changing its height. */
+function Key({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="readout rounded-[3px] border border-hairline px-1 py-px text-[10px] text-foreground">
+      {children}
+    </kbd>
   );
 }
 

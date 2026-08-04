@@ -3,7 +3,7 @@
 import { CrosshairIcon, SendIcon, XIcon } from "lucide-react";
 
 import { Readout, overlayPanel } from "@/components/console/instrument";
-import { TaskStatusChip } from "@/components/dashboard/task-chip";
+import { TaskStatusChip } from "@/components/console/task-chip";
 import { cn } from "@/lib/utils";
 import type { GoalTask } from "@/hooks/use-goal-task";
 

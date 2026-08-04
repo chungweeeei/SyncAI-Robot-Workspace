@@ -14,6 +14,7 @@ from temporalio.client import (
     SchedulePolicy,
     ScheduleSpec,
 )
+from temporalio.api.common.v1 import Payload
 from temporalio.service import RPCError, RPCStatusCode
 
 from syncai_backend.exceptions import (
@@ -81,37 +82,96 @@ def _spec_to_trigger(spec: ScheduleSpec) -> ScheduleTrigger:
     return ScheduleTrigger()
 
 
-def _trigger_to_memo(trigger: ScheduleTrigger) -> dict:
-    """Serialise a trigger into memo fields so it survives Temporal's cron
-    normalisation and can be echoed back verbatim on get/list."""
+def _schedule_to_memo(schedule: ScheduleTask) -> dict:
+    """Serialise a schedule's trigger and provenance into memo fields.
+
+    The trigger has to be here because Temporal normalises cron_expressions into
+    internal calendar specs, so describe() can no longer report the string that
+    was registered. The provenance rides along in the same place for a different
+    reason: the memo is readable from ``list_schedules()`` while the
+    start-workflow args are not, so this is the only channel by which the
+    collection endpoint can say which map a schedule belongs to.
+    """
     memo: dict = {}
-    if trigger.cron:
-        memo["cron"] = trigger.cron
-    if trigger.interval_seconds:
-        memo["interval_seconds"] = trigger.interval_seconds
-    if trigger.timezone:
-        memo["timezone"] = trigger.timezone
+    if schedule.trigger.cron:
+        memo["cron"] = schedule.trigger.cron
+    if schedule.trigger.interval_seconds:
+        memo["interval_seconds"] = schedule.trigger.interval_seconds
+    if schedule.trigger.timezone:
+        memo["timezone"] = schedule.trigger.timezone
+    if schedule.map_name:
+        memo["map_name"] = schedule.map_name
+    if schedule.saved_task_id:
+        memo["saved_task_id"] = schedule.saved_task_id
+    if schedule.saved_task_name:
+        memo["saved_task_name"] = schedule.saved_task_name
     return memo
 
 
-async def _read_trigger(described) -> ScheduleTrigger:
-    """Rebuild a ScheduleTrigger, preferring the original values saved in the
-    schedule memo and falling back to the (normalised) spec."""
-    try:
-        memo = await described.memo()
-    except Exception:
-        memo = {}
+async def _read_memo(described) -> dict:
+    """One memo read per description, tolerating a schedule that has none.
 
-    cron = memo.get("cron") if memo else None
-    interval_seconds = memo.get("interval_seconds") if memo else None
-    timezone = memo.get("timezone") if memo else None
+    Split out from the interpretation below so each call site awaits the decode
+    exactly once and then pulls both the trigger and the provenance out of the
+    result -- the previous shape awaited it inside the trigger helper, which
+    would have meant a second decode per row once provenance was added.
+    """
+    try:
+        return await described.memo() or {}
+    except Exception:
+        return {}
+
+
+def _trigger_from_memo(memo: dict, spec: ScheduleSpec) -> ScheduleTrigger:
+    """The trigger as registered, falling back to the (normalised) spec."""
+    cron = memo.get("cron")
+    interval_seconds = memo.get("interval_seconds")
 
     if cron or interval_seconds:
         return ScheduleTrigger(
-            cron=cron, interval_seconds=interval_seconds, timezone=timezone
+            cron=cron,
+            interval_seconds=interval_seconds,
+            timezone=memo.get("timezone"),
         )
 
-    return _spec_to_trigger(described.schedule.spec)
+    return _spec_to_trigger(spec)
+
+
+async def _read_steps(logger: structlog.stdlib.BoundLogger, desc) -> List[Step]:
+    """Decode the frozen step list out of a *described* schedule's action.
+
+    ``ScheduleActionStartWorkflow._from_proto`` leaves ``args`` as the raw
+    ``temporalio.api.common.v1.Payload`` protos, and the ScheduleDescription
+    carries the data_converter that turns them back into a WorkflowTask.
+
+    Module-level, and taking the logger rather than reading ``self._logger``, so
+    it can be unit-tested against a hand-built description -- the same reason
+    ``_spec_to_trigger`` is not a method.
+
+    Never fatal. A schedule created outside this API, or one whose payload this
+    converter cannot map, must still report its trigger and next run times --
+    the same policy ``get_task_state``'s step query and the memo read above use.
+    """
+    action = getattr(desc.schedule, "action", None)
+    if not isinstance(action, ScheduleActionStartWorkflow) or not action.args:
+        return []
+
+    try:
+        args = list(action.args)
+        # Guarded rather than assumed: args are Payloads only on the describe
+        # path. A ScheduleTask this process just built still holds the python
+        # objects, and so does a test's stub.
+        if isinstance(args[0], Payload):
+            args = await desc.data_converter.decode(args, [WorkflowTask])
+        task = args[0]
+        return list(task.definition.steps) if isinstance(task, WorkflowTask) else []
+    except Exception as err:
+        logger.warn(
+            "[WorkflowGateway] Failed to decode schedule steps",
+            schedule_id=getattr(desc, "id", None),
+            error=str(err),
+        )
+        return []
 
 
 class WorkflowGateway:
@@ -246,10 +306,9 @@ class WorkflowGateway:
         # that can be queried via GET /api/v1/tasks/{id}.
         workflow_task = WorkflowTask(id=schedule.id, definition=schedule.definition)
 
-        # Temporal normalises cron_expressions into internal calendar specs, so
-        # describe() no longer returns the original cron string. Stash the
-        # original trigger in the schedule memo so get/list can echo it back.
-        memo = _trigger_to_memo(schedule.trigger)
+        # Trigger + provenance into the memo, so get/list can echo both back.
+        # See _schedule_to_memo for why the memo and not the action args.
+        memo = _schedule_to_memo(schedule)
 
         try:
             await client.create_schedule(
@@ -298,13 +357,20 @@ class WorkflowGateway:
             )
             raise InternalServerError("Describe schedule failed")
 
+        memo = await _read_memo(desc)
+
         return ScheduleView(
             id=desc.id,
-            trigger=await _read_trigger(desc),
+            trigger=_trigger_from_memo(memo, desc.schedule.spec),
             paused=desc.schedule.state.paused,
             next_run_times=[
                 t.astimezone(timezone.utc) for t in desc.info.next_action_times
             ],
+            map_name=memo.get("map_name"),
+            saved_task_id=memo.get("saved_task_id"),
+            saved_task_name=memo.get("saved_task_name"),
+            # Only the describe path can reach the frozen steps; see _read_steps.
+            steps=await _read_steps(self._logger, desc),
         )
 
     async def list_schedules(self) -> List[ScheduleView]:
@@ -319,16 +385,31 @@ class WorkflowGateway:
 
         schedules: List[ScheduleView] = []
         try:
+            # `list_schedules` is a coroutine returning the iterator, hence the
+            # await inside the async-for. (`list_workflows`, by contrast, returns
+            # the iterator directly — do not copy this shape onto that one.)
             async for item in await client.list_schedules():
+                memo = await _read_memo(item)
                 schedules.append(
                     ScheduleView(
                         id=item.id,
-                        trigger=await _read_trigger(item),
+                        trigger=_trigger_from_memo(memo, item.schedule.spec),
                         paused=item.schedule.state.paused,
                         next_run_times=[
                             t.astimezone(timezone.utc)
                             for t in item.info.next_action_times
                         ],
+                        map_name=memo.get("map_name"),
+                        saved_task_id=memo.get("saved_task_id"),
+                        saved_task_name=memo.get("saved_task_name"),
+                        # `steps` deliberately left empty. A schedule *list*
+                        # element is a ScheduleListDescription whose action is a
+                        # ScheduleListActionStartWorkflow -- one field, the
+                        # workflow type name. The frozen args are unreachable
+                        # here at any price, and faking it with a describe() per
+                        # row would turn one paged RPC into 1+N on first paint
+                        # for data most rows never show. GET /{id} is the path
+                        # that carries steps.
                     )
                 )
         except Exception as err:

@@ -8,19 +8,19 @@ export type RobotMode = "MAINTENANCE" | "MANUAL" | "AUTO";
  * What the gait controller reports it is doing — not `RobotState.mode`, which is
  * which byobu session is up.
  *
- * `policy` and `motion` are open strings rather than unions on purpose: the
- * backend decodes the controller's integers through a lookup with an `"UNKNOWN"`
- * fallback, and it will legitimately hit that fallback — CHAMP/ISSAC are real
- * policies the REST command surface does not expose, and MPC's motion code is
- * genuinely unknown. That is exactly why the raw integers come along: `"UNKNOWN"`
- * beside a `motion_state` of 6 is how somebody eventually works out what MPC
- * reports.
+ * Open strings rather than unions on purpose: the backend decodes the controller's
+ * integers through a lookup with an `"UNKNOWN"` fallback, and it will legitimately
+ * hit that fallback — CHAMP/ISSAC are real policies the REST command surface does
+ * not expose, and MPC's motion code is genuinely unknown.
+ *
+ * The payload carries labels only; the raw integers stay on the ROS topic. So
+ * `"UNKNOWN"` is as much as the console can ever say, and two different unmapped
+ * codes are indistinguishable here — `ros2 topic echo /<robot_id>/robot_state
+ * --field low_level_mode` is where you find out which one it was.
  */
 export interface RobotLowLevelMode {
   policy: string;
-  policy_state: number;
   motion: string;
-  motion_state: number;
 }
 
 export interface RobotPose {

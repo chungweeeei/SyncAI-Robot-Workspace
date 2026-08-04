@@ -15,19 +15,47 @@ import {
 import { blitGrid, blitGridRect } from "@/lib/map/render";
 import type { GridPatch } from "@/lib/map/patch";
 import type { GridSession } from "@/lib/map/session";
+import { vertexGlyph } from "@/lib/map/vertex";
 import {
   CELL_GRID_MIN_SCALE,
   cellAt,
   fitView,
   gridToScreen,
+  gridToWorld,
   panBy,
   reanchorView,
   screenToGrid,
+  worldToGrid,
   zoomAt,
   type View,
 } from "@/lib/map/view";
+import type { MapVertex } from "@/lib/types/map";
+import type { MapMetadata, PlanarPose } from "@/lib/types/robot";
 
 export type EditTool = "brush" | "line" | "rect" | "pan";
+
+/**
+ * What a press on the canvas means.
+ *
+ * "grid" paints cells; "vertex" places and aims map vertices and never touches
+ * the cell buffer. The two share this component rather than getting a canvas
+ * each because lib/map/view.ts's rule is that there is exactly one view
+ * transform and every handler reads the same one — a second layer would have to
+ * be handed `viewRef`, which is the one thing this component does not expose.
+ */
+export type EditMode = "grid" | "vertex";
+
+/** What a completed vertex gesture produced. */
+export interface VertexGesture {
+  /** The vertex the press landed on, or null for a press on bare map. */
+  id: string | null;
+  /**
+   * Position plus heading in degrees. For a press on an existing vertex the
+   * position is that vertex's stored one, echoed back unchanged — see
+   * handlePointerDown on why the press point is deliberately not used there.
+   */
+  pose: PlanarPose;
+}
 
 export interface CellProbe {
   col: number;
@@ -45,6 +73,14 @@ interface Palette {
   cellGrid: string;
   /** Brush outline and shape preview — a commanded value the operator set. */
   cmd: string;
+  /**
+   * Stored map vertices. One hue for all five types (see lib/map/vertex.ts on
+   * why the type is a glyph and not a colour), and not one of the signal hues:
+   * a saved vertex is neither measured nor commanded nor faulted, so borrowing
+   * a signal colour for it would weaken the ones that do mean something. The
+   * *draft* vertex uses `cmd`, like every other value the operator is setting.
+   */
+  vertex: string;
 }
 
 /*
@@ -56,9 +92,33 @@ interface Palette {
  * brush and previews, because they show a value the operator is about to commit.
  */
 const PALETTES: Record<"light" | "dark", Palette> = {
-  light: { well: "#e2e9ee", extent: "#8b9aa5", cellGrid: "#b9c6ce", cmd: "#0a6d94" },
-  dark: { well: "#22282c", extent: "#5c6a74", cellGrid: "#3a444b", cmd: "#45c8f0" },
+  light: {
+    well: "#e2e9ee",
+    extent: "#8b9aa5",
+    cellGrid: "#b9c6ce",
+    cmd: "#0a6d94",
+    vertex: "#2f4a58",
+  },
+  dark: {
+    well: "#22282c",
+    extent: "#5c6a74",
+    cellGrid: "#3a444b",
+    cmd: "#45c8f0",
+    vertex: "#a8bcc7",
+  },
 };
+
+/**
+ * Drawn under every marker and label before the coloured shape.
+ *
+ * A vertex sits on cells the grid renders literally — white where the floor is
+ * free, near-black where it is not (see lib/map/render.ts) — so no single hue is
+ * legible everywhere a vertex can be placed. A translucent light halo behind the
+ * mark is what makes the dark light-theme marker readable on top of an obstacle,
+ * and it is drawn rather than themed because the *grid* under it never follows
+ * the theme.
+ */
+const MARKER_HALO = "rgba(255, 255, 255, 0.85)";
 
 /** Above this many preview cells, outline the shape instead of filling cells. */
 const PREVIEW_CELL_LIMIT = 4000;
@@ -66,16 +126,51 @@ const PREVIEW_CELL_LIMIT = 4000;
 /** Smallest on-screen brush ring, so a 1-cell brush stays findable zoomed out. */
 const MIN_RING_PX = 6;
 
+/*
+ * Vertex markers are sized in CSS pixels and do NOT scale with zoom, which is
+ * the opposite of the brush ring. The ring scales because it has to be honest
+ * about how many cells a click will paint; a vertex is a single pose, so scaling
+ * it would only make it vanish at fit view — the zoom level where an operator is
+ * most likely to be looking for it.
+ */
+const VERTEX_DOT_RADIUS = 4.5;
+const VERTEX_ARROW_PX = 18;
+/** Click slop around a marker centre. Comfortably larger than the dot itself. */
+const VERTEX_HIT_RADIUS = 11;
+/** Below this drag distance the gesture is a click and the heading is kept. */
+const HEADING_DEADZONE_PX = 10;
+
 const ZOOM_PER_PX = 0.0015;
 const WHEEL_LINE_PX = 16;
 
 type Gesture =
   | { kind: "paint"; pointerId: number; last: Cell }
   | { kind: "shape"; pointerId: number; anchor: Cell; head: Cell }
-  | { kind: "pan"; pointerId: number; cx: number; cy: number };
+  | { kind: "pan"; pointerId: number; cx: number; cy: number }
+  /**
+   * Placing or aiming a vertex. `theta` is held here rather than pushed to the
+   * shell on every move: this component is memoized precisely so a gesture at
+   * pointer rate cannot re-render the toolbar, and the draw path already reads
+   * in-flight gesture state (drawPreview does the same for a line/rect).
+   */
+  | {
+      kind: "vertex";
+      pointerId: number;
+      /** The vertex being aimed, or null when placing a new one. */
+      id: string | null;
+      /** Map frame, fixed for the whole gesture. */
+      wx: number;
+      wy: number;
+      /** Press point in container-local CSS px, for the deadzone and the angle. */
+      cx: number;
+      cy: number;
+      theta: number;
+    };
 
 export interface GridCanvasProps {
   session: GridSession;
+  /** Grid paints cells; vertex places poses and never touches the buffer. */
+  mode: EditMode;
   tool: EditTool;
   value: GridValue;
   /** Odd cell diameter from BRUSH_SIZES. */
@@ -97,6 +192,25 @@ export interface GridCanvasProps {
   onHover: (probe: CellProbe | null) => void;
   /** Coalesced the same way. */
   onScaleChange: (scale: number) => void;
+
+  /** Vertices already stored for this map. Drawn in every mode. */
+  vertices: MapVertex[];
+  /** Staged, not-yet-created vertex. Drawn in the commanded hue. */
+  draft: PlanarPose | null;
+  /** Highlighted, and the one the panel is editing. */
+  selectedId: string | null;
+  /**
+   * True while the panel has armed a re-place of the selected vertex.
+   *
+   * It suppresses marker hit-testing for the duration, so the operator can drop
+   * the vertex on top of another one without the press being captured by it.
+   */
+  placing: boolean;
+  /** Fired on pointer-down, before any drag, so selection feels immediate. */
+  onVertexPick: (id: string | null) => void;
+  /** Fired once on pointer-up with the finished pose. */
+  onVertexGesture: (gesture: VertexGesture) => void;
+
   className?: string;
 }
 
@@ -218,6 +332,8 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
     const current = propsRef.current;
     drawPreview(ctx, view, session, gestureRef.current, current, palette);
     drawBrushRing(ctx, view, gestureRef.current, hoverRef.current, current, palette);
+    // Last, so markers sit above the shape preview rather than under it.
+    drawVertices(ctx, view, session.meta, gestureRef.current, current, palette);
 
     // Publish at most once per frame, and only on a real change: moving within one
     // cell at high zoom, or a pan that does not change the scale, costs nothing.
@@ -240,6 +356,19 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
   React.useEffect(() => {
     requestDraw();
   }, [theme, requestDraw]);
+
+  /**
+   * Repaint when the vertex layer changes.
+   *
+   * Necessary because the propsRef effect above deliberately does not draw: the
+   * tool, the brush and the paint value only matter at the *next* pointer event,
+   * so a render caused by one of them costs no frame. Vertex data is different —
+   * it is on screen, and a create that lands while the pointer is still would
+   * otherwise not appear until something else happened to ask for a frame.
+   */
+  React.useEffect(() => {
+    requestDraw();
+  }, [props.vertices, props.draft, props.selectedId, props.mode, requestDraw]);
 
   // Fit: drop the transform and let draw() rebuild it from the current rect.
   React.useEffect(() => {
@@ -339,6 +468,24 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
     };
   };
 
+  /**
+   * The topmost vertex marker under a point, or null.
+   *
+   * Hit-tested in screen space rather than in metres so the target stays the
+   * same size at every zoom — the marker does not scale, so a world-space radius
+   * would be unclickable zoomed out and enormous zoomed in. Last-to-first
+   * because that is paint order reversed: the marker drawn on top wins.
+   */
+  const vertexAt = (view: View, cx: number, cy: number): MapVertex | null => {
+    const { vertices } = propsRef.current;
+    for (let i = vertices.length - 1; i >= 0; i -= 1) {
+      const vertex = vertices[i];
+      const at = vertexScreen(view, session.meta, vertex.x, vertex.y);
+      if (Math.hypot(at.cx - cx, at.cy - cy) <= VERTEX_HIT_RADIUS) return vertex;
+    }
+    return null;
+  };
+
   const probeAt = (cell: Cell | null): CellProbe | null => {
     if (!cell) return null;
     return {
@@ -357,11 +504,72 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const view = viewRef.current;
     if (!view) return;
-    if (event.button !== 0 && event.button !== 1) return;
+    if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
 
-    const { tool, value, brush, spacePan } = propsRef.current;
+    const { mode, tool, value, brush, spacePan } = propsRef.current;
     const { cx, cy } = localPoint(event);
-    const panning = tool === "pan" || event.button === 1 || spacePan;
+    // Right and middle drag always pan, in every mode and whatever the tool.
+    //
+    // This is the dashboard's bargain, adapted. There, left-drag moves the view
+    // and an armed pick mode is what takes the button away; here the default
+    // left-drag is the edit — painting is what this screen is *for* — so the view
+    // gets its own button instead of the editing being demoted behind a mode.
+    // Right is the one that is free: a 2D canvas has no orbit to compete for it,
+    // unlike the point-cloud viewport where right-drag is the orbit.
+    //
+    // `tool` is only consulted in grid mode: the toolbar hides the tool row in
+    // vertex mode but keeps the state, so an operator who left Pan selected and
+    // then switched would otherwise find vertex mode unable to place anything.
+    const panning =
+      event.button === 1 ||
+      event.button === 2 ||
+      spacePan ||
+      (mode === "grid" && tool === "pan");
+
+    if (!panning && mode === "vertex") {
+      const { placing, draft } = propsRef.current;
+      // Suppressed while a re-place is armed, so the selected vertex can be
+      // dropped on top of an existing one without the press being stolen by it.
+      const hit = placing ? null : vertexAt(view, cx, cy);
+
+      // An existing vertex anchors at its *stored* position, not at the press
+      // point. The press has to land within VERTEX_HIT_RADIUS of the marker, so
+      // using it would silently move the vertex by up to 11 px worth of metres
+      // every time the operator merely selected one to re-aim it.
+      let anchor: { wx: number; wy: number };
+      if (hit) {
+        anchor = { wx: hit.x, wy: hit.y };
+      } else {
+        // Only a press on the grid places a vertex; the map is letterboxed and a
+        // press in the margin means nothing, exactly as it does for a stroke.
+        const cell = cellAt(view, session.grid, cx, cy);
+        if (!cell) return;
+        // Cell centre, not corner: gridToWorld(col, row) is the corner, and at
+        // 0.05 m/cell reporting that as the pose is a 2.5 cm lie — the same
+        // reason GridStatus offsets its readout by half a cell.
+        anchor = gridToWorld(cell.col + 0.5, cell.row + 0.5, session.meta);
+      }
+
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      propsRef.current.onVertexPick(hit?.id ?? null);
+
+      gestureRef.current = {
+        kind: "vertex",
+        pointerId: event.pointerId,
+        id: hit?.id ?? null,
+        wx: anchor.wx,
+        wy: anchor.wy,
+        cx,
+        cy,
+        // Inside the deadzone the gesture is a click, and a click must not snap
+        // the heading to 0°: keep the vertex's own, or the draft's if the
+        // operator is placing a run of points facing the same way.
+        theta: hit?.theta ?? draft?.theta ?? 0,
+      };
+      requestDraw();
+      return;
+    }
 
     if (!panning) {
       // Only a press that lands on the grid starts a stroke; the map is letterboxed
@@ -391,6 +599,19 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureRef.current = { kind: "pan", pointerId: event.pointerId, cx, cy };
+    // An inline style rather than a class, because the className is React's and a
+    // render lands mid-pan routinely: panning changes the hovered cell, draw()
+    // publishes that to the shell, and the re-render would rewrite className and
+    // drop the class again. `style.cursor` is not managed by React here, so it
+    // survives. This is the only feedback that a right-drag grabbed the map, since
+    // the Pan tool is not selected in that case.
+    setPanCursor(true);
+  };
+
+  /** Held on the container itself; see the note in handlePointerDown. */
+  const setPanCursor = (grabbing: boolean) => {
+    const container = containerRef.current;
+    if (container) container.style.cursor = grabbing ? "grabbing" : "";
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -419,6 +640,20 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
 
     if (gesture.kind === "shape") {
       gesture.head = clampedCell(view, cx, cy);
+      requestDraw();
+      return;
+    }
+
+    if (gesture.kind === "vertex") {
+      const dragPx = Math.hypot(cx - gesture.cx, cy - gesture.cy);
+      if (dragPx >= HEADING_DEADZONE_PX) {
+        // The y term is negated because canvas rows grow downward while ROS y
+        // grows upward — the same flip worldToGrid applies. Screen-space is
+        // enough here (unlike the 3D viewport, which has to raycast the floor
+        // because the camera can look from any azimuth): this canvas is always
+        // axis-aligned with the map and never rotated.
+        gesture.theta = (Math.atan2(-(cy - gesture.cy), cx - gesture.cx) * 180) / Math.PI;
+      }
       requestDraw();
       return;
     }
@@ -455,7 +690,23 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
       event.currentTarget.releasePointerCapture(gesture.pointerId);
     }
 
-    if (gesture.kind === "pan") return;
+    if (gesture.kind === "pan") {
+      setPanCursor(false);
+      return;
+    }
+
+    if (gesture.kind === "vertex") {
+      // Nothing in the cell buffer moved, so the accumulator is not consulted
+      // and no patch is pushed. Committing an empty patch here would put an
+      // entry in the undo stack that undoes nothing, which is worse than no
+      // undo at all — the operator would press it and watch a real edit survive.
+      propsRef.current.onVertexGesture({
+        id: gesture.id,
+        pose: { x: gesture.wx, y: gesture.wy, theta: gesture.theta },
+      });
+      requestDraw();
+      return;
+    }
 
     const { brush, value } = propsRef.current;
     if (gesture.kind === "shape" && view) {
@@ -482,7 +733,9 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
   const handlePointerCancel = endGesture;
 
   const panCursor =
-    props.tool === "pan" || props.spacePan ? "cursor-grab active:cursor-grabbing" : "";
+    (props.mode === "grid" && props.tool === "pan") || props.spacePan
+      ? "cursor-grab active:cursor-grabbing"
+      : "";
 
   return (
     <div
@@ -498,6 +751,11 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
       onPointerMove={handlePointerMove}
       onPointerUp={endGesture}
       onPointerCancel={handlePointerCancel}
+      // Right-drag pans, so the context menu has to go: without this, the menu
+      // opens on mouseup over the canvas and swallows the pointerup that ends the
+      // gesture, leaving the pan stuck to the cursor. There is nothing on this
+      // canvas a browser context menu offers anyway — no text, no image to save.
+      onContextMenu={(event) => event.preventDefault()}
       onPointerLeave={() => {
         if (gestureRef.current) return;
         hoverRef.current = null;
@@ -627,6 +885,9 @@ function drawBrushRing(
   props: GridCanvasProps,
   palette: Palette,
 ): void {
+  // Nothing is being painted in vertex mode, so a footprint would be a promise
+  // about cells that no press there will touch.
+  if (props.mode === "vertex") return;
   if (!hover || props.tool === "pan" || props.spacePan) return;
   if (gesture?.kind === "pan") return;
 
@@ -642,4 +903,152 @@ function drawBrushRing(
     size,
     size,
   );
+}
+
+/** A map-frame pose in container-local CSS pixels, via the one view transform. */
+function vertexScreen(view: View, meta: MapMetadata, wx: number, wy: number) {
+  const { px, py } = worldToGrid(wx, wy, meta);
+  return gridToScreen(view, px, py);
+}
+
+/**
+ * The vertex layer: stored vertices, the staged draft, and the one being aimed.
+ *
+ * Drawn in every mode, not only in vertex mode. Where the vertices are is
+ * information a grid edit needs too — repainting a wall that a CHARGER stop sits
+ * against is exactly when you want to see it — and hiding them would make the
+ * mode switch feel like it loaded different data rather than changed what a
+ * press does.
+ */
+function drawVertices(
+  ctx: CanvasRenderingContext2D,
+  view: View,
+  meta: MapMetadata,
+  gesture: Gesture | null,
+  props: GridCanvasProps,
+  palette: Palette,
+): void {
+  const aiming = gesture?.kind === "vertex" ? gesture : null;
+
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  for (const vertex of props.vertices) {
+    // Mid-gesture the aimed vertex follows the pointer rather than its stored
+    // heading; committing is the panel's job, so the row itself has not moved.
+    const live = aiming?.id === vertex.id;
+    const at = vertexScreen(view, meta, vertex.x, vertex.y);
+    drawMarker(ctx, {
+      cx: at.cx,
+      cy: at.cy,
+      theta: live ? aiming.theta : vertex.theta,
+      colour: live || vertex.id === props.selectedId ? palette.cmd : palette.vertex,
+      emphasis: live || vertex.id === props.selectedId,
+      glyph: vertexGlyph(vertex.type),
+      label: vertex.name,
+      dashed: false,
+    });
+  }
+
+  // A draft is drawn last and dashed: it is the one mark on screen that is not
+  // in the database yet, and dashing says so without needing a second hue —
+  // `cmd` already means "a value the operator is setting", the same as the brush
+  // ring it shares the canvas with.
+  const draft = aiming && aiming.id === null ? { ...aiming, x: aiming.wx, y: aiming.wy } : props.draft;
+  if (draft) {
+    const at = vertexScreen(view, meta, draft.x, draft.y);
+    drawMarker(ctx, {
+      cx: at.cx,
+      cy: at.cy,
+      theta: draft.theta,
+      colour: palette.cmd,
+      emphasis: true,
+      glyph: null,
+      label: null,
+      dashed: true,
+    });
+  }
+
+  ctx.restore();
+}
+
+interface MarkerSpec {
+  cx: number;
+  cy: number;
+  /** Degrees, CCW from +x in the map frame. */
+  theta: number;
+  colour: string;
+  /** Thicker ring and a filled centre — the selected or in-flight vertex. */
+  emphasis: boolean;
+  glyph: string | null;
+  label: string | null;
+  dashed: boolean;
+}
+
+/**
+ * One marker: a ring, a heading arrow, and a `G · name` caption.
+ *
+ * Every stroke is laid down twice — once in MARKER_HALO at +2 px width, then in
+ * the marker colour. Without it a light-theme marker disappears into an obstacle
+ * and a dark-theme one disappears into free space, because the grid beneath is
+ * blitted literally and does not follow the theme.
+ */
+function drawMarker(ctx: CanvasRenderingContext2D, spec: MarkerSpec): void {
+  const { cx, cy, colour, emphasis, dashed } = spec;
+  const radians = (spec.theta * Math.PI) / 180;
+  // Screen y grows downward, map y grows upward — the same flip worldToGrid does.
+  const tipX = cx + Math.cos(radians) * VERTEX_ARROW_PX;
+  const tipY = cy - Math.sin(radians) * VERTEX_ARROW_PX;
+
+  const shape = new Path2D();
+  shape.moveTo(cx + VERTEX_DOT_RADIUS, cy);
+  shape.arc(cx, cy, VERTEX_DOT_RADIUS, 0, Math.PI * 2);
+  const arrow = new Path2D();
+  arrow.moveTo(cx, cy);
+  arrow.lineTo(tipX, tipY);
+  // Two barbs at ±150° off the heading, so the head reads as an arrow at 18 px.
+  for (const offset of [Math.PI * 0.83, -Math.PI * 0.83]) {
+    arrow.moveTo(tipX, tipY);
+    arrow.lineTo(
+      tipX + Math.cos(radians + offset) * 6,
+      tipY - Math.sin(radians + offset) * 6,
+    );
+  }
+
+  const width = emphasis ? 2 : 1.5;
+
+  ctx.setLineDash([]);
+  ctx.strokeStyle = MARKER_HALO;
+  ctx.lineWidth = width + 2;
+  ctx.stroke(shape);
+  ctx.stroke(arrow);
+
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = width;
+  if (dashed) ctx.setLineDash([3, 2]);
+  ctx.stroke(shape);
+  ctx.setLineDash([]);
+  ctx.stroke(arrow);
+
+  if (emphasis && !dashed) {
+    ctx.fillStyle = colour;
+    ctx.fill(shape);
+  }
+
+  const caption = [spec.glyph, spec.label].filter(Boolean).join(" · ");
+  if (!caption) return;
+
+  // Offset up-right of the dot so the caption never sits under the arrow when
+  // the heading points right, which is the default for a click without a drag.
+  const tx = cx + VERTEX_DOT_RADIUS + 4;
+  const ty = cy - VERTEX_DOT_RADIUS - 4;
+  ctx.font = "500 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = MARKER_HALO;
+  ctx.strokeText(caption, tx, ty);
+  ctx.fillStyle = colour;
+  ctx.fillText(caption, tx, ty);
 }

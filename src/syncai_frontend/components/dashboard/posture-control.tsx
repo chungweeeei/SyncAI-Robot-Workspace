@@ -3,7 +3,7 @@
 import { ArrowDownToLineIcon, ArrowUpFromLineIcon } from "lucide-react";
 
 import { InstrumentGroup } from "@/components/console/instrument";
-import { TaskStatusChip } from "@/components/dashboard/task-chip";
+import { TaskStatusChip } from "@/components/console/task-chip";
 import { usePosture } from "@/hooks/use-posture";
 import { cn } from "@/lib/utils";
 import type { Posture } from "@/lib/api/task";

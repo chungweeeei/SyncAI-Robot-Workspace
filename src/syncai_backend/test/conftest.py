@@ -6,6 +6,8 @@ The database layer is exercised against an in-memory SQLite engine instead of
 PostgreSQL, so no database server is required.
 """
 
+import math
+
 import pytest
 import structlog
 
@@ -50,6 +52,23 @@ def map_repo(logger, engine):
     from syncai_backend.repositories.map.map import init_map_repo
 
     return init_map_repo(logger=logger, engine=engine)
+
+
+@pytest.fixture
+def saved_task_repo(logger, engine):
+    """A SavedTaskRepo backed by the in-memory SQLite engine.
+
+    Shares the ``engine`` fixture with ``map_repo`` on purpose: a saved task's
+    MOVE steps reference rows in ``map_vertices``, and the resolution path under
+    test is exactly the join between the two tables.
+
+    The ``engine`` fixture itself needs no change for this table -- ``SavedTask``
+    registers on the same ``Base`` as ``MapPoint`` the moment
+    ``database.models`` is imported, so ``create_all`` already emits it.
+    """
+    from syncai_backend.repositories.task.saved_task import init_saved_task_repo
+
+    return init_saved_task_repo(logger=logger, engine=engine)
 
 
 @pytest.fixture
@@ -181,5 +200,80 @@ def make_occupancy_grid():
         grid.info.origin.position.z = float(origin[2])
         grid.data = list(data)
         return grid
+
+    return _make
+
+
+@pytest.fixture
+def make_robot_state():
+    """Factory building a syncai_common/RobotState the way the aggregator does.
+
+    ``syncai_common`` is imported lazily for the same reason as the grid factory
+    above: a host without the built interfaces must still collect.
+
+    Defaults describe a healthy, localized robot, because the interesting tests
+    are the ones that override one thing. Note what the defaults encode about the
+    message's own conventions, all of which the REST projection has to respect:
+
+    * ``timestamp`` is SECONDS, ``motor_status.timestamp`` is also seconds *here*
+      (the ``motor_states`` topic carries nanoseconds; syncai_robot_state
+      rescales) — so a test asserting the payload does not need to convert.
+    * ``localization_status.position.yaw`` is RADIANS; the payload is degrees.
+    * ``battery_status.battery_percentage`` is 0–100 as a float; the payload is
+      an int.
+    * ``low_level_mode`` carries the controller's own integers, which may be
+      values the command surface refuses — pass ``policy_state=2`` to get the
+      CHAMP case that must not 500 the endpoint.
+    """
+    from syncai_common.msg import MotorState, RobotState as RobotStateMsg
+
+    def _make(
+        robot_id="robot01",
+        timestamp=1754000000,
+        map_name="dp2f",
+        mode=2,  # RobotMode.AUTO
+        state=1,  # RobotStatus.IDLE
+        localization_valid=True,
+        position=(1.5, -2.5, 0.0, math.pi / 2),
+        velocity=0.25,
+        wifi_info='{"ssid": "net", "rssi": -40, "ip_address": "10.0.0.2"}',
+        battery_percentage=87.6,
+        motors=(("FL_HipX_joint", 41, 0),),
+        motor_timestamp=1754000000,
+        policy_state=1,
+        motion_state=1,
+    ):
+        msg = RobotStateMsg()
+        msg.robot_id = robot_id
+        msg.timestamp = timestamp
+        msg.map = map_name
+        msg.mode = mode
+        msg.state = state
+        msg.localization_valid = localization_valid
+        msg.localization_status.position.x = float(position[0])
+        msg.localization_status.position.y = float(position[1])
+        msg.localization_status.position.z = float(position[2])
+        msg.localization_status.position.yaw = float(position[3])
+        msg.localization_status.velocity = float(velocity)
+        msg.network_status.wifi_info = wifi_info
+        msg.battery_status.battery_percentage = float(battery_percentage)
+
+        msg.motor_status.timestamp = motor_timestamp
+        states = []
+        for name, temperature, error in motors:
+            motor = MotorState()
+            motor.name = name
+            motor.temperature = temperature
+            motor.error = error
+            # Kinematics deliberately non-zero: the payload must not carry them,
+            # and a zero would make a leak indistinguishable from a default.
+            motor.q = 0.75
+            motor.dq = -0.5
+            states.append(motor)
+        msg.motor_status.states = states
+
+        msg.low_level_mode.policy_state = policy_state
+        msg.low_level_mode.motion_state = motion_state
+        return msg
 
     return _make

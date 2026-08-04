@@ -6,6 +6,7 @@ import {
   TERMINAL_TASK_STATUSES,
   fetchTaskState,
   type TaskStatus,
+  type TaskStepState,
 } from "@/lib/api/task";
 
 // A workflow reports through a Temporal query, which is only as fresh as the
@@ -21,6 +22,12 @@ export interface TaskTracker {
   cancelable: boolean;
   /** The error message of the first failed step, if any. */
   error: string | null;
+  /**
+   * Per-step state of the tracked task, as the workflow query last reported it.
+   * Empty until the first poll answers with a populated list — a multi-step flow
+   * joins it to its own rows by step id.
+   */
+  steps: TaskStepState[];
   /** Id of the task being polled, for callers that need to cancel it. */
   taskId: string | null;
   /** Start polling a freshly submitted task. */
@@ -44,6 +51,7 @@ export function useTaskTracker(): TaskTracker {
   const [taskId, setTaskId] = React.useState<string | null>(null);
   const [taskStatus, setTaskStatus] = React.useState<TaskStatus | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [steps, setSteps] = React.useState<TaskStepState[]>([]);
 
   React.useEffect(() => {
     if (!taskId) return;
@@ -55,6 +63,14 @@ export function useTaskTracker(): TaskTracker {
         const state = await fetchTaskState(taskId, abort.signal);
         if (!active) return;
         setTaskStatus(state.status);
+        // Never overwrite a known step list with an empty one. get_task_state
+        // degrades `steps` to [] whenever the workflow query fails — in the
+        // window before the workflow's first task executes, when no worker is
+        // polling this robot's queue, and again once the execution has closed —
+        // and each of those would otherwise blank the per-step readback the
+        // operator is watching. An empty list is never meaningful here: the
+        // composer refuses to dispatch a zero-step task.
+        if (state.steps.length) setSteps(state.steps);
         const failed = state.steps.find((step) => step.error_msg);
         setError(failed?.error_msg || null);
         // Terminal: drop the id so this effect tears the interval down. The
@@ -82,9 +98,13 @@ export function useTaskTracker(): TaskTracker {
     setTaskStatus("PENDING");
   }, []);
 
+  // `track` deliberately does not clear `steps`: it is only ever called with a
+  // fresh id, and the caller that knows a new task is starting calls reset()
+  // first. Clearing in both places would be two owners of one responsibility.
   const reset = React.useCallback(() => {
     setTaskStatus(null);
     setError(null);
+    setSteps([]);
   }, []);
 
   return {
@@ -93,6 +113,7 @@ export function useTaskTracker(): TaskTracker {
       taskStatus !== null && !TERMINAL_TASK_STATUSES.includes(taskStatus),
     cancelable: taskId !== null,
     error,
+    steps,
     taskId,
     track,
     setError,

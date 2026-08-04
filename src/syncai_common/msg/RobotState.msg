@@ -121,5 +121,7 @@ MotorStates motor_status
 # localization_valid. That was a deliberate decision rather than the default: the
 # router's field list is a whitelist, and this is the only way the console can show
 # what the controller is doing rather than what it was told to do. The router
-# decodes both integers to labels AND passes the raw values through.
+# decodes both integers to LABELS ONLY -- the raw values stay here, on this topic,
+# which is where you look when a label comes back UNKNOWN (MPC's code, or the
+# controller's startup sentinel; REST cannot tell them apart).
 RobotLowLevelMode low_level_mode

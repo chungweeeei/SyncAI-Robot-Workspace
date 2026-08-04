@@ -52,13 +52,11 @@ export function LocomotionControl({
   } = useLocomotion(lowLevelMode);
 
   const mpc = controller === "MPC";
-  // The label carries the raw integer when the backend could not name the value:
-  // MPC's motion code is unknown, so "UNKNOWN · 6" is the only form of this
-  // readout that lets somebody find out what it actually is.
-  const motion =
-    lowLevelMode.motion === "UNKNOWN"
-      ? `UNKNOWN · ${lowLevelMode.motion_state}`
-      : lowLevelMode.motion;
+  // UNKNOWN is worth flagging rather than reading as a state: it is either the
+  // controller's startup sentinel or a code this stack has no name for (MPC's is
+  // genuinely unknown), and the payload carries labels only so the two cannot be
+  // told apart here. `ros2 topic echo … --field low_level_mode` is the escape hatch.
+  const motionUnknown = lowLevelMode.motion === "UNKNOWN";
 
   return (
     <InstrumentGroup
@@ -102,7 +100,11 @@ export function LocomotionControl({
         <Readout label="Reported" value={lowLevelMode.policy} tone="caution" />
       )}
 
-      <Readout label="Motion" value={motion} tone="live" />
+      <Readout
+        label="Motion"
+        value={lowLevelMode.motion}
+        tone={motionUnknown ? "caution" : "live"}
+      />
 
       {error && (
         <p className="text-[11px] leading-snug break-words text-signal-warn">

@@ -49,6 +49,17 @@ class ScheduleRequest(BaseModel):
     steps: List[StepRequest] = Field(
         ..., description="Steps executed on each trigger", examples=[]
     )
+    map_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Map whose frame the MOVE coordinates are in, carried through to the "
+            "schedule memo so a client can tell whether this schedule still "
+            "belongs to the loaded map. A display label only, and deliberately "
+            "unvalidated: this router has no MapCatalogRepo, and threading one in "
+            "for a label is not worth it. POST /api/v1/saved_tasks/{id}/schedule "
+            "is the validated path."
+        ),
+    )
 
 
 class ScheduleResponse(BaseModel):
@@ -68,6 +79,32 @@ class ScheduleStateResponse(BaseModel):
     paused: bool = Field(..., description="Whether the schedule is paused")
     next_run_times: List[datetime] = Field(
         ..., description="Upcoming trigger times (UTC)"
+    )
+    map_name: Optional[str] = Field(
+        default=None,
+        description="Map whose frame this schedule's MOVE coordinates are in.",
+    )
+    saved_task_id: Optional[str] = Field(
+        default=None,
+        description="The saved task this schedule was frozen from, if any.",
+    )
+    saved_task_name: Optional[str] = Field(
+        default=None, description="That saved task's name at registration time."
+    )
+    # The element is StepRequest rather than a new response model: it is already
+    # exactly {id, type, params}, it is already imported here, and a second
+    # identical model is a copy that can drift. (StepState is the wrong shape --
+    # that one is status/error, not a definition.)
+    steps: List[StepRequest] = Field(
+        default_factory=list,
+        description=(
+            "The frozen step list. Populated by GET /api/v1/schedules/{id} only; "
+            "the collection endpoint always answers [], because Temporal's "
+            "schedule *list* API does not carry the start-workflow arguments. "
+            "Frozen at registration: later vertex edits do not reach a scheduled "
+            "run, so a client comparing these against their source saved task is "
+            "how staleness becomes visible."
+        ),
     )
 
 
@@ -91,6 +128,7 @@ def init_schedule_router(
                     for step in req.steps
                 ],
             ),
+            map_name=req.map_name,
         )
 
         await workflow_gw.create_schedule(schedule=schedule_task)
@@ -116,11 +154,25 @@ def init_schedule_router(
                 ),
                 paused=view.paused,
                 next_run_times=view.next_run_times,
+                map_name=view.map_name,
+                saved_task_id=view.saved_task_id,
+                saved_task_name=view.saved_task_name,
+                # `steps` left at its default here — see the field's description.
             )
             for view in views
         ]
 
-    @schedule_router.get("/api/v1/schedules/{id}", response_model=ScheduleStateResponse)
+    @schedule_router.get(
+        "/api/v1/schedules/{id}",
+        response_model=ScheduleStateResponse,
+        # The only route here that serialises StepParams outward, and FastAPI
+        # defaults this flag to True: MoveParams / ArtifactParams inherit
+        # BaseSchema's to_camel generator, so the default would answer
+        # `artifactId` / `waitFor` / `waitTimeoutSeconds` while the request side
+        # accepts both spellings — a silent asymmetry at a boundary the frontend
+        # documents as snake_case-only.
+        response_model_by_alias=False,
+    )
     async def get_schedule(id: str):
         view = await workflow_gw.get_schedule(schedule_id=id)
 
@@ -133,6 +185,13 @@ def init_schedule_router(
             ),
             paused=view.paused,
             next_run_times=view.next_run_times,
+            map_name=view.map_name,
+            saved_task_id=view.saved_task_id,
+            saved_task_name=view.saved_task_name,
+            steps=[
+                StepRequest(id=step.id, type=step.type, params=step.params)
+                for step in view.steps
+            ],
         )
 
     @schedule_router.delete("/api/v1/schedules/{id}", response_model=ScheduleResponse)

@@ -82,21 +82,46 @@ export function cellAt(view: View, size: GridSize, cx: number, cy: number) {
 }
 
 /**
- * Keep the map inside the viewport.
+ * Keep the map reachable, not pinned.
  *
- * On an axis where the scaled map is smaller than the viewport it is centred
- * (letterboxed); otherwise the offset is clamped so an edge can reach but never
- * pass the viewport edge. Zooming out is bounded by fitScale, so "smaller than
- * the viewport" only happens on the axis that is not the limiting one.
+ * The rule is that the map must still straddle the viewport centre: its near edge
+ * may not be dragged past the centre line on either axis. That leaves the map
+ * always grabbable — there is no way to fling it off screen and lose it — while
+ * still allowing a real pan at every zoom level.
+ *
+ * This replaced a stricter rule ("an edge may reach but never pass the viewport
+ * edge, and an axis where the map fits is force-centred"), which had a bug that
+ * looked like a broken feature: the editor opens at `fitScale`, at fit the map by
+ * definition fits at least one axis and exactly fills the other, and zooming out
+ * is floored at `fitScale` — so on the opening view *both* axes were force-centred
+ * and dragging with the Pan tool was a guaranteed no-op. Operators reasonably
+ * concluded panning did not work. Letting the map overscroll is what every image
+ * and map editor does, and it costs only the guarantee that the map is always
+ * flush to an edge, which nothing here needed.
+ *
+ * Note the consequence: `clampView` no longer re-centres anything. Whatever wants
+ * a centred map has to say so — `fitView` does, and `0` / the Fit button is the
+ * explicit way back to it.
  */
 export function clampView(view: View, rect: Size, size: GridSize): View {
-  const w = size.width * view.scale;
-  const h = size.height * view.scale;
   return {
     scale: view.scale,
-    ox: w <= rect.width ? (rect.width - w) / 2 : Math.min(0, Math.max(rect.width - w, view.ox)),
-    oy: h <= rect.height ? (rect.height - h) / 2 : Math.min(0, Math.max(rect.height - h, view.oy)),
+    ox: clampAxis(view.ox, rect.width, size.width * view.scale),
+    oy: clampAxis(view.oy, rect.height, size.height * view.scale),
   };
+}
+
+/**
+ * One axis of the straddle rule: the map's far edge cannot come short of the
+ * viewport's midpoint, and its near edge cannot pass it.
+ *
+ * `extent` is the scaled map's length on this axis. When it is smaller than the
+ * viewport the window is `extent` wide, which is still a usable amount of travel
+ * and never zero — the case the previous force-centring turned into a dead drag.
+ */
+function clampAxis(offset: number, viewport: number, extent: number): number {
+  const mid = viewport / 2;
+  return Math.min(mid, Math.max(mid - extent, offset));
 }
 
 /**
