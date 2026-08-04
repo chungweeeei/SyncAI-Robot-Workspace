@@ -1,14 +1,17 @@
-import { wsUrl } from "@/lib/api/config";
+import {
+  createReconnectingSocket,
+  type ReconnectingSocket,
+} from "@/lib/ros/socket";
 import type { RobotPose } from "@/lib/types/robot";
-import type { StreamStatus } from "@/lib/types/pointcloud";
+import type { StreamStatus } from "@/lib/types/stream";
 
 /**
  * Client for the internal telemetry WebSocket
  * (/api/v1/robot/telemetry/stream): the high-rate channel the 3D viewer uses
  * for pose and joint angles, deliberately separate from the frozen
- * GET /api/v1/robot/state third-party contract (1 Hz — unusable for motion)
- * and from the binary point-cloud stream (different wire format and
- * backpressure behaviour).
+ * GET /api/v1/robot/state third-party contract (whole-second timestamps,
+ * polled — unusable for motion) and from the point-cloud stream (a big frame
+ * there would head-of-line block pose here; see lib/ros/socket.ts).
  *
  * Wire format: JSON text frames multiplexed by ``type``:
  *
@@ -40,35 +43,22 @@ export interface TelemetryStreamHandlers {
   onStatus?: (status: StreamStatus) => void;
 }
 
-export interface TelemetryStream {
-  close: () => void;
-}
-
 /**
  * Connect to the telemetry WebSocket and dispatch each message to its typed
- * handler. Reconnects automatically with a fixed backoff until closed — same
- * skeleton as createPointCloudStream, kept separate because the payloads
- * (JSON vs binary) share nothing.
+ * handler. Reconnect and status handling come from createReconnectingSocket;
+ * only the JSON demultiplexing below is specific to this stream.
  */
 export function createTelemetryStream(
   handlers: TelemetryStreamHandlers,
   path = "/api/v1/robot/telemetry/stream",
-): TelemetryStream {
-  let ws: WebSocket | null = null;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let closed = false;
-
-  const connect = () => {
-    if (closed) return;
-    handlers.onStatus?.("connecting");
-    ws = new WebSocket(wsUrl(path));
-
-    ws.onopen = () => handlers.onStatus?.("open");
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;
+): ReconnectingSocket {
+  return createReconnectingSocket(path, {
+    onStatus: handlers.onStatus,
+    onMessage: (data) => {
+      if (typeof data !== "string") return;
       let msg: TelemetryMessage;
       try {
-        msg = JSON.parse(ev.data) as TelemetryMessage;
+        msg = JSON.parse(data) as TelemetryMessage;
       } catch {
         return; // malformed frame; skip rather than kill the stream
       }
@@ -79,23 +69,6 @@ export function createTelemetryStream(
       } else if (msg.type === "joints") {
         handlers.onJoints?.(msg.joints);
       }
-    };
-    ws.onerror = () => handlers.onStatus?.("error");
-    ws.onclose = () => {
-      handlers.onStatus?.("closed");
-      if (!closed) {
-        reconnectTimer = setTimeout(connect, 2000);
-      }
-    };
-  };
-
-  connect();
-
-  return {
-    close: () => {
-      closed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws?.close();
     },
-  };
+  });
 }

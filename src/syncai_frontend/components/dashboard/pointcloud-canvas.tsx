@@ -10,7 +10,8 @@ import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 import { G23_JOINTS } from "@/lib/robot/g23-joints";
 import type { MapMetadata, PlanarPose, RobotPose } from "@/lib/types/robot";
-import type { PointCloudFrame, StreamStatus } from "@/lib/types/pointcloud";
+import type { PointCloudFrame } from "@/lib/types/pointcloud";
+import type { StreamStatus } from "@/lib/types/stream";
 import {
   createPointCloudStream,
   fetchMapPointCloud,

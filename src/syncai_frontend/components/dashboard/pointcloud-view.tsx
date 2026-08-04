@@ -16,7 +16,7 @@ import { apiUrl } from "@/lib/api/config";
 import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
 import type { PlanarPose, RobotPose } from "@/lib/types/robot";
-import type { StreamStatus } from "@/lib/types/pointcloud";
+import type { StreamStatus } from "@/lib/types/stream";
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
   connecting: "Connecting",

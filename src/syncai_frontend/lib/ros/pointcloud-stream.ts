@@ -1,5 +1,10 @@
-import { apiUrl, wsUrl } from "@/lib/api/config";
-import type { PointCloudFrame, StreamStatus } from "@/lib/types/pointcloud";
+import { apiUrl } from "@/lib/api/config";
+import {
+  createReconnectingSocket,
+  type ReconnectingSocket,
+} from "@/lib/ros/socket";
+import type { PointCloudFrame } from "@/lib/types/pointcloud";
+import type { StreamStatus } from "@/lib/types/stream";
 
 /**
  * Decode a binary point-cloud frame: little-endian uint32 count + count*3
@@ -17,52 +22,27 @@ export interface PointCloudStreamHandlers {
   onStatus?: (status: StreamStatus) => void;
 }
 
-export interface PointCloudStream {
-  close: () => void;
-}
-
 /**
  * Connect to the live body_cloud WebSocket and invoke ``onFrame`` for each
- * decoded frame. Reconnects automatically with a fixed backoff until closed.
+ * decoded frame. Reconnect and status handling come from
+ * createReconnectingSocket — see it for why this stream and the telemetry one
+ * are separate connections rather than one multiplexed socket.
  */
 export function createPointCloudStream(
   handlers: PointCloudStreamHandlers,
   path = "/api/v1/robot/pointcloud/stream",
-): PointCloudStream {
-  let ws: WebSocket | null = null;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let closed = false;
-
-  const connect = () => {
-    if (closed) return;
-    handlers.onStatus?.("connecting");
-    ws = new WebSocket(wsUrl(path));
-    ws.binaryType = "arraybuffer";
-
-    ws.onopen = () => handlers.onStatus?.("open");
-    ws.onmessage = (ev) => {
-      if (ev.data instanceof ArrayBuffer) {
-        handlers.onFrame(decodePointCloud(ev.data));
+): ReconnectingSocket {
+  return createReconnectingSocket(path, {
+    binaryType: "arraybuffer",
+    onStatus: handlers.onStatus,
+    onMessage: (data) => {
+      // Anything that is not a binary frame is not one of ours; skip it rather
+      // than throwing inside the socket's onmessage.
+      if (data instanceof ArrayBuffer) {
+        handlers.onFrame(decodePointCloud(data));
       }
-    };
-    ws.onerror = () => handlers.onStatus?.("error");
-    ws.onclose = () => {
-      handlers.onStatus?.("closed");
-      if (!closed) {
-        reconnectTimer = setTimeout(connect, 2000);
-      }
-    };
-  };
-
-  connect();
-
-  return {
-    close: () => {
-      closed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws?.close();
     },
-  };
+  });
 }
 
 /**

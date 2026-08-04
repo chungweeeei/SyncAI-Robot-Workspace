@@ -32,6 +32,7 @@ from syncai_backend.subscribers.pointcloud_subscriber import (
 from syncai_backend.subscribers.telemetry_subscriber import (
     init_telemetry_subscriber,
 )
+from syncai_backend.subscribers.tf import init_tf_listener
 
 
 dotenv.load_dotenv()
@@ -80,12 +81,24 @@ class SyncAIBackend(Node):
         artifact_gw = init_artifact_gateway(logger=logger)
         workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
 
+        # One /tf + /tf_static subscription for the whole process, shared by the
+        # two subscribers that need transforms. Held on self because this is the
+        # object that owns it; see subscribers/tf.py for why they no longer
+        # build one each.
+        self._tf_listener = init_tf_listener(logger=logger, node=self)
+
         init_robot_state_subscriber(logger=logger, node=self, robot_repo=robot_repo)
         init_pointcloud_subscriber(
-            logger=logger, node=self, pointcloud_repo=pointcloud_repo
+            logger=logger,
+            node=self,
+            pointcloud_repo=pointcloud_repo,
+            tf_buffer=self._tf_listener.buffer,
         )
         init_telemetry_subscriber(
-            logger=logger, node=self, telemetry_repo=telemetry_repo
+            logger=logger,
+            node=self,
+            telemetry_repo=telemetry_repo,
+            tf_buffer=self._tf_listener.buffer,
         )
 
         start_temporal_worker(

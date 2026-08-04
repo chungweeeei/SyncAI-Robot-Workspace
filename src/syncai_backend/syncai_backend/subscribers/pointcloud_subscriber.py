@@ -12,7 +12,6 @@ from sensor_msgs_py import point_cloud2
 
 from tf2_ros import LookupException, TransformException
 from tf2_ros.buffer import Buffer
-from tf2_ros.transform_listener import TransformListener
 
 from syncai_backend.repositories.pointcloud.pointcloud import PointCloudRepo
 from syncai_backend.helpers.pointcloud import (
@@ -52,9 +51,16 @@ class PointCloudSubscriber:
         self,
         logger: structlog.stdlib.BoundLogger,
         pointcloud_repo: PointCloudRepo,
+        tf_buffer: Buffer,
     ):
         self._logger = logger
         self._pc_repo = pointcloud_repo
+        # The backend's one shared TF buffer, injected from main.py — see
+        # subscribers/tf.py for why this is no longer built here. Read from the
+        # cloud callback's own thread while the telemetry subscriber reads it
+        # from another; tf2's Buffer guards itself, so that is safe under the
+        # MultiThreadedExecutor.
+        self._tf_buffer = tf_buffer
         self._voxel_size = 0.0
         self._max_points = 30000
         # Frame the live cloud is transformed into before packing, so it
@@ -73,10 +79,6 @@ class PointCloudSubscriber:
         # Keyed by source frame so an upstream frame rename resolves afresh
         # rather than reusing the old tree's answer.
         self._fixed_frames: dict[str, str] = {}
-
-        # register tf buffer
-        self._tf_buffer: Buffer = None
-        self._tf_listener: TransformListener = None
 
     def _resolve_fixed_frame(self, source_frame: str) -> str:
         """The TF parent of ``source_frame`` — where _cloud_cb splits the chain.
@@ -117,14 +119,12 @@ class PointCloudSubscriber:
         return parent
 
     def register(self, node: Node):
-        # spin_thread=False: the listener's /tf(/tf_static) subscriptions run on
-        # the node's own executor, so it never spawns an extra GIL-contending
-        # thread. The cloud callback lives in its own MutuallyExclusive group so
-        # a busy scan frame can't starve the robot_state/map/TF callbacks (the
-        # node is spun by a MultiThreadedExecutor in main.py).
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, node, spin_thread=False)
-
+        # The cloud callback lives in its own MutuallyExclusive group so a busy
+        # scan frame can't starve the robot_state/map/TF callbacks (the node is
+        # spun by a MultiThreadedExecutor in main.py). That separation is also
+        # what makes the blocking lookup timeout in _cloud_cb safe: the shared
+        # TF listener's subscriptions sit in the node's default group, so
+        # another executor thread keeps filing the transforms this one waits on.
         node.create_subscription(
             msg_type=PointCloud2,
             topic="pointlio/body_cloud",
@@ -241,10 +241,12 @@ def init_pointcloud_subscriber(
     logger: structlog.stdlib.BoundLogger,
     node: Node,
     pointcloud_repo: PointCloudRepo,
+    tf_buffer: Buffer,
 ) -> PointCloudSubscriber:
     subscriber = PointCloudSubscriber(
         logger=logger,
         pointcloud_repo=pointcloud_repo,
+        tf_buffer=tf_buffer,
     )
     subscriber.register(node=node)
     return subscriber

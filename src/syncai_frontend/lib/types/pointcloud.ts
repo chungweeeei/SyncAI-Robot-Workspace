@@ -12,5 +12,3 @@ export interface PointCloudFrame {
   /** flat [x0, y0, z0, x1, y1, z1, ...] in map-frame metres */
   positions: Float32Array;
 }
-
-export type StreamStatus = "connecting" | "open" | "closed" | "error";

@@ -10,7 +10,6 @@ from nav_msgs.msg import Odometry
 
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
-from tf2_ros.transform_listener import TransformListener
 
 from syncai_common.msg import MotorStates
 
@@ -48,30 +47,26 @@ class TelemetrySubscriber:
     """
 
     def __init__(
-        self, logger: structlog.stdlib.BoundLogger, telemetry_repo: TelemetryRepo
+        self,
+        logger: structlog.stdlib.BoundLogger,
+        telemetry_repo: TelemetryRepo,
+        tf_buffer: Buffer,
     ):
         self._logger = logger
         self._repo = telemetry_repo
+        # The backend's one shared TF buffer, injected from main.py — see
+        # subscribers/tf.py for why this is no longer built here. Read from the
+        # executor threads that run the callbacks below; tf2's Buffer guards
+        # itself, so sharing it with the point-cloud subscriber is safe under
+        # the MultiThreadedExecutor.
+        self._tf_buffer = tf_buffer
 
         # Edge-triggered logging for the map->odom lookup, same pattern as
         # PointCloudSubscriber._cloud_tf_available: log once when pose samples
         # start dropping and once when they recover, not per message.
         self._tf_available = None
 
-        self._tf_buffer: Buffer = None
-        self._tf_listener: TransformListener = None
-
     def register(self, node: Node):
-        # A second Buffer/TransformListener next to the point-cloud
-        # subscriber's own means a duplicate in-process /tf subscription. That
-        # duplication is accepted on purpose: sharing one buffer would couple
-        # the two subscribers' lifecycles for the sake of a ~20 Hz planar
-        # transform topic, which costs nothing to receive twice.
-        # spin_thread=False for the same reason as there: no extra
-        # GIL-contending thread; the executor spins the /tf subscriptions.
-        self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, node, spin_thread=False)
-
         # Both QoS profiles are best-effort keep-last: only the newest sample
         # matters (the repo is single-slot anyway). Compatible with both
         # publishers — odom is reliable (best-effort sub on reliable pub is
@@ -154,8 +149,13 @@ class TelemetrySubscriber:
 
 
 def init_telemetry_subscriber(
-    logger: structlog.stdlib.BoundLogger, node: Node, telemetry_repo: TelemetryRepo
+    logger: structlog.stdlib.BoundLogger,
+    node: Node,
+    telemetry_repo: TelemetryRepo,
+    tf_buffer: Buffer,
 ) -> TelemetrySubscriber:
-    subscriber = TelemetrySubscriber(logger=logger, telemetry_repo=telemetry_repo)
+    subscriber = TelemetrySubscriber(
+        logger=logger, telemetry_repo=telemetry_repo, tf_buffer=tf_buffer
+    )
     subscriber.register(node=node)
     return subscriber
