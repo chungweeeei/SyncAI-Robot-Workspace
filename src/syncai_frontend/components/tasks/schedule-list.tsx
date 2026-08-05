@@ -16,7 +16,8 @@ import {
   ScheduleSteps,
 } from "@/components/tasks/schedule-steps";
 import type { SchedulesStatus } from "@/hooks/use-schedules";
-import type { ScheduleState, ScheduleTrigger } from "@/lib/api/schedule";
+import type { ScheduleState } from "@/lib/api/schedule";
+import { describeTrigger } from "@/lib/task/schedule";
 import type { SavedTask } from "@/lib/api/saved-task";
 
 export interface ScheduleListProps {
@@ -28,24 +29,6 @@ export interface ScheduleListProps {
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onDelete: (id: string) => void;
-}
-
-/**
- * `every 30 min` / `0 9 * * 1-5 · Asia/Taipei`.
- *
- * Local to this file, like map-card's formatSize: one consumer, and a
- * lib/task/schedule.ts holding two formatters would be a file whose header has
- * nothing to say.
- */
-function describeTrigger(trigger: ScheduleTrigger): string {
-  if (trigger.cron) {
-    return trigger.timezone ? `${trigger.cron} · ${trigger.timezone}` : trigger.cron;
-  }
-  const seconds = trigger.interval_seconds;
-  if (!seconds) return "—";
-  if (seconds % 3600 === 0) return `every ${seconds / 3600} h`;
-  if (seconds % 60 === 0) return `every ${seconds / 60} min`;
-  return `every ${seconds} s`;
 }
 
 /**

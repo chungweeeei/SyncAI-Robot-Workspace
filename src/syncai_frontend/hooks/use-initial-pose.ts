@@ -6,8 +6,23 @@ import { setInitialPose } from "@/lib/api/robot";
 import { normalizeTheta } from "@/lib/api/task";
 import type { PlanarPose } from "@/lib/types/robot";
 
+/**
+ * How long a published estimate stays on screen before it clears itself.
+ *
+ * Short on purpose. The first attempt at this was 5 s — long enough to read the
+ * numbers twice — and in practice the operator reached for Clear before it ever
+ * elapsed, which is the same complaint the auto-clear was written to answer. The
+ * receipt only has to be *seen*: the numbers were placed by eye a moment ago,
+ * and whether the seed took is answered by the robot in the viewport snapping to
+ * the marker, not by this panel.
+ */
+const CLEAR_AFTER_PUBLISH_MS = 1500;
+
 export interface InitialPoseEstimate {
-  /** The pose the last drag produced — sent as soon as it was released. */
+  /**
+   * The pose the last drag produced — sent as soon as it was released, and
+   * dropped again a few seconds after it lands (see the auto-clear below).
+   */
   pose: PlanarPose | null;
   /** Called by the view when a drag produces a pose; stages *and* sends it. */
   commitPose: (pose: PlanarPose) => void;
@@ -36,7 +51,9 @@ export interface InitialPoseEstimate {
  * There is no status to poll afterwards. `initialpose` is a plain topic with no
  * ack, and the localizer only takes it as an ICP initial guess — so `published`
  * means the sample was sent, and whether it took is answered by the pose feed
- * moving to where the robot was dropped.
+ * moving to where the robot was dropped. That is also why a published estimate
+ * expires on its own after CLEAR_AFTER_PUBLISH_MS: with nothing to wait for,
+ * leaving the read-back up would state an open action that is already over.
  */
 export function useInitialPose(): InitialPoseEstimate {
   const [pose, setPose] = React.useState<PlanarPose | null>(null);
@@ -69,6 +86,29 @@ export function useInitialPose(): InitialPoseEstimate {
     },
     [send],
   );
+
+  /**
+   * A published estimate tidies itself away.
+   *
+   * This flow has no terminal state to clear on — unlike a goal, which ends with
+   * a task reaching SUCCEEDED — so before this the read-back and the amber
+   * marker sat on screen until someone pressed Clear, and in practice nobody
+   * did: the gesture is finished the moment the robot is dropped, and the panel
+   * outliving it made a completed action look like an open one.
+   *
+   * Only a *success* is cleared. A failure keeps the pose, because that panel is
+   * the only place the error and its Retry live, and the pose is what Retry
+   * re-sends. A fresh drag sets `published` false first, which cancels any timer
+   * already running, so the new estimate always gets its own full window.
+   */
+  React.useEffect(() => {
+    if (!published) return;
+    const timer = setTimeout(() => {
+      setPose(null);
+      setPublished(false);
+    }, CLEAR_AFTER_PUBLISH_MS);
+    return () => clearTimeout(timer);
+  }, [published]);
 
   const publish = React.useCallback(async () => {
     if (!pose) return;

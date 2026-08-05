@@ -3,15 +3,33 @@
 import * as React from "react";
 
 import { SavedTaskRow } from "@/components/tasks/saved-task-row";
+import type { ScheduleState } from "@/lib/api/schedule";
 import type { SavedTask } from "@/lib/api/saved-task";
 import type { TaskStatus, TaskStepState } from "@/lib/api/task";
 import type { SavedTasksStatus } from "@/hooks/use-saved-tasks";
+import { schedulesBySavedTask } from "@/lib/task/schedule";
+
+/** Shared empty list, so an unscheduled row is not a fresh prop every render. */
+const EMPTY_SCHEDULES: readonly ScheduleState[] = [];
 
 export interface TaskLibraryProps {
   /** Rows to show — already scoped by the caller (see TaskConsole). */
   tasks: SavedTask[];
   /** How many rows were withheld because they belong to another map. */
   hiddenCount: number;
+  /**
+   * Every registered schedule, not the ones for a given row: the rows are
+   * matched here so the caller does not have to build the same index once per
+   * row. Passed in rather than fetched, like every other prop on this component.
+   */
+  schedules: readonly ScheduleState[];
+  /**
+   * How many of those name no saved task. They cannot be shown on a row — there
+   * is no row they belong to — but they are unattended runs on this robot, so
+   * counting them is what keeps "no clock chip anywhere" from meaning "nothing
+   * runs on its own here".
+   */
+  unlinkedScheduleCount: number;
   status: SavedTasksStatus;
   busy: boolean;
   activeMapName: string | null;
@@ -39,6 +57,8 @@ export interface TaskLibraryProps {
 export function TaskLibrary({
   tasks,
   hiddenCount,
+  schedules,
+  unlinkedScheduleCount,
   status,
   busy,
   activeMapName,
@@ -51,6 +71,11 @@ export function TaskLibrary({
   onSchedule,
   onDelete,
 }: TaskLibraryProps) {
+  const scheduledBy = React.useMemo(
+    () => schedulesBySavedTask(schedules),
+    [schedules],
+  );
+
   if (status === "loading") {
     return (
       <p className="text-[11px] leading-tight text-muted-foreground">
@@ -87,6 +112,7 @@ export function TaskLibrary({
               // did not is left blank rather than showing another row's status.
               taskStatus={task.id === dispatchedFromId ? taskStatus : null}
               stepStates={task.id === dispatchedFromId ? stepStates : null}
+              schedules={scheduledBy.get(task.id) ?? EMPTY_SCHEDULES}
               onDispatch={() => onDispatch(task)}
               onLoad={() => onLoad(task)}
               onSchedule={() => onSchedule(task)}
@@ -106,6 +132,22 @@ export function TaskLibrary({
         <p className="text-[11px] leading-tight text-muted-foreground">
           {hiddenCount} {hiddenCount === 1 ? "task is" : "tasks are"} saved for
           other maps and not shown here.
+        </p>
+      )}
+
+      {/*
+       * The same kind of footnote, for the other direction. A schedule
+       * registered from loose steps — the composer's Schedule pane with nothing
+       * loaded — records no source, so no row above can carry its clock chip. It
+       * still runs the robot unattended, and an operator reading a library with
+       * no clock chips on it would otherwise conclude nothing does.
+       */}
+      {unlinkedScheduleCount > 0 && (
+        <p className="text-[11px] leading-tight text-signal-caution">
+          {unlinkedScheduleCount}{" "}
+          {unlinkedScheduleCount === 1 ? "schedule runs" : "schedules run"} steps
+          that were never saved as a task, so {unlinkedScheduleCount === 1 ? "it is" : "they are"}{" "}
+          not shown on any row here — see Registered schedules below.
         </p>
       )}
     </div>

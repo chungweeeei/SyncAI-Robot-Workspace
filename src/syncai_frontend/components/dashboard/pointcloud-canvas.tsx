@@ -9,6 +9,8 @@ import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
 import { G23_JOINTS } from "@/lib/robot/g23-joints";
+import { vertexGlyph } from "@/lib/map/vertex";
+import type { MapVertex } from "@/lib/types/map";
 import type { MapMetadata, PlanarPose, RobotPose } from "@/lib/types/robot";
 import type { PointCloudFrame } from "@/lib/types/pointcloud";
 import type { StreamStatus } from "@/lib/types/stream";
@@ -48,6 +50,30 @@ interface Theme {
    *  never be misread for each other on the floor. */
   initialPose: number;
   initialPoseDraft: number;
+  /**
+   * Stored map vertices. One hue for all five types, deliberately not a signal
+   * colour: see lib/map/vertex.ts on why the type is a glyph.
+   *
+   * Both themes get a *dark* hue, which is where this parts company with the
+   * gridmap editor's `PALETTES.vertex` (components/maps/grid-canvas.tsx) — the
+   * two agree on the family, not on the value. The editor can flip to a light
+   * marker in night mode because it draws its own halo behind every mark; here
+   * the marker lies on a ground plane textured with the occupancy grid, which is
+   * white free space in *either* theme (lib/map/render.ts blits the bytes
+   * literally). The editor's dark-theme hue put a light mark on that white
+   * floor, which is how a stop became something you had to go looking for.
+   *
+   * The dark value is still mid-toned rather than ink, because a map that has
+   * not been converted to a gridmap has no ground plane at all and the mark
+   * falls back onto the near-black background.
+   */
+  vertex: number;
+  /**
+   * The vertex under the pointer. The commanded hue, because that stop is one
+   * double-click away from becoming the commanded pose — and because the gridmap
+   * editor already lights its selected vertex in `palette.cmd`.
+   */
+  vertexHover: number;
 }
 
 // Scene colours track the console surfaces so the viewport reads as a recessed
@@ -63,6 +89,8 @@ const THEMES: Record<"light" | "dark", Theme> = {
     goalDraft: 0x4aa6c6,
     initialPose: 0x93600e,
     initialPoseDraft: 0xc08c33,
+    vertex: 0x173845,
+    vertexHover: 0x0a6d94,
   },
   dark: {
     background: 0x0b1014,
@@ -73,6 +101,8 @@ const THEMES: Record<"light" | "dark", Theme> = {
     goalDraft: 0x8adcf7,
     initialPose: 0xf0b23c,
     initialPoseDraft: 0xf6cd7e,
+    vertex: 0x2b5f77,
+    vertexHover: 0x45c8f0,
   },
 };
 
@@ -280,6 +310,363 @@ function setMarkerColor(marker: THREE.Group, color: number) {
   (mesh.material as THREE.MeshBasicMaterial).color.setHex(color);
 }
 
+/*
+ * Vertex markers, in metres.
+ *
+ * Deliberately *not* the ring-and-arrow of createPoseMarker at a smaller scale.
+ * A map carries a dozen or more stored stops and only ever one goal, and a dozen
+ * arrows crossing each other at floor level is noise the operator has to read
+ * past to find the marker they are acting on. A stop is instead a flat target on
+ * the floor — a translucent disc, a crisp ring, and a chevron for the heading —
+ * so the whole layer reads as ground marking rather than as instruments.
+ *
+ * The chevron is what carries the heading, and it is short: a stop's heading is
+ * worth knowing but never worth as much screen as the goal's, which is drawn as
+ * a full arrow because it is the pose being commanded right now.
+ *
+ * The mark sits lower than MARKER_Z_M so a goal placed on a stop draws over it
+ * rather than z-fighting with it.
+ */
+const VERTEX_DISC_RADIUS_M = 0.2;
+// A 5 cm band rather than 3: the ring is what locates the stop from across a
+// warehouse, and a hairline ring is the first thing to alias away at distance.
+const VERTEX_RING_INNER_M = 0.2;
+const VERTEX_RING_OUTER_M = 0.25;
+const VERTEX_CHEVRON_BASE_M = 0.31;
+const VERTEX_CHEVRON_TIP_M = 0.46;
+const VERTEX_CHEVRON_HALF_M = 0.1;
+const VERTEX_Z_M = 0.02;
+
+/*
+ * The floor mark alone disappears the moment the camera drops toward the
+ * horizon — which is most of the time, because the useful views of a robot are
+ * from behind and low. A thin stem and a small badge above it give every stop a
+ * vertical presence that survives a grazing camera, the same way a pin does on a
+ * street map, without adding anything at floor level.
+ *
+ * The badge carries the type glyph and nothing else. The name lives in the
+ * dialog a double-click opens: a caption per stop is the one thing that turns
+ * this layer back into clutter, and the operator only needs a name at the moment
+ * they are about to act on one.
+ */
+const VERTEX_STEM_HEIGHT_M = 0.6;
+const VERTEX_STEM_RADIUS_M = 0.009;
+const VERTEX_BADGE_SIZE_M = 0.22;
+/** Badge scale-up on hover — the marker under the pointer has to answer back. */
+const VERTEX_BADGE_HOVER_SCALE = 1.3;
+/** Texture resolution of a badge, not its drawn size. */
+const VERTEX_BADGE_TEXTURE_PX = 128;
+/**
+ * Radius of the invisible disc that catches the pointer. Comfortably wider than
+ * the mark itself, for the same reason the gridmap editor's VERTEX_HIT_RADIUS is
+ * wider than its dot: a stop is a point, and a point is hard to hit.
+ */
+const VERTEX_HIT_RADIUS_M = 0.42;
+
+/** Materials for one vertex hue, shared by every marker drawn in it. */
+interface VertexMaterials {
+  /** The disc: present, but never competing with the cloud drawn over it. */
+  fill: THREE.MeshBasicMaterial;
+  /** Ring and chevron — the part that has to stay crisp at distance. */
+  line: THREE.MeshBasicMaterial;
+  stem: THREE.MeshBasicMaterial;
+}
+
+function createVertexMaterials(color: number): VertexMaterials {
+  const make = (opacity: number) =>
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      side: THREE.DoubleSide,
+      // Ground marking, not geometry: writing depth would let one stop's
+      // translucent disc erase the cloud behind the next one.
+      depthWrite: false,
+    });
+  // The ring and chevron are drawn flat out: they are the mark. Only the disc
+  // stays translucent, and even that is now solid enough to read as a target
+  // through the live cloud rather than as a smudge under it.
+  return { fill: make(0.35), line: make(1), stem: make(0.7) };
+}
+
+/** `0x2b5f77` → `"#2b5f77"`, for the canvas the badge is drawn on. */
+function cssHex(color: number): string {
+  return `#${color.toString(16).padStart(6, "0")}`;
+}
+
+/**
+ * The type badge: a filled disc in the marker hue with the glyph knocked out in
+ * near-white, plus a pale rim.
+ *
+ * The hue is baked in rather than left to `SpriteMaterial.color` tinting a white
+ * texture. Tinting was cheaper — one texture served both the resting and hover
+ * hues — but it forces the glyph to be a *darkened* version of the disc it sits
+ * on, and once the disc hue went dark enough to be findable, dark-on-dark is
+ * what that leaves. A light glyph on a solid dark disc is the contrast that
+ * makes the badge readable at a glance, and it is the same figure/ground the
+ * console's own chips use.
+ *
+ * Two textures per glyph then, resting and hover — ten in the worst case, all
+ * 128 px, all built once per layer.
+ */
+function createBadgeTexture(glyph: string, fill: number): THREE.CanvasTexture {
+  const size = VERTEX_BADGE_TEXTURE_PX;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2D canvas context unavailable");
+
+  const centre = size / 2;
+  ctx.fillStyle = cssHex(fill);
+  ctx.beginPath();
+  ctx.arc(centre, centre, centre - size * 0.08, 0, Math.PI * 2);
+  ctx.fill();
+  // A pale rim, so a dark badge keeps its edge against the near-black
+  // background of a map with no gridmap under it.
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+  ctx.lineWidth = size * 0.05;
+  ctx.stroke();
+
+  ctx.fillStyle = "#f2f7fa";
+  ctx.font = `700 ${size * 0.5}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  // +2% down: the monospace cap sits high in the em box, and a badge whose
+  // letter is off-centre is the kind of thing you see without being able to
+  // name it.
+  ctx.fillText(glyph, centre, centre + size * 0.02);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** Everything one vertex owns, so hover can recolour it without a rebuild. */
+interface VertexHandle {
+  fill: THREE.Mesh[];
+  line: THREE.Mesh[];
+  stem: THREE.Mesh[];
+  badge: THREE.Sprite;
+  /** Resting and hover faces of this stop's badge, swapped by `paint`. */
+  badgeTextures: { base: THREE.CanvasTexture; hover: THREE.CanvasTexture };
+  /** The mark itself, hidden as a whole while the stop is being re-placed. */
+  marker: THREE.Group;
+}
+
+export interface VertexLayer {
+  group: THREE.Group;
+  /** What a pointer ray is tested against. */
+  pickables: THREE.Object3D[];
+  /** Resolve a `userData.vertexId` from a hit back to its row. */
+  byId: Map<string, MapVertex>;
+  /** Light up one marker, or none. Cheap enough to call per pointer move. */
+  setHovered: (id: string | null) => void;
+  /** Take one marker off the map while its pose is in the operator's hands. */
+  setMoving: (id: string | null) => void;
+  dispose: () => void;
+}
+
+/**
+ * The whole stored-vertex layer as one group, plus the disposer for everything
+ * it allocated.
+ *
+ * Built wholesale and thrown away on any change rather than diffed: the list
+ * comes from a fetch-once-per-mount hook, so "any change" means a map swap or a
+ * theme toggle, not a stream. Geometry, materials and the badge textures are all
+ * shared across the layer; a vertex owns only its meshes, its sprite material
+ * (which carries the tint hover changes) and its transforms.
+ */
+function createVertexLayer(
+  vertices: MapVertex[],
+  theme: Theme,
+): VertexLayer {
+  const group = new THREE.Group();
+  const base = createVertexMaterials(theme.vertex);
+  const hover = createVertexMaterials(theme.vertexHover);
+
+  const discGeom = new THREE.CircleGeometry(VERTEX_DISC_RADIUS_M, 32);
+  const ringGeom = new THREE.RingGeometry(
+    VERTEX_RING_INNER_M,
+    VERTEX_RING_OUTER_M,
+    32,
+  );
+  // Both the chevron and the ring are already in the XY plane, i.e. flat on
+  // this z-up world, and the chevron already points down +x — so the marker
+  // group's rotation.z is the heading, exactly as in createPoseMarker.
+  const chevron = new THREE.Shape();
+  chevron.moveTo(VERTEX_CHEVRON_TIP_M, 0);
+  chevron.lineTo(VERTEX_CHEVRON_BASE_M, VERTEX_CHEVRON_HALF_M);
+  chevron.lineTo(VERTEX_CHEVRON_BASE_M, -VERTEX_CHEVRON_HALF_M);
+  chevron.closePath();
+  const chevronGeom = new THREE.ShapeGeometry(chevron);
+  const stemGeom = new THREE.CylinderGeometry(
+    VERTEX_STEM_RADIUS_M,
+    VERTEX_STEM_RADIUS_M,
+    VERTEX_STEM_HEIGHT_M,
+    6,
+  );
+  const hitGeom = new THREE.CircleGeometry(VERTEX_HIT_RADIUS_M, 12);
+  // The hit discs are `visible = false` (set per mesh below) and still picked:
+  // three's Raycaster tests layers, never visibility, so a flagged-off mesh
+  // costs no draw call and keeps catching rays. That is the whole job here.
+  const hitMaterial = new THREE.MeshBasicMaterial({
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+
+  // Keyed by glyph *and* face, so five types cost at most ten textures however
+  // many stops the map has.
+  const badgeTextures = new Map<string, THREE.CanvasTexture>();
+  const badgeTexture = (glyph: string, hovered: boolean) => {
+    const key = `${hovered ? "h" : "b"}:${glyph}`;
+    let texture = badgeTextures.get(key);
+    if (!texture) {
+      texture = createBadgeTexture(
+        glyph,
+        hovered ? theme.vertexHover : theme.vertex,
+      );
+      badgeTextures.set(key, texture);
+    }
+    return texture;
+  };
+  const handles = new Map<string, VertexHandle>();
+  const pickables: THREE.Object3D[] = [];
+  const byId = new Map<string, MapVertex>();
+
+  for (const vertex of vertices) {
+    byId.set(vertex.id, vertex);
+
+    const marker = new THREE.Group();
+    marker.position.set(vertex.x, vertex.y, VERTEX_Z_M);
+    marker.rotation.z = (vertex.theta * Math.PI) / 180;
+
+    const disc = new THREE.Mesh(discGeom, base.fill);
+    const ring = new THREE.Mesh(ringGeom, base.line);
+    const head = new THREE.Mesh(chevronGeom, base.line);
+
+    const stem = new THREE.Mesh(stemGeom, base.stem);
+    // The cylinder runs along +y by default; +90deg about x stands it up.
+    stem.rotation.x = Math.PI / 2;
+    stem.position.z = VERTEX_STEM_HEIGHT_M / 2;
+
+    const hit = new THREE.Mesh(hitGeom, hitMaterial);
+    hit.userData.vertexId = vertex.id;
+    hit.visible = false;
+
+    marker.add(disc, ring, head, stem, hit);
+    group.add(marker);
+
+    const glyph = vertexGlyph(vertex.type);
+    const faces = {
+      base: badgeTexture(glyph, false),
+      hover: badgeTexture(glyph, true),
+    };
+    const badge = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: faces.base,
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    badge.scale.setScalar(VERTEX_BADGE_SIZE_M);
+    // Hung off the layer rather than the marker: a sprite ignores rotation, so
+    // parenting it under the heading transform would only hide that fact.
+    // Lifted by a third of its own height so it caps the stem instead of
+    // swallowing the top of it.
+    badge.position.set(
+      vertex.x,
+      vertex.y,
+      VERTEX_Z_M + VERTEX_STEM_HEIGHT_M + VERTEX_BADGE_SIZE_M / 3,
+    );
+    badge.userData.vertexId = vertex.id;
+    group.add(badge);
+
+    pickables.push(hit, badge);
+    handles.set(vertex.id, {
+      fill: [disc],
+      line: [ring, head],
+      stem: [stem],
+      badge,
+      badgeTextures: faces,
+      marker,
+    });
+  }
+
+  let hovered: string | null = null;
+
+  const paint = (id: string | null, on: boolean) => {
+    const handle = id ? handles.get(id) : undefined;
+    if (!handle) return;
+    const set = on ? hover : base;
+    for (const mesh of handle.fill) mesh.material = set.fill;
+    for (const mesh of handle.line) mesh.material = set.line;
+    for (const mesh of handle.stem) mesh.material = set.stem;
+    const material = handle.badge.material as THREE.SpriteMaterial;
+    material.map = on ? handle.badgeTextures.hover : handle.badgeTextures.base;
+    // Swapping the map is a program change, not a uniform change.
+    material.needsUpdate = true;
+    handle.badge.scale.setScalar(
+      on ? VERTEX_BADGE_SIZE_M * VERTEX_BADGE_HOVER_SCALE : VERTEX_BADGE_SIZE_M,
+    );
+  };
+
+  const setHovered = (id: string | null) => {
+    // An id this layer does not know is treated as none: the caller's idea of
+    // what is hovered outlives a rebuild, and a map swap can retire the stop it
+    // names. Resolving it here (rather than trusting the id) is what keeps a
+    // rebuilt layer from carrying a highlight nothing can clear.
+    const next = id && handles.has(id) ? id : null;
+    if (next === hovered) return;
+    paint(hovered, false);
+    paint(next, true);
+    hovered = next;
+  };
+
+  let moving: string | null = null;
+
+  const setMoving = (id: string | null) => {
+    const next = id && handles.has(id) ? id : null;
+    if (next === moving) return;
+    for (const candidate of [moving, next]) {
+      const handle = candidate ? handles.get(candidate) : undefined;
+      if (!handle) continue;
+      // Group visibility covers the whole mark; the badge is hung off the layer
+      // rather than the marker, so it has to be told separately.
+      const shown = candidate !== next;
+      handle.marker.visible = shown;
+      handle.badge.visible = shown;
+    }
+    moving = next;
+  };
+
+  const dispose = () => {
+    for (const geometry of [
+      discGeom,
+      ringGeom,
+      chevronGeom,
+      stemGeom,
+      hitGeom,
+    ]) {
+      geometry.dispose();
+    }
+    for (const set of [base, hover]) {
+      set.fill.dispose();
+      set.line.dispose();
+      set.stem.dispose();
+    }
+    hitMaterial.dispose();
+    // Textures are shared between the badges wearing the same glyph, so they are
+    // freed here rather than per badge — and they have to be freed here at all:
+    // the scene teardown's traverse reaches geometries and materials, never the
+    // texture a material points at.
+    for (const texture of badgeTextures.values()) texture.dispose();
+    for (const handle of handles.values()) handle.badge.material.dispose();
+  };
+
+  return { group, pickables, byId, setHovered, setMoving, dispose };
+}
+
 /**
  * Wire the OrbitControls buttons for a camera mode.
  *  - "move":  left-drag pans (moves the view), right-drag orbits.
@@ -312,8 +699,44 @@ function applyCameraMode(
 // origin, so a modest span centred on the origin frames them sensibly.
 const DEFAULT_SPAN_M = 20;
 
-/** The two kinds of pose a drag on the viewport can produce. */
-export type PickMode = "goal" | "initial-pose";
+/**
+ * How far south of the target an overhead camera is parked, as a fraction of its
+ * height.
+ *
+ * A camera placed *exactly* above its target in a z-up world has its up vector
+ * parallel to its view direction, which is undefined for both the projection and
+ * OrbitControls' spherical maths — the view snaps to an arbitrary azimuth and
+ * the first orbit drag flips it. About a degree off vertical costs nothing that
+ * reads as tilt and pins map +y to the top of the screen, which is the
+ * orientation the gridmap editor and every site plan use.
+ */
+const TOP_DOWN_TILT = 0.02;
+
+/** Slack around the map extent when framing it from overhead. */
+const TOP_DOWN_MARGIN = 1.08;
+
+/** Height at which a perspective camera frames a `widthM` x `heightM` rectangle. */
+function overheadDistance(
+  camera: THREE.PerspectiveCamera,
+  widthM: number,
+  heightM: number,
+): number {
+  const halfFov = (camera.fov * Math.PI) / 360;
+  // The vertical fov is the fixed one; the horizontal follows from the aspect,
+  // so a wide, short map is framed by its width and a tall one by its height.
+  const forHeight = heightM / 2 / Math.tan(halfFov);
+  const forWidth = widthM / 2 / (Math.tan(halfFov) * camera.aspect);
+  return Math.max(forHeight, forWidth) * TOP_DOWN_MARGIN;
+}
+
+/**
+ * The kinds of pose a drag on the viewport can produce.
+ *
+ * "vertex" re-places a stop that already exists, which is why the canvas needs
+ * `movingVertex` alongside the mode: unlike the other two, the drag is *about*
+ * a row, and the marker for it has to come off the map while it is in hand.
+ */
+export type PickMode = "goal" | "initial-pose" | "vertex";
 
 interface PointCloudCanvasProps {
   /** 2D map metadata; when omitted the cloud renders with no ground plane. */
@@ -341,11 +764,50 @@ interface PointCloudCanvasProps {
   /** When true, also fetch and render the static localizer map cloud. */
   showMapCloud?: boolean;
   /**
+   * The active map's stored vertices, drawn flat on the ground with their
+   * headings and names. Read-only here: placing and editing them belongs to the
+   * gridmap editor, and the dashboard's two ground gestures are already spoken
+   * for by the pick modes below.
+   */
+  vertices?: MapVertex[];
+  /** Hide the vertex layer without unmounting the canvas. Defaults to true. */
+  showVertices?: boolean;
+  /**
+   * Fired when a stored vertex is double-clicked. Double, not single: a single
+   * click on the viewport is already how the camera is driven, and a stop is a
+   * place the robot will drive to — the gesture that proposes that has to be one
+   * the operator cannot make by brushing the map.
+   *
+   * What it means is "the operator asked about this stop", not "go there": the
+   * canvas never dispatches a task, it hands the row up and the view asks.
+   */
+  onVertexActivate?: (vertex: MapVertex) => void;
+  /**
+   * The vertex a `"vertex"` pick is re-placing. Its stored marker is hidden for
+   * the duration — the draft under the pointer is the same stop, and drawing it
+   * twice would leave the operator unsure which one they are about to save — and
+   * its heading seeds the draft, so releasing without a drag keeps the heading it
+   * already had instead of snapping to 0°.
+   */
+  movingVertex?: MapVertex | null;
+  /**
    * Camera interaction mode. "move" = free navigation, left-drag pans the
    * scene. "focus" = the camera locks onto the robot (target follows its pose
    * and stays centred), left-drag orbits around it. Defaults to "move".
    */
   cameraMode?: "move" | "focus";
+  /**
+   * Bumped by the view's top-down button to swing the camera overhead. A nonce
+   * rather than a callback the view holds, the same shape the gridmap editor's
+   * Fit action uses (`fitNonce` in components/maps/grid-canvas.tsx): the camera
+   * lives in here, and handing out a setter would give the view a second way to
+   * reach it. 0 means "never pressed", so a fresh mount keeps its default view.
+   *
+   * It is an action, not a mode — nothing stops the next drag from orbiting
+   * straight back out of it, which is why it is a button rather than a third
+   * option beside Move / Focus.
+   */
+  topDownNonce?: number;
   /**
    * Open the live body_cloud WebSocket. Defaults to true; the model-preview
    * route turns it off so a machine with no backend running doesn't sit in the
@@ -356,8 +818,10 @@ interface PointCloudCanvasProps {
   goal?: PlanarPose | null;
   /**
    * The initial pose the operator last placed, drawn in the caution hue until
-   * cleared. It stays on the floor after publication on purpose: it is the
-   * reference the reported pose is read against while the localizer converges.
+   * cleared. It outlives the publication on purpose — it is the reference the
+   * reported pose is read against while the localizer's ICP converges — but only
+   * by seconds: useInitialPose expires a published estimate on its own, and this
+   * marker goes with it.
    */
   initialPose?: PlanarPose | null;
   /**
@@ -388,7 +852,12 @@ export function PointCloudCanvas({
   pose,
   joints,
   showMapCloud,
+  vertices,
+  showVertices = true,
+  onVertexActivate,
+  movingVertex = null,
   cameraMode = "move",
+  topDownNonce = 0,
   liveStream = true,
   goal = null,
   initialPose = null,
@@ -425,6 +894,13 @@ export function PointCloudCanvas({
     controls: OrbitControls;
     liveGeom: THREE.BufferGeometry;
     mapPoints: THREE.Points | null;
+    /**
+     * The map extent this scene was built around, in metres, or null when there
+     * is no 2D map. Kept here rather than read off the `meta` prop so the
+     * top-down effect can frame the map without listing `meta` as a dependency —
+     * which would re-frame the camera every time a map loads.
+     */
+    mapFrame: { cx: number; cy: number; widthM: number; heightM: number } | null;
     goalMarker: THREE.Group;
     initialPoseMarker: THREE.Group;
     draftMarker: THREE.Group;
@@ -456,6 +932,18 @@ export function PointCloudCanvas({
    * pointer handlers already hold the same drag in `draft` for the marker.
    */
   const posePreviewRef = React.useRef<SmoothPose | null>(null);
+
+  // The stored-vertex layer and the marker currently lit under the pointer.
+  // `hoverIdRef` is the scene's copy and drives the highlight at pointer rate;
+  // the state alongside it exists only so the cursor can become a pointer, which
+  // is a render — hence two, rather than one read at two speeds.
+  const vertexLayerRef = React.useRef<VertexLayer | null>(null);
+  const hoverIdRef = React.useRef<string | null>(null);
+  /** Mirrors `movingVertex` for the layer effect, which rebuilds around it. */
+  const movingIdRef = React.useRef<string | null>(null);
+  const [hoveredVertex, setHoveredVertex] = React.useState<MapVertex | null>(
+    null,
+  );
 
   // Joint articulation. The GLB keeps URDF link names as node names, so each
   // joint resolves to the child-link Object3D it rotates. Nodes belong to the
@@ -745,6 +1233,7 @@ export function PointCloudCanvas({
       controls,
       liveGeom,
       mapPoints: null,
+      mapFrame: meta ? { cx: centerX, cy: centerY, widthM, heightM } : null,
       goalMarker,
       initialPoseMarker,
       draftMarker,
@@ -848,6 +1337,39 @@ export function PointCloudCanvas({
     ctx.controls.update();
   }, [cameraMode, meta, mapImageUrl, resolvedTheme]);
 
+  // ---- Top-down view (one-shot) ----------------------------------------
+  // Deliberately not a dep of the camera-mode effect above and deliberately not
+  // re-run on a scene rebuild: this answers a button press, and a map load or a
+  // theme toggle re-framing the camera would throw away a view the operator set
+  // by hand. The nonce is the only thing that triggers it.
+  React.useEffect(() => {
+    if (!topDownNonce) return;
+    const ctx = sceneRef.current;
+    if (!ctx) return;
+    const { camera, controls, mapFrame } = ctx;
+
+    // Focus mode's target is the robot and the render loop keeps writing it, so
+    // there the only choice left is the height — and the current one is the
+    // operator's own zoom, which a "look from above" should not discard.
+    // Otherwise a map to frame beats wherever the view had been panned to:
+    // the whole point of going overhead is to see the site, not the corner of
+    // it that happened to be under the camera.
+    const framing = cameraModeRef.current !== "focus" ? mapFrame : null;
+    if (framing) controls.target.set(framing.cx, framing.cy, 0);
+
+    const height = framing
+      ? overheadDistance(camera, framing.widthM, framing.heightM)
+      : camera.position.distanceTo(controls.target);
+
+    camera.position.set(
+      controls.target.x,
+      // Not exactly overhead — see TOP_DOWN_TILT.
+      controls.target.y - height * TOP_DOWN_TILT,
+      controls.target.z + height,
+    );
+    controls.update();
+  }, [topDownNonce]);
+
   // ---- Pick mode: hand the left button over ----------------------------
   // Separate from the effect above (which also re-frames the camera when focus
   // mode is entered — arming a pick must not jolt the view). `cameraMode` is a
@@ -904,6 +1426,51 @@ export function PointCloudCanvas({
       yaw: (draft.theta * Math.PI) / 180,
     };
   }, [draft, carrying, pickMode]);
+
+  // ---- Stored map vertices (toggle) ------------------------------------
+  // The layer is reached into after it is built — hover recolours a marker on
+  // every pointer move — so it is held in a ref rather than being rebuilt.
+  // `hoverIdRef` mirrors the id the layer is currently showing, so a rebuild
+  // (map swap, theme toggle) can restore the highlight, and so a pointer move
+  // that stays on the same marker costs one comparison and no React render.
+  //
+  // The layer itself is rebuilt rather than diffed, so it needs no slot in
+  // sceneRef: the group is created here and this effect's own cleanup takes it
+  // back out. The scene-rebuild deps (meta / mapImageUrl / theme) are listed for
+  // the same reason the marker effect lists them — a rebuild drops the old
+  // scene, and without them the layer would never be re-added to the new one.
+  React.useEffect(() => {
+    const ctx = sceneRef.current;
+    if (!ctx || !showVertices || !vertices?.length) return;
+
+    const theme = THEMES[resolvedTheme === "dark" ? "dark" : "light"];
+    const layer = createVertexLayer(vertices, theme);
+    ctx.scene.add(layer.group);
+    vertexLayerRef.current = layer;
+    // A theme toggle under a resting pointer must not drop the highlight, and a
+    // list patched by a re-place rebuilds this layer mid-gesture: both ids
+    // survive the rebuild even though the objects wearing them do not.
+    layer.setHovered(hoverIdRef.current);
+    layer.setMoving(movingIdRef.current);
+
+    return () => {
+      // `ctx.scene` may already be the discarded scene by the time this runs
+      // (the setup effect's cleanup goes first); removing from it is harmless
+      // either way, and the dispose is what actually matters — the teardown
+      // traverse frees geometries and materials but never the badge textures.
+      ctx.scene.remove(layer.group);
+      layer.dispose();
+      vertexLayerRef.current = null;
+    };
+  }, [vertices, showVertices, meta, mapImageUrl, resolvedTheme]);
+
+  // A stop in the operator's hands comes off the map. Its own effect rather than
+  // a dep of the one above: arming a re-place must not rebuild the layer, and
+  // the build effect re-applies this from the ref after a rebuild anyway.
+  React.useEffect(() => {
+    movingIdRef.current = movingVertex?.id ?? null;
+    vertexLayerRef.current?.setMoving(movingIdRef.current);
+  }, [movingVertex]);
 
   // ---- Optional static map cloud (toggle) ------------------------------
   React.useEffect(() => {
@@ -967,8 +1534,8 @@ export function PointCloudCanvas({
   // useRef initialiser argument is evaluated (then thrown away) every render.
   const raycasterRef = React.useRef<THREE.Raycaster | null>(null);
 
-  /** Project a pointer position onto the z=0 map plane. */
-  const pickGround = (event: React.PointerEvent) => {
+  /** Aim the shared raycaster through a pointer position, or null off-canvas. */
+  const castFromPointer = (event: { clientX: number; clientY: number }) => {
     const ctx = sceneRef.current;
     if (!ctx) return null;
     const rect = ctx.renderer.domElement.getBoundingClientRect();
@@ -982,9 +1549,46 @@ export function PointCloudCanvas({
       ),
       ctx.camera,
     );
+    return raycaster;
+  };
+
+  /** Project a pointer position onto the z=0 map plane. */
+  const pickGround = (event: React.PointerEvent) => {
+    const raycaster = castFromPointer(event);
+    if (!raycaster) return null;
     const hit = raycaster.ray.intersectPlane(GROUND_PLANE, new THREE.Vector3());
     // Misses when the ray runs parallel to the floor or points at the sky.
     return hit ? { wx: hit.x, wy: hit.y } : null;
+  };
+
+  /**
+   * The stored vertex under a pointer position, or null.
+   *
+   * A real raycast against the layer, not a distance test against projected
+   * screen positions: the markers stand on the floor of a perspective view, so
+   * "near the pointer" only means anything after the projection the raycaster is
+   * already doing. Hidden layer, no hits — the ref is null.
+   */
+  const pickVertex = (event: { clientX: number; clientY: number }) => {
+    const layer = vertexLayerRef.current;
+    if (!layer) return null;
+    const raycaster = castFromPointer(event);
+    if (!raycaster) return null;
+    const hit = raycaster.intersectObjects(layer.pickables, false)[0];
+    const id = hit?.object.userData.vertexId as string | undefined;
+    return id ? (layer.byId.get(id) ?? null) : null;
+  };
+
+  /** Light the marker under the pointer, or clear the highlight. */
+  const hoverVertex = (vertex: MapVertex | null) => {
+    const id = vertex?.id ?? null;
+    // Told every time, not only on a change: setHovered is self-deduping, and
+    // going through it unconditionally is what re-lights a marker whose layer
+    // was rebuilt while the pointer sat still on it.
+    vertexLayerRef.current?.setHovered(id);
+    if (id === hoverIdRef.current) return;
+    hoverIdRef.current = id;
+    setHoveredVertex(vertex);
   };
 
   /**
@@ -1004,6 +1608,20 @@ export function PointCloudCanvas({
     );
   };
 
+  /**
+   * The heading a draft starts at, before any drag aims it.
+   *
+   * A re-place starts from the stop's own heading rather than the robot's: the
+   * gesture is about where that stop is, and a plain click to nudge it half a
+   * metre must not silently spin it to face wherever the machine happens to be
+   * pointing. The other two modes keep the robot's heading, which is the sane
+   * default when the pose being placed is the robot's own.
+   */
+  const seedTheta = () =>
+    draft?.theta ??
+    (pickMode === "vertex" ? movingVertex?.theta : pose?.theta) ??
+    0;
+
   const handlePointerDown = (event: React.PointerEvent) => {
     if (!pickMode || event.button !== 0) return;
     const hit = pickGround(event);
@@ -1015,39 +1633,50 @@ export function PointCloudCanvas({
     sceneRef.current?.renderer.domElement.setPointerCapture(event.pointerId);
     // The press plants what was being carried: same spot, on the floor now.
     setCarrying(false);
-    // Until the pointer moves, keep the heading it was carried at (the robot's
-    // own, on the first press) so a plain click still yields a sane pose
-    // instead of snapping to 0deg.
-    setDraft({ x: hit.wx, y: hit.wy, theta: draft?.theta ?? pose?.theta ?? 0 });
+    // Until the pointer moves, keep the heading it was carried at (the seed, on
+    // the first press) so a plain click still yields a sane pose instead of
+    // snapping to 0deg.
+    setDraft({ x: hit.wx, y: hit.wy, theta: seedTheta() });
   };
 
   const handlePointerMove = (event: React.PointerEvent) => {
-    if (!pickMode) return;
+    if (!pickMode) {
+      // Hover-testing the vertex layer is the *only* thing a bare pointer move
+      // does here. Skipped with a button down: that is a camera drag, and
+      // lighting up markers the view is sweeping past says the pointer is over
+      // something when it is really just orbiting.
+      if (event.buttons === 0) hoverVertex(pickVertex(event));
+      return;
+    }
+    // A pose is being placed, so nothing on the map is a target — and leaving a
+    // marker lit under a crosshair would offer a second meaning for a gesture
+    // that already has one.
+    hoverVertex(null);
+
     const anchor = anchorRef.current;
 
-    // No press yet: carry the pose under the pointer, keeping the heading. Only
-    // initial-pose mode does this — see the preview effect above. A cursor over
-    // ground outside the map carries nothing, for the same reason a press there
-    // does not plant: it could not be published.
+    // No press yet: carry the pose under the pointer, keeping the heading. Goal
+    // mode alone does not — an arrow trailing the cursor with nothing committed
+    // would read as a goal that is already set. The other two are *moving*
+    // something that exists (the robot, or a stored stop), so seeing it follow
+    // the pointer before the press is the whole point. A cursor over ground
+    // outside the map carries nothing, for the same reason a press there does
+    // not plant: it could not be published.
     if (!anchor) {
-      if (pickMode !== "initial-pose") return;
+      if (pickMode === "goal") return;
       const hit = pickGround(event);
       if (!hit || !insideMap(hit.wx, hit.wy)) {
         setDraft(null);
         return;
       }
       setCarrying(true);
-      setDraft({
-        x: hit.wx,
-        y: hit.wy,
-        theta: draft?.theta ?? pose?.theta ?? 0,
-      });
+      setDraft({ x: hit.wx, y: hit.wy, theta: seedTheta() });
       return;
     }
 
     // Planted: the position is fixed at the anchor and the drag only aims.
     // Keep whatever heading the draft already has inside the deadzone.
-    let theta = draft?.theta ?? pose?.theta ?? 0;
+    let theta = seedTheta();
     const dragPx = Math.hypot(
       event.clientX - anchor.cx,
       event.clientY - anchor.cy,
@@ -1089,9 +1718,22 @@ export function PointCloudCanvas({
   // passing through here first. Both the marker and preview effects gate on
   // pickMode anyway, so a draft left in state is never drawn.
   const handlePointerLeave = () => {
+    hoverVertex(null);
     if (anchorRef.current) return;
     setDraft(null);
     setCarrying(false);
+  };
+
+  /**
+   * Double-click a stored vertex to ask about it. Ignored while a pick mode is
+   * armed — the two presses of the double-click have already staged and
+   * committed a pose by the time this fires, and a dialog on top of that would
+   * be asking about the wrong thing.
+   */
+  const handleDoubleClick = (event: React.MouseEvent) => {
+    if (pickMode || !onVertexActivate) return;
+    const vertex = pickVertex(event);
+    if (vertex) onVertexActivate(vertex);
   };
 
   return (
@@ -1100,6 +1742,9 @@ export function PointCloudCanvas({
       className={cn(
         "relative h-full w-full overflow-hidden",
         pickMode && "cursor-crosshair touch-none",
+        // Nothing else on this canvas is clickable, so the cursor is the only
+        // thing that says a marker is.
+        !pickMode && hoveredVertex && "cursor-pointer",
         className,
       )}
       onPointerDown={handlePointerDown}
@@ -1107,6 +1752,7 @@ export function PointCloudCanvas({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onPointerLeave={handlePointerLeave}
+      onDoubleClick={handleDoubleClick}
     />
   );
 }

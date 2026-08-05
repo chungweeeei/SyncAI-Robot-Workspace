@@ -145,15 +145,19 @@ export function PrimaryReadout({
 
 export function Chip({
   tone = "neutral",
+  title,
   className,
   children,
 }: {
   tone?: Tone;
+  /** Hover text, for a chip whose two words stand in for a longer fact. */
+  title?: string;
   className?: string;
   children: React.ReactNode;
 }) {
   return (
     <span
+      title={title}
       className={cn(
         "instrument-label inline-flex h-5 items-center rounded-sm border px-1.5",
         TONE_CHIP[tone],

@@ -24,7 +24,16 @@ export interface GoalTask {
   error: string | null;
   /** Only true while the task id is still known (see the poll effect). */
   cancelable: boolean;
+  /** Submit the staged goal. */
   send: () => Promise<void>;
+  /**
+   * Stage a goal and submit it in one call, for flows that confirmed the pose
+   * before handing it over — double-clicking a stored vertex asks the same
+   * question a `commitGoal` + read-back + Send does, so making the caller round
+   * -trip through state to answer it twice would be theatre. It still stages,
+   * so the marker and the read-back describe the task that is now running.
+   */
+  sendGoal: (goal: GoalPose) => Promise<void>;
   cancel: () => Promise<void>;
   clear: () => void;
 }
@@ -56,18 +65,32 @@ export function useGoalTask(robotId: string): GoalTask {
     [setError],
   );
 
+  const sendGoal = React.useCallback(
+    async (next: GoalPose) => {
+      // Normalised here as well as in commitGoal: this is the other door into
+      // the same state, and the marker's heading has to mean the same thing
+      // whichever one the pose came through.
+      const staged = { ...next, theta: normalizeTheta(next.theta) };
+      setGoal(staged);
+      setBusy(true);
+      setError(null);
+      try {
+        // `staged`, not the `goal` state — setState is not visible until the
+        // next render, so reading it back here would submit the previous goal.
+        track(await sendMoveTask(robotId, staged));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [robotId, track, setError],
+  );
+
   const send = React.useCallback(async () => {
     if (!goal) return;
-    setBusy(true);
-    setError(null);
-    try {
-      track(await sendMoveTask(robotId, goal));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [goal, robotId, track, setError]);
+    await sendGoal(goal);
+  }, [goal, sendGoal]);
 
   const cancel = React.useCallback(async () => {
     if (!taskId) return;
@@ -97,6 +120,7 @@ export function useGoalTask(robotId: string): GoalTask {
     error: task.error,
     cancelable: task.cancelable,
     send,
+    sendGoal,
     cancel,
     clear,
   };

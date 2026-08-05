@@ -149,7 +149,13 @@ export function ScheduleSourceChip({
   schedule: { saved_task_id?: string | null; saved_task_name?: string | null };
   savedTasks: readonly SavedTask[];
 }) {
-  if (!schedule.saved_task_id) return null;
+  // No source at all: registered from loose steps in the composer (or before the
+  // memo carried a source). Saying so beats saying nothing — the alternative was
+  // a row that looked exactly like a linked one, on a page whose library then
+  // showed no sign that this schedule existed.
+  if (!schedule.saved_task_id) {
+    return <Chip tone="caution">unsaved steps</Chip>;
+  }
 
   const source = savedTasks.find((task) => task.id === schedule.saved_task_id);
   // The source was deleted after registration. The schedule still runs — it holds

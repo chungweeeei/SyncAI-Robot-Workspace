@@ -26,6 +26,11 @@ import type { InitialPoseEstimate } from "@/hooks/use-initial-pose";
  * a retry for when it did not — the ordinary way to correct a pose is to drag
  * again, not to press a button here.
  *
+ * A successful estimate also expires on its own (useInitialPose), so this panel
+ * flashes up on release and is gone a moment later without being dismissed —
+ * and re-arming the tool clears it outright. Clear stays for a failure, which
+ * never expires because its error and its Retry live here.
+ *
  * All state lives in `useInitialPose` (plus the view's pick mode); this
  * component is presentation only.
  */

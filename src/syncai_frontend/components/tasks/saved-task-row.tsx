@@ -5,6 +5,7 @@ import {
   CalendarPlusIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ClockIcon,
   PencilIcon,
   SendIcon,
   Trash2Icon,
@@ -13,8 +14,10 @@ import {
 import { Chip } from "@/components/console/instrument";
 import { TaskStatusChip } from "@/components/console/task-chip";
 import { IconButton } from "@/components/tasks/icon-button";
+import type { ScheduleState } from "@/lib/api/schedule";
 import type { SavedStep, SavedTask } from "@/lib/api/saved-task";
 import type { TaskStepState } from "@/lib/api/task";
+import { describeTrigger } from "@/lib/task/schedule";
 import { stepGlyph } from "@/lib/task/step";
 
 export interface SavedTaskRowProps {
@@ -27,6 +30,13 @@ export interface SavedTaskRowProps {
   stepStates: ReadonlyMap<string, TaskStepState> | null;
   /** Task-level status of the run this row started, or null. */
   taskStatus: React.ComponentProps<typeof TaskStatusChip>["status"] | null;
+  /**
+   * The registered schedules frozen from this task. Empty means the row is a
+   * one-time task — which, until this existed, was indistinguishable from a
+   * scheduled one: the schedules live in their own list, on the other pane of
+   * the composer, and nothing on the row said the robot would run it unattended.
+   */
+  schedules: readonly ScheduleState[];
   busy: boolean;
   onDispatch: () => void;
   onLoad: () => void;
@@ -49,6 +59,7 @@ export function SavedTaskRow({
   dispatchDisabled,
   stepStates,
   taskStatus,
+  schedules,
   busy,
   onDispatch,
   onLoad,
@@ -56,6 +67,36 @@ export function SavedTaskRow({
   onDelete,
 }: SavedTaskRowProps) {
   const [open, setOpen] = React.useState(false);
+
+  /**
+   * One chip for however many schedules point at this task.
+   *
+   * A single schedule spells its trigger out, because that is the fact the
+   * operator is actually after — "every 30 min" answers "will this run on its
+   * own, and when" in one read. Two or more collapse to a count: a row is not
+   * the place to list them, and the Registered schedules pane is one click away
+   * on the composer's Schedule pane.
+   *
+   * Paused counts as scheduled but not as armed, so an all-paused row goes
+   * caution — the same tone the wrong-map chip uses for "registered, but it will
+   * not do what the label implies".
+   */
+  const schedule =
+    schedules.length === 0
+      ? null
+      : {
+          label:
+            schedules.length === 1
+              ? describeTrigger(schedules[0].trigger)
+              : `${schedules.length} schedules`,
+          paused: schedules.every((entry) => entry.paused),
+          title: schedules
+            .map(
+              (entry) =>
+                `${entry.id}: ${describeTrigger(entry.trigger)}${entry.paused ? " (paused)" : ""}`,
+            )
+            .join("\n"),
+        };
 
   // The one hard gate in this feature. A task whose coordinates are in another
   // map's frame points somewhere else entirely in the loaded map, so it cannot be
@@ -93,6 +134,18 @@ export function SavedTaskRow({
           {task.steps.map((step) => stepGlyph(step.type)).join(" ")}
         </span>
 
+        {/* Before the map chip: whether the robot runs this by itself outranks
+          * which map it is in. */}
+        {schedule && (
+          <Chip
+            tone={schedule.paused ? "caution" : "active"}
+            title={schedule.title}
+            className="gap-1"
+          >
+            <ClockIcon className="size-3" aria-hidden />
+            {schedule.paused ? "paused" : schedule.label}
+          </Chip>
+        )}
         {task.map_name && (
           <Chip tone={wrongMap ? "caution" : "neutral"}>{task.map_name}</Chip>
         )}
