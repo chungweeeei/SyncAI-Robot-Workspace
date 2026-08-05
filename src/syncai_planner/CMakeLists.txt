@@ -19,6 +19,14 @@ find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(syncai_costmap_2d REQUIRED)
 find_package(syncai_nav_core REQUIRED)
+# smac planner dependencies. ompl provides the Dubins / Reeds-Shepp state
+# spaces for analytic expansion and the smoother; its humble CMake config only
+# exports classic OMPL_INCLUDE_DIRS / OMPL_LIBRARIES variables (no imported
+# target), so it is linked by variable below rather than via the dependencies
+# list.
+find_package(angles REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(ompl REQUIRED)
 
 set(dependencies
   rclcpp
@@ -33,6 +41,7 @@ set(dependencies
   syncai_util
   syncai_costmap_2d
   syncai_nav_core
+  angles
 )
 
 set(library_name ${PROJECT_NAME})
@@ -42,6 +51,16 @@ add_library(${library_name} SHARED
   plugins/navfn_planner/navfn.cpp
   plugins/navfn_planner/navfn_planner.cpp
   plugins/straight_line_planner/straight_line_planner.cpp
+  plugins/smac_planner/a_star.cpp
+  plugins/smac_planner/analytic_expansion.cpp
+  plugins/smac_planner/collision_checker.cpp
+  plugins/smac_planner/costmap_downsampler.cpp
+  plugins/smac_planner/node_2d.cpp
+  plugins/smac_planner/node_basic.cpp
+  plugins/smac_planner/node_hybrid.cpp
+  plugins/smac_planner/smac_planner_2d.cpp
+  plugins/smac_planner/smac_planner_hybrid.cpp
+  plugins/smac_planner/smoother.cpp
   src/planner_server.cpp
 )
 
@@ -49,8 +68,18 @@ target_include_directories(${library_name} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+# SYSTEM keeps the workspace-wide -Wpedantic from flagging OMPL's headers,
+# which were never written against it.
+target_include_directories(${library_name} SYSTEM PUBLIC ${OMPL_INCLUDE_DIRS})
 
 ament_target_dependencies(${library_name} ${dependencies})
+target_link_libraries(${library_name}
+  ${OMPL_LIBRARIES}
+  Eigen3::Eigen
+)
+# The smac A* search is the hot path and upstream always builds it -O3; plan
+# latency is user-visible, so force it regardless of the workspace build type.
+target_compile_options(${library_name} PRIVATE -O3)
 
 pluginlib_export_plugin_description_file(syncai_nav_core global_planner_plugin.xml)
 

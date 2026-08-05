@@ -2,20 +2,20 @@
 
 The global planning half of the nav stack: an action server that owns the
 **global costmap** and hosts `GlobalPlanner` plugins. Port of `nav2_planner`,
-with `nav2_navfn_planner` merged in as a plugin of this package rather than
-living in its own.
+with `nav2_navfn_planner` and `nav2_smac_planner` merged in as plugins of this
+package rather than living in their own.
 
 ```
 syncai_task_runner ──ComputePathToPose (nav2_msgs)──►  planner_server
                    ──ComputePathThroughPoses────────►       │
                                                             │  global_costmap (internal node)
-                                            ┌───────────────┴───────────────┐
-                                            ▼                               ▼
-                                     NavfnPlanner                  StraightLinePlanner
-                                  (Dijkstra / A*)                 (reference / testing)
-                                            │
-                                            ▼
-                                   nav_msgs/Path ──► syncai_controller (FollowPath)
+                              ┌───────────────┬─────────────┴─┬───────────────────┐
+                              ▼               ▼               ▼                   ▼
+                       NavfnPlanner   StraightLinePlanner  SmacPlannerHybrid   SmacPlanner2D
+                     (Dijkstra / A*)  (reference/testing)  (Hybrid-A*, SE2)  (cost-aware A*)
+                              │
+                              ▼
+                     nav_msgs/Path ──► syncai_controller (FollowPath)
 ```
 
 Two structural notes carry over from the rest of the stack:
@@ -38,9 +38,10 @@ plugins/
   navfn_planner/navfn.cpp          the NavFn potential-field solver (1063 lines, upstream)
   navfn_planner/navfn_planner.cpp  the GlobalPlanner plugin wrapping it
   straight_line_planner/           a minimal reference plugin
+  smac_planner/                    the Smac family: 2 plugin wrappers + shared core
+                                   (A*, smoother, collision checker, node models)
 global_planner_plugin.xml          pluginlib manifest, exported to syncai_nav_core
-params/planner_server_params.yaml       2D / sim
-params/planner_server_3d_params.yaml    3D / real robot
+params/planner_server_params.yaml
 launch/planner_server.launch.py
 ```
 
@@ -129,11 +130,55 @@ Three behaviours worth knowing:
 Linear interpolation from start to goal at `interpolation_resolution` spacing,
 **with no obstacle checking whatsoever**. It exists as a minimal reference
 implementation of the `GlobalPlanner` interface and as a way to feed the
-controller a known path for tuning. Loaded in the 2D params, dropped from the 3D
-params.
+controller a known path for tuning. Not listed in `planner_plugins` today —
+add it back to the params file when needed.
 
 Do not select it on a real robot expecting collision avoidance — it will happily
 plan through a wall.
+
+### Smac planners (`syncai_planner/SmacPlannerHybrid` / `SmacPlanner2D`)
+
+Port of `nav2_smac_planner` (humble, 1.1.20) — two plugins sharing one search
+core (`AStarAlgorithm`, smoother, `GridCollisionChecker`, costmap downsampler):
+
+- **SmacPlannerHybrid** — Hybrid-A* over SE2 with Dubins / Reeds-Shepp motion
+  models: kinematically feasible paths that respect `minimum_turning_radius`,
+  with full-footprint collision checking near obstacles.
+- **SmacPlanner2D** — cost-aware grid A*; the closest smac analogue to NavFn
+  with `use_astar: true`. Radius-only collision checking.
+
+Upstream's third plugin, **SmacPlannerLattice, was deliberately dropped** from
+the port: nobody here plans to feed it motion-primitive JSONs, and it carried
+its own baggage (the `sample_primitives` data blob installed to share/, the
+nlohmann_json dependency, and a `NodeLattice` model in the shared core). If it
+is ever needed, restore it from upstream plus this port's de-lifecycle diff on
+the other two wrappers — the shared core still compiles `Node2D` and
+`NodeHybrid` only.
+
+None are loaded by default — `planner_plugins` stays `["GridBased"]` (NavFn).
+The params file carries a commented, pre-tuned `SmacHybrid` block; see the
+rationale comments there.
+
+The port follows the same de-lifecycle pattern as the rest of the stack:
+upstream's `configure()` + `activate()` collapse into `initialize()`,
+`deactivate()` + `cleanup()` into the destructor, the lifecycle publishers
+became plain publishers (live from creation), and the dynamic-parameter
+callback — kept, since live-tuning penalties is the main reason to run smac —
+is registered at the end of `initialize()`. Debug topics: `unsmoothed_plan`
+(the pre-smoother path, published only while subscribed) and
+`downsampled_costmap` (only when `downsample_costmap: true`).
+
+Two gotchas:
+
+- **OMPL is a hard dependency** (`ros-humble-ompl`). It is in the Dockerfile's
+  base stage, but a container created from an older image needs
+  `sudo apt-get update && sudo apt-get install -y ros-humble-ompl` by hand —
+  and that hand-install is wiped on container recreation, so rebuild the image
+  when convenient.
+- **Do not configure two planner ids of the same smac type.** The node models
+  (`NodeHybrid`, `Node2D`) keep their motion tables and heuristic caches in
+  static storage, so two instances would trample each other — same limitation
+  upstream, just less obvious here where all plugins live in one library.
 
 ## Parameters
 
@@ -144,8 +189,11 @@ plan through a wall.
 | `planner_plugins` | `["GridBased"]` | IDs; each needs `<id>.plugin` naming the type |
 | `expected_planner_frequency` | `1.0` (config: `10.0`) | Warning threshold only |
 
-`expected_planner_frequency` is the only dynamically reconfigurable parameter,
-and the callback takes the same mutex the plan cycle holds.
+`expected_planner_frequency` is the only parameter the *server's* dynamic
+callback handles, and it takes the same mutex the plan cycle holds. The smac
+plugins register their own callbacks, so their penalties / motion-model
+parameters are live-tunable too (NavFn's are not — it reads them once in
+`initialize()`).
 
 **Global costmap** (`/**/global_costmap`) — the full costmap parameter set; see
 `syncai_costmap_2d`'s README. The choices specific to a *global* costmap here:
@@ -157,26 +205,26 @@ sync with the local costmap** in `syncai_controller`. A circular
 `robot_radius: 0.22` was tried and was oversized enough that RPP rejected valid
 paths through ~0.6 m gaps.
 
-### 2D vs 3D params
+### Notes on the current config
 
-| | `planner_server_params.yaml` | `planner_server_3d_params.yaml` |
-|---|---|---|
-| `use_sim_time` | `true` | `false` |
-| `planner_plugins` | `GridBased`, `StraightLine` | `GridBased` only |
-| Keepout filter | `filters: ["keepout_filter"]` | **not configured** |
-| Obstacle sources | `scan` | `scan` **and** `pointlio/body_cloud` |
+There used to be separate 2D (sim) and 3D (real robot) params files; the 2D
+one went away with `bringup_2d`, and `planner_server_params.yaml` now carries
+the 3D-path configuration: `use_sim_time: false`, `GridBased` only, obstacle
+sources `scan` **and** `pointlio/body_cloud`.
 
-The keepout filter needs `costmap_filter_info_server` and a mask server running
-alongside, otherwise it warns "Filter mask was not received" every 2 s:
+The pointcloud source deliberately leaves `sensor_frame` empty so the
+observation buffer uses the cloud's own header frame as the raytrace origin —
+meaning no per-robot launch override, but also that it only works after
+`/localizer/relocalize`.
+
+The keepout filter is ported and verified but **not configured** today. To
+enable it, add `filters: ["keepout_filter"]` (plus the filter's params) to the
+global costmap section — and run `costmap_filter_info_server` and a mask
+server alongside, otherwise it warns "Filter mask was not received" every 2 s:
 
 ```bash
 ros2 launch syncai_map_server costmap_filter_info.launch.py
 ```
-
-The 3D pointcloud source deliberately leaves `sensor_frame` empty so the
-observation buffer uses the cloud's own header frame as the raytrace origin —
-meaning no per-robot launch override, but also that it only works after
-`/localizer/relocalize`.
 
 ## Interfaces
 
@@ -197,8 +245,6 @@ services the BT's recovery branch calls.
 
 ```bash
 ros2 launch syncai_planner planner_server.launch.py
-ros2 launch syncai_planner planner_server.launch.py \
-    params_file:=$PWD/src/syncai_planner/params/planner_server_3d_params.yaml
 ros2 launch syncai_planner planner_server.launch.py \
     system_config:=config/instances/robot02.ini
 ```
@@ -235,8 +281,8 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
   takes the whole process down at startup.
 - **Footprints must match the controller's local costmap.** Diverging footprints
   mean the planner produces paths RPP then rejects with "collision ahead!".
-- **`StraightLinePlanner` ignores obstacles entirely.** It is loaded by default
-  in the 2D params; do not select it via `planner_id` on hardware.
+- **`StraightLinePlanner` ignores obstacles entirely.** If it is ever added
+  back to `planner_plugins`, do not select it via `planner_id` on hardware.
 - **The launch file overrides `obstacle_layer.scan.sensor_frame` to
   `<robot_id>/laser`, but the 2D scan lives in `<robot_id>/scan`.**
   the merger stamps its output with `<robot_id>/scan` (and the `base_link →
@@ -252,5 +298,6 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
   only `expected_planner_frequency` is handled at all — plugin parameters go to
   each plugin's own callback.
 
-Upstream references: [`nav2_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_planner)
-and [`nav2_navfn_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_navfn_planner).
+Upstream references: [`nav2_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_planner),
+[`nav2_navfn_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_navfn_planner),
+and [`nav2_smac_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_smac_planner).

@@ -124,6 +124,21 @@ public:
     return cost;
   }
 
+  /**
+   * @brief Get the cost scaling factor of the inflation decay
+   *
+   * Accessors mirroring nav2's InflationLayer, added for the smac planner
+   * port. The humble-era smac code only needs the public computeCost() above,
+   * but newer upstream revisions reconstruct the decay from these two values —
+   * keeping the API aligned makes future re-syncs mechanical.
+   */
+  double getCostScalingFactor() { return cost_scaling_factor_; }
+
+  /**
+   * @brief Get the inflation radius in meters (see getCostScalingFactor)
+   */
+  double getInflationRadius() { return inflation_radius_; }
+
   // Provide a typedef to ease future code maintenance
   typedef std::recursive_mutex mutex_t;
 

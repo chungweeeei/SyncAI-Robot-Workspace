@@ -3,7 +3,7 @@
 <package format="3">
   <name>syncai_planner</name>
   <version>0.0.0</version>
-  <description>Global planner action server ported from nav2_planner to a non-lifecycle rclcpp::Node, with the NavFn planner plugin (from nav2_navfn_planner) merged into the same package</description>
+  <description>Global planner action server ported from nav2_planner to a non-lifecycle rclcpp::Node, with the NavFn planner plugin (from nav2_navfn_planner) and the Smac planner family (from nav2_smac_planner) merged into the same package</description>
   <maintainer email="chungweeeei@gmail.com">syncrobotic</maintainer>
   <license>Apache-2.0</license>
 
@@ -21,6 +21,13 @@
   <depend>syncai_util</depend>
   <depend>syncai_costmap_2d</depend>
   <depend>syncai_nav_core</depend>
+
+  <!-- smac planner deps, same rosdep keys upstream nav2_smac_planner uses.
+       ompl resolves to ros-humble-ompl (also added to the Dockerfile base
+       stage — a hand-installed copy would be wiped on container recreation). -->
+  <depend>angles</depend>
+  <depend>eigen</depend>
+  <depend>ompl</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
