@@ -17,7 +17,7 @@ import { apiUrl } from "@/lib/api/config";
 import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
 import type { MapVertex } from "@/lib/types/map";
-import type { PlanarPose, RobotPose } from "@/lib/types/robot";
+import type { PlanarPose, PlannedPath, RobotPose } from "@/lib/types/robot";
 import type { StreamStatus } from "@/lib/types/stream";
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
@@ -85,7 +85,18 @@ export function PointCloudView({
     Record<string, number> | undefined
   >(undefined);
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
+  /**
+   * The planner's route, on the same stream as the pose. Undefined until the
+   * first plan; an empty `points` arrives when the run ends, which is what takes
+   * the band back off the floor — see the backend's TelemetryRepo.get_path on why
+   * that clear has to be sent rather than inferred from silence.
+   */
+  const [path, setPath] = React.useState<PlannedPath | undefined>(undefined);
   const [showMapCloud, setShowMapCloud] = React.useState(false);
+  // On by default, like the vertices and for the same reason: the route is a
+  // single mark that says what the robot is doing right now, not a layer someone
+  // turns on to inspect the localizer.
+  const [showPath, setShowPath] = React.useState(true);
   // On by default, unlike the map cloud: the vertices are a handful of markers
   // that say what the map is *for*, while the cloud is hundreds of thousands of
   // points shown only when someone is checking the localizer.
@@ -186,15 +197,17 @@ export function PointCloudView({
     [sendGoal],
   );
 
-  // Robot pose + joints via the telemetry WebSocket (~20 Hz map-frame pose
-  // from odom, joints at the gait controller's telemetry rate). This replaced
-  // polling GET /api/v1/robot/state every 500 ms: that endpoint's timestamp has
+  // Robot pose + joints + planned route via the telemetry WebSocket (~20 Hz
+  // map-frame pose from odom, joints at the gait controller's telemetry rate,
+  // the route once per replan). Pose and joints replaced polling
+  // GET /api/v1/robot/state every 500 ms: that endpoint's timestamp has
   // whole-second resolution and it is a polled, frozen third-party contract, so
   // no amount of client-side polling or easing could make the motion continuous.
   React.useEffect(() => {
     const stream = createTelemetryStream({
       onPose: setPose,
       onJoints: setJoints,
+      onPath: setPath,
     });
     return () => stream.close();
   }, []);
@@ -208,6 +221,8 @@ export function PointCloudView({
         pose={pose}
         joints={joints}
         showMapCloud={showMapCloud}
+        path={path}
+        showPath={showPath}
         vertices={vertices}
         showVertices={showVertices}
         onVertexActivate={setAskedVertex}
@@ -322,6 +337,15 @@ export function PointCloudView({
             label="Vertices"
             on={showVertices}
             onToggle={() => setShowVertices((v) => !v)}
+          />
+        )}
+        {/* Same rule, and here it means the control comes and goes with the run:
+          * there is no route to hide between tasks. */}
+        {path !== undefined && path.points.length > 0 && (
+          <LayerToggle
+            label="Path"
+            on={showPath}
+            onToggle={() => setShowPath((v) => !v)}
           />
         )}
       </div>

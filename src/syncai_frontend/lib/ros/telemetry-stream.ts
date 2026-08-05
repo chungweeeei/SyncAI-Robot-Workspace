@@ -2,7 +2,7 @@ import {
   createReconnectingSocket,
   type ReconnectingSocket,
 } from "@/lib/ros/socket";
-import type { RobotPose } from "@/lib/types/robot";
+import type { PlannedPath, RobotPose } from "@/lib/types/robot";
 import type { StreamStatus } from "@/lib/types/stream";
 
 /**
@@ -17,6 +17,11 @@ import type { StreamStatus } from "@/lib/types/stream";
  *
  *   {"type": "pose",   "x", "y", "z", "yaw_deg", "stamp"}
  *   {"type": "joints", "joints": {"FL_HipX_joint": rad, ...}, "stamp"}
+ *   {"type": "path",   "points": [[x, y], ...], "stamp"}
+ *
+ * `path` shares this socket rather than getting its own: it is ~8 kB once per
+ * replan (~0.333 Hz), nowhere near the size that made the point cloud a separate
+ * connection.
  */
 
 interface PoseMessage {
@@ -34,12 +39,21 @@ interface JointsMessage {
   stamp: number;
 }
 
-type TelemetryMessage = PoseMessage | JointsMessage;
+interface PathMessage {
+  type: "path";
+  /** Map-frame [x, y] pairs, metres. Empty means "no route". */
+  points: [number, number][];
+  stamp: number;
+}
+
+type TelemetryMessage = PoseMessage | JointsMessage | PathMessage;
 
 export interface TelemetryStreamHandlers {
   onPose?: (pose: RobotPose) => void;
   /** Joint angles in radians, keyed by URDF joint name. */
   onJoints?: (joints: Record<string, number>) => void;
+  /** The planner's route. An empty `points` means the route is over. */
+  onPath?: (path: PlannedPath) => void;
   onStatus?: (status: StreamStatus) => void;
 }
 
@@ -68,6 +82,17 @@ export function createTelemetryStream(
         handlers.onPose?.({ x: msg.x, y: msg.y, z: msg.z, theta: msg.yaw_deg });
       } else if (msg.type === "joints") {
         handlers.onJoints?.(msg.joints);
+      } else if (msg.type === "path") {
+        // Flattened here rather than in the consumer, for the same reason
+        // yaw_deg is relabelled above: this is the wire-to-app translation
+        // layer, and the pairs the JSON has to use are not the layout the
+        // geometry builder walks.
+        const points = new Float32Array(msg.points.length * 2);
+        for (let i = 0; i < msg.points.length; i++) {
+          points[i * 2] = msg.points[i][0];
+          points[i * 2 + 1] = msg.points[i][1];
+        }
+        handlers.onPath?.({ points, stamp: msg.stamp });
       }
     },
   });

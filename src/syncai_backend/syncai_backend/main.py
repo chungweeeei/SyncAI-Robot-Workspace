@@ -33,6 +33,9 @@ from syncai_backend.subscribers.pointcloud_subscriber import (
 from syncai_backend.subscribers.telemetry_subscriber import (
     init_telemetry_subscriber,
 )
+from syncai_backend.subscribers.path_subscriber import (
+    init_path_subscriber,
+)
 from syncai_backend.subscribers.tf import init_tf_listener
 
 
@@ -105,6 +108,9 @@ class SyncAIBackend(Node):
             telemetry_repo=telemetry_repo,
             tf_buffer=self._tf_listener.buffer,
         )
+        # The planner's route, onto the same telemetry socket. No tf_buffer: the
+        # plan is published in the map frame already.
+        init_path_subscriber(logger=logger, node=self, telemetry_repo=telemetry_repo)
 
         start_temporal_worker(
             logger=logger, robot_id=robot_id, robot_gw=robot_gw, artifact_gw=artifact_gw

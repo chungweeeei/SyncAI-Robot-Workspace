@@ -42,6 +42,25 @@ export interface PlanarPose {
   theta: number;
 }
 
+/**
+ * The planner's remaining global route, from the telemetry stream's `path`
+ * frames. Flat map-frame metres — [x0, y0, x1, y1, …] — because the only
+ * consumer walks it to build geometry, and a Float32Array of pairs is what that
+ * loop wants rather than an array of objects.
+ *
+ * Heading is not carried: the viewport draws the route as a band on the floor,
+ * not as a series of poses.
+ *
+ * An empty `points` is the explicit "no route" state, not a missing sample. The
+ * backend synthesises it when plans stop arriving, because nothing in the nav
+ * stack publishes an empty plan and arrival / cancel / abort are otherwise
+ * indistinguishable silence.
+ */
+export interface PlannedPath {
+  points: Float32Array;
+  stamp: number;
+}
+
 export interface RobotLocalizationStatus {
   position: RobotPose;
   /** linear velocity in m/s */
