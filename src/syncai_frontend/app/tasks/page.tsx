@@ -7,13 +7,21 @@ import { TaskConsole } from "@/components/tasks/task-console";
  * Chrome only — TaskConsole owns the library, the composing, the dispatching and
  * the schedules.
  *
- * A step list now survives a reload: it is saved server-side and the library is
- * the first thing on the page. What does *not* survive is the tracked id of a run
- * already in flight — there is no `GET /api/v1/tasks` collection to recover it
- * from and nothing here persists it, so reloading mid-run leaves the robot going
- * with no status or Cancel on screen. That is the same limitation the dashboard's
- * goal flow has, and the Temporal UI on :8081 is where such a run is picked back
- * up.
+ * A step list survives a reload: it is saved server-side and the library is the
+ * first thing on the page.
+ *
+ * A run in flight now survives one too. `GET /api/v1/active_tasks` answers what
+ * is executing on this robot's Temporal task queue, whoever started it, so a
+ * reloaded page recovers the task id it never held — and with the id it gets the
+ * status chip in the masthead, the banner above the library, and Cancel. That
+ * also covers the two cases no browser state ever could: a run started from
+ * another console, and one a schedule fired overnight.
+ *
+ * What still does not survive is the *detail*: which of the steps is executing.
+ * That readback is joined by step id inside `useTaskDispatch`, which only has it
+ * for a task this mount dispatched, so a recovered run is reported at task level
+ * only. Adopting a run back into the composer is a separate piece of work; the
+ * Temporal UI on :8081 remains the place to inspect one step by step.
  */
 export default function TasksPage() {
   const { state } = useConsoleRobotState();

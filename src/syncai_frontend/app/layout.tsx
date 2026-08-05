@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Archivo, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
+import { ActiveTaskProvider } from "@/components/console/active-task-context";
 import { NavRail } from "@/components/console/nav-rail";
 import { RobotStateProvider } from "@/components/console/robot-state-context";
 import { StatusStrip } from "@/components/console/status-strip";
@@ -55,23 +56,32 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           {/*
-           * One poll for the whole console. The status strip and whichever page
-           * is mounted read the same RobotState snapshot, so the header clock
-           * can never disagree with the pose in the rail — which it would if
-           * each of them called useRobotState() on its own interval.
+           * Two polls for the whole console, and only two. The status strip and
+           * whichever page is mounted read the same RobotState snapshot, so the
+           * header clock can never disagree with the pose in the rail — which it
+           * would if each of them called useRobotState() on its own interval.
+           *
+           * The second one answers "is the robot executing a task", which is a
+           * fact about the machine rather than about any one screen: it has to
+           * survive navigation, and it has to be true for runs this browser
+           * never started. They stay separate providers because they fail
+           * differently — see ActiveTaskProvider.
            */}
           <RobotStateProvider>
-            <div className="flex h-dvh flex-col lg:flex-row">
-              <NavRail />
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <StatusStrip />
-                {/* Pages own their own scrolling: the dashboard must not scroll
-                 * (the viewport is sized to what is left), settings must. */}
-                <main className="min-h-0 flex-1 overflow-hidden">
-                  {children}
-                </main>
+            <ActiveTaskProvider>
+              <div className="flex h-dvh flex-col lg:flex-row">
+                <NavRail />
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                  <StatusStrip />
+                  {/* Pages own their own scrolling: the dashboard must not
+                   * scroll (the viewport is sized to what is left), settings
+                   * must. */}
+                  <main className="min-h-0 flex-1 overflow-hidden">
+                    {children}
+                  </main>
+                </div>
               </div>
-            </div>
+            </ActiveTaskProvider>
           </RobotStateProvider>
         </ThemeProvider>
       </body>

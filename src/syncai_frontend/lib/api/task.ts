@@ -10,8 +10,13 @@
 //
 // Creation is dispatch: the endpoint awaits Temporal's start_workflow before
 // answering, so a 200 means the workflow is queued and the robot is about to
-// act. There is no separate run/execute call, and no GET collection either —
-// a caller that wants to follow a task has to keep the id this returns.
+// act. There is no separate run/execute call.
+//
+// There is no GET collection of *all* tasks — nothing stores them, and Temporal
+// forgets a closed workflow inside a day — but there is one of the **running**
+// ones: `fetchActiveTasks`. That is how a caller recovers an id it never had,
+// which is every id after a reload and every id belonging to a run a schedule
+// started while nobody was watching.
 
 import { apiUrl } from "@/lib/api/config";
 import { requestJson } from "@/lib/api/http";
@@ -194,6 +199,48 @@ export function fetchTaskState(
     apiUrl(`/api/v1/tasks/${encodeURIComponent(id)}`),
     { signal },
   );
+}
+
+/** Who started a run. See the backend's `TaskSource` on why not "OPERATOR". */
+export type TaskSource = "DIRECT" | "SCHEDULE";
+
+/** `ActiveTaskResponse`, verbatim. */
+export interface ActiveTask {
+  /** Workflow id — the same id `fetchTaskState` and `cancelTask` take. */
+  id: string;
+  run_id: string;
+  status: TaskStatus;
+  /** ISO 8601, UTC. */
+  started_at: string;
+  source: TaskSource;
+  /** Set only when `source` is "SCHEDULE". */
+  schedule_id: string | null;
+}
+
+export interface ActiveTasksResponse {
+  tasks: ActiveTask[];
+  /**
+   * When the backend read the snapshot, ISO 8601 UTC. Elapsed time must be
+   * measured against this rather than the browser clock: the two clocks are
+   * different, and the answer is served from a short server-side cache.
+   */
+  as_of: string;
+}
+
+/**
+ * Everything running on this robot's task queue right now.
+ *
+ * The one call in this client that does not need to be told which task to look
+ * at. It is answered from Temporal's visibility index, so it sees runs this tab
+ * never started — another tab's, the MCP server's, and a schedule's, including
+ * ones that began before this page was loaded.
+ */
+export function fetchActiveTasks(
+  signal?: AbortSignal,
+): Promise<ActiveTasksResponse> {
+  return requestJson<ActiveTasksResponse>(apiUrl("/api/v1/active_tasks"), {
+    signal,
+  });
 }
 
 /**

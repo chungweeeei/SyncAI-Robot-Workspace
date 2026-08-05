@@ -1,5 +1,6 @@
 "use client";
 
+import { ActiveTaskChip } from "@/components/console/active-task-chip";
 import { useConsoleRobotState } from "@/components/console/robot-state-context";
 import {
   Chip,
@@ -89,6 +90,24 @@ export function StatusStrip() {
           <span className="readout truncate text-[13px]">
             {state?.map ?? "—"}
           </span>
+        </div>
+
+        <StripDivider className="hidden sm:block" />
+
+        {/* Whether the robot is executing anything, from Temporal rather than
+          * from this tab — so it is true for a run another console started, or
+          * one a schedule started with nobody watching, or one that began
+          * before this page was loaded. `role="status"` so going from idle to
+          * running is announced rather than just recoloured.
+          *
+          * Left cluster, beside the mode and the map: those three say what the
+          * robot *is doing and where*, while the right cluster is the health of
+          * the links and the machine. */}
+        <div role="status" className="flex items-center gap-2">
+          <span className="instrument-label hidden text-muted-foreground sm:inline">
+            Task
+          </span>
+          <ActiveTaskChip />
         </div>
 
         <div className="ml-auto flex items-center gap-2.5 sm:gap-3.5">

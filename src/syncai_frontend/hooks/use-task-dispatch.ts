@@ -22,6 +22,15 @@ export interface TaskDispatch {
   error: string | null;
   /** Per-step state of the tracked task, keyed by step id. Empty before a dispatch. */
   stepStates: ReadonlyMap<string, TaskStepState>;
+  /**
+   * The run this hook is following, or null.
+   *
+   * Exposed so the console can tell a run it already has a readback and a Cancel
+   * for from one it has only heard about through GET /api/v1/active_tasks —
+   * without it, a task dispatched from this very tab would also be announced as
+   * an unattended run in the banner above the library.
+   */
+  taskId: string | null;
   send: (steps: readonly TaskStepRequest[]) => Promise<void>;
   cancel: () => Promise<void>;
   clear: () => void;
@@ -102,6 +111,7 @@ export function useTaskDispatch(robotId: string | null): TaskDispatch {
     cancelable: task.cancelable,
     error: task.error,
     stepStates,
+    taskId,
     send,
     cancel,
     clear: reset,

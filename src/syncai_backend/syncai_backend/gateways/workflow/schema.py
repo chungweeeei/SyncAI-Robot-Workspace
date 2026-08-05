@@ -193,6 +193,47 @@ class TaskState(BaseSchema):
     steps: List[Step] = Field(..., description="Per-step state")
 
 
+class TaskSource(str, Enum):
+    """Who started a running task.
+
+    DIRECT, not OPERATOR: `POST /api/v1/tasks` is also how syncai_ros_mcp
+    dispatches, so "an operator did this" would be a claim the backend cannot
+    make. All it can tell apart is "someone called the endpoint" from "a
+    Temporal schedule fired", and the latter only because the schedule
+    machinery stamps its own search attribute on the run.
+    """
+
+    DIRECT = "DIRECT"
+    SCHEDULE = "SCHEDULE"
+
+
+class ActiveTask(BaseSchema):
+    """One execution that is running on this robot's task queue right now.
+
+    Deliberately identity and provenance only -- no step list. The point of this
+    shape is that it comes from a single visibility query with no per-task
+    follow-up, which is what makes it cheap enough for the whole console to poll
+    (see ACTIVE_TASK_CACHE_TTL_S). Per-step detail already has an endpoint:
+    GET /api/v1/tasks/{id}, and `id` here is exactly the id it takes.
+    """
+
+    id: str = Field(..., description="Workflow id, i.e. the task id")
+    run_id: str = Field(
+        ...,
+        description=(
+            "Temporal run id. Distinguishes two runs of the same schedule, "
+            "whose workflow ids differ only by nominal trigger time."
+        ),
+    )
+    status: str = Field(..., description="Mapped through _WORKFLOW_STATUS_MAP")
+    started_at: datetime = Field(..., description="Execution start time (UTC)")
+    source: TaskSource = Field(..., description="Who started it")
+    schedule_id: Optional[str] = Field(
+        default=None,
+        description="The schedule that started it, when source is SCHEDULE.",
+    )
+
+
 class ScheduleTrigger(BaseSchema):
     cron: Optional[str] = Field(
         default=None,

@@ -5,7 +5,12 @@ import type { TaskStatus } from "@/lib/api/task";
 
 // A task in flight is active guidance, which is what magenta means everywhere
 // else in the console; a finished one is just a measured outcome.
-const STATUS_TONE: Record<TaskStatus, Tone> = {
+//
+// Exported for the one surface that cannot use TaskStatusChip itself: the
+// status strip has no room for "IN PROGRESS" and renders its own shorter label.
+// It borrows the tone from here so a running task cannot end up one colour in
+// the masthead and another on /tasks.
+export const STATUS_TONE: Record<TaskStatus, Tone> = {
   PENDING: "cmd",
   IN_PROGRESS: "active",
   COMPLETED: "live",

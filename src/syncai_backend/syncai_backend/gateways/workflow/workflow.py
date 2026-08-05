@@ -1,6 +1,9 @@
+import asyncio
 import structlog
-from datetime import timedelta, timezone
-from typing import List
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
 
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.client import (
@@ -15,6 +18,7 @@ from temporalio.client import (
     ScheduleSpec,
 )
 from temporalio.api.common.v1 import Payload
+from temporalio.common import SearchAttributeKey
 from temporalio.service import RPCError, RPCStatusCode
 
 from syncai_backend.exceptions import (
@@ -26,14 +30,21 @@ from syncai_backend.exceptions import (
 from syncai_backend.temporal.shared import TEMPORAL_SERVER_URL
 
 from syncai_backend.gateways.workflow.schema import (
+    ActiveTask,
     ScheduleTask,
     ScheduleTrigger,
     ScheduleView,
     Step,
+    TaskSource,
     TaskState,
     WorkflowTask,
 )
-from syncai_backend.gateways.workflow.config import WORKFLOW_TYPE_NAME
+from syncai_backend.gateways.workflow.config import (
+    ACTIVE_TASK_CACHE_TTL_S,
+    ACTIVE_TASK_LIST_LIMIT,
+    ACTIVE_TASK_RPC_TIMEOUT_S,
+    WORKFLOW_TYPE_NAME,
+)
 
 
 _WORKFLOW_STATUS_MAP = {
@@ -45,6 +56,65 @@ _WORKFLOW_STATUS_MAP = {
     WorkflowExecutionStatus.CANCELED: "CANCELED",
     WorkflowExecutionStatus.TERMINATED: "CANCELED",
 }
+
+
+# The schedule that started a run, as Temporal itself records it.
+#
+# This is a *predefined* search attribute, written by the schedule machinery on
+# every triggered execution — this codebase sets no custom search attributes and
+# does not need to. It is also the only way the provenance is recoverable at
+# all: a scheduled run's workflow id is `<schedule_id>-<nominal ISO time>`, a
+# string the backend never forms, never stores and cannot reconstruct (it would
+# have to guess the exact nominal instant). Nothing in the memo helps either —
+# the memo belongs to the *schedule*, not to the run it starts.
+_SCHEDULED_BY_KEY = SearchAttributeKey.for_keyword("TemporalScheduledById")
+
+
+def _active_query(task_queue: str) -> str:
+    """The visibility List Filter behind GET /api/v1/active_tasks.
+
+    `TaskQueue` is the per-robot scope, so no custom attribute is needed: every
+    execution for this robot is enqueued on `<robot_id>.ROBOT_TASK_QUEUE` by
+    WorkflowGateway, whoever started it. `WorkflowType` keeps a future second
+    workflow type on the same queue out of the answer.
+
+    Requires SQL advanced visibility, i.e. Temporal server >= 1.20 on Postgres
+    or MySQL — the compose stack pins temporalio/auto-setup:1.29.7 on Postgres,
+    so this is satisfied. A deployment on standard visibility would reject the
+    query with INVALID_ARGUMENT; see the handler in _fetch_active_tasks for what
+    to do about it.
+    """
+    return (
+        f"WorkflowType = '{WORKFLOW_TYPE_NAME}' "
+        f"AND TaskQueue = '{task_queue}' "
+        "AND ExecutionStatus = 'Running'"
+    )
+
+
+def _schedule_id_of(execution) -> Optional[str]:
+    """The schedule that started this run, or None for a direct dispatch."""
+    try:
+        return execution.typed_search_attributes.get(_SCHEDULED_BY_KEY)
+    except Exception:
+        # Never fatal, same policy as _read_steps / _read_memo: provenance is
+        # decoration, presence is the safety fact. A run whose attributes cannot
+        # be decoded must still be reported as running.
+        return None
+
+
+@dataclass
+class _ActiveSnapshot:
+    """One cached answer — success or failure — and when it was taken.
+
+    `fetched_at` is a monotonic reading (TTL arithmetic must not be affected by
+    a wall-clock step), while `as_of` is the wall clock the client renders
+    elapsed times against.
+    """
+
+    fetched_at: float
+    as_of: datetime
+    tasks: Optional[List[ActiveTask]] = None
+    error: Optional[Exception] = None
 
 
 def _build_schedule_spec(trigger: ScheduleTrigger) -> ScheduleSpec:
@@ -183,6 +253,16 @@ class WorkflowGateway:
         self._task_queue = f"{robot_id}.ROBOT_TASK_QUEUE"
         self._client: Client | None = None
 
+        # The active-task cache. Both fields are touched ONLY from the uvicorn
+        # event loop (start_rest_server runs uvicorn on its own daemon thread);
+        # the Temporal worker in temporal/worker.py runs asyncio.run on a
+        # different thread with its own Client and must never reach this.
+        #
+        # The lock is created lazily rather than here because this gateway is
+        # constructed on the main thread, before that loop exists.
+        self._active_snapshot: Optional[_ActiveSnapshot] = None
+        self._active_lock: Optional[asyncio.Lock] = None
+
     async def _get_client(self) -> Client:
         if self._client is not None:
             return self._client
@@ -266,6 +346,154 @@ class WorkflowGateway:
             steps = []
 
         return TaskState(id=task_id, status=status, steps=steps)
+
+    async def list_active_tasks(self) -> Tuple[List[ActiveTask], datetime]:
+        """What is running on this robot right now, and when that was read.
+
+        This is the only thing in the system that can answer the question. The
+        REST surface has no task collection, the database stores no runs, and a
+        schedule-triggered execution's workflow id is never recorded anywhere —
+        but every one of them is an execution on this robot's task queue, so
+        Temporal's visibility index knows about all of them equally: runs from
+        this browser, from another tab, from the MCP server, from a schedule
+        that fired while nobody was looking, and runs that started before the
+        page asking was ever loaded.
+
+        Cached in one slot for ACTIVE_TASK_CACHE_TTL_S. The console polls this
+        from every open tab, and without the cache each of them would spend a
+        Temporal RPC on an answer that is identical.
+        """
+        # Lazily built on first use, on the loop that will own it. Racing to
+        # create it is not possible: everything here runs on that single loop.
+        if self._active_lock is None:
+            self._active_lock = asyncio.Lock()
+
+        cached = self._read_active_cache()
+        if cached is not None:
+            return cached
+
+        async with self._active_lock:
+            # Re-check inside the lock. This is not belt and braces: without it,
+            # N callers arriving in the same tick all miss, all queue on the
+            # lock, and each then makes its own RPC — N *serialised* round trips,
+            # which is worse than no lock at all. With it, one fetches and the
+            # rest replay what it stored.
+            cached = self._read_active_cache()
+            if cached is not None:
+                return cached
+
+            snapshot = await self._fetch_active_tasks()
+            self._active_snapshot = snapshot
+
+        if snapshot.error is not None:
+            raise snapshot.error
+        return snapshot.tasks or [], snapshot.as_of
+
+    def _read_active_cache(self) -> Optional[Tuple[List[ActiveTask], datetime]]:
+        """Replay the snapshot while it is fresh, re-raising a cached failure.
+
+        Failures are cached in the same slot as successes, and that matters more
+        than the success path: a gRPC connect to a dead Temporal can block for
+        seconds, and the lock above serialises those attempts, so an uncached
+        failure with four tabs polling would pile waiters onto the event loop.
+        The cost is that the first success after a recovery is up to one TTL
+        late, which is the right trade for a state that changes a few times an
+        hour.
+        """
+        snapshot = self._active_snapshot
+        if snapshot is None:
+            return None
+        if time.monotonic() - snapshot.fetched_at >= ACTIVE_TASK_CACHE_TTL_S:
+            return None
+        if snapshot.error is not None:
+            raise snapshot.error
+        return snapshot.tasks or [], snapshot.as_of
+
+    async def _fetch_active_tasks(self) -> _ActiveSnapshot:
+        """One visibility query, packaged as a snapshot. Never raises."""
+        fetched_at = time.monotonic()
+        as_of = datetime.now(timezone.utc)
+
+        def failed(err: Exception) -> _ActiveSnapshot:
+            return _ActiveSnapshot(fetched_at=fetched_at, as_of=as_of, error=err)
+
+        try:
+            client = await self._get_client()
+        except Exception as err:
+            self._logger.error(
+                "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
+            )
+            return failed(InternalServerError("Failed to connect to Temporal server"))
+
+        tasks: List[ActiveTask] = []
+        try:
+            # No `await` on list_workflows: it returns the iterator directly.
+            # This is the call the warning in list_schedules was written for —
+            # the two APIs differ, and awaiting this one is a TypeError.
+            async for execution in client.list_workflows(
+                _active_query(self._task_queue),
+                limit=ACTIVE_TASK_LIST_LIMIT,
+                page_size=ACTIVE_TASK_LIST_LIMIT,
+                rpc_timeout=timedelta(seconds=ACTIVE_TASK_RPC_TIMEOUT_S),
+            ):
+                status = _WORKFLOW_STATUS_MAP.get(execution.status)
+                if status is None:
+                    # Skipped rather than raised: one unmapped status must not
+                    # cost the operator the whole answer, and the query already
+                    # filtered on Running so this is a Temporal-side surprise.
+                    self._logger.warn(
+                        "[WorkflowGateway] Unmapped status in active tasks",
+                        task_id=execution.id,
+                        status=str(execution.status),
+                    )
+                    continue
+
+                schedule_id = _schedule_id_of(execution)
+                tasks.append(
+                    ActiveTask(
+                        id=execution.id,
+                        run_id=execution.run_id,
+                        status=status,
+                        started_at=execution.start_time.astimezone(timezone.utc),
+                        source=(
+                            TaskSource.SCHEDULE if schedule_id else TaskSource.DIRECT
+                        ),
+                        schedule_id=schedule_id,
+                    )
+                )
+        except RPCError as err:
+            if err.status == RPCStatusCode.INVALID_ARGUMENT:
+                # Almost certainly a deployment on *standard* visibility, where
+                # a List Filter this shape is rejected. The fix is to drop the
+                # TaskQueue / WorkflowType predicates from _active_query and
+                # filter the results in Python; it is not pre-built because the
+                # pinned server (auto-setup 1.29.7 on Postgres) has advanced
+                # visibility and one code path is worth more than a fallback
+                # nothing exercises.
+                self._logger.error(
+                    "[WorkflowGateway] Visibility rejected the active-task query; "
+                    "is this server on standard visibility?",
+                    query=_active_query(self._task_queue),
+                    error=str(err),
+                )
+            else:
+                self._logger.error(
+                    "[WorkflowGateway] Failed to list active tasks", error=str(err)
+                )
+            return failed(InternalServerError("List active tasks failed"))
+        except Exception as err:
+            self._logger.error(
+                "[WorkflowGateway] Failed to list active tasks", error=str(err)
+            )
+            return failed(InternalServerError("List active tasks failed"))
+
+        # Debug rather than info: this is the cache-miss line, i.e. the one that
+        # says how often Temporal is actually being asked. It is the only way to
+        # tell coalescing from a cache that is quietly doing nothing.
+        self._logger.debug(
+            "[WorkflowGateway] Active task snapshot refreshed", count=len(tasks)
+        )
+        return _ActiveSnapshot(fetched_at=fetched_at, as_of=as_of, tasks=tasks)
 
     async def cancel_task(self, task_id: str):
 

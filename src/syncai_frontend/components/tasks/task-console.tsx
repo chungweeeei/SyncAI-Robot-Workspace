@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { Chip, InstrumentGroup, Segmented } from "@/components/console/instrument";
+import { ActiveRunBanner } from "@/components/tasks/active-run-banner";
 import { DispatchPanel } from "@/components/tasks/dispatch-panel";
 import { SaveGroup } from "@/components/tasks/save-group";
 import { ScheduleForm } from "@/components/tasks/schedule-form";
@@ -51,9 +52,11 @@ const MODE_OPTIONS = [
  *
  * **One route, one mount, one tracker.** Splitting into /tasks + /tasks/[id] was
  * rejected: the App Router unmounts on navigation, so walking back to an index
- * while a task ran would lose the tracked id and with it the only Cancel button
- * for a moving robot. That is the hole the page header already apologises for,
- * promoted from "if you reload" to "if you click".
+ * while a task ran would lose the tracked id and with it the per-step readback
+ * for a moving robot. Cancel is no longer part of that argument — ActiveRunBanner
+ * recovers any run from GET /api/v1/active_tasks, so a task that outlived its
+ * tracker can still be stopped from here — but the step-level detail is still
+ * only available to the mount that dispatched it.
  *
  * **The task editor is two columns and folds away.** Stacking steps, name, mode and
  * dispatch in one column meant the button that runs the thing was a scroll below
@@ -226,6 +229,11 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
 
   return (
     <>
+      {/* Above the library, because it is the most urgent thing this screen can
+        * say: a robot is executing something and this tab is not the one that
+        * asked for it. */}
+      <ActiveRunBanner trackedTaskId={dispatch.taskId} />
+
       <div className="mb-4 overflow-hidden rounded-md border border-hairline bg-panel">
         <InstrumentGroup
           label="Saved tasks"
