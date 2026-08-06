@@ -19,11 +19,11 @@ find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(syncai_costmap_2d REQUIRED)
 find_package(syncai_nav_core REQUIRED)
-# smac planner dependencies. ompl provides the Dubins / Reeds-Shepp state
-# spaces for analytic expansion and the smoother; its humble CMake config only
-# exports classic OMPL_INCLUDE_DIRS / OMPL_LIBRARIES variables (no imported
-# target), so it is linked by variable below rather than via the dependencies
-# list.
+# smac planner dependencies. ompl is still required after the Hybrid-A*
+# planner was dropped: Smoother uses its Dubins state space to resample the
+# boundary segments of a path. Its humble CMake config only exports classic
+# OMPL_INCLUDE_DIRS / OMPL_LIBRARIES variables (no imported target), so it is
+# linked by variable below rather than via the dependencies list.
 find_package(angles REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(ompl REQUIRED)
@@ -52,14 +52,11 @@ add_library(${library_name} SHARED
   plugins/navfn_planner/navfn_planner.cpp
   plugins/straight_line_planner/straight_line_planner.cpp
   plugins/smac_planner/a_star.cpp
-  plugins/smac_planner/analytic_expansion.cpp
   plugins/smac_planner/collision_checker.cpp
   plugins/smac_planner/costmap_downsampler.cpp
   plugins/smac_planner/node_2d.cpp
   plugins/smac_planner/node_basic.cpp
-  plugins/smac_planner/node_hybrid.cpp
   plugins/smac_planner/smac_planner_2d.cpp
-  plugins/smac_planner/smac_planner_hybrid.cpp
   plugins/smac_planner/smoother.cpp
   src/planner_server.cpp
 )

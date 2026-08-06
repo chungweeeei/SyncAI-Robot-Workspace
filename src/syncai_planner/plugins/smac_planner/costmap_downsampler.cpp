@@ -50,9 +50,11 @@ void CostmapDownsampler::on_configure(
     _downsampled_size_x, _downsampled_size_y, _downsampled_resolution,
     _costmap->getOriginX(), _costmap->getOriginY(), UNKNOWN);
 
-  // The empty-node case is deliberate, not defensive: NodeHybrid's obstacle
-  // heuristic constructs a downsampler with a default (empty) WeakPtr exactly
-  // so that its internal downsampled costmap is never published.
+  // The empty-node case is deliberate, not defensive: upstream's NodeHybrid
+  // obstacle heuristic constructs a downsampler with a default (empty) WeakPtr
+  // exactly so that its internal downsampled costmap is never published. No
+  // caller does that since the Hybrid planner was dropped, but the branch is
+  // what keeps on_configure() safe to call without a node.
   if (auto locked_node = node.lock()) {
     _downsampled_costmap_pub = std::make_unique<syncai_costmap_2d::Costmap2DPublisher>(
       locked_node, _downsampled_costmap.get(), global_frame, topic_name, false);
@@ -62,8 +64,7 @@ void CostmapDownsampler::on_configure(
 void CostmapDownsampler::on_activate()
 {
   // No-op: syncai_costmap_2d's publisher is a plain rclcpp publisher, live
-  // from construction. Kept so upstream call sites (NodeHybrid's obstacle
-  // heuristic and the plugin wrappers) port without edits.
+  // from construction. Kept so upstream call sites port without edits.
 }
 
 void CostmapDownsampler::on_deactivate()

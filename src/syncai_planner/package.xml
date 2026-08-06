@@ -24,7 +24,9 @@
 
   <!-- smac planner deps, same rosdep keys upstream nav2_smac_planner uses.
        ompl resolves to ros-humble-ompl (also added to the Dockerfile base
-       stage — a hand-installed copy would be wiped on container recreation). -->
+       stage — a hand-installed copy would be wiped on container recreation).
+       It stays required after the Hybrid-A* planner was dropped, because the
+       smoother resamples path boundaries through a Dubins state space. -->
   <depend>angles</depend>
   <depend>eigen</depend>
   <depend>ompl</depend>

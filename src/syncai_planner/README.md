@@ -9,14 +9,17 @@ package rather than living in their own.
 syncai_task_runner ──ComputePathToPose (nav2_msgs)──►  planner_server
                    ──ComputePathThroughPoses────────►       │
                                                             │  global_costmap (internal node)
-                              ┌───────────────┬─────────────┴─┬───────────────────┐
-                              ▼               ▼               ▼                   ▼
-                       NavfnPlanner   StraightLinePlanner  SmacPlannerHybrid   SmacPlanner2D
-                     (Dijkstra / A*)  (reference/testing)  (Hybrid-A*, SE2)  (cost-aware A*)
+                              ┌───────────────┬─────────────┴─┐
+                              ▼               ▼               ▼
+                       SmacPlanner2D    NavfnPlanner   StraightLinePlanner
+                      (cost-aware A*)  (Dijkstra / A*)  (reference/testing)
                               │
                               ▼
                      nav_msgs/Path ──► syncai_controller (FollowPath)
 ```
+
+`SmacPlanner2D` is the configured planner; the other two are built and
+registered but not loaded.
 
 Two structural notes carry over from the rest of the stack:
 
@@ -38,8 +41,8 @@ plugins/
   navfn_planner/navfn.cpp          the NavFn potential-field solver (1063 lines, upstream)
   navfn_planner/navfn_planner.cpp  the GlobalPlanner plugin wrapping it
   straight_line_planner/           a minimal reference plugin
-  smac_planner/                    the Smac family: 2 plugin wrappers + shared core
-                                   (A*, smoother, collision checker, node models)
+  smac_planner/                    SmacPlanner2D + its search core
+                                   (A*, smoother, collision checker, Node2D)
 global_planner_plugin.xml          pluginlib manifest, exported to syncai_nav_core
 params/planner_server_params.yaml
 launch/planner_server.launch.py
@@ -97,11 +100,13 @@ tasks as separate `MOVE` steps. It is here for the patrol/nav-through-poses case
 
 ## Planner plugins
 
-### NavfnPlanner (`syncai_planner/NavfnPlanner`)
+### NavfnPlanner (`syncai_planner/NavfnPlanner`) — built, not loaded
 
 The classic NavFn potential-field planner: propagate a navigation function
 outward from the goal over the costmap, then follow the gradient back from the
-start.
+start. It was the configured planner until `GridBased` was pointed at
+`SmacPlanner2D`; it is still registered, so switching back is a one-line change
+to `plugin:` in the params file.
 
 | Parameter | Default | Notes |
 |---|---|---|
@@ -136,48 +141,85 @@ add it back to the params file when needed.
 Do not select it on a real robot expecting collision avoidance — it will happily
 plan through a wall.
 
-### Smac planners (`syncai_planner/SmacPlannerHybrid` / `SmacPlanner2D`)
+### SmacPlanner2D (`syncai_planner/SmacPlanner2D`) — the configured planner
 
-Port of `nav2_smac_planner` (humble, 1.1.20) — two plugins sharing one search
-core (`AStarAlgorithm`, smoother, `GridCollisionChecker`, costmap downsampler):
+Port of `nav2_smac_planner` (humble, 1.1.20), reduced to its 2D plugin plus the
+shared search core (`AStarAlgorithm<Node2D>`, `Smoother`,
+`GridCollisionChecker`, `CostmapDownsampler`).
 
-- **SmacPlannerHybrid** — Hybrid-A* over SE2 with Dubins / Reeds-Shepp motion
-  models: kinematically feasible paths that respect `minimum_turning_radius`,
-  with full-footprint collision checking near obstacles.
-- **SmacPlanner2D** — cost-aware grid A*; the closest smac analogue to NavFn
-  with `use_astar: true`. Radius-only collision checking.
+Cost-aware 8-connected grid A*: edge cost is
+`length * (1.0 + cost_travel_multiplier * cell_cost / 252)`, so inflation cost
+is inside the search rather than something a gradient walk has to fight
+afterwards. That is the reason it replaced NavFn as `GridBased` — NavFn's
+gradient descent cuts corners against the inflation gradient, this drifts to
+the centreline of a corridor on its own. Collision checking is radius-only
+(`setFootprint(..., radius=true, ...)` is hardcoded for 2D), so there is no
+footprint / inflation coupling to tune here — clearance comes entirely from the
+costmap's inflation layer.
 
-Upstream's third plugin, **SmacPlannerLattice, was deliberately dropped** from
-the port: nobody here plans to feed it motion-primitive JSONs, and it carried
-its own baggage (the `sample_primitives` data blob installed to share/, the
-nlohmann_json dependency, and a `NodeLattice` model in the shared core). If it
-is ever needed, restore it from upstream plus this port's de-lifecycle diff on
-the other two wrappers — the shared core still compiles `Node2D` and
-`NodeHybrid` only.
+| Parameter | Default | Config | Notes |
+|---|---|---|---|
+| `tolerance` | `0.125` | `0.3` | Goal tolerance in metres |
+| `allow_unknown` | `true` | `true` | Plan through `NO_INFORMATION` |
+| `cost_travel_multiplier` | `1.0` | `2.0` | Weight on costmap cost vs. distance. **Not** called `cost_penalty` — that was the Hybrid spelling |
+| `downsample_costmap` | `false` | `false` | Publishes `downsampled_costmap` when on |
+| `downsampling_factor` | `1` | `1` | |
+| `max_iterations` | `1000000` | `1000000` | |
+| `max_on_approach_iterations` | `1000` | `1000` | Refinement budget once inside tolerance |
+| `max_planning_time` | `2.0` | `2.0` | Hard cutoff in `createPath()`, and the smoother gets whatever is left |
+| `use_final_approach_orientation` | `false` | `false` | Same reasoning as NavFn's |
+| `smoother.{tolerance,max_iterations,w_data,w_smooth,do_refinement}` | see params | defaults | **Sub-namespace** — read as `GridBased.smoother.*` |
 
-None are loaded by default — `planner_plugins` stays `["GridBased"]` (NavFn).
-The params file carries a commented, pre-tuned `SmacHybrid` block; see the
-rationale comments there.
+Behaviours worth knowing:
+
+- **Only the last pose has a meaningful orientation.** The search is over
+  (x, y); every intermediate pose ships an identity quaternion and the last one
+  is overwritten with the goal yaw. RPP does not read intermediate yaw, so this
+  costs nothing today.
+- **There is no `smooth_path` toggle.** 2D always smooths, with the smoother
+  constructed as holonomic and with no turning-radius constraint.
+- **Debug topic `unsmoothed_plan`** carries the pre-smoother path, published
+  only while something is subscribed.
+
+**What was dropped from the port.** Upstream's other two plugins are not here:
+
+- **SmacPlannerLattice** — nobody plans to feed it motion-primitive JSONs, and
+  it carried the `sample_primitives` data blob, the nlohmann_json dependency
+  and a `NodeLattice` model.
+- **SmacPlannerHybrid** — removed after evaluation, not merely unconfigured.
+  G23 turns in place, so Hybrid-A*'s `minimum_turning_radius` (which Dubins
+  cannot take as `0`) only bought detours, and RPP cannot follow the reversing
+  paths Reeds-Shepp exists to produce. Its cost — 72-bin SE2 search, a Dijkstra
+  obstacle heuristic, a precomputed Dubins lookup table and full-footprint
+  collision checking at every angle bin — bought nothing this robot uses.
+
+Removing Hybrid also took `NodeHybrid` and the whole `AnalyticExpansion` class
+with it (every `AnalyticExpansion<Node2D>` entry point upstream is a
+`return nullptr` stub, so `createPath()` lost a step that could never fire),
+trimmed `NodeBasic` to the two members the queue actually needs, and left
+`AStarAlgorithm`'s `initialize()` / `setStart()` / `setGoal()` defined only as
+`Node2D` specializations. To restore either planner, take it from upstream plus
+this port's de-lifecycle diff on `smac_planner_2d.cpp`, and re-add the
+`AnalyticExpansion` call to `AStarAlgorithm::createPath()`.
 
 The port follows the same de-lifecycle pattern as the rest of the stack:
 upstream's `configure()` + `activate()` collapse into `initialize()`,
 `deactivate()` + `cleanup()` into the destructor, the lifecycle publishers
 became plain publishers (live from creation), and the dynamic-parameter
-callback — kept, since live-tuning penalties is the main reason to run smac —
-is registered at the end of `initialize()`. Debug topics: `unsmoothed_plan`
-(the pre-smoother path, published only while subscribed) and
-`downsampled_costmap` (only when `downsample_costmap: true`).
+callback — kept, since live-tuning is the main reason to run smac — is
+registered at the end of `initialize()`.
 
 Two gotchas:
 
-- **OMPL is a hard dependency** (`ros-humble-ompl`). It is in the Dockerfile's
-  base stage, but a container created from an older image needs
-  `sudo apt-get update && sudo apt-get install -y ros-humble-ompl` by hand —
-  and that hand-install is wiped on container recreation, so rebuild the image
-  when convenient.
-- **Do not configure two planner ids of the same smac type.** The node models
-  (`NodeHybrid`, `Node2D`) keep their motion tables and heuristic caches in
-  static storage, so two instances would trample each other — same limitation
+- **OMPL is still a hard dependency** (`ros-humble-ompl`), even without Hybrid:
+  `Smoother` resamples the boundary segments of a path through a Dubins state
+  space. It is in the Dockerfile's base stage, but a container created from an
+  older image needs `sudo apt-get update && sudo apt-get install -y
+  ros-humble-ompl` by hand — and that hand-install is wiped on container
+  recreation, so rebuild the image when convenient.
+- **Do not configure two SmacPlanner2D ids.** `Node2D` keeps
+  `cost_travel_multiplier` and its neighbour-offset table in *static* storage,
+  so a second instance overwrites the first's tuning — same limitation
   upstream, just less obvious here where all plugins live in one library.
 
 ## Parameters
@@ -190,10 +232,11 @@ Two gotchas:
 | `expected_planner_frequency` | `1.0` (config: `10.0`) | Warning threshold only |
 
 `expected_planner_frequency` is the only parameter the *server's* dynamic
-callback handles, and it takes the same mutex the plan cycle holds. The smac
-plugins register their own callbacks, so their penalties / motion-model
-parameters are live-tunable too (NavFn's are not — it reads them once in
-`initialize()`).
+callback handles, and it takes the same mutex the plan cycle holds.
+`SmacPlanner2D` registers its own callback, so `cost_travel_multiplier`,
+`tolerance` and friends are live-tunable with `ros2 param set` (NavFn's are not
+— it reads them once in `initialize()`). Swapping the *plugin* still needs a
+restart either way.
 
 **Global costmap** (`/**/global_costmap`) — the full costmap parameter set; see
 `syncai_costmap_2d`'s README. The choices specific to a *global* costmap here:
@@ -209,7 +252,8 @@ paths through ~0.6 m gaps.
 
 There used to be separate 2D (sim) and 3D (real robot) params files; the 2D
 one went away with `bringup_2d`, and `planner_server_params.yaml` now carries
-the 3D-path configuration: `use_sim_time: false`, `GridBased` only, obstacle
+the 3D-path configuration: `use_sim_time: false`, `GridBased`
+(`SmacPlanner2D`) only, obstacle
 sources `scan` **and** `pointlio/body_cloud`.
 
 The pointcloud source deliberately leaves `sensor_frame` empty so the

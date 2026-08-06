@@ -34,18 +34,13 @@ typedef std::pair<float, unsigned int> NodeHeuristicPair;
  */
 struct SearchInfo
 {
-  float minimum_turning_radius;
-  float non_straight_penalty;
-  float change_penalty;
-  float reverse_penalty;
+  // Upstream carries a dozen fields here: turning radius, the direction-change
+  // and reverse penalties, the analytic-expansion tuning, the lattice file
+  // path. Every one of them was read only by NodeHybrid or NodeLattice, and
+  // neither is built in this port, so Node2D's single weight is all that is
+  // left. It is spelled cost_penalty in the struct but exposed as the
+  // cost_travel_multiplier parameter, matching upstream's naming on both ends.
   float cost_penalty;
-  float retrospective_penalty;
-  float rotation_penalty;
-  float analytic_expansion_ratio;
-  float analytic_expansion_max_length;
-  std::string lattice_filepath;
-  bool cache_obstacle_heuristic;
-  bool allow_reverse_expansion;
 };
 
 /**
@@ -96,73 +91,6 @@ struct SmootherParams
   bool holonomic_;
   bool do_refinement_;
 };
-
-/**
- * @struct syncai_planner::MotionPose
- * @brief A struct for poses in motion primitives
- */
-struct MotionPose
-{
-  /**
-   * @brief A constructor for syncai_planner::MotionPose
-   */
-  MotionPose() {}
-
-  /**
-   * @brief A constructor for syncai_planner::MotionPose
-   * @param x X pose
-   * @param y Y pose
-   * @param theta Angle of pose
-   */
-  MotionPose(const float & x, const float & y, const float & theta)
-  : _x(x), _y(y), _theta(theta)
-  {}
-
-  MotionPose operator-(const MotionPose & p2)
-  {
-    return MotionPose(this->_x - p2._x, this->_y - p2._y, this->_theta - p2._theta);
-  }
-
-  float _x;
-  float _y;
-  float _theta;
-};
-
-typedef std::vector<MotionPose> MotionPoses;
-
-/**
- * @struct syncai_planner::LatticeMetadata
- * @brief A struct of all lattice metadata
- */
-struct LatticeMetadata
-{
-  float min_turning_radius;
-  float grid_resolution;
-  unsigned int number_of_headings;
-  std::vector<float> heading_angles;
-  unsigned int number_of_trajectories;
-  std::string motion_model;
-};
-
-/**
- * @struct syncai_planner::MotionPrimitive
- * @brief A struct of all motion primitive data
- */
-struct MotionPrimitive
-{
-  unsigned int trajectory_id;
-  float start_angle;
-  float end_angle;
-  float turning_radius;
-  float trajectory_length;
-  float arc_length;
-  float straight_length;
-  bool left_turn;
-  MotionPoses poses;
-};
-
-typedef std::vector<MotionPrimitive> MotionPrimitives;
-typedef std::vector<MotionPrimitive *> MotionPrimitivePtrs;
 
 }  // namespace syncai_planner
 

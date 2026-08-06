@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License. Reserved.
 
-#include <omp.h>
 #include <cmath>
 #include <stdexcept>
 #include <memory>
@@ -55,28 +54,11 @@ AStarAlgorithm<NodeT>::~AStarAlgorithm()
 {
 }
 
-template<typename NodeT>
-void AStarAlgorithm<NodeT>::initialize(
-  const bool & allow_unknown,
-  int & max_iterations,
-  const int & max_on_approach_iterations,
-  const double & max_planning_time,
-  const float & lookup_table_size,
-  const unsigned int & dim_3_size)
-{
-  _traverse_unknown = allow_unknown;
-  _max_iterations = max_iterations;
-  _max_on_approach_iterations = max_on_approach_iterations;
-  _max_planning_time = max_planning_time;
-  if (!_is_initialized) {
-    NodeT::precomputeDistanceHeuristic(lookup_table_size, _motion_model, dim_3_size, _search_info);
-  }
-  _is_initialized = true;
-  _dim3_size = dim_3_size;
-  _expander = std::make_unique<AnalyticExpansion<NodeT>>(
-    _motion_model, _search_info, _traverse_unknown, _dim3_size);
-}
-
+// Node2D is the only node type this port builds, so the members below are
+// defined only as its explicit specialization: the primary-template versions
+// upstream carries are all written against NodeHybrid's SE2 state (motion
+// heuristic lookup tables, an obstacle heuristic seeded per goal, a pose on
+// every graph node) and have nothing to fall back on here.
 template<>
 void AStarAlgorithm<Node2D>::initialize(
   const bool & allow_unknown,
@@ -95,8 +77,6 @@ void AStarAlgorithm<Node2D>::initialize(
     throw std::runtime_error("Node type Node2D cannot be given non-1 dim 3 quantization.");
   }
   _dim3_size = dim_3_size;
-  _expander = std::make_unique<AnalyticExpansion<Node2D>>(
-    _motion_model, _search_info, _traverse_unknown, _dim3_size);
 }
 
 template<typename NodeT>
@@ -114,7 +94,6 @@ void AStarAlgorithm<NodeT>::setCollisionChecker(GridCollisionChecker * collision
     _y_size = y_size;
     NodeT::initMotionModel(_motion_model, _x_size, _y_size, _dim3_size, _search_info);
   }
-  _expander->setCollisionChecker(collision_checker);
 }
 
 template<typename NodeT>
@@ -141,20 +120,6 @@ void AStarAlgorithm<Node2D>::setStart(
   _start = addToGraph(Node2D::getIndex(mx, my, getSizeX()));
 }
 
-template<typename NodeT>
-void AStarAlgorithm<NodeT>::setStart(
-  const unsigned int & mx,
-  const unsigned int & my,
-  const unsigned int & dim_3)
-{
-  _start = addToGraph(NodeT::getIndex(mx, my, dim_3));
-  _start->setPose(
-    Coordinates(
-      static_cast<float>(mx),
-      static_cast<float>(my),
-      static_cast<float>(dim_3)));
-}
-
 template<>
 void AStarAlgorithm<Node2D>::setGoal(
   const unsigned int & mx,
@@ -167,31 +132,6 @@ void AStarAlgorithm<Node2D>::setGoal(
 
   _goal = addToGraph(Node2D::getIndex(mx, my, getSizeX()));
   _goal_coordinates = Node2D::Coordinates(mx, my);
-}
-
-template<typename NodeT>
-void AStarAlgorithm<NodeT>::setGoal(
-  const unsigned int & mx,
-  const unsigned int & my,
-  const unsigned int & dim_3)
-{
-  _goal = addToGraph(NodeT::getIndex(mx, my, dim_3));
-
-  typename NodeT::Coordinates goal_coords(
-    static_cast<float>(mx),
-    static_cast<float>(my),
-    static_cast<float>(dim_3));
-
-  if (!_search_info.cache_obstacle_heuristic || goal_coords != _goal_coordinates) {
-    if (!_start) {
-      throw std::runtime_error("Start must be set before goal.");
-    }
-
-    NodeT::resetObstacleHeuristic(_costmap, _start->pose.x, _start->pose.y, mx, my);
-  }
-
-  _goal_coordinates = goal_coords;
-  _goal->setPose(_goal_coordinates);
 }
 
 template<typename NodeT>
@@ -243,13 +183,10 @@ bool AStarAlgorithm<NodeT>::createPath(
   // Optimization: preallocate all variables
   NodePtr current_node = nullptr;
   NodePtr neighbor = nullptr;
-  NodePtr expansion_result = nullptr;
   float g_cost = 0.0;
   NodeVector neighbors;
   int approach_iterations = 0;
   NeighborIterator neighbor_iterator;
-  int analytic_iterations = 0;
-  int closest_distance = std::numeric_limits<int>::max();
 
   // Given an index, return a node ptr reference if its collision-free and valid
   const unsigned int max_index = getSizeX() * getSizeY() * getSizeDim3();
@@ -288,15 +225,9 @@ bool AStarAlgorithm<NodeT>::createPath(
     // 2) Mark Nbest as visited
     current_node->visited();
 
-    // 2.1) Use an analytic expansion (if available) to generate a path
-    expansion_result = nullptr;
-    expansion_result = _expander->tryAnalyticExpansion(
-      current_node, getGoal(), neighborGetter, analytic_iterations, closest_distance);
-    if (expansion_result != nullptr) {
-      current_node = expansion_result;
-    }
-
     // 3) Check if we're at the goal, backtrace if required
+    // (upstream step 2.1, the Dubins / Reeds-Shepp analytic expansion to the
+    // goal, is gone with NodeHybrid — it was a no-op stub for Node2D.)
     if (isGoal(current_node)) {
       return current_node->backtracePath(path);
     } else if (_best_heuristic_node.first < getToleranceHeuristic()) {
@@ -441,6 +372,5 @@ unsigned int & AStarAlgorithm<NodeT>::getSizeDim3()
 
 // Instantiate algorithm for the supported template types
 template class AStarAlgorithm<Node2D>;
-template class AStarAlgorithm<NodeHybrid>;
 
 }  // namespace syncai_planner

@@ -822,6 +822,21 @@ function createPathRibbon(
  * through to its no-action default) rather than disabling the controls outright
  * keeps right-drag orbit and wheel zoom live, so the operator can still look
  * around while placing a pose.
+ *
+ * `zoomToCursor` tracks the mode for the same reason `enablePan` does. In "move"
+ * the wheel has to close in on whatever is under the pointer, not on the orbit
+ * target: OrbitControls' default dolly slides the camera straight down the
+ * view axis, so the screen centre is the only thing zoom can ever approach, and
+ * reaching a corner of a warehouse map costs a zoom-pan-zoom-pan crawl. The
+ * gridmap editor already anchors its wheel at the cursor (`zoomAt` in
+ * lib/map/view.ts), so this is also what makes the two views behave alike.
+ *
+ * In "focus" it stays off, and not just as a preference: zoom-to-cursor works by
+ * shifting the *target* toward the pointer ray, and the render loop reassigns
+ * `controls.target` to the robot pose every frame (see `stepPose`). The shift
+ * would be overwritten a frame later, leaving the camera swung off-axis with the
+ * robot snapping back to centre — a lurch per wheel notch. A locked target is
+ * the whole point of focus mode, so zoom there belongs on the axis to the robot.
  */
 function applyCameraMode(
   controls: OrbitControls,
@@ -830,6 +845,7 @@ function applyCameraMode(
 ) {
   const orbit = mode === "focus";
   controls.enablePan = !orbit;
+  controls.zoomToCursor = !orbit;
   controls.mouseButtons = {
     LEFT: picking ? null : orbit ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
     MIDDLE: THREE.MOUSE.DOLLY,

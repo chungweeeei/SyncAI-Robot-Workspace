@@ -27,9 +27,7 @@
 #include "syncai_costmap_2d/costmap_2d.hpp"
 
 #include "syncai_planner/plugins/smac_planner/thirdparty/robin_hood.h"
-#include "syncai_planner/plugins/smac_planner/analytic_expansion.hpp"
 #include "syncai_planner/plugins/smac_planner/node_2d.hpp"
-#include "syncai_planner/plugins/smac_planner/node_hybrid.hpp"
 #include "syncai_planner/plugins/smac_planner/node_basic.hpp"
 #include "syncai_planner/plugins/smac_planner/types.hpp"
 #include "syncai_planner/plugins/smac_planner/constants.hpp"
@@ -256,7 +254,6 @@ protected:
 
   GridCollisionChecker * _collision_checker;
   syncai_costmap_2d::Costmap2D * _costmap;
-  std::unique_ptr<AnalyticExpansion<NodeT>> _expander;
 };
 
 }  // namespace syncai_planner

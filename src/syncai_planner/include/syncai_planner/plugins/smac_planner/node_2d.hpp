@@ -27,7 +27,6 @@
 #include "syncai_planner/plugins/smac_planner/types.hpp"
 #include "syncai_planner/plugins/smac_planner/constants.hpp"
 #include "syncai_planner/plugins/smac_planner/collision_checker.hpp"
-#include "syncai_planner/plugins/smac_planner/node_hybrid.hpp"
 
 namespace syncai_planner
 {

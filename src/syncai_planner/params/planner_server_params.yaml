@@ -16,54 +16,67 @@
     # Lowered to match the slow Isaac Sim clock (~35 Hz / 0.58x real-time).
     expected_planner_frequency: 10.0
 
+    # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
+    # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
+    # rename here would silently send every task-runner goal to an unknown
+    # planner (getPlan() logs an error and returns an empty path). Swapping the
+    # plugin under the existing id is what makes the change take effect without
+    # touching the behavior tree.
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "syncai_planner/NavfnPlanner"
+      plugin: "syncai_planner/SmacPlanner2D"
+
+      # Cost-aware grid A*. Replaced NavFn because NavFn's gradient descent
+      # cuts corners against the inflation gradient; here the inflation cost is
+      # inside the edge cost, so the path drifts to the centreline of a
+      # corridor on its own. The Hybrid-A* planner was evaluated and removed:
+      # G23 turns in place, so its minimum_turning_radius (which Dubins cannot
+      # take as 0) only bought detours, and RPP cannot follow a reversing path.
       tolerance: 0.3        # accept goals within this distance (m) of the requested pose
-      use_astar: false      # false = Dijkstra, true = A*
       allow_unknown: true   # allow planning through unknown space
 
-    # --- Opt-in Smac planners (ported from nav2_smac_planner, humble) ------
-    # NavFn stays the default: it is proven on this robot, and every id listed
-    # in planner_plugins is loaded and configured at startup (heuristic lookup
-    # tables included), so unused planners should not cost anything. To try
-    # one, add its id to planner_plugins above and pass planner_id:
-    # "SmacHybrid" in the ComputePathToPose goal (the BT's move.xml sends
-    # GridBased explicitly). Do NOT configure two ids of the same smac type —
-    # the node classes share static motion tables (same limitation upstream).
-    #
-    # planner_plugins: ["GridBased", "SmacHybrid"]
-    # SmacHybrid:
-    #   plugin: "syncai_planner/SmacPlannerHybrid"
-    #   motion_model_for_search: "DUBIN"  # RPP never reverses; REEDS_SHEPP would
-    #                                     # allow backing up the controller can't follow
-    #   minimum_turning_radius: 0.30      # m. The quadruped can spin in place but
-    #                                     # Hybrid-A* needs > 0; keep well above one
-    #                                     # costmap cell (resolution 0.05)
-    #   angle_quantization_bins: 72       # 5 deg bins
-    #   tolerance: 0.3                    # match GridBased
-    #   allow_unknown: true
-    #   downsample_costmap: false         # 0.05 m maps here are small enough as-is
-    #   downsampling_factor: 1
-    #   max_iterations: 1000000
-    #   max_on_approach_iterations: 1000
-    #   max_planning_time: 5.0
-    #   analytic_expansion_ratio: 3.5
-    #   analytic_expansion_max_length: 3.0
-    #   cost_penalty: 2.0                 # tuned against the inflation layer below
-    #                                     # (cost_scaling_factor 2.0, radius 0.5);
-    #                                     # raise to hug the centerline harder
-    #   change_penalty: 0.0
-    #   non_straight_penalty: 1.2
-    #   reverse_penalty: 2.0              # only relevant for REEDS_SHEPP
-    #   retrospective_penalty: 0.015
-    #   cache_obstacle_heuristic: false   # obstacle layer changes every cycle
-    #   smooth_path: true
-    #   lookup_table_size: 20.0
-    #
-    # SmacPlanner2D ("syncai_planner/SmacPlanner2D"): cost-aware grid A* —
-    #   the nearest smac equivalent to NavFn with use_astar: true. Radius-only
-    #   collision checking, so no footprint / inflation coupling to tune.
+      # Weight on costmap cost relative to travel distance, applied as
+      # 1.0 + cost_travel_multiplier * (cell_cost / 252). This is the knob that
+      # makes the planner cost-aware at all; 0.0 degenerates to plain A* on
+      # distance. Tuned against the inflation layer below (cost_scaling_factor
+      # 2.0, inflation_radius 0.5) — raise it to hug the centreline harder at
+      # the price of longer paths, lower it if the robot refuses tight gaps.
+      cost_travel_multiplier: 2.0
+
+      # 0.05 m maps here are small enough to search at full resolution.
+      # Downsampling would also publish a debug "downsampled_costmap" topic.
+      downsample_costmap: false
+      downsampling_factor: 1
+
+      # Search bounds. max_planning_time is a hard cutoff inside createPath()
+      # (unlike expected_planner_frequency above, which only warns), and it is
+      # also the budget the smoother gets whatever is left of.
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+
+      # false: the last pose keeps the requested goal yaw, so the controller
+      # performs the final in-place rotation. Same reasoning as NavFn's setting
+      # — the task API's `theta` is a real goal heading, not a don't-care.
+      use_final_approach_orientation: false
+
+      # SmacPlanner2D always smooths (there is no smooth_path toggle — that was
+      # a Hybrid-only parameter); these are the gradient-descent smoother's
+      # weights. w_smooth up / w_data down = smoother but less faithful to the
+      # grid path. Defaults from upstream, listed because the sub-namespace is
+      # easy to miss: they are read as GridBased.smoother.*, not GridBased.*.
+      smoother:
+        tolerance: 1.0e-10
+        max_iterations: 1000
+        w_data: 0.2
+        w_smooth: 0.3
+        do_refinement: true
+
+    # NavfnPlanner ("syncai_planner/NavfnPlanner", params: tolerance /
+    #   use_astar / allow_unknown / use_final_approach_orientation) and
+    #   StraightLinePlanner are still built and registered. To fall back, set
+    #   plugin: above — do not add a second id, since move.xml only ever asks
+    #   for GridBased.
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").

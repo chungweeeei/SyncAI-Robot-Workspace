@@ -25,10 +25,7 @@
 #include <utility>
 #include <limits>
 
-#include "ompl/base/StateSpace.h"
-
 #include "syncai_planner/plugins/smac_planner/constants.hpp"
-#include "syncai_planner/plugins/smac_planner/node_hybrid.hpp"
 #include "syncai_planner/plugins/smac_planner/node_2d.hpp"
 #include "syncai_planner/plugins/smac_planner/types.hpp"
 #include "syncai_planner/plugins/smac_planner/collision_checker.hpp"
@@ -69,11 +66,13 @@ public:
    */
   void processSearchNode();
 
-  typename NodeT::Coordinates pose;  // Used by NodeHybrid and NodeLattice
+  // Upstream also caches a pose, a motion-primitive pointer and a reverse
+  // flag here. Those were read only by the NodeHybrid and NodeLattice
+  // specializations of populateSearchNode()/processSearchNode(), neither of
+  // which this port builds, so Node2D is left with the two members the queue
+  // actually needs.
   NodeT * graph_node_ptr;
-  MotionPrimitive * prim_ptr;  // Used by NodeLattice
-  unsigned int index, motion_index;
-  bool backward;
+  unsigned int index;
 };
 
 }  // namespace syncai_planner
