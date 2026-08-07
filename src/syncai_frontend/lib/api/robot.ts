@@ -2,7 +2,7 @@
 // (src/syncai_backend/syncai_backend/interfaces/rest/routers/robot.py).
 
 import { apiUrl } from "@/lib/api/config";
-import { errorDetail } from "@/lib/api/http";
+import { requestJson } from "@/lib/api/http";
 import { normalizeTheta } from "@/lib/api/task";
 import type { PlanarPose } from "@/lib/types/robot";
 
@@ -15,17 +15,16 @@ import type { PlanarPose } from "@/lib/types/robot";
  * to "did it work" is the pose feed moving to where the operator put the marker.
  */
 export async function setInitialPose(pose: PlanarPose): Promise<void> {
-  const res = await fetch(apiUrl("/api/v1/robot/set_initial_pose"), {
+  // parse: false — the 200 envelope carries nothing a caller reads.
+  await requestJson<void>(apiUrl("/api/v1/robot/set_initial_pose"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       x: pose.x,
       y: pose.y,
       theta: normalizeTheta(pose.theta),
     }),
+    parse: false,
   });
-
-  if (!res.ok) throw new Error(await errorDetail(res));
 }
 
 /**
@@ -52,16 +51,11 @@ export interface SetMotionKeyResult {
   message: string;
 }
 
-export async function setMotionKey(key: MotionKey): Promise<SetMotionKeyResult> {
-  const res = await fetch(apiUrl("/api/v1/robot/set_motion_key"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key }),
-  });
-
-  if (!res.ok) throw new Error(await errorDetail(res));
-
-  return (await res.json()) as SetMotionKeyResult;
+export function setMotionKey(key: MotionKey): Promise<SetMotionKeyResult> {
+  return requestJson<SetMotionKeyResult>(
+    apiUrl("/api/v1/robot/set_motion_key"),
+    { method: "POST", body: JSON.stringify({ key }) },
+  );
 }
 
 /**
@@ -92,16 +86,9 @@ export interface SetPolicyModeResult {
  * under MPC means the datagram went out and the controller did whatever it does
  * with it.
  */
-export async function setPolicyMode(
-  mode: PolicyMode,
-): Promise<SetPolicyModeResult> {
-  const res = await fetch(apiUrl("/api/v1/robot/set_policy_mode"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
-  });
-
-  if (!res.ok) throw new Error(await errorDetail(res));
-
-  return (await res.json()) as SetPolicyModeResult;
+export function setPolicyMode(mode: PolicyMode): Promise<SetPolicyModeResult> {
+  return requestJson<SetPolicyModeResult>(
+    apiUrl("/api/v1/robot/set_policy_mode"),
+    { method: "POST", body: JSON.stringify({ mode }) },
+  );
 }

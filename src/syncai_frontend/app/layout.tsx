@@ -6,6 +6,7 @@ import { ActiveTaskProvider } from "@/components/console/active-task-context";
 import { NavRail } from "@/components/console/nav-rail";
 import { RobotStateProvider } from "@/components/console/robot-state-context";
 import { StatusStrip } from "@/components/console/status-strip";
+import { QueryProvider } from "@/components/query-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 
 // `axes: ["wdth"]` is what makes the condensed instrument labels possible —
@@ -66,23 +67,28 @@ export default function RootLayout({
            * survive navigation, and it has to be true for runs this browser
            * never started. They stay separate providers because they fail
            * differently — see ActiveTaskProvider.
+           *
+           * QueryProvider sits outside both because both polls now live in the
+           * TanStack Query cache it owns.
            */}
-          <RobotStateProvider>
-            <ActiveTaskProvider>
-              <div className="flex h-dvh flex-col lg:flex-row">
-                <NavRail />
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                  <StatusStrip />
-                  {/* Pages own their own scrolling: the dashboard must not
-                   * scroll (the viewport is sized to what is left), settings
-                   * must. */}
-                  <main className="min-h-0 flex-1 overflow-hidden">
-                    {children}
-                  </main>
+          <QueryProvider>
+            <RobotStateProvider>
+              <ActiveTaskProvider>
+                <div className="flex h-dvh flex-col lg:flex-row">
+                  <NavRail />
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    <StatusStrip />
+                    {/* Pages own their own scrolling: the dashboard must not
+                     * scroll (the viewport is sized to what is left), settings
+                     * must. */}
+                    <main className="min-h-0 flex-1 overflow-hidden">
+                      {children}
+                    </main>
+                  </div>
                 </div>
-              </div>
-            </ActiveTaskProvider>
-          </RobotStateProvider>
+              </ActiveTaskProvider>
+            </RobotStateProvider>
+          </QueryProvider>
         </ThemeProvider>
       </body>
     </html>

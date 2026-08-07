@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/api/query-keys";
 import {
   createSavedTask,
   deleteSavedTask,
@@ -45,51 +47,35 @@ export interface UseSavedTasks {
  * something else does: a saved MOVE step's coordinates are resolved server-side
  * against the vertex's *current* pose, so editing a vertex on /maps changes what
  * these rows say. Navigation remounts the page and re-reads, and this is the
- * in-page escape hatch.
+ * in-page escape hatch. Write failures live in their own slot rather than the
+ * query's, so the reload a refresh triggers cannot clear a sentence the
+ * operator still needs to read.
  */
 export function useSavedTasks(): UseSavedTasks {
-  const [tasks, setTasks] = React.useState<SavedTask[] | null>(null);
-  const [status, setStatus] = React.useState<SavedTasksStatus>("loading");
-  const [busy, setBusy] = React.useState(false);
-  const [nonce, setNonce] = React.useState(0);
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: queryKeys.savedTasks,
+    queryFn: ({ signal }) => listSavedTasks(signal),
+  });
 
-  /**
-   * Load and write failures are held apart, then merged on the way out.
-   *
-   * A single slot would work here — nothing refreshes after a write, so a
-   * successful reload cannot clobber a write's message the way it can in
-   * useSchedules — but keeping them separate means a stale write error does not
-   * survive a successful refresh either.
-   */
-  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
   const [writeError, setWriteError] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    let active = true;
-    const abort = new AbortController();
+  const refresh = React.useCallback(
+    () =>
+      void queryClient.invalidateQueries({ queryKey: queryKeys.savedTasks }),
+    [queryClient],
+  );
 
-    listSavedTasks(abort.signal)
-      .then((data) => {
-        if (!active) return;
-        setTasks(data);
-        setStatus("ok");
-        setLoadError(null);
-      })
-      .catch((cause: unknown) => {
-        if (!active || abort.signal.aborted) return;
-        setStatus("error");
-        setLoadError(
-          cause instanceof Error ? cause.message : "Failed to load the saved tasks.",
-        );
-      });
-
-    return () => {
-      active = false;
-      abort.abort();
-    };
-  }, [nonce]);
-
-  const refresh = React.useCallback(() => setNonce((n) => n + 1), []);
+  /** Rewrite the cached list; a no-op until the load has answered. */
+  const setTasks = React.useCallback(
+    (next: (current: SavedTask[]) => SavedTask[]) => {
+      queryClient.setQueryData<SavedTask[]>(queryKeys.savedTasks, (current) =>
+        current ? next(current) : current,
+      );
+    },
+    [queryClient],
+  );
 
   /**
    * Run one write, holding `busy` and turning a rejection into `error`.
@@ -120,11 +106,11 @@ export function useSavedTasks(): UseSavedTasks {
       if (created) {
         // Inserted in the server's order (name, then created_at) rather than
         // appended, so the row does not jump on the next refresh.
-        setTasks((current) => sortByName([...(current ?? []), created]));
+        setTasks((current) => sortByName([...current, created]));
       }
       return created;
     },
-    [run],
+    [run, setTasks],
   );
 
   const update = React.useCallback(
@@ -133,13 +119,13 @@ export function useSavedTasks(): UseSavedTasks {
       if (updated) {
         setTasks((current) =>
           sortByName(
-            (current ?? []).map((task) => (task.id === id ? updated : task)),
+            current.map((task) => (task.id === id ? updated : task)),
           ),
         );
       }
       return updated;
     },
-    [run],
+    [run, setTasks],
   );
 
   const remove = React.useCallback(
@@ -149,19 +135,19 @@ export function useSavedTasks(): UseSavedTasks {
         return true as const;
       });
       if (done) {
-        setTasks((current) => (current ?? []).filter((task) => task.id !== id));
+        setTasks((current) => current.filter((task) => task.id !== id));
       }
       return done === true;
     },
-    [run],
+    [run, setTasks],
   );
 
   const clearError = React.useCallback(() => setWriteError(null), []);
 
   return {
-    tasks: tasks ?? [],
-    status,
-    error: writeError ?? loadError,
+    tasks: query.data ?? [],
+    status: query.isPending ? "loading" : query.isError ? "error" : "ok",
+    error: writeError ?? query.error?.message ?? null,
     busy,
     create,
     update,

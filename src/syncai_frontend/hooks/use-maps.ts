@@ -1,6 +1,8 @@
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { fetchMaps } from "@/lib/api/map";
+import { queryKeys } from "@/lib/api/query-keys";
 import type { MapSummary } from "@/lib/types/map";
 
 export type MapsStatus = "loading" | "ok" | "error";
@@ -19,41 +21,38 @@ export interface UseMaps {
 }
 
 /**
- * Loads the map catalogue once per mount.
+ * The map catalogue, through the shared query cache.
  *
  * Not polled, unlike useRobotState: the set of directories under `map/` only
  * changes when someone saves or converts a map, which is a deliberate act and
  * never happens while an operator is looking at this screen. `refresh()` is the
  * escape hatch instead of a timer.
+ *
+ * Every observer shares one cache entry and one in-flight request — the
+ * dashboard mounting useActiveMap in two components used to cost two GETs; now
+ * the second render reads the first's answer. A fresh mount still refetches
+ * (staleTime 0), which keeps the old picked-up-on-next-visit behaviour, just
+ * with the cached copy painted while the request runs.
  */
 export function useMaps(): UseMaps {
-  const [maps, setMaps] = React.useState<MapSummary[] | null>(null);
-  const [status, setStatus] = React.useState<MapsStatus>("loading");
-  const [nonce, setNonce] = React.useState(0);
+  const queryClient = useQueryClient();
+  const { data, isPending, isError } = useQuery({
+    queryKey: queryKeys.maps,
+    queryFn: ({ signal }) => fetchMaps(signal),
+  });
 
-  React.useEffect(() => {
-    let active = true;
-    const abort = new AbortController();
+  // Invalidate rather than refetch(): the entry is shared, so a Refresh pressed
+  // on one screen must update every mounted observer, not just this one.
+  const refresh = React.useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: queryKeys.maps }),
+    [queryClient],
+  );
 
-    fetchMaps(abort.signal)
-      .then((data) => {
-        if (!active) return;
-        setMaps(data);
-        setStatus("ok");
-      })
-      .catch(() => {
-        if (active) setStatus("error");
-      });
-
-    return () => {
-      active = false;
-      abort.abort();
-    };
-  }, [nonce]);
-
-  const refresh = React.useCallback(() => setNonce((n) => n + 1), []);
-
-  return { maps, status, refresh };
+  return {
+    maps: data ?? null,
+    status: isPending ? "loading" : isError ? "error" : "ok",
+    refresh,
+  };
 }
 
 /**
@@ -65,7 +64,7 @@ export function useMaps(): UseMaps {
  * each call site so the answer has one definition — the same reason the flag is
  * server-derived instead of the UI parsing `RobotState.map`'s path.
  *
- * Inherits useMaps' fetch-once-per-mount policy, so a map swapped underneath a
+ * Inherits useMaps' refetch-on-mount policy, so a map swapped underneath a
  * long-open dashboard is not picked up until something calls `refresh()`. That
  * is the trade the disk-sourced endpoints already made; a swap means restarting
  * the stack, which drops the telemetry socket next to this anyway.

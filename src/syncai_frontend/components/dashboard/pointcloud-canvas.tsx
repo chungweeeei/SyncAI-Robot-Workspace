@@ -823,6 +823,23 @@ function createPathRibbon(
  * keeps right-drag orbit and wheel zoom live, so the operator can still look
  * around while placing a pose.
  *
+ * `touches` has to be set alongside `mouseButtons` and not instead of it:
+ * OrbitControls keeps two entirely separate mapping tables and consults
+ * `touches` for every pointer of `pointerType === "touch"`, so a mouse mapping
+ * alone leaves a phone on the library defaults (ONE: ROTATE, TWO: DOLLY_PAN)
+ * whatever mode the console is in. That is what made the viewport impossible to
+ * pan by dragging on a tablet — one finger orbited in *both* modes, and there
+ * was no gesture left that moved the view — and it also let a one-finger drag
+ * swing the camera while a pick was armed, which the mouse mapping expressly
+ * forbids.
+ *
+ * The touch table mirrors the mouse one rather than inventing a second
+ * vocabulary: one finger does what the left button does, two fingers do what
+ * the right button does plus pinch-zoom (there is no wheel to carry it). In
+ * "focus" that second gesture is DOLLY_PAN rather than DOLLY_ROTATE only
+ * because one finger already rotates there; with `enablePan` off the pan half
+ * is inert, so it degrades to the pinch-zoom the mode needs.
+ *
  * `zoomToCursor` tracks the mode for the same reason `enablePan` does. In "move"
  * the wheel has to close in on whatever is under the pointer, not on the orbit
  * target: OrbitControls' default dolly slides the camera straight down the
@@ -850,6 +867,10 @@ function applyCameraMode(
     LEFT: picking ? null : orbit ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
     MIDDLE: THREE.MOUSE.DOLLY,
     RIGHT: THREE.MOUSE.ROTATE,
+  };
+  controls.touches = {
+    ONE: picking ? null : orbit ? THREE.TOUCH.ROTATE : THREE.TOUCH.PAN,
+    TWO: orbit ? THREE.TOUCH.DOLLY_PAN : THREE.TOUCH.DOLLY_ROTATE,
   };
 }
 

@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/api/query-keys";
 import {
   createSchedule,
   deleteSchedule,
@@ -55,56 +57,32 @@ export interface UseSchedules {
  * disappearing, rather than sitting there next to an error about it. The one local
  * write is the optimistic paused flag, and PAUSE_SETTLE_MS explains why.
  *
+ * Write failures live in their own slot rather than the query's, and the
+ * refresh-on-every-write above is the reason: a rejected create triggers a
+ * reload that *succeeds*, and if the failure lived where the query keeps its
+ * error, that success would clear the very sentence the operator needs to read.
+ * Splitting them, and preferring the write, is what makes "Schedule X already
+ * exists" survive the reload that follows it.
+ *
  * There is no timer. `next_run_times` moves on the minute at best, while the list
  * endpoint costs a Temporal list RPC plus a memo decode per schedule — a 1 Hz
  * poll would spend a request a second on data that changes hourly. Same trade
  * useMaps records, with an explicit Refresh as the escape hatch.
  */
 export function useSchedules(): UseSchedules {
-  const [schedules, setSchedules] = React.useState<ScheduleState[] | null>(null);
-  const [status, setStatus] = React.useState<SchedulesStatus>("loading");
-  const [busy, setBusy] = React.useState(false);
-  const [nonce, setNonce] = React.useState(0);
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: queryKeys.schedules,
+    queryFn: ({ signal }) => listSchedules(signal),
+  });
 
-  /**
-   * The two failures are held apart even though the UI has one place to put a
-   * sentence, unlike useMapVertices which shares a single slot.
-   *
-   * The reason is the refresh-on-every-write above: a rejected create sets its
-   * message and then triggers a reload that *succeeds*, and a single shared slot
-   * would have that success clear the very sentence the operator needs to read.
-   * Splitting them, and preferring the write, is what makes "Schedule X already
-   * exists" survive the reload that follows it.
-   */
-  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
   const [writeError, setWriteError] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    let active = true;
-    const abort = new AbortController();
-
-    listSchedules(abort.signal)
-      .then((data) => {
-        if (!active) return;
-        setSchedules(data);
-        setStatus("ok");
-        setLoadError(null);
-      })
-      .catch((cause: unknown) => {
-        if (!active || abort.signal.aborted) return;
-        setStatus("error");
-        setLoadError(
-          cause instanceof Error ? cause.message : "Failed to load the schedules.",
-        );
-      });
-
-    return () => {
-      active = false;
-      abort.abort();
-    };
-  }, [nonce]);
-
-  const refresh = React.useCallback(() => setNonce((n) => n + 1), []);
+  const refresh = React.useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: queryKeys.schedules }),
+    [queryClient],
+  );
 
   /**
    * Run one write, holding `busy` and turning a rejection into `error`.
@@ -132,11 +110,11 @@ export function useSchedules(): UseSchedules {
   );
 
   /**
-   * Pause / resume: flip the row locally, then reconcile once Temporal has caught
-   * up. The optimistic flip is what makes the button feel like it did something
-   * during the PAUSE_SETTLE_MS window, and it is safe to trust because the write
-   * already returned 200 — this is a display lag, not an unconfirmed write. A
-   * failure skips the flip and refreshes at once, so the row snaps back.
+   * Pause / resume: flip the row in the cache, then reconcile once Temporal has
+   * caught up. The optimistic flip is what makes the button feel like it did
+   * something during the PAUSE_SETTLE_MS window, and it is safe to trust because
+   * the write already returned 200 — this is a display lag, not an unconfirmed
+   * write. A failure skips the flip and refreshes at once, so the row snaps back.
    */
   const runPaused = React.useCallback(
     async (id: string, paused: boolean, action: () => Promise<void>) => {
@@ -144,11 +122,12 @@ export function useSchedules(): UseSchedules {
       setWriteError(null);
       try {
         await action();
-        setSchedules(
+        queryClient.setQueryData<ScheduleState[]>(
+          queryKeys.schedules,
           (current) =>
             current?.map((entry) =>
               entry.id === id ? { ...entry, paused } : entry,
-            ) ?? current,
+            ),
         );
         window.setTimeout(refresh, PAUSE_SETTLE_MS);
         return true;
@@ -160,7 +139,7 @@ export function useSchedules(): UseSchedules {
         setBusy(false);
       }
     },
-    [refresh],
+    [queryClient, refresh],
   );
 
   const create = React.useCallback(
@@ -181,9 +160,9 @@ export function useSchedules(): UseSchedules {
   );
 
   return {
-    schedules: schedules ?? [],
-    status,
-    error: writeError ?? loadError,
+    schedules: query.data ?? [],
+    status: query.isPending ? "loading" : query.isError ? "error" : "ok",
+    error: writeError ?? query.error?.message ?? null,
     busy,
     create,
     pause,

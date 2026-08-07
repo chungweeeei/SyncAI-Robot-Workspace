@@ -13,11 +13,11 @@ import { useActiveMapVertices } from "@/hooks/use-active-map-vertices";
 import { useGoalTask } from "@/hooks/use-goal-task";
 import { useInitialPose } from "@/hooks/use-initial-pose";
 import { useActiveMap } from "@/hooks/use-maps";
+import { useTelemetry } from "@/hooks/use-telemetry";
 import { apiUrl } from "@/lib/api/config";
-import { createTelemetryStream } from "@/lib/ros/telemetry-stream";
 import { cn } from "@/lib/utils";
 import type { MapVertex } from "@/lib/types/map";
-import type { PlanarPose, PlannedPath, RobotPose } from "@/lib/types/robot";
+import type { PlanarPose } from "@/lib/types/robot";
 import type { StreamStatus } from "@/lib/types/stream";
 
 const STATUS_LABEL: Record<StreamStatus, string> = {
@@ -80,18 +80,10 @@ export function PointCloudView({
   // mount, not polled.
   const stops = useActiveMapVertices();
   const { vertices, moveVertex } = stops;
-  const [pose, setPose] = React.useState<RobotPose | undefined>(undefined);
-  const [joints, setJoints] = React.useState<
-    Record<string, number> | undefined
-  >(undefined);
+  // Robot pose + joints + planned route via the telemetry WebSocket — see
+  // useTelemetry on the rates and on why this is a stream and not a poll.
+  const { pose, joints, path } = useTelemetry();
   const [status, setStatus] = React.useState<StreamStatus>("connecting");
-  /**
-   * The planner's route, on the same stream as the pose. Undefined until the
-   * first plan; an empty `points` arrives when the run ends, which is what takes
-   * the band back off the floor — see the backend's TelemetryRepo.get_path on why
-   * that clear has to be sent rather than inferred from silence.
-   */
-  const [path, setPath] = React.useState<PlannedPath | undefined>(undefined);
   const [showMapCloud, setShowMapCloud] = React.useState(false);
   // On by default, like the vertices and for the same reason: the route is a
   // single mark that says what the robot is doing right now, not a layer someone
@@ -196,21 +188,6 @@ export function PointCloudView({
     },
     [sendGoal],
   );
-
-  // Robot pose + joints + planned route via the telemetry WebSocket (~20 Hz
-  // map-frame pose from odom, joints at the gait controller's telemetry rate,
-  // the route once per replan). Pose and joints replaced polling
-  // GET /api/v1/robot/state every 500 ms: that endpoint's timestamp has
-  // whole-second resolution and it is a polled, frozen third-party contract, so
-  // no amount of client-side polling or easing could make the motion continuous.
-  React.useEffect(() => {
-    const stream = createTelemetryStream({
-      onPose: setPose,
-      onJoints: setJoints,
-      onPath: setPath,
-    });
-    return () => stream.close();
-  }, []);
 
   return (
     <div className={cn("relative h-full w-full", className)}>

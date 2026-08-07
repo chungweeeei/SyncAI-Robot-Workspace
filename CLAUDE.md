@@ -289,6 +289,16 @@ Next.js (dev server on port 3001), shadcn/ui components, **raw three.js** for
 the 3D point-cloud view (no react-three-fiber). WebRTC streaming was considered
 and deferred.
 
+REST reads go through **TanStack Query**: one `QueryClient` in
+`components/query-provider.tsx` (retry and focus-refetch are off on purpose —
+the poll intervals are the retry policy), and every cache key lives in
+`lib/api/query-keys.ts` so cache *sharing* between hooks is a decision visible
+in one place (the gridmap editor and the dashboard read the same vertices
+entry). The WebSocket streams (telemetry, point cloud) stay outside it — a push
+stream has nothing to refetch; see `hooks/use-telemetry.ts`, and the point
+cloud additionally bypasses React state entirely (20 Hz × few-hundred-KB frames
+go straight into three.js buffers in `PointCloudCanvas`).
+
 `src/syncai_frontend/AGENTS.md` warns that the pinned Next.js version has
 breaking changes relative to model training data — read the relevant guide in
 `node_modules/next/dist/docs/` before writing Next.js code.

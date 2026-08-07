@@ -1,5 +1,7 @@
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/api/query-keys";
 import {
   createVertex,
   deleteVertex,
@@ -38,61 +40,32 @@ export interface UseMapVertices {
  * no benefit on a robot LAN. Each action is one request, and `error` describes
  * the last one.
  *
- * `error` is shared by the load and the writes on purpose: the panel has exactly
- * one place to put a sentence, and the two cases are never live at once (a map
- * whose list failed to load has no vertices to edit).
+ * The list lives in the query cache under the map's name. The key does two
+ * jobs: it is the old `loaded.name === name` race guard (a response or a
+ * write's echo that resolves after the editor moved to another map lands under
+ * its own key and cannot patch the list now on screen), and it is shared with
+ * useActiveMapVertices, so an edit made here is already current on the
+ * dashboard — see lib/api/query-keys.ts.
  */
 export function useMapVertices(name: string): UseMapVertices {
-  /**
-   * The list and the name it belongs to, stored together so a result for the
-   * previous map can be told from one for the current map by comparing — rather
-   * than by clearing state at the top of the effect, which is a cascading render
-   * the compiler lint rejects. Same shape as `useMapGrid`'s `Loaded`.
-   */
-  const [loaded, setLoaded] = React.useState<{
-    name: string;
-    vertices: MapVertex[] | null;
-  } | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: queryKeys.mapVertices(name),
+    queryFn: ({ signal }) => listVertices(name, signal),
+  });
+
+  const [writeError, setWriteError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
-  React.useEffect(() => {
-    let active = true;
-    const abort = new AbortController();
-
-    listVertices(name, abort.signal)
-      .then((vertices) => {
-        if (!active) return;
-        setLoaded({ name, vertices });
-        setError(null);
-      })
-      .catch((cause: unknown) => {
-        if (!active || abort.signal.aborted) return;
-        setLoaded({ name, vertices: null });
-        setError(
-          cause instanceof Error ? cause.message : "Failed to load the map vertices.",
-        );
-      });
-
-    return () => {
-      active = false;
-      abort.abort();
-    };
-  }, [name]);
-
-  /**
-   * Rewrite the current map's list, ignoring a write that resolved after the
-   * editor moved to another map.
-   */
+  /** Rewrite this map's cached list; a no-op until the load has answered. */
   const setVertices = React.useCallback(
     (next: (current: MapVertex[]) => MapVertex[]) => {
-      setLoaded((current) =>
-        current?.vertices
-          ? { name: current.name, vertices: next(current.vertices) }
-          : current,
+      queryClient.setQueryData<MapVertex[]>(
+        queryKeys.mapVertices(name),
+        (current) => (current ? next(current) : current),
       );
     },
-    [],
+    [queryClient, name],
   );
 
   /**
@@ -104,11 +77,11 @@ export function useMapVertices(name: string): UseMapVertices {
    */
   const run = React.useCallback(async <T,>(action: () => Promise<T>): Promise<T | null> => {
     setBusy(true);
-    setError(null);
+    setWriteError(null);
     try {
       return await action();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setWriteError(cause instanceof Error ? cause.message : String(cause));
       return null;
     } finally {
       setBusy(false);
@@ -151,14 +124,16 @@ export function useMapVertices(name: string): UseMapVertices {
     [name, run, setVertices],
   );
 
-  const clearError = React.useCallback(() => setError(null), []);
-
-  const current = loaded?.name === name ? loaded : null;
+  const clearError = React.useCallback(() => setWriteError(null), []);
 
   return {
-    vertices: current?.vertices ?? [],
-    status: current ? (current.vertices ? "ok" : "error") : "loading",
-    error,
+    vertices: query.data ?? [],
+    status: query.isPending ? "loading" : query.isError ? "error" : "ok",
+    // Shared slot preserved from before the migration: the panel has exactly
+    // one place to put a sentence, and the two cases are never live at once (a
+    // map whose list failed to load has no vertices to edit). The load half now
+    // clears itself — a successful refetch resets the query's error.
+    error: writeError ?? query.error?.message ?? null,
     busy,
     create,
     update,

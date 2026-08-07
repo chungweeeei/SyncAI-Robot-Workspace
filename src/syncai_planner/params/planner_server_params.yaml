@@ -14,7 +14,7 @@
 
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
     # Lowered to match the slow Isaac Sim clock (~35 Hz / 0.58x real-time).
-    expected_planner_frequency: 10.0
+    expected_planner_frequency: 20.0
 
     # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
     # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
@@ -32,8 +32,8 @@
       # corridor on its own. The Hybrid-A* planner was evaluated and removed:
       # G23 turns in place, so its minimum_turning_radius (which Dubins cannot
       # take as 0) only bought detours, and RPP cannot follow a reversing path.
-      tolerance: 0.3        # accept goals within this distance (m) of the requested pose
-      allow_unknown: true   # allow planning through unknown space
+      tolerance: 0.5        # accept goals within this distance (m) of the requested pose
+      allow_unknown: false   # allow planning through unknown space
 
       # Weight on costmap cost relative to travel distance, applied as
       # 1.0 + cost_travel_multiplier * (cell_cost / 252). This is the knob that
@@ -47,30 +47,6 @@
       # Downsampling would also publish a debug "downsampled_costmap" topic.
       downsample_costmap: false
       downsampling_factor: 1
-
-      # Search bounds. max_planning_time is a hard cutoff inside createPath()
-      # (unlike expected_planner_frequency above, which only warns), and it is
-      # also the budget the smoother gets whatever is left of.
-      max_iterations: 1000000
-      max_on_approach_iterations: 1000
-      max_planning_time: 2.0
-
-      # false: the last pose keeps the requested goal yaw, so the controller
-      # performs the final in-place rotation. Same reasoning as NavFn's setting
-      # — the task API's `theta` is a real goal heading, not a don't-care.
-      use_final_approach_orientation: false
-
-      # SmacPlanner2D always smooths (there is no smooth_path toggle — that was
-      # a Hybrid-only parameter); these are the gradient-descent smoother's
-      # weights. w_smooth up / w_data down = smoother but less faithful to the
-      # grid path. Defaults from upstream, listed because the sub-namespace is
-      # easy to miss: they are read as GridBased.smoother.*, not GridBased.*.
-      smoother:
-        tolerance: 1.0e-10
-        max_iterations: 1000
-        w_data: 0.2
-        w_smooth: 0.3
-        do_refinement: true
 
     # NavfnPlanner ("syncai_planner/NavfnPlanner", params: tolerance /
     #   use_astar / allow_unknown / use_final_approach_orientation) and
@@ -106,7 +82,7 @@
     # together if SyncAI-Omniverse sim_config.yaml robots[*].scale changes.
     # (A circular robot_radius=0.22 was oversized and made RPP reject valid
     # paths through ~0.6 m gaps.)
-    footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
+    footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 
     # Relative topic: resolves to /<robot_id>/map (matches map_server's

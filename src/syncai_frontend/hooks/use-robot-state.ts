@@ -1,6 +1,8 @@
-import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { apiUrl } from "@/lib/api/config";
+import { requestJson } from "@/lib/api/http";
+import { queryKeys } from "@/lib/api/query-keys";
 import type { RobotState } from "@/lib/types/robot";
 
 // The upstream detailed topic runs at 10 Hz, but RobotState.timestamp has only
@@ -23,7 +25,9 @@ export interface UseRobotState {
    * Client clock (ms) at the last successful fetch, null before the first one.
    * A fresh value on every frame is what drives the status strip's 1 Hz sweep,
    * so this changes even when the payload itself is identical — `state` alone
-   * cannot say "a frame just arrived".
+   * cannot say "a frame just arrived". (Query's dataUpdatedAt moves on every
+   * successful fetch even when structural sharing keeps `data` the same object,
+   * which is exactly that contract.)
    */
   updatedAt: number | null;
 }
@@ -32,39 +36,23 @@ export interface UseRobotState {
  * Polls GET /api/v1/robot/state and returns the latest RobotState. The backend
  * responds 404 until the robot has published its first state, which surfaces
  * here as status "error" with state still null.
+ *
+ * TanStack Query owns the interval and the cache; the keep-the-last-good-state
+ * behaviour on a transient failure comes from the cache holding `data` through
+ * an errored refetch, same contract as the hand-rolled interval this replaces.
  */
 export function useRobotState(pollMs: number = DEFAULT_POLL_MS): UseRobotState {
-  const [state, setState] = React.useState<RobotState | null>(null);
-  const [status, setStatus] = React.useState<RobotStateStatus>("loading");
-  const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
+  const { data, dataUpdatedAt, isPending, isError } = useQuery({
+    queryKey: queryKeys.robotState,
+    queryFn: ({ signal }) =>
+      requestJson<RobotState>(apiUrl("/api/v1/robot/state"), { signal }),
+    refetchInterval: pollMs,
+  });
 
-  React.useEffect(() => {
-    let active = true;
-    const tick = async () => {
-      try {
-        const res = await fetch(apiUrl("/api/v1/robot/state"));
-        if (!active) return;
-        if (!res.ok) {
-          setStatus("error");
-          return;
-        }
-        const data = (await res.json()) as RobotState;
-        if (!active) return;
-        setState(data);
-        setStatus("ok");
-        setUpdatedAt(Date.now());
-      } catch {
-        // Transient (network blip, backend restart): keep the last good state.
-        if (active) setStatus("error");
-      }
-    };
-    tick();
-    const id = setInterval(tick, pollMs);
-    return () => {
-      active = false;
-      clearInterval(id);
-    };
-  }, [pollMs]);
-
-  return { state, status, updatedAt };
+  return {
+    state: data ?? null,
+    status: isPending ? "loading" : isError ? "error" : "ok",
+    // dataUpdatedAt is 0 until the first success; the contract wants null.
+    updatedAt: dataUpdatedAt || null,
+  };
 }

@@ -1,8 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useActiveMap } from "@/hooks/use-maps";
+import { queryKeys } from "@/lib/api/query-keys";
 import { listVertices, updateVertex } from "@/lib/api/vertex";
 import type { MapVertex } from "@/lib/types/map";
 import type { PlanarPose } from "@/lib/types/robot";
@@ -37,9 +39,9 @@ export interface UseActiveMapVertices {
  * Deliberately not useMapVertices, which the gridmap editor uses. That hook
  * needs a map name at first render, and the active map's name only exists after
  * the catalogue answers, so `map?.name ?? ""` would fire a request at
- * /api/v1/maps//vertices and turn a normal first paint into a failure banner. It
- * also exposes create / remove, and a task screen with a vertex-delete in reach
- * is an invitation.
+ * /api/v1/maps//vertices and turn a normal first paint into a failure banner
+ * (`enabled` below is what holds that request). It also exposes create /
+ * remove, and a task screen with a vertex-delete in reach is an invitation.
  *
  * Position is the exception, and only because the dashboard is where the mistake
  * is *visible*: a stop drawn half a metre inside a wall is obvious with the live
@@ -53,53 +55,26 @@ export interface UseActiveMapVertices {
  * the list loads fine and a re-place fails — and a failed write must not make
  * the layer read as unloaded.
  *
- * There is no `refresh`. It inherits useMaps' fetch-once-per-mount policy, and
- * the App Router unmounts this page on navigation — so a vertex placed in the
- * editor is picked up on the next visit, which is every visit. A re-place done
- * here patches the loaded list in place from the row the server echoes back, for
- * the same reason useMapVertices does: the response *is* the stored row, so a
- * GET would cost a round trip to learn nothing.
+ * There is no `refresh`. The cache entry is the same one the gridmap editor
+ * writes through (see lib/api/query-keys.ts), so an edit made there is current
+ * here the moment it lands; and the App Router unmounts this page on
+ * navigation, so a fresh mount refetches anyway — which is every visit.
  */
 export function useActiveMapVertices(): UseActiveMapVertices {
   const { map, status: mapsStatus } = useActiveMap();
   const name = map?.name ?? null;
+  const queryClient = useQueryClient();
 
-  /**
-   * The list and the map it belongs to, stored together so a response for the
-   * previous map can be told from one for the current map by comparing — rather
-   * than by clearing state at the top of the effect, which is the cascading
-   * render the compiler lint rejects. Same shape as useMapVertices' `loaded`.
-   */
-  const [loaded, setLoaded] = React.useState<{
-    name: string;
-    vertices: MapVertex[] | null;
-  } | null>(null);
-
-  React.useEffect(() => {
-    if (!name) return;
-    let active = true;
-    const abort = new AbortController();
-
-    listVertices(name, abort.signal)
-      .then((vertices) => {
-        if (!active) return;
-        // Sorted here rather than in the picker: the list endpoint answers in DB
-        // order, and a dropdown whose order changes between mounts is unusable.
-        setLoaded({
-          name,
-          vertices: [...vertices].sort((a, b) => a.name.localeCompare(b.name)),
-        });
-      })
-      .catch(() => {
-        if (!active || abort.signal.aborted) return;
-        setLoaded({ name, vertices: null });
-      });
-
-    return () => {
-      active = false;
-      abort.abort();
-    };
-  }, [name]);
+  const query = useQuery({
+    queryKey: queryKeys.mapVertices(name ?? ""),
+    queryFn: ({ signal }) => listVertices(name ?? "", signal),
+    enabled: name !== null,
+    // Sorted for the picker — the list endpoint answers in DB order, and a
+    // dropdown whose order changes between mounts is unusable — but sorted in
+    // `select`, per observer, so the shared cache entry keeps the editor's DB
+    // order and its append-on-create semantics.
+    select: sortByName,
+  });
 
   const [busy, setBusy] = React.useState(false);
   const [writeError, setWriteError] = React.useState<string | null>(null);
@@ -115,17 +90,16 @@ export function useActiveMapVertices(): UseActiveMapVertices {
           y: pose.y,
           theta: pose.theta,
         });
-        setLoaded((current) =>
-          // Guarded against a write that lands after the active map changed:
-          // the list it would patch is not the list this row belongs to.
-          current?.name === name && current.vertices
-            ? {
-                name,
-                vertices: current.vertices.map((vertex) =>
-                  vertex.id === id ? updated : vertex,
-                ),
-              }
-            : current,
+        // Patched into the cache from the row the server echoes back, for the
+        // same reason useMapVertices splices: the response *is* the stored row,
+        // so a GET would cost a round trip to learn nothing. Written under the
+        // name the request was made against, so a write that lands after the
+        // active map changed patches the list it belongs to — the keyed cache
+        // is the old `loaded.name === name` guard.
+        queryClient.setQueryData<MapVertex[]>(
+          queryKeys.mapVertices(name),
+          (current) =>
+            current?.map((vertex) => (vertex.id === id ? updated : vertex)),
         );
         return true;
       } catch (cause) {
@@ -137,12 +111,10 @@ export function useActiveMapVertices(): UseActiveMapVertices {
         setBusy(false);
       }
     },
-    [name],
+    [name, queryClient],
   );
 
   const clearWriteError = React.useCallback(() => setWriteError(null), []);
-
-  const current = name && loaded?.name === name ? loaded : null;
 
   const status: ActiveVerticesStatus =
     mapsStatus === "loading"
@@ -151,19 +123,24 @@ export function useActiveMapVertices(): UseActiveMapVertices {
         ? "error"
         : !name
           ? "no-map"
-          : current
-            ? current.vertices
-              ? "ok"
-              : "error"
-            : "loading";
+          : query.isPending
+            ? "loading"
+            : query.isError
+              ? "error"
+              : "ok";
 
   return {
     mapName: name,
-    vertices: current?.vertices ?? [],
+    vertices: query.data ?? [],
     status,
     busy,
     writeError,
     moveVertex,
     clearWriteError,
   };
+}
+
+/** Module-level so `select` keeps one identity and the sort is not re-run per render. */
+function sortByName(vertices: MapVertex[]): MapVertex[] {
+  return [...vertices].sort((a, b) => a.name.localeCompare(b.name));
 }

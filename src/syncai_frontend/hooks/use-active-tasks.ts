@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/api/query-keys";
 import { fetchActiveTasks, type ActiveTask } from "@/lib/api/task";
 
 // Slower than the 1 Hz robot-state poll next to it, on purpose. This poll's job
@@ -42,48 +44,29 @@ export interface UseActiveTasks {
  * What the robot is executing right now, whoever asked for it.
  *
  * Shaped after useRobotState — one interval, last-good-value on a transient
- * failure — because it plays the same role: a small, always-on fact about the
- * machine that the whole console reads. It is mounted once, in
- * ActiveTaskProvider, for the same reason that one is.
+ * failure (the cache holds `data` through an errored refetch, and the tone says
+ * it is a memory; blanking the list while a run is likely still going would be
+ * the less honest of the two wrong answers) — because it plays the same role: a
+ * small, always-on fact about the machine that the whole console reads. It is
+ * mounted once, in ActiveTaskProvider, for the same reason that one is.
  */
 export function useActiveTasks(
   pollMs: number = ACTIVE_TASK_POLL_MS,
 ): UseActiveTasks {
-  const [tasks, setTasks] = React.useState<ActiveTask[]>([]);
-  const [status, setStatus] = React.useState<ActiveTasksStatus>("loading");
-  const [asOf, setAsOf] = React.useState<string | null>(null);
-  const [nonce, setNonce] = React.useState(0);
+  const { data, isPending, isError, refetch } = useQuery({
+    queryKey: queryKeys.activeTasks,
+    queryFn: ({ signal }) => fetchActiveTasks(signal),
+    refetchInterval: pollMs,
+  });
 
-  React.useEffect(() => {
-    let active = true;
-    const abort = new AbortController();
+  const refresh = React.useCallback(() => {
+    void refetch();
+  }, [refetch]);
 
-    const tick = async () => {
-      try {
-        const data = await fetchActiveTasks(abort.signal);
-        if (!active) return;
-        setTasks(data.tasks);
-        setAsOf(data.as_of);
-        setStatus("ok");
-      } catch {
-        // Transient (backend restart, Temporal blip): keep the last good list
-        // and let the tone say it is a memory. If a run was going when the link
-        // dropped it is almost certainly still going, so blanking the list
-        // would be the less honest of the two wrong answers.
-        if (active && !abort.signal.aborted) setStatus("error");
-      }
-    };
-
-    tick();
-    const id = setInterval(tick, pollMs);
-    return () => {
-      active = false;
-      abort.abort();
-      clearInterval(id);
-    };
-  }, [pollMs, nonce]);
-
-  const refresh = React.useCallback(() => setNonce((n) => n + 1), []);
-
-  return { tasks, status, asOf, refresh };
+  return {
+    tasks: data?.tasks ?? [],
+    status: isPending ? "loading" : isError ? "error" : "ok",
+    asOf: data?.as_of ?? null,
+    refresh,
+  };
 }
