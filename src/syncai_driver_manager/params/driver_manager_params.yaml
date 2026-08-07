@@ -9,3 +9,41 @@
     # Remote controller endpoint that outbound command datagrams are sent to.
     command_target_ip: "192.168.1.120"
     command_target_port: 50051
+
+    # --- Per-direction velocity-scale correction ---
+    # The gait controller under-tracks cmd_vel, so cmdVelCallback multiplies each
+    # axis by its direction's gain before the AXES datagram goes out. Calibrated
+    # on robot01 against /odom — yaw comes from the lidar IMU gyro (a direct
+    # measurement), forward speed is differentiated from the LIO pose and is the
+    # softer number.
+    #
+    # Only STEADY-STATE points count: a bin taken while the command is still
+    # ramping measures the ramp, not the gain. Two navigation runs, each holding
+    # one plateau long enough to matter:
+    #
+    #   run A  scale 1.00        cmd 0.80 m/s   -> 0.624   ratio 0.78  (n=153)
+    #                            cmd 1.30 rad/s -> 0.695   ratio 0.53  (n=125)
+    #   run B  scale 1.15 / 1.67 cmd 0.60 m/s   -> 0.495   ratio 0.82  (n=321)
+    #                            cmd 0.65 rad/s -> 0.776   ratio 1.19  (n=202)
+    #
+    # Values below fold run B's residual error back in: 1.15/0.82 and 1.67/1.19,
+    # both landing on 1.40.
+    #
+    # KNOWN WEAK: this is one plateau per axis per run, and the two runs do not
+    # agree with each other. Run B reached 0.776 rad/s from an AXES value of
+    # 1.09, which is more output from less input than run A's 0.695 at AXES
+    # 1.30 — so the response is not a fixed gain, and an earlier reading of it
+    # as "gain plus a hard ceiling at 0.69" was wrong (that curve was built from
+    # ramp transients). Until someone runs an open-loop sweep — hold each of
+    # vx 0.2..0.6 and wz 0.2..1.0 for 3-5 s and record the plateaus — treat
+    # these as a working correction, not a calibration, and keep the nav-side
+    # commands modest (see controller_server_params.yaml).
+    #
+    # Lateral and reverse stay at 1.0: the nav stack never commands them
+    # (allow_reversing is false, min_y_velocity_threshold gates strafe).
+    scale_fwd: 1.40      # 1.15 / 0.82
+    scale_back: 1.0      # unmeasured
+    scale_left: 1.0      # unmeasured
+    scale_right: 1.0     # unmeasured
+    scale_turn_l: 1.40   # 1.67 / 1.19
+    scale_turn_r: 1.40   # 1.67 / 1.19

@@ -51,7 +51,14 @@
 
     FollowPath:
       plugin: "syncai_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.8
+      # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
+      # so pure pursuit was computing its arcs (w = v * curvature) for a speed
+      # a quarter higher than reality. driver_manager's scale_fwd now corrects
+      # the gain, but the gait controller's response falls off as the command
+      # grows and nobody has swept it properly yet, so keep the command in the
+      # range that has been measured. Raise this only together with a fresh
+      # scale_fwd measurement at the new speed — the two are one calibration.
+      desired_linear_vel: 0.60
       lookahead_dist: 0.6
       # Raised from 0.3: pure pursuit steering gain scales with 1/lookahead^2,
       # so the short low-speed lookahead made startup oscillate (weaving until
@@ -72,17 +79,27 @@
       # Caveat (this floor was previously lowered to 0.1 for this reason): a
       # value this high overrides curvature regulation right after
       # rotate-to-heading exits, where the arc is sharpest, so watch for
-      # corner-cutting / weaving on tight turns.
+      # corner-cutting / weaving on tight turns. Now that desired_linear_vel is
+      # 0.60 this floor is half the top speed, so curvature regulation has only
+      # a 0.30-0.60 band to work in — lower it before raising it if corner
+      # cutting persists.
       regulated_linear_scaling_min_speed: 0.3
       use_rotate_to_heading: true
       # Lowered from 0.785 (45 deg): exiting rotation that far off-heading made
       # the robot drive away from the path and trigger another rotation.
       # 0.25 rad (~14 deg) hands over to path tracking nearly aligned.
       rotate_to_heading_min_angle: 0.25
-      rotate_to_heading_angular_vel: 1.3
+      # Lowered from 1.3, where the robot only delivered 0.695 rad/s (ratio
+      # 0.53). The controller therefore believed every in-place turn was
+      # finishing about twice as fast as it was, exited rotate-to-heading still
+      # off-heading, and had to re-enter — the weave. At 0.65 with
+      # scale_turn_* the measured rate lands within ~20% of the command, which
+      # is the whole point: rotate-to-heading's exit test only means something
+      # if the commanded rate is the real one.
+      rotate_to_heading_angular_vel: 0.65
       max_angular_accel: 3.2
       # No velocity smoother in this stack: the controller clamps linear
-      # acceleration itself (0 -> 0.8 m/s ramps over ~0.8 s).
+      # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
       max_linear_accel: 1.0
       allow_reversing: false
       use_interpolation: true

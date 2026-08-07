@@ -287,6 +287,12 @@ void ControllerServer::computeControl()
       return;
     }
 
+    // Per-goal controller state, cleared exactly once here. Deliberately not in
+    // setPlannerPath(): updateGlobalPath() routes the BT's ~0.333 Hz replans
+    // through that too, so resetting there re-zeroed RPP's acceleration-clamp
+    // baseline mid-drive and chopped cmd_vel into a sawtooth (see setPlan()).
+    controllers_[current_controller_]->reset();
+
     setPlannerPath(action_server_->get_current_goal()->path);
     progress_checker_->reset();
 

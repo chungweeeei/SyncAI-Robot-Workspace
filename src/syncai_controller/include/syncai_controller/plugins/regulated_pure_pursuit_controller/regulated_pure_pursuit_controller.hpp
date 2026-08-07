@@ -70,6 +70,12 @@ public:
   void setPlan(const nav_msgs::msg::Path & path) override;
 
   /**
+   * @brief Clear per-goal state: zero the acceleration-clamp baseline so the
+   * first command of a new goal ramps up from a standstill.
+   */
+  void reset() override;
+
+  /**
    * @brief Limits the maximum linear speed of the robot.
    * @param speed_limit expressed in absolute value (in m/s)
    * or in percentage from maximum robot speed.

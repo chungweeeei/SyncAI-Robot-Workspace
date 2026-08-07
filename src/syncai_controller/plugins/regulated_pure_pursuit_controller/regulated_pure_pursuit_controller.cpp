@@ -315,8 +315,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   }
 
   // 線速度加速度限制：這個 stack 的 cmd_vel 沒有經過 velocity smoother，
-  // 必須由 controller 自己保證線速度的 kinematic feasibility
-  // （角速度在 rotateToHeading() 內已有 max_angular_accel 的對應 clamp）。
+  // 必須由 controller 自己保證線速度的 kinematic feasibility。角速度在兩條分支
+  // 各自夾制：旋轉分支在 rotateToHeading() 內，追蹤分支在下面的 curvature 之後。
   //
   // 基準用「上一個 cycle 的命令速度」last_cmd_vel_，不是量測速度 speed。
   // speed 來自未平滑的 Point-LIO twist，四足步態讓軀幹前後晃 ±0.2~0.5 m/s，
@@ -333,6 +333,27 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     // Apply curvature to angular velocity after constraining linear velocity:
     // 用 clamp 後的線速度算角速度，維持追蹤弧線的曲率不變。
     angular_vel = linear_vel * curvature;
+
+    // 角速度加速度限制。rotateToHeading() 內部已有同樣的 clamp，但追蹤分支原本
+    // 沒有，於是「退出原地旋轉」的那一個 cycle 是斷崖：實機量到 wz 1.300 ->
+    // 0.235（≈ -21 rad/s²），而進入旋轉那側因為走 rotateToHeading() 反而是每
+    // cycle +0.16 的平滑爬升。斷崖退出還會餵出震盪 —— 退出後航向轉過頭，下一個
+    // cycle 就反向重新進入 rotate-to-heading（量到 wz +1.300 -> +0.024 -> -0.064
+    // -> ... -> -0.815），也就是 controller_server_params.yaml 裡
+    // regulated_linear_scaling_min_speed 註解警告過的 weaving。
+    //
+    // 代價：受夾制的那幾個 cycle 內 (v, w) 不再精確等於路徑曲率，出彎會走稍寬
+    // 一點的弧 —— 與上面線性夾制同一種取捨。退出時航向誤差上限是
+    // rotate_to_heading_min_angle (0.25 rad)，而 1.3 rad/s 以 3.2 rad/s² 洩掉約
+    // 多轉 0.26 rad，數量級相抵。
+    //
+    // 只加在這個分支：rotateToHeading() 的 sqrt(2αθ) 是一條「為了停得住」的減速
+    // 上限，在它之後再套一次對稱的加速度夾制會把速度往回拉、抵消該上限。
+    const double min_feasible_angular_speed =
+      last_cmd_vel_.angular.z - max_angular_accel_ * control_duration_;
+    const double max_feasible_angular_speed =
+      last_cmd_vel_.angular.z + max_angular_accel_ * control_duration_;
+    angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
   }
 
   // 剛算好的(v, w) 定義了一條弧線，在真的執行之前，先在costmap上模擬機器人沿這條弧線走的過程中 footprint 會不會壓到障礙物。
@@ -664,10 +685,22 @@ void RegulatedPurePursuitController::applyConstraints(
 
 void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
+  // Path only. last_cmd_vel_ deliberately survives: setPlan() is also the
+  // mid-navigation replan entry point (the BT re-ticks FollowPath every ~3 s,
+  // which arrives as an action preempt -> updateGlobalPath -> setPlan), and
+  // zeroing the accel-clamp baseline here made the command collapse to a single
+  // accel step and re-ramp on every replan. Measured on the real robot: vx
+  // 0.80 -> 0.05 m/s in one 50 ms cycle (max_linear_accel * control_duration),
+  // worse in rotate-to-heading where the 1.3 rad/s plateau was cut to 0.16 and
+  // needed 8 cycles to recover — a 0.32 Hz sawtooth on cmd_vel that burned ~16%
+  // of the drive re-accelerating. Per-goal reset lives in reset().
   global_plan_ = path;
+}
 
-  // New goal / plan: zero the accel-clamp baseline so the first command ramps
-  // up from a standstill rather than inheriting the previous goal's velocity.
+void RegulatedPurePursuitController::reset()
+{
+  // New goal: zero the accel-clamp baseline so the first command ramps up from
+  // a standstill rather than inheriting the previous goal's velocity.
   last_cmd_vel_ = geometry_msgs::msg::Twist();
 }
 

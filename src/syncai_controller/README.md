@@ -176,10 +176,56 @@ and with `allow_reversing: false` it could push the command negative. Clamping
 against the last command keeps the *command trajectory* kinematically feasible
 without coupling to gait noise.
 
-`last_cmd_vel_` is zeroed in `setPlan()`, so every new goal ramps from a
-standstill. `rotateToHeading()` applies the same pattern with `max_angular_accel`,
-plus a `sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target
-instead of overshooting.
+`last_cmd_vel_` is zeroed in `reset()` — called once per goal by
+`ControllerServer::computeControl()` — so every new goal ramps from a standstill.
+`rotateToHeading()` applies the same pattern with `max_angular_accel`, plus a
+`sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target instead of
+overshooting.
+
+The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
+cost us once: `setPlan()` is also the mid-navigation replan path. The BT's
+`RateController hz="0.333"` in `move.xml` hands `FollowPath` a fresh path every
+~3 s, which reaches the server as an action preempt and lands in
+`updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
+clamped the very next command to a single accel step, so the command re-ramped
+from ~0 every 3 s. Measured on the real robot over a two-goal run:
+
+```
+t= 3.150  vx +0.650 -> +0.050    (/plan published at 3.058)
+t= 6.299  vx +0.300 -> +0.050    (/plan at 6.196)
+t=16.158  vx +0.800 -> +0.050    (/plan at 16.056)
+t=19.307  wz +1.300 -> +0.160    (/plan at 19.205)
+```
+
+`0.050 = max_linear_accel × control_duration` and `0.160 = max_angular_accel ×
+control_duration` — i.e. the first step off a zero baseline, every collapse
+~100 ms behind a `/plan`. cmd_vel *timing* was fine throughout (50.0 ms median,
+p90 50.8 ms), so this only ever showed up as a value discontinuity: about 16% of
+the drive spent re-accelerating, most visible during rotate-to-heading, where
+the constant 1.3 rad/s plateau was cut to 0.16 and needed 8 cycles to climb back.
+
+### Angular clamping on both branches
+
+The angular clamp is applied twice, once per branch: inside `rotateToHeading()`
+for in-place rotation, and again after `angular_vel = linear_vel * curvature` for
+path tracking. The second one was missing originally, which made *exiting*
+rotation a cliff while *entering* it was smooth:
+
+```
+entering rotation                    leaving rotation
+52.096  vx 0.800  wz 0.195           52.596  vx 0.300  wz 1.300
+52.146  vx 0.750  wz 0.497           52.646  vx 0.350  wz 0.235   <- one cycle
+52.196  vx 0.700  wz 0.657
+  ...   -0.05/cycle  +0.16/cycle     (≈ -21 rad/s², clamp not applied)
+```
+
+and it fed a weave: the robot overshot the heading on exit and re-entered
+rotate-to-heading the other way one cycle later (`wz 1.300 → 0.024 → -0.064 →
+… → -0.815`).
+
+The clamp deliberately does **not** wrap `rotateToHeading()`'s output. That
+function ends with a `sqrt(2·α·θ)` deceleration cap; a symmetric acceleration
+clamp applied on top of it would pull the command back up and cancel the cap.
 
 ## Plugins
 

@@ -103,6 +103,23 @@ void DriverManagerNode::initParameters()
   telemetry_recv_port_ = this->declare_parameter<int>("telemetry_recv_port", 50012);
   command_target_ip_ = this->declare_parameter<std::string>("command_target_ip", "192.168.1.120");
   command_target_port_ = this->declare_parameter<int>("command_target_port", 50051);
+
+  // Per-direction velocity-scale correction. These were previously hard-coded
+  // 1.0 with set_speed_scale as the only way to change them, which meant the
+  // correction was silently never applied — nothing in the stack calls that
+  // service on startup. Declared here so the calibration lives in the params
+  // YAML and survives a restart; set_speed_scale still overrides at runtime.
+  scale_fwd_.store(this->declare_parameter<double>("scale_fwd", 1.0));
+  scale_back_.store(this->declare_parameter<double>("scale_back", 1.0));
+  scale_left_.store(this->declare_parameter<double>("scale_left", 1.0));
+  scale_right_.store(this->declare_parameter<double>("scale_right", 1.0));
+  scale_turn_l_.store(this->declare_parameter<double>("scale_turn_l", 1.0));
+  scale_turn_r_.store(this->declare_parameter<double>("scale_turn_r", 1.0));
+
+  RCLCPP_INFO(
+    this->get_logger(), "[DriverManagerNode][%s] Speed scales F:%.2f B:%.2f L:%.2f R:%.2f "
+    "TL:%.2f TR:%.2f", __func__, scale_fwd_.load(), scale_back_.load(), scale_left_.load(),
+    scale_right_.load(), scale_turn_l_.load(), scale_turn_r_.load());
 }
 
 void DriverManagerNode::initPubSub()

@@ -45,8 +45,25 @@ public:
   /**
    * @brief local setPlan - Sets the global plan
    * @param path The global plan
+   *
+   * Called both when a goal starts and on every mid-navigation replan (the BT
+   * re-ticks FollowPath with a fresh path at ~0.333 Hz, which reaches the
+   * controller as an action preempt). A plugin must therefore treat this as
+   * "the path changed", never as "a new goal started" — per-goal state belongs
+   * in reset(). Not distinguishing the two is what produced the cmd_vel
+   * sawtooth described there.
    */
   virtual void setPlan(const nav_msgs::msg::Path & path) = 0;
+
+  /**
+   * @brief Clear per-goal controller state. Called once when a goal is
+   * accepted, before the first setPlan(), and never again for that goal.
+   *
+   * Default is a no-op: only plugins that carry state across control cycles
+   * (RPP's acceleration-clamp baseline) need to override it. Not pure virtual
+   * so existing plugins keep compiling unchanged.
+   */
+  virtual void reset() {}
 
   /**
    * @brief Controller computeVelocityCommands - calculates the best command given the current pose and velocity

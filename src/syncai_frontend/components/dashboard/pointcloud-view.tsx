@@ -6,6 +6,7 @@ import { Grid2x2Icon } from "lucide-react";
 import { Segmented, overlayPanel } from "@/components/console/instrument";
 import { GoalControl } from "@/components/dashboard/goal-control";
 import { InitialPoseControl } from "@/components/dashboard/initial-pose-control";
+import { ManualControl } from "@/components/dashboard/manual-control";
 import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
 import { VertexMoveDialog } from "@/components/dashboard/vertex-move-dialog";
 import { VertexPlaceControl } from "@/components/dashboard/vertex-place-control";
@@ -326,6 +327,11 @@ export function PointCloudView({
           />
         )}
       </div>
+
+      {/* Bottom-right, the one corner still free: status pill top-right, pose
+        * tools top-left, viewport controls bottom-left. Visual-only for now —
+        * see ManualControl on where a cmd_vel sender will plug in. */}
+      <ManualControl className="absolute right-3 bottom-3" />
     </div>
   );
 }
