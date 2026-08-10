@@ -34,6 +34,23 @@ import type { PlanarPose } from "@/lib/types/robot";
 const DEFAULT_BRUSH = 7;
 
 /**
+ * The editor opens in Pan, not in Brush.
+ *
+ * Opening armed with a brush means the first thing an operator does on a freshly
+ * loaded map — drag it to the corner they came here to look at — is a stroke,
+ * and on a 1602x1502 grid at fit scale that stroke is hundreds of cells wide
+ * before they notice. Undo would reach it, but only if they realised; the map is
+ * blitted literally and a Free stroke across free space is invisible.
+ *
+ * Painting therefore costs one click on the Tool row, which is the trade this
+ * makes: an explicit arming gesture for the destructive default, in exchange for
+ * "look around" being the safe thing that needs no decision. Right/middle-drag
+ * and Space still pan whatever the tool is — Pan being the *default* does not
+ * make it the only way.
+ */
+const DEFAULT_TOOL: EditTool = "pan";
+
+/**
  * Loads the map and shows the guard states; EditorSurface does the editing.
  *
  * The split exists so that everything belonging to one loaded grid — the undo
@@ -107,7 +124,7 @@ function EditorSurface({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [mode, setMode] = React.useState<EditMode>("grid");
-  const [tool, setTool] = React.useState<EditTool>("brush");
+  const [tool, setTool] = React.useState<EditTool>(DEFAULT_TOOL);
   // Free by default: erasing phantom obstacles is the reason this screen exists.
   const [value, setValue] = React.useState<GridValue>(FREE);
   const [brush, setBrush] = React.useState<number>(DEFAULT_BRUSH);

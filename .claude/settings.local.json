@@ -43,7 +43,8 @@
       "Bash(chmod +x scripts/byobu_session_dev.sh)",
       "Bash(bash -n scripts/byobu_session_dev.sh)",
       "Read(//Users/chungwei/Desktop/SyncAI-Robot-Workspace/**)",
-      "Bash(grep -n 'syncai_frontend` | Next.js\\\\|syncai_backend` | Python\\\\|### Application layer\\\\|### Third-party' CLAUDE.md)"
+      "Bash(grep -n 'syncai_frontend` | Next.js\\\\|syncai_backend` | Python\\\\|### Application layer\\\\|### Third-party' CLAUDE.md)",
+      "Bash(lsusb)"
     ]
   }
 }

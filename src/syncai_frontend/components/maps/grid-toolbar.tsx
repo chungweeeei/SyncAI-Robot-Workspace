@@ -18,11 +18,19 @@ const MODES: readonly { value: EditMode; label: string }[] = [
   { value: "vertex", label: "Vertex" },
 ];
 
+/*
+ * Pan is first because it is what the editor opens in (see DEFAULT_TOOL in
+ * map-grid-editor.tsx). A segmented control reads left-to-right as "here is
+ * where you start, here is what you can arm", and leaving Pan in the trailing
+ * slot it used to occupy would put the selected chip at the far end of the row
+ * on load — which reads as an odd leftover setting rather than a deliberate
+ * resting state.
+ */
 const TOOLS: readonly { value: EditTool; label: string }[] = [
+  { value: "pan", label: "Pan" },
   { value: "brush", label: "Brush" },
   { value: "line", label: "Line" },
   { value: "rect", label: "Rect" },
-  { value: "pan", label: "Pan" },
 ];
 
 /**
@@ -231,28 +239,14 @@ export function GridToolbar({
       )}
 
       {/*
-       * Right-drag is listed first because it is the one an operator coming from
-       * the dashboard expects to find: there the view moves under a plain drag, and
-       * here the left button is the edit, so the view got its own button.
-       *
-       * The rest were all implemented and mentioned nowhere, which made them
-       * effectively private. That matters most in vertex mode, where the Tool row
-       * above is hidden and these drags are the only way to move the view.
+       * The keyboard/mouse hint line that used to close this panel was removed on
+       * request. The gestures it documented are all still live — right-drag and
+       * middle-drag pan in every mode, Space pans while held, 0 fits, scroll
+       * zooms — they are just undocumented on screen again. Worth knowing if
+       * vertex mode ever feels stuck: the Tool row is hidden there, so those
+       * drags are the only way to move the view.
        */}
-      <p className="border-t border-hairline pt-2 text-[11px] leading-tight text-muted-foreground">
-        Right-drag to move the view · also <Key>Space</Key> or middle-drag ·{" "}
-        <Key>0</Key> to fit · scroll to zoom
-      </p>
     </div>
-  );
-}
-
-/** A key cap, sized to sit inside an 11px line without changing its height. */
-function Key({ children }: { children: React.ReactNode }) {
-  return (
-    <kbd className="readout rounded-[3px] border border-hairline px-1 py-px text-[10px] text-foreground">
-      {children}
-    </kbd>
   );
 }
 

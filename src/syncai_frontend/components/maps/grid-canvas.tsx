@@ -510,11 +510,12 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
     const { cx, cy } = localPoint(event);
     // Right and middle drag always pan, in every mode and whatever the tool.
     //
-    // This is the dashboard's bargain, adapted. There, left-drag moves the view
-    // and an armed pick mode is what takes the button away; here the default
-    // left-drag is the edit — painting is what this screen is *for* — so the view
-    // gets its own button instead of the editing being demoted behind a mode.
-    // Right is the one that is free: a 2D canvas has no orbit to compete for it,
+    // This is the dashboard's bargain, adapted: there, left-drag moves the view
+    // and an armed pick mode is what takes the button away. Same here — the
+    // editor opens in Pan (see DEFAULT_TOOL) and arming a brush is what claims
+    // the left button. Right and middle keep panning regardless, so the operator
+    // never has to disarm the brush just to reach another part of the map. Right
+    // is the one that is free: a 2D canvas has no orbit to compete for it,
     // unlike the point-cloud viewport where right-drag is the orbit.
     //
     // `tool` is only consulted in grid mode: the toolbar hides the tool row in
