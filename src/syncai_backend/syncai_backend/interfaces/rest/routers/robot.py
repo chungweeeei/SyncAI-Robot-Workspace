@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from syncai_common.msg import RobotMode, RobotState as RobotStateMsg
 
-from syncai_backend.exceptions import InternalServerError, NotFoundError
+from syncai_backend.exceptions import UpstreamError, NotFoundError
 from syncai_backend.gateways.robot.robot import MotionKey, RobotGateway
 from syncai_backend.repositories.robot.robot import RobotRepo
 
@@ -410,7 +410,7 @@ def init_robot_router(
                 theta=request.theta,
                 message=message,
             )
-            raise InternalServerError(message)
+            raise UpstreamError(message)
 
         return SetInitialPoseResponse(
             message=(
@@ -437,11 +437,13 @@ def init_robot_router(
     #     nothing reporting it.
     #   * A REST-level debounce would buy almost nothing. The Temporal STANDUP /
     #     LIEDOWN activities call RobotGateway.set_motion_key() directly,
-    #     in-process, and never pass through this router; `ros2 service call`,
-    #     the reference GUI and the teleop cmd_vel producer never reach the
-    #     backend at all. It would throttle only the slowest caller while
-    #     implying the command stream is regulated — worse than the honest
-    #     absence.
+    #     in-process, and never pass through this router; `ros2 service call`
+    #     and the reference GUI never reach the backend at all. (The console's
+    #     teleop cmd_vel DOES pass through the backend now — the WS endpoint in
+    #     routers/teleop.py — but its regulation is velocity clamping and a
+    #     watchdog in the gateway, not a request rate limit here.) A debounce
+    #     would throttle only the slowest caller while implying the command
+    #     stream is regulated — worse than the honest absence.
     #   * MODE is overloaded on the wire: set_motion_key sends `MODE <char>`,
     #     set_policy_mode sends `MODE <uint>`. These two endpoints therefore feed
     #     different command families into the same keyword on the same socket,
@@ -508,7 +510,7 @@ def init_robot_router(
             logger.error(
                 "Failed to set motion key", key=request.key.value, message=message
             )
-            raise InternalServerError(message)
+            raise UpstreamError(message)
 
         # No success log: the gateway already logged the attempt at info, and a
         # second line for the same event is noise. The refusal above does log,
@@ -552,7 +554,7 @@ def init_robot_router(
             logger.error(
                 "Failed to set policy mode", mode=request.mode.value, message=message
             )
-            raise InternalServerError(message)
+            raise UpstreamError(message)
 
         # 200 means the driver wrote `MODE <n>` to the socket. It does not mean
         # the controller switched policy: there is no acknowledgement, and

@@ -2,7 +2,7 @@
 
 The router is mounted on a bare FastAPI app with the production exception
 handlers registered, so the domain-exception -> status-code mapping under test is
-the real one (InternalServerError -> 502). RobotRepo is real — it is a lock and a
+the real one (UpstreamError -> 502). RobotRepo is real — it is a lock and a
 slot — and only the gateway is stubbed, because a real one needs a live DDS graph
 with syncai_driver_manager on it.
 

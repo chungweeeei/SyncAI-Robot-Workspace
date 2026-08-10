@@ -28,6 +28,7 @@ from geometry_msgs.msg import (
     Pose,
     PoseStamped,
     PoseWithCovarianceStamped,
+    Twist,
 )
 
 
@@ -67,10 +68,44 @@ class MoveGoal:
     result: Optional[Any] = None
 
 
+# Teleop velocity ceilings. The WS teleop contract is normalized [-1, 1] per
+# axis — the frontend never speaks m/s — so these constants are the single
+# place the robot's manual top speed is decided, and a buggy or malicious
+# client cannot exceed them. Values are deliberately under the nav stack's:
+# the controller runs desired_linear_vel 0.60 m/s, and the driver manager
+# multiplies forward/turn commands by ~1.4 (its velocity-scale correction for
+# the gait controller's undertracking), so a normalized 1.0 here already
+# reaches ~0.7 m/s at the gait controller.
+TELEOP_MAX_LINEAR_MPS = 0.5
+TELEOP_MAX_ANGULAR_RPS = 0.65
+
+
+# How many finished MOVE goals _goals keeps around. The dict used to grow
+# without bound — every goal carried its ClientGoalHandle and result forever,
+# so a robot on a patrol schedule leaked a few dozen entries a day. Five is
+# enough for every real reader: the MOVE activity polls only its own (newest)
+# goal and returns on the terminal state, so by the time a goal is old enough
+# to evict, nothing will ask about it again. Eviction happens on insert, and
+# never touches an EXECUTING goal — get_move_status / cancel_move on a live
+# goal must keep working no matter how the book fills up.
+MAX_TRACKED_GOALS = 5
+
+
 def _wait_for_future(future, timeout: Optional[float] = None) -> bool:
     event = threading.Event()
     future.add_done_callback(lambda _: event.set())
     return event.wait(timeout=timeout)
+
+
+def _clamp_normalized(value: float) -> float:
+    """[-1, 1] with NaN/inf collapsed to 0 — the last gate before the wire.
+
+    The frontend clamps too, but this is the boundary a malformed or hostile
+    client actually reaches, so the guarantee lives here.
+    """
+    if not math.isfinite(value):
+        return 0.0
+    return max(-1.0, min(1.0, value))
 
 
 class RobotGateway:
@@ -149,7 +184,19 @@ class RobotGateway:
             qos_profile=10,
         )
 
-        self._publishers.update({"initial_pose": initial_pose_pub})
+        # Relative name again: this must land on the same /<robot_id>/cmd_vel
+        # the driver manager subscribes (QoS(10) there, matched here). The
+        # controller publishes the same topic during FollowPath — see the
+        # EXECUTING gate in teleop_cmd_vel for how the two are kept apart.
+        cmd_vel_pub = self._node.create_publisher(
+            msg_type=Twist,
+            topic="cmd_vel",
+            qos_profile=10,
+        )
+
+        self._publishers.update(
+            {"initial_pose": initial_pose_pub, "cmd_vel": cmd_vel_pub}
+        )
 
     def scan_wifi_networks(self) -> Tuple[bool, str, List[WifiNetwork]]:
         scan_client = self._service_clients.get("scan_wifi")
@@ -281,6 +328,56 @@ class RobotGateway:
 
         return True, ""
 
+    def teleop_cmd_vel(self, vx: float, vy: float, wz: float) -> Tuple[bool, str]:
+        """Publish one teleop velocity command. Inputs are normalized [-1, 1].
+
+        Scaling to real velocities happens here, against the TELEOP_MAX_*
+        ceilings — the WS contract deliberately never carries m/s.
+
+        Refused outright while a MOVE goal is EXECUTING: the controller owns
+        cmd_vel during FollowPath (20 Hz), there is no mux in the stack, and
+        the driver is last-message-wins per datagram — interleaving teleop
+        would make the robot judder between two command sources. The operator
+        cancels the task first, then drives.
+
+        No per-call info log and no subscriber-count warning (the
+        set_initial_pose template's two lines): this runs at ~10 Hz.
+        """
+        if self._autonomous_move_active():
+            return False, "autonomous move in progress"
+
+        twist = Twist()
+        twist.linear.x = _clamp_normalized(vx) * TELEOP_MAX_LINEAR_MPS
+        twist.linear.y = _clamp_normalized(vy) * TELEOP_MAX_LINEAR_MPS
+        twist.angular.z = _clamp_normalized(wz) * TELEOP_MAX_ANGULAR_RPS
+
+        self._publishers.get("cmd_vel").publish(twist)
+
+        return True, ""
+
+    def teleop_stop(self) -> None:
+        """Publish a zero-velocity Twist — the teleop watchdog/disconnect stop.
+
+        This exists because the driver manager has NO cmd_vel watchdog: when a
+        publisher goes quiet it just stops sending AXES, it never sends a stop.
+        So the backend owns stop-on-disconnect and stop-on-stale-input, and
+        this is the primitive both use.
+
+        Gated like teleop_cmd_vel: while an autonomous MOVE is executing the
+        teleop path contributed no motion, and injecting zeros would fight the
+        controller on its own topic.
+        """
+        if self._autonomous_move_active():
+            return
+
+        self._publishers.get("cmd_vel").publish(Twist())
+
+    def _autonomous_move_active(self) -> bool:
+        with self._lock:
+            return any(
+                goal.state is MoveState.EXECUTING for goal in self._goals.values()
+            )
+
     def _send_nav_goal(
         self, client_name: str, goal_msg
     ) -> Tuple[bool, str, Optional[str]]:
@@ -302,6 +399,7 @@ class RobotGateway:
         goal_id = str(uuid.UUID(bytes=bytes(goal_id.uuid)))
         with self._lock:
             self._goals[goal_id] = MoveGoal(goal_id=goal_id, goal_handle=goal_handle)
+            self._evict_finished_goals()
 
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
@@ -309,6 +407,26 @@ class RobotGateway:
         )
 
         return True, "", goal_id
+
+    def _evict_finished_goals(self) -> None:
+        """Trim _goals to MAX_TRACKED_GOALS, oldest finished first.
+
+        Caller holds self._lock. Relies on dict insertion order for "oldest";
+        EXECUTING goals are skipped, so with more live goals than the cap the
+        dict simply stays over it until they finish — correctness over the
+        bound, and in practice the task-level mutex keeps live goals at one.
+        """
+        excess = len(self._goals) - MAX_TRACKED_GOALS
+        if excess <= 0:
+            return
+
+        for goal_id in list(self._goals):
+            if excess <= 0:
+                break
+            if self._goals[goal_id].state is MoveState.EXECUTING:
+                continue
+            del self._goals[goal_id]
+            excess -= 1
 
     def move(self, x: float, y: float, yaw: float) -> Tuple[bool, str, Optional[str]]:
         self._logger.info("[RobotGateway] Sending navigation goal ", x=x, y=y, yaw=yaw)

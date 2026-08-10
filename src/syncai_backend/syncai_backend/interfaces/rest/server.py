@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from syncai_backend.exceptions import (
     BadRequestError,
     ConflictError,
-    InternalServerError,
+    UpstreamError,
     NotFoundError,
     UnauthorizedError,
 )
@@ -21,6 +21,7 @@ from syncai_backend.interfaces.rest.routers.network import init_network_router
 from syncai_backend.interfaces.rest.routers.map import init_map_router
 from syncai_backend.interfaces.rest.routers.pointcloud import init_pointcloud_router
 from syncai_backend.interfaces.rest.routers.telemetry import init_telemetry_router
+from syncai_backend.interfaces.rest.routers.teleop import init_teleop_router
 
 from syncai_backend.repositories.robot.robot import RobotRepo
 from syncai_backend.repositories.map.map import MapRepo
@@ -58,8 +59,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _unauthorized(_: Request, exc: UnauthorizedError) -> JSONResponse:
         return _json(status.HTTP_401_UNAUTHORIZED, str(exc))
 
-    @app.exception_handler(InternalServerError)
-    async def _internal_server(_: Request, exc: InternalServerError) -> JSONResponse:
+    @app.exception_handler(UpstreamError)
+    async def _upstream(_: Request, exc: UpstreamError) -> JSONResponse:
         return _json(status.HTTP_502_BAD_GATEWAY, str(exc))
 
 
@@ -164,6 +165,10 @@ def init_rest_server(
     app.include_router(
         init_telemetry_router(logger=logger, telemetry_repo=telemetry_repo)
     )
+    # The inbound WS counterpart of the streams above: the console's manual
+    # control sends normalized velocity frames here. Takes robot_gw, not a
+    # repo — it is a command surface, same as the robot router.
+    app.include_router(init_teleop_router(logger=logger, robot_gw=robot_gw))
 
     return app
 

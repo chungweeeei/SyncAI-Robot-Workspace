@@ -5,7 +5,8 @@ import { JoystickIcon } from "lucide-react";
 
 import { overlayPanel } from "@/components/console/instrument";
 import { Thumbstick } from "@/components/dashboard/thumbstick";
-import { useJoystick } from "@/hooks/use-joystick";
+import { useJoystick, type TeleopVector } from "@/hooks/use-joystick";
+import { useTeleopSender } from "@/hooks/use-teleop-sender";
 import { cn } from "@/lib/utils";
 
 /**
@@ -24,15 +25,15 @@ function formatAxis(value: number): string {
  * normalized vector. Pointer and WASD/QE keyboard input, merged in
  * useJoystick.
  *
- * **Visual-only for now.** Nothing here talks to the robot: there is no
- * cmd_vel path through the backend yet. The caption under the readouts is that
- * fact made honest on screen — delete it when the sender lands. (It started as
- * a VISUAL chip in the header; three pieces of caps text on a 240px row read
- * as clutter, and a sentence says more than a badge.) The sender's tap-in
- * point is `useJoystick().vectorRef` (see its doc for why a ref and not a
- * callback), which also means this panel is not gated on RobotMode ===
- * "MANUAL" yet: with no command path there is nothing to gate, and hiding the
- * panel would only hide the one place the interaction can be exercised.
+ * **Armed = sending.** While armed, TeleopFooter keeps a WS teleop channel
+ * open and streams `vectorRef` at 10 Hz to the backend, which clamps, scales
+ * and publishes cmd_vel (see use-teleop-sender.ts / lib/ros/teleop-channel.ts
+ * for the no-reconnect and watchdog reasoning). If the channel drops, the
+ * panel disarms itself — a dead link must not leave the button claiming the
+ * robot is listening. Still not gated on RobotMode === "MANUAL", now as a
+ * deliberate call rather than a vacuous one: the backend refuses teleop while
+ * an autonomous MOVE is executing and the footer surfaces that refusal, which
+ * covers the actual hazard without hiding the panel.
  *
  * Input has to be ARMED (the header toggle) before the panel hears anything,
  * and it comes up disarmed. The same deliberate-act grammar as the pick-mode
@@ -50,6 +51,8 @@ function formatAxis(value: number): string {
 export function ManualControl({ className }: { className?: string }) {
   const [armed, setArmed] = React.useState(false);
   const stick = useJoystick(armed);
+  // A WS event, not an effect body — the allowed place for setState.
+  const handleDrop = React.useCallback(() => setArmed(false), []);
 
   return (
     <div className={cn(overlayPanel, "w-64 p-3", className)}>
@@ -112,10 +115,55 @@ export function ManualControl({ className }: { className?: string }) {
         <AxisReadout label="VY" value={stick.vector.vy} armed={armed} />
         <AxisReadout label="WZ" value={stick.vector.wz} armed={armed} />
       </div>
-      <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
-        Visual only — nothing is sent to the robot yet.
-      </p>
+      {/* Mounting TeleopFooter only while armed is what opens/closes the
+        * channel AND what resets its per-session state — the mount boundary
+        * replaces any setState-in-effect reset (Next 16 lint). Disarmed gets
+        * a same-height line so arming never reflows the panel. */}
+      {armed ? (
+        <TeleopFooter vectorRef={stick.vectorRef} onDrop={handleDrop} />
+      ) : (
+        <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
+          Disarmed — nothing is sent.
+        </p>
+      )}
     </div>
+  );
+}
+
+/**
+ * The live half of the panel: owns the WS channel for exactly as long as it
+ * is mounted. Three states on one line: connecting (muted), streaming (cmd
+ * hue — this IS the command channel now), and a backend refusal (warn hue;
+ * e.g. teleop rejected while an autonomous move runs, decays after ~2 s of
+ * the frames no longer being refused).
+ */
+function TeleopFooter({
+  vectorRef,
+  onDrop,
+}: {
+  vectorRef: React.RefObject<TeleopVector>;
+  onDrop: () => void;
+}) {
+  const link = useTeleopSender(vectorRef, onDrop);
+
+  if (link.phase === "connecting") {
+    return (
+      <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
+        Connecting to robot…
+      </p>
+    );
+  }
+  if (link.refusal !== null) {
+    return (
+      <p className="mt-2 text-[11px] leading-tight text-signal-warn">
+        {link.refusal}
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 text-[11px] leading-tight text-signal-cmd">
+      Streaming to robot · 10 Hz
+    </p>
   );
 }
 

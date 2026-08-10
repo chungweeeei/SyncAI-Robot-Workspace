@@ -94,6 +94,9 @@ def client(logger, workflow_gw):
 
 
 def _move_task(task_id="robot01-task-001"):
+    # `timestamp` was dropped from TaskRequest but deployed clients (console,
+    # MCP) still send it; keeping it in this body pins that pydantic goes on
+    # ignoring the unknown field instead of 422ing old callers.
     return {
         "id": task_id,
         "timestamp": 1782786519,
@@ -187,8 +190,10 @@ class TestActiveTasks:
 
 
 class TestCancelTask:
-    def test_delete_requests_the_cancel(self, client, workflow_gw):
+    def test_delete_answers_canceling_not_canceled(self, client, workflow_gw):
+        # A delete is a cancel *request*; the workflow may still finish
+        # COMPLETED. The response must not claim the outcome.
         body = client.delete("/api/v1/tasks/robot01-task-001").json()
 
         assert workflow_gw.cancelled == ["robot01-task-001"]
-        assert body["status"] == "CANCELED"
+        assert body["status"] == "CANCELING"

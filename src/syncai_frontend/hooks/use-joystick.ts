@@ -47,10 +47,11 @@ export interface JoystickState {
    * Always-current mirror of `vector`, updated synchronously on every input
    * event (not just per animation frame — rAF stops in a hidden tab, and a
    * stale non-zero command surviving an alt-tab is exactly the bug the blur
-   * handler below exists to prevent). This ref is the contract for the future
-   * cmd_vel sender: a send loop has its own clock (say a 10 Hz interval), so it
-   * reads this without ever re-rendering anything. A callback prop at pointer
-   * rate was rejected — it would push send-rate policy onto every consumer.
+   * handler below exists to prevent). This ref is the contract for the cmd_vel
+   * sender (use-teleop-sender.ts / teleop-channel.ts): the send loop has its
+   * own clock (a 10 Hz interval), so it reads this without ever re-rendering
+   * anything. A callback prop at pointer rate was rejected — it would push
+   * send-rate policy onto every consumer.
    */
   vectorRef: React.RefObject<TeleopVector>;
   /** Called by each Thumbstick with its raw deflection; null on release. */
@@ -119,10 +120,10 @@ function applyDeadzone(value: StickValue): StickValue {
  *
  * **Everything in here is COMMANDED, nothing is measured** — cf. the epistemics
  * note in use-locomotion.ts. That is why the panel renders all of it in the cmd
- * hue: these numbers are what the operator is asking for, and once a sender
- * exists the robot's answer will arrive separately, through telemetry, in the
- * live hue. For now nothing is sent anywhere at all — this hook is the visual
- * half, built so the sender can be added without touching it.
+ * hue: these numbers are what the operator is asking for; the robot's answer
+ * arrives separately, through telemetry, in the live hue. This hook is the
+ * visual half — the sender (use-teleop-sender.ts) reads `vectorRef` and never
+ * touches anything else here.
  *
  * Input merging is per-stick, pointer wins: while a stick's pointer is
  * captured, that whole stick is pointer-owned and its keys are ignored;

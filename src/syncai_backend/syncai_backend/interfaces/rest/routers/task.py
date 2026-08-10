@@ -24,6 +24,12 @@ class TaskStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
+    # Only ever answered by DELETE /tasks/{id}, never by the status mapping:
+    # a delete is a cancel *request*, and Temporal is free to let the workflow
+    # finish COMPLETED before the cancellation lands. The old response said
+    # CANCELED outright — a lie the frontend had already noticed and was
+    # discarding (see its task.ts).
+    CANCELING = "CANCELING"
 
 
 class StepRequest(BaseModel):
@@ -48,12 +54,13 @@ class StepRequest(BaseModel):
         return self
 
 
+# No `timestamp` field: the old required one was received and then never read
+# by anything, which made every client invent a value to satisfy validation.
+# Existing callers (console, MCP) still send it and pydantic ignores unknown
+# fields by default, so dropping it is backward compatible.
 class TaskRequest(BaseModel):
     id: str = Field(
         ..., description="Unique identifier of the task", examples=["robot01-task-001"]
-    )
-    timestamp: int = Field(
-        ..., description="Timestamp of the task", examples=[1782786519]
     )
     steps: List[StepRequest] = Field(
         ..., description="List of steps to be executed", examples=[]
@@ -155,7 +162,7 @@ def init_task_router(
         return TaskResponse(
             id=req.id,
             status=TaskStatus.PENDING,
-            message=f"Task {req.id} is already in the queue for execution.",
+            message=f"Task {req.id} accepted and queued for execution.",
         )
 
     # Not /api/v1/tasks/active. FastAPI matches by declaration order, so that
@@ -214,10 +221,14 @@ def init_task_router(
     async def cancel_task(id: str):
         await workflow_gw.cancel_task(task_id=id)
 
+        # CANCELING, not CANCELED — see the note on the enum member.
         return TaskResponse(
             id=id,
-            status=TaskStatus.CANCELED,
-            message=f"Task {id} has been requested to cancel.",
+            status=TaskStatus.CANCELING,
+            message=(
+                f"Cancellation of task {id} requested; poll "
+                f"GET /api/v1/tasks/{id} for the final state."
+            ),
         )
 
     return task_router

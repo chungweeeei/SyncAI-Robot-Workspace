@@ -37,7 +37,7 @@ from temporalio.service import RPCError, RPCStatusCode  # noqa: E402
 from syncai_backend.exceptions import (  # noqa: E402
     BadRequestError,
     ConflictError,
-    InternalServerError,
+    UpstreamError,
     NotFoundError,
 )
 from syncai_backend.gateways.workflow.config import WORKFLOW_TYPE_NAME  # noqa: E402
@@ -199,12 +199,12 @@ class TestWorkflowGateway:
         self._listing(mock_client, [])
         mock_client.start_workflow.side_effect = Exception("boom")
         with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
-            with pytest.raises(InternalServerError, match="Start workflow failed"):
+            with pytest.raises(UpstreamError, match="Start workflow failed"):
                 asyncio.run(workflow_gw.start_task(_task()))
 
     def test_start_task_connection_failure(self, workflow_gw):
         with patch(CONNECT, new_callable=AsyncMock, side_effect=Exception("refused")):
-            with pytest.raises(InternalServerError, match="connect to Temporal"):
+            with pytest.raises(UpstreamError, match="connect to Temporal"):
                 asyncio.run(workflow_gw.start_task(_task()))
 
     # ==================== start_task: one task at a time ====================
@@ -273,7 +273,7 @@ class TestWorkflowGateway:
             "unavailable", RPCStatusCode.UNAVAILABLE, b""
         )
         with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
-            with pytest.raises(InternalServerError, match="List active tasks failed"):
+            with pytest.raises(UpstreamError, match="List active tasks failed"):
                 asyncio.run(workflow_gw.start_task(_task()))
 
         mock_client.start_workflow.assert_not_called()
@@ -327,7 +327,7 @@ class TestWorkflowGateway:
             mock_client, describe=SimpleNamespace(status=None, task_queue=OWN_QUEUE)
         )
         with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
-            with pytest.raises(InternalServerError, match="Unknown workflow status"):
+            with pytest.raises(UpstreamError, match="Unknown workflow status"):
                 asyncio.run(workflow_gw.get_task_state("robot01-task-001"))
 
     def test_get_task_state_not_found(self, workflow_gw, mock_client):
@@ -373,7 +373,7 @@ class TestWorkflowGateway:
             "unavailable", RPCStatusCode.UNAVAILABLE, b""
         )
         with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
-            with pytest.raises(InternalServerError, match="Cancel workflow failed"):
+            with pytest.raises(UpstreamError, match="Cancel workflow failed"):
                 asyncio.run(workflow_gw.cancel_task("robot01-task-001"))
 
     # ==================== list_active_tasks ====================
@@ -462,7 +462,7 @@ class TestWorkflowGateway:
 
             async def _twice():
                 for _ in range(2):
-                    with pytest.raises(InternalServerError):
+                    with pytest.raises(UpstreamError):
                         await workflow_gw.list_active_tasks()
 
             asyncio.run(_twice())
@@ -510,7 +510,7 @@ class TestWorkflowGateway:
     ):
         mock_client.create_schedule.side_effect = Exception("boom")
         with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
-            with pytest.raises(InternalServerError, match="Create schedule failed"):
+            with pytest.raises(UpstreamError, match="Create schedule failed"):
                 asyncio.run(workflow_gw.create_schedule(_schedule()))
 
     # ==================== get_schedule ====================
@@ -618,7 +618,7 @@ class TestWorkflowGateway:
     def test_list_schedules_maps_failures_to_internal(self, workflow_gw, mock_client):
         mock_client.list_schedules.side_effect = Exception("boom")
         with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
-            with pytest.raises(InternalServerError, match="List schedules failed"):
+            with pytest.raises(UpstreamError, match="List schedules failed"):
                 asyncio.run(workflow_gw.list_schedules())
 
 

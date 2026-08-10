@@ -3,7 +3,7 @@ from typing import List
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from syncai_backend.exceptions import BadRequestError, InternalServerError
+from syncai_backend.exceptions import BadRequestError, UpstreamError
 from syncai_backend.gateways.robot.robot import RobotGateway
 
 
@@ -48,7 +48,7 @@ def init_network_router(
         success, message, networks = robot_gw.scan_wifi_networks()
         if not success:
             logger.error("Failed to scan WiFi networks", message=message)
-            raise InternalServerError(message)
+            raise UpstreamError(message)
 
         return ScanWifiNetworksResponse(
             networks=[

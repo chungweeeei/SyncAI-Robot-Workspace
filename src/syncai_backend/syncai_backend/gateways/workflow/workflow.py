@@ -26,7 +26,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from syncai_backend.exceptions import (
     BadRequestError,
     ConflictError,
-    InternalServerError,
+    UpstreamError,
     NotFoundError,
 )
 
@@ -425,7 +425,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         await self._require_idle(client)
 
@@ -449,7 +449,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to start workflow", error=str(err)
             )
-            raise InternalServerError("Start workflow failed")
+            raise UpstreamError("Start workflow failed")
 
         self._last_started_task_id = request.id
 
@@ -461,7 +461,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         handle = client.get_workflow_handle(task_id)
 
@@ -473,7 +473,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to describe workflow", error=str(err)
             )
-            raise InternalServerError("Describe workflow failed")
+            raise UpstreamError("Describe workflow failed")
 
         # Workflow ids are namespace-global; the task queue is what scopes an
         # execution to this robot (the predicate _active_query already uses).
@@ -493,7 +493,7 @@ class WorkflowGateway:
                 task_id=task_id,
                 status=str(description.status),
             )
-            raise InternalServerError("Unknown workflow status")
+            raise UpstreamError("Unknown workflow status")
 
         # Per-step state lives in the workflow and is exposed via a query. This
         # can fail in the brief window before the workflow's first task executes
@@ -587,7 +587,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            return failed(InternalServerError("Failed to connect to Temporal server"))
+            return failed(UpstreamError("Failed to connect to Temporal server"))
 
         tasks: List[ActiveTask] = []
         try:
@@ -644,12 +644,12 @@ class WorkflowGateway:
                 self._logger.error(
                     "[WorkflowGateway] Failed to list active tasks", error=str(err)
                 )
-            return failed(InternalServerError("List active tasks failed"))
+            return failed(UpstreamError("List active tasks failed"))
         except Exception as err:
             self._logger.error(
                 "[WorkflowGateway] Failed to list active tasks", error=str(err)
             )
-            return failed(InternalServerError("List active tasks failed"))
+            return failed(UpstreamError("List active tasks failed"))
 
         # Debug rather than info: this is the cache-miss line, i.e. the one that
         # says how often Temporal is actually being asked. It is the only way to
@@ -667,7 +667,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         handle = client.get_workflow_handle(task_id)
 
@@ -686,7 +686,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to describe workflow", error=str(err)
             )
-            raise InternalServerError("Cancel workflow failed")
+            raise UpstreamError("Cancel workflow failed")
 
         # 404, not 403 — see get_task_state.
         if description.task_queue != self._task_queue:
@@ -700,7 +700,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to cancel workflow", error=str(err)
             )
-            raise InternalServerError("Cancel workflow failed")
+            raise UpstreamError("Cancel workflow failed")
 
     async def create_schedule(self, schedule: ScheduleTask):
 
@@ -710,7 +710,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         spec = _build_schedule_spec(schedule.trigger)
 
@@ -748,7 +748,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to create schedule", error=str(err)
             )
-            raise InternalServerError("Create schedule failed")
+            raise UpstreamError("Create schedule failed")
 
     async def _require_owned_schedule(
         self, client: Client, schedule_id: str
@@ -778,7 +778,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to describe schedule", error=str(err)
             )
-            raise InternalServerError("Describe schedule failed")
+            raise UpstreamError("Describe schedule failed")
 
         if _schedule_task_queue(desc) != self._task_queue:
             raise NotFoundError(f"Schedule {schedule_id} not found")
@@ -793,7 +793,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         desc = await self._require_owned_schedule(client, schedule_id)
 
@@ -866,7 +866,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         schedules: List[ScheduleView] = []
         try:
@@ -905,7 +905,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to list schedules", error=str(err)
             )
-            raise InternalServerError("List schedules failed")
+            raise UpstreamError("List schedules failed")
 
         return schedules
 
@@ -917,7 +917,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         # Ownership gate (one extra RPC on a rare, operator-initiated call);
         # the verify→act race is benign — a schedule deleted in between just
@@ -934,7 +934,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to delete schedule", error=str(err)
             )
-            raise InternalServerError("Delete schedule failed")
+            raise UpstreamError("Delete schedule failed")
 
     async def pause_schedule(self, schedule_id: str):
 
@@ -944,7 +944,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         # Ownership gate — see delete_schedule.
         await self._require_owned_schedule(client, schedule_id)
@@ -959,7 +959,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to pause schedule", error=str(err)
             )
-            raise InternalServerError("Pause schedule failed")
+            raise UpstreamError("Pause schedule failed")
 
     async def resume_schedule(self, schedule_id: str):
 
@@ -969,7 +969,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
-            raise InternalServerError("Failed to connect to Temporal server")
+            raise UpstreamError("Failed to connect to Temporal server")
 
         # Ownership gate — see delete_schedule.
         await self._require_owned_schedule(client, schedule_id)
@@ -984,7 +984,7 @@ class WorkflowGateway:
             self._logger.error(
                 "[WorkflowGateway] Failed to resume schedule", error=str(err)
             )
-            raise InternalServerError("Resume schedule failed")
+            raise UpstreamError("Resume schedule failed")
 
 
 def init_workflow_gateway(

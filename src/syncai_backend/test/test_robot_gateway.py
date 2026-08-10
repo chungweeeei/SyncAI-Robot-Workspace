@@ -25,7 +25,12 @@ pytest.importorskip("rclpy")
 from action_msgs.msg import GoalStatus  # noqa: E402
 from builtin_interfaces.msg import Time  # noqa: E402
 
+from geometry_msgs.msg import Twist  # noqa: E402
+
 from syncai_backend.gateways.robot.robot import (  # noqa: E402
+    MAX_TRACKED_GOALS,
+    TELEOP_MAX_ANGULAR_RPS,
+    TELEOP_MAX_LINEAR_MPS,
     MotionKey,
     MoveState,
     RobotGateway,
@@ -193,6 +198,125 @@ class TestCancelMove:
 
         assert success is False
         assert "rejected" in message
+
+
+class TestGoalBookEviction:
+    """_goals is capped at MAX_TRACKED_GOALS — it used to grow forever.
+
+    Distinct uuids per goal here, unlike _send_goal's fixed GOAL_UUID: the cap
+    is about many goals coexisting, so they must not collide on one key.
+    """
+
+    def _send_goal(self, robot_gw, move_client, n: int):
+        handle = MagicMock()
+        handle.accepted = True
+        handle.goal_id = SimpleNamespace(uuid=uuid.UUID(int=n).bytes)
+        result_future = _Future(completed=False)
+        handle.get_result_async.return_value = result_future
+        move_client.send_goal_async.return_value = _Future(result=handle)
+
+        accepted, _, goal_id = robot_gw.move(x=0.0, y=0.0, yaw=0.0)
+        assert accepted
+        return goal_id, result_future
+
+    def _finish(self, result_future):
+        result_future.complete(
+            SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED, result=None)
+        )
+
+    def test_finished_goals_are_capped_oldest_first(self, robot_gw, move_client):
+        ids = []
+        for n in range(MAX_TRACKED_GOALS + 3):
+            goal_id, result_future = self._send_goal(robot_gw, move_client, n)
+            self._finish(result_future)
+            ids.append(goal_id)
+
+        assert len(robot_gw._goals) == MAX_TRACKED_GOALS
+        # The three oldest are gone, the newest five still answer.
+        for goal_id in ids[:3]:
+            assert robot_gw.get_move_status(goal_id=goal_id) is None
+        for goal_id in ids[3:]:
+            assert robot_gw.get_move_status(goal_id=goal_id) is not None
+
+    def test_an_executing_goal_is_never_evicted(self, robot_gw, move_client):
+        # Live goals may exceed the cap; the MOVE activity's get_move_status /
+        # cancel_move must keep working on every one of them.
+        futures = []
+        for n in range(MAX_TRACKED_GOALS + 2):
+            _, result_future = self._send_goal(robot_gw, move_client, n)
+            futures.append(result_future)
+
+        assert len(robot_gw._goals) == MAX_TRACKED_GOALS + 2
+
+        # Once they finish, the next insert trims the book back to the cap.
+        for result_future in futures:
+            self._finish(result_future)
+        self._send_goal(robot_gw, move_client, 100)
+
+        assert len(robot_gw._goals) == MAX_TRACKED_GOALS
+
+
+class TestTeleop:
+    """teleop_cmd_vel / teleop_stop — the WS teleop channel's gateway half.
+
+    The wire is normalized [-1, 1]; the scaling to real velocities and the
+    clamp are pinned here because this is the one place a client cannot
+    reach. The EXECUTING gate matters because the controller publishes the
+    same cmd_vel topic during FollowPath and there is no mux in the stack.
+    """
+
+    def _cmd_vel_pub(self, robot_gw):
+        return robot_gw._publishers["cmd_vel"]
+
+    def test_scales_normalized_input_to_the_ceilings(self, robot_gw):
+        ok, message = robot_gw.teleop_cmd_vel(vx=0.8, vy=-0.5, wz=-1.0)
+
+        assert (ok, message) == (True, "")
+        twist = self._cmd_vel_pub(robot_gw).publish.call_args[0][0]
+        assert twist.linear.x == pytest.approx(0.8 * TELEOP_MAX_LINEAR_MPS)
+        assert twist.linear.y == pytest.approx(-0.5 * TELEOP_MAX_LINEAR_MPS)
+        assert twist.angular.z == pytest.approx(-1.0 * TELEOP_MAX_ANGULAR_RPS)
+
+    def test_clamps_out_of_range_and_zeroes_non_finite(self, robot_gw):
+        ok, _ = robot_gw.teleop_cmd_vel(vx=2.0, vy=float("nan"), wz=-3.0)
+
+        assert ok is True
+        twist = self._cmd_vel_pub(robot_gw).publish.call_args[0][0]
+        assert twist.linear.x == pytest.approx(TELEOP_MAX_LINEAR_MPS)
+        assert twist.linear.y == 0.0
+        assert twist.angular.z == pytest.approx(-TELEOP_MAX_ANGULAR_RPS)
+
+    def test_stop_publishes_a_zero_twist(self, robot_gw):
+        robot_gw.teleop_stop()
+
+        assert self._cmd_vel_pub(robot_gw).publish.call_args[0][0] == Twist()
+
+    def test_refused_while_a_move_is_executing(self, robot_gw, move_client):
+        _send_goal(robot_gw, move_client)  # leaves the goal EXECUTING
+        pub = self._cmd_vel_pub(robot_gw)
+        pub.publish.reset_mock()
+
+        ok, message = robot_gw.teleop_cmd_vel(vx=1.0, vy=0.0, wz=0.0)
+
+        assert ok is False
+        assert "autonomous move in progress" in message
+        # The stop is suppressed too: the teleop path contributed no motion,
+        # and injecting zeros would fight the controller on its own topic.
+        robot_gw.teleop_stop()
+        pub.publish.assert_not_called()
+
+    def test_allowed_again_once_the_move_finishes(self, robot_gw, move_client):
+        _, result_future = _send_goal(robot_gw, move_client)
+        result_future.complete(
+            SimpleNamespace(status=GoalStatus.STATUS_SUCCEEDED, result=None)
+        )
+        pub = self._cmd_vel_pub(robot_gw)
+        pub.publish.reset_mock()
+
+        ok, _ = robot_gw.teleop_cmd_vel(vx=0.1, vy=0.0, wz=0.0)
+
+        assert ok is True
+        pub.publish.assert_called_once()
 
 
 class TestCommandServices:
