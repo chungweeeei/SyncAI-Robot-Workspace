@@ -5,9 +5,10 @@ import type { TeleopVector } from "@/hooks/use-joystick";
  * functions only, no React, no config.ts (which touches process.env/window),
  * so `node --experimental-strip-types` can exercise this file directly.
  *
- * The wire carries normalized [-1, 1] per axis, never m/s: the backend owns
- * the velocity ceilings (RobotGateway's TELEOP_MAX_*), so a buggy client
- * cannot command past them and a limit change is a one-place edit there.
+ * The wire carries [-1, 1] per axis, which the backend clamps again and
+ * publishes as-is (full stick = 1.0 m/s / 1.0 rad/s — the scale-down below
+ * the clamp was deliberately dropped). If a ceiling comes back, it belongs
+ * backend-side in RobotGateway.teleop_cmd_vel, not here.
  */
 
 function clampAxis(value: number): number {

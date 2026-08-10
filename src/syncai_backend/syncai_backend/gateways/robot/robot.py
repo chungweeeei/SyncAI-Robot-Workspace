@@ -68,18 +68,6 @@ class MoveGoal:
     result: Optional[Any] = None
 
 
-# Teleop velocity ceilings. The WS teleop contract is normalized [-1, 1] per
-# axis — the frontend never speaks m/s — so these constants are the single
-# place the robot's manual top speed is decided, and a buggy or malicious
-# client cannot exceed them. Values are deliberately under the nav stack's:
-# the controller runs desired_linear_vel 0.60 m/s, and the driver manager
-# multiplies forward/turn commands by ~1.4 (its velocity-scale correction for
-# the gait controller's undertracking), so a normalized 1.0 here already
-# reaches ~0.7 m/s at the gait controller.
-TELEOP_MAX_LINEAR_MPS = 0.5
-TELEOP_MAX_ANGULAR_RPS = 0.65
-
-
 # How many finished MOVE goals _goals keeps around. The dict used to grow
 # without bound — every goal carried its ClientGoalHandle and result forever,
 # so a robot on a patrol schedule leaked a few dozen entries a day. Five is
@@ -329,10 +317,14 @@ class RobotGateway:
         return True, ""
 
     def teleop_cmd_vel(self, vx: float, vy: float, wz: float) -> Tuple[bool, str]:
-        """Publish one teleop velocity command. Inputs are normalized [-1, 1].
+        """Publish one teleop velocity command, clamped to [-1, 1] per axis.
 
-        Scaling to real velocities happens here, against the TELEOP_MAX_*
-        ceilings — the WS contract deliberately never carries m/s.
+        The clamped value goes on the wire as-is (m/s and rad/s): there used
+        to be scale-to-ceiling constants here (0.5 m/s / 0.65 rad/s) but the
+        artificial cap was dropped on request — full stick now means
+        1.0 m/s / 1.0 rad/s. The [-1, 1] clamp is kept as the one hard bound:
+        a broken or hostile client can command fast, but never 10 m/s. If a
+        ceiling below 1.0 is ever wanted again, this is where it goes.
 
         Refused outright while a MOVE goal is EXECUTING: the controller owns
         cmd_vel during FollowPath (20 Hz), there is no mux in the stack, and
@@ -347,9 +339,9 @@ class RobotGateway:
             return False, "autonomous move in progress"
 
         twist = Twist()
-        twist.linear.x = _clamp_normalized(vx) * TELEOP_MAX_LINEAR_MPS
-        twist.linear.y = _clamp_normalized(vy) * TELEOP_MAX_LINEAR_MPS
-        twist.angular.z = _clamp_normalized(wz) * TELEOP_MAX_ANGULAR_RPS
+        twist.linear.x = _clamp_normalized(vx)
+        twist.linear.y = _clamp_normalized(vy)
+        twist.angular.z = _clamp_normalized(wz)
 
         self._publishers.get("cmd_vel").publish(twist)
 

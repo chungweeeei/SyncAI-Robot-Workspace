@@ -29,8 +29,6 @@ from geometry_msgs.msg import Twist  # noqa: E402
 
 from syncai_backend.gateways.robot.robot import (  # noqa: E402
     MAX_TRACKED_GOALS,
-    TELEOP_MAX_ANGULAR_RPS,
-    TELEOP_MAX_LINEAR_MPS,
     MotionKey,
     MoveState,
     RobotGateway,
@@ -259,32 +257,33 @@ class TestGoalBookEviction:
 class TestTeleop:
     """teleop_cmd_vel / teleop_stop — the WS teleop channel's gateway half.
 
-    The wire is normalized [-1, 1]; the scaling to real velocities and the
-    clamp are pinned here because this is the one place a client cannot
-    reach. The EXECUTING gate matters because the controller publishes the
-    same cmd_vel topic during FollowPath and there is no mux in the stack.
+    The wire value is published as-is; the only bound is the [-1, 1] clamp
+    (the scale-to-ceiling constants were dropped on request), and it is
+    pinned here because gateway-side is the one place a client cannot reach.
+    The EXECUTING gate matters because the controller publishes the same
+    cmd_vel topic during FollowPath and there is no mux in the stack.
     """
 
     def _cmd_vel_pub(self, robot_gw):
         return robot_gw._publishers["cmd_vel"]
 
-    def test_scales_normalized_input_to_the_ceilings(self, robot_gw):
+    def test_publishes_the_wire_value_as_is(self, robot_gw):
         ok, message = robot_gw.teleop_cmd_vel(vx=0.8, vy=-0.5, wz=-1.0)
 
         assert (ok, message) == (True, "")
         twist = self._cmd_vel_pub(robot_gw).publish.call_args[0][0]
-        assert twist.linear.x == pytest.approx(0.8 * TELEOP_MAX_LINEAR_MPS)
-        assert twist.linear.y == pytest.approx(-0.5 * TELEOP_MAX_LINEAR_MPS)
-        assert twist.angular.z == pytest.approx(-1.0 * TELEOP_MAX_ANGULAR_RPS)
+        assert twist.linear.x == pytest.approx(0.8)
+        assert twist.linear.y == pytest.approx(-0.5)
+        assert twist.angular.z == pytest.approx(-1.0)
 
     def test_clamps_out_of_range_and_zeroes_non_finite(self, robot_gw):
         ok, _ = robot_gw.teleop_cmd_vel(vx=2.0, vy=float("nan"), wz=-3.0)
 
         assert ok is True
         twist = self._cmd_vel_pub(robot_gw).publish.call_args[0][0]
-        assert twist.linear.x == pytest.approx(TELEOP_MAX_LINEAR_MPS)
+        assert twist.linear.x == 1.0
         assert twist.linear.y == 0.0
-        assert twist.angular.z == pytest.approx(-TELEOP_MAX_ANGULAR_RPS)
+        assert twist.angular.z == -1.0
 
     def test_stop_publishes_a_zero_twist(self, robot_gw):
         robot_gw.teleop_stop()

@@ -36,11 +36,11 @@ def init_teleop_router(
 
             {"vx": .., "vy": .., "wz": ..}
 
-        each axis normalized to [-1, 1] (REP-103 body frame: +vx forward,
-        +vy left, +wz CCW). Scaling to real velocities is the gateway's job,
-        against TELEOP_MAX_LINEAR_MPS / TELEOP_MAX_ANGULAR_RPS — the wire
-        never carries m/s, so the robot's manual top speed is decided in
-        exactly one place a client cannot reach.
+        each axis clamped by the gateway to [-1, 1] and published as-is in
+        m/s and rad/s (REP-103 body frame: +vx forward, +vy left, +wz CCW).
+        There is deliberately no scale-down below that clamp any more — full
+        stick is 1.0 m/s — but the clamp itself still lives gateway-side,
+        where a client cannot reach it.
 
         Server -> client frames exist only to say no:
 
