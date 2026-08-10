@@ -278,3 +278,111 @@ server;如果它需要跨來源關聯、或需要把部落知識編碼成結論,
 2. **提案 2**(stack doctor)——同宿主,把 `CLAUDE.md` 的知識變成可執行的判斷
 3. 觀察 agent 實際靠這兩個解掉了什麼,再決定 **3 / 4** 誰先
 4. **提案 5**(調參)最後,而且只對 sim
+
+---
+
+## 8. Agent 串接:deepagents(LangChain)
+
+上面所有提案講的都是「工具長什麼樣」;這一節回答「誰來呼叫這些工具」。結論:
+**互動式診斷不需要寫任何程式**——Claude Code 本身就是 MCP client:
+
+```bash
+claude mcp add --transport http syncai http://robot01.local:8000/mcp
+```
+
+deepagents 值得寫的場景是**嵌入式 / 自動化 agent**:排程健檢、operator console
+內建的對話式診斷、backend 觸發的自動故障分析。先確定「誰在什麼時候呼叫這個
+agent」,再決定要不要自己養一個 harness。
+
+### 8.1 為什麼是 deepagents
+
+三個理由,都直接對到這份文件既有的設計:
+
+1. **MCP 接線是一行 config。** deepagents 透過 `langchain-mcp-adapters` 的
+   `MultiServerMCPClient` 吃 MCP tools,支援 streamable HTTP——`syncai_ros_mcp`
+   正是 FastMCP over HTTP(port 8000),直接對上。
+2. **`interrupt_on` 直接落地 §5.3 的工具分級。** read-only / mutating /
+   destructive 三級制可以宣告式地寫成核准政策,不用自己寫 gate。
+3. **planning + subagents 適合提案 1、2 的任務形狀。**「任務為什麼卡住」是跨
+   日誌 / DDS / Temporal 的多步驟因果鏈,正是它 todo-planning 的用途;它的
+   virtual filesystem 也能承接大段日誌輸出,不把主 context 撐爆。
+
+架構上乾淨的一點:agent process 只跟 `:8000` 講 HTTP,**完全不碰 rclpy**,
+所以 §5.2 的 spin 執行緒問題與它無關——那始終是 MCP server 側的責任。agent
+可以跑在開發機或 fleet 側任何到得了機器人的地方。
+
+### 8.2 最小接線
+
+```python
+import asyncio
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.checkpoint.memory import MemorySaver
+from deepagents import create_deep_agent
+
+async def main():
+    client = MultiServerMCPClient({
+        "robot01": {
+            "transport": "http",
+            "url": "http://robot01.local:8000/mcp",  # mDNS 容器已經解得到
+        },
+    })
+    tools = await client.get_tools()
+
+    agent = create_deep_agent(
+        model="anthropic:claude-opus-5",
+        tools=tools,
+        system_prompt="你是 SyncAI 四足機器人的維運助理...",
+        interrupt_on=INTERRUPT_POLICY,   # 見 8.3
+        checkpointer=MemorySaver(),      # HITL 必需;上生產換 Postgres checkpointer
+    )
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "檢查 robot01 現在的導航狀態"}]},
+        config={"configurable": {"thread_id": "1"}},
+    )
+
+asyncio.run(main())
+```
+
+模型字串用 `anthropic:claude-opus-5`。checkpointer 上生產要換持久化的
+Postgres checkpointer——這個 stack 剛好已經有 Postgres(`:5432`)。
+
+### 8.3 工具分級 → `interrupt_on` 政策
+
+§5.3 的分級直接翻譯:
+
+```python
+INTERRUPT_POLICY = {
+    # read-only:不攔
+    "get_topics": False, "tail": False, "timeline": False, "check_stack": False,
+    # mutating:要人核准
+    "create_task":    {"allowed_decisions": ["approve", "reject"]},
+    "set_motion_key": {"allowed_decisions": ["approve", "edit", "reject"]},
+    # destructive:核准制,或乾脆不暴露
+    "switch_mode":    {"allowed_decisions": ["approve", "reject"]},
+}
+```
+
+進階:`when` predicate(langchain ≥ 1.3.3)可以做條件式攔截,例如只攔
+`set_motion_key` 中 key 為危險值的呼叫,其餘放行。
+
+⚠️ **`interrupt_on` 是 UX,不是安全邊界。** 攔截發生在 agent client 側;任何
+直接打 `:8000` 的東西都繞得過去。§5.3 那個教訓(backend 刻意不轉發 ESTOP
+`'4'`)的正確位置仍然在 **server 側**——deepagents 的核准機制是疊在上面的
+第二層,不是替代。
+
+### 8.4 多機器人的坑
+
+`MultiServerMCPClient` 同時掛 robot01 / robot02 時,兩邊的 `get_topics`、
+`tail` **同名衝突**。最省事的做法是**一台機器人一個 agent instance**——跟
+Temporal task queue 按 `robot_id` 分流的哲學一致。要單一 agent 管全 fleet,
+就回到 §5.4:fleet-side server 每個工具顯式收 `robot_id`,而不是把多個
+per-robot server 疊在同一個 client 裡。
+
+### 8.5 與落地順序的配合
+
+跟 §7 的順序天然配對:提案 1、2 全是唯讀工具,先做 agent + 全部
+`interrupt_on: False`,零風險跑起來驗證價值;等到要暴露 mutating 工具
+(create_task、switch_mode)時,checkpointer + interrupt 的骨架已經在了,
+只是加幾行分級設定。注意 HITL 的 approve / reject flow 需要 UI 端點——
+operator console(Next.js frontend)是自然的落點,這是接 mutating 工具前
+要先做的一件事。
