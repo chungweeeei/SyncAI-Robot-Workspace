@@ -9,8 +9,9 @@ command the robot to move.
 import os
 import threading
 import structlog
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional
 from rclpy.node import Node
+from rclpy.client import Client
 from nav2_msgs.srv import LoadMap
 
 
@@ -25,12 +26,8 @@ _LOAD_MAP_MESSAGES = {
     LoadMap.Response.RESULT_MAP_DOES_NOT_EXIST: (
         "map_server could not find the map yaml"
     ),
-    LoadMap.Response.RESULT_INVALID_MAP_DATA: (
-        "map_server could not read gridmap.pgm"
-    ),
-    LoadMap.Response.RESULT_INVALID_MAP_METADATA: (
-        "map_server rejected gridmap.yaml"
-    ),
+    LoadMap.Response.RESULT_INVALID_MAP_DATA: ("map_server could not read gridmap.pgm"),
+    LoadMap.Response.RESULT_INVALID_MAP_METADATA: ("map_server rejected gridmap.yaml"),
     LoadMap.Response.RESULT_UNDEFINED_FAILURE: (
         "map_server reported an undefined failure"
     ),
@@ -61,7 +58,7 @@ class MapGateway:
 
         self._node = node
 
-        self._service_clients: Dict[str, Any] = {}
+        self._service_clients: dict[str, Client] = {}
         self.register_service_clients()
 
     def register_service_clients(self):
@@ -81,7 +78,7 @@ class MapGateway:
 
         self._service_clients.update({"load_map": load_map_client})
 
-    def reload_map(self, yaml_path: str) -> Tuple[bool, str]:
+    def reload_map(self, yaml_path: str) -> tuple[bool, str]:
         """Make the running map_server re-read a map and re-publish it.
 
         ``loadMapCallback`` reads both the yaml and the .pgm off disk on every
@@ -98,7 +95,7 @@ class MapGateway:
         """
         load_map_client = self._service_clients.get("load_map")
         if not load_map_client.wait_for_service(timeout_sec=5.0):
-            return False, "map_server/load_map is not available; is the stack running?"
+            return False, "load_map service is not available."
 
         # map_io.cpp's loadMapYaml expands `~/` only to open the yaml, then
         # resolves the yaml's relative `image:` key against dirname() of the
@@ -130,7 +127,5 @@ class MapGateway:
         return True, ""
 
 
-def init_map_gateway(
-    logger: structlog.stdlib.BoundLogger, node: Node
-) -> MapGateway:
+def init_map_gateway(logger: structlog.stdlib.BoundLogger, node: Node) -> MapGateway:
     return MapGateway(logger=logger, node=node)

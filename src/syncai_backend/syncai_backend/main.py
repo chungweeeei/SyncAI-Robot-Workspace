@@ -112,7 +112,7 @@ class SyncAIBackend(Node):
         # plan is published in the map frame already.
         init_path_subscriber(logger=logger, node=self, telemetry_repo=telemetry_repo)
 
-        start_temporal_worker(
+        worker_handle = start_temporal_worker(
             logger=logger, robot_id=robot_id, robot_gw=robot_gw, artifact_gw=artifact_gw
         )
         start_rest_server(
@@ -126,6 +126,7 @@ class SyncAIBackend(Node):
             pointcloud_repo=pointcloud_repo,
             telemetry_repo=telemetry_repo,
             saved_task_repo=saved_task_repo,
+            worker_handle=worker_handle,
         )
 
 

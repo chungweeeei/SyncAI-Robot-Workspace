@@ -2,6 +2,7 @@ import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
@@ -54,7 +55,30 @@ class RobotWorkflow:
                 result: ActivityResult = await workflow.execute_activity(
                     activity_fn,
                     args=args,
-                    start_to_close_timeout=timedelta(minutes=3600),
+                    # Without an explicit policy Temporal retries forever
+                    # (maximum_attempts=0). The activities mark aborted moves
+                    # and unreachable artifacts retryable because those are
+                    # sometimes transient -- but against unlimited attempts, a
+                    # permanently blocked MOVE re-dispatched every backoff
+                    # interval kept this run open forever: the step showed
+                    # IN_PROGRESS for good, and ScheduleOverlapPolicy.SKIP
+                    # silently dropped every later trigger of the schedule.
+                    # Three attempts keeps the self-healing for the transient
+                    # cases and turns the persistent ones into a visible
+                    # FAILED step. The 5s initial interval is so a MOVE's
+                    # second try isn't 1s after the first (the default) --
+                    # too soon for e.g. a restarting action server to be back.
+                    retry_policy=RetryPolicy(
+                        initial_interval=timedelta(seconds=5),
+                        maximum_attempts=3,
+                    ),
+                    # Per-attempt ceiling. This used to be minutes=3600 -- 60
+                    # hours, a units slip (the intent was one hour), so it
+                    # could never fire. A dead worker is caught by the 3s
+                    # heartbeat regardless; this bounds the live-but-stuck
+                    # case where an attempt heartbeats forever without ever
+                    # reaching a terminal state.
+                    start_to_close_timeout=timedelta(hours=1),
                     heartbeat_timeout=timedelta(seconds=3),
                     cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
                 )

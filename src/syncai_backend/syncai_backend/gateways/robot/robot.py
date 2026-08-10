@@ -4,8 +4,10 @@ import threading
 import structlog
 from enum import Enum
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from rclpy.node import Node
+from rclpy.publisher import Publisher
+from rclpy.client import Client
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from nav2_msgs.action import NavigateToPose
@@ -78,17 +80,17 @@ class RobotGateway:
 
         self._node = node
 
-        self._action_clients: Dict[str, ActionClient] = {}
+        self._action_clients: dict[str, ActionClient] = {}
         self.register_action_clients()
 
-        self._service_clients: Dict[str, Any] = {}
+        self._service_clients: dict[str, Client] = {}
         self.register_service_clients()
 
-        self._publishers: Dict[str, Any] = {}
+        self._publishers: dict[str, Publisher] = {}
         self.register_publishers()
 
         self._lock = threading.Lock()
-        self._goals: Dict[str, MoveGoal] = {}
+        self._goals: dict[str, MoveGoal] = {}
 
     def register_action_clients(self):
 
@@ -343,7 +345,7 @@ class RobotGateway:
 
             goal.result = result.result
 
-    def get_move_status(self, goal_id: str) -> Optional[Dict[str, Any]]:
+    def get_move_status(self, goal_id: str) -> Optional[dict[str, Any]]:
 
         with self._lock:
             goal = self._goals.get(goal_id)

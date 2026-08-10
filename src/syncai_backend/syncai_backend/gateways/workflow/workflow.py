@@ -12,6 +12,7 @@ from temporalio.client import (
     Schedule,
     ScheduleActionStartWorkflow,
     ScheduleAlreadyRunningError,
+    ScheduleDescription,
     ScheduleIntervalSpec,
     ScheduleOverlapPolicy,
     SchedulePolicy,
@@ -19,10 +20,12 @@ from temporalio.client import (
 )
 from temporalio.api.common.v1 import Payload
 from temporalio.common import SearchAttributeKey
+from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
 from syncai_backend.exceptions import (
     BadRequestError,
+    ConflictError,
     InternalServerError,
     NotFoundError,
 )
@@ -152,7 +155,7 @@ def _spec_to_trigger(spec: ScheduleSpec) -> ScheduleTrigger:
     return ScheduleTrigger()
 
 
-def _schedule_to_memo(schedule: ScheduleTask) -> dict:
+def _schedule_to_memo(schedule: ScheduleTask, robot_id: str) -> dict:
     """Serialise a schedule's trigger and provenance into memo fields.
 
     The trigger has to be here because Temporal normalises cron_expressions into
@@ -161,8 +164,17 @@ def _schedule_to_memo(schedule: ScheduleTask) -> dict:
     reason: the memo is readable from ``list_schedules()`` while the
     start-workflow args are not, so this is the only channel by which the
     collection endpoint can say which map a schedule belongs to.
+
+    ``robot_id`` is written unconditionally, and for the same list-path reason:
+    the namespace is shared by every robot on the Temporal server, and the list
+    element's action (a ScheduleListActionStartWorkflow) does not carry the
+    task queue, so the memo is the only thing that lets ``list_schedules``
+    answer "mine or another robot's?" without a describe per row. The describe
+    path does not need it — the full action carries ``task_queue`` there — which
+    is exactly what the legacy fallback in ``list_schedules`` leans on for
+    schedules written before this key existed.
     """
-    memo: dict = {}
+    memo: dict = {"robot_id": robot_id}
     if schedule.trigger.cron:
         memo["cron"] = schedule.trigger.cron
     if schedule.trigger.interval_seconds:
@@ -205,6 +217,35 @@ def _trigger_from_memo(memo: dict, spec: ScheduleSpec) -> ScheduleTrigger:
         )
 
     return _spec_to_trigger(spec)
+
+
+def _schedule_task_queue(desc) -> Optional[str]:
+    """The task queue a described schedule dispatches onto, or None.
+
+    This is the ownership fact for a schedule: every schedule this backend
+    creates starts its workflow on ``<robot_id>.ROBOT_TASK_QUEUE``, so the
+    action's task queue says which robot the schedule belongs to — the same
+    predicate ``_active_query`` uses for running executions.
+
+    Only the *describe* path can answer: a ScheduleListDescription's action is a
+    ScheduleListActionStartWorkflow, one field (the workflow type name), with no
+    task queue at any price. Hence the memo carries ``robot_id`` for the list
+    path and this reads the action for the describe path.
+
+    None for anything that is not a start-workflow action. Callers treat that as
+    "not owned" — the opposite default from ``_read_steps``' never-fatal policy,
+    and deliberately so: steps are decoration on a schedule already known to be
+    ours, while ownership is the fact that decides whether another robot's
+    schedule can be paused or deleted from here. Decoration degrades open;
+    a safety predicate degrades closed.
+
+    Module-level and free of ``self`` for the same reason as ``_read_steps``:
+    unit tests hand it a hand-built description.
+    """
+    action = getattr(desc.schedule, "action", None)
+    if not isinstance(action, ScheduleActionStartWorkflow):
+        return None
+    return action.task_queue
 
 
 async def _read_steps(logger: structlog.stdlib.BoundLogger, desc) -> List[Step]:
@@ -250,8 +291,23 @@ class WorkflowGateway:
         # Tasks are enqueued on this robot's own task queue (must match the
         # worker's queue name in temporal/worker.py) so its own Temporal
         # worker — not another robot's — executes them.
+        self._robot_id = robot_id
         self._task_queue = f"{robot_id}.ROBOT_TASK_QUEUE"
         self._client: Client | None = None
+
+        # Ownership verdicts for schedules whose memo predates the robot_id
+        # key, so the describe-per-legacy-row fallback in list_schedules is
+        # paid once per schedule rather than once per poll. Never invalidated,
+        # and that is sound rather than lazy: the cache is consulted only for
+        # rows with no robot_id in the memo, and every schedule this codebase
+        # creates writes one — so a delete-and-recreate under the same id
+        # arrives with a memo and never reads its stale entry. The one writer
+        # that could still mint memo-less schedules is a backend running the
+        # previous version of this file.
+        #
+        # Same single-loop threading argument as _active_snapshot above: only
+        # the uvicorn event loop touches this, so no lock.
+        self._schedule_owner_cache: dict[str, bool] = {}
 
         # The active-task cache. Both fields are touched ONLY from the uvicorn
         # event loop (start_rest_server runs uvicorn on its own daemon thread);
@@ -262,6 +318,17 @@ class WorkflowGateway:
         # constructed on the main thread, before that loop exists.
         self._active_snapshot: Optional[_ActiveSnapshot] = None
         self._active_lock: Optional[asyncio.Lock] = None
+
+        # The last task start_task successfully started, for _require_idle's
+        # first check. The visibility index the second check reads is
+        # eventually consistent — a workflow started moments ago may not be in
+        # it yet — while describe-by-id is strongly consistent, so remembering
+        # our own last start is what closes the back-to-back-dispatch window.
+        # In-memory only: lost on restart, at which point the visibility sweep
+        # is still there and anything older than a restart is in the index.
+        # Same single-loop argument as the fields above — only the uvicorn
+        # event loop calls start_task.
+        self._last_started_task_id: Optional[str] = None
 
     async def _get_client(self) -> Client:
         if self._client is not None:
@@ -277,6 +344,79 @@ class WorkflowGateway:
 
         return self._client
 
+    async def _require_idle(self, client: Client) -> None:
+        """Refuse to dispatch while anything is already running on this robot.
+
+        "One robot does one task at a time" used to hold by accident, not by
+        rule: ScheduleOverlapPolicy.SKIP only constrains a schedule against
+        itself, and a direct POST /api/v1/tasks checked nothing at all. Two
+        concurrent workflows do not collide on the robot — the worker's
+        max_workers=1 serialises activities — but that mutex has the wrong
+        granularity: the *steps* of the two tasks interleave, so a MOVE →
+        ARTIFACT task can fire its pickup while the other task has walked the
+        robot away from the conveyor. This is the entrance every direct
+        dispatch goes through, so the rule is enforced here; scheduled runs
+        cannot be gated (Temporal starts them itself), which is why an
+        operator dispatch is refused *during* a scheduled run but not the
+        other way around.
+
+        Two reads, cheapest-and-strongest first:
+
+        1. Describe the task this process last started. Describe-by-id is
+           strongly consistent, so this closes the window where a start from
+           a moment ago has not reached the visibility index yet — and this
+           backend is the only writer of direct dispatches for its robot.
+        2. A fresh visibility sweep of the task queue (the _active_query
+           predicate), which sees everything else: scheduled runs, and starts
+           that predate a backend restart. Fresh rather than through
+           list_active_tasks' TTL cache — a console-poll-stale answer is fine
+           for display but not for a dispatch decision.
+
+        Check-then-start is not atomic; two requests in the same instant can
+        both pass. With this robot's writers being one console and the MCP
+        server, that residual window is accepted — the alternative (a mutex
+        workflow per robot) is a task-model rework.
+        """
+        if self._last_started_task_id is not None:
+            handle = client.get_workflow_handle(self._last_started_task_id)
+            try:
+                description = await handle.describe()
+            except RPCError as err:
+                if err.status == RPCStatusCode.NOT_FOUND:
+                    # Retention already dropped it; certainly not running.
+                    description = None
+                else:
+                    # Don't fail the dispatch on this read: the visibility
+                    # sweep below still runs and fails closed on error.
+                    self._logger.warn(
+                        "[WorkflowGateway] Failed to describe last started task",
+                        task_id=self._last_started_task_id,
+                        error=str(err),
+                    )
+                    description = None
+
+            if (
+                description is not None
+                and _WORKFLOW_STATUS_MAP.get(description.status) == "IN_PROGRESS"
+            ):
+                raise ConflictError(
+                    f"Robot is busy: task {self._last_started_task_id} is running"
+                )
+            self._last_started_task_id = None
+
+        snapshot = await self._fetch_active_tasks()
+        # A dispatch decision is as good a snapshot as a console poll; storing
+        # it keeps the active_tasks cache warm (same loop, same slot).
+        self._active_snapshot = snapshot
+        if snapshot.error is not None:
+            # Fail closed: "could not tell whether the robot is busy" must not
+            # become "assume it is idle" on a machine that moves.
+            raise snapshot.error
+        if snapshot.tasks:
+            raise ConflictError(
+                f"Robot is busy: task {snapshot.tasks[0].id} is running"
+            )
+
     async def start_task(self, request: WorkflowTask):
 
         try:
@@ -287,6 +427,8 @@ class WorkflowGateway:
             )
             raise InternalServerError("Failed to connect to Temporal server")
 
+        await self._require_idle(client)
+
         try:
             await client.start_workflow(
                 workflow=WORKFLOW_TYPE_NAME,
@@ -294,11 +436,22 @@ class WorkflowGateway:
                 args=[request],
                 task_queue=self._task_queue,
             )
+        except WorkflowAlreadyStartedError:
+            # Workflow ids are namespace-global while task queues are
+            # per-robot, so this fires for a re-post of this robot's own task
+            # AND for a collision with another robot's — Temporal rejects both
+            # identically and does not say which. A 400 naming the id beats the
+            # generic 502 below either way: the request was well formed, the id
+            # is just taken. Same precedent as create_schedule's
+            # ScheduleAlreadyRunningError.
+            raise BadRequestError(f"Task {request.id} already exists")
         except Exception as err:
             self._logger.error(
                 "[WorkflowGateway] Failed to start workflow", error=str(err)
             )
             raise InternalServerError("Start workflow failed")
+
+        self._last_started_task_id = request.id
 
     async def get_task_state(self, task_id: str) -> TaskState:
 
@@ -321,6 +474,17 @@ class WorkflowGateway:
                 "[WorkflowGateway] Failed to describe workflow", error=str(err)
             )
             raise InternalServerError("Describe workflow failed")
+
+        # Workflow ids are namespace-global; the task queue is what scopes an
+        # execution to this robot (the predicate _active_query already uses).
+        # Without this check a console pointed at robot01 could read — and,
+        # below in cancel_task, cancel — robot02's runs through nothing more
+        # than an id. 404 rather than 403, the same reasoning as the map
+        # router's _require_vertex: from this robot's URL space the task
+        # genuinely is not there, and "belongs to another robot" would confirm
+        # the id exists to a caller who addressed the wrong robot.
+        if description.task_queue != self._task_queue:
+            raise NotFoundError(f"Task {task_id} not found")
 
         status = _WORKFLOW_STATUS_MAP.get(description.status)
         if status is None:
@@ -507,6 +671,27 @@ class WorkflowGateway:
 
         handle = client.get_workflow_handle(task_id)
 
+        # Describe before cancelling, purely for the ownership check: cancel is
+        # the request that made the missing scope dangerous (an id is all it
+        # took to stop another robot mid-run), so it must not act until the
+        # execution is known to sit on this robot's task queue. Costs one RPC
+        # on a rare, operator-initiated call. The describe→cancel race is
+        # benign — a workflow that closes in between makes cancel a no-op, and
+        # one that is deleted answers NOT_FOUND, handled below either way.
+        try:
+            description = await handle.describe()
+        except RPCError as err:
+            if err.status == RPCStatusCode.NOT_FOUND:
+                raise NotFoundError(f"Task {task_id} not found")
+            self._logger.error(
+                "[WorkflowGateway] Failed to describe workflow", error=str(err)
+            )
+            raise InternalServerError("Cancel workflow failed")
+
+        # 404, not 403 — see get_task_state.
+        if description.task_queue != self._task_queue:
+            raise NotFoundError(f"Task {task_id} not found")
+
         try:
             await handle.cancel()
         except RPCError as err:
@@ -534,9 +719,10 @@ class WorkflowGateway:
         # that can be queried via GET /api/v1/tasks/{id}.
         workflow_task = WorkflowTask(id=schedule.id, definition=schedule.definition)
 
-        # Trigger + provenance into the memo, so get/list can echo both back.
+        # Trigger + provenance + this robot's identity into the memo, so
+        # get/list can echo the first two back and list can scope on the third.
         # See _schedule_to_memo for why the memo and not the action args.
-        memo = _schedule_to_memo(schedule)
+        memo = _schedule_to_memo(schedule, self._robot_id)
 
         try:
             await client.create_schedule(
@@ -553,7 +739,8 @@ class WorkflowGateway:
                     # new run start while the previous one is still executing.
                     policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
                 ),
-                memo=memo or None,
+                # Never empty: robot_id is always present, so no `or None`.
+                memo=memo,
             )
         except ScheduleAlreadyRunningError:
             raise BadRequestError(f"Schedule {schedule.id} already exists")
@@ -563,16 +750,24 @@ class WorkflowGateway:
             )
             raise InternalServerError("Create schedule failed")
 
-    async def get_schedule(self, schedule_id: str) -> ScheduleView:
+    async def _require_owned_schedule(
+        self, client: Client, schedule_id: str
+    ) -> ScheduleDescription:
+        """Describe a schedule, insisting it dispatches onto this robot's queue.
 
-        try:
-            client = await self._get_client()
-        except Exception as err:
-            self._logger.error(
-                "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
-            )
-            raise InternalServerError("Failed to connect to Temporal server")
+        Schedule ids are namespace-global while task queues are per-robot, so
+        without this gate the four single-schedule verbs (get / pause / resume /
+        delete) would operate on any robot's schedule through nothing more than
+        an id. The action's task queue is the same ownership fact _active_query
+        keys running executions on; it is read here rather than from the memo
+        because the describe path carries the full action — which also makes
+        the check hold for legacy schedules whose memo predates the robot_id
+        key.
 
+        404 rather than 403 on a foreign schedule, the same reasoning as
+        get_task_state (and the map router's _require_vertex before it): from
+        this robot's URL space the schedule genuinely is not there.
+        """
         handle = client.get_schedule_handle(schedule_id)
 
         try:
@@ -584,6 +779,23 @@ class WorkflowGateway:
                 "[WorkflowGateway] Failed to describe schedule", error=str(err)
             )
             raise InternalServerError("Describe schedule failed")
+
+        if _schedule_task_queue(desc) != self._task_queue:
+            raise NotFoundError(f"Schedule {schedule_id} not found")
+
+        return desc
+
+    async def get_schedule(self, schedule_id: str) -> ScheduleView:
+
+        try:
+            client = await self._get_client()
+        except Exception as err:
+            self._logger.error(
+                "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
+            )
+            raise InternalServerError("Failed to connect to Temporal server")
+
+        desc = await self._require_owned_schedule(client, schedule_id)
 
         memo = await _read_memo(desc)
 
@@ -600,6 +812,51 @@ class WorkflowGateway:
             # Only the describe path can reach the frozen steps; see _read_steps.
             steps=await _read_steps(self._logger, desc),
         )
+
+    async def _owns_listed_schedule(
+        self, client: Client, schedule_id: str, memo: dict
+    ) -> bool:
+        """Whether a schedule met on the *list* path belongs to this robot.
+
+        The cheap answer is the memo's robot_id, written by create_schedule
+        since the namespace became visibly shared; the list element's action
+        cannot carry the task queue (see _schedule_task_queue), so the memo is
+        the only per-row fact available without another RPC.
+
+        A memo with no robot_id is a legacy schedule, from before the key
+        existed. For those — and only those — fall back to one describe(),
+        whose full action does carry the task queue, and cache the verdict so
+        the cost is one RPC per legacy schedule ever, not per poll. See the
+        cache's note in __init__ for why it never needs invalidating.
+
+        A describe that fails answers False (row hidden this round) without
+        caching, so a transient RPC error neither drops the whole listing nor
+        sticks to the schedule — the same one-bad-row-must-not-cost-the-answer
+        policy as _fetch_active_tasks' unmapped-status skip. Hiding rather than
+        showing on error is the ownership default: see _schedule_task_queue.
+        """
+        owner = memo.get("robot_id")
+        if owner is not None:
+            return owner == self._robot_id
+
+        cached = self._schedule_owner_cache.get(schedule_id)
+        if cached is not None:
+            return cached
+
+        try:
+            desc = await client.get_schedule_handle(schedule_id).describe()
+        except Exception as err:
+            self._logger.warn(
+                "[WorkflowGateway] Failed to resolve legacy schedule owner; "
+                "hiding it from this listing",
+                schedule_id=schedule_id,
+                error=str(err),
+            )
+            return False
+
+        owned = _schedule_task_queue(desc) == self._task_queue
+        self._schedule_owner_cache[schedule_id] = owned
+        return owned
 
     async def list_schedules(self) -> List[ScheduleView]:
 
@@ -618,6 +875,10 @@ class WorkflowGateway:
             # the iterator directly — do not copy this shape onto that one.)
             async for item in await client.list_schedules():
                 memo = await _read_memo(item)
+                # The namespace is shared by every robot on this Temporal
+                # server; only this robot's schedules belong in its answer.
+                if not await self._owns_listed_schedule(client, item.id, memo):
+                    continue
                 schedules.append(
                     ScheduleView(
                         id=item.id,
@@ -658,6 +919,11 @@ class WorkflowGateway:
             )
             raise InternalServerError("Failed to connect to Temporal server")
 
+        # Ownership gate (one extra RPC on a rare, operator-initiated call);
+        # the verify→act race is benign — a schedule deleted in between just
+        # answers the NOT_FOUND handled below.
+        await self._require_owned_schedule(client, schedule_id)
+
         handle = client.get_schedule_handle(schedule_id)
 
         try:
@@ -680,6 +946,9 @@ class WorkflowGateway:
             )
             raise InternalServerError("Failed to connect to Temporal server")
 
+        # Ownership gate — see delete_schedule.
+        await self._require_owned_schedule(client, schedule_id)
+
         handle = client.get_schedule_handle(schedule_id)
 
         try:
@@ -701,6 +970,9 @@ class WorkflowGateway:
                 "[WorkflowGateway] Failed to connect to Temporal server", error=str(err)
             )
             raise InternalServerError("Failed to connect to Temporal server")
+
+        # Ownership gate — see delete_schedule.
+        await self._require_owned_schedule(client, schedule_id)
 
         handle = client.get_schedule_handle(schedule_id)
 

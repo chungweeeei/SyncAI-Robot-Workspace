@@ -24,9 +24,7 @@ def _execute(engine: Engine, clause: str, raise_error: bool = True):
                 raise e
 
 
-def connect_to_postgres(
-    logger: structlog.stdlib.BoundLogger, robot_id: str
-) -> Engine:
+def connect_to_postgres(logger: structlog.stdlib.BoundLogger, robot_id: str) -> Engine:
     pg_user = os.getenv("POSTGRES_USER", "syncrobotic")
     pg_password = os.getenv("POSTGRES_PASSWORD", "syncrobotic")
     pg_host = os.getenv("POSTGRES_HOST", "localhost")

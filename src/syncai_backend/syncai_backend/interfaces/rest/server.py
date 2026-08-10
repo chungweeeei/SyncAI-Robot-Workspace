@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from syncai_backend.exceptions import (
     BadRequestError,
+    ConflictError,
     InternalServerError,
     NotFoundError,
     UnauthorizedError,
@@ -32,6 +33,8 @@ from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
 from syncai_backend.gateways.map.map import MapGateway
 
+from syncai_backend.temporal.worker import TemporalWorkerHandle
+
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Map domain exceptions to HTTP responses so routers don't have to."""
@@ -46,6 +49,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(BadRequestError)
     async def _bad_request(_: Request, exc: BadRequestError) -> JSONResponse:
         return _json(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    @app.exception_handler(ConflictError)
+    async def _conflict(_: Request, exc: ConflictError) -> JSONResponse:
+        return _json(status.HTTP_409_CONFLICT, str(exc))
 
     @app.exception_handler(UnauthorizedError)
     async def _unauthorized(_: Request, exc: UnauthorizedError) -> JSONResponse:
@@ -67,6 +74,7 @@ def init_rest_server(
     pointcloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
     saved_task_repo: SavedTaskRepo,
+    worker_handle: TemporalWorkerHandle,
 ) -> FastAPI:
 
     description = """
@@ -89,8 +97,31 @@ def init_rest_server(
 
     @app.get("/health")
     async def health() -> dict:
-        """Liveness probe for the container healthcheck."""
-        return {"status": "ok"}
+        """Liveness probe, plus the task server's actual state.
+
+        The Temporal worker runs in a daemon thread whose death used to be
+        invisible: POST /tasks kept answering 200 (the gateway lazy-connects)
+        while nothing would ever execute the queued work. The handle makes
+        that state readable here.
+
+        Always HTTP 200 — a non-200 wired into a container healthcheck would
+        restart-loop the whole backend whenever Temporal is down for long,
+        and the rest of the process (telemetry, maps, manual control) is
+        still healthy. Degradation lives in the body. The field says
+        "task_server", not "temporal_worker": REST consumers get the
+        operator-facing vocabulary, not the implementation (the vertex /
+        MapPoint precedent).
+        """
+        worker_status, worker_error = worker_handle.snapshot()
+        return {
+            "status": (
+                "ok"
+                if worker_status == TemporalWorkerHandle.STATUS_RUNNING
+                else "degraded"
+            ),
+            "task_server": worker_status,
+            "task_server_error": worker_error,
+        }
 
     app.include_router(init_task_router(logger=logger, workflow_gw=workflow_gw))
     app.include_router(init_schedule_router(logger=logger, workflow_gw=workflow_gw))
@@ -148,6 +179,7 @@ def start_rest_server(
     pointcloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
     saved_task_repo: SavedTaskRepo,
+    worker_handle: TemporalWorkerHandle,
 ):
 
     app = init_rest_server(
@@ -161,6 +193,7 @@ def start_rest_server(
         pointcloud_repo=pointcloud_repo,
         telemetry_repo=telemetry_repo,
         saved_task_repo=saved_task_repo,
+        worker_handle=worker_handle,
     )
 
     def _run():
