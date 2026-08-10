@@ -8,12 +8,12 @@ whose action is a ``ScheduleListActionStartWorkflow`` -- one field, the workflow
 type name -- so the collection endpoint answers ``steps: []`` by construction,
 not by omission. Faking it would cost a describe RPC per row on first paint.
 
-And ``response_model_by_alias=False`` on the get route. ``MoveParams`` /
-``ArtifactParams`` inherit ``BaseSchema``'s camelCase alias generator, and
-FastAPI defaults that flag to True, so without it the response would spell an
-ARTIFACT step's params ``artifactId`` / ``waitFor`` / ``waitTimeoutSeconds``
-while the request side accepts both. ``MoveParams`` is all single words and
-cannot catch this -- which is why the test uses an ARTIFACT step.
+And ``response_model_by_alias=False`` on the get route. Everything under
+``BaseSchema`` inherits the camelCase alias generator, and FastAPI defaults
+that flag to True, so without it the response would spell ``map_name`` as
+``mapName`` while the request side accepts both. (The regression was
+originally pinned on ``ArtifactParams``'s fields; the artifact integration is
+gone, the flag still matters, so it is pinned on the body-level fields now.)
 """
 
 import asyncio
@@ -28,9 +28,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from syncai_backend.gateways.workflow.schema import (  # noqa: E402
-    ArtifactParams,
     MoveParams,
-    PickupCommand,
     ScheduleTrigger,
     ScheduleView,
     Step,
@@ -47,16 +45,7 @@ from syncai_backend.interfaces.rest.server import (  # noqa: E402
 )
 
 
-ARTIFACT_STEP = Step(
-    id="1-artifact",
-    type=StepType.ARTIFACT,
-    params=ArtifactParams(
-        artifact_id="conveyor01",
-        command=PickupCommand(action="pickup"),
-        wait_for="handoff",
-        wait_timeout_seconds=120,
-    ),
-)
+STANDUP_STEP = Step(id="1-standup", type=StepType.STANDUP)
 MOVE_STEP = Step(
     id="2-move", type=StepType.MOVE, params=MoveParams(x=1.0, y=2.0, theta=90.0)
 )
@@ -71,7 +60,7 @@ def _view(**overrides):
         "map_name": "full",
         "saved_task_id": "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
         "saved_task_name": "Morning patrol",
-        "steps": [ARTIFACT_STEP, MOVE_STEP],
+        "steps": [STANDUP_STEP, MOVE_STEP],
     }
     body.update(overrides)
     return ScheduleView(**body)
@@ -111,18 +100,22 @@ def client(logger, workflow_gw):
 def test_get_carries_steps_and_provenance(client):
     body = client.get("/api/v1/schedules/sched-1").json()
 
-    assert [s["id"] for s in body["steps"]] == ["1-artifact", "2-move"]
+    assert [s["id"] for s in body["steps"]] == ["1-standup", "2-move"]
     assert body["map_name"] == "full"
     assert body["saved_task_name"] == "Morning patrol"
 
 
-def test_get_serialises_step_params_in_snake_case(client):
-    """The response_model_by_alias=False regression test."""
-    params = client.get("/api/v1/schedules/sched-1").json()["steps"][0]["params"]
+def test_get_serialises_in_snake_case(client):
+    """The response_model_by_alias=False regression test.
 
-    assert "artifact_id" in params and "artifactId" not in params
-    assert "wait_for" in params and "waitFor" not in params
-    assert "wait_timeout_seconds" in params and "waitTimeoutSeconds" not in params
+    Pinned on the response's own multi-word fields: the step projection here
+    carries only id/type/params, and MoveParams is all single words, so the
+    body-level fields are what would flip to camelCase if the flag fell off.
+    """
+    body = client.get("/api/v1/schedules/sched-1").json()
+
+    assert "map_name" in body and "mapName" not in body
+    assert "next_run_times" in body and "nextRunTimes" not in body
 
 
 def test_list_never_carries_steps(client, workflow_gw):
@@ -201,14 +194,14 @@ def test_read_steps_decodes_payload_args(logger):
     from temporalio.client import ScheduleActionStartWorkflow
 
     task = WorkflowTask(
-        id="sched-1", definition=WorkflowTaskDefinition(steps=[ARTIFACT_STEP])
+        id="sched-1", definition=WorkflowTaskDefinition(steps=[STANDUP_STEP])
     )
     action = ScheduleActionStartWorkflow(
         "RobotWorkflow", args=[Payload()], id="sched-1", task_queue="q"
     )
 
     steps = asyncio.run(_read_steps(logger, _desc(action, _StubConverter(result=[task]))))
-    assert [s.id for s in steps] == ["1-artifact"]
+    assert [s.id for s in steps] == ["1-standup"]
 
 
 def test_read_steps_is_empty_for_a_foreign_action(logger):

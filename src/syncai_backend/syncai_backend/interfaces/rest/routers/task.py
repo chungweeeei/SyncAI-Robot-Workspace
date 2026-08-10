@@ -35,7 +35,7 @@ class StepRequest(BaseModel):
         default=None,
         description=(
             "Parameters for the step, which vary based on the step type. "
-            "Omitted for STANDUP/LIEDOWN, required for MOVE/ARTIFACT"
+            "Omitted for STANDUP/LIEDOWN, required for MOVE"
         ),
     )
 

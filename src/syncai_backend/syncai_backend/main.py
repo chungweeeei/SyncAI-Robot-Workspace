@@ -21,7 +21,6 @@ from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
 
 from syncai_backend.gateways.robot.robot import init_robot_gateway
 from syncai_backend.gateways.map.map import init_map_gateway
-from syncai_backend.gateways.artifact.artifact import init_artifact_gateway
 from syncai_backend.gateways.workflow.workflow import init_workflow_gateway
 
 from syncai_backend.subscribers.robot_state_subscriber import (
@@ -86,7 +85,6 @@ class SyncAIBackend(Node):
         # initialpose, NavigateToPose), and the map router has no business
         # holding a handle that can command the robot to move.
         map_gw = init_map_gateway(logger=logger, node=self)
-        artifact_gw = init_artifact_gateway(logger=logger)
         workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
 
         # One /tf + /tf_static subscription for the whole process, shared by the
@@ -113,7 +111,7 @@ class SyncAIBackend(Node):
         init_path_subscriber(logger=logger, node=self, telemetry_repo=telemetry_repo)
 
         worker_handle = start_temporal_worker(
-            logger=logger, robot_id=robot_id, robot_gw=robot_gw, artifact_gw=artifact_gw
+            logger=logger, robot_id=robot_id, robot_gw=robot_gw
         )
         start_rest_server(
             logger=logger,

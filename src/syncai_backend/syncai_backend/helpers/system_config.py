@@ -5,10 +5,10 @@
 ``config/instances/robotNN.ini`` over it inside the container. ``[map]`` in that
 same file is what decides which map the stack loads.
 
-``gateways/artifact/artifact.py`` already carries its own copy of the path
-constant and its own ``configparser`` read. It is left alone on purpose: it is a
-working path on a live robot and this module has no reason to touch it. If a
-third reader ever appears, consolidate all three here rather than pasting again.
+``gateways/artifact/artifact.py`` used to carry its own copy of the path
+constant and its own ``configparser`` read; it went away with the artifact
+integration (2026-08), leaving this module the only INI reader. If a second
+reader ever appears, consolidate it here rather than pasting again.
 """
 
 import configparser

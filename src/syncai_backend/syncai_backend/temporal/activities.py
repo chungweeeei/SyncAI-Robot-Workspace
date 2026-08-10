@@ -9,12 +9,6 @@ from temporalio.exceptions import ApplicationError, CancelledError
 
 from syncai_backend.gateways.workflow.schema import StepParams
 from syncai_backend.gateways.robot.robot import MotionKey, RobotGateway
-from syncai_backend.gateways.artifact.artifact import (
-    ArtifactGateway,
-    ArtifactCommandRejected,
-    ArtifactUnavailable,
-    UnknownArtifactError,
-)
 
 
 class ActivityResult(BaseModel):
@@ -28,11 +22,9 @@ class RobotActivities:
         self,
         logger: structlog.stdlib.BoundLogger,
         robot_gw: RobotGateway,
-        artifact_gw: ArtifactGateway,
     ):
         self._logger = logger
         self._robot_gw = robot_gw
-        self._artifact_gw = artifact_gw
 
     def _wait_for_nav_goal(self, goal_id: str, label: str) -> str:
         """Poll a navigation goal until it reaches a terminal state.
@@ -115,73 +107,3 @@ class RobotActivities:
     @activity.defn
     def execute_lie_down(self) -> ActivityResult:
         return self._set_motion_key(key=MotionKey.LIE_DOWN, label="LieDown")
-
-    @activity.defn
-    def execute_artifact(self, params: StepParams) -> ActivityResult:
-        try:
-            ack = self._artifact_gw.send_command(
-                artifact_id=params.artifact_id, command=params.command.model_dump()
-            )
-        except (UnknownArtifactError, ArtifactCommandRejected) as err:
-            raise ApplicationError(str(err), non_retryable=True) from err
-        except ArtifactUnavailable as err:
-            raise ApplicationError(str(err), non_retryable=False) from err
-
-        self._logger.info(
-            "[RobotActivity] Artifact command accepted",
-            artifact_id=params.artifact_id,
-            ack=ack,
-        )
-
-        if params.wait_for is None:
-            return ActivityResult(success=True)
-
-        # The command ack only means the trigger register was written; poll
-        # the artifact state until live_info.phase reaches the expected value.
-        expected_phase = params.wait_for.value
-        deadline = time.monotonic() + params.wait_timeout_seconds
-
-        try:
-            while True:
-                # A transient GET failure must not fail (and thus retry) the
-                # activity: the edge-triggered command already fired and a
-                # retry would re-trigger it. Keep polling until the deadline.
-                try:
-                    state = self._artifact_gw.get_state(params.artifact_id)
-                except (ArtifactUnavailable, ArtifactCommandRejected) as err:
-                    self._logger.warning(
-                        "[RobotActivity] Artifact state poll failed",
-                        artifact_id=params.artifact_id,
-                        error=str(err),
-                    )
-                    state = None
-
-                activity.heartbeat(state)
-
-                if state is not None:
-                    if state.get("error_code", 0) != 0:
-                        raise ApplicationError(
-                            f"artifact reported error_code={state['error_code']}",
-                            non_retryable=True,
-                        )
-
-                    live_info = state.get("live_info") or {}
-                    if live_info.get("phase") == expected_phase:
-                        return ActivityResult(success=True)
-
-                if time.monotonic() >= deadline:
-                    raise ApplicationError(
-                        f"artifact did not reach phase '{expected_phase}' within "
-                        f"{params.wait_timeout_seconds}s",
-                        non_retryable=True,
-                    )
-
-                time.sleep(1.0)
-
-        except CancelledError:
-            # No cancel API on the artifact side; the command already fired.
-            self._logger.warning(
-                "[RobotActivity] Artifact activity has been cancelled",
-                artifact_id=params.artifact_id,
-            )
-            raise

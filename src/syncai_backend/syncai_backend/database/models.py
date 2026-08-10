@@ -59,10 +59,11 @@ class SavedTask(Base):
 
     1. **This package has no migrations.** The schema is whatever ``create_all``
        produced on first boot. A typed child table would freeze the *step
-       vocabulary* into DDL nothing here can subsequently alter -- ``ArtifactParams``
-       alone is a discriminated command union of five fields, and the next step
-       type would need an ``ALTER TABLE`` on a robot with no tool to run one. A
-       JSON array grows an optional key and the old rows keep validating.
+       vocabulary* into DDL nothing here can subsequently alter -- the removed
+       ``ArtifactParams`` alone was a discriminated command union of five
+       fields, and the next step type would need an ``ALTER TABLE`` on a robot
+       with no tool to run one. A JSON array grows an optional key and the old
+       rows keep validating.
     2. **The step schema is already enforced above the storage layer.**
        ``StepRequest`` + ``validate_step_params`` is the single authority on which
        step types carry which params, and it runs at the request boundary. Typed

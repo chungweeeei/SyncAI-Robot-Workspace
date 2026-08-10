@@ -165,12 +165,11 @@ def init_schedule_router(
     @schedule_router.get(
         "/api/v1/schedules/{id}",
         response_model=ScheduleStateResponse,
-        # The only route here that serialises StepParams outward, and FastAPI
-        # defaults this flag to True: MoveParams / ArtifactParams inherit
-        # BaseSchema's to_camel generator, so the default would answer
-        # `artifactId` / `waitFor` / `waitTimeoutSeconds` while the request side
-        # accepts both spellings — a silent asymmetry at a boundary the frontend
-        # documents as snake_case-only.
+        # The only route here that serialises Step objects outward, and FastAPI
+        # defaults this flag to True: everything under BaseSchema inherits the
+        # to_camel generator, so the default would answer `error_msg` as
+        # `errorMsg` while the request side accepts both spellings — a silent
+        # asymmetry at a boundary the frontend documents as snake_case-only.
         response_model_by_alias=False,
     )
     async def get_schedule(id: str):

@@ -46,8 +46,8 @@ The layering is a convention, not something tooling enforces:
 ```
 interfaces/rest/routers/   HTTP + WS surface; pydantic schemas; no business logic
         │
-gateways/                  outbound integrations: ROS (robot), Temporal (workflow),
-        │                  artifact backends (HTTP)
+gateways/                  outbound integrations: ROS (robot, map), Temporal (workflow)
+        │
 repositories/              state stores: in-memory caches + PostgreSQL CRUD
         │
 database/                  SQLAlchemy engine + ORM models
@@ -208,7 +208,7 @@ registered in `server.py` map them to HTTP:
 | `NotFoundError` | 404 |
 | `BadRequestError` | 400 |
 | `UnauthorizedError` | 401 |
-| `InternalServerError` | **502 Bad Gateway** (these all mean a downstream — Temporal, a ROS service, an artifact backend — failed) |
+| `InternalServerError` | **502 Bad Gateway** (these all mean a downstream — Temporal or a ROS service — failed) |
 
 **Point-cloud wire format** (both the WS stream and `GET /api/v1/map/pointcloud`):
 
@@ -267,7 +267,11 @@ dispatches by `StepType`:
 | StepType | Activity | What it does |
 |---|---|---|
 | `MOVE` | `execute_move` | Send a `NavigateToPose` goal, poll to a terminal state, heartbeat each second |
-| `ARTIFACT` | `execute_artifact` | POST a command to the artifact backend's REST API, optionally poll its state until `live_info.phase` reaches `wait_for` |
+| `STANDUP` / `LIEDOWN` | `execute_stand` / `execute_lie_down` | Send the motion key; fire-and-forget (see the note in `activities.py`) |
+
+(`ARTIFACT` — conveyor pickup/drop over the artifact backend's REST API — was
+removed in 2026-08 along with `gateways/artifact/`; saved tasks or schedules
+that still carry an ARTIFACT step must be purged before deploying.)
 
 Details that matter when editing this path:
 
@@ -281,9 +285,6 @@ Details that matter when editing this path:
 - **Per-step state is a workflow query** (`get_step_states`), not a database
   table. `GET /api/v1/tasks/{id}` degrades to an empty step list if the query
   fails (no worker polling yet), rather than erroring the whole request.
-- **Retry semantics are deliberate.** An artifact command is *edge-triggered* —
-  retrying re-fires it — so a transient state-poll failure is swallowed and
-  polling continues to the deadline instead of failing the activity.
 - **Schedules use `SKIP` overlap policy**: a robot can only do one thing at a
   time, so a new run never starts while the previous one is still executing.
 - Temporal normalises cron expressions into internal calendar specs, so the
@@ -305,13 +306,6 @@ Details that matter when editing this path:
   not active, and refuses one with a `MISSING` vertex — an unattended run does not
   get the snapshot fallback an operator watching the screen is allowed.
 
-**Standing decision:** `ARTIFACT` activities call the artifact REST API directly.
-The behavior-tree route is reserved for a future need for tick-level parallelism.
-
-The artifact registry comes from the `[artifacts]` section of `config/system.ini`
-(`artifact_id = base_url`), read once at startup. Missing section ⇒ `ARTIFACT`
-steps fail with a clear error.
-
 ## Configuration
 
 | Env var | Default | Used by |
@@ -321,13 +315,12 @@ steps fail with a clear error.
 | `POSTGRES_PORT` | `5432` | ditto |
 | `POSTGRES_USER` | `syncrobotic` | ditto |
 | `POSTGRES_PASSWORD` | `syncrobotic` | ditto |
-| `SYNCAI_SYSTEM_INI` | `config/system.ini` | Artifact registry lookup |
+| `SYNCAI_SYSTEM_INI` | `config/system.ini` | `helpers/system_config.py` (per-robot INI reads, e.g. `[map]`) |
 
 `.env` in the workspace root is loaded via `python-dotenv` at import time.
 
-Two things are read from **`config/system.ini`** rather than the environment:
-`[system] robot_id` (by the launch file) and `[artifacts]` (by
-`ArtifactGateway`). Both use the *relative* path `config/system.ini`, which works
+`[system] robot_id` is read from **`config/system.ini`** rather than the
+environment (by the launch file), using the *relative* path — which works
 because every process in this stack runs with the workspace root as its cwd.
 
 Postgres connection is retried 20× at 5 s intervals on startup, and the

@@ -30,7 +30,6 @@ class RobotWorkflow:
 
         activity_map = {
             StepType.MOVE: RobotActivities.execute_move,
-            StepType.ARTIFACT: RobotActivities.execute_artifact,
             StepType.STANDUP: RobotActivities.execute_stand,
             StepType.LIEDOWN: RobotActivities.execute_lie_down,
         }
@@ -56,9 +55,9 @@ class RobotWorkflow:
                     activity_fn,
                     args=args,
                     # Without an explicit policy Temporal retries forever
-                    # (maximum_attempts=0). The activities mark aborted moves
-                    # and unreachable artifacts retryable because those are
-                    # sometimes transient -- but against unlimited attempts, a
+                    # (maximum_attempts=0). The activities mark aborted and
+                    # rejected moves retryable because those are sometimes
+                    # transient -- but against unlimited attempts, a
                     # permanently blocked MOVE re-dispatched every backoff
                     # interval kept this run open forever: the step showed
                     # IN_PROGRESS for good, and ScheduleOverlapPolicy.SKIP

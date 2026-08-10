@@ -468,15 +468,14 @@ def init_saved_task_router(
 
     # --- Routes -------------------------------------------------------------
     #
-    # `response_model_by_alias=False` on every route returning StepParams, and it
-    # is load-bearing: these are the first responses in this codebase to
-    # serialise MoveParams / ArtifactParams outward, FastAPI defaults that flag to
-    # True, and those models inherit BaseSchema's to_camel generator. The default
-    # would answer ArtifactParams as `artifactId` / `waitFor` /
-    # `waitTimeoutSeconds` while the request side accepts both spellings -- a
-    # silent asymmetry at the one boundary the frontend documents as
-    # snake_case-only. MoveParams happens to be unaffected (all single words),
-    # which is exactly why it would go unnoticed until the first ARTIFACT step.
+    # `response_model_by_alias=False` on every route returning Step objects, and
+    # it is load-bearing: FastAPI defaults that flag to True, and everything
+    # under BaseSchema inherits the to_camel generator, so the default would
+    # answer `error_msg` as `errorMsg` (and any future multi-word params field
+    # likewise) while the request side accepts both spellings -- a silent
+    # asymmetry at the one boundary the frontend documents as snake_case-only.
+    # MoveParams happens to be unaffected (all single words), which is exactly
+    # why it would go unnoticed until the first multi-word field shipped.
     #
     # Plain `def`, not `async def`, for everything except /schedule: these touch
     # psycopg2, so FastAPI must run them in its worker threadpool rather than on

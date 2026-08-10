@@ -352,9 +352,9 @@ class WorkflowGateway:
         itself, and a direct POST /api/v1/tasks checked nothing at all. Two
         concurrent workflows do not collide on the robot — the worker's
         max_workers=1 serialises activities — but that mutex has the wrong
-        granularity: the *steps* of the two tasks interleave, so a MOVE →
-        ARTIFACT task can fire its pickup while the other task has walked the
-        robot away from the conveyor. This is the entrance every direct
+        granularity: the *steps* of the two tasks interleave, so the robot
+        walks one task's route with the other task's stops spliced into it.
+        This is the entrance every direct
         dispatch goes through, so the rule is enforced here; scheduled runs
         cannot be gated (Temporal starts them itself), which is why an
         operator dispatch is refused *during* a scheduled run but not the

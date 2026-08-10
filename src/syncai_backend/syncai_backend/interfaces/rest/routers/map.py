@@ -82,8 +82,10 @@ class VertexType(str, Enum):
     # A plain navigation stop (no pure path-only vertices exist in this
     # system, so every ordinary nav target is GENERAL).
     GENERAL = "GENERAL"
-    # An IoT device station (pickup/drop/conveyor, etc.); name mirrors
-    # ``StepType.ARTIFACT`` in the workflow schema.
+    # An IoT device station (pickup/drop/conveyor, etc.). The name used to
+    # mirror ``StepType.ARTIFACT``; that step type went away with the conveyor
+    # integration (2026-08), but the vertex label stays — it marks a place on
+    # the map, existing rows carry it, and the frontend renders it.
     ARTIFACT = "ARTIFACT"
     # A charging dock.
     CHARGER = "CHARGER"

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, List, Literal, Union, Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 from enum import Enum
@@ -21,9 +21,14 @@ class StepStatus(str, Enum):
     CANCELED = "CANCELED"
 
 
+# ARTIFACT (conveyor pickup/drop via the artifact backend's REST API) was a
+# member here until 2026-08: the whole integration — gateways/artifact,
+# execute_artifact, ArtifactParams and its command union — was removed when the
+# conveyor work was shelved, deliberately rather than left to rot. Old saved
+# tasks / frozen schedules that still carry an ARTIFACT step fail Step
+# validation now; purge them before deploying a build without it.
 class StepType(str, Enum):
     MOVE = "MOVE"
-    ARTIFACT = "ARTIFACT"
     STANDUP = "STANDUP"
     LIEDOWN = "LIEDOWN"
 
@@ -44,88 +49,21 @@ class MoveParams(BaseSchema):
     )
 
 
-# Mirrors the artifact backend's command API (SyncAI-Artifact-Workspace
-# routers/artifact.py). Field names/values must stay in sync with it: the
-# command is forwarded verbatim and re-validated there.
-class PickupCommand(BaseSchema):
-    action: Literal["pickup"]
-    robot: Union[Annotated[int, Field(ge=0, le=0xFFFE)], Literal["any"]] = Field(
-        "any", description="Robot index, or 'any' = closest robot in the dock"
-    )
-    box: int = Field(
-        0, ge=0, le=0xFFFE, description="0 = unspecified; N = boxNN", examples=[0]
-    )
-
-
-class DropCommand(BaseSchema):
-    action: Literal["drop"]
-    zone: Union[Annotated[int, Field(ge=0, le=0xFFFE)], Literal["any"]] = Field(
-        "any", description="Drop-zone index, or 'any' = debug bypass"
-    )
-    box: int = Field(
-        0, ge=0, le=0xFFFE, description="0 = unspecified; N = boxNN", examples=[0]
-    )
-
-
-ArtifactCommand = Annotated[
-    Union[PickupCommand, DropCommand], Field(discriminator="action")
-]
-
-
-# Cargo pipeline phase reported in live_info.phase (GET /state). Mirrors the
-# sim's phase codes decoded by syncai_artifact_state: belt -> handoff ->
-# carried -> dropped.
-class ConveyorPhase(str, Enum):
-    BELT = "belt"
-    HANDOFF = "handoff"
-    CARRIED = "carried"
-    DROPPED = "dropped"
-
-
-class ArtifactParams(BaseSchema):
-    artifact_id: str = Field(
-        ...,
-        description="Registry key resolving to the artifact backend base URL",
-        examples=["conveyor01"],
-    )
-    command: ArtifactCommand = Field(
-        ...,
-        description=(
-            "Command sent as the POST /api/v1/artifact/command body, "
-            "discriminated by 'action'"
-        ),
-        examples=[{"action": "pickup", "robot": "any", "box": 0}],
-    )
-    wait_for: Optional[ConveyorPhase] = Field(
-        default=None,
-        description=(
-            "If set, poll the artifact state until live_info.phase reaches "
-            "this value; if omitted the step completes once the command is "
-            "accepted"
-        ),
-        examples=["handoff"],
-    )
-    wait_timeout_seconds: int = Field(
-        60,
-        gt=0,
-        description="Fail the step if wait_for is not reached within this time",
-        examples=[120],
-    )
-
-
-StepParams = Union[MoveParams, ArtifactParams]
+# A single-member union since the ARTIFACT removal, kept as an alias on
+# purpose: this is the extension point the next parameterised step type
+# re-widens, and every signature that says StepParams keeps saying what it
+# means.
+StepParams = MoveParams
 
 
 # Which params model each step type expects; None means the step takes no
 # params at all (STANDUP/LIEDOWN are a single motion key, there is nothing to
-# parameterise). The table exists because StepParams is a plain union with no
-# discriminator: without an explicit check a MOVE step carrying an artifact
-# body -- or, now that params is optional, no body at all -- would validate
-# fine here and only blow up inside the activity, long after the REST call was
-# answered with 200.
+# parameterise). The table survives StepParams collapsing to one model:
+# without it a MOVE step with no body at all -- params is optional -- would
+# validate fine here and only blow up inside the activity, long after the REST
+# call was answered with 200.
 STEP_PARAMS_TYPE: dict[StepType, Optional[type[BaseModel]]] = {
     StepType.MOVE: MoveParams,
-    StepType.ARTIFACT: ArtifactParams,
     StepType.STANDUP: None,
     StepType.LIEDOWN: None,
 }
@@ -156,7 +94,7 @@ class Step(BaseSchema):
         default=None,
         description=(
             "Parameters for the step, which vary based on the step type. "
-            "Omitted for STANDUP/LIEDOWN, required for MOVE/ARTIFACT"
+            "Omitted for STANDUP/LIEDOWN, required for MOVE"
         ),
     )
     status: StepStatus = Field(
