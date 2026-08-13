@@ -367,3 +367,57 @@ class TestCommandServices:
         assert published.header.frame_id == "map"
         assert published.pose.pose.position.x == 1.0
         assert published.pose.pose.orientation.z == pytest.approx(math.sin(math.pi / 2))
+
+
+class TestSwitchMode:
+    """switch_mode is three-valued; None is a real switch, not a failure.
+
+    The unanswered case uses a never-completing future plus a shrunken ack
+    window rather than waiting out the real 2 s — the constant is module-level
+    for exactly this.
+    """
+
+    def _service(self, robot_gw, response=None, available=True, completed=True):
+        client = robot_gw._service_clients["switch_mode"]
+        client.wait_for_service.return_value = available
+        client.call_async.return_value = _Future(result=response, completed=completed)
+        return client
+
+    def test_quick_answer_is_passed_through(self, robot_gw):
+        client = self._service(
+            robot_gw, SimpleNamespace(success=True, message="Already in AUTO")
+        )
+
+        success, message = robot_gw.switch_mode(mode=2)
+
+        assert (success, message) == (True, "Already in AUTO")
+        assert client.call_async.call_args[0][0].mode == 2
+
+    def test_refusal_is_passed_through(self, robot_gw):
+        self._service(
+            robot_gw, SimpleNamespace(success=False, message="refused")
+        )
+
+        success, message = robot_gw.switch_mode(mode=1)
+
+        assert (success, message) == (False, "refused")
+
+    def test_unanswered_switch_reports_none(self, robot_gw, monkeypatch):
+        from syncai_backend.gateways.robot import robot as robot_module
+
+        monkeypatch.setattr(robot_module, "SWITCH_MODE_ACK_TIMEOUT", 0.01)
+        self._service(robot_gw, completed=False)
+
+        success, message = robot_gw.switch_mode(mode=1)
+
+        assert success is None
+        assert "dispatched" in message
+
+    def test_service_unavailable(self, robot_gw):
+        client = self._service(robot_gw, available=False)
+
+        success, message = robot_gw.switch_mode(mode=2)
+
+        assert success is False
+        assert "not available" in message
+        client.call_async.assert_not_called()

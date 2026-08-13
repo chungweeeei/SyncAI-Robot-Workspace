@@ -38,6 +38,9 @@ receives, so it has no way to persist an array the browser edited.
 import hashlib
 import os
 import struct
+import subprocess
+import sys
+import threading
 import uuid
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
@@ -47,7 +50,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from syncai_backend.exceptions import BadRequestError, NotFoundError
+from syncai_backend.exceptions import BadRequestError, NotFoundError, UpstreamError
 from syncai_backend.database.models import MapPoint
 from syncai_backend.gateways.map.map import MapGateway
 from syncai_backend.helpers.pgm import render_png, render_thumbnail
@@ -67,6 +70,27 @@ from syncai_backend.repositories.map.map import MapRepo
 # subscriber; if one moves, move the other.
 MAP_CLOUD_VOXEL_SIZE = 0.3
 MAP_CLOUD_MAX_POINTS = 300000
+
+# The pcd -> gridmap conversion tool, and the recipe POST /api/v1/maps runs it
+# with after a save. ~/robot_ws rather than a cwd-relative path, matching
+# MapCatalogRepo.maps_dir — the byobu panes do start in the workspace root, but
+# the maps root is already pinned this way and the two must agree.
+#
+# The flags are the tool docstring's dp1f recipe verbatim, z-bands included.
+# The z-bands are honest defaults, not universals: LIO's z=0 is the lidar
+# mount height at the mapping start pose, so they hold for this robot standing
+# on flat ground, and a site where they don't gets its map re-converted by
+# hand with --stats to pick bands (the conversion is re-runnable; gridmap_raw
+# is not created until the first edit). --free-mode floor and --min-points 2
+# specifically are the two choices the docstring says to keep.
+PCD_TO_GRIDMAP = os.path.expanduser("~/robot_ws/tools/pcd_to_gridmap.py")
+GRIDMAP_RECIPE = [
+    "--zmin", "-0.3", "--zmax", "1.5",
+    "--free-mode", "floor", "--floor-zmin", "-0.95", "--floor-zmax", "-0.25",
+    "--min-points", "2", "--obstacle-close", "2", "--free-close", "5",
+    "--despeckle", "--min-obstacle-size", "12",
+    "--fill-holes", "--max-hole-size", "20000",
+]
 
 
 # --- Schemas ----------------------------------------------------------------
@@ -192,6 +216,35 @@ class MapSummaryResponse(BaseModel):
     )
 
 
+class CreateMapRequest(BaseModel):
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Directory name for the new map (letters, digits, dot, dash, "
+            "underscore). Becomes map/<name>/ on the robot."
+        ),
+    )
+
+
+class CreateMapResponse(BaseModel):
+    name: str = Field(..., description="The map that was created.")
+    has_pointcloud: bool = Field(
+        ..., description="Whether pgo wrote map.pcd (true on any 200)."
+    )
+    grid_pending: bool = Field(
+        ...,
+        description=(
+            "Whether the pcd -> gridmap conversion was started in the "
+            "background. Until it finishes (or if it fails, or if false), the "
+            "map lists with grid: null — run tools/pcd_to_gridmap.py by hand "
+            "in that case."
+        ),
+    )
+    message: str = Field(..., description="What happened, for the operator to read.")
+
+
 class SaveGridmapResponse(BaseModel):
     name: str = Field(..., description="The map that was written.")
     etag: str = Field(
@@ -289,6 +342,78 @@ def _not_modified(request: Request, tag: str) -> bool:
     return bool(header) and tag in [value.strip() for value in header.split(",")]
 
 
+def _start_grid_conversion(
+    logger: structlog.stdlib.BoundLogger, name: str, directory: str
+) -> bool:
+    """Run pcd_to_gridmap over a just-saved map in a daemon thread.
+
+    In the background because the conversion is minutes on a large site
+    (dp1f is 1.3 M points over 80 x 77 m) and, unlike the save itself, nothing
+    downstream is waiting on it: the map is already durable as map.pcd, and
+    ``list_maps`` was built to represent the not-yet-converted state
+    (``grid: null``). Holding the POST open for it would pin a worker thread
+    and invite the client to time out on a request that already succeeded.
+
+    The return value is a STARTED flag, not an outcome — the outcome lands in
+    the log only, and the operator-visible signal is the map's card growing a
+    thumbnail (the maps list re-fetch picks up gridmap.yaml appearing). A
+    failed conversion leaves grid: null, exactly the state a by-hand
+    ``tools/pcd_to_gridmap.py`` run fixes.
+
+    False when the tool or the pcd is missing — the latter guards a stub
+    gateway in tests and a save_maps that lied, the former a deployment where
+    tools/ was not shipped. Both are a log line plus ``grid_pending: false``,
+    never a failure of the POST: the save succeeded.
+    """
+    pcd_path = os.path.join(directory, "map.pcd")
+    if not os.path.isfile(PCD_TO_GRIDMAP) or not os.path.isfile(pcd_path):
+        logger.warning(
+            "Skipping gridmap conversion",
+            map=name,
+            tool_present=os.path.isfile(PCD_TO_GRIDMAP),
+            pcd_present=os.path.isfile(pcd_path),
+        )
+        return False
+
+    # sys.executable rather than "python3": the tool needs numpy/cv2 from the
+    # same environment this process already imports them from.
+    command = [
+        sys.executable,
+        PCD_TO_GRIDMAP,
+        pcd_path,
+        "-o",
+        os.path.join(directory, "gridmap"),
+        *GRIDMAP_RECIPE,
+    ]
+
+    def _run() -> None:
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, text=True, timeout=600.0
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.error("Gridmap conversion did not run", map=name, error=str(exc))
+            return
+
+        if completed.returncode != 0:
+            logger.error(
+                "Gridmap conversion failed",
+                map=name,
+                returncode=completed.returncode,
+                # The tail is where argparse/numpy put the reason; the head of
+                # a long traceback is noise here.
+                stderr=completed.stderr[-2000:],
+            )
+            return
+
+        logger.info("Gridmap conversion finished", map=name)
+
+    threading.Thread(
+        target=_run, name=f"pcd-to-gridmap-{name}", daemon=True
+    ).start()
+    return True
+
+
 # --- Router -----------------------------------------------------------------
 
 
@@ -343,6 +468,61 @@ def init_map_router(
     def get_map(name: str):
         stored = _require(name)
         return _summary(stored, map_catalog_repo.active_name(), _vertex_count(name))
+
+    @map_router.post("/api/v1/maps", response_model=CreateMapResponse)
+    def create_map(request: CreateMapRequest):
+        """Save the mapping run pgo is holding in RAM as a new on-disk map.
+
+        The one endpoint that can only succeed in MANUAL mode: pgo is the sole
+        holder of the keyframes and its save_maps service is the sole
+        serialiser, so in AUTO the gateway reports the service absent and this
+        answers 502 with that explanation. The console calls this BEFORE
+        switching back to AUTO — the switch tears pgo down and an unsaved run
+        is unrecoverable.
+
+        Plain ``def`` like the rest of the router, and here it carries real
+        weight: save_map parks on the pgo response for up to 180 s while it
+        merges and writes the cloud.
+
+        Directory-then-service, with an unwind: save_maps demands an existing
+        directory, so the repo creates it (409 if the name is taken — reusing
+        a directory would let save_maps wipe an existing map's patches/), and
+        a failed save removes it again so a typo'd attempt does not leave a
+        ghost entry in the catalogue.
+
+        The gridmap conversion is started in the background, not awaited — see
+        _start_grid_conversion. ``grid_pending`` mirrors SaveGridmapResponse's
+        ``reloaded``: the request succeeded, one follow-on effect is reported
+        separately.
+        """
+        directory = map_catalog_repo.create_map_dir(request.name)
+
+        saved, detail = map_gw.save_map(directory)
+        if not saved:
+            map_catalog_repo.discard_empty_map_dir(request.name)
+            # Uniform 502 for a downstream that did not do the thing, message
+            # forwarded verbatim — same contract as the robot router's
+            # commands. "NO POSES!" and "not available — pgo only runs in
+            # mapping (MANUAL) mode" both reach the operator this way.
+            logger.error("Failed to save map", map=request.name, error=detail)
+            raise UpstreamError(detail)
+
+        grid_pending = _start_grid_conversion(logger, request.name, directory)
+
+        return CreateMapResponse(
+            name=request.name,
+            has_pointcloud=True,
+            grid_pending=grid_pending,
+            message=(
+                f"Saved '{request.name}'."
+                + (
+                    " Converting to a 2D gridmap in the background."
+                    if grid_pending
+                    else " Convert it with tools/pcd_to_gridmap.py to get a "
+                    "2D gridmap."
+                )
+            ),
+        )
 
     @map_router.get(
         "/api/v1/maps/{name}/vertices", response_model=List[MapVertexResponse]

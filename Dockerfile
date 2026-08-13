@@ -192,6 +192,31 @@ RUN apt-get update && apt-get install -y \
     libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# GStreamer for the camera stream. The base image carries only
+# gstreamer1.0-plugins-base, which is why a pipeline built here fails with
+# `no element "v4l2src"`:
+#   - plugins-good  : v4l2src (V4L2 capture)
+#   - plugins-bad   : h264parse (videoparsersbad)
+#   - gstreamer1.0-rtsp : rtspclientsink, to publish into mediamtx
+#   - gstreamer1.0-tools: gst-inspect-1.0 / gst-launch-1.0, without which there
+#                         is no way to tell a missing element from a missing
+#                         command when debugging a pipeline in here
+#
+# NOT included, and not installable from apt: the Tegra elements (nvjpegdec,
+# nvvidconv, nvv4l2h264enc) live in nvidia-l4t-gstreamer and there is no L4T apt
+# repo in this image. They are instead injected by the nvidia container runtime,
+# which already lists them in /etc/nvidia-container-runtime/host-files-for-
+# container.d/drivers.csv on the host — but only when the container requests it
+# via NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES. Hardware encoding in
+# here additionally needs /dev/video0 passed through and membership of the host's
+# video group; see docker-compose.robots.yml.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-rtsp \
+    gstreamer1.0-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 # Prebuilt Livox-SDK2 / GTSAM / Sophus from the cached builder stage.
 COPY --from=deps-builder /usr/local /usr/local
 RUN ldconfig

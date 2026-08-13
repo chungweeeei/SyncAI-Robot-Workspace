@@ -44,7 +44,24 @@
       "Bash(bash -n scripts/byobu_session_dev.sh)",
       "Read(//Users/chungwei/Desktop/SyncAI-Robot-Workspace/**)",
       "Bash(grep -n 'syncai_frontend` | Next.js\\\\|syncai_backend` | Python\\\\|### Application layer\\\\|### Third-party' CLAUDE.md)",
-      "Bash(lsusb)"
+      "Bash(lsusb)",
+      "Bash(ffmpeg -hide_banner -encoders)",
+      "Bash(ffmpeg -hide_banner -version)",
+      "Bash(curl -s --max-time 3 http://localhost:9997/v3/paths/list)",
+      "Bash(timeout 40 ffmpeg -hide_banner -loglevel warning -f v4l2 -input_format mjpeg -video_size 1280x720 -framerate 60 -i /dev/video0 -frames:v 60 -c:v h264_v4l2m2m -b:v 4M -f null -)",
+      "Bash(timeout 40 ffprobe -hide_banner -loglevel error -rtsp_transport tcp -show_entries stream=codec_name,width,height,avg_frame_rate,profile -of default=noprint_wrappers=1 rtsp://127.0.0.1:8554/camera)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" --max-time 5 http://localhost:8889/camera)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" --max-time 5 -X OPTIONS http://localhost:8889/camera/whep)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" --max-time 5 -X POST -H \"Content-Type: application/sdp\" --data-binary \"\" http://localhost:8889/camera/whep)",
+      "Bash(gst-inspect-1.0 rtspclientsink *)",
+      "Bash(dpkg -l)",
+      "Bash(awk '{print $2,$3}')",
+      "Bash(curl -s http://localhost:9997/v3/paths/list)",
+      "Bash(git -C /home/unitree/andy/SyncAI-Robot-Workspace log --oneline -25)",
+      "Bash(grep -E \"^\\(tsc|eslint|next\\)$\")",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(./node_modules/.bin/eslint app/mapping/page.tsx components/mapping/ hooks/use-mode-switch.ts lib/api/mapping.ts components/console/nav-rail.tsx)",
+      "Bash(zcat log/stack/robot01/mapping/robot_state/@*.s)"
     ]
   }
 }

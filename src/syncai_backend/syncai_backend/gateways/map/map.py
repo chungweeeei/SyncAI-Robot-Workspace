@@ -1,9 +1,14 @@
-"""Pushes a gridmap the backend just wrote into the running map_server.
+"""The map router's ROS surface: map_server reloads and pgo map saves.
 
-Its own gateway rather than a method on ``RobotGateway``: that one is the
+Its own gateway rather than methods on ``RobotGateway``: that one is the
 driver / sys_manager / nav surface (motion keys, wifi, initialpose,
 NavigateToPose), and the map router has no business holding a handle that can
-command the robot to move.
+command the robot to move. Both clients here only make map files change hands.
+
+The two clients are also never alive at the same time, which is worth knowing
+before debugging either: ``map_server/load_map`` exists only in the nav (AUTO)
+session, ``pgo/save_maps`` only in the mapping (MANUAL) one. A "service is not
+available" from one of them usually means "wrong mode", not "broken stack".
 """
 
 import os
@@ -13,6 +18,10 @@ from typing import Optional
 from rclpy.node import Node
 from rclpy.client import Client
 from nav2_msgs.srv import LoadMap
+
+# FASTLIO2_ROS2's interface package — `interface` really is its name. Declared
+# in package.xml so colcon orders the build; there is no pip/rosdep fallback.
+from interface.srv import SaveMaps
 
 
 # LoadMap.srv carries no `message` field -- only `uint8 result` and the grid --
@@ -76,7 +85,16 @@ class MapGateway:
             srv_name="map_server/load_map",
         )
 
-        self._service_clients.update({"load_map": load_map_client})
+        # Relative name again, with the pgo node's own prefix:
+        # /<robot_id>/pgo/save_maps. Served only while a mapping session is up.
+        save_maps_client = self._node.create_client(
+            srv_type=SaveMaps,
+            srv_name="pgo/save_maps",
+        )
+
+        self._service_clients.update(
+            {"load_map": load_map_client, "save_maps": save_maps_client}
+        )
 
     def reload_map(self, yaml_path: str) -> tuple[bool, str]:
         """Make the running map_server re-read a map and re-publish it.
@@ -125,6 +143,54 @@ class MapGateway:
             )
 
         return True, ""
+
+    def save_map(self, directory: str) -> tuple[bool, str]:
+        """Ask pgo to serialise its accumulated keyframes into ``directory``.
+
+        The directory must already exist: ``saveMapsCB`` answers
+        ``"<path> IS NOT EXISTS!"`` otherwise — it only ever creates the
+        ``patches/`` subdirectory itself. The caller (MapCatalogRepo's
+        ``create_map_dir``) owns making it, so this method never touches the
+        filesystem beyond the abspath below.
+
+        ``save_patches=True`` always: ``patches/`` + ``poses.txt`` are what a
+        later HBA refinement or ``RefineMap`` needs, they cost disk only, and
+        every existing map directory on this robot carries them.
+
+        A failure here is *usually* "wrong mode": pgo only runs in the mapping
+        session, so in AUTO the wait_for_service below is what fails. The other
+        common answer is ``"NO POSES!"`` — a mapping run that has not moved far
+        enough to bank a single keyframe (10 deg / 0.5 m thresholds).
+        """
+        save_maps_client = self._service_clients.get("save_maps")
+        if not save_maps_client.wait_for_service(timeout_sec=5.0):
+            return False, (
+                "save_maps service is not available — pgo only runs in "
+                "mapping (MANUAL) mode."
+            )
+
+        # Same trap as reload_map's map_url: pgo does no expansion at all, it
+        # hands the string to std::filesystem, so a `~` or a path relative to
+        # the backend's cwd would land somewhere surprising or nowhere.
+        file_path = os.path.abspath(os.path.expanduser(directory))
+
+        self._logger.info("[MapGateway] Saving map", file_path=file_path)
+
+        future = save_maps_client.call_async(
+            SaveMaps.Request(file_path=file_path, save_patches=True)
+        )
+        # Far above reload_map's 20 s because the handler genuinely works for
+        # its living: it merges every keyframe cloud, voxel-filters the result
+        # and writes a ~20 MB map.pcd plus one small .pcd per keyframe — on
+        # this Jetson, tens of seconds for a large site. A timeout that fired
+        # mid-write would report failure for a save that then completes, so it
+        # errs long; the FastAPI handler parking on this runs on the worker
+        # thread pool, not the event loop.
+        if not _wait_for_future(future, timeout=180.0):
+            return False, "Timeout waiting for pgo/save_maps response"
+
+        response = future.result()
+        return response.success, response.message
 
 
 def init_map_gateway(logger: structlog.stdlib.BoundLogger, node: Node) -> MapGateway:

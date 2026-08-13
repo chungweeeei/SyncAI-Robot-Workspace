@@ -14,16 +14,20 @@ class RobotStateSubscriber:
 
     ``RobotState`` carries more than that REST payload exposes — ``motor_status``
     reaches it flattened to its ``states`` array and trimmed to
-    name/temperature/error, while that field's own ``timestamp`` and
-    ``localization_valid`` do not reach it at all. The router's field list is a
+    name/temperature/error, while that field's own ``timestamp`` and the
+    message-level ``state`` do not reach it at all. The router's field list is a
     whitelist and must stay one; this subscriber hands the whole message through
     unfiltered.
 
-    Note the consequence of the drop below for ``low_level_mode``, which IS
-    exposed: the gait controller's state is unreadable over REST until the
-    localizer has been relocalized, because the whole sample is discarded until
-    then. That is precisely the window in which an operator wants to know whether
-    the robot is standing.
+    Every sample is stored, including the ones with ``localization_valid=false``
+    and a zeroed pose. This subscriber used to drop those so the endpoint kept
+    404-ing instead of reporting the robot parked on the map origin — which also
+    made battery, the gait controller's state and above all ``mode`` unreadable
+    exactly when they matter: before relocalization in nav, and for the ENTIRE
+    mapping run, whose TF chain never reaches base_link at all (the mapping
+    console was blind because of this). The pose-honesty half of that trade is
+    kept by exposing ``localization_valid`` in the payload instead, so a zeroed
+    pose arrives labelled rather than not arriving.
     """
 
     def __init__(self, logger: structlog.stdlib.BoundLogger, robot_repo: RobotRepo):
@@ -45,14 +49,6 @@ class RobotStateSubscriber:
         )
 
     def _robot_state_cb(self, msg: RobotStateMsg):
-        # syncai_robot_state publishes on every tick now, including the window
-        # before the localizer has been relocalized, where localization_status
-        # is zeroed rather than a real pose. Dropping those keeps
-        # GET /api/v1/robot/state answering 404 ("no state yet") instead of
-        # 200 with the robot apparently parked on the map origin — the frontend
-        # gates its whole dashboard on that 404.
-        if not msg.localization_valid:
-            return
         self._robot_repo.update_robot_state(state=msg)
 
 

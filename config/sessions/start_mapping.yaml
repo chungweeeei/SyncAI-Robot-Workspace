@@ -22,8 +22,8 @@
 # pgo_node is the ONLY thing that can save a map: it accumulates keyframes in RAM
 # and save_maps serialises them. If pgo is not running for the whole drive there
 # is nothing to save, and no way to recover it afterwards except by replaying a
-# bag. That single fact is why the "lio" window is not optional and why the
-# bag-record pane below is worth using.
+# bag. That single fact is why the "lio" window is not optional, and why
+# recording a bag of the drive is worth considering for a long run.
 #
 # Deliberately NOT here, all for the same reason — they need a finished map:
 #   * map_server  — loads [map] map in its constructor and throws if absent
@@ -34,9 +34,25 @@
 #                   absence also removes the "teleop races the controller"
 #                   hazard that the old byobu_session_dev.sh warned about.
 #   * hba         — offline refinement, and shelved (see the pipeline doc §3.5)
-#   * robot_state / backend / frontend — nav-oriented. robot_state would report
-#                   UNINITIALIZED all run (its pose needs the localizer's TF),
-#                   and backend hard-requires postgres.
+#
+# robot_state / backend / frontend ARE here, although earlier revisions excluded
+# them as nav-oriented: the operator console is the mapping UI now. Switching
+# modes (POST /api/v1/robot/mode), teleop (WS /api/v1/robot/teleop -> cmd_vel),
+# the live cloud view (WS /api/v1/robot/pointcloud/stream) and the save-map call
+# (POST /api/v1/maps -> pgo/save_maps) all go through the backend — without it a
+# mapping run can only be driven and saved from a shell. What the old exclusion
+# note warned about still holds, and is accepted:
+#   * robot_state reports state=UNINITIALIZED for the whole run (its pose wants
+#     map -> base_link, and mapping's TF chain ends at pointlio_body). Its mode
+#     field is the reason it is here at all — sourced from get_mode, it is what
+#     the console's mode chip reads.
+#   * backend needs postgres, which lives in the infra compose stack
+#     (docker-compose.yml) and is up regardless of which session exists.
+#   * The backend's cloud stream works unchanged: pgo broadcasts
+#     map -> <robot_id>/pointlio_odom itself, so the TF-to-map path resolves
+#     without the localizer.
+# The replaced keyboard-teleop window is gone for good: the console's teleop
+# channel covers it without a pane where a stray keypress is a motion command.
 #
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
 # starts in the workspace root so the relative config/system.ini resolves. In
@@ -53,8 +69,9 @@
 # other down.
 session: syncai-mapping
 
-# Not `teleop`: a stray keypress in that pane is a real motion command, so the
-# session must not come up focused on it.
+# bringup is the window whose log answers "is the lidar alive?", which is the
+# first question of every mapping run. (The old reason — not coming up focused
+# on the keyboard-teleop pane — went away with that pane.)
 select: bringup
 
 windows:
@@ -93,27 +110,30 @@ windows:
       - cmd: ros2 launch syncai_driver_manager driver_manager.launch.py
         log: mapping/driver_manager
 
-  # ---------- Window 3: posture + teleop + spare shell -----------------------
-  # Pane 0 is pre-typed (NOT executed): the robot has to be standing before it
-  # will go anywhere. '0' is Stand, '1' is Locomotion (RL), '2' is Lie down.
-  # Which mode actually accepts AXES velocity is not documented anywhere — if
-  # keys do nothing after '0', try '1'. Verify on hardware.
-  #
-  # Pane 1 publishes the namespaced relative topic `cmd_vel`, i.e. the one
-  # driver_manager consumes, so keys pressed *while this pane is focused* drive
-  # the robot. It only emits on a keypress, but that also means a stray key here
-  # is a real motion command: leave the session on another window unless you
-  # mean to drive.
-  #
-  # Pane 2 is a deliberate spare shell (no cmd, no log) for `ros2 topic hz`
-  # style pokes — tapping an interactive pane would only record your keystrokes.
-  - name: teleop
+  # ---------- Window 3: robot_state / backend ----------
+  # Same pairing as start_nav.yaml's backend window. robot_state's pose lookup
+  # never succeeds here (see the header) — it is present for battery / motors /
+  # wifi and above all for RobotState.mode, which the console polls to know the
+  # switch to MANUAL landed. The backend sleep mirrors start_nav.yaml; the
+  # services it fronts (teleop, cloud stream, save_maps) all tolerate their
+  # upstream nodes arriving later.
+  - name: backend
     panes:
-      - cmd: >-
-          RID=$(awk -F':[[:space:]]*' '/^robot_id:/{print $2}' config/system.ini)
-          && ros2 service call "/$RID/set_motion_key" syncai_common/srv/SetMotionKey "{key: '0'}"
-        enter: false
-      - cmd: >-
-          RID=$(awk -F':[[:space:]]*' '/^robot_id:/{print $2}' config/system.ini)
-          && ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r __ns:=/$RID
-      - {}
+      - cmd: ros2 launch syncai_robot_state robot_state.launch.py
+        log: mapping/robot_state
+      - cmd: ros2 launch syncai_backend backend.launch.py
+        sleep: 2
+        log: mapping/backend
+
+  # ---------- Window 4: frontend dev server (Next.js, 3001) ----------
+  # cwd is the package dir, not the workspace root — npm needs its package.json.
+  # The same dev server as start_nav.yaml: switch_mode kills it with the rest of
+  # the nav session, so the mapping session has to bring its own or the operator
+  # loses the console for the whole run. The already-loaded page in the browser
+  # survives the gap (it is a client-side app); this pane is what serves it
+  # again on reload.
+  - name: frontend
+    cwd: src/syncai_frontend
+    panes:
+      - cmd: npm run dev
+        log: mapping/frontend

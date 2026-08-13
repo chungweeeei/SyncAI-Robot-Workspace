@@ -19,6 +19,10 @@
     # Raising it does not make the message more orderable — RobotState.timestamp
     # has whole-second resolution.
     publish_rate: 1.0
+    # How often to poll sys_manager's get_mode for RobotState.mode, in Hz. Kept
+    # slow on purpose: every call spawns `byobu has-session` subprocesses in
+    # sys_manager, and the mode only changes over a tens-of-seconds switch.
+    mode_poll_rate: 1.0
     # Low-battery hysteresis, in percent (0-100), driving state = WARNING.
     #
     # 20% is the number already used elsewhere for the same condition: the

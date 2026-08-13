@@ -73,6 +73,7 @@ def init_rest_server(
     map_catalog_repo: MapCatalogRepo,
     map_gw: MapGateway,
     pointcloud_repo: PointCloudRepo,
+    map_cloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
     saved_task_repo: SavedTaskRepo,
     worker_handle: TemporalWorkerHandle,
@@ -159,8 +160,14 @@ def init_rest_server(
             workflow_gw=workflow_gw,
         )
     )
+    # Two streams, one router: the live body_cloud and pgo's merged "map so
+    # far" cloud (mapping mode only) share the wire format and the pump.
     app.include_router(
-        init_pointcloud_router(logger=logger, pointcloud_repo=pointcloud_repo)
+        init_pointcloud_router(
+            logger=logger,
+            pointcloud_repo=pointcloud_repo,
+            map_cloud_repo=map_cloud_repo,
+        )
     )
     app.include_router(
         init_telemetry_router(logger=logger, telemetry_repo=telemetry_repo)
@@ -182,6 +189,7 @@ def start_rest_server(
     map_catalog_repo: MapCatalogRepo,
     map_gw: MapGateway,
     pointcloud_repo: PointCloudRepo,
+    map_cloud_repo: PointCloudRepo,
     telemetry_repo: TelemetryRepo,
     saved_task_repo: SavedTaskRepo,
     worker_handle: TemporalWorkerHandle,
@@ -196,6 +204,7 @@ def start_rest_server(
         map_catalog_repo=map_catalog_repo,
         map_gw=map_gw,
         pointcloud_repo=pointcloud_repo,
+        map_cloud_repo=map_cloud_repo,
         telemetry_repo=telemetry_repo,
         saved_task_repo=saved_task_repo,
         worker_handle=worker_handle,

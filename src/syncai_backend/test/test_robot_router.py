@@ -54,7 +54,12 @@ class _StubRobotGateway:
     def __init__(self):
         self.motion_keys = []
         self.policy_modes = []
+        self.switched_modes = []
         self.result = (True, "Motion key sent")
+        # Its own default rather than sharing `result`: the gateway's
+        # switch_mode is three-valued, and None (dispatched, no answer inside
+        # the ack window) is the outcome of every real switch.
+        self.switch_result = (None, "Mode switch dispatched")
 
     def set_motion_key(self, key):
         self.motion_keys.append(key)
@@ -63,6 +68,10 @@ class _StubRobotGateway:
     def set_policy_mode(self, mode):
         self.policy_modes.append(mode)
         return self.result
+
+    def switch_mode(self, mode):
+        self.switched_modes.append(mode)
+        return self.switch_result
 
 
 @pytest.fixture
@@ -257,16 +266,42 @@ def test_state_payload_keys_are_exactly_the_whitelist(
         "map",
         "mode",
         "low_level_mode",
+        "localization_valid",
         "localization_status",
         "network_status",
         "battery_status",
         "motor_status",
     }
-    # Named individually as well, because these are the three the message carries
-    # and the payload must keep holding back.
+    # Named individually as well, because these are the two the message carries
+    # and the payload must keep holding back. (localization_valid used to be a
+    # third: it was widened in deliberately when the subscriber stopped dropping
+    # unlocalized samples — the consumer needs it to tell the zeroed placeholder
+    # pose from a robot at the origin.)
     assert "state" not in body
-    assert "localization_valid" not in body
     assert "timestamp" not in body["motor_status"][0]
+
+
+def test_state_reports_an_unlocalized_sample(client, robot_repo, make_robot_state):
+    """The mapping-mode shape: sample stored, pose labelled as a placeholder.
+
+    The subscriber used to drop localization_valid=false samples, which made
+    the whole endpoint 404 for an entire mapping run — mode, battery and the
+    gait state included. The pose-honesty half of that trade now rides on the
+    flag instead.
+    """
+    robot_repo.update_robot_state(
+        state=make_robot_state(
+            mode=1,  # RobotMode.MANUAL
+            localization_valid=False,
+            position=(0.0, 0.0, 0.0, 0.0),
+        )
+    )
+
+    body = _get_state(client).json()
+
+    assert body["mode"] == "MANUAL"
+    assert body["localization_valid"] is False
+    assert body["localization_status"]["position"]["x"] == 0.0
 
 
 def test_state_falls_back_when_wifi_info_is_null(client, robot_repo, make_robot_state):
@@ -360,3 +395,53 @@ def test_policy_mode_gateway_failure_is_502(client, robot_gw):
 
     assert response.status_code == 502
     assert response.json()["detail"] == "set_policy_mode service is not available"
+
+
+# --- POST /api/v1/robot/mode -------------------------------------------------
+
+
+def _post_mode(client, payload):
+    return client.post("/api/v1/robot/mode", json=payload)
+
+
+def test_dispatched_switch_reports_switching(client, robot_gw):
+    """The gateway's None — every real switch — is a 200 with switching=true.
+
+    In production the client rarely reads this body (the switch kills the
+    process serving it); the test pins the contract for the cases where it
+    does arrive.
+    """
+    response = _post_mode(client, {"mode": "MANUAL"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "MANUAL"
+    assert body["switching"] is True
+    # The wire value is the RobotMode uint8, not the REST string.
+    assert robot_gw.switched_modes == [RobotMode.MANUAL]
+
+
+def test_noop_switch_reports_not_switching(client, robot_gw):
+    robot_gw.switch_result = (True, "Already in AUTO; nothing to do")
+
+    response = _post_mode(client, {"mode": "AUTO"})
+
+    assert response.status_code == 200
+    assert response.json()["switching"] is False
+    assert robot_gw.switched_modes == [RobotMode.AUTO]
+
+
+def test_switch_refusal_is_502_with_the_message_verbatim(client, robot_gw):
+    robot_gw.switch_result = (False, "switch_mode service is not available")
+
+    response = _post_mode(client, {"mode": "AUTO"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "switch_mode service is not available"
+
+
+@pytest.mark.parametrize("mode", ["MAINTENANCE", "auto", 2, None])
+def test_unswitchable_mode_is_422_before_the_gateway(client, robot_gw, mode):
+    """MAINTENANCE is derivable but not a switch target; ints are not the API."""
+    assert _post_mode(client, {"mode": mode}).status_code == 422
+    assert robot_gw.switched_modes == []

@@ -26,6 +26,28 @@ std::chrono::nanoseconds periodFromRate(double rate_hz)
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / safe_rate));
 }
+
+// For log lines only — the message carries the numeric constant.
+const char * modeName(uint8_t mode)
+{
+  switch (mode) {
+    case syncai_common::msg::RobotMode::MAINTENANCE:
+      return "MAINTENANCE";
+    case syncai_common::msg::RobotMode::MANUAL:
+      return "MANUAL";
+    case syncai_common::msg::RobotMode::AUTO:
+      return "AUTO";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+// How many mode-poll ticks an unanswered get_mode request may sit before it is
+// pruned and retried. At the default 1 Hz that is 5 s — far longer than a
+// healthy sys_manager needs (get_mode is two `byobu has-session` subprocesses),
+// but short enough that robot_state recovers from a sys_manager restart within
+// a few polls instead of holding a dead future forever.
+constexpr int kModeRequestStaleTicks = 5;
 }  // namespace
 
 RobotStateNode::RobotStateNode() : Node("syncai_robot_state")
@@ -87,9 +109,24 @@ RobotStateNode::RobotStateNode() : Node("syncai_robot_state")
   low_level_mode_sub_ = this->create_subscription<std_msgs::msg::Int32MultiArray>(
     "mode", rclcpp::QoS(10), std::bind(&RobotStateNode::lowLevelModeCallback, this, _1));
 
+  // Source of truth for RobotState.mode. sys_manager serves `get_mode` on a
+  // relative name in the same namespace, and it is the ONLY party that can
+  // answer (the mode is derived from which byobu session exists, never stored),
+  // so this node polls and relays instead of guessing. Deliberately a service
+  // poll and not a subscription: sys_manager publishes no mode topic, and adding
+  // one there would mean a second source of truth to keep honest.
+  get_mode_client_ = this->create_client<syncai_common::srv::GetMode>("get_mode");
+
   timer_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_ = this->create_wall_timer(
     periodFromRate(publish_rate_), std::bind(&RobotStateNode::onTimer, this), timer_cb_group_);
+
+  // Default callback group, NOT timer_cb_group_: that group exists to isolate
+  // the 10 Hz tick's blocking TF work, and this poll never blocks (readiness
+  // check + async request). Sharing the group would let a slow poll cycle delay
+  // a publish for no reason.
+  mode_poll_timer_ = this->create_wall_timer(
+    periodFromRate(mode_poll_rate_), std::bind(&RobotStateNode::onModePollTimer, this));
 }
 
 RobotStateNode::~RobotStateNode()
@@ -130,6 +167,17 @@ void RobotStateNode::initParameters()
   this->get_parameter("publish_rate", publish_rate_);
   RCLCPP_INFO(
     this->get_logger(), "[RobotStateNode][%s] publish_rate: %f Hz", __func__, publish_rate_);
+
+  // 1 Hz, deliberately an order of magnitude below publish_rate. Every get_mode
+  // call makes sys_manager spawn `byobu has-session` subprocesses (one per known
+  // session spec), so polling this at the 10 Hz publish rate would be ~20
+  // subprocesses a second on the manager for a value that changes on the
+  // timescale of a mode switch — tens of seconds of byobu commands and sleep
+  // offsets. One second of staleness on a mode chip is invisible next to that.
+  this->declare_parameter("mode_poll_rate", 1.0);
+  this->get_parameter("mode_poll_rate", mode_poll_rate_);
+  RCLCPP_INFO(
+    this->get_logger(), "[RobotStateNode][%s] mode_poll_rate: %f Hz", __func__, mode_poll_rate_);
 
   // Low-battery hysteresis, in percent. 20% is not a new number: it is the
   // threshold in syncai_driver_manager's unwired
@@ -290,8 +338,14 @@ syncai_common::msg::RobotState RobotStateNode::buildState()
   msg.timestamp = static_cast<uint64_t>(this->now().seconds());
   msg.robot_id = robot_id_;
   msg.map = map_name_;
-  // {TODO} mode is currently hardcoded to AUTO
-  msg.mode = syncai_common::msg::RobotMode::AUTO;  // default for now
+  {
+    // The live operating mode as last answered by sys_manager's get_mode — see
+    // onModePollTimer(). Up to one poll period stale by construction; that is
+    // the accepted cost of not spamming sys_manager with subprocess-backed
+    // service calls at the publish rate.
+    std::lock_guard<std::mutex> lock(mutex_);
+    msg.mode = reported_mode_;
+  }
 
   // position from TF (global_frame -> base_frame)
   //
@@ -429,5 +483,76 @@ void RobotStateNode::onTimer()
   // tick. This is the only place the latches advance.
   updateHealthLatches();
   robot_state_pub_->publish(buildState());
+}
+
+void RobotStateNode::onModePollTimer()
+{
+  // Readiness first, without waiting: wait_for_service() would block this
+  // executor thread, and an absent sys_manager is a normal condition to ride
+  // out (it restarts independently of the sessions it manages). The cached mode
+  // simply holds — same policy as every sample cache in this node.
+  if (!get_mode_client_->service_is_ready()) {
+    uint8_t held;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      held = reported_mode_;
+    }
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 10000,
+      "[RobotStateNode][%s] get_mode service unavailable; holding mode %s", __func__,
+      modeName(held));
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (mode_request_pending_) {
+      // At most one request in flight. Without this guard a sys_manager that is
+      // mid-switch (its switch handler holds a lock across ~40 byobu commands,
+      // and get_mode shares the node) would accumulate one queued request per
+      // tick, all answering at once when it frees up.
+      if (++mode_request_stale_ticks_ < kModeRequestStaleTicks) {
+        return;
+      }
+      // The request has sat unanswered long enough to be presumed dead (e.g.
+      // sys_manager restarted between our send and its reply — the future then
+      // never completes). Drop it and fall through to send a fresh one.
+      get_mode_client_->prune_pending_requests();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[RobotStateNode][%s] get_mode unanswered for %d polls; pruned and retrying", __func__,
+        mode_request_stale_ticks_);
+    }
+    mode_request_pending_ = true;
+    mode_request_stale_ticks_ = 0;
+  }
+
+  auto request = std::make_shared<syncai_common::srv::GetMode::Request>();
+  get_mode_client_->async_send_request(
+    request, [this](rclcpp::Client<syncai_common::srv::GetMode>::SharedFuture future) {
+      const auto response = future.get();
+      uint8_t previous;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mode_request_pending_ = false;
+        previous = reported_mode_;
+        // Adopted even when success is false: per GetMode.srv, false means
+        // AMBIGUOUS (both sessions exist, possible only if built by hand) and
+        // `mode` then holds the first match — still the best available answer,
+        // and better than freezing the field on a stale one.
+        reported_mode_ = response->mode;
+      }
+      if (!response->success) {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 10000,
+          "[RobotStateNode][%s] get_mode reports an ambiguous mode: %s", __func__,
+          response->message.c_str());
+      }
+      if (previous != response->mode) {
+        RCLCPP_INFO(
+          this->get_logger(), "[RobotStateNode][%s] mode %s -> %s (session '%s')", __func__,
+          modeName(previous), modeName(response->mode), response->session.c_str());
+      }
+    });
 }
 }  // namespace syncai_robot_state

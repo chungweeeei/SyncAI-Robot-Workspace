@@ -29,6 +29,9 @@ from syncai_backend.subscribers.robot_state_subscriber import (
 from syncai_backend.subscribers.pointcloud_subscriber import (
     init_pointcloud_subscriber,
 )
+from syncai_backend.subscribers.map_cloud_subscriber import (
+    init_map_cloud_subscriber,
+)
 from syncai_backend.subscribers.telemetry_subscriber import (
     init_telemetry_subscriber,
 )
@@ -73,6 +76,11 @@ class SyncAIBackend(Node):
         # The static map cloud used to have a second one; it is read from the
         # saved .pcd on request now, so there is nothing to cache between calls.
         pointcloud_repo = init_pointcloud_repo(logger=logger)
+        # Second slot of the same shape for pgo's merged "map so far" cloud
+        # (mapping mode only). Content-agnostic seq+bytes, so no new repo class
+        # — and no reset hook needed, because this process restarts with every
+        # mapping session.
+        map_cloud_repo = init_pointcloud_repo(logger=logger)
         # Single-slot pose/joints cache feeding the internal telemetry WS
         # (the high-rate channel the 3D viewer uses instead of the frozen,
         # whole-second-resolution GET /api/v1/robot/state contract).
@@ -100,6 +108,11 @@ class SyncAIBackend(Node):
             pointcloud_repo=pointcloud_repo,
             tf_buffer=self._tf_listener.buffer,
         )
+        # pgo's merged map cloud arrives already in the map frame, so unlike
+        # the live cloud above this needs no tf_buffer.
+        init_map_cloud_subscriber(
+            logger=logger, node=self, map_cloud_repo=map_cloud_repo
+        )
         init_telemetry_subscriber(
             logger=logger,
             node=self,
@@ -122,6 +135,7 @@ class SyncAIBackend(Node):
             map_catalog_repo=map_catalog_repo,
             map_gw=map_gw,
             pointcloud_repo=pointcloud_repo,
+            map_cloud_repo=map_cloud_repo,
             telemetry_repo=telemetry_repo,
             saved_task_repo=saved_task_repo,
             worker_handle=worker_handle,

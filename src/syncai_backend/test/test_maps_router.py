@@ -10,6 +10,7 @@ status-code mapping is the real one. Repos are real, over a tmp_path maps tree a
 in-memory SQLite.
 """
 
+import os
 import struct
 
 import pytest
@@ -32,19 +33,27 @@ from syncai_backend.interfaces.rest.server import (  # noqa: E402
 
 
 class _StubMapGateway:
-    """Records reload_map calls instead of making a ROS service call.
+    """Records reload_map / save_map calls instead of making ROS service calls.
 
     The one thing this suite cannot make real: a LoadMap client needs a live
-    map_server on a DDS graph. The repos either side of it stay real.
+    map_server on a DDS graph, a SaveMaps client a live pgo. The repos either
+    side stay real. Note save_map writes nothing — a saved map's on-disk files
+    are pgo's doing, so tests that need a map.pcd create it themselves.
     """
 
     def __init__(self):
         self.calls = []
         self.result = (True, "")
+        self.save_calls = []
+        self.save_result = (True, "")
 
     def reload_map(self, yaml_path):
         self.calls.append(yaml_path)
         return self.result
+
+    def save_map(self, directory):
+        self.save_calls.append(directory)
+        return self.save_result
 
 
 @pytest.fixture
@@ -455,3 +464,63 @@ def test_pointcloud_is_recached_when_the_file_changes(client, maps_dir, make_pcd
 
     assert struct.unpack("<I", first[:4])[0] == 3
     assert struct.unpack("<I", second[:4])[0] == 2
+
+
+# --- POST /api/v1/maps --------------------------------------------------------
+
+
+def _post_map(client, payload):
+    return client.post("/api/v1/maps", json=payload)
+
+
+def test_create_map_saves_through_the_gateway(client, map_gw, catalog_repo):
+    """The stub writes no map.pcd, so grid_pending honestly reports false."""
+    response = _post_map(client, {"name": "newmap"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "newmap"
+    assert body["has_pointcloud"] is True
+    assert body["grid_pending"] is False
+    # The gateway got the directory this router created, absolute.
+    directory = catalog_repo.resolve_dir("newmap")
+    assert map_gw.save_calls == [directory]
+    assert os.path.isdir(directory)
+
+
+def test_create_map_lists_afterwards_with_a_null_grid(client, maps_dir, make_pcd):
+    _post_map(client, {"name": "newmap"})
+    # Stand in for pgo: the stub gateway does not write files.
+    make_pcd(maps_dir / "newmap" / "map.pcd")
+
+    entry = _by_name(client.get("/api/v1/maps").json())["newmap"]
+
+    assert entry["grid"] is None
+    assert entry["has_pointcloud"] is True
+
+
+def test_create_map_conflicts_with_an_existing_map(client, map_gw):
+    response = _post_map(client, {"name": "full"})
+
+    assert response.status_code == 409
+    assert map_gw.save_calls == []
+
+
+@pytest.mark.parametrize("name", ["../evil", "a/b", "", ".", "x" * 65])
+def test_create_map_rejects_bad_names(client, map_gw, name):
+    response = _post_map(client, {"name": name})
+
+    # Length/emptiness die in the schema (422), separators in resolve_dir (400);
+    # either way nothing reaches the gateway and no directory appears.
+    assert response.status_code in (400, 422)
+    assert map_gw.save_calls == []
+
+
+def test_failed_save_unwinds_the_directory(client, map_gw, catalog_repo):
+    map_gw.save_result = (False, "NO POSES!")
+
+    response = _post_map(client, {"name": "newmap"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "NO POSES!"
+    assert not os.path.exists(catalog_repo.resolve_dir("newmap"))

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  CompassIcon,
   ListChecksIcon,
   MapIcon,
   RadarIcon,
@@ -22,6 +23,9 @@ import { cn } from "@/lib/utils";
 // the GLB, not an operator screen. Open it by hand. (See its page comment.)
 const navItems = [
   { title: "Dashboard", href: "/", icon: RadarIcon },
+  // Between the driving screen and the map library, which is the mapping
+  // workflow's own order: drive, build, then manage what was saved.
+  { title: "Mapping", href: "/mapping", icon: CompassIcon },
   { title: "Maps", href: "/maps", icon: MapIcon },
   { title: "Tasks", href: "/tasks", icon: ListChecksIcon },
   { title: "Settings", href: "/settings", icon: SlidersHorizontalIcon },

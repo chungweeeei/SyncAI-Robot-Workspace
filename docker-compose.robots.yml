@@ -3,34 +3,21 @@
 # (the workspace root), so the workspace mount / instance INIs keep working.
 # Infra services (temporal, postgres, ...) stay in docker-compose.yml.
 #
-# Two mutually exclusive deployment modes, selected via compose profiles:
+# One deployment mode, kept behind the `real` profile so the robot containers
+# are opt-in and never come up as a side effect of starting the infra stack:
 #
 #   real  — physical robot on this machine's hardware. host networking
 #           (lidar UDP on the physical NIC, DDS over lo via
 #           cyclonedds_standalone.xml); infra is reached through the
 #           host-published ports on 127.0.0.1 (service names do NOT resolve
 #           under network_mode: host).
-#   sim   — Isaac Sim fleet. Each robot is dual-homed: syncai-lan macvlan on
-#           the wired factory LAN (NAT-free DDS with the Isaac Sim
-#           workstation at 192.168.0.3, unicast-only discovery pinned via
-#           DDS_BIND_ADDRESS + cyclonedds.xml) + the default bridge (macvlan
-#           blocks host<->container traffic, so infra is reached by service
-#           name over the bridge instead).
+#
+# The Isaac Sim fleet (macvlan dual-homed `*-sim` services on the external
+# syncai-lan network) used to live here and was removed; recover it from git
+# history rather than re-deriving it if the simulator comes back.
 #
 # Start explicitly (naming a service auto-enables its profiles):
-#   docker compose up -d robot01                        # real robot
-#   docker compose --profile sim up -d                  # whole sim fleet
-#   docker compose up -d robot02-sim robot03-sim        # subset of the fleet
-# Container names follow the service names (robot01 vs robot01-sim), so a
-# real robot and sim robots can coexist (e.g. real robot01 + sim robot02+).
-# Do NOT run the real and sim variant of the SAME robot together — they share
-# the instance ini, so both would claim the same robot identity on DDS.
-#
-# The sim profile needs the external macvlan network (shared with the
-# conveyor containers: robot01=.32, conveyor01=.33, conveyor02=.34,
-# robot02+=.35...). Create it once:
-#   docker network create -d macvlan --subnet=192.168.0.0/24 \
-#     --ip-range=192.168.0.32/28 -o parent=enP2p1s0 syncai-lan
+#   docker compose up -d robot01
 #
 # NOTE (X11): DISPLAY=:1 targets the Jetson's local desktop via the unix
 # socket mount. If GUIs fail after a host reboot, check `ls /tmp/.X11-unix`
@@ -38,11 +25,10 @@
 #   XAUTHORITY=/run/user/1000/gdm/Xauthority xauth nlist :1 \
 #     | sed -e 's/^..../ffff/' | xauth -f /tmp/.docker.xauth nmerge -
 
-# Everything the real and sim variants share: dev image, host-uid user (so
-# files created in the mounted workspace keep the right ownership; HOME is
+# Everything the robot services share: dev image, host-uid user (so files
+# created in the mounted workspace keep the right ownership; HOME is
 # world-writable in the image), apparmor off (nmcli needs D-Bus, blocked by
-# the docker-default profile), idle bash (the stack is launched manually via
-# scripts/byobu_session.py).
+# the docker-default profile), and sys_manager as the container's main process.
 x-robot-common: &robot-common
   build:
     context: .
@@ -58,19 +44,43 @@ x-robot-common: &robot-common
   working_dir: /home/syncrobotic/robot_ws
   stdin_open: true
   tty: true
-  command: [ "bash" ]
+  # sys_manager is the container's main process: it owns the byobu sessions the
+  # rest of the stack runs in (see NodeManager), so it has to be up before
+  # switch_mode can build one — and it must NOT live inside a session itself, or
+  # kill_session would take out its own pane. Everything else is still started
+  # by hand from `docker compose exec robot01 bash`.
+  #
+  # The sourcing is explicit rather than relying on the image's ~/.bashrc: that
+  # line only runs for *interactive* shells, and this is not one, so a bare
+  # `ros2 launch` would die on `ros2: command not found`. `bash -c` (not `-lc`)
+  # keeps that decision here instead of in the shell's startup files.
+  #
+  # install/setup.bash lives in the bind-mounted workspace, so it does not exist
+  # until the workspace has been built once — on a fresh clone the container
+  # exits immediately. Build first (`docker compose run --rm robot01 bash`, then
+  # colcon build), or read `docker compose logs robot01` for the failure.
+  #
+  # working_dir is already the workspace root, which the launch files depend on:
+  # they read the relative path config/system.ini.
+  command:
+    - bash
+    - -c
+    - >-
+      source /opt/ros/humble/setup.bash && source install/setup.bash && exec ros2 launch syncai_sys_manager sys_manager.launch.py
 
-# Environment shared by both modes (maps merge with <<, lists don't — keep
-# environment as a map here).
+# Environment shared by every robot service (maps merge with <<, lists don't —
+# keep environment as a map here).
 #
 # ROS_DOMAIN_ID is a literal, NOT ${ROS_DOMAIN_ID:-1}: compose interpolation
 # gives the invoking shell precedence over .env, and the Jetson host's
 # ~/.bashrc exports ROS_DOMAIN_ID=69 — so an overridable default silently
 # resolved to 69 instead of the value written here. Hardcoding makes this file
 # the single source of truth regardless of which shell runs `docker compose`.
-# Both cyclonedds*.xml use <Domain Id="any">, so they follow whatever is set
-# here. Note the flip side: anything started on the HOST (rviz2, ros2 CLI)
-# inherits 69 and will NOT see the containers until that export is changed.
+# It is NOT the only place, though: config/cyclonedds.xml pins <Domain Id="1">
+# (it no longer says "any"), so the two have to be changed together — bumping
+# only this one leaves DDS configured for a domain nothing is publishing on.
+# Note the flip side: anything started on the HOST (rviz2, ros2 CLI) inherits
+# 69 and will NOT see the containers until that export is changed.
 x-robot-env: &robot-env
   ROS_DOMAIN_ID: "1"
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
@@ -87,15 +97,6 @@ x-robot-env: &robot-env
   # promptly so lines reach the pane/multilog without block-buffering delay.
   RCUTILS_COLORIZED_OUTPUT: "0"
   PYTHONUNBUFFERED: "1"
-
-# Environment for the sim (macvlan dual-homed) robots; DDS_BIND_ADDRESS is
-# per-robot. cyclonedds.xml pins DDS to the macvlan IP and peers with the
-# Isaac Sim workstation.
-x-sim-env: &sim-env
-  <<: *robot-env
-  TEMPORAL_ADDRESS: temporal:7233
-  POSTGRES_HOST: postgres
-  CYCLONEDDS_URI: file:///home/syncrobotic/robot_ws/config/cyclonedds.xml
 
 # Size-capped, RAM-backed tmpfs for ROS_LOG_DIR. Long-form mount because the
 # short `tmpfs:` syntax can't set a size. Referenced from each service's
@@ -127,6 +128,28 @@ services:
       POSTGRES_HOST: 127.0.0.1
       # lo-only unicast DDS; nav/backend/tools all share the host's lo.
       CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
+      # Camera encoding. These two are what make the nvidia container runtime
+      # bind-mount the L4T userspace in, including the Tegra GStreamer plugins
+      # (nvjpegdec / nvvidconv / nvv4l2h264enc) that drive the hardware encoder.
+      # Docker's default runtime here is already `nvidia`, but without these the
+      # runtime injects nothing and a pipeline dies on `no element "nvjpegdec"`.
+      # The plugin list is not ours: it ships in
+      # /etc/nvidia-container-runtime/host-files-for-container.d/drivers.csv.
+      #
+      # `all` for capabilities rather than `video` alone: the CSV is consumed
+      # wholesale, and trimming this reintroduces the missing-element failures
+      # without saving anything measurable.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    devices:
+      # The USB camera. Not covered by the nvidia runtime's devices.csv (that
+      # lists Tegra hardware only), so it needs passing through explicitly.
+      - /dev/video0:/dev/video0
+    group_add:
+      # /dev/video0 is root:video 0660 and the container user is uid 1000, so
+      # without the host's video group the device is present but unreadable.
+      # Overridable because the gid is per-host: `getent group video`.
+      - "${VIDEO_GID:-44}"
     volumes:
       # Size-capped tmpfs backing ROS_LOG_DIR (see x-ros-log-tmpfs).
       - *ros-log-tmpfs
@@ -143,35 +166,3 @@ services:
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       # Host avahi legacy socket so libnss-mdns resolves *.local names.
       - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-
-  # ---------------------------------------------------------------------
-  # sim: Isaac Sim fleet (macvlan dual-homed)
-  # ---------------------------------------------------------------------
-  robot01-sim:
-    <<: *robot-common
-    profiles: [ "sim" ]
-    container_name: robot01-sim
-    networks:
-      # The bridge must provide the default route (internet via NAT); the
-      # macvlan gateway would be the host itself, which macvlan blocks.
-      default:
-        gw_priority: 1
-      syncai-lan:
-        ipv4_address: 192.168.0.32
-    environment:
-      <<: *sim-env
-      DDS_BIND_ADDRESS: 192.168.0.32
-    volumes:
-      - *ros-log-tmpfs
-      - .:/home/syncrobotic/robot_ws
-      - ./config/instances/robot01.ini:/home/syncrobotic/robot_ws/config/system.ini
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
-      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
-
-networks:
-  # macvlan on the wired factory LAN, shared with the artifact containers.
-  # Used only by the sim profile; created externally (see header).
-  syncai-lan:
-    external: true
