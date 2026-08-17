@@ -5,9 +5,14 @@ it reads — and, since the editor's save path landed, writes — ``map/<name>/`
 the directories ``pgo/save_maps`` and ``tools/pcd_to_gridmap.py`` produce.
 
 Writing is deliberately narrow: ``write_gridmap`` replaces the *cells* of an
-existing gridmap and nothing else. It cannot create a map, cannot change a map's
-extent, and never rewrites ``gridmap.yaml``. Everything about the grid's
-geometry stays a property of the pcd → grid conversion.
+existing gridmap and nothing else. It cannot change a map's extent, and never
+rewrites ``gridmap.yaml``. Everything about the grid's geometry stays a
+property of the pcd → grid conversion.
+
+Creating is narrower still: ``create_map_dir`` makes exactly one empty
+directory for ``pgo/save_maps`` to fill (the service demands it exists and
+refuses to create it), and ``discard_empty_map_dir`` is its unwind for the
+save-failed case. Neither writes a byte of map data.
 """
 
 import os
@@ -20,7 +25,7 @@ from typing import List, Optional, Tuple
 import structlog
 import yaml
 
-from syncai_backend.exceptions import BadRequestError, NotFoundError
+from syncai_backend.exceptions import BadRequestError, ConflictError, NotFoundError
 from syncai_backend.helpers.pgm import read_pgm_size, write_pgm
 from syncai_backend.helpers.system_config import active_map_name
 
@@ -159,6 +164,47 @@ class MapCatalogRepo:
         return active_map_name(self.logger)
 
     # --- Writing ------------------------------------------------------------
+
+    def create_map_dir(self, name: str) -> str:
+        """Create an empty directory for ``pgo/save_maps`` to fill; return it.
+
+        The service is the reason this exists at all: ``saveMapsCB`` demands
+        the target directory already exist ("<path> IS NOT EXISTS!") and only
+        ever creates ``patches/`` underneath it.
+
+        An existing directory is a ``ConflictError``, never reused. save_maps
+        overwrites ``map.pcd`` and *wipes* ``patches/`` before rewriting it, so
+        pointing it at an existing map would destroy that map to store this
+        one — an operator who wants that deletes the old map first, explicitly.
+        ``makedirs`` with the default ``exist_ok=False`` backs the check up at
+        the syscall, so two racing requests cannot both pass.
+        """
+        directory = self.resolve_dir(name)
+        if os.path.exists(directory):
+            raise ConflictError(f"A map named '{name}' already exists.")
+
+        os.makedirs(directory)
+        self.logger.info("[MapCatalogRepo] Created map directory", map=name)
+        return directory
+
+    def discard_empty_map_dir(self, name: str) -> None:
+        """Remove a map directory only if it is empty — create_map_dir's unwind.
+
+        For the path where the directory was created and save_maps then failed:
+        without this, every failed save leaves a ghost entry that ``list_maps``
+        reports as a map with nothing in it. ``rmdir``, deliberately not
+        ``shutil.rmtree``: if the failure somehow happened *after* files were
+        written, deleting data to tidy up a bookkeeping entry is the wrong
+        trade, so a non-empty directory is left alone and logged.
+        """
+        try:
+            os.rmdir(self.resolve_dir(name))
+        except OSError as exc:
+            self.logger.warning(
+                "[MapCatalogRepo] Left the map directory in place",
+                map=name,
+                error=str(exc),
+            )
 
     def write_gridmap(self, name: str, data: bytes) -> bytes:
         """Replace an existing gridmap's cells with ``data``; return the file.

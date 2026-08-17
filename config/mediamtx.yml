@@ -1,0 +1,149 @@
+# MediaMTX configuration for the robot's camera stream.
+#
+# MediaMTX is a pure relay here: it never touches /dev/video0. The publisher
+# runs on the host, where the Tegra encoder lives, and pushes an already-encoded
+# H.264 stream in over RTSP. See the "Publishing" note at the bottom.
+#
+# That split is deliberate. The official image is built FROM scratch — no shell,
+# no ffmpeg — so it cannot capture or transcode anything, and giving a container
+# the camera plus the L4T multimedia stack needs device passthrough, the video
+# group, and NVIDIA_DRIVER_CAPABILITIES to inject the Tegra GStreamer plugins.
+# Keeping capture on the host avoids all of that and keeps encoding on the
+# hardware blocks.
+#
+# Keys are checked against the defaults shipped in bluenviron/mediamtx v1.20.0.
+# MediaMTX refuses to start on an unknown key, so this file is version-coupled to
+# the image tag in docker-compose.yml — change them together.
+
+logLevel: info
+logDestinations: [stdout]
+
+###############################################
+# Ingest: RTSP
+
+rtsp: true
+rtspAddress: :8554
+
+# TCP only, and this is load-bearing rather than a preference. With `udp` in the
+# list MediaMTX also binds rtpAddress :8000 and rtcpAddress :8001, and both are
+# already taken on this host by riva-speech (Triton publishes 8000-8002). Under
+# network_mode: host that would be a straight bind conflict. The publisher is on
+# loopback, so TCP framing costs nothing here.
+rtspTransports: [tcp]
+
+###############################################
+# Delivery: WebRTC (WHEP)
+
+webrtc: true
+webrtcAddress: :8889
+
+# ICE needs a UDP port that the browser can reach directly. Combined with
+# network_mode: host in compose, candidates are gathered from the host's real
+# interfaces, so a browser on the LAN can connect without any NAT1-to-1 mapping.
+webrtcLocalUDPAddress: :8189
+
+# The operator UI is served from a different origin (port 3001), so the browser
+# needs CORS to POST the WHEP offer. Reads are unauthenticated by design (see
+# authInternalUsers), so there is no credential for a hostile origin to abuse.
+webrtcAllowOrigins: ["*"]
+
+###############################################
+# Control API
+#
+# Enabled because it is the only way to ask whether a stream is actually live:
+#   curl -s http://localhost:9997/v3/paths/list | jq
+# Restricted to loopback by the permissions below.
+
+api: true
+apiAddress: :9997
+
+###############################################
+# Everything else off.
+#
+# Not tidiness — with network_mode: host every enabled server binds a real host
+# port. RTMP (1935), HLS (8888), SRT (8890/udp), playback (9996) and pprof (9999)
+# are unused here, and leaving them on would claim ports other services on this
+# Jetson may want. HLS at 8888 would in fact have collided immediately:
+# riva-speech already publishes it.
+#
+# moq is off for the same reason and is easy to miss: it defaults to ON in
+# v1.20.0 and quietly claims three more ports (8892 TCP/HTTP2, 8892 UDP/HTTP3,
+# 8893 UDP/QUIC) while generating a self-signed certificate on first start.
+# Verified by stopping the container and watching which ports disappeared.
+
+rtmp: false
+hls: false
+srt: false
+moq: false
+playback: false
+metrics: false
+pprof: false
+
+###############################################
+# Authentication
+#
+# Publishing is restricted to loopback because the publisher runs on this host;
+# without that, anything on the LAN could push a different stream into the
+# `camera` path and `overridePublisher` would let it replace the real one.
+# Reading is open, which is the deliberate trade for a robot on a trusted LAN —
+# tighten `ips` here if that stops being true.
+
+authMethod: internal
+authInternalUsers:
+  # Publisher: loopback only.
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: publish
+
+  # Viewers: any IP on the LAN.
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+
+  # Control API: loopback only.
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: api
+
+###############################################
+# Paths
+#
+# Only `camera` exists. There is deliberately no `all_others` catch-all, so a
+# typo in a client URL fails loudly instead of silently creating an empty path.
+
+paths:
+  camera:
+    # Waiting for an external publisher (the host-side GStreamer pipeline).
+    source: publisher
+
+# Publishing from the host
+# ------------------------
+# The camera has no 30 fps mode (MJPG at 1280x720 offers 60 and 120 only), and
+# nvjpegdec emits NVMM I420, so nvvidconv is required to reach the NV12 the
+# encoder wants. This pipeline is measured at ~3.75 Mbit/s with an IDR every
+# half second:
+#
+#   gst-launch-1.0 v4l2src device=/dev/video0 io-mode=2 \
+#     ! image/jpeg,width=1280,height=720,framerate=60/1 \
+#     ! nvjpegdec ! 'video/x-raw(memory:NVMM)' \
+#     ! nvvidconv ! 'video/x-raw(memory:NVMM),format=NV12' \
+#     ! nvv4l2h264enc bitrate=4000000 profile=0 insert-sps-pps=true \
+#         insert-vui=true iframeinterval=30 idrinterval=30 \
+#         control-rate=1 maxperf-enable=true \
+#     ! h264parse config-interval=-1 \
+#     ! rtspclientsink location=rtsp://127.0.0.1:8554/camera protocols=tcp
+#
+# rtspclientsink comes from gstreamer1.0-rtsp (gst-rtsp-server). A short IDR
+# interval matters because every WHEP viewer joins mid-stream and cannot decode
+# until the next one arrives.
+#
+# Read it back at:
+#   WHEP    http://<robot>:8889/camera/whep
+#   Player  http://<robot>:8889/camera
+#   RTSP    rtsp://<robot>:8554/camera

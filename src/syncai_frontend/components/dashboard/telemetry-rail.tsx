@@ -32,27 +32,38 @@ function rssiToBars(rssi: number): number {
 export function TelemetryRail({ state }: { state: RobotState }) {
   const { position, velocity } = state.localization_status;
   const network = state.network_status;
+  // A false flag means the pose fields are a zeroed placeholder, not a
+  // reading — a state frame arrives before the localizer converges (and all
+  // through a mapping run) now that the backend no longer withholds it. The
+  // numbers are masked rather than shown at 0.00: a dash cannot be misread as
+  // the robot standing on the map origin.
+  const localized = state.localization_valid;
 
   return (
     <div className="divide-y divide-hairline">
-      <InstrumentGroup label="Pose">
+      <InstrumentGroup
+        label="Pose"
+        caption={localized ? undefined : "Not localized — no pose to report."}
+      >
         <div className="mb-3 grid grid-cols-2 gap-3">
           <PrimaryReadout
             label="X"
-            value={position.x.toFixed(2)}
+            value={localized ? position.x.toFixed(2) : "—"}
             unit="m"
+            tone={localized ? "live" : "neutral"}
           />
           <PrimaryReadout
             label="Y"
-            value={position.y.toFixed(2)}
+            value={localized ? position.y.toFixed(2) : "—"}
             unit="m"
+            tone={localized ? "live" : "neutral"}
           />
         </div>
         <Readout
           label="Heading"
-          value={position.theta.toFixed(1)}
+          value={localized ? position.theta.toFixed(1) : "—"}
           unit="°"
-          tone="live"
+          tone={localized ? "live" : "neutral"}
         />
         <Readout
           label="Velocity"

@@ -100,6 +100,14 @@ export interface RobotState {
   map: string;
   mode: RobotMode;
   low_level_mode: RobotLowLevelMode;
+  /**
+   * Whether localization_status carries a real pose. False before the
+   * localizer converges, and for the whole of a mapping run (its TF chain
+   * never reaches base_link) — the pose fields are then a zeroed placeholder.
+   * A state frame with this false is still a live frame: mode, battery and
+   * the gait state are all real.
+   */
+  localization_valid: boolean;
   localization_status: RobotLocalizationStatus;
   network_status: RobotNetworkStatus;
   battery_status: RobotBatteryStatus;

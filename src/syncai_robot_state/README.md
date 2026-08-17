@@ -49,7 +49,7 @@ Exposed through `GET /api/v1/robot/state`:
 | `timestamp` | `now().seconds()` | **Seconds**, not milliseconds |
 | `robot_id` | `robot_id` parameter | Set from the INI by the launch file |
 | `map` | `map` parameter | See the gotcha — this is a path, not a name |
-| `mode` | — | **Hardcoded to `AUTO`** (`{TODO}` in the source) |
+| `mode` | `get_mode` service (sys_manager), polled at `mode_poll_rate` | Which byobu session is up (MAINTENANCE / MANUAL / AUTO). Up to one poll period (default 1 s) stale; holds the last answer while sys_manager is unreachable, and reports `AUTO` until the first answer arrives |
 | `localization_status.position` | TF `global_frame → base_frame` | x/y/z plus `yaw` in **radians**. Zeroed when the lookup fails |
 | `localization_status.velocity` | `odom.twist.twist.linear.x` | Forward speed only |
 | `battery_status.battery_percentage` | `battery_state.percentage × 100` | `BatteryState` is 0–1, this field is 0–100 |
@@ -253,9 +253,11 @@ All names relative, so they inherit the `<robot_id>` namespace.
 | Subscribe | `wifi_status` | `syncai_common/WifiStatus` | BEST_EFFORT, VOLATILE, KeepLast(1) |
 | Subscribe | `motor_states` | `syncai_common/MotorStates` | SensorData |
 | Subscribe | `mode` | `std_msgs/Int32MultiArray` | RELIABLE, VOLATILE, KeepLast(10) |
+| Service client | `get_mode` | `syncai_common/GetMode` | polled at `mode_poll_rate`, at most one request in flight |
 
 `odom` comes from `syncai_lio_bridge`, `battery_state`, `motor_states` and `mode`
-from `syncai_driver_manager`, `wifi_status` from `syncai_sys_manager`. The
+from `syncai_driver_manager`, `wifi_status` and `get_mode` from
+`syncai_sys_manager`. The
 backend's subscriber matches the BEST_EFFORT publisher — and so must any new one:
 a best-effort publisher cannot satisfy a RELIABLE subscriber, so subscribing with
 default QoS receives nothing at all.
@@ -278,6 +280,7 @@ to best-effort would stop matching this subscription **silently**; check it with
 | `base_frame` | `base_link` | `<robot_id>/base_link` |
 | `transform_tolerance` | `0.1` | — |
 | `publish_rate` | `10.0` Hz | — (params file only). **The shipped params file says `1.0`** (`params/robot_state_params.yaml`), and the launch file always passes it, so a launched node runs at 1 Hz despite this default and every "10 Hz" in these docs |
+| `mode_poll_rate` | `1.0` Hz | — (params file only). How often to ask sys_manager `get_mode`; each call costs it `byobu has-session` subprocesses, so keep it slow |
 | `low_battery_warn_percentage` | `20.0` % | — (params file only) |
 | `low_battery_clear_percentage` | `25.0` % | — (params file only) |
 
@@ -326,13 +329,14 @@ ros2 topic pub -r 2 /<robot_id>/battery_state sensor_msgs/msg/BatteryState \
 
 ## Gotchas
 
-- **`mode` is hardcoded.** Every message says `AUTO` regardless of what the
-  robot is doing, and the REST layer surfaces it, so the UI always shows AUTO.
-  Marked `{TODO}`. This is `RobotMode`, **not** the gait controller's state — see
-  the next bullet.
+- **`mode` is polled, not pushed.** It relays sys_manager's `get_mode` answer at
+  `mode_poll_rate` (default 1 Hz), so it lags a mode switch by up to a second,
+  reports `AUTO` until the first answer, and freezes on the last answer while
+  sys_manager is down. This is `RobotMode`, **not** the gait controller's state —
+  see the next bullet.
 - **Three different things are now called "mode", two of them in one message.**
   In a single `RobotState`: `mode` is `RobotMode` (MAINTENANCE / MANUAL / AUTO —
-  which byobu session is up, hardcoded to `AUTO`, shared with `SwitchMode` /
+  which byobu session is up, shared with `SwitchMode` /
   `GetMode`); `low_level_mode.policy_state` is the gait controller's RL policy
   index (0 PPO / 1 HIMLOCO / 2 CHAMP / 3 ISSAC — the vocabulary of
   `SetPolicyMode.mode`); `low_level_mode.motion_state` is its motion state

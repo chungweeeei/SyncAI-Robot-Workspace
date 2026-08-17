@@ -19,6 +19,7 @@ from syncai_common.srv import (
     ScanWifiNetworks,
     SetMotionKey,
     SetPolicyMode,
+    SwitchMode,
 )
 
 from std_msgs.msg import Header
@@ -77,6 +78,16 @@ class MoveGoal:
 # never touches an EXECUTING goal — get_move_status / cancel_move on a live
 # goal must keep working no matter how the book fills up.
 MAX_TRACKED_GOALS = 5
+
+# How long switch_mode() waits for sys_manager's answer before reporting the
+# switch as merely dispatched. This is NOT sized to how long a switch takes
+# (tens of seconds of byobu commands and sleep offsets) and must not be: on a
+# real switch sys_manager kills the byobu session THIS PROCESS runs in before
+# it would ever respond, so no timeout is long enough to see that answer. The
+# window only exists to catch the responses that do come back fast — the no-op
+# ("Already in AUTO; nothing to do") and a refusal — where reporting the real
+# outcome beats a blind "dispatched". Module-level so tests can shrink it.
+SWITCH_MODE_ACK_TIMEOUT = 2.0
 
 
 def _wait_for_future(future, timeout: Optional[float] = None) -> bool:
@@ -150,12 +161,23 @@ class RobotGateway:
             srv_name="set_policy_mode",
         )
 
+        # sys_manager's operating-mode switch (which byobu session is up). On
+        # this gateway rather than a new one because sys_manager is already part
+        # of its surface (the wifi services above), and because switching modes
+        # is very much "a handle that can command the robot" — the reason
+        # MapGateway exists is to keep such handles away from the map router.
+        switch_mode_client = self._node.create_client(
+            srv_type=SwitchMode,
+            srv_name="switch_mode",
+        )
+
         self._service_clients.update(
             {
                 "scan_wifi": scan_wifi_client,
                 "connect_wifi": connect_wifi_client,
                 "set_motion_key": set_motion_key_client,
                 "set_policy_mode": set_policy_mode_client,
+                "switch_mode": switch_mode_client,
             }
         )
 
@@ -270,6 +292,41 @@ class RobotGateway:
         # parsing, would then surface as a spurious 502.
         if not _wait_for_future(future, timeout=10.0):
             return False, "Timeout waiting for set_policy_mode response"
+
+        response = future.result()
+        return response.success, response.message
+
+    def switch_mode(self, mode: int) -> Tuple[Optional[bool], str]:
+        """Ask sys_manager to switch the operating mode. Three-valued on purpose.
+
+        Returns ``(True, msg)`` / ``(False, msg)`` when sys_manager answered
+        inside ``SWITCH_MODE_ACK_TIMEOUT``, and ``(None, msg)`` when it did not
+        — and on a real switch, ``None`` is the EXPECTED outcome, not a fault.
+        ``switch_mode`` kills every known byobu session before building the
+        target one, and this backend is a pane of whichever session is live, so
+        the service response to a genuine switch is addressed to a process that
+        is already dying. The caller cannot usually deliver its own HTTP
+        response either; the console treats the dropped connection as the
+        signal and polls robot_state until the new session's backend answers.
+
+        The quick answers are worth the short wait, though: "Already in X;
+        nothing to do" (sys_manager refuses to rebuild the live mode — in
+        MANUAL a rebuild would drop an unsaved map, since pgo keeps its
+        keyframes in RAM) and refusals both come back in well under a second,
+        and reporting them beats a blind "dispatched".
+
+        Takes the RobotMode uint8 (MANUAL=1 / AUTO=2), not a REST enum — same
+        int-at-the-boundary contract as set_policy_mode.
+        """
+        switch_mode_client = self._service_clients.get("switch_mode")
+        if not switch_mode_client.wait_for_service(timeout_sec=5.0):
+            return False, "switch_mode service is not available"
+
+        self._logger.info("[RobotGateway] Switching operating mode", mode=mode)
+
+        future = switch_mode_client.call_async(SwitchMode.Request(mode=mode))
+        if not _wait_for_future(future, timeout=SWITCH_MODE_ACK_TIMEOUT):
+            return None, "Mode switch dispatched; the stack is rebuilding"
 
         response = future.result()
         return response.success, response.message

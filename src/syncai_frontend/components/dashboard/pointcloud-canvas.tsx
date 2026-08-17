@@ -1006,6 +1006,21 @@ interface PointCloudCanvasProps {
    * stream's 2 s reconnect loop, logging a failed socket forever.
    */
   liveStream?: boolean;
+  /**
+   * Open the streamed "map so far" WebSocket — pgo's merged, loop-closure-
+   * corrected keyframe cloud, which only has a producer while a mapping
+   * session is up — and render it as a dim layer under the live scan. Each
+   * frame REPLACES the layer wholesale (a loop closure moves the whole map, so
+   * accumulation client-side would be wrong). Defaults to false; the mapping
+   * page is the one surface that turns it on.
+   */
+  mapCloudStream?: boolean;
+  /**
+   * Status of the map-cloud stream, separate from `onStatus` (the live
+   * scan's): the two sockets fail independently and the mapping page shows
+   * each with its own pill.
+   */
+  onMapStatus?: (status: StreamStatus) => void;
   /** Committed goal, drawn on the ground until the caller clears it. */
   goal?: PlanarPose | null;
   /**
@@ -1053,6 +1068,8 @@ export function PointCloudCanvas({
   cameraMode = "move",
   topDownNonce = 0,
   liveStream = true,
+  mapCloudStream = false,
+  onMapStatus,
   goal = null,
   initialPose = null,
   pickMode = null,
@@ -1089,6 +1106,12 @@ export function PointCloudCanvas({
     liveGeom: THREE.BufferGeometry;
     mapPoints: THREE.Points | null;
     /**
+     * The streamed "map so far" layer (mapCloudStream), rebuilt wholesale per
+     * frame — frames arrive seconds apart, unlike the preallocated 10 Hz
+     * liveGeom above.
+     */
+    streamedMapPoints: THREE.Points | null;
+    /**
      * The map extent this scene was built around, in metres, or null when there
      * is no 2D map. Kept here rather than read off the `meta` prop so the
      * top-down effect can frame the map without listing `meta` as a dependency —
@@ -1106,6 +1129,64 @@ export function PointCloudCanvas({
   React.useEffect(() => {
     onStatusRef.current = onStatus;
   }, [onStatus]);
+
+  // Same treatment for the map-cloud stream's status callback.
+  const onMapStatusRef = React.useRef(onMapStatus);
+  React.useEffect(() => {
+    onMapStatusRef.current = onMapStatus;
+  }, [onMapStatus]);
+
+  /**
+   * Last frame of the streamed map cloud, held so the layer survives a scene
+   * rebuild. The live cloud needs no such thing — its next frame is 100 ms
+   * away — but this one arrives every few seconds, and a theme toggle or map
+   * load in between would otherwise leave the layer empty until then.
+   */
+  const mapStreamFrameRef = React.useRef<PointCloudFrame | null>(null);
+
+  const applyMapStreamFrame = React.useCallback(
+    (frame: PointCloudFrame) => {
+      const ctx = sceneRef.current;
+      if (!ctx) return;
+      if (ctx.streamedMapPoints) {
+        ctx.scene.remove(ctx.streamedMapPoints);
+        ctx.streamedMapPoints.geometry.dispose();
+        (ctx.streamedMapPoints.material as THREE.Material).dispose();
+        ctx.streamedMapPoints = null;
+      }
+      const geom = new THREE.BufferGeometry();
+      // Zero-copy is safe: each WS message owns its ArrayBuffer, and the layer
+      // is replaced (never appended to) when the next frame arrives.
+      geom.setAttribute(
+        "position",
+        new THREE.BufferAttribute(frame.positions, 3),
+      );
+      const theme = THEMES[resolvedTheme === "dark" ? "dark" : "light"];
+      // The static map cloud's dim solid treatment, for the same reason it has
+      // one: the height-coloured live scan must read on top of the map.
+      const points = new THREE.Points(
+        geom,
+        new THREE.PointsMaterial({
+          size: MAP_POINT_SIZE,
+          color: theme.mapCloud,
+          opacity: 0.6,
+          transparent: true,
+        }),
+      );
+      points.frustumCulled = false;
+      ctx.streamedMapPoints = points;
+      ctx.scene.add(points);
+    },
+    [resolvedTheme],
+  );
+
+  // Read by the stream effect through a ref so a theme change (which remakes
+  // the callback above) re-tints via the setup effect's re-apply instead of
+  // bouncing the WebSocket through its 2 s reconnect loop.
+  const applyMapStreamFrameRef = React.useRef(applyMapStreamFrame);
+  React.useEffect(() => {
+    applyMapStreamFrameRef.current = applyMapStreamFrame;
+  }, [applyMapStreamFrame]);
 
   // Camera mode + pose easing state, read by the render loop and by effects
   // that must not re-run on every change without listing them as deps.
@@ -1427,6 +1508,7 @@ export function PointCloudCanvas({
       controls,
       liveGeom,
       mapPoints: null,
+      streamedMapPoints: null,
       mapFrame: meta ? { cx: centerX, cy: centerY, widthM, heightM } : null,
       goalMarker,
       initialPoseMarker,
@@ -1434,11 +1516,18 @@ export function PointCloudCanvas({
       dispose,
     };
 
+    // Re-apply the held streamed map frame: the rebuild this effect just did
+    // disposed the old layer, and the stream's next frame is seconds away.
+    // Running through applyMapStreamFrame also re-tints it for a theme change.
+    if (mapStreamFrameRef.current) {
+      applyMapStreamFrame(mapStreamFrameRef.current);
+    }
+
     return () => {
       dispose();
       sceneRef.current = null;
     };
-  }, [meta, mapImageUrl, resolvedTheme, applyJoints]);
+  }, [meta, mapImageUrl, resolvedTheme, applyJoints, applyMapStreamFrame]);
 
   // ---- Live body_cloud stream (independent of scene rebuilds) ----------
   // The WebSocket is opened once on mount and closed on unmount. Each frame is
@@ -1485,6 +1574,39 @@ export function PointCloudCanvas({
     });
     return () => stream.close();
   }, [liveStream]);
+
+  // ---- Streamed "map so far" cloud (mapping runs) ------------------------
+  // Same socket-outside-the-scene-effect shape as the live stream above, same
+  // reason. Deps are [mapCloudStream] alone: the frame applier is reached
+  // through its ref so a theme change never bounces the socket.
+  React.useEffect(() => {
+    if (!mapCloudStream) {
+      // Turned off (or never on): drop the held frame and the drawn layer, so
+      // re-enabling starts clean and a toggled-off layer is not resurrected by
+      // the next scene rebuild's re-apply.
+      mapStreamFrameRef.current = null;
+      const ctx = sceneRef.current;
+      if (ctx?.streamedMapPoints) {
+        ctx.scene.remove(ctx.streamedMapPoints);
+        ctx.streamedMapPoints.geometry.dispose();
+        (ctx.streamedMapPoints.material as THREE.Material).dispose();
+        ctx.streamedMapPoints = null;
+      }
+      return;
+    }
+
+    const stream = createPointCloudStream(
+      {
+        onFrame: (frame) => {
+          mapStreamFrameRef.current = frame;
+          applyMapStreamFrameRef.current(frame);
+        },
+        onStatus: (s) => onMapStatusRef.current?.(s),
+      },
+      "/api/v1/robot/pointcloud/map/stream",
+    );
+    return () => stream.close();
+  }, [mapCloudStream]);
 
   // ---- Pose updates (no scene rebuild) ---------------------------------
   // This only records where the robot should be; the render loop above walks

@@ -185,6 +185,15 @@ class RobotState(BaseModel):
             "was commanded. See the model for why it carries raw integers too."
         ),
     )
+    localization_valid: bool = Field(
+        ...,
+        description=(
+            "Whether localization_status carries a real pose. False before the "
+            "localizer has been relocalized, and for the whole of a mapping "
+            "(MANUAL) run — the pose fields are then a zeroed placeholder, not "
+            "the robot standing on the map origin."
+        ),
+    )
     localization_status: RobotLocalizationStatus = Field(
         ..., description="The localization status of the robot."
     )
@@ -201,6 +210,54 @@ class RobotState(BaseModel):
             "syncai_driver_manager is not publishing motor_states."
         ),
     )
+
+
+class OperatingMode(str, Enum):
+    """The switchable operating modes — the byobu session families.
+
+    MAINTENANCE is deliberately absent: it is not a mode you switch *into*
+    (sys_manager derives it from "no session exists" and its switch_mode
+    rejects it), so the schema refuses it with a 422 before any ROS client is
+    touched, the same pattern as PolicyMode below. It still appears in
+    RobotState.mode as a *reported* value.
+    """
+
+    MANUAL = "MANUAL"
+    AUTO = "AUTO"
+
+
+# The REST vocabulary is the name; the srv field is the RobotMode uint8.
+_OPERATING_MODE_TO_INT = {
+    OperatingMode.MANUAL: RobotMode.MANUAL,
+    OperatingMode.AUTO: RobotMode.AUTO,
+}
+
+
+class SwitchModeRequest(BaseModel):
+    mode: OperatingMode = Field(
+        ...,
+        description=(
+            "Target operating mode: MANUAL (mapping session) or AUTO "
+            "(navigation session). MAINTENANCE is not a switchable target."
+        ),
+    )
+
+
+class SwitchModeResponse(BaseModel):
+    mode: OperatingMode = Field(..., description="The mode the request asked for.")
+    switching: bool = Field(
+        ...,
+        description=(
+            "True when the switch was dispatched and the stack is being torn "
+            "down and rebuilt — INCLUDING the process serving this API, so "
+            "expect this very response to be the last one for ~10-30 s (or to "
+            "never arrive: a dropped connection right after this POST is the "
+            "switch working, not failing). Poll GET /api/v1/robot/state until "
+            "its `mode` reports the target. False means sys_manager answered "
+            "without a rebuild — the robot was already in the requested mode."
+        ),
+    )
+    message: str = Field(..., description="Human-readable result of the request.")
 
 
 class SetInitialPoseRequest(BaseModel):
@@ -345,9 +402,10 @@ def init_robot_router(
         # explicitly for the same reason as above: a widened MotorState must not
         # widen this.
         #
-        # A None here means no sample with localization_valid has arrived yet;
-        # the subscriber drops the invalid ones so this endpoint keeps 404-ing
-        # rather than reporting a zeroed pose as real.
+        # A None here means the robot_state node has not published at all —
+        # the subscriber stores every sample now, invalid localization
+        # included, so this 404 means "node down", not "not localized yet".
+        # localization_valid in the payload is what carries the second fact.
         state: RobotStateMsg = robot_repo.get_robot_state()
         if state is None:
             raise NotFoundError("Robot state is not available yet.")
@@ -363,6 +421,11 @@ def init_robot_router(
                 policy=_policy_state_to_str(state.low_level_mode.policy_state),
                 motion=_motion_state_to_str(state.low_level_mode.motion_state),
             ),
+            # The one whitelist widening since the rule was written: without it
+            # a consumer cannot tell the zeroed placeholder pose from a robot
+            # at the origin — the ambiguity that used to be handled by dropping
+            # the sample entirely, which blinded the console in mapping mode.
+            localization_valid=state.localization_valid,
             localization_status=RobotLocalizationStatus(
                 position=RobotPose(
                     x=state.localization_status.position.x,
@@ -386,6 +449,60 @@ def init_robot_router(
                 )
                 for motor in state.motor_status.states
             ],
+        )
+
+    @robot_router.post("/api/v1/robot/mode", response_model=SwitchModeResponse)
+    def switch_mode(request: SwitchModeRequest):
+        """Switch the operating mode — the one request that outlives its server.
+
+        A real switch kills the byobu session this backend is a pane of, so
+        the normal outcome is the gateway's three-valued None ("dispatched,
+        no answer inside the ack window") followed by this process dying
+        mid-flight — the client usually sees a dropped connection rather than
+        this response, and must treat that as success-in-progress. The
+        response body only reliably reaches the client for the quick cases:
+        the no-op (already in the target mode) and a refusal.
+
+        Plain ``def`` like the other command endpoints: the gateway blocks on
+        wait_for_service plus the ack window.
+
+        There is no GET twin. The live mode is already on
+        GET /api/v1/robot/state — syncai_robot_state polls sys_manager's
+        get_mode and relays it — and a second source of the same answer here
+        would just be one more thing to keep honest.
+        """
+        success, message = robot_gw.switch_mode(
+            mode=int(_OPERATING_MODE_TO_INT[request.mode])
+        )
+
+        if success is False:
+            # Same uniform 502 as every gateway failure. Reachable for a dead
+            # sys_manager ("not available") and for a refusal; the no-op comes
+            # back success=True and lands below.
+            logger.error(
+                "Failed to switch mode", mode=request.mode.value, message=message
+            )
+            raise UpstreamError(message)
+
+        if success is True:
+            # sys_manager answered without rebuilding anything — the only
+            # answer that arrives this fast is "Already in X; nothing to do".
+            return SwitchModeResponse(
+                mode=request.mode,
+                switching=False,
+                message=f"Already in {request.mode.value}; nothing to do.",
+            )
+
+        # success is None: dispatched, and the teardown is presumably already
+        # underway. Still a 200 — nothing failed, and no client here would do
+        # anything different with a 202.
+        return SwitchModeResponse(
+            mode=request.mode,
+            switching=True,
+            message=(
+                f"Switching to {request.mode.value}. The console will lose "
+                "this API while the stack rebuilds; poll robot state."
+            ),
         )
 
     @robot_router.post(

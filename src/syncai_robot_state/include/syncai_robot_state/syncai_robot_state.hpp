@@ -10,8 +10,10 @@
 #include "sensor_msgs/msg/battery_state.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "syncai_common/msg/motor_states.hpp"
+#include "syncai_common/msg/robot_mode.hpp"
 #include "syncai_common/msg/robot_state.hpp"
 #include "syncai_common/msg/wifi_status.hpp"
+#include "syncai_common/srv/get_mode.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -40,6 +42,14 @@ namespace syncai_robot_state
 // field is the stack's only measured counterpart to the one-way SetPolicyMode /
 // SetMotionKey commands, and keeping it dumb is what keeps this node's "holds no
 // state beyond the latest sample" property true.
+//
+// RobotState.mode (AUTO / MANUAL / MAINTENANCE — i.e. which byobu session is up)
+// is relayed the same dumb way: sys_manager's `get_mode` service is polled at a
+// slow rate and the last answer is cached, with no interpretation added here.
+// sys_manager is the only party that can know the mode (it DERIVES it by asking
+// byobu, and never stores it), so asking is the only honest implementation — the
+// previous one hardcoded AUTO, which made the frontend's mode chip a lie
+// whenever a mapping session was live.
 //
 // It only ever reports. No threshold here commands the robot to do anything.
 class RobotStateNode : public rclcpp::Node
@@ -83,6 +93,11 @@ private:
   // elements are REJECTED here, not padded.
   void lowLevelModeCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
 
+  // Slow-poll of sys_manager's `get_mode` service. Non-blocking by construction:
+  // it checks service readiness, sends at most one async request at a time, and
+  // caches the answer in the response callback.
+  void onModePollTimer();
+
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -98,8 +113,17 @@ private:
   rclcpp::Subscription<syncai_common::msg::WifiStatus>::SharedPtr wifi_sub_;
   rclcpp::Subscription<syncai_common::msg::MotorStates>::SharedPtr motor_states_sub_;
   // The TOPIC is `mode`; the FIELD it feeds is `low_level_mode`. RobotState.mode
-  // is a different thing entirely (RobotMode, hardcoded to AUTO).
+  // is a different thing entirely (RobotMode, polled from sys_manager's
+  // `get_mode` service below).
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr low_level_mode_sub_;
+
+  // Client for sys_manager's `get_mode` (relative name, so it lands on
+  // <robot_id>/get_mode), plus its own slow timer. The timer deliberately does
+  // NOT share timer_cb_group_: that group exists to isolate the 10 Hz tick's
+  // blocking TF work, and this poll is non-blocking — parking it in the default
+  // group keeps a wedged sys_manager from ever delaying the publish tick.
+  rclcpp::Client<syncai_common::srv::GetMode>::SharedPtr get_mode_client_;
+  std::shared_ptr<rclcpp::TimerBase> mode_poll_timer_;
 
   // Latest odom / battery / wifi / motor / low-level-mode samples, guarded because
   // they are written from their subscription callbacks and read from the timer
@@ -127,6 +151,25 @@ private:
   int32_t low_level_policy_state_{0};
   int32_t low_level_motion_state_{0};
 
+  // Last answer from get_mode, written by the service response callback and read
+  // by buildState() — under mutex_ like the sample caches, and for the same
+  // reason (the response callback runs on another executor thread).
+  //
+  // Starts at AUTO, not MAINTENANCE: this node only ever runs inside a session
+  // that sys_manager built (or adopted), so "no answer yet" almost always means
+  // "the 1 Hz poll simply hasn't fired", not "the stack is down" — and AUTO is
+  // also exactly what the field reported for its entire hardcoded life, so the
+  // first second of a nav bringup looks the same as it always has. In a mapping
+  // session the field reads AUTO for at most one poll period before correcting
+  // itself to MANUAL.
+  uint8_t reported_mode_{syncai_common::msg::RobotMode::AUTO};
+  // In-flight guard for the poll: at most one outstanding request, so a
+  // sys_manager that stops answering accumulates stale ticks instead of queued
+  // requests. Both under mutex_ (timer and response callback are different
+  // threads).
+  bool mode_request_pending_{false};
+  int mode_request_stale_ticks_{0};
+
   // Health latches. Written ONLY by updateHealthLatches(), read by buildState().
   //
   // Not under mutex_: they are touched exclusively from the timer, which has its
@@ -140,6 +183,9 @@ private:
   std::string map_name_;
   std::string global_frame_, base_frame_;
   double publish_rate_;
+  // How often to ask sys_manager for the live mode. Much slower than
+  // publish_rate on purpose — see initParameters().
+  double mode_poll_rate_;
   double transform_tolerance_;
   // Hysteresis pair for low_battery_latched_, in percent (0-100). Load-time
   // only: this node has no on-set-parameters callback.

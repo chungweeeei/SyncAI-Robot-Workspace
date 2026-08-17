@@ -218,9 +218,12 @@ were somehow up, leaving one behind would leave `get_mode` ambiguous), and
 refuses to rebuild the mode that is already live — in `MANUAL` that would drop an
 unsaved map on the floor, because `pgo_node` accumulates its keyframes in RAM and
 `save_maps` is the only thing that serialises them. `sys_manager` itself runs
-**outside** both specs (start it separately, `ros2 launch syncai_sys_manager
-sys_manager.launch.py`); add it back as a window in a spec and `kill_session`
-would kill the pane it is running in.
+**outside** both specs — it is the robot container's main process
+(`command:` in `docker-compose.robots.yml` runs `ros2 launch syncai_sys_manager
+sys_manager.launch.py`), so `docker compose up -d robot01` brings the stack up
+on its own: `setup_session()` sees nothing running and builds `AUTO`. Add
+`sys_manager` back as a window in a spec and `kill_session` would kill the pane
+it is running in.
 
 The window list is **data**: `config/sessions/*.yaml` holds windows / panes /
 commands / `sleep` offsets / `multilog` names, and `NodeManager` holds the byobu
@@ -306,19 +309,29 @@ breaking changes relative to model training data — read the relevant guide in
 ## Infrastructure
 
 - **`docker-compose.yml`** — shared services: `postgres` (5432, bind-mounted to
-  `./data/postgres`), `pgadmin` (5050), `temporal` (7233), `temporal_ui` (8081).
-- **`docker-compose.robots.yml`** — robot containers under two profiles:
-  `real` (`robot01`, `robot02`; `network_mode: host`, loopback-only unicast DDS)
-  and `sim` (`robot01-sim` … `robot03-sim`; dual-homed on a `syncai-lan`
-  macvlan so they reach Temporal/Postgres while DDS runs on the macvlan).
-  Robot containers also bind-mount the host D-Bus socket (so `nmcli` reaches the
-  host NetworkManager — needs `apparmor=unconfined` + sudo) and the avahi socket
-  (so `libnss-mdns` resolves `*.local`).
-- **CycloneDDS** is the RMW, configured by hand: `config/cyclonedds.xml` (LAN /
-  macvlan) and `config/cyclonedds_standalone.xml` (loopback + explicit unicast
-  peers). Gotchas that have bitten before: a single interface with
-  `multicast=false` disables multicast **globally**; peer pings only use the
-  top-priority interface; unicast `<Peers>` require the remote side to have
+  `./data/postgres`), `pgadmin` (5050), `temporal` (7233), `temporal_ui` (8081),
+  `mediamtx` (RTSP in / WebRTC out for the camera; `network_mode: host` so ICE
+  candidates are the real interfaces — capture and Tegra H.264 encoding happen
+  outside it and are pushed in over RTSP).
+- **`docker-compose.robots.yml`** — robot containers. One service, `robot01`,
+  behind the `real` profile (`network_mode: host`, loopback-only unicast DDS);
+  the profile only keeps it opt-in, so bringing up the infra stack does not drag
+  a robot up with it. The Isaac Sim fleet (`*-sim` services dual-homed on a
+  `syncai-lan` macvlan) was **removed** — recover it from git history rather
+  than re-deriving it if the simulator comes back. Robot containers also
+  bind-mount the host D-Bus socket (so `nmcli` reaches the host NetworkManager —
+  needs `apparmor=unconfined` + sudo) and the avahi socket (so `libnss-mdns`
+  resolves `*.local`), and pass through `/dev/video0` plus the host `video` gid
+  for the camera.
+- **CycloneDDS** is the RMW, configured by hand: `config/cyclonedds.xml` —
+  loopback only (`lo`), `AllowMulticast=false`, one explicit unicast peer at
+  `127.0.0.1`. It is the single config left; `cyclonedds_standalone.xml` went
+  away with the sim/macvlan split. It pins `<Domain Id="1">`, so the domain is
+  **not** inherited from `ROS_DOMAIN_ID` — changing the compose env alone
+  silently leaves DDS on domain 1 and nothing discovers anything. Change both.
+  Gotchas that have bitten before: a single interface with `multicast=false`
+  disables multicast **globally**; peer pings only use the top-priority
+  interface; unicast `<Peers>` require the remote side to have
   `ParticipantIndex=auto`.
 - tmpfs `mode:` in compose must be written as an octal literal (`0o1777`) — a
   bare `1777` is parsed as decimal.

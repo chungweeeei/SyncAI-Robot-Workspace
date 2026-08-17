@@ -23,6 +23,13 @@
     sourced.
   -->
   <exec_depend>syncai_common</exec_depend>
+  <!--
+    FASTLIO2_ROS2's interface package (yes, it is genuinely named `interface`):
+    the map gateway imports interface.srv.SaveMaps to trigger pgo's map save.
+    Same rationale as syncai_common above — build ordering plus honesty about
+    a runtime import.
+  -->
+  <exec_depend>interface</exec_depend>
 
   <!--
     Web stack (FastAPI + uvicorn) is installed via pip / requirements.txt, not
