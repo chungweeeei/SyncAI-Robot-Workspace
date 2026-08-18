@@ -1,20 +1,3 @@
-"""The maps stored on the robot's disk, as opposed to the one that is loaded.
-
-``MapRepo`` next door owns vertex CRUD in Postgres. This repo never touches ROS:
-it reads — and, since the editor's save path landed, writes — ``map/<name>/``,
-the directories ``pgo/save_maps`` and ``tools/pcd_to_gridmap.py`` produce.
-
-Writing is deliberately narrow: ``write_gridmap`` replaces the *cells* of an
-existing gridmap and nothing else. It cannot change a map's extent, and never
-rewrites ``gridmap.yaml``. Everything about the grid's geometry stays a
-property of the pcd → grid conversion.
-
-Creating is narrower still: ``create_map_dir`` makes exactly one empty
-directory for ``pgo/save_maps`` to fill (the service demands it exists and
-refuses to create it), and ``discard_empty_map_dir`` is its unwind for the
-save-failed case. Neither writes a byte of map data.
-"""
-
 import os
 import re
 import shutil
@@ -38,12 +21,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 @dataclass(frozen=True)
 class GridInfo:
-    """A gridmap's geometry, from gridmap.yaml plus the .pgm header."""
-
     resolution: float
-    # World pose of the grid's lower-left corner: [x, y, yaw] in the map frame.
-    # This is the yaml's three-element origin, NOT the {x, y, z} position of an
-    # OccupancyGrid message — pcd_to_gridmap.py always writes yaw 0.0.
     origin: Tuple[float, float, float]
     width: int
     height: int
@@ -52,8 +30,6 @@ class GridInfo:
 @dataclass(frozen=True)
 class StoredMap:
     name: str
-    # None when the directory has a point cloud but no gridmap yet, which is the
-    # state of every map between pgo/save_maps and pcd_to_gridmap.py.
     grid: Optional[GridInfo]
     has_pointcloud: bool
     size_bytes: int
@@ -249,9 +225,7 @@ class MapCatalogRepo:
         raw_path = os.path.join(directory, "gridmap_raw.pgm")
         if not os.path.exists(raw_path):
             shutil.copy2(path, raw_path)
-            self.logger.info(
-                "[MapCatalogRepo] Kept the pre-edit gridmap", map=name, path=raw_path
-            )
+            self.logger.info("[MapCatalogRepo] Kept the pre-edit gridmap", map=name, path=raw_path)
 
         try:
             width, height = read_pgm_size(path)
@@ -272,9 +246,7 @@ class MapCatalogRepo:
             )
 
         written = write_pgm(path=path, width=width, height=height, body=data)
-        self.logger.info(
-            "[MapCatalogRepo] Wrote gridmap", map=name, width=width, height=height
-        )
+        self.logger.info("[MapCatalogRepo] Wrote gridmap", map=name, width=width, height=height)
         return written
 
     # --- Internals ----------------------------------------------------------
@@ -353,7 +325,5 @@ def _walk_stats(path: str) -> Tuple[int, float]:
     return total, newest
 
 
-def init_map_catalog_repo(
-    logger: structlog.stdlib.BoundLogger
-) -> MapCatalogRepo:
+def init_map_catalog_repo(logger: structlog.stdlib.BoundLogger) -> MapCatalogRepo:
     return MapCatalogRepo(logger=logger)

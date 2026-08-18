@@ -1,40 +1,3 @@
-"""Everything the operator UI asks about maps, in one router.
-
-``/api/v1/maps/{name}/...`` is the whole API: a map is named in the URL, and its
-image, thumbnail, point cloud and vertices all hang off it.
-Vertices are nested to the same depth as the rest — the map name is not needed
-to *find* a vertex (the id is unique), it is there so the URL and the row cannot
-disagree about which map a vertex belongs to.
-
-There is no longer a singular ``/api/v1/map/...`` family. It served the map the
-stack had **loaded**, read from live ROS topics, and every one of its endpoints
-had a per-name equivalent here: ``info`` -> ``GET /api/v1/maps/{name}``,
-``image`` -> ``/image``, ``pointcloud`` -> ``/pointcloud`` off the saved .pcd.
-Retiring it also retired its only producers — ``map_subscriber.py`` and the
-``map_cloud`` half of the point-cloud subscriber — so the backend no longer
-subscribes to ``map`` or ``localizer/map_cloud`` at all.
-
-Disk is the only answer these endpoints give, which used to mean a saved edit was
-invisible to the running stack. It no longer does: ``PUT /{name}/grid`` writes the
-cells back and, when the edited map is the active one, asks map_server to re-read
-them and re-publish ``map``, so the robot plans on the same grid the UI shows.
-
-This file used to be ``map.py`` and ``maps.py``, one character apart, which was
-a standing invitation to edit the wrong one. Merged because at the REST boundary
-they are one resource seen two ways — the catalogue's ``vertex_count`` and
-``active`` fields already join disk state against the vertex table — and given
-one OpenAPI tag, so ``/docs`` shows a single "Map" section.
-
-The **repositories** stay split, deliberately: ``MapRepo`` is the vertex table,
-``MapCatalogRepo`` is the filesystem. Neither needs the other's dependency.
-
-``PUT /{name}/grid`` is the only write into a map's *files*; everything else
-about the catalogue is read-only. It takes the cells as a raw octet-stream and
-writes them itself rather than going through ``nav2_msgs/SaveMap``, which cannot
-help: that service takes a *topic name*, subscribes to it and saves whatever it
-receives, so it has no way to persist an array the browser edited.
-"""
-
 import hashlib
 import os
 import struct
@@ -85,11 +48,28 @@ MAP_CLOUD_MAX_POINTS = 300000
 # specifically are the two choices the docstring says to keep.
 PCD_TO_GRIDMAP = os.path.expanduser("~/robot_ws/tools/pcd_to_gridmap.py")
 GRIDMAP_RECIPE = [
-    "--zmin", "-0.3", "--zmax", "1.5",
-    "--free-mode", "floor", "--floor-zmin", "-0.95", "--floor-zmax", "-0.25",
-    "--min-points", "2", "--obstacle-close", "2", "--free-close", "5",
-    "--despeckle", "--min-obstacle-size", "12",
-    "--fill-holes", "--max-hole-size", "20000",
+    "--zmin",
+    "-0.3",
+    "--zmax",
+    "1.5",
+    "--free-mode",
+    "floor",
+    "--floor-zmin",
+    "-0.95",
+    "--floor-zmax",
+    "-0.25",
+    "--min-points",
+    "2",
+    "--obstacle-close",
+    "2",
+    "--free-close",
+    "5",
+    "--despeckle",
+    "--min-obstacle-size",
+    "12",
+    "--fill-holes",
+    "--max-hole-size",
+    "20000",
 ]
 
 
@@ -188,9 +168,7 @@ class GridInfoResponse(BaseModel):
 
 class MapSummaryResponse(BaseModel):
     name: str = Field(..., description="Directory name under the maps root.")
-    active: bool = Field(
-        ..., description="Whether this is the map the stack was launched with."
-    )
+    active: bool = Field(..., description="Whether this is the map the stack was launched with.")
     grid: Optional[GridInfoResponse] = Field(
         None,
         description=(
@@ -200,9 +178,7 @@ class MapSummaryResponse(BaseModel):
     )
     thumbnail: Optional[str] = Field(
         None,
-        description=(
-            "Path of this map's thumbnail endpoint, or null when it has no grid."
-        ),
+        description=("Path of this map's thumbnail endpoint, or null when it has no grid."),
     )
     has_pointcloud: bool = Field(
         ..., description="Whether map.pcd is present (the 3D localizer's source)."
@@ -211,9 +187,7 @@ class MapSummaryResponse(BaseModel):
     modified_at: str = Field(
         ..., description="ISO 8601 timestamp of the newest file in the directory."
     )
-    vertex_count: int = Field(
-        ..., description="Number of stored vertices belonging to this map."
-    )
+    vertex_count: int = Field(..., description="Number of stored vertices belonging to this map.")
 
 
 class CreateMapRequest(BaseModel):
@@ -230,9 +204,7 @@ class CreateMapRequest(BaseModel):
 
 class CreateMapResponse(BaseModel):
     name: str = Field(..., description="The map that was created.")
-    has_pointcloud: bool = Field(
-        ..., description="Whether pgo wrote map.pcd (true on any 200)."
-    )
+    has_pointcloud: bool = Field(..., description="Whether pgo wrote map.pcd (true on any 200).")
     grid_pending: bool = Field(
         ...,
         description=(
@@ -254,9 +226,7 @@ class SaveGridmapResponse(BaseModel):
             "subsequent GET of /image or /thumbnail answers with."
         ),
     )
-    active: bool = Field(
-        ..., description="Whether this is the map the stack was launched with."
-    )
+    active: bool = Field(..., description="Whether this is the map the stack was launched with.")
     reloaded: bool = Field(
         ...,
         description=(
@@ -305,9 +275,7 @@ def _summary(
         name=stored.name,
         active=stored.name == active_name,
         grid=grid,
-        thumbnail=(
-            f"/api/v1/maps/{stored.name}/thumbnail" if stored.grid is not None else None
-        ),
+        thumbnail=(f"/api/v1/maps/{stored.name}/thumbnail" if stored.grid is not None else None),
         has_pointcloud=stored.has_pointcloud,
         size_bytes=stored.size_bytes,
         modified_at=stored.modified_at.isoformat().replace("+00:00", "Z"),
@@ -342,9 +310,7 @@ def _not_modified(request: Request, tag: str) -> bool:
     return bool(header) and tag in [value.strip() for value in header.split(",")]
 
 
-def _start_grid_conversion(
-    logger: structlog.stdlib.BoundLogger, name: str, directory: str
-) -> bool:
+def _start_grid_conversion(logger: structlog.stdlib.BoundLogger, name: str, directory: str) -> bool:
     """Run pcd_to_gridmap over a just-saved map in a daemon thread.
 
     In the background because the conversion is minutes on a large site
@@ -388,9 +354,7 @@ def _start_grid_conversion(
 
     def _run() -> None:
         try:
-            completed = subprocess.run(
-                command, capture_output=True, text=True, timeout=600.0
-            )
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=600.0)
         except (OSError, subprocess.TimeoutExpired) as exc:
             logger.error("Gridmap conversion did not run", map=name, error=str(exc))
             return
@@ -408,9 +372,7 @@ def _start_grid_conversion(
 
         logger.info("Gridmap conversion finished", map=name)
 
-    threading.Thread(
-        target=_run, name=f"pcd-to-gridmap-{name}", daemon=True
-    ).start()
+    threading.Thread(target=_run, name=f"pcd-to-gridmap-{name}", daemon=True).start()
     return True
 
 
@@ -518,31 +480,22 @@ def init_map_router(
                 + (
                     " Converting to a 2D gridmap in the background."
                     if grid_pending
-                    else " Convert it with tools/pcd_to_gridmap.py to get a "
-                    "2D gridmap."
+                    else " Convert it with tools/pcd_to_gridmap.py to get a 2D gridmap."
                 )
             ),
         )
 
-    @map_router.get(
-        "/api/v1/maps/{name}/vertices", response_model=List[MapVertexResponse]
-    )
+    @map_router.get("/api/v1/maps/{name}/vertices", response_model=List[MapVertexResponse])
     def list_map_vertices(name: str, type: Optional[VertexType] = None):
         # _require first: without it an unknown map name returns [] — the same
         # answer as a real map with no vertices yet, which is the harder of the
         # two states to debug from the UI side.
         _require(name)
-        vertices = map_repo.list_vertices(
-            map_name=name, type=type.value if type else None
-        )
+        vertices = map_repo.list_vertices(map_name=name, type=type.value if type else None)
         return [_vertex_response(vertex) for vertex in vertices]
 
-    @map_router.post(
-        "/api/v1/maps/{name}/vertices", response_model=List[MapVertexResponse]
-    )
-    def create_map_vertices(
-        name: str, reqs: List[MapVertexRequest] = Body(..., min_length=1)
-    ):
+    @map_router.post("/api/v1/maps/{name}/vertices", response_model=List[MapVertexResponse])
+    def create_map_vertices(name: str, reqs: List[MapVertexRequest] = Body(..., min_length=1)):
         _require(name)
         vertices = map_repo.create_vertices(
             [
@@ -578,15 +531,11 @@ def init_map_router(
             raise NotFoundError(f"Map vertex {vertex_id} was not found in '{name}'.")
         return vertex
 
-    @map_router.get(
-        "/api/v1/maps/{name}/vertices/{id}", response_model=MapVertexResponse
-    )
+    @map_router.get("/api/v1/maps/{name}/vertices/{id}", response_model=MapVertexResponse)
     def get_map_vertex(name: str, id: uuid.UUID):
         return _vertex_response(_require_vertex(name, id))
 
-    @map_router.put(
-        "/api/v1/maps/{name}/vertices/{id}", response_model=MapVertexResponse
-    )
+    @map_router.put("/api/v1/maps/{name}/vertices/{id}", response_model=MapVertexResponse)
     def update_map_vertex(name: str, id: uuid.UUID, req: MapVertexUpdateRequest):
         _require_vertex(name, id)
 
@@ -599,9 +548,7 @@ def init_map_router(
             raise NotFoundError(f"Map vertex {id} was not found in '{name}'.")
         return _vertex_response(vertex)
 
-    @map_router.delete(
-        "/api/v1/maps/{name}/vertices/{id}", response_model=DeleteResponse
-    )
+    @map_router.delete("/api/v1/maps/{name}/vertices/{id}", response_model=DeleteResponse)
     def delete_map_vertex(name: str, id: uuid.UUID):
         _require_vertex(name, id)
         map_repo.delete_vertex(vertex_id=id)
@@ -619,8 +566,7 @@ def init_map_router(
         path = map_catalog_repo.gridmap_path(name)
         if path is None:
             raise NotFoundError(
-                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py "
-                "over its map.pcd first."
+                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py over its map.pcd first."
             )
         try:
             with open(path, "rb") as handle:
@@ -677,9 +623,7 @@ def init_map_router(
 
     @map_router.get("/api/v1/maps/{name}/thumbnail")
     def get_map_thumbnail(name: str, request: Request):
-        return _png_response(
-            name, request, thumbnail_cache, render_thumbnail, "thumbnail"
-        )
+        return _png_response(name, request, thumbnail_cache, render_thumbnail, "thumbnail")
 
     @map_router.put("/api/v1/maps/{name}/grid", response_model=SaveGridmapResponse)
     def save_map_grid(
@@ -729,8 +673,7 @@ def init_map_router(
         # saving, which matters because map_server re-reads both a few lines down.
         if stored.grid is None:
             raise NotFoundError(
-                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py "
-                "over its map.pcd first."
+                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py over its map.pcd first."
             )
 
         expected = stored.grid.width * stored.grid.height
@@ -761,9 +704,7 @@ def init_map_router(
                 etag=tag,
                 active=False,
                 reloaded=False,
-                message=(
-                    f"Saved {name}"
-                ),
+                message=(f"Saved {name}"),
             )
 
         # None only if gridmap.yaml vanished since stored.grid was read — the same
@@ -783,16 +724,13 @@ def init_map_router(
             # answer, `message` the human one. 202/207 were considered and
             # dropped: no client here understands them, and nothing is partial or
             # queued — the request completed, one of its two effects did not.
-            logger.error("Saved gridmap but map_server did not reload", map=name,
-                         error=detail)
+            logger.error("Saved gridmap but map_server did not reload", map=name, error=detail)
             return SaveGridmapResponse(
                 name=name,
                 etag=tag,
                 active=True,
                 reloaded=False,
-                message=(
-                    f"Saved '{name}', but system did not reload."
-                ),
+                message=(f"Saved '{name}', but system did not reload."),
             )
 
         return SaveGridmapResponse(
@@ -845,9 +783,7 @@ def init_map_router(
             payload = struct.pack("<I", points.shape[0]) + pack_xyz_f32(points)
             cached = (stamp, payload)
             cloud_cache[name] = cached
-            logger.info(
-                "packed stored map cloud", map=name, num_points=int(points.shape[0])
-            )
+            logger.info("packed stored map cloud", map=name, num_points=int(points.shape[0]))
 
         return Response(
             content=cached[1],

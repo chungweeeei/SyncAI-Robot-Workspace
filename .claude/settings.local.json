@@ -61,7 +61,8 @@
       "Bash(grep -E \"^\\(tsc|eslint|next\\)$\")",
       "Bash(./node_modules/.bin/tsc --noEmit)",
       "Bash(./node_modules/.bin/eslint app/mapping/page.tsx components/mapping/ hooks/use-mode-switch.ts lib/api/mapping.ts components/console/nav-rail.tsx)",
-      "Bash(zcat log/stack/robot01/mapping/robot_state/@*.s)"
+      "Bash(zcat log/stack/robot01/mapping/robot_state/@*.s)",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }

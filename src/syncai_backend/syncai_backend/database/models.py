@@ -27,14 +27,10 @@ class MapPoint(Base):
 
     __tablename__ = "map_vertices"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # Free-form classification, e.g. "waypoint" / "task_point".
     type: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Which map this point belongs to; indexed for per-map listing.
-    map_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    map: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     x: Mapped[float] = mapped_column(Float, nullable=False)
     y: Mapped[float] = mapped_column(Float, nullable=False)
     theta: Mapped[float] = mapped_column(Float, nullable=False)
@@ -109,9 +105,7 @@ class SavedTask(Base):
     # The map whose frame this task's MOVE coordinates are in, or NULL when the
     # task has no MOVE step and is therefore runnable anywhere. Indexed for the
     # "what can I run on the map the robot is actually on" listing.
-    map_name: Mapped[Optional[str]] = mapped_column(
-        String(255), nullable=True, index=True
-    )
+    map_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     # Ordered saved steps; the element shape is ``_StoredStep`` in
     # interfaces/rest/routers/saved_task.py. JSONB on PostgreSQL -- indexable and
     # comparable with ``=``, which plain ``json`` is not -- and the variant has to

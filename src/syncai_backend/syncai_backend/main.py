@@ -50,9 +50,6 @@ class SyncAIBackend(Node):
     def __init__(self, logger: structlog.stdlib.BoundLogger):
         super().__init__("syncai_backend_node")
 
-        # The launch file sets the namespace to the robot_id from
-        # config/system.ini; it scopes this robot's Temporal task queue so
-        # another robot's worker never picks up tasks submitted here.
         robot_id = self.get_namespace().strip("/") or "default_robot"
 
         try:
@@ -62,9 +59,8 @@ class SyncAIBackend(Node):
             raise
 
         robot_repo = init_robot_repo(logger=logger)
-        # init_map_repo creates the ORM schema and builds its own session_maker
-        # from the engine (per-repo session convention).
         map_repo = init_map_repo(logger=logger, engine=engine)
+
         # The operator's library of re-dispatchable step lists. Its own repo
         # rather than a method on MapRepo: that one is the vertex table, this is a
         # different table, and the only thing they share is the engine.
@@ -110,9 +106,7 @@ class SyncAIBackend(Node):
         )
         # pgo's merged map cloud arrives already in the map frame, so unlike
         # the live cloud above this needs no tf_buffer.
-        init_map_cloud_subscriber(
-            logger=logger, node=self, map_cloud_repo=map_cloud_repo
-        )
+        init_map_cloud_subscriber(logger=logger, node=self, map_cloud_repo=map_cloud_repo)
         init_telemetry_subscriber(
             logger=logger,
             node=self,
@@ -123,9 +117,7 @@ class SyncAIBackend(Node):
         # plan is published in the map frame already.
         init_path_subscriber(logger=logger, node=self, telemetry_repo=telemetry_repo)
 
-        worker_handle = start_temporal_worker(
-            logger=logger, robot_id=robot_id, robot_gw=robot_gw
-        )
+        worker_handle = start_temporal_worker(logger=logger, robot_id=robot_id, robot_gw=robot_gw)
         start_rest_server(
             logger=logger,
             workflow_gw=workflow_gw,

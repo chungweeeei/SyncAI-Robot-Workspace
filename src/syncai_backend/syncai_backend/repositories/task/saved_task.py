@@ -1,8 +1,9 @@
 import uuid
 import structlog
 
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 from sqlalchemy import Engine, or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -41,8 +42,11 @@ class SavedTaskRepo:
         )
 
     @contextmanager
-    def _session(self, op: str) -> Iterator[Session]:
+    def _session(self, op: str) -> Generator[Session, None, None]:
         """A session for one repo operation, naming ``op`` if it fails.
+
+        The ``Generator`` annotation (not ``Iterator``) is what ``@contextmanager``
+        wants -- see the note on ``MapRepo._session``.
 
         Log-and-reraise, for the reason ``MapRepo._session`` records at length:
         the SQLAlchemy error carries the statement that failed, and translating

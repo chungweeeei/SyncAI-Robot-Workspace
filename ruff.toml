@@ -1,0 +1,67 @@
+# Ruff config for every Python package in this workspace
+# (syncai_backend, syncai_sys_manager, syncai_ros_mcp).
+#
+# Why this file exists at all: nothing here was ever linted by config, so Ruff
+# fell back to its own built-in defaults — and those defaults grew. The
+# 2026 VSCode extension bundles ruff 0.16, whose default rule set now includes
+# isort, PL*, UP*, TRY*, BLE*, SIM* and friends (`ruff check --isolated` enables
+# ~414 rules). That turned into 471 in-editor warnings across the three
+# packages overnight, 72 of them `I001` alone, with no code change behind it.
+#
+# So this is the Python counterpart to `.clang-format`: the rule set is pinned
+# here rather than inherited from whatever Ruff version the editor happens to
+# ship, so the warnings an operator sees do not depend on when they last
+# updated an extension.
+#
+# Ruff resolves config by walking up from each file, and no package under src/
+# carries a pyproject.toml or ruff.toml of its own (the setup.cfg files are
+# ament packaging only — Ruff does not read them), so this root file governs
+# the whole workspace. Same cwd-is-the-workspace-root assumption the launch
+# files and byobu panes already make.
+
+# ROS 2 Humble is Python 3.10; syntax-version-dependent rules must not assume
+# newer syntax is available.
+target-version = "py310"
+
+# Matches the 100 columns `.clang-format` pins for C++, so the two halves of
+# the stack wrap at the same place. Nothing in the selected rule set enforces
+# it today (E501 is not in `E4`/`E7`/`E9`) — it is here so that if `ruff
+# format` is ever wired into formatOnSave it does not silently reflow
+# everything to Ruff's 88-column default.
+line-length = 100
+
+# `build`, `node_modules`, `.ruff_cache` and friends are in Ruff's default
+# exclude list already; these are the ones specific to a colcon workspace.
+# src/third-party is submodules (pinned, unmodified upstream) plus the one
+# vendored package we only patched in C++ — linting any of it produces noise we
+# would never act on.
+extend-exclude = [
+    "install",
+    "log",
+    "data",
+    "record",
+    "src/third-party",
+]
+
+[lint]
+# Ruff's historical default: pyflakes plus the pycodestyle subsets that catch
+# real errors rather than whitespace. Pinned explicitly so an extension upgrade
+# cannot widen it again without someone editing this file.
+#
+# The 471 findings the wider default set reports are not all noise — BLE001
+# (28 blind excepts), RUF013 (17 implicit Optionals) and UP035 are worth a pass
+# each. But there is no CI running Ruff and no test suite to catch a regression
+# from a mechanical --fix, so widening the select is a deliberate decision to
+# make later, one family at a time, not something to inherit by default.
+select = ["E4", "E7", "E9", "F"]
+
+# isort (`I`) is deliberately NOT selected. The backend groups its imports by
+# architectural layer — main.py walks logger/database/temporal → rest →
+# repositories → gateways → subscribers, mirroring the
+# routers → gateways → repositories → database layering that CLAUDE.md
+# describes — with blank lines carrying that meaning. isort classifies all of
+# them as first-party, collapses the groups into one block and alphabetises it,
+# which destroys the only place that ordering is written down. If import
+# sorting is ever wanted, it needs `lint.isort.sections` teaching it those
+# layers first; until then the "Organize imports" quick fix is a regression,
+# not a cleanup.

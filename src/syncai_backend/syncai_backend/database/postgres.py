@@ -29,10 +29,6 @@ def connect_to_postgres(logger: structlog.stdlib.BoundLogger, robot_id: str) -> 
     pg_password = os.getenv("POSTGRES_PASSWORD", "syncrobotic")
     pg_host = os.getenv("POSTGRES_HOST", "localhost")
     pg_port = int(os.getenv("POSTGRES_PORT", 5432))
-    # Each robot owns its own database so multiple robots can share one
-    # PostgreSQL server without colliding. The name is "<robot_id>_db";
-    # robot_id comes from config/system.ini (mounted by docker-compose)
-    # via the ROS namespace.
     pg_db = f"{robot_id}_db"
 
     engine = create_engine(
