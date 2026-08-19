@@ -246,7 +246,7 @@ def _vertex_response(vertex: MapPoint) -> MapVertexResponse:
         id=vertex.id,
         name=vertex.name,
         type=vertex.type,
-        map_name=vertex.map_name,
+        map_name=vertex.map,
         x=vertex.x,
         y=vertex.y,
         theta=vertex.theta,
@@ -406,11 +406,11 @@ def init_map_router(
     cloud_cache: Dict[str, Tuple[Tuple[int, int], bytes]] = {}
 
     def _vertex_count(name: str) -> int:
-        # map_vertices.map_name holds the bare directory name, the same spelling
+        # map_vertices.map holds the bare directory name, the same spelling
         # this catalogue uses. RobotState.map, by contrast, is a path
         # ("map/dp2f/gridmap.yaml") — reconciling the two is exactly why `active`
         # is resolved on this side and not in the UI.
-        return len(map_repo.list_vertices(map_name=name))
+        return len(map_repo.list_vertices(map=name))
 
     def _require(name: str) -> StoredMap:
         stored = map_catalog_repo.get_map(name)
@@ -491,24 +491,24 @@ def init_map_router(
         # answer as a real map with no vertices yet, which is the harder of the
         # two states to debug from the UI side.
         _require(name)
-        vertices = map_repo.list_vertices(map_name=name, type=type.value if type else None)
+        vertices = map_repo.list_vertices(map=name, type=type.value if type else None)
         return [_vertex_response(vertex) for vertex in vertices]
 
     @map_router.post("/api/v1/maps/{name}/vertices", response_model=List[MapVertexResponse])
     def create_map_vertices(name: str, reqs: List[MapVertexRequest] = Body(..., min_length=1)):
         _require(name)
         vertices = map_repo.create_vertices(
-            [
+            map=name,
+            vertices=[
                 {
                     "name": req.name,
                     "type": req.type.value,
-                    "map_name": name,
                     "x": req.x,
                     "y": req.y,
                     "theta": req.theta,
                 }
                 for req in reqs
-            ]
+            ],
         )
         return [_vertex_response(vertex) for vertex in vertices]
 
@@ -527,7 +527,7 @@ def init_map_router(
         """
         _require(name)
         vertex = map_repo.get_vertex(vertex_id=vertex_id)
-        if vertex is None or vertex.map_name != name:
+        if vertex is None or vertex.map != name:
             raise NotFoundError(f"Map vertex {vertex_id} was not found in '{name}'.")
         return vertex
 

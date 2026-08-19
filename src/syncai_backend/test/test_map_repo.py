@@ -9,12 +9,11 @@ import uuid
 _MISSING_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 
-def _create(repo, name="v", type="GENERAL", map_name="warehouse", x=1.0, y=2.0,
+def _create(repo, name="v", type="GENERAL", map="warehouse", x=1.0, y=2.0,
             theta=0.0):
     """Create a single vertex through the batch API and return it."""
-    return repo.create_vertices([{
-        "name": name, "type": type, "map_name": map_name, "x": x, "y": y,
-        "theta": theta,
+    return repo.create_vertices(map=map, vertices=[{
+        "name": name, "type": type, "x": x, "y": y, "theta": theta,
     }])[0]
 
 
@@ -24,18 +23,16 @@ def test_create_returns_persisted_vertex(map_repo):
     assert vertex.id is not None
     assert vertex.name == "dock"
     assert vertex.type == "GENERAL"
-    assert vertex.map_name == "warehouse"
+    assert vertex.map == "warehouse"
     assert (vertex.x, vertex.y, vertex.theta) == (3.0, -1.5, 90.0)
     assert vertex.created_at is not None
     assert vertex.updated_at is not None
 
 
 def test_create_vertices_batch_persists_all_in_order(map_repo):
-    created = map_repo.create_vertices([
-        {"name": "a", "type": "GENERAL", "map_name": "warehouse", "x": 0.0,
-         "y": 0.0, "theta": 0.0},
-        {"name": "b", "type": "ARTIFACT", "map_name": "warehouse", "x": 1.0,
-         "y": 1.0, "theta": 0.0},
+    created = map_repo.create_vertices(map="warehouse", vertices=[
+        {"name": "a", "type": "GENERAL", "x": 0.0, "y": 0.0, "theta": 0.0},
+        {"name": "b", "type": "ARTIFACT", "x": 1.0, "y": 1.0, "theta": 0.0},
     ])
 
     assert [v.name for v in created] == ["a", "b"]
@@ -61,16 +58,16 @@ def test_list_vertices_orders_by_creation_time(map_repo):
     assert [v.id for v in vertices] == [first.id, second.id]
 
 
-def test_list_vertices_filters_by_map_name_and_type(map_repo):
-    _create(map_repo, name="g1", type="GENERAL", map_name="warehouse")
-    _create(map_repo, name="a1", type="ARTIFACT", map_name="warehouse")
-    _create(map_repo, name="g2", type="GENERAL", map_name="office")
+def test_list_vertices_filters_by_map_and_type(map_repo):
+    _create(map_repo, name="g1", type="GENERAL", map="warehouse")
+    _create(map_repo, name="a1", type="ARTIFACT", map="warehouse")
+    _create(map_repo, name="g2", type="GENERAL", map="office")
 
-    assert len(map_repo.list_vertices(map_name="warehouse")) == 2
-    assert len(map_repo.list_vertices(map_name="office")) == 1
+    assert len(map_repo.list_vertices(map="warehouse")) == 2
+    assert len(map_repo.list_vertices(map="office")) == 1
     assert len(map_repo.list_vertices(type="GENERAL")) == 2
-    assert len(map_repo.list_vertices(map_name="warehouse", type="ARTIFACT")) == 1
-    assert map_repo.list_vertices(map_name="does-not-exist") == []
+    assert len(map_repo.list_vertices(map="warehouse", type="ARTIFACT")) == 1
+    assert map_repo.list_vertices(map="does-not-exist") == []
 
 
 def test_update_changes_fields(map_repo):

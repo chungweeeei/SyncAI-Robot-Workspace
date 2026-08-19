@@ -326,7 +326,7 @@ def init_saved_task_router(
     def _vertices(map_name: Optional[str]) -> Dict[uuid.UUID, MapPoint]:
         if map_name is None:
             return {}
-        return {v.id: v for v in map_repo.list_vertices(map_name=map_name)}
+        return {v.id: v for v in map_repo.list_vertices(map=map_name)}
 
     def _require_vertex_refs(
         map_name: Optional[str],
@@ -357,7 +357,7 @@ def init_saved_task_router(
                 )
             raise BadRequestError(
                 f"Step '{step.id}' references vertex {step.vertex_id}, which is "
-                f"on map '{other.map_name}', not '{map_name}'."
+                f"on map '{other.map}', not '{map_name}'."
             )
 
     def _check(map_name: Optional[str], steps: List[SavedStepRequest]) -> None:

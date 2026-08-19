@@ -127,13 +127,12 @@ def test_list_nulls_grid_for_an_unconverted_map(client):
 
 
 def test_list_counts_vertices_of_that_map_only(client, map_repo):
-    map_repo.create_vertices([
-        {"name": "a", "type": "GENERAL", "map_name": "full",
-         "x": 1.0, "y": 2.0, "theta": 0.0},
-        {"name": "b", "type": "CHARGER", "map_name": "full",
-         "x": 3.0, "y": 4.0, "theta": 90.0},
-        {"name": "c", "type": "GENERAL", "map_name": "rawonly",
-         "x": 5.0, "y": 6.0, "theta": 0.0},
+    map_repo.create_vertices(map="full", vertices=[
+        {"name": "a", "type": "GENERAL", "x": 1.0, "y": 2.0, "theta": 0.0},
+        {"name": "b", "type": "CHARGER", "x": 3.0, "y": 4.0, "theta": 90.0},
+    ])
+    map_repo.create_vertices(map="rawonly", vertices=[
+        {"name": "c", "type": "GENERAL", "x": 5.0, "y": 6.0, "theta": 0.0},
     ])
 
     body = _by_name(client.get("/api/v1/maps").json())

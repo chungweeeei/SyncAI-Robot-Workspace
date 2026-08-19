@@ -73,8 +73,9 @@ def client(logger, saved_task_repo, map_repo, catalog_repo, workflow_gw, tmp_pat
 def dock(map_repo):
     """A vertex on the active map, at a pose no snapshot in this file uses."""
     return map_repo.create_vertices(
-        [{"name": "dock", "type": "GENERAL", "map_name": "full",
-          "x": 3.0, "y": -1.5, "theta": 90.0}]
+        map="full",
+        vertices=[{"name": "dock", "type": "GENERAL",
+                   "x": 3.0, "y": -1.5, "theta": 90.0}],
     )[0]
 
 
@@ -218,8 +219,9 @@ def test_vertex_from_another_map_names_both_maps(client, map_repo):
     404: the body named both the map and the vertex, so there is no scope being
     probed, and at save time the distinction is the whole diagnosis."""
     elsewhere = map_repo.create_vertices(
-        [{"name": "other", "type": "GENERAL", "map_name": "rawonly",
-          "x": 0.0, "y": 0.0, "theta": 0.0}]
+        map="rawonly",
+        vertices=[{"name": "other", "type": "GENERAL",
+                   "x": 0.0, "y": 0.0, "theta": 0.0}],
     )[0]
 
     res = _create(client, steps=[_move(elsewhere.id)])
