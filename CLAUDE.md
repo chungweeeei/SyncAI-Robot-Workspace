@@ -93,6 +93,7 @@ uses.
 | `behaviortree_cpp_v3` | Submodule, pinned to upstream tag `3.8.8`. Unmodified. |
 | `FASTLIO2_ROS2` | Submodule → `chungweeeei/SyncAI-Fast-LIO2` (branch `dev`). Contains LIO + PGO + HBA + `localizer`. |
 | `livox_ros_driver2`, `Livox-SDK2` | Submodules (MID360 driver) |
+| `small_gicp` | Submodule, pinned to upstream tag `v1.0.1`. Unmodified. The `localizer`'s registration backend (`RegistrationPCL`, a `pcl::Registration` subclass). Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package and `localizer` finds it with `find_package(small_gicp)`; the ordering comes from `<depend>small_gicp</depend>` in the localizer's manifest. |
 | `ros2_laser_scan_merger` | **Vendored** (source committed) — locally modified |
 
 ## The robot_id convention

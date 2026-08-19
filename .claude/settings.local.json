@@ -62,7 +62,8 @@
       "Bash(./node_modules/.bin/tsc --noEmit)",
       "Bash(./node_modules/.bin/eslint app/mapping/page.tsx components/mapping/ hooks/use-mode-switch.ts lib/api/mapping.ts components/console/nav-rail.tsx)",
       "Bash(zcat log/stack/robot01/mapping/robot_state/@*.s)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(grep -n \"third-party\\\\|behaviortree_cpp_v3\\\\` | Submodule\\\\|ros2_laser_scan_merger\\\\|Livox-SDK2\" /Users/andy_tseng/Desktop/Projects/SyncAI-Robot-Workspace/CLAUDE.md)"
     ]
   }
 }

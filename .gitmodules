@@ -11,3 +11,6 @@
 	path = src/third-party/FASTLIO2_ROS2
 	url = git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
 	branch = dev
+[submodule "src/third-party/small_gicp"]
+	path = src/third-party/small_gicp
+	url = https://github.com/koide3/small_gicp.git
