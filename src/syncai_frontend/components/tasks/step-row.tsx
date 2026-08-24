@@ -73,7 +73,7 @@ export function StepRow({
           onChange={(type) => onPatch({ type })}
         />
 
-        {/* Loaded from a saved task whose vertex has since been deleted, so these
+        {/* Loaded from a template whose vertex has since been deleted, so these
          * coordinates are the snapshot rather than a live pose. Not an error — the
          * row dispatches fine — but the operator should know the map no longer
          * agrees, and re-picking a vertex clears it. */}

@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { Chip } from "@/components/console/instrument";
 import { getSchedule } from "@/lib/api/schedule";
-import { toDispatchSteps, type SavedTask } from "@/lib/api/saved-task";
+import { toDispatchSteps, type TaskTemplate } from "@/lib/api/task-template";
 import type { TaskStepRequest } from "@/lib/api/task";
 import { stepGlyph } from "@/lib/task/step";
 
@@ -12,8 +12,8 @@ type Status = "loading" | "ok" | "error";
 
 export interface ScheduleStepsProps {
   scheduleId: string;
-  /** The saved task this schedule was frozen from, if it is still in the library. */
-  source: SavedTask | null;
+  /** The template this schedule was frozen from, if it is still in the library. */
+  source: TaskTemplate | null;
 }
 
 /**
@@ -25,8 +25,8 @@ export interface ScheduleStepsProps {
  * per-schedule `describe`. Paying that on expansion means one RPC for the one
  * schedule the operator opened, instead of N on every first paint.
  *
- * When the schedule came from a saved task that is still in the library, the
- * frozen steps are diffed against that task's *current* resolution. That is the
+ * When the schedule came from a template that is still in the library, the
+ * frozen steps are diffed against that template's *current* resolution. That is the
  * only way the operator can see that a schedule is about to drive somewhere the
  * map no longer says — the steps in Temporal are concrete and nothing re-reads
  * them, so a vertex moved after registration never reaches a scheduled run.
@@ -74,7 +74,7 @@ export function ScheduleSteps({ scheduleId, source }: ScheduleStepsProps) {
       {drift !== null && (
         <p className="text-[11px] leading-tight text-signal-caution">
           {drift === 0
-            ? "Frozen coordinates match the saved task."
+            ? "Frozen coordinates match the template."
             : `${drift} ${drift === 1 ? "step no longer matches" : "steps no longer match"} ` +
               `“${source?.name}”. A scheduled run uses what is frozen below — ` +
               "delete and re-create the schedule to pick up the current positions."}
@@ -104,19 +104,19 @@ export function ScheduleSteps({ scheduleId, source }: ScheduleStepsProps) {
 }
 
 /**
- * How many steps the schedule froze that the saved task would now dispatch
+ * How many steps the schedule froze that the template would now dispatch
  * differently, or null when the two are not comparable.
  *
- * A changed step *count* makes a per-step diff meaningless — the saved task was
+ * A changed step *count* makes a per-step diff meaningless — the template was
  * edited after the schedule was registered — so that reports as "not comparable"
  * rather than as a misleading number.
  */
-function findDrift(frozen: readonly TaskStepRequest[], source: SavedTask): number | null {
+function findDrift(frozen: readonly TaskStepRequest[], source: TaskTemplate): number | null {
   let current: TaskStepRequest[];
   try {
     current = toDispatchSteps(source.steps);
   } catch {
-    // A saved step with no resolvable coordinates at all; nothing to compare to.
+    // A stored step with no resolvable coordinates at all; nothing to compare to.
     return null;
   }
   if (current.length !== frozen.length) return null;
@@ -144,24 +144,24 @@ function Line({ children }: { children: React.ReactNode }) {
 /** The `stale` badge for the collapsed row, so drift is visible without expanding. */
 export function ScheduleSourceChip({
   schedule,
-  savedTasks,
+  templates,
 }: {
-  schedule: { saved_task_id?: string | null; saved_task_name?: string | null };
-  savedTasks: readonly SavedTask[];
+  schedule: { task_template_id?: string | null; task_template_name?: string | null };
+  templates: readonly TaskTemplate[];
 }) {
   // No source at all: registered from loose steps in the composer (or before the
   // memo carried a source). Saying so beats saying nothing — the alternative was
   // a row that looked exactly like a linked one, on a page whose library then
   // showed no sign that this schedule existed.
-  if (!schedule.saved_task_id) {
+  if (!schedule.task_template_id) {
     return <Chip tone="caution">unsaved steps</Chip>;
   }
 
-  const source = savedTasks.find((task) => task.id === schedule.saved_task_id);
+  const source = templates.find((template) => template.id === schedule.task_template_id);
   // The source was deleted after registration. The schedule still runs — it holds
   // its own copy of the steps — so this is information, not a fault.
   if (!source) {
     return <Chip tone="neutral">source deleted</Chip>;
   }
-  return <Chip tone="neutral">{schedule.saved_task_name ?? source.name}</Chip>;
+  return <Chip tone="neutral">{schedule.task_template_name ?? source.name}</Chip>;
 }

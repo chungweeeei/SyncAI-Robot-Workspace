@@ -65,18 +65,18 @@ export interface ScheduleState {
   next_run_times: string[];
   /** Map the frozen coordinates are in, from the memo. Null for older schedules. */
   map_name?: string | null;
-  /** The saved task this was frozen from, if it came from one. */
-  saved_task_id?: string | null;
-  saved_task_name?: string | null;
+  /** The task template this was frozen from, if it came from one. */
+  task_template_id?: string | null;
+  task_template_name?: string | null;
   /**
    * The frozen step list — **only** populated by `getSchedule`; always `[]` from
    * `listSchedules`, and legitimately `[]` for a schedule registered before this
    * field existed or one whose payload could not be decoded.
    *
    * Frozen at registration: a schedule stores concrete steps in Temporal, and
-   * nothing re-reads them, so later vertex edits reach saved tasks and immediate
+   * nothing re-reads them, so later vertex edits reach templates and immediate
    * dispatches but not an already-registered schedule. Comparing these against
-   * the source saved task's current resolution is how that staleness becomes
+   * the source template's current resolution is how that staleness becomes
    * visible instead of silent.
    */
   steps?: TaskStepRequest[];

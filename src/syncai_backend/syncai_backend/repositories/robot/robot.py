@@ -10,8 +10,7 @@ class RobotRepo:
     def __init__(self, logger: structlog.stdlib.BoundLogger):
         self.logger = logger
 
-        # In-Process memory cache for robot state. Only samples with
-        # localization_valid ever land here — see RobotStateSubscriber.
+        # In-Process memory cache for robot state
         self._robot_state_lock = threading.Lock()
         self._robot_state: Optional[RobotStateMsg] = None
 

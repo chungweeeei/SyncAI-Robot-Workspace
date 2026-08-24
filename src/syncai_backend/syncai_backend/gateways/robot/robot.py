@@ -5,6 +5,7 @@ import structlog
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
+from rclpy import qos
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.client import Client
@@ -182,30 +183,23 @@ class RobotGateway:
         )
 
     def register_publishers(self):
-
-        # Relative name, so it resolves under this node's robot_id namespace and
-        # reaches that robot's localizer only. Default QoS (reliable, volatile,
-        # depth 10) matches both consumers of the topic: the FAST-LIO2 localizer
-        # (depth 10) on the 3D path and syncai_amcl (SystemDefaultsQoS) on the
-        # 2D one.
         initial_pose_pub = self._node.create_publisher(
             msg_type=PoseWithCovarianceStamped,
             topic="initialpose",
-            qos_profile=10,
+            qos_profile=qos.QoSProfile(depth=5),
         )
 
-        # Relative name again: this must land on the same /<robot_id>/cmd_vel
-        # the driver manager subscribes (QoS(10) there, matched here). The
-        # controller publishes the same topic during FollowPath — see the
-        # EXECUTING gate in teleop_cmd_vel for how the two are kept apart.
         cmd_vel_pub = self._node.create_publisher(
             msg_type=Twist,
             topic="cmd_vel",
-            qos_profile=10,
+            qos_profile=qos.QoSProfile(depth=5),
         )
 
         self._publishers.update(
-            {"initial_pose": initial_pose_pub, "cmd_vel": cmd_vel_pub}
+            {
+                "initial_pose": initial_pose_pub,
+                "cmd_vel": cmd_vel_pub
+            }
         )
 
     def scan_wifi_networks(self) -> Tuple[bool, str, List[WifiNetwork]]:

@@ -175,7 +175,9 @@ class ActiveTask(BaseSchema):
 class ScheduleTrigger(BaseSchema):
     cron: Optional[str] = Field(
         default=None,
-        description="Cron expression, e.g. '0 9 * * 1-5'. Mutually exclusive with intervalSeconds.",
+        description=(
+            "Cron expression, e.g. '0 9 * * 1-5'. Mutually exclusive with intervalSeconds."
+        ),
         examples=["*/3 * * * *"],
     )
     interval_seconds: Optional[int] = Field(
@@ -208,12 +210,12 @@ class ScheduleTask(BaseSchema):
         default=None,
         description="Map whose frame this schedule's MOVE coordinates are in.",
     )
-    saved_task_id: Optional[str] = Field(
+    task_template_id: Optional[str] = Field(
         default=None,
-        description="The saved task this schedule was frozen from, if any.",
+        description="The task template this schedule was frozen from, if any.",
     )
-    saved_task_name: Optional[str] = Field(
-        default=None, description="That saved task's name at registration time."
+    task_template_name: Optional[str] = Field(
+        default=None, description="That template's name at registration time."
     )
 
 
@@ -226,8 +228,8 @@ class ScheduleView(BaseSchema):
         description="Upcoming trigger times (UTC)",
     )
     map_name: Optional[str] = Field(default=None)
-    saved_task_id: Optional[str] = Field(default=None)
-    saved_task_name: Optional[str] = Field(default=None)
+    task_template_id: Optional[str] = Field(default=None)
+    task_template_name: Optional[str] = Field(default=None)
     steps: List[Step] = Field(
         default_factory=list,
         description=(

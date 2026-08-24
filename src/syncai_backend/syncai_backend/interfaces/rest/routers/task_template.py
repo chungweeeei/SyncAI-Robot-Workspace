@@ -1,4 +1,4 @@
-"""REST surface for the operator's library of re-dispatchable tasks.
+"""REST surface for the operator's library of re-dispatchable task templates.
 
 Why this exists: ``POST /api/v1/tasks`` creates *and dispatches* in one call and
 persists nothing, and Temporal is not a fallback -- namespace ``default`` keeps
@@ -7,23 +7,23 @@ An operator who authored a patrol route had no way to run it again.
 
 Two things about this module are worth knowing before reading it.
 
-**Vertex resolution happens here, on the read.** A saved MOVE step carries both a
-``vertex_id`` and a ``params`` snapshot. Every read reports ``resolved_params`` --
-the vertex's *current* pose when it still exists, the snapshot when it does not --
-so moving a dock on the map updates every saved route that references it, and a
-client dispatches by sending ``resolved_params`` without ever reimplementing that
-rule. The rejected alternative was a server-side
-``POST /api/v1/saved_tasks/{id}/dispatch``: it would have to either refuse or
-silently substitute, where this lets the operator *see* the resolved numbers and
-the "vertex was deleted" warning before committing. It also keeps
-``POST /api/v1/tasks`` the single dispatch path, and keeps a saved task's
+**Vertex resolution happens here, on the read.** A template's MOVE step carries
+both a ``vertex_id`` and a ``params`` snapshot. Every read reports
+``resolved_params`` -- the vertex's *current* pose when it still exists, the
+snapshot when it does not -- so moving a dock on the map updates every template
+that references it, and a client dispatches by sending ``resolved_params``
+without ever reimplementing that rule. The rejected alternative was a
+server-side ``POST /api/v1/task_templates/{id}/dispatch``: it would have to
+either refuse or silently substitute, where this lets the operator *see* the
+resolved numbers and the "vertex was deleted" warning before committing. It also
+keeps ``POST /api/v1/tasks`` the single dispatch path, and keeps a template's
 provenance out of everything Temporal persists.
 
-**The path is ``/api/v1/saved_tasks``, not ``/api/v1/tasks/saved``.**
+**The path is ``/api/v1/task_templates``, not ``/api/v1/tasks/templates``.**
 ``GET /api/v1/tasks/{id}`` takes an unconstrained ``str`` (it is a Temporal
 workflow id), so any static sub-path is either shadowed by it or steals the
-workflow id ``"saved"``, depending on include order. Cross-module route-order
-dependence is not worth shipping.
+workflow id ``"templates"``, depending on include order. Cross-module
+route-order dependence is not worth shipping.
 """
 
 import uuid
@@ -37,7 +37,7 @@ from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from syncai_backend.database.models import MapPoint, SavedTask
+from syncai_backend.database.models import MapPoint, TaskTemplate
 from syncai_backend.exceptions import BadRequestError, NotFoundError
 from syncai_backend.gateways.workflow.schema import (
     MoveParams,
@@ -56,14 +56,14 @@ from syncai_backend.interfaces.rest.routers.schedule import (
 from syncai_backend.interfaces.rest.routers.task import StepRequest
 from syncai_backend.repositories.map.catalog import MapCatalogRepo
 from syncai_backend.repositories.map.map import MapRepo
-from syncai_backend.repositories.task.saved_task import SavedTaskRepo
+from syncai_backend.repositories.task.task_template import TaskTemplateRepo
 
 
 # --- Request models ---------------------------------------------------------
 
 
-class SavedStepRequest(StepRequest):
-    """A step as it is *saved*: a StepRequest plus where its numbers came from.
+class TemplateStepRequest(StepRequest):
+    """A step as it is *stored*: a StepRequest plus where its numbers came from.
 
     Subclassed rather than restated, so ``validate_step_params`` stays the only
     place that knows which step types carry which params -- and so a STANDUP with
@@ -85,14 +85,14 @@ class SavedStepRequest(StepRequest):
     # would *override* the inherited validator rather than add to it, and the
     # params check would silently stop running.
     @model_validator(mode="after")
-    def _check_vertex_ref(self) -> "SavedStepRequest":
+    def _check_vertex_ref(self) -> "TemplateStepRequest":
         if self.vertex_id is not None and self.type is not StepType.MOVE:
             raise ValueError(f"{self.type.value} step cannot reference a vertex")
         return self
 
 
-class _StoredStep(SavedStepRequest):
-    """The persisted shape: a SavedStepRequest plus the server-owned label.
+class _StoredStep(TemplateStepRequest):
+    """The persisted shape: a TemplateStepRequest plus the server-owned label.
 
     Private because it is not a wire shape. ``vertex_name`` is resolved from the
     vertex table at save time and is part of the *snapshot* -- a name is as much
@@ -109,22 +109,22 @@ class _StoredStep(SavedStepRequest):
     vertex_name: Optional[str] = Field(default=None)
 
 
-class SavedTaskRequest(BaseModel):
+class TaskTemplateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str = Field(default="", max_length=1000)
     map_name: Optional[str] = Field(
         default=None,
         description=(
             "The map whose frame the MOVE coordinates are in. Required when the "
-            "task has any MOVE step; must be omitted when it has none."
+            "template has any MOVE step; must be omitted when it has none."
         ),
     )
     # min_length=1, unlike TaskRequest which accepts steps: [] and starts a
-    # workflow that instantly COMPLETEs. A *saved* empty task is worse than a
-    # dispatched one: you save it and can then never run it. TaskRequest is left
+    # workflow that instantly COMPLETEs. An empty *template* is worse than an
+    # empty dispatch: you save it and can then never run it. TaskRequest is left
     # alone -- tightening an endpoint three other call sites use is not this
     # feature's business.
-    steps: List[SavedStepRequest] = Field(..., min_length=1)
+    steps: List[TemplateStepRequest] = Field(..., min_length=1)
 
     @field_validator("name")
     @classmethod
@@ -137,7 +137,7 @@ class SavedTaskRequest(BaseModel):
         return stripped
 
 
-class SavedTaskUpdateRequest(BaseModel):
+class TaskTemplateUpdateRequest(BaseModel):
     """Fields to change. All optional; omitted ones are left alone.
 
     ``steps`` replaces the whole list -- there is no per-step patch, because a
@@ -147,7 +147,7 @@ class SavedTaskUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=1000)
     map_name: Optional[str] = None
-    steps: Optional[List[SavedStepRequest]] = Field(default=None, min_length=1)
+    steps: Optional[List[TemplateStepRequest]] = Field(default=None, min_length=1)
 
     @field_validator("name")
     @classmethod
@@ -160,7 +160,7 @@ class SavedTaskUpdateRequest(BaseModel):
         return stripped
 
 
-class SavedTaskScheduleRequest(BaseModel):
+class TaskTemplateScheduleRequest(BaseModel):
     id: str = Field(
         ..., min_length=1, description="Temporal schedule id to register"
     )
@@ -183,7 +183,7 @@ class VertexRefStatus(str, Enum):
     """The vertex is gone; `resolved_params` is the snapshot taken at save time."""
 
 
-class SavedStepResponse(BaseModel):
+class TemplateStepResponse(BaseModel):
     id: str
     type: StepType
     params: Optional[StepParams] = Field(
@@ -209,26 +209,26 @@ class SavedStepResponse(BaseModel):
     )
 
 
-class SavedTaskResponse(BaseModel):
-    """One stored task.
+class TaskTemplateResponse(BaseModel):
+    """One stored template.
 
     ``id`` is this row's UUID and is **not** a task id -- it cannot be passed to
     ``GET /api/v1/tasks/{id}``, which wants the Temporal workflow id a dispatch
-    returns. Both families are spelled "task"; this is the one that is a row.
+    returns. That family is a *run*; this is the template it was run from.
     """
 
     id: uuid.UUID
     name: str
     description: str
     map_name: Optional[str]
-    steps: List[SavedStepResponse]
+    steps: List[TemplateStepResponse]
     map_matches_active: bool = Field(
         ...,
         description=(
-            "True when this task's map is the one the robot is on, or the task is "
-            "map-independent and so has nothing to mismatch. A client's dispatch "
-            "guard: coordinates from another map's frame point somewhere else in "
-            "the loaded one."
+            "True when this template's map is the one the robot is on, or the "
+            "template is map-independent and so has nothing to mismatch. A "
+            "client's dispatch guard: coordinates from another map's frame point "
+            "somewhere else in the loaded one."
         ),
     )
     missing_vertex_count: int = Field(
@@ -249,7 +249,7 @@ class DeleteResponse(BaseModel):
 #
 # A 422's `detail` is a validation *array*, not a sentence -- the frontend files
 # go out of their way to keep that off an operator's screen -- while
-# `{"detail": "a task with MOVE steps must name the map its coordinates are in"}`
+# `{"detail": "a template with MOVE steps must name the map its coordinates are in"}`
 # renders as-is.
 #
 # And a PUT may send `{"steps": [...]}` alone, so the conflict is between the body
@@ -257,11 +257,11 @@ class DeleteResponse(BaseModel):
 # state in the handler gives both verbs one status and one sentence.
 
 
-def _check_step_ids(steps: List[SavedStepRequest]) -> None:
+def _check_step_ids(steps: List[TemplateStepRequest]) -> None:
     """Reject duplicate step ids.
 
     Nothing enforces this on TaskRequest, where a duplicate is only a confusing
-    TaskStateResponse for one run. In a *saved* task it is a durable ambiguity,
+    TaskStateResponse for one run. In a *template* it is a durable ambiguity,
     re-dispatched every time the row is used.
     """
     seen: set[str] = set()
@@ -274,7 +274,7 @@ def _check_step_ids(steps: List[SavedStepRequest]) -> None:
         raise ValueError(f"duplicate step ids: {duplicates}")
 
 
-def _check_map_scope(map_name: Optional[str], steps: List[SavedStepRequest]) -> None:
+def _check_map_scope(map_name: Optional[str], steps: List[TemplateStepRequest]) -> None:
     """Any MOVE step means a map name is required; none means it is forbidden.
 
     The rule is "does it contain a MOVE", not "does it reference a vertex": a
@@ -284,29 +284,29 @@ def _check_map_scope(map_name: Optional[str], steps: List[SavedStepRequest]) -> 
     has_move = any(step.type is StepType.MOVE for step in steps)
     if has_move and not map_name:
         raise ValueError(
-            "a task with MOVE steps must name the map its coordinates are in"
+            "a template with MOVE steps must name the map its coordinates are in"
         )
     if not has_move and map_name:
         raise ValueError(
-            "a task with no MOVE step is map-independent; omit map_name"
+            "a template with no MOVE step is map-independent; omit map_name"
         )
 
 
-def init_saved_task_router(
+def init_task_template_router(
     logger: structlog.stdlib.BoundLogger,
-    saved_task_repo: SavedTaskRepo,
+    task_template_repo: TaskTemplateRepo,
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
     workflow_gw: WorkflowGateway,
 ) -> APIRouter:
-    saved_task_router = APIRouter(prefix="", tags=["Saved task"])
+    task_template_router = APIRouter(prefix="", tags=["Task template"])
 
     # --- Helpers ------------------------------------------------------------
 
-    def _require(task_id: uuid.UUID) -> SavedTask:
-        row = saved_task_repo.get_saved_task(task_id=task_id)
+    def _require(task_id: uuid.UUID) -> TaskTemplate:
+        row = task_template_repo.get_task_template(task_id=task_id)
         if row is None:
-            raise NotFoundError(f"Saved task {task_id} was not found.")
+            raise NotFoundError(f"Task template {task_id} was not found.")
         return row
 
     def _require_map(map_name: Optional[str]) -> None:
@@ -314,9 +314,9 @@ def init_saved_task_router(
 
         The map router's own ``_require`` raises NotFoundError because there the
         map name *is* the path: the addressed resource genuinely is not there.
-        Here the addressed resource is the saved-tasks collection, which exists;
-        the body is what is wrong, and a 404 would tell the client the collection
-        is missing.
+        Here the addressed resource is the task-templates collection, which
+        exists; the body is what is wrong, and a 404 would tell the client the
+        collection is missing.
         """
         if map_name is None:
             return
@@ -330,10 +330,10 @@ def init_saved_task_router(
 
     def _require_vertex_refs(
         map_name: Optional[str],
-        steps: List[SavedStepRequest],
+        steps: List[TemplateStepRequest],
         vertices: Dict[uuid.UUID, MapPoint],
     ) -> None:
-        """Every referenced vertex must exist and belong to this task's map.
+        """Every referenced vertex must exist and belong to this template's map.
 
         The two failures are reported *separately*, unlike the map router's
         ``_require_vertex`` which folds "not there" and "belongs elsewhere" into
@@ -360,7 +360,7 @@ def init_saved_task_router(
                 f"on map '{other.map}', not '{map_name}'."
             )
 
-    def _check(map_name: Optional[str], steps: List[SavedStepRequest]) -> None:
+    def _check(map_name: Optional[str], steps: List[TemplateStepRequest]) -> None:
         try:
             _check_step_ids(steps)
             _check_map_scope(map_name, steps)
@@ -368,7 +368,7 @@ def init_saved_task_router(
             raise BadRequestError(str(exc))
 
     def _stored_steps(
-        steps: List[SavedStepRequest], vertices: Dict[uuid.UUID, MapPoint]
+        steps: List[TemplateStepRequest], vertices: Dict[uuid.UUID, MapPoint]
     ) -> list[dict]:
         """Freeze the request's steps into the JSON column's element shape.
 
@@ -402,14 +402,14 @@ def init_saved_task_router(
             )
         return stored
 
-    def _read_steps(row: SavedTask) -> List[_StoredStep]:
+    def _read_steps(row: TaskTemplate) -> List[_StoredStep]:
         return [_StoredStep.model_validate(entry) for entry in row.steps]
 
     def _step_response(
         stored: _StoredStep, vertices: Dict[uuid.UUID, MapPoint]
-    ) -> SavedStepResponse:
+    ) -> TemplateStepResponse:
         if stored.vertex_id is None:
-            return SavedStepResponse(
+            return TemplateStepResponse(
                 id=stored.id,
                 type=stored.type,
                 params=stored.params,
@@ -421,7 +421,7 @@ def init_saved_task_router(
 
         vertex = vertices.get(stored.vertex_id)
         if vertex is None:
-            return SavedStepResponse(
+            return TemplateStepResponse(
                 id=stored.id,
                 type=stored.type,
                 params=stored.params,
@@ -432,7 +432,7 @@ def init_saved_task_router(
                 resolved_params=stored.params,
             )
 
-        return SavedStepResponse(
+        return TemplateStepResponse(
             id=stored.id,
             type=stored.type,
             params=stored.params,
@@ -440,24 +440,24 @@ def init_saved_task_router(
             # The vertex's *current* name, so a rename shows through.
             vertex_name=vertex.name,
             vertex_status=VertexRefStatus.CURRENT,
-            # This is the feature: move a dock on the map and every saved route
+            # This is the feature: move a dock on the map and every template
             # that references it dispatches to the new pose.
             resolved_params=MoveParams(x=vertex.x, y=vertex.y, theta=vertex.theta),
         )
 
     def _response(
-        row: SavedTask,
+        row: TaskTemplate,
         active_name: Optional[str],
         vertices: Dict[uuid.UUID, MapPoint],
-    ) -> SavedTaskResponse:
+    ) -> TaskTemplateResponse:
         steps = [_step_response(stored, vertices) for stored in _read_steps(row)]
-        return SavedTaskResponse(
+        return TaskTemplateResponse(
             id=row.id,
             name=row.name,
             description=row.description,
             map_name=row.map_name,
             steps=steps,
-            # A map-independent task has nothing to mismatch.
+            # A map-independent template has nothing to mismatch.
             map_matches_active=row.map_name is None or row.map_name == active_name,
             missing_vertex_count=sum(
                 1 for step in steps if step.vertex_status is VertexRefStatus.MISSING
@@ -481,18 +481,18 @@ def init_saved_task_router(
     # psycopg2, so FastAPI must run them in its worker threadpool rather than on
     # the event loop -- same reason the map router's handlers are sync.
 
-    @saved_task_router.post(
-        "/api/v1/saved_tasks",
-        response_model=SavedTaskResponse,
+    @task_template_router.post(
+        "/api/v1/task_templates",
+        response_model=TaskTemplateResponse,
         response_model_by_alias=False,
     )
-    def create_saved_task(req: SavedTaskRequest):
+    def create_task_template(req: TaskTemplateRequest):
         _check(req.map_name, req.steps)
         _require_map(req.map_name)
         vertices = _vertices(req.map_name)
         _require_vertex_refs(req.map_name, req.steps, vertices)
 
-        row = saved_task_repo.create_saved_task(
+        row = task_template_repo.create_task_template(
             name=req.name,
             description=req.description,
             map_name=req.map_name,
@@ -500,20 +500,20 @@ def init_saved_task_router(
         )
         return _response(row, map_catalog_repo.active_name(), vertices)
 
-    @saved_task_router.get(
-        "/api/v1/saved_tasks",
-        response_model=List[SavedTaskResponse],
+    @task_template_router.get(
+        "/api/v1/task_templates",
+        response_model=List[TaskTemplateResponse],
         response_model_by_alias=False,
     )
-    def list_saved_tasks(map_name: Optional[str] = None):
-        """Every saved task, or one map's plus the map-independent ones.
+    def list_task_templates(map_name: Optional[str] = None):
+        """Every template, or one map's plus the map-independent ones.
 
         The console deliberately does not pass ``map_name`` -- it fetches
         everything and filters client-side so it can report how many rows it hid,
-        because silently hiding another map's tasks is how an operator concludes
-        their work was lost. The parameter is here for other consumers.
+        because silently hiding another map's templates is how an operator
+        concludes their work was lost. The parameter is here for other consumers.
         """
-        rows = saved_task_repo.list_saved_tasks(map_name=map_name)
+        rows = task_template_repo.list_task_templates(map_name=map_name)
         active_name = map_catalog_repo.active_name()
 
         # One vertex query per distinct map among the rows, not per row.
@@ -524,21 +524,21 @@ def init_saved_task_router(
 
         return [_response(row, active_name, by_map[row.map_name]) for row in rows]
 
-    @saved_task_router.get(
-        "/api/v1/saved_tasks/{id}",
-        response_model=SavedTaskResponse,
+    @task_template_router.get(
+        "/api/v1/task_templates/{id}",
+        response_model=TaskTemplateResponse,
         response_model_by_alias=False,
     )
-    def get_saved_task(id: uuid.UUID):
+    def get_task_template(id: uuid.UUID):
         row = _require(id)
         return _response(row, map_catalog_repo.active_name(), _vertices(row.map_name))
 
-    @saved_task_router.put(
-        "/api/v1/saved_tasks/{id}",
-        response_model=SavedTaskResponse,
+    @task_template_router.put(
+        "/api/v1/task_templates/{id}",
+        response_model=TaskTemplateResponse,
         response_model_by_alias=False,
     )
-    def update_saved_task(id: uuid.UUID, req: SavedTaskUpdateRequest):
+    def update_task_template(id: uuid.UUID, req: TaskTemplateUpdateRequest):
         row = _require(id)
         changes = req.model_dump(exclude_unset=True)
 
@@ -546,10 +546,11 @@ def init_saved_task_router(
         # stored row: a PUT that only drops the last MOVE step must be allowed to
         # clear map_name, and a PUT that only sets map_name has to be checked
         # against the steps already on disk. Re-validating the stored steps
-        # against the possibly-new map is also what makes "task moved to another
-        # map while its steps still point at the old map's vertices" unrepresentable.
+        # against the possibly-new map is also what makes "template moved to
+        # another map while its steps still point at the old map's vertices"
+        # unrepresentable.
         merged_map = changes["map_name"] if "map_name" in changes else row.map_name
-        merged_steps: List[SavedStepRequest] = (
+        merged_steps: List[TemplateStepRequest] = (
             req.steps if req.steps is not None else list(_read_steps(row))
         )
 
@@ -561,24 +562,24 @@ def init_saved_task_router(
         if "steps" in changes and req.steps is not None:
             changes["steps"] = _stored_steps(req.steps, vertices)
 
-        updated = saved_task_repo.update_saved_task(task_id=id, **changes)
+        updated = task_template_repo.update_task_template(task_id=id, **changes)
         if updated is None:
-            raise NotFoundError(f"Saved task {id} was not found.")
+            raise NotFoundError(f"Task template {id} was not found.")
         return _response(updated, map_catalog_repo.active_name(), vertices)
 
-    @saved_task_router.delete(
-        "/api/v1/saved_tasks/{id}", response_model=DeleteResponse
+    @task_template_router.delete(
+        "/api/v1/task_templates/{id}", response_model=DeleteResponse
     )
-    def delete_saved_task(id: uuid.UUID):
+    def delete_task_template(id: uuid.UUID):
         _require(id)
-        saved_task_repo.delete_saved_task(task_id=id)
-        return DeleteResponse(message=f"Saved task {id} has been deleted.")
+        task_template_repo.delete_task_template(task_id=id)
+        return DeleteResponse(message=f"Task template {id} has been deleted.")
 
-    @saved_task_router.post(
-        "/api/v1/saved_tasks/{id}/schedule", response_model=ScheduleResponse
+    @task_template_router.post(
+        "/api/v1/task_templates/{id}/schedule", response_model=ScheduleResponse
     )
-    async def schedule_saved_task(id: uuid.UUID, req: SavedTaskScheduleRequest):
-        """Freeze this saved task's CURRENT resolution into a Temporal schedule.
+    async def schedule_task_template(id: uuid.UUID, req: TaskTemplateScheduleRequest):
+        """Freeze this template's CURRENT resolution into a Temporal schedule.
 
         ``async``, unlike its CRUD siblings, because the dominant cost is the
         create_schedule gRPC. The blocking DB work is pushed to the threadpool in
@@ -595,13 +596,13 @@ def init_saved_task_router(
         warning and may proceed.
         """
 
-        def _freeze() -> Tuple[SavedTask, List[Step]]:
+        def _freeze() -> Tuple[TaskTemplate, List[Step]]:
             row = _require(id)
             active_name = map_catalog_repo.active_name()
 
             if row.map_name is not None and row.map_name != active_name:
                 raise BadRequestError(
-                    f"Saved task '{row.name}' is for map '{row.map_name}', but the "
+                    f"Template '{row.name}' is for map '{row.map_name}', but the "
                     f"robot has {active_name or 'no map'} loaded. A scheduled run "
                     "is unattended, so it will not be registered against another "
                     "map's coordinate frame."
@@ -619,8 +620,8 @@ def init_saved_task_router(
                         "not be registered against a stale snapshot — re-point or "
                         "remove the step first."
                     )
-                # Note what is NOT carried over: vertex_id / vertex_name. A saved
-                # task's provenance never enters the Temporal schema.
+                # Note what is NOT carried over: vertex_id / vertex_name. A
+                # template's provenance never enters the Temporal schema.
                 steps.append(
                     Step(
                         id=stored.id,
@@ -642,8 +643,8 @@ def init_saved_task_router(
                 ),
                 definition=WorkflowTaskDefinition(steps=steps),
                 map_name=row.map_name,
-                saved_task_id=str(row.id),
-                saved_task_name=row.name,
+                task_template_id=str(row.id),
+                task_template_name=row.name,
             )
         )
 
@@ -655,4 +656,4 @@ def init_saved_task_router(
             ),
         )
 
-    return saved_task_router
+    return task_template_router

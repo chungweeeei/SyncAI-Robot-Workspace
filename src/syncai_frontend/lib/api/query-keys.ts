@@ -15,8 +15,8 @@ export const queryKeys = {
   maps: ["maps"] as const,
   /** GET /api/v1/maps/<name>/vertices — one map's stops, keyed by map name. */
   mapVertices: (name: string) => ["map-vertices", name] as const,
-  /** GET /api/v1/tasks/saved — the operator's task library. */
-  savedTasks: ["saved-tasks"] as const,
+  /** GET /api/v1/task_templates — the operator's template library. */
+  taskTemplates: ["task-templates"] as const,
   /** GET /api/v1/schedules — Temporal's schedule list. */
   schedules: ["schedules"] as const,
 };

@@ -55,20 +55,22 @@ def map_repo(logger, engine):
 
 
 @pytest.fixture
-def saved_task_repo(logger, engine):
-    """A SavedTaskRepo backed by the in-memory SQLite engine.
+def task_template_repo(logger, engine):
+    """A TaskTemplateRepo backed by the in-memory SQLite engine.
 
-    Shares the ``engine`` fixture with ``map_repo`` on purpose: a saved task's
+    Shares the ``engine`` fixture with ``map_repo`` on purpose: a template's
     MOVE steps reference rows in ``map_vertices``, and the resolution path under
     test is exactly the join between the two tables.
 
-    The ``engine`` fixture itself needs no change for this table -- ``SavedTask``
-    registers on the same ``Base`` as ``MapPoint`` the moment
+    The ``engine`` fixture itself needs no change for this table --
+    ``TaskTemplate`` registers on the same ``Base`` as ``MapPoint`` the moment
     ``database.models`` is imported, so ``create_all`` already emits it.
     """
-    from syncai_backend.repositories.task.saved_task import init_saved_task_repo
+    from syncai_backend.repositories.task.task_template import (
+        init_task_template_repo,
+    )
 
-    return init_saved_task_repo(logger=logger, engine=engine)
+    return init_task_template_repo(logger=logger, engine=engine)
 
 
 @pytest.fixture

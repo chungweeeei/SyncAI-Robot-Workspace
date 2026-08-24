@@ -169,8 +169,8 @@ def init_task_router(
     # path only works while it is declared above /api/v1/tasks/{id} — the day
     # someone reorders these decorators it silently becomes a lookup for a task
     # literally named "active" and answers 404. The same collision is why
-    # /api/v1/saved_tasks was chosen over /api/v1/tasks/saved; see the note in
-    # interfaces/rest/server.py.
+    # /api/v1/task_templates was chosen over /api/v1/tasks/templates; see the
+    # note in interfaces/rest/server.py.
     #
     # Plural, and a list, because "one robot does one thing" is not an invariant
     # this endpoint can rely on: ScheduleOverlapPolicy.SKIP constrains a single

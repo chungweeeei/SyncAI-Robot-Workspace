@@ -4,10 +4,10 @@ import * as React from "react";
 import { SaveIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
-import { SAVED_TASK_NAME_MAX } from "@/lib/api/saved-task";
+import { TASK_TEMPLATE_NAME_MAX } from "@/lib/api/task-template";
 
 export interface SaveGroupProps {
-  /** The saved task currently loaded in the editor, or null when authoring fresh. */
+  /** The template currently loaded in the editor, or null when authoring fresh. */
   editing: { id: string; name: string } | null;
   /** False when the step list is not savable (see the composer's own gate). */
   ready: boolean;
@@ -33,7 +33,7 @@ export interface SaveGroupProps {
  * instead of something you have to know is possible.
  *
  * Reset is by remounting: TaskConsole keys this component, so loading a different
- * saved task arrives as a fresh mount with that task's name in the field, rather
+ * template arrives as a fresh mount with that template's name in the field, rather
  * than as state cleared in an effect. Same trick as the vertex panel's form.
  */
 export function SaveGroup({
@@ -52,7 +52,7 @@ export function SaveGroup({
   // The backend strips and rejects a blank name, but as a 422 whose detail is a
   // validation *array* rather than a sentence. Refusing here keeps that off the
   // operator's screen — the same reason the vertex panel checks its own name.
-  const nameOk = trimmed.length > 0 && trimmed.length <= SAVED_TASK_NAME_MAX;
+  const nameOk = trimmed.length > 0 && trimmed.length <= TASK_TEMPLATE_NAME_MAX;
 
   // A warning, not a gate: duplicate names are allowed by design (the id is the
   // identity, exactly as for map vertices), and there is no migration path to add
@@ -71,7 +71,7 @@ export function SaveGroup({
       onSubmit={(event) => {
         event.preventDefault();
         if (!canSave) return;
-        // Enter submits the primary action, which is Update when a saved task is
+        // Enter submits the primary action, which is Update when a template is
         // loaded and Create otherwise.
         if (editing) onUpdate(editing.id, trimmed);
         else onCreate(trimmed);
@@ -82,7 +82,7 @@ export function SaveGroup({
         <Input
           value={name}
           disabled={busy}
-          maxLength={SAVED_TASK_NAME_MAX}
+          maxLength={TASK_TEMPLATE_NAME_MAX}
           onChange={(event) => setName(event.target.value)}
           placeholder="Morning patrol"
           className="readout mt-0.5 h-7 rounded-sm text-[13px]"
@@ -91,7 +91,7 @@ export function SaveGroup({
 
       {duplicate && (
         <p className="text-[11px] leading-tight text-signal-caution">
-          Another saved task already has this name. Saving is still allowed — the
+          Another template already has this name. Saving is still allowed — the
           two are told apart by id, not by name.
         </p>
       )}

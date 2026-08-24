@@ -42,7 +42,7 @@ class MapPoint(Base):
     )
 
 
-class SavedTask(Base):
+class TaskTemplate(Base):
     """An operator-authored step list, kept so it can be re-dispatched.
 
     Temporal is not the library. Namespace ``default`` retains closed workflows
@@ -81,20 +81,20 @@ class SavedTask(Base):
     Two traps:
 
     - **JSON columns are not mutation-tracked.** ``row.steps.append(...)`` inside
-      a session is silently not flushed. ``SavedTaskRepo`` only ever assigns a
+      a session is silently not flushed. ``TaskTemplateRepo`` only ever assigns a
       fresh list, which is why ``MutableList.as_mutable`` is not used -- but the
       first person to try an in-place edit will lose it, hence this note.
     - **``Base.metadata`` is shared.** The moment this class exists,
       ``init_map_repo``'s ``MapPoint.metadata.create_all(engine)`` -- the same
-      statement spelled through a different class -- also creates ``saved_tasks``.
-      That is harmless, but it means adding a model to this file changes what an
-      unrelated repo factory does.
+      statement spelled through a different class -- also creates
+      ``task_templates``. That is harmless, but it means adding a model to this
+      file changes what an unrelated repo factory does.
     """
 
-    __tablename__ = "saved_tasks"
+    __tablename__ = "task_templates"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    # A label, not an identity: two saved tasks may share a name, exactly as two
+    # A label, not an identity: two templates may share a name, exactly as two
     # map vertices may (map_vertices has no unique constraint either), and the id
     # is what addresses one. A unique constraint was considered and rejected --
     # there is no migration path to add or drop one later, and it could not cover
@@ -107,7 +107,7 @@ class SavedTask(Base):
     # "what can I run on the map the robot is actually on" listing.
     map_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     # Ordered saved steps; the element shape is ``_StoredStep`` in
-    # interfaces/rest/routers/saved_task.py. JSONB on PostgreSQL -- indexable and
+    # interfaces/rest/routers/task_template.py. JSONB on PostgreSQL -- indexable and
     # comparable with ``=``, which plain ``json`` is not -- and the variant has to
     # be chosen now, because there is no ALTER path later. Plain JSON on SQLite,
     # which is what the test fixture runs.

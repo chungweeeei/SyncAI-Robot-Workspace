@@ -17,19 +17,19 @@ import { ScheduleList } from "@/components/tasks/schedule-list";
 import { StepList } from "@/components/tasks/step-list";
 import { TaskLibrary } from "@/components/tasks/task-library";
 import { useActiveMapVertices } from "@/hooks/use-active-map-vertices";
-import { useSavedTasks } from "@/hooks/use-saved-tasks";
+import { useTaskTemplates } from "@/hooks/use-task-templates";
 import { useSchedules } from "@/hooks/use-schedules";
 import { useStepDrafts } from "@/hooks/use-step-drafts";
 import { useTaskDispatch } from "@/hooks/use-task-dispatch";
 import {
-  scheduleSavedTask,
+  scheduleTaskTemplate,
   toDispatchSteps,
-  type SavedTask,
-} from "@/lib/api/saved-task";
+  type TaskTemplate,
+} from "@/lib/api/task-template";
 import {
-  fromSavedSteps,
+  fromTemplateSteps,
   stepDraftsSubmittable,
-  toSavedSteps,
+  toTemplateSteps,
   toStepRequests,
 } from "@/lib/task/step";
 
@@ -41,8 +41,8 @@ const MODE_OPTIONS = [
 ] as const satisfies readonly { value: TaskMode; label: string }[];
 
 /**
- * The task console: a library of saved routes, a composer, and the two ways to run
- * what is in the composer.
+ * The task console: a library of task templates, a composer, and the two ways to
+ * run what is in the composer.
  *
  * **The library is first, above the composer.** The complaint this answers is that
  * returning to the page showed nothing saved, so the first thing under the header
@@ -76,11 +76,11 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
   const drafts = useStepDrafts();
   const dispatch = useTaskDispatch(robotId);
   const schedules = useSchedules();
-  const saved = useSavedTasks();
+  const library = useTaskTemplates();
   const { vertices, status: verticesStatus, mapName } = useActiveMapVertices();
 
   /**
-   * Which saved task is loaded in the composer, so Save can offer to overwrite it.
+   * Which template is loaded in the composer, so Save can offer to overwrite it.
    * Null when the operator is authoring something new.
    */
   const [editing, setEditing] = React.useState<{ id: string; name: string } | null>(
@@ -88,7 +88,7 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
   );
 
   /**
-   * Which saved task the in-flight run came from; null when it came from the
+   * Which template the in-flight run came from; null when it came from the
    * composer. Only used to decide which library row shows the readback, so the
    * two degenerate cases (row deleted mid-run, row not in the current scope)
    * resolve to "no badge" rather than to a lost run.
@@ -134,40 +134,43 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
 
   /**
    * The library, scoped to what this robot can actually run: the loaded map's
-   * tasks plus the map-independent ones. The rest are counted, not dropped — see
-   * TaskLibrary's footnote for why that line exists.
+   * templates plus the map-independent ones. The rest are counted, not dropped —
+   * see TaskLibrary's footnote for why that line exists.
    */
-  const visibleTasks = React.useMemo(
-    () => saved.tasks.filter((task) => task.map_name === null || task.map_matches_active),
-    [saved.tasks],
+  const visibleTemplates = React.useMemo(
+    () =>
+      library.templates.filter(
+        (template) => template.map_name === null || template.map_matches_active,
+      ),
+    [library.templates],
   );
-  const hiddenCount = saved.tasks.length - visibleTasks.length;
+  const hiddenCount = library.templates.length - visibleTemplates.length;
 
   /**
-   * Schedules that name no saved task, i.e. the ones registered from loose steps
+   * Schedules that name no template, i.e. the ones registered from loose steps
    * through `POST /api/v1/schedules`. Nothing ties them to a library row, so
    * they are counted in the library's footnote instead — see TaskLibrary.
    *
-   * (Older schedules can also land here: `saved_task_id` did not always exist in
+   * (Older schedules can also land here: the provenance did not always exist in
    * the memo, so one registered before it did reads as unlinked whatever it was
    * made from.)
    */
   const unlinkedScheduleCount = schedules.schedules.filter(
-    (entry) => !entry.saved_task_id,
+    (entry) => !entry.task_template_id,
   ).length;
 
-  /** Any MOVE step means the saved task has to name the map it is in. */
+  /** Any MOVE step means the template has to name the map it is in. */
   const draftMapName = drafts.steps.some((step) => step.type === "MOVE")
     ? mapName
     : null;
   const saveReason =
     stepReason ??
     (draftMapName === null && drafts.steps.some((step) => step.type === "MOVE")
-      ? "The robot has no map loaded, so a task with MOVE steps cannot be scoped to one."
+      ? "The robot has no map loaded, so a template with MOVE steps cannot be scoped to one."
       : null);
 
   /**
-   * Let go of the saved task *and* empty the editor, then fold it away.
+   * Let go of the template *and* empty the editor, then fold it away.
    *
    * It used to only detach the link and keep the steps, on the theory that
    * "load A, tweak, save as B" wanted them. But the button reads as "I am done
@@ -196,35 +199,36 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
     setComposerOpen(false);
   };
 
-  const loadSaved = (task: SavedTask) => {
-    // fromSavedSteps reads resolved_params, so a vertex moved since the save shows
-    // its *current* pose here — which is the whole point of storing the reference.
-    drafts.replace(fromSavedSteps(task.steps));
-    setEditing({ id: task.id, name: task.name });
+  const loadTemplate = (template: TaskTemplate) => {
+    // fromTemplateSteps reads resolved_params, so a vertex moved since the save
+    // shows its *current* pose here — which is the whole point of storing the
+    // reference.
+    drafts.replace(fromTemplateSteps(template.steps));
+    setEditing({ id: template.id, name: template.name });
     setSaveNonce((n) => n + 1);
-    // Loading a task *is* the start of editing it, so the composer unfolds
+    // Loading a template *is* the start of editing it, so the composer unfolds
     // whether or not the operator opened it — otherwise the pencil button would
     // look like it did nothing.
     setComposerOpen(true);
   };
 
-  const dispatchSaved = (task: SavedTask) => {
+  const dispatchTemplate = (template: TaskTemplate) => {
     // Force the composer back to Dispatch mode before firing. Cancel lives in
     // DispatchPanel and the mode picker freezes for the duration of a run, so
     // starting a task from a library row while the Schedule pane was open would
     // leave a moving robot with no stop button anywhere on screen. The mirror of
     // the one-stop-button rule the Segmented's own comment records.
     setMode("now");
-    setDispatchedFrom(task.id);
+    setDispatchedFrom(template.id);
     // Latched open, not merely forced open for the duration: `editorOpen` would
     // already unfold the composer while the task runs, but folding it shut again
     // the moment the run ends would take the terminal status and its Clear
     // button with it — from a run the operator started two clicks ago.
     setComposerOpen(true);
-    // Deliberately does NOT load the task into the composer: that would silently
-    // discard whatever the operator was authoring, which is the same class of data
-    // loss this feature exists to fix.
-    void dispatch.send(toDispatchSteps(task.steps));
+    // Deliberately does NOT load the template into the composer: that would
+    // silently discard whatever the operator was authoring, which is the same
+    // class of data loss this feature exists to fix.
+    void dispatch.send(toDispatchSteps(template.steps));
   };
 
   return (
@@ -236,18 +240,18 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
 
       <div className="mb-4 overflow-hidden rounded-md border border-hairline bg-panel">
         <InstrumentGroup
-          label="Saved tasks"
+          label="Task templates"
           action={
             <div className="flex items-center gap-1.5">
-              <Chip tone={visibleTasks.length ? "neutral" : "caution"}>
-                {visibleTasks.length}
+              <Chip tone={visibleTemplates.length ? "neutral" : "caution"}>
+                {visibleTemplates.length}
               </Chip>
               <button
                 type="button"
-                aria-label="Refresh saved tasks"
-                title="Refresh saved tasks"
-                disabled={saved.busy}
-                onClick={saved.refresh}
+                aria-label="Refresh task templates"
+                title="Refresh task templates"
+                disabled={library.busy}
+                onClick={library.refresh}
                 className="flex size-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-elevated hover:text-foreground disabled:opacity-40"
               >
                 <RefreshCwIcon className="size-3.5" aria-hidden />
@@ -256,43 +260,45 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
           }
           caption="A saved MOVE step follows the vertex it was taken from, so moving a stop on the map updates every route that uses it."
         >
-          {saved.error && (
+          {library.error && (
             <p
               role="alert"
               className="text-[11px] leading-snug break-words text-signal-warn"
             >
-              {saved.error}
+              {library.error}
             </p>
           )}
           <TaskLibrary
-            tasks={visibleTasks}
+            templates={visibleTemplates}
             hiddenCount={hiddenCount}
             schedules={schedules.schedules}
             unlinkedScheduleCount={unlinkedScheduleCount}
-            status={saved.status}
-            busy={saved.busy}
+            status={library.status}
+            busy={library.busy}
             activeMapName={mapName}
             dispatchDisabled={dispatch.running || robotId === null}
             dispatchedFromId={dispatchedFrom}
             taskStatus={dispatch.taskStatus}
             stepStates={dispatch.stepStates}
-            onDispatch={dispatchSaved}
-            onLoad={loadSaved}
-            onSchedule={(task) => {
+            onDispatch={dispatchTemplate}
+            onLoad={loadTemplate}
+            onSchedule={(template) => {
               // The trigger is authored in the composer's Schedule pane, which is
-              // the only place a cron/interval form exists. Loading the task first
-              // is what makes that pane describe the thing being scheduled.
-              loadSaved(task);
+              // the only place a cron/interval form exists. Loading the template
+              // first is what makes that pane describe the thing being scheduled.
+              loadTemplate(template);
               setMode("schedule");
             }}
-            onDelete={(task) => {
+            onDelete={(template) => {
               // A confirm rather than an undo: there is no local history to step
               // back over. Same stance as the vertex panel and the schedule list.
               if (
-                window.confirm(`Delete saved task "${task.name}"? This cannot be undone.`)
+                window.confirm(
+                  `Delete task template "${template.name}"? This cannot be undone.`,
+                )
               ) {
-                void saved.remove(task.id).then((gone) => {
-                  if (gone && editing?.id === task.id) setEditing(null);
+                void library.remove(template.id).then((gone) => {
+                  if (gone && editing?.id === template.id) setEditing(null);
                 });
               }
             }}
@@ -349,7 +355,7 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
             // running task would leave them describing rows that are gone.
             disabled={dispatch.running}
             onClick={stopEditing}
-            title="Let go of this saved task, clear the editor and fold it away"
+            title="Let go of this template, clear the editor and fold it away"
             className="instrument-label flex h-9 min-w-0 shrink items-center gap-1 rounded-md border border-signal-cmd/40 bg-signal-cmd/8 px-2 text-signal-cmd transition-colors hover:bg-signal-cmd/16 disabled:opacity-40"
           >
             <span className="min-w-0 truncate">Stop editing</span>
@@ -389,15 +395,15 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
                 editing={editing}
                 ready={stepsOk && saveReason === null}
                 reason={saveReason}
-                busy={saved.busy}
+                busy={library.busy}
                 error={null}
-                existingNames={saved.tasks.map((task) => task.name)}
+                existingNames={library.templates.map((template) => template.name)}
                 onCreate={(name) => {
-                  void saved
+                  void library
                     .create({
                       name,
                       map_name: draftMapName,
-                      steps: toSavedSteps(drafts.steps),
+                      steps: toTemplateSteps(drafts.steps),
                     })
                     .then((created) => {
                       if (created) {
@@ -407,11 +413,11 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
                     });
                 }}
                 onUpdate={(id, name) => {
-                  void saved
+                  void library
                     .update(id, {
                       name,
                       map_name: draftMapName,
-                      steps: toSavedSteps(drafts.steps),
+                      steps: toTemplateSteps(drafts.steps),
                     })
                     .then((updated) => {
                       if (updated) {
@@ -465,12 +471,12 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
                 label="Schedule"
                 caption={
                   editing
-                    ? "Registering from a saved task freezes its coordinates now — later vertex edits do not reach a scheduled run."
+                    ? "Registering from a template freezes its coordinates now — later vertex edits do not reach a scheduled run."
                     : // Said before the fact, because it cannot be said after: a
                       // schedule registered from loose steps records no source,
                       // so no library row can ever show that it exists. Saving
                       // first is the whole difference, and it is one button away.
-                      "These steps are not saved as a task, so this schedule will not show on any library row. Save it first if you want to see later that it runs on its own."
+                      "These steps are not saved as a template, so this schedule will not show on any library row. Save it first if you want to see later that it runs on its own."
                 }
               >
                 <ScheduleForm
@@ -478,17 +484,18 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
                   existingIds={schedules.schedules.map((entry) => entry.id)}
                   ready={stepsOk}
                   reason={stepReason}
-                  busy={schedules.busy || saved.busy}
+                  busy={schedules.busy || library.busy}
                   error={schedules.error}
                   onCreate={(id, trigger) => {
-                    // Two paths on purpose. With a saved task loaded, go through
-                    // /saved_tasks/{id}/schedule: it re-resolves server-side, records
-                    // the provenance in the schedule memo (so the row can later be
-                    // told it has gone stale), and refuses an unattended run against
-                    // another map or a deleted vertex. Without one, there is no row to
-                    // reference and the plain schedule endpoint takes the steps.
+                    // Two paths on purpose. With a template loaded, go through
+                    // /task_templates/{id}/schedule: it re-resolves server-side,
+                    // records the provenance in the schedule memo (so the row can
+                    // later be told it has gone stale), and refuses an unattended run
+                    // against another map or a deleted vertex. Without one, there is
+                    // no row to reference and the plain schedule endpoint takes the
+                    // steps.
                     const done = editing
-                      ? scheduleSavedTask(editing.id, id, trigger).then(() => true)
+                      ? scheduleTaskTemplate(editing.id, id, trigger).then(() => true)
                       : schedules.create({
                           id,
                           trigger,
@@ -503,10 +510,10 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
                         }
                       })
                       .catch(() => {
-                        // scheduleSavedTask is the only path that can reject here —
+                        // scheduleTaskTemplate is the only path that can reject here —
                         // useSchedules already swallows its own. Surfaced through the
-                        // saved-task hook so the sentence lands in one place.
-                        saved.refresh();
+                        // template hook so the sentence lands in one place.
+                        library.refresh();
                       });
                   }}
                 />
@@ -542,7 +549,7 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
           >
             <ScheduleList
               schedules={schedules.schedules}
-              savedTasks={saved.tasks}
+              templates={library.templates}
               status={schedules.status}
               busy={schedules.busy}
               onPause={schedules.pause}

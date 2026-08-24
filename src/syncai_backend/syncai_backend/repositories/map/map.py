@@ -50,7 +50,7 @@ class MapRepo:
         Each dict carries the column values (name/type/x/y/theta).
         All rows are committed together, so a failure inserts none of them.
         """
-        with self._session("create_vertices") as session:
+        with self._session(op="create_vertices") as session:
             rows = [MapPoint(map=map, **fields) for fields in vertices]
             session.add_all(rows)
             session.commit()
@@ -65,7 +65,8 @@ class MapRepo:
         vertex on the robot, and callers treat an empty result as normal (a map
         with no vertices yet), so this must never raise on zero rows.
         """
-        with self._session("list_vertices") as session:
+        with self._session(op="list_vertices") as session:
+            # database statements
             stmt = select(MapPoint)
             if map is not None:
                 stmt = stmt.where(MapPoint.map == map)
@@ -79,7 +80,7 @@ class MapRepo:
             return list(session.scalars(stmt).all())
 
     def get_vertex(self, vertex_id: uuid.UUID) -> Optional[MapPoint]:
-        with self._session("get_vertex") as session:
+        with self._session(op="get_vertex") as session:
             return session.get(MapPoint, vertex_id)
 
     def update_vertex(self, vertex_id: uuid.UUID, **fields) -> Optional[MapPoint]:
@@ -87,7 +88,7 @@ class MapRepo:
         allowed = {"name", "type", "x", "y", "theta"}
         changes = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
-        with self._session("update_vertex") as session:
+        with self._session(op="update_vertex") as session:
             vertex = session.get(MapPoint, vertex_id)
             if vertex is None:
                 return None
@@ -99,7 +100,7 @@ class MapRepo:
             return vertex
 
     def delete_vertex(self, vertex_id: uuid.UUID) -> bool:
-        with self._session("delete_vertex") as session:
+        with self._session(op="delete_vertex") as session:
             vertex = session.get(MapPoint, vertex_id)
             if vertex is None:
                 return False

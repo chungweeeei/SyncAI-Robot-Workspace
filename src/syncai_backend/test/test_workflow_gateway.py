@@ -82,8 +82,8 @@ def _schedule(schedule_id: str = "robot01-sched-001") -> ScheduleTask:
         trigger=ScheduleTrigger(cron="*/3 * * * *", timezone="Asia/Taipei"),
         definition=WorkflowTaskDefinition(steps=[MOVE_STEP]),
         map_name="full",
-        saved_task_id="0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
-        saved_task_name="Morning patrol",
+        task_template_id="0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
+        task_template_name="Morning patrol",
     )
 
 
@@ -493,8 +493,8 @@ class TestWorkflowGateway:
             "cron": "*/3 * * * *",
             "timezone": "Asia/Taipei",
             "map_name": "full",
-            "saved_task_id": "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
-            "saved_task_name": "Morning patrol",
+            "task_template_id": "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
+            "task_template_name": "Morning patrol",
         }
 
     def test_create_schedule_maps_a_duplicate_to_bad_request(
@@ -532,6 +532,29 @@ class TestWorkflowGateway:
         assert view.map_name == "full"
         assert view.paused is False
         assert view.next_run_times[0].tzinfo is not None
+
+    def test_get_schedule_reads_legacy_provenance_memo_keys(
+        self, workflow_gw, mock_client
+    ):
+        """Schedules registered before the TaskTemplate rename carry
+        saved_task_* memo keys. A memo is immutable history -- nothing can
+        rewrite the ones already in Temporal -- so the view must keep reading
+        them forever."""
+        self._schedule_handle(
+            mock_client,
+            describe=_own_schedule_desc(
+                {
+                    "cron": "*/3 * * * *",
+                    "saved_task_id": "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
+                    "saved_task_name": "Morning patrol",
+                }
+            ),
+        )
+        with patch(CONNECT, new_callable=AsyncMock, return_value=mock_client):
+            view = asyncio.run(workflow_gw.get_schedule("robot01-sched-001"))
+
+        assert view.task_template_id == "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55"
+        assert view.task_template_name == "Morning patrol"
 
     def test_get_schedule_falls_back_to_the_spec_without_a_memo(
         self, workflow_gw, mock_client

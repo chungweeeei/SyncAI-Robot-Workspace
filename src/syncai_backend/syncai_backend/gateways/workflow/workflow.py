@@ -183,10 +183,10 @@ def _schedule_to_memo(schedule: ScheduleTask, robot_id: str) -> dict:
         memo["timezone"] = schedule.trigger.timezone
     if schedule.map_name:
         memo["map_name"] = schedule.map_name
-    if schedule.saved_task_id:
-        memo["saved_task_id"] = schedule.saved_task_id
-    if schedule.saved_task_name:
-        memo["saved_task_name"] = schedule.saved_task_name
+    if schedule.task_template_id:
+        memo["task_template_id"] = schedule.task_template_id
+    if schedule.task_template_name:
+        memo["task_template_name"] = schedule.task_template_name
     return memo
 
 
@@ -807,8 +807,12 @@ class WorkflowGateway:
                 t.astimezone(timezone.utc) for t in desc.info.next_action_times
             ],
             map_name=memo.get("map_name"),
-            saved_task_id=memo.get("saved_task_id"),
-            saved_task_name=memo.get("saved_task_name"),
+            # Schedules registered before the TaskTemplate rename carry the old
+            # memo keys; a memo is immutable history, so read both forever.
+            task_template_id=memo.get("task_template_id", memo.get("saved_task_id")),
+            task_template_name=memo.get(
+                "task_template_name", memo.get("saved_task_name")
+            ),
             # Only the describe path can reach the frozen steps; see _read_steps.
             steps=await _read_steps(self._logger, desc),
         )
@@ -889,8 +893,14 @@ class WorkflowGateway:
                             for t in item.info.next_action_times
                         ],
                         map_name=memo.get("map_name"),
-                        saved_task_id=memo.get("saved_task_id"),
-                        saved_task_name=memo.get("saved_task_name"),
+                        # Old memo keys: same pre-rename fallback as the
+                        # describe path above.
+                        task_template_id=memo.get(
+                            "task_template_id", memo.get("saved_task_id")
+                        ),
+                        task_template_name=memo.get(
+                            "task_template_name", memo.get("saved_task_name")
+                        ),
                         # `steps` deliberately left empty. A schedule *list*
                         # element is a ScheduleListDescription whose action is a
                         # ScheduleListActionStartWorkflow -- one field, the

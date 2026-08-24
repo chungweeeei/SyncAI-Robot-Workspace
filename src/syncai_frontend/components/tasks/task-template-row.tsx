@@ -15,13 +15,13 @@ import { Chip } from "@/components/console/instrument";
 import { TaskStatusChip } from "@/components/console/task-chip";
 import { IconButton } from "@/components/tasks/icon-button";
 import type { ScheduleState } from "@/lib/api/schedule";
-import type { SavedStep, SavedTask } from "@/lib/api/saved-task";
+import type { TemplateStep, TaskTemplate } from "@/lib/api/task-template";
 import type { TaskStepState } from "@/lib/api/task";
 import { describeTrigger } from "@/lib/task/schedule";
 import { stepGlyph } from "@/lib/task/step";
 
-export interface SavedTaskRowProps {
-  task: SavedTask;
+export interface TaskTemplateRowProps {
+  template: TaskTemplate;
   /** The map the robot is on, for the mismatch sentence. Null when none loaded. */
   activeMapName: string | null;
   /** True while any task is in flight, or the robot id is not known yet. */
@@ -31,7 +31,7 @@ export interface SavedTaskRowProps {
   /** Task-level status of the run this row started, or null. */
   taskStatus: React.ComponentProps<typeof TaskStatusChip>["status"] | null;
   /**
-   * The registered schedules frozen from this task. Empty means the row is a
+   * The registered schedules frozen from this template. Empty means the row is a
    * one-time task — which, until this existed, was indistinguishable from a
    * scheduled one: the schedules live in their own list, on the other pane of
    * the composer, and nothing on the row said the robot would run it unattended.
@@ -53,8 +53,8 @@ export interface SavedTaskRowProps {
  * matching every other list in the console (ScheduleList, VertexList) and keeping
  * the tap targets large on a touch console.
  */
-export function SavedTaskRow({
-  task,
+export function TaskTemplateRow({
+  template,
   activeMapName,
   dispatchDisabled,
   stepStates,
@@ -65,11 +65,11 @@ export function SavedTaskRow({
   onLoad,
   onSchedule,
   onDelete,
-}: SavedTaskRowProps) {
+}: TaskTemplateRowProps) {
   const [open, setOpen] = React.useState(false);
 
   /**
-   * One chip for however many schedules point at this task.
+   * One chip for however many schedules point at this template.
    *
    * A single schedule spells its trigger out, because that is the fact the
    * operator is actually after — "every 30 min" answers "will this run on its
@@ -102,7 +102,7 @@ export function SavedTaskRow({
   // map's frame points somewhere else entirely in the loaded map, so it cannot be
   // dispatched or scheduled — unlike a missing vertex, which merely falls back to
   // the snapshot and is reported.
-  const wrongMap = task.map_name !== null && !task.map_matches_active;
+  const wrongMap = template.map_name !== null && !template.map_matches_active;
   const blocked = wrongMap || dispatchDisabled;
 
   return (
@@ -123,15 +123,15 @@ export function SavedTaskRow({
         </button>
 
         <span className="readout min-w-0 flex-1 truncate text-[13px]">
-          {task.name}
+          {template.name}
         </span>
 
         {/* The step shape at a glance — M M S reads as a route without expanding. */}
         <span
           className="readout shrink-0 text-[11px] tracking-wider text-muted-foreground"
-          aria-label={`${task.steps.length} steps`}
+          aria-label={`${template.steps.length} steps`}
         >
-          {task.steps.map((step) => stepGlyph(step.type)).join(" ")}
+          {template.steps.map((step) => stepGlyph(step.type)).join(" ")}
         </span>
 
         {/* Before the map chip: whether the robot runs this by itself outranks
@@ -146,17 +146,17 @@ export function SavedTaskRow({
             {schedule.paused ? "paused" : schedule.label}
           </Chip>
         )}
-        {task.map_name && (
-          <Chip tone={wrongMap ? "caution" : "neutral"}>{task.map_name}</Chip>
+        {template.map_name && (
+          <Chip tone={wrongMap ? "caution" : "neutral"}>{template.map_name}</Chip>
         )}
-        {task.missing_vertex_count > 0 && (
-          <Chip tone="caution">{task.missing_vertex_count} missing</Chip>
+        {template.missing_vertex_count > 0 && (
+          <Chip tone="caution">{template.missing_vertex_count} missing</Chip>
         )}
         {taskStatus && <TaskStatusChip status={taskStatus} />}
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <IconButton
-            label={`Dispatch "${task.name}" now`}
+            label={`Dispatch "${template.name}" now`}
             disabled={blocked || busy}
             onClick={onDispatch}
             className="text-signal-cmd hover:bg-signal-cmd/12"
@@ -164,7 +164,7 @@ export function SavedTaskRow({
             <SendIcon className="size-3.5" aria-hidden />
           </IconButton>
           <IconButton
-            label={`Load "${task.name}" into the editor`}
+            label={`Load "${template.name}" into the editor`}
             // Loading is always allowed, even for another map's task: reading and
             // fixing one is exactly what you would want to do next.
             disabled={busy}
@@ -173,14 +173,14 @@ export function SavedTaskRow({
             <PencilIcon className="size-3.5" aria-hidden />
           </IconButton>
           <IconButton
-            label={`Schedule "${task.name}"`}
+            label={`Schedule "${template.name}"`}
             disabled={wrongMap || busy}
             onClick={onSchedule}
           >
             <CalendarPlusIcon className="size-3.5" aria-hidden />
           </IconButton>
           <IconButton
-            label={`Delete "${task.name}"`}
+            label={`Delete "${template.name}"`}
             disabled={busy}
             className="text-signal-warn hover:bg-signal-warn/12"
             onClick={onDelete}
@@ -192,15 +192,15 @@ export function SavedTaskRow({
 
       {wrongMap && (
         <p className="mt-1 pl-7 text-[11px] leading-tight text-signal-caution">
-          Saved for <span className="readout">{task.map_name}</span>; the robot has{" "}
+          Saved for <span className="readout">{template.map_name}</span>; the robot has{" "}
           <span className="readout">{activeMapName ?? "no map"}</span> loaded.
         </p>
       )}
 
       {open && (
         <ol className="mt-1.5 space-y-0.5 pl-7">
-          {task.steps.map((step, index) => (
-            <SavedStepLine
+          {template.steps.map((step, index) => (
+            <TemplateStepLine
               key={step.id}
               step={step}
               index={index}
@@ -213,12 +213,12 @@ export function SavedTaskRow({
   );
 }
 
-function SavedStepLine({
+function TemplateStepLine({
   step,
   index,
   state,
 }: {
-  step: SavedStep;
+  step: TemplateStep;
   index: number;
   state: TaskStepState | null;
 }) {

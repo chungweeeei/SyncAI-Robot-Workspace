@@ -310,7 +310,9 @@ def _not_modified(request: Request, tag: str) -> bool:
     return bool(header) and tag in [value.strip() for value in header.split(",")]
 
 
-def _start_grid_conversion(logger: structlog.stdlib.BoundLogger, name: str, directory: str) -> bool:
+def _start_grid_conversion(
+    logger: structlog.stdlib.BoundLogger, name: str, directory: str
+) -> bool:
     """Run pcd_to_gridmap over a just-saved map in a daemon thread.
 
     In the background because the conversion is minutes on a large site
@@ -649,9 +651,10 @@ def init_map_router(
         included. ``bytes = Body(...)`` is what makes it possible — FastAPI reads
         the body in its async layer and hands the finished bytes to the
         threadpool. The alternative (``async def`` + ``await request.body()`` +
-        ``run_in_threadpool`` twice) buys only tolerance of a missing
-        Content-Type, and needs two threadpool hops a later edit can silently
-        drop.
+        ``run_in_threadpool`` twice) buys nothing — a ``bytes`` body parameter
+        already receives the raw payload whatever the Content-Type header says;
+        the ``media_type`` here is OpenAPI documentation, not enforcement — and
+        needs two threadpool hops a later edit can silently drop.
 
         Cell *values* are deliberately not validated. map_io.cpp classifies by
         range (occupied <= 89, unknown 90..205, free >= 206) under the
@@ -725,12 +728,16 @@ def init_map_router(
             # dropped: no client here understands them, and nothing is partial or
             # queued — the request completed, one of its two effects did not.
             logger.error("Saved gridmap but map_server did not reload", map=name, error=detail)
+            # `detail` rides in the message, not only in the log: the gateway
+            # goes out of its way to distinguish "service not there" from
+            # "map_server rejected it" from a timeout, and the operator staring
+            # at a stale map is the one who needs that distinction.
             return SaveGridmapResponse(
                 name=name,
                 etag=tag,
                 active=True,
                 reloaded=False,
-                message=(f"Saved '{name}', but system did not reload."),
+                message=(f"Saved '{name}', but map_server did not reload: {detail}"),
             )
 
         return SaveGridmapResponse(

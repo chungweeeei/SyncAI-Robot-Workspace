@@ -2,19 +2,19 @@
 
 import * as React from "react";
 
-import { SavedTaskRow } from "@/components/tasks/saved-task-row";
+import { TaskTemplateRow } from "@/components/tasks/task-template-row";
 import type { ScheduleState } from "@/lib/api/schedule";
-import type { SavedTask } from "@/lib/api/saved-task";
+import type { TaskTemplate } from "@/lib/api/task-template";
 import type { TaskStatus, TaskStepState } from "@/lib/api/task";
-import type { SavedTasksStatus } from "@/hooks/use-saved-tasks";
-import { schedulesBySavedTask } from "@/lib/task/schedule";
+import type { TaskTemplatesStatus } from "@/hooks/use-task-templates";
+import { schedulesByTemplate } from "@/lib/task/schedule";
 
 /** Shared empty list, so an unscheduled row is not a fresh prop every render. */
 const EMPTY_SCHEDULES: readonly ScheduleState[] = [];
 
 export interface TaskLibraryProps {
   /** Rows to show — already scoped by the caller (see TaskConsole). */
-  tasks: SavedTask[];
+  templates: TaskTemplate[];
   /** How many rows were withheld because they belong to another map. */
   hiddenCount: number;
   /**
@@ -24,29 +24,29 @@ export interface TaskLibraryProps {
    */
   schedules: readonly ScheduleState[];
   /**
-   * How many of those name no saved task. They cannot be shown on a row — there
+   * How many of those name no template. They cannot be shown on a row — there
    * is no row they belong to — but they are unattended runs on this robot, so
    * counting them is what keeps "no clock chip anywhere" from meaning "nothing
    * runs on its own here".
    */
   unlinkedScheduleCount: number;
-  status: SavedTasksStatus;
+  status: TaskTemplatesStatus;
   busy: boolean;
   activeMapName: string | null;
   /** True while a task is running, or before the robot id is known. */
   dispatchDisabled: boolean;
-  /** The saved task the in-flight run came from, or null if it came from the editor. */
+  /** The template the in-flight run came from, or null if it came from the editor. */
   dispatchedFromId: string | null;
   taskStatus: TaskStatus | null;
   stepStates: ReadonlyMap<string, TaskStepState>;
-  onDispatch: (task: SavedTask) => void;
-  onLoad: (task: SavedTask) => void;
-  onSchedule: (task: SavedTask) => void;
-  onDelete: (task: SavedTask) => void;
+  onDispatch: (template: TaskTemplate) => void;
+  onLoad: (template: TaskTemplate) => void;
+  onSchedule: (template: TaskTemplate) => void;
+  onDelete: (template: TaskTemplate) => void;
 }
 
 /**
- * The saved-task library. Presentation only.
+ * The template library. Presentation only.
  *
  * Height-capped with its own scroll, which is what makes putting it *above* the
  * composer affordable without any collapse state — no chevron on the frame,
@@ -55,7 +55,7 @@ export interface TaskLibraryProps {
  * off the screen.
  */
 export function TaskLibrary({
-  tasks,
+  templates,
   hiddenCount,
   schedules,
   unlinkedScheduleCount,
@@ -72,14 +72,14 @@ export function TaskLibrary({
   onDelete,
 }: TaskLibraryProps) {
   const scheduledBy = React.useMemo(
-    () => schedulesBySavedTask(schedules),
+    () => schedulesByTemplate(schedules),
     [schedules],
   );
 
   if (status === "loading") {
     return (
       <p className="text-[11px] leading-tight text-muted-foreground">
-        Reading the saved tasks…
+        Reading the task templates…
       </p>
     );
   }
@@ -87,36 +87,36 @@ export function TaskLibrary({
   if (status === "error") {
     return (
       <p className="text-[11px] leading-tight text-muted-foreground">
-        The saved tasks could not be read. The message is above.
+        The task templates could not be read. The message is above.
       </p>
     );
   }
 
   return (
     <div className="space-y-1.5">
-      {tasks.length === 0 ? (
+      {templates.length === 0 ? (
         <p className="text-[11px] leading-tight text-muted-foreground">
-          Nothing saved for this map yet. Build a list below, name it, and press
+          No templates for this map yet. Build a list below, name it, and press
           Save as new.
         </p>
       ) : (
         <ul className="max-h-56 space-y-1.5 overflow-y-auto">
-          {tasks.map((task) => (
-            <SavedTaskRow
-              key={task.id}
-              task={task}
+          {templates.map((template) => (
+            <TaskTemplateRow
+              key={template.id}
+              template={template}
               activeMapName={activeMapName}
               dispatchDisabled={dispatchDisabled}
               busy={busy}
               // Only the row that started the run gets the readback. A row that
               // did not is left blank rather than showing another row's status.
-              taskStatus={task.id === dispatchedFromId ? taskStatus : null}
-              stepStates={task.id === dispatchedFromId ? stepStates : null}
-              schedules={scheduledBy.get(task.id) ?? EMPTY_SCHEDULES}
-              onDispatch={() => onDispatch(task)}
-              onLoad={() => onLoad(task)}
-              onSchedule={() => onSchedule(task)}
-              onDelete={() => onDelete(task)}
+              taskStatus={template.id === dispatchedFromId ? taskStatus : null}
+              stepStates={template.id === dispatchedFromId ? stepStates : null}
+              schedules={scheduledBy.get(template.id) ?? EMPTY_SCHEDULES}
+              onDispatch={() => onDispatch(template)}
+              onLoad={() => onLoad(template)}
+              onSchedule={() => onSchedule(template)}
+              onDelete={() => onDelete(template)}
             />
           ))}
         </ul>
@@ -130,8 +130,8 @@ export function TaskLibrary({
        */}
       {hiddenCount > 0 && (
         <p className="text-[11px] leading-tight text-muted-foreground">
-          {hiddenCount} {hiddenCount === 1 ? "task is" : "tasks are"} saved for
-          other maps and not shown here.
+          {hiddenCount} {hiddenCount === 1 ? "template is" : "templates are"} saved
+          for other maps and not shown here.
         </p>
       )}
 
@@ -146,7 +146,7 @@ export function TaskLibrary({
         <p className="text-[11px] leading-tight text-signal-caution">
           {unlinkedScheduleCount}{" "}
           {unlinkedScheduleCount === 1 ? "schedule runs" : "schedules run"} steps
-          that were never saved as a task, so {unlinkedScheduleCount === 1 ? "it is" : "they are"}{" "}
+          that were never saved as a template, so {unlinkedScheduleCount === 1 ? "it is" : "they are"}{" "}
           not shown on any row here — see Registered schedules below.
         </p>
       )}

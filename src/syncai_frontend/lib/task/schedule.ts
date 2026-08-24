@@ -2,7 +2,7 @@
 //
 // This lived inside schedule-list.tsx, with a note saying a lib module holding
 // one formatter would be a file whose header has nothing to say. It has
-// something to say now: the saved-task library also has to render a trigger, so
+// something to say now: the template library also has to render a trigger, so
 // that a row can be told apart from a one-time task at a glance, and two copies
 // of "every 30 min" would drift the first time the wording changed.
 
@@ -21,25 +21,25 @@ export function describeTrigger(trigger: ScheduleTrigger): string {
 }
 
 /**
- * The registered schedules that were frozen from each saved task, keyed by task
- * id.
+ * The registered schedules that were frozen from each template, keyed by
+ * template id.
  *
- * Only schedules that carry a `saved_task_id` land here — one registered
- * straight from the composer references no row and belongs to no task. That is
- * also why this is a lookup built from the schedule list rather than a field on
- * the saved task: the backend's saved-task response says nothing about
+ * Only schedules that carry a `task_template_id` land here — one registered
+ * straight from the composer references no row and belongs to no template. That
+ * is also why this is a lookup built from the schedule list rather than a field
+ * on the template: the backend's template response says nothing about
  * schedules, and the provenance only exists in the Temporal memo.
  */
-export function schedulesBySavedTask(
+export function schedulesByTemplate(
   schedules: readonly ScheduleState[],
 ): Map<string, ScheduleState[]> {
-  const byTask = new Map<string, ScheduleState[]>();
+  const byTemplate = new Map<string, ScheduleState[]>();
   for (const schedule of schedules) {
-    const id = schedule.saved_task_id;
+    const id = schedule.task_template_id;
     if (!id) continue;
-    const existing = byTask.get(id);
+    const existing = byTemplate.get(id);
     if (existing) existing.push(schedule);
-    else byTask.set(id, [schedule]);
+    else byTemplate.set(id, [schedule]);
   }
-  return byTask;
+  return byTemplate;
 }

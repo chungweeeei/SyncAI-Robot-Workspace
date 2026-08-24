@@ -56,7 +56,7 @@ class ScheduleRequest(BaseModel):
             "schedule memo so a client can tell whether this schedule still "
             "belongs to the loaded map. A display label only, and deliberately "
             "unvalidated: this router has no MapCatalogRepo, and threading one in "
-            "for a label is not worth it. POST /api/v1/saved_tasks/{id}/schedule "
+            "for a label is not worth it. POST /api/v1/task_templates/{id}/schedule "
             "is the validated path."
         ),
     )
@@ -84,12 +84,12 @@ class ScheduleStateResponse(BaseModel):
         default=None,
         description="Map whose frame this schedule's MOVE coordinates are in.",
     )
-    saved_task_id: Optional[str] = Field(
+    task_template_id: Optional[str] = Field(
         default=None,
-        description="The saved task this schedule was frozen from, if any.",
+        description="The task template this schedule was frozen from, if any.",
     )
-    saved_task_name: Optional[str] = Field(
-        default=None, description="That saved task's name at registration time."
+    task_template_name: Optional[str] = Field(
+        default=None, description="That template's name at registration time."
     )
     # The element is StepRequest rather than a new response model: it is already
     # exactly {id, type, params}, it is already imported here, and a second
@@ -102,7 +102,7 @@ class ScheduleStateResponse(BaseModel):
             "the collection endpoint always answers [], because Temporal's "
             "schedule *list* API does not carry the start-workflow arguments. "
             "Frozen at registration: later vertex edits do not reach a scheduled "
-            "run, so a client comparing these against their source saved task is "
+            "run, so a client comparing these against their source template is "
             "how staleness becomes visible."
         ),
     )
@@ -155,8 +155,8 @@ def init_schedule_router(
                 paused=view.paused,
                 next_run_times=view.next_run_times,
                 map_name=view.map_name,
-                saved_task_id=view.saved_task_id,
-                saved_task_name=view.saved_task_name,
+                task_template_id=view.task_template_id,
+                task_template_name=view.task_template_name,
                 # `steps` left at its default here — see the field's description.
             )
             for view in views
@@ -185,8 +185,8 @@ def init_schedule_router(
             paused=view.paused,
             next_run_times=view.next_run_times,
             map_name=view.map_name,
-            saved_task_id=view.saved_task_id,
-            saved_task_name=view.saved_task_name,
+            task_template_id=view.task_template_id,
+            task_template_name=view.task_template_name,
             steps=[
                 StepRequest(id=step.id, type=step.type, params=step.params)
                 for step in view.steps

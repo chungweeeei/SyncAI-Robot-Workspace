@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"console.log\\(process.platform, process.arch\\)\")",
+      "Bash(rm -rf node_modules)",
+      "Bash(npm ci *)",
+      "Bash(timeout 30 npm run dev)",
+      "Bash(node -e \"try { require\\('lightningcss-linux-arm64-gnu'\\); console.log\\('OK gnu package'\\); } catch\\(e\\){ console.log\\('FAIL:', e.message\\); }\")",
+      "Bash(node -e \"const d=require\\('detect-libc'\\); console.log\\('family:', d.familySync\\(\\), 'isMusl:', d.isNonGlibcLinuxSync ? 'n/a':''\\);\")",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(pkill -f \"next-server\")",
+      "Read(//workspace/.devcontainer/**)"
+    ]
+  }
+}

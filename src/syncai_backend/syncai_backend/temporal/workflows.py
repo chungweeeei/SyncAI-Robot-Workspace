@@ -79,7 +79,9 @@ class RobotWorkflow:
                     # reaching a terminal state.
                     start_to_close_timeout=timedelta(hours=1),
                     heartbeat_timeout=timedelta(seconds=3),
-                    cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+                    cancellation_type=(
+                        workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                    ),
                 )
             except asyncio.CancelledError:
                 step.status = StepStatus.CANCELED

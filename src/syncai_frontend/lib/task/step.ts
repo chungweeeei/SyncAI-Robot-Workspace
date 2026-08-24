@@ -6,7 +6,7 @@
 // shape lives here too, so lib/api/task.ts never has to know what a half-typed
 // coordinate field looks like.
 
-import type { SavedStep, SavedStepRequest } from "@/lib/api/saved-task";
+import type { TemplateStep, TemplateStepRequest } from "@/lib/api/task-template";
 import {
   normalizeTheta,
   type MoveStepParams,
@@ -59,7 +59,7 @@ export interface StepDraft {
    */
   vertexId: string | null;
   /**
-   * Set when this row was loaded from a saved task whose vertex has since been
+   * Set when this row was loaded from a template whose vertex has since been
    * deleted — the coordinates are the snapshot taken at save time, not a live
    * pose. Display only; it does not stop the row being dispatched.
    */
@@ -196,16 +196,16 @@ export function toStepRequests(
 }
 
 /**
- * The authored list in the shape the saved-task endpoint stores.
+ * The authored list in the shape the task-template endpoint stores.
  *
  * Identical to `toStepRequests` except that a MOVE also carries its `vertex_id`.
  * That one extra field is the whole difference between "run this now" and "keep
  * this so it can follow the map later", which is why the two conversions sit next
  * to each other rather than one calling into the other with a flag.
  */
-export function toSavedSteps(
+export function toTemplateSteps(
   drafts: readonly StepDraft[],
-): SavedStepRequest[] {
+): TemplateStepRequest[] {
   return drafts.map((draft, index) => {
     const request = toStepRequest(draft, index);
     if (request.type !== "MOVE") return request;
@@ -216,7 +216,7 @@ export function toSavedSteps(
 }
 
 /**
- * Load a saved task's steps back into the editor.
+ * Load a template's steps back into the editor.
  *
  * The numbers come from `resolved_params`, **not** `params`: the server has
  * already applied "the vertex's current pose wins, the snapshot is the fallback",
@@ -227,7 +227,7 @@ export function toSavedSteps(
  * The formatters are the same ones the vertex picker prefills through, so a
  * round trip through save/load does not change what is in the fields.
  */
-export function fromSavedSteps(steps: readonly SavedStep[]): StepDraft[] {
+export function fromTemplateSteps(steps: readonly TemplateStep[]): StepDraft[] {
   return steps.map((step) => {
     const draft = newStepDraft(step.type);
     const pose = step.resolved_params;

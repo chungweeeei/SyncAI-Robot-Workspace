@@ -43,9 +43,10 @@ class PointCloudRepo:
             )
 
     def get_latest(self, after_seq: int = 0) -> Optional[PointCloudFrame]:
-        """Return the cached frame if it is newer than ``after_seq``, else None."""
         with self._lock:
-            if self._frame is None or self._frame.seq <= after_seq:
+            if self._frame is None:
+                return None
+            if self._frame.seq <= after_seq:
                 return None
             return self._frame
 

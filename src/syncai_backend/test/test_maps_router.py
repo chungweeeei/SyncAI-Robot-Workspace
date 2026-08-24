@@ -391,18 +391,23 @@ def test_save_grid_updates_the_thumbnail_without_an_eviction(client):
     assert after.content != before.content
 
 
-def test_save_grid_needs_an_octet_stream_content_type(client, maps_dir):
-    """Without the header FastAPI falls back to parsing the body as JSON.
+def test_save_grid_accepts_a_missing_content_type(client, maps_dir):
+    """A bare BufferSource fetch() sends no Content-Type; the save still lands.
 
-    Documents the contract the frontend has to satisfy: a BufferSource body makes
-    fetch() send no Content-Type at all unless it is set explicitly.
+    This test used to assert the opposite, on the premise that FastAPI would
+    fall back to parsing the body as JSON without the header. The pinned
+    FastAPI does no such thing: a ``bytes`` body parameter receives the raw
+    payload whatever the Content-Type says, so the ``media_type`` on the Body
+    is OpenAPI documentation, not enforcement. The length gate is what actually
+    rejects a malformed body (test_save_grid_rejects_a_wrong_length_body), so
+    tolerating the missing header loses nothing — and pinning tolerance keeps
+    this from silently flipping again on the next FastAPI bump.
     """
-    before = (maps_dir / "full" / "gridmap.pgm").read_bytes()
-
     response = client.put("/api/v1/maps/full/grid", content=b"\x00" * 24)
 
-    assert response.status_code != 200
-    assert (maps_dir / "full" / "gridmap.pgm").read_bytes() == before
+    assert response.status_code == 200
+    # The write really happened: the body is the 24 cells just sent.
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes()[-24:] == b"\x00" * 24
 
 
 # --- /api/v1/maps/{name}/pointcloud -----------------------------------------

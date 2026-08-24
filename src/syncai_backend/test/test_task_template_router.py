@@ -1,11 +1,11 @@
-"""Tests for /api/v1/saved_tasks.
+"""Tests for /api/v1/task_templates.
 
 Same shape as test_maps_router.py: the router is mounted on a bare FastAPI app
 with the production exception handlers registered, so the domain-exception ->
 status-code mapping is the real one. The repos are real, over a tmp_path maps
 tree and in-memory SQLite; only the Temporal gateway is stubbed.
 
-The heart of the file is test_resolution_*: a saved MOVE step keeps a coordinate
+The heart of the file is test_resolution_*: a stored MOVE step keeps a coordinate
 *snapshot* and a *vertex reference*, and a read reports what a dispatch should
 send now. Every one of those tests posts a snapshot that deliberately disagrees
 with its vertex, so "prefer the vertex's current pose" is pinned rather than
@@ -24,8 +24,8 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from syncai_backend.helpers.system_config import SYSTEM_INI_ENV  # noqa: E402
-from syncai_backend.interfaces.rest.routers.saved_task import (  # noqa: E402
-    init_saved_task_router,
+from syncai_backend.interfaces.rest.routers.task_template import (  # noqa: E402
+    init_task_template_router,
 )
 from syncai_backend.interfaces.rest.server import (  # noqa: E402
     register_exception_handlers,
@@ -48,7 +48,7 @@ def workflow_gw():
 
 
 @pytest.fixture
-def client(logger, saved_task_repo, map_repo, catalog_repo, workflow_gw, tmp_path,
+def client(logger, task_template_repo, map_repo, catalog_repo, workflow_gw, tmp_path,
            monkeypatch):
     """A client whose active map is 'full'; 'rawonly' exists but is not active."""
     ini = tmp_path / "system.ini"
@@ -58,9 +58,9 @@ def client(logger, saved_task_repo, map_repo, catalog_repo, workflow_gw, tmp_pat
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(
-        init_saved_task_router(
+        init_task_template_router(
             logger=logger,
-            saved_task_repo=saved_task_repo,
+            task_template_repo=task_template_repo,
             map_repo=map_repo,
             map_catalog_repo=catalog_repo,
             workflow_gw=workflow_gw,
@@ -94,7 +94,7 @@ def _move(vertex_id=None, step_id="1-move", params=None):
 def _create(client, **overrides):
     body = {"name": "patrol", "map_name": "full", "steps": [_move()]}
     body.update(overrides)
-    return client.post("/api/v1/saved_tasks", json=body)
+    return client.post("/api/v1/task_templates", json=body)
 
 
 # --- Resolution -------------------------------------------------------------
@@ -124,7 +124,7 @@ def test_resolution_follows_a_moved_vertex(client, map_repo, dock):
 
     map_repo.update_vertex(dock.id, x=9.0)
 
-    step = client.get(f"/api/v1/saved_tasks/{task_id}").json()["steps"][0]
+    step = client.get(f"/api/v1/task_templates/{task_id}").json()["steps"][0]
     assert step["resolved_params"]["x"] == 9.0
     assert step["params"] == SNAPSHOT  # untouched
 
@@ -134,7 +134,7 @@ def test_resolution_reports_the_vertexs_current_name(client, map_repo, dock):
 
     map_repo.update_vertex(dock.id, name="dock-renamed")
 
-    step = client.get(f"/api/v1/saved_tasks/{task_id}").json()["steps"][0]
+    step = client.get(f"/api/v1/task_templates/{task_id}").json()["steps"][0]
     assert step["vertex_name"] == "dock-renamed"
 
 
@@ -145,7 +145,7 @@ def test_resolution_falls_back_to_the_snapshot_when_the_vertex_is_gone(
 
     map_repo.delete_vertex(dock.id)
 
-    body = client.get(f"/api/v1/saved_tasks/{task_id}").json()
+    body = client.get(f"/api/v1/task_templates/{task_id}").json()
     step = body["steps"][0]
     assert step["vertex_status"] == "MISSING"
     assert step["resolved_params"] == SNAPSHOT
@@ -248,7 +248,7 @@ def test_posture_step_with_params_is_still_rejected(client):
 
 def test_empty_step_list_is_rejected(client):
     """Diverges from TaskRequest, which accepts steps: [] and starts a workflow
-    that instantly COMPLETEs. A saved empty task is worse: you save it and can
+    that instantly COMPLETEs. An empty template is worse: you save it and can
     then never run it."""
     assert _create(client, steps=[]).status_code == 422
 
@@ -265,15 +265,15 @@ def test_duplicate_step_ids_are_rejected(client):
 
 
 def test_non_uuid_path_id_is_422(client):
-    assert client.get("/api/v1/saved_tasks/not-a-uuid").status_code == 422
+    assert client.get("/api/v1/task_templates/not-a-uuid").status_code == 422
 
 
 def test_unknown_id_is_404(client):
     unknown = uuid.uuid4()
-    assert client.get(f"/api/v1/saved_tasks/{unknown}").status_code == 404
-    assert client.put(f"/api/v1/saved_tasks/{unknown}",
+    assert client.get(f"/api/v1/task_templates/{unknown}").status_code == 404
+    assert client.put(f"/api/v1/task_templates/{unknown}",
                       json={"name": "x"}).status_code == 404
-    assert client.delete(f"/api/v1/saved_tasks/{unknown}").status_code == 404
+    assert client.delete(f"/api/v1/task_templates/{unknown}").status_code == 404
 
 
 # --- CRUD -------------------------------------------------------------------
@@ -282,10 +282,10 @@ def test_unknown_id_is_404(client):
 def test_create_list_get_delete_round_trip(client):
     task_id = _create(client).json()["id"]
 
-    assert [t["id"] for t in client.get("/api/v1/saved_tasks").json()] == [task_id]
-    assert client.get(f"/api/v1/saved_tasks/{task_id}").json()["name"] == "patrol"
-    assert client.delete(f"/api/v1/saved_tasks/{task_id}").status_code == 200
-    assert client.get(f"/api/v1/saved_tasks/{task_id}").status_code == 404
+    assert [t["id"] for t in client.get("/api/v1/task_templates").json()] == [task_id]
+    assert client.get(f"/api/v1/task_templates/{task_id}").json()["name"] == "patrol"
+    assert client.delete(f"/api/v1/task_templates/{task_id}").status_code == 200
+    assert client.get(f"/api/v1/task_templates/{task_id}").status_code == 404
 
 
 def test_list_filter_returns_the_map_and_the_map_independent(client):
@@ -294,14 +294,14 @@ def test_list_filter_returns_the_map_and_the_map_independent(client):
     _create(client, name="anywhere", map_name=None, steps=[STANDUP])
 
     names = [t["name"] for t in
-             client.get("/api/v1/saved_tasks?map_name=full").json()]
+             client.get("/api/v1/task_templates?map_name=full").json()]
     assert sorted(names) == ["anywhere", "on-full"]
 
 
 def test_put_can_clear_the_map_scope_together_with_the_steps(client):
     task_id = _create(client).json()["id"]
 
-    res = client.put(f"/api/v1/saved_tasks/{task_id}",
+    res = client.put(f"/api/v1/task_templates/{task_id}",
                      json={"map_name": None, "steps": [STANDUP]})
     assert res.status_code == 200
     assert res.json()["map_name"] is None
@@ -312,7 +312,7 @@ def test_put_cannot_clear_the_map_scope_while_move_steps_remain(client):
     against merged state in the handler."""
     task_id = _create(client).json()["id"]
 
-    res = client.put(f"/api/v1/saved_tasks/{task_id}", json={"map_name": None})
+    res = client.put(f"/api/v1/task_templates/{task_id}", json={"map_name": None})
     assert res.status_code == 400
     assert "must name the map" in res.json()["detail"]
 
@@ -322,26 +322,26 @@ def test_put_cannot_move_a_task_to_a_map_its_vertices_are_not_on(client, dock):
     "task on map A, vertices on map B" unrepresentable."""
     task_id = _create(client, steps=[_move(dock.id)]).json()["id"]
 
-    res = client.put(f"/api/v1/saved_tasks/{task_id}", json={"map_name": "rawonly"})
+    res = client.put(f"/api/v1/task_templates/{task_id}", json={"map_name": "rawonly"})
     assert res.status_code == 400
 
 
 def test_put_renames_without_touching_the_steps(client, dock):
     task_id = _create(client, steps=[_move(dock.id)]).json()["id"]
 
-    res = client.put(f"/api/v1/saved_tasks/{task_id}", json={"name": "renamed"})
+    res = client.put(f"/api/v1/task_templates/{task_id}", json={"name": "renamed"})
     assert res.status_code == 200
     assert res.json()["name"] == "renamed"
     assert res.json()["steps"][0]["vertex_status"] == "CURRENT"
 
 
-# --- Schedule from a saved task ---------------------------------------------
+# --- Schedule from a template ------------------------------------------------
 
 
 def test_schedule_freezes_the_current_resolution(client, workflow_gw, dock):
     task_id = _create(client, steps=[_move(dock.id), STANDUP]).json()["id"]
 
-    res = client.post(f"/api/v1/saved_tasks/{task_id}/schedule",
+    res = client.post(f"/api/v1/task_templates/{task_id}/schedule",
                       json={"id": "sched-1", "trigger": {"cron": "0 9 * * 1-5"}})
     assert res.status_code == 200
 
@@ -351,8 +351,8 @@ def test_schedule_freezes_the_current_resolution(client, workflow_gw, dock):
     assert (move.params.x, move.params.y, move.params.theta) == (3.0, -1.5, 90.0)
     # Provenance rides in the memo, never in the Temporal step schema.
     assert registered.map_name == "full"
-    assert registered.saved_task_id == task_id
-    assert registered.saved_task_name == "patrol"
+    assert registered.task_template_id == task_id
+    assert registered.task_template_name == "patrol"
     assert not hasattr(move, "vertex_id")
 
 
@@ -362,7 +362,7 @@ def test_schedule_refuses_a_missing_vertex(client, workflow_gw, map_repo, dock):
     task_id = _create(client, steps=[_move(dock.id)]).json()["id"]
     map_repo.delete_vertex(dock.id)
 
-    res = client.post(f"/api/v1/saved_tasks/{task_id}/schedule",
+    res = client.post(f"/api/v1/task_templates/{task_id}/schedule",
                       json={"id": "sched-1", "trigger": {"cron": "0 9 * * 1-5"}})
     assert res.status_code == 400
     assert "no longer exists" in res.json()["detail"]
@@ -372,7 +372,7 @@ def test_schedule_refuses_a_missing_vertex(client, workflow_gw, map_repo, dock):
 def test_schedule_refuses_a_task_for_an_inactive_map(client, workflow_gw):
     task_id = _create(client, map_name="rawonly").json()["id"]
 
-    res = client.post(f"/api/v1/saved_tasks/{task_id}/schedule",
+    res = client.post(f"/api/v1/task_templates/{task_id}/schedule",
                       json={"id": "sched-1", "trigger": {"cron": "0 9 * * 1-5"}})
     assert res.status_code == 400
     assert "rawonly" in res.json()["detail"]
@@ -384,7 +384,7 @@ def test_schedule_reuses_the_exactly_one_trigger_validator(client, dock):
     task_id = _create(client, steps=[_move(dock.id)]).json()["id"]
 
     res = client.post(
-        f"/api/v1/saved_tasks/{task_id}/schedule",
+        f"/api/v1/task_templates/{task_id}/schedule",
         json={"id": "sched-1",
               "trigger": {"cron": "0 9 * * 1-5", "interval_seconds": 300}},
     )
@@ -394,7 +394,7 @@ def test_schedule_reuses_the_exactly_one_trigger_validator(client, dock):
 def test_schedule_on_a_map_independent_task_is_allowed(client, workflow_gw):
     task_id = _create(client, map_name=None, steps=[STANDUP]).json()["id"]
 
-    res = client.post(f"/api/v1/saved_tasks/{task_id}/schedule",
+    res = client.post(f"/api/v1/task_templates/{task_id}/schedule",
                       json={"id": "sched-1", "trigger": {"interval_seconds": 900}})
     assert res.status_code == 200
     assert workflow_gw.schedules[-1].map_name is None

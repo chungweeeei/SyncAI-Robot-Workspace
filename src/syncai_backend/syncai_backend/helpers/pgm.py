@@ -125,10 +125,10 @@ def read_pgm_size(path: str) -> Tuple[int, int]:
 
 
 def write_pgm(path: str, width: int, height: int, body: bytes) -> bytes:
-    """Replace ``path`` with a binary PGM of ``body``, atomically.
+    r"""Replace ``path`` with a binary PGM of ``body``, atomically.
 
     The header is byte-identical to what ``tools/pcd_to_gridmap.py`` emits —
-    ``P5\\n{w} {h}\\n255\\n``, no comment line — so an edited map is
+    ``P5\n{w} {h}\n255\n``, no comment line — so an edited map is
     indistinguishable from a converted one and ``read_pgm_size`` agrees about
     where the body starts.
 

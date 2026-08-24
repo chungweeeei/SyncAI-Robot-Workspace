@@ -58,8 +58,8 @@ def _view(**overrides):
         "paused": False,
         "next_run_times": [],
         "map_name": "full",
-        "saved_task_id": "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
-        "saved_task_name": "Morning patrol",
+        "task_template_id": "0f2b8a34-6c11-4d0e-9f52-1a9b7c3d4e55",
+        "task_template_name": "Morning patrol",
         "steps": [STANDUP_STEP, MOVE_STEP],
     }
     body.update(overrides)
@@ -102,7 +102,7 @@ def test_get_carries_steps_and_provenance(client):
 
     assert [s["id"] for s in body["steps"]] == ["1-standup", "2-move"]
     assert body["map_name"] == "full"
-    assert body["saved_task_name"] == "Morning patrol"
+    assert body["task_template_name"] == "Morning patrol"
 
 
 def test_get_serialises_in_snake_case(client):

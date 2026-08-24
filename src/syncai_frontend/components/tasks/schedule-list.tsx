@@ -18,12 +18,12 @@ import {
 import type { SchedulesStatus } from "@/hooks/use-schedules";
 import type { ScheduleState } from "@/lib/api/schedule";
 import { describeTrigger } from "@/lib/task/schedule";
-import type { SavedTask } from "@/lib/api/saved-task";
+import type { TaskTemplate } from "@/lib/api/task-template";
 
 export interface ScheduleListProps {
   schedules: ScheduleState[];
-  /** The library, so a row can be diffed against the task it was frozen from. */
-  savedTasks: SavedTask[];
+  /** The library, so a row can be diffed against the template it was frozen from. */
+  templates: TaskTemplate[];
   status: SchedulesStatus;
   busy: boolean;
   onPause: (id: string) => void;
@@ -44,7 +44,7 @@ function formatRunTime(iso: string): string {
 
 export function ScheduleList({
   schedules,
-  savedTasks,
+  templates,
   status,
   busy,
   onPause,
@@ -83,7 +83,7 @@ export function ScheduleList({
         <ScheduleRow
           key={schedule.id}
           schedule={schedule}
-          savedTasks={savedTasks}
+          templates={templates}
           busy={busy}
           onPause={onPause}
           onResume={onResume}
@@ -102,14 +102,14 @@ export function ScheduleList({
  */
 function ScheduleRow({
   schedule,
-  savedTasks,
+  templates,
   busy,
   onPause,
   onResume,
   onDelete,
 }: {
   schedule: ScheduleState;
-  savedTasks: SavedTask[];
+  templates: TaskTemplate[];
   busy: boolean;
   onPause: (id: string) => void;
   onResume: (id: string) => void;
@@ -128,7 +128,7 @@ function ScheduleRow({
   const next = schedule.paused ? undefined : schedule.next_run_times[0];
 
   const source =
-    savedTasks.find((task) => task.id === schedule.saved_task_id) ?? null;
+    templates.find((template) => template.id === schedule.task_template_id) ?? null;
 
   return (
     <li className="rounded-sm border border-hairline bg-elevated/40 px-2 py-2">
@@ -151,7 +151,7 @@ function ScheduleRow({
           {schedule.id}
         </span>
 
-        <ScheduleSourceChip schedule={schedule} savedTasks={savedTasks} />
+        <ScheduleSourceChip schedule={schedule} templates={templates} />
         {schedule.paused && <Chip tone="caution">Paused</Chip>}
 
         <div className="flex shrink-0 items-center gap-0.5">

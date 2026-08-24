@@ -14,7 +14,7 @@ from syncai_backend.interfaces.rest.server import start_rest_server
 
 from syncai_backend.repositories.robot.robot import init_robot_repo
 from syncai_backend.repositories.map.map import init_map_repo
-from syncai_backend.repositories.task.saved_task import init_saved_task_repo
+from syncai_backend.repositories.task.task_template import init_task_template_repo
 from syncai_backend.repositories.map.catalog import init_map_catalog_repo
 from syncai_backend.repositories.pointcloud.pointcloud import init_pointcloud_repo
 from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
@@ -52,6 +52,7 @@ class SyncAIBackend(Node):
 
         robot_id = self.get_namespace().strip("/") or "default_robot"
 
+        # Connect to the PostgreSQL database
         try:
             engine = connect_to_postgres(logger=logger, robot_id=robot_id)
         except Exception as e:
@@ -64,7 +65,7 @@ class SyncAIBackend(Node):
         # The operator's library of re-dispatchable step lists. Its own repo
         # rather than a method on MapRepo: that one is the vertex table, this is a
         # different table, and the only thing they share is the engine.
-        saved_task_repo = init_saved_task_repo(logger=logger, engine=engine)
+        task_template_repo = init_task_template_repo(logger=logger, engine=engine)
         # The maps on disk, as opposed to the one that is loaded. Reads the
         # filesystem only; no engine, no ROS.
         map_catalog_repo = init_map_catalog_repo(logger=logger)
@@ -129,7 +130,7 @@ class SyncAIBackend(Node):
             pointcloud_repo=pointcloud_repo,
             map_cloud_repo=map_cloud_repo,
             telemetry_repo=telemetry_repo,
-            saved_task_repo=saved_task_repo,
+            task_template_repo=task_template_repo,
             worker_handle=worker_handle,
         )
 

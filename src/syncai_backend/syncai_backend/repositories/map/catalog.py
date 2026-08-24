@@ -37,13 +37,6 @@ class StoredMap:
 
 
 class MapCatalogRepo:
-    """Lists and reads the map directories under ``maps_dir``.
-
-    Synchronous, like every other repo here: the REST handlers that call it are
-    declared with plain ``def`` so FastAPI runs the file I/O on its worker thread
-    pool rather than the event loop.
-    """
-
     def __init__(self, logger: structlog.stdlib.BoundLogger):
         self.logger = logger
         self.maps_dir = os.path.expanduser("~/robot_ws/map")

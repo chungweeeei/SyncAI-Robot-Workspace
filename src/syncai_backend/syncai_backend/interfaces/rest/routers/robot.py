@@ -32,12 +32,15 @@ def _mode_to_str(mode: int) -> str:
 # only 0 and 1; a robot actually running CHAMP (2) or ISSAC (3) — or MPC, whose
 # code nobody here knows — would fail pydantic validation and take the whole
 # state endpoint down with a 500. Reporting has to survive values commanding
-# refuses, so it degrades to "UNKNOWN" the way _mode_to_str does.
+# refuses: CHAMP and ISSAC are labeled here because the controller documents
+# them (policies the robot can genuinely be running, just not ones this API
+# will command), and anything else — MPC included — degrades to "UNKNOWN" the
+# way _mode_to_str does.
 #
 # The vocabularies themselves are the controller's, transcribed from the
 # reference implementation's Readme and unverified against current firmware; see
 # syncai_common/msg/RobotLowLevelMode.msg, which is where they are documented.
-_POLICY_STATE_TO_STR = {0: "PPO", 1: "HIMLOCO"}
+_POLICY_STATE_TO_STR = {0: "PPO", 1: "HIMLOCO", 2: "CHAMP", 3: "ISSAC"}
 
 # 8 is the controller's own startup sentinel ("I have not entered a state yet").
 # Note what is NOT in here: MPC. This workspace added the `MODE M` command without

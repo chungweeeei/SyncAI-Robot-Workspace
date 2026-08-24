@@ -119,14 +119,18 @@ class TelemetryRepo:
     def get_pose(self, after_seq: int = 0) -> Optional[PoseSample]:
         """Return the cached pose if newer than ``after_seq``, else None."""
         with self._lock:
-            if self._pose is None or self._pose.seq <= after_seq:
+            if self._pose is None:
+                return None
+            if self._pose.seq <= after_seq:
                 return None
             return self._pose
 
     def get_joints(self, after_seq: int = 0) -> Optional[JointsSample]:
         """Return the cached joints if newer than ``after_seq``, else None."""
         with self._lock:
-            if self._joints is None or self._joints.seq <= after_seq:
+            if self._joints is None:
+                return None
+            if self._joints.seq <= after_seq:
                 return None
             return self._joints
 

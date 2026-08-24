@@ -93,7 +93,10 @@ class MapGateway:
         )
 
         self._service_clients.update(
-            {"load_map": load_map_client, "save_maps": save_maps_client}
+            {
+                "load_map": load_map_client,
+                "save_maps": save_maps_client
+            }
         )
 
     def reload_map(self, yaml_path: str) -> tuple[bool, str]:

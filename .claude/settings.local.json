@@ -63,7 +63,20 @@
       "Bash(./node_modules/.bin/eslint app/mapping/page.tsx components/mapping/ hooks/use-mode-switch.ts lib/api/mapping.ts components/console/nav-rail.tsx)",
       "Bash(zcat log/stack/robot01/mapping/robot_state/@*.s)",
       "mcp__ide__getDiagnostics",
-      "Bash(grep -n \"third-party\\\\|behaviortree_cpp_v3\\\\` | Submodule\\\\|ros2_laser_scan_merger\\\\|Livox-SDK2\" /Users/andy_tseng/Desktop/Projects/SyncAI-Robot-Workspace/CLAUDE.md)"
+      "Bash(grep -n \"third-party\\\\|behaviortree_cpp_v3\\\\` | Submodule\\\\|ros2_laser_scan_merger\\\\|Livox-SDK2\" /Users/andy_tseng/Desktop/Projects/SyncAI-Robot-Workspace/CLAUDE.md)",
+      "Bash(apt-cache rdepends *)",
+      "Bash(sudo apt-get update -qq)",
+      "Bash(sudo apt-get install -y --no-install-recommends ros-humble-ompl)",
+      "Bash(colcon build *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(apt-cache policy *)",
+      "Bash(sudo apt-get install -y --no-install-recommends nlohmann-json3-dev)",
+      "Bash(dpkg -l libapr1-dev libaprutil1-dev)",
+      "Bash(git config *)",
+      "Bash(git -C /workspace/src/third-party/Livox-SDK2 log --oneline -1)",
+      "Bash(sudo apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev)",
+      "Bash(sudo cmake --install /home/ros/.claude/jobs/ca9e9c65/tmp/livox-sdk2-build)",
+      "Bash(sudo ldconfig)"
     ]
   }
 }

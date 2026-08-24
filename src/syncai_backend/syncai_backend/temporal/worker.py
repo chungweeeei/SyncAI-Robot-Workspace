@@ -76,7 +76,6 @@ async def run_worker(
     `ready` is set right before the worker starts polling, so a caller running
     this in a background thread can block until the worker is up.
     """
-
     client = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:

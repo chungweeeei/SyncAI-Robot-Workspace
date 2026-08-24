@@ -16,9 +16,9 @@ export interface StepDrafts {
   move: (key: number, delta: -1 | 1) => void;
   patch: (key: number, changes: Partial<Omit<StepDraft, "key">>) => void;
   /**
-   * Swap the whole list, for loading a saved task into the editor.
+   * Swap the whole list, for loading a template into the editor.
    *
-   * The drafts must be freshly built (via `fromSavedSteps`, which calls
+   * The drafts must be freshly built (via `fromTemplateSteps`, which calls
    * `newStepDraft`) rather than reused, so every row arrives with a key that has
    * never been mounted — otherwise React would reconcile the incoming rows into
    * the outgoing ones and carry over the focused input.
