@@ -19,7 +19,7 @@ import type { InitialPoseEstimate } from "@/hooks/use-initial-pose";
  * quieter. Amber, and a separate button, keep the two from being confused
  * mid-drag.
  *
- * Unlike the goal control there is no Send: arming picks the robot model up onto
+ * Like the goal control there is no Send: arming picks the robot model up onto
  * the pointer, and putting it down where the machine stands *is* the
  * confirmation — `useInitialPose` posts on release. So this
  * panel is a readback of what already went out, and the amber button below it is

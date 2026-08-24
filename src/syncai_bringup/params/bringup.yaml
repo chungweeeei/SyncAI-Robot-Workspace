@@ -1,5 +1,6 @@
 # Parameters for the two nodes bringup.launch.py starts: robot_state_publisher
-# (G23 body TF tree) and the Livox MID360 driver.
+# (G23 body TF tree) and the Livox driver (MID360 or MID360s — the fleet has
+# both, and none of the settings here differ by model).
 #
 # The /**/ wildcard keys match the node names in any namespace, so the same file
 # works for any robot_id: the launch file reads robot_id from config/system.ini
@@ -11,9 +12,11 @@
 #   * frame_prefix       - needs the resolved robot_id
 #   * frame_id           - same; TF frame names are NOT namespaced by ROS, so
 #                          the fallback below is overridden with <robot_id>/laser
-#   * user_config_path   - the livox network JSON, generated per robot_id at
-#                          launch time from host_ip below + the [sensor.lidar]
-#                          ip in the system INI
+#   * user_config_path   - the livox network JSON, generated per robot_id and
+#                          lidar model at launch time from host_ip below + the
+#                          [sensor.lidar] ip / type in the system INI. type is
+#                          what selects the MID360 vs MID360s JSON schema; there
+#                          is no ROS parameter for the model.
 /**/robot_state_publisher:
   ros__parameters:
     # Real robot: there is no /clock. Set ONLY here — a launch-level override
@@ -24,7 +27,9 @@
   ros__parameters:
     use_sim_time: false
 
-    # Mirrored from livox_ros_driver2/launch_ROS2/msg_MID360_launch.py.
+    # Mirrored from livox_ros_driver2/launch_ROS2/msg_MID360_launch.py (its
+    # msg_MID360s_launch.py counterpart is byte-identical apart from which
+    # config JSON it points at, so nothing below is model-specific).
     # 0 = PointCloud2 (PointXYZRTL), 1 = Livox CustomMsg. Must stay 1: the
     # FAST-LIO2 chain consumes CustomMsg, and switching to 0 for some tool that
     # wants standard messages breaks LIO silently.
@@ -45,8 +50,9 @@
     # = zero point clouds, with no error from the driver.
     #
     # Check with `ip -4 addr` on the machine the driver runs on (host networking,
-    # so that is the Jetson itself). The lidar's own IP is NOT here: it is
-    # per-robot identity, read from [sensor.lidar] ip in config/system.ini.
+    # so that is the Jetson itself). The lidar's own IP and model are NOT here:
+    # they are per-robot hardware identity, read from [sensor.lidar] ip / type
+    # in config/system.ini.
     host_ip: "192.168.1.103"
 
     # Fallback only. TF frame names are not namespaced by ROS, so the launch

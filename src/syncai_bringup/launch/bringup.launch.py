@@ -33,12 +33,12 @@
 #     here, driven by a lidar_height launch argument; both were dropped when the
 #     extrinsic moved into the URDF, because a height-only argument could not
 #     carry the pitch.
-#   * The Livox MID360 point cloud, via the livox_ros_driver2 node.
+#   * The Livox MID360 / MID360s point cloud, via the livox_ros_driver2 node.
 #
 # robot_id is read from the system config INI at launch time, same convention as
-# every other launch file in the stack. The same INI also supplies the MID360's
-# own IP ([sensor.lidar] ip), which is per-robot hardware identity and belongs
-# next to robot_id rather than in a shared params file.
+# every other launch file in the stack. The same INI also supplies the lidar's
+# own IP and model ([sensor.lidar] ip / type), which are per-robot hardware
+# identity and belong next to robot_id rather than in a shared params file.
 #
 # Node parameters live in params/bringup.yaml under /**/ wildcard keys. Only the
 # values that cannot be static are set here, appended after the file so they win:
@@ -50,6 +50,12 @@
 # params, and that file needs two addresses: the lidar's and the host's. Both are
 # per-deployment, so the JSON is generated here (write_livox_config) from the INI
 # lidar IP + the params-file host_ip, and user_config_path points at the result.
+#
+# That JSON is also the only place the lidar *model* is selected. The fleet runs
+# both MID360 and MID360s units and livox_ros_driver2 has no ROS parameter for
+# the model — the vendor msg_MID360_launch.py and msg_MID360s_launch.py differ
+# in exactly one line, which config JSON they point at. So [sensor.lidar] type
+# picks the schema write_livox_config emits; see LIVOX_MODELS.
 
 import configparser
 import json
@@ -106,9 +112,28 @@ LIDAR_NET_PORTS = {
     "log_data_port": 56500,
 }
 
-# 8 = kLivoxLidarType, the only value the MID360 accepts (lds_lidar.cpp gates
-# the whole init path on this bit).
+# 8 = kLivoxLidarType, the driver's own lidar-family bitmask; lds_lidar.cpp
+# gates the whole init path on this bit. It is NOT the device model — the vendor
+# MID360_config.json and MID360s_config.json both carry 8, and the real device
+# type comes from the section name below.
 LIVOX_LIDAR_TYPE = 8
+
+# INI [sensor.lidar] type -> the JSON section name the Livox SDK matches on.
+#
+# That section name IS the model selector: Livox-SDK2's parse_cfg_file.cpp maps
+# {"HAP", "MID360", "Mid360s"} onto device types 10 / 9 / 35 and looks each one
+# up with a case-sensitive doc.HasMember(), so these strings have to be copied
+# verbatim from its dev_type_map. device_type is not cosmetic either — it decides
+# whether the SDK opens a broadcast socket (device_manager.cpp), which lidar-side
+# ports it talks to, and which command handler it drives (mid360s has a separate
+# implementation). Getting it wrong raises nothing: the driver negotiates with
+# the wrong handler and simply never publishes a cloud.
+LIVOX_MODELS = {"mid360": "MID360", "mid360s": "Mid360s"}
+
+# What a missing or unrecognised [sensor.lidar] type falls back to, rather than
+# failing the launch — see read_lidar_type for why it is a warning and not a
+# raise.
+FALLBACK_LIDAR_MODEL = "mid360"
 
 logger = launch_logging.get_logger("bringup.launch")
 
@@ -159,6 +184,50 @@ def read_lidar_ip(config_path: str) -> str:
     return lidar_ip
 
 
+def read_lidar_type(config_path: str) -> str:
+    """Read [sensor.lidar] type from the system INI as a LIVOX_MODELS key.
+
+    Warns and falls back instead of raising, unlike read_lidar_ip: the whole
+    fleet was MID360 before the first MID360s arrived, so every already-deployed
+    instance INI predates this key and has to keep working untouched. The price
+    is that a MID360s whose INI forgot the key fails the quiet way — no cloud,
+    no error — so the warning spells out both the value it read and the accepted
+    set, to leave a trace in the bringup log for whoever goes looking.
+
+    Spelling is normalised (case, dashes, underscores, spaces) so mid360s /
+    Mid360s / MID-360S / "mid 360s" all resolve to the same key; the INI is
+    hand-edited per robot and the model is the one field with two very similar
+    legal values.
+    """
+    config = configparser.ConfigParser()
+    if not config.read(config_path):
+        logger.warning(
+            f"System config '{config_path}' not found; falling back to lidar "
+            f"model '{FALLBACK_LIDAR_MODEL}'"
+        )
+        return FALLBACK_LIDAR_MODEL
+
+    raw = config.get("sensor.lidar", "type", fallback="").strip()
+    model = raw.lower().replace("-", "").replace("_", "").replace(" ", "")
+    if model in LIVOX_MODELS:
+        return model
+
+    known = ", ".join(sorted(LIVOX_MODELS))
+    if not raw:
+        logger.warning(
+            f"No [sensor.lidar] type in '{config_path}'; falling back to "
+            f"'{FALLBACK_LIDAR_MODEL}'. Add it (one of: {known}) — a MID360s "
+            "left on the MID360 default publishes nothing and reports nothing."
+        )
+    else:
+        logger.warning(
+            f"Unknown [sensor.lidar] type '{raw}' in '{config_path}'; falling "
+            f"back to '{FALLBACK_LIDAR_MODEL}'. Expected one of: {known}."
+        )
+
+    return FALLBACK_LIDAR_MODEL
+
+
 def read_host_ip(params_path: str) -> str:
     """Read host_ip from the livox node's block in the params YAML.
 
@@ -184,33 +253,71 @@ def read_host_ip(params_path: str) -> str:
     return host_ip
 
 
-def write_livox_config(robot_id: str, lidar_ip: str, host_ip: str) -> str:
+def render_host_net_info(model: str, host_ip: str):
+    """Build the model's host_net_info block, mirroring its vendor config file.
+
+    The MID360 uses an object with one IP field per stream; the MID360s uses an
+    array of host entries keyed by a single host_ip. Both shapes are in fact
+    accepted for either model — the SDK's ParseLidarCfg branches on array vs
+    object, not on device type, and ParseHostNetInfo takes host_ip or
+    cmd_data_ip interchangeably — so this could collapse to one array-shaped
+    block. It deliberately does not: the MID360 object form is the one already
+    running on real hardware, and there is nothing to win by moving it onto a
+    parse path it has never been through.
+    """
+    # The host binds the lidar-side port + 1 for every stream, same convention
+    # as every vendor sample.
+    host_ports = {key: port + 1 for key, port in LIDAR_NET_PORTS.items()}
+
+    if model == "mid360s":
+        # Array of one. The newer schema allows several host entries per lidar
+        # (and an optional per-entry lidar_ip list); we only ever have the one
+        # Jetson, so a single element is the whole story. It also drops the
+        # per-stream IP fields for a single host_ip, which is what the SDK
+        # actually stores either way (see below).
+        return [{"host_ip": host_ip, **host_ports}]
+
+    return {
+        "cmd_data_ip": host_ip,
+        "cmd_data_port": host_ports["cmd_data_port"],
+        "push_msg_ip": host_ip,
+        "push_msg_port": host_ports["push_msg_port"],
+        "point_data_ip": host_ip,
+        "point_data_port": host_ports["point_data_port"],
+        "imu_data_ip": host_ip,
+        "imu_data_port": host_ports["imu_data_port"],
+        # Left empty only to mirror the vendor file byte for byte; it has no
+        # effect. The SDK's HostNetInfo holds a single host_ip, taken from
+        # cmd_data_ip when the per-stream form is used (ParseHostNetInfo), and
+        # the log socket is opened against that same host_ip regardless
+        # (device_manager.cpp). What actually keeps the SDK's debug log stream
+        # off is the absent top-level lidar_log_enable, which parse_cfg_file.cpp
+        # defaults to false — so these four per-stream IPs all have to agree,
+        # and there is no way to opt out of just the log one.
+        "log_data_ip": "",
+        "log_data_port": host_ports["log_data_port"],
+    }
+
+
+def write_livox_config(robot_id: str, model: str, lidar_ip: str, host_ip: str) -> str:
     """Render the livox user config JSON and return its path.
 
-    Only the two IPs vary; everything else mirrors the vendor MID360_config.json.
-    extrinsic_parameter stays all-zero on purpose — the mount extrinsic (the
-    0.25 rad tilt included) lives on the URDF's lidar_top_joint, which is what
-    syncai_lio_bridge looks up. Setting it here as well would apply the rotation
-    twice.
+    Only the two IPs and the model vary; everything else mirrors the vendor
+    MID360_config.json / MID360s_config.json. extrinsic_parameter stays all-zero
+    on purpose — the mount extrinsic (the 0.25 rad tilt included) lives on the
+    URDF's lidar_top_joint, which is what syncai_lio_bridge looks up. Setting it
+    here as well would apply the rotation twice.
+
+    lidar_net_info and lidar_configs are shared across models rather than
+    branched: the SDK's two port sets (kMid360* and kMid360s* in
+    comm/define.h) hold identical numbers, and params_check.cpp overwrites them
+    from device_type anyway, so a per-model copy would only be able to disagree.
     """
     config = {
         "lidar_summary_info": {"lidar_type": LIVOX_LIDAR_TYPE},
-        "MID360": {
+        LIVOX_MODELS[model]: {
             "lidar_net_info": dict(LIDAR_NET_PORTS),
-            "host_net_info": {
-                "cmd_data_ip": host_ip,
-                "cmd_data_port": LIDAR_NET_PORTS["cmd_data_port"] + 1,
-                "push_msg_ip": host_ip,
-                "push_msg_port": LIDAR_NET_PORTS["push_msg_port"] + 1,
-                "point_data_ip": host_ip,
-                "point_data_port": LIDAR_NET_PORTS["point_data_port"] + 1,
-                "imu_data_ip": host_ip,
-                "imu_data_port": LIDAR_NET_PORTS["imu_data_port"] + 1,
-                # Left empty like the vendor file: the SDK's own debug log
-                # stream is off unless an IP is given, and we do not want it.
-                "log_data_ip": "",
-                "log_data_port": LIDAR_NET_PORTS["log_data_port"] + 1,
-            },
+            "host_net_info": render_host_net_info(model, host_ip),
         },
         "lidar_configs": [
             {
@@ -233,15 +340,16 @@ def write_livox_config(robot_id: str, lidar_ip: str, host_ip: str) -> str:
     }
 
     # Per robot_id so two robots launched on one host (sim profile) cannot
-    # clobber each other's config.
+    # clobber each other's config, and per model so re-lidaring a robot does not
+    # leave a stale file whose name claims the other one.
     os.makedirs(LIVOX_CONFIG_DIR, exist_ok=True)
-    config_path = os.path.join(LIVOX_CONFIG_DIR, f"{robot_id}_MID360_config.json")
+    config_path = os.path.join(LIVOX_CONFIG_DIR, f"{robot_id}_{model}_config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
 
     logger.info(
-        f"Livox config for '{robot_id}': lidar {lidar_ip} -> host {host_ip} "
-        f"(rendered to {config_path})"
+        f"Livox config for '{robot_id}': {model} at {lidar_ip} -> host "
+        f"{host_ip} (rendered to {config_path})"
     )
     return config_path
 
@@ -289,13 +397,17 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
-    # Livox MID360 driver, brought over from
+    # Livox driver, brought over from
     # livox_ros_driver2/launch_ROS2/msg_MID360_launch.py. The user config JSON
-    # carries the network wiring the ROS params cannot express (lidar IP, host
-    # IP, UDP ports); it is rendered here from the two per-robot inputs instead
-    # of read out of the vendor share directory — see write_livox_config.
+    # carries everything the ROS params cannot express: the network wiring
+    # (lidar IP, host IP, UDP ports) and the lidar model. It is rendered here
+    # from the per-robot inputs instead of read out of the vendor share
+    # directory — see write_livox_config.
     livox_config_path = write_livox_config(
-        robot_id, read_lidar_ip(config_path), read_host_ip(params_path)
+        robot_id,
+        read_lidar_type(config_path),
+        read_lidar_ip(config_path),
+        read_host_ip(params_path),
     )
     livox_driver = Node(
         package="livox_ros_driver2",

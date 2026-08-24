@@ -129,7 +129,7 @@ export function PointCloudView({
   // (the objects themselves are fresh every render, so depending on those would
   // rebuild the callback on every telemetry frame).
   const { commitPose, clear: clearEstimate } = estimate;
-  const { commitGoal, sendGoal } = task;
+  const { sendGoal } = task;
 
   const armPick = React.useCallback(
     (mode: "goal" | "initial-pose") => {
@@ -154,11 +154,11 @@ export function PointCloudView({
   }, []);
 
   // Single-shot, like RViz's nav-goal / pose-estimate tools: one drag, one pose,
-  // then the mode disarms so a stray click on the map cannot restage it. That
-  // disarm carries more weight for an initial pose than it used to — that flow
-  // publishes on release now, so a second click would re-seed the localizer, not
-  // just move a marker — and it carries the same weight for a re-place, which
-  // writes the row on release.
+  // then the mode disarms so a stray click on the map cannot fire another. Every
+  // branch below commits on release — the estimate re-seeds the localizer, a
+  // re-place writes the row, a goal dispatches a MOVE task — so that disarm is
+  // the whole reason a second click is inert. It used to cost a moved marker at
+  // worst; on the goal branch it would cost a second robot movement.
   const commitPick = React.useCallback(
     (picked: PlanarPose) => {
       if (pick?.mode === "initial-pose") {
@@ -170,18 +170,22 @@ export function PointCloudView({
         // marker at its new pose in the same render that clears this.
         void moveVertex(target.id, picked).finally(() => setSavingVertex(null));
       } else {
-        commitGoal(picked);
+        // Dispatched, not staged: the arrow the operator just aimed is the
+        // confirmation, so there is no Send to press (see useGoalTask). The void
+        // is safe — sendGoal reports its own failure through the task state that
+        // GoalControl renders, which is also where the Retry for it lives.
+        void sendGoal(picked);
       }
       setPick(null);
     },
-    [pick, commitPose, commitGoal, moveVertex],
+    [pick, commitPose, sendGoal, moveVertex],
   );
 
-  // Confirmed in the dialog, so it goes straight out as a MOVE task — the
-  // question was already asked, and staging it again would leave the operator
-  // hunting for a Send button after they said yes. The dialog closes first: the
-  // task's own state is reported by GoalControl, which is where an error from
-  // this submit shows up too.
+  // Confirmed in the dialog, so it goes straight out as a MOVE task — the same
+  // door a finished drag goes through, since the dialog asked the question the
+  // drag answers by aiming. The dialog closes first: the task's own state is
+  // reported by GoalControl, which is where an error from this submit shows up
+  // too.
   const moveToVertex = React.useCallback(
     (vertex: MapVertex) => {
       setAskedVertex(null);
