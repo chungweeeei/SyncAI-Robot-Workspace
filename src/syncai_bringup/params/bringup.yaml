@@ -1,6 +1,11 @@
-# Parameters for the two nodes bringup.launch.py starts: robot_state_publisher
-# (G23 body TF tree) and the Livox driver (MID360 or MID360s — the fleet has
-# both, and none of the settings here differ by model).
+# Parameters for the nodes bringup.launch.py starts: robot_state_publisher
+# (G23 body TF tree), the Livox driver (MID360 or MID360s — the fleet has both,
+# and none of the settings here differ by model), and the VizionSDK camera.
+#
+# The camera block is the odd one out: its node only runs under
+# use_camera:=true, so unlike the other two these values sit unread on a normal
+# bringup. They are here rather than in a separate file so that the one params
+# path a session spec passes around still carries everything.
 #
 # The /**/ wildcard keys match the node names in any namespace, so the same file
 # works for any robot_id: the launch file reads robot_id from config/system.ini
@@ -64,3 +69,97 @@
     # Only read when data_src selects an .lvx replay, which we never do.
     lvx_file_path: "/home/livox/livox_test.lvx"
     cmdline_input_bd_code: "livox0000000001"
+
+# The TechNexion VCS-AR0234-C camera, driven by vizionsdk_ros2. Only started
+# when bringup.launch.py is given use_camera:=true — this block is inert
+# otherwise. Frame ids and device_index are computed in the launch file and
+# appended after this file, so they win; everything else is here.
+/**/vizionsdk_camera:
+  ros__parameters:
+    use_sim_time: false
+
+    # IMU is the reason to run this node at all today: it is the only way to get
+    # the AR0234 module's ISPU out over ROS. Images stay off because the RTSP /
+    # WebRTC path already owns /dev/video0 — flipping publish_image to true is
+    # what makes this node a *streaming* opener and takes the device away from
+    # scripts/publish_camera.sh. See the header of bringup.launch.py.
+    publish_imu: false
+    publish_image: true
+
+    imu_rate_hz: 100.0
+    imu_mode: "ispu"
+    publish_ispu_orientation: true
+
+    # NOT the vizionsdk_ros2 defaults, which are "mg" and "deg/s". sensor_msgs/
+    # Imu is defined in m/s^2 and rad/s, and nothing on the wire says otherwise
+    # — a consumer that trusted the message definition would be off by 9806.65
+    # on linear_acceleration and 57.3 on angular_velocity. The node converts, so
+    # this is free; see ParseAccelerationUnit / ParseGyroUnit in conversions.hpp
+    # for the accepted spellings.
+    acceleration_unit: "m/s^2"
+    gyro_unit: "rad/s"
+
+    # Only read when publish_image is true. MJPG rather than UYVY because the
+    # node publishes it straight to image_raw/compressed: UYVY would put
+    # 1280*720*2 bytes on the wire per frame and still need the separate
+    # yuv422_to_bgr_node to be viewable. 1280x720 at 60 matches the defaults in
+    # scripts/publish_camera.sh, and 60 is not a stylistic choice — this camera
+    # advertises only 60 and 120 fps at 720p, no 30 (v4l2-ctl --list-formats-ext).
+    # image_rate_hz 0.0 means "publish at the negotiated format's rate".
+    image_format: "MJPG"
+    image_width: 1280
+    image_height: 720
+    image_framerate: 60
+    image_rate_hz: 0.0
+    image_timeout_ms: 1000
+
+    # Fallbacks only. TF frame names are not namespaced by ROS, so the launch
+    # file overrides both with "<robot_id>/...". Nothing parents them yet —
+    # description/G23.urdf has no camera link, so they are roots in the global
+    # tree and no lookup to base_link will resolve.
+    imu_frame_id: camera_imu_link
+    image_frame_id: camera_optical_frame
+
+    publish_status: true
+    status_rate_hz: 1.0
+
+    # White balance. These are the only two of the node's 29 isp.* parameters
+    # pinned here; the rest keep the node's own -1 default, which means "leave
+    # the camera's current value alone" (ConfigureIspControls skips negatives).
+    #
+    # Pinning white balance is not cosmetic. These are UVC controls that live in
+    # the camera and persist across open/close for as long as it stays powered,
+    # so with no write here the node inherits whatever the last process left
+    # behind — and the camera has already been found parked at auto-WB-off with
+    # the temperature frozen, which tints everything and reads as "the camera is
+    # broken". scripts/publish_camera.sh sets the v4l2 equivalents for exactly
+    # this reason; this block is the ROS-side half of the same fix, aimed at the
+    # same physical control on the same camera.
+    #
+    # The values are VX_AWB_MODE_STATUS from the SDK's VxPublicTypes.hpp, which
+    # declares it with no explicit initialisers:
+    #   0 = MANUAL_TEMPERATURE_WB    1 = AUTO_WB
+    isp.whitebalance_mode: 1
+
+    # -1 (= leave alone) on purpose, and it has to stay that way while the mode
+    # above is AUTO_WB. Writing a temperature into a camera that is running auto
+    # white balance is a write the driver may reject, and a rejected ISP write
+    # at *construction* is fatal: ApplyIspControl's failure path is a
+    # std::runtime_error, not a warning, so it takes the node down. Ordering is
+    # not the problem — IspControlParameters() lists mode before temperature, so
+    # the gate is always applied first — the pairing simply has to be mode 0
+    # with a real temperature, or mode 1 with this left at -1.
+    #
+    # The legal range belongs to the camera and is only readable at runtime via
+    # VxGetISPImageProcessingRange, so it cannot be stated here with authority.
+    # For orientation, v4l2 reports the same control on this VCS-AR0234-C as
+    # min=2300 max=15000 step=1 default=5000.
+    isp.whitebalance_temperature: -1
+
+    # Nothing else is pinned, and adding one is a gamble on the node's life for
+    # the reason above: out of range at construction is a throw, and the range
+    # is only knowable at runtime. Probe live first, where a bad value costs
+    # nothing but a rejected parameter set —
+    #   ros2 param set /<robot_id>/vizionsdk_camera isp.<name> 999999
+    # answers "isp.<name> must be between <min> and <max>" — then pin what the
+    # camera confirmed.

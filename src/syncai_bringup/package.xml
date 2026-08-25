@@ -3,7 +3,7 @@
 <package format="3">
   <name>syncai_bringup</name>
   <version>0.0.0</version>
-  <description>Sensing and TF bringup for the SyncAI navigation stack: the G23 robot description plus the Livox MID360 driver</description>
+  <description>Sensing and TF bringup for the SyncAI navigation stack: the G23 robot description, the Livox MID360 driver, and the optional VizionSDK camera</description>
   <maintainer email="chungweeeei@gmail.com">ros</maintainer>
   <license>Apache-2.0</license>
 
@@ -25,6 +25,19 @@
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>livox_ros_driver2</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+
+  <!-- The VizionSDK camera node, started only under use_camera:=true. An
+       exec_depend and not a depend: nothing here compiles against it, the
+       launch file just names the executable. It stays listed even though the
+       node is off by default, because rosdep and the colcon build order are
+       what get vizionsdk_ros2 built before anything tries to launch it.
+
+       Note that rosdep cannot install what vizionsdk_ros2 itself needs. The
+       TechNexion VizionSDK it links against has no rosdep key and lives in no
+       distro repo — it is installed from a .deb in the Dockerfile, so a
+       workspace built outside that image fails at configure with
+       "No package 'vizionsdk' found". -->
+  <exec_depend>vizionsdk_ros2</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

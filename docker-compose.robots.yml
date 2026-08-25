@@ -33,35 +33,14 @@ x-robot-common: &robot-common
   build:
     context: .
     dockerfile: Dockerfile
-    # The Dockerfile is multi-stage; `dev` is the interactive development
-    # image (rviz2, colcon, byobu, ...). Production images are built from
-    # the nav-runtime / backend-runtime targets, see docker-compose.prod.yml.
     target: dev
-  image: syncai-robot
+  image: syncai-robot-base
   user: "${UID:-1000}:${GID:-1000}"
   security_opt:
     - apparmor=unconfined
   working_dir: /home/syncrobotic/robot_ws
   stdin_open: true
   tty: true
-  # sys_manager is the container's main process: it owns the byobu sessions the
-  # rest of the stack runs in (see NodeManager), so it has to be up before
-  # switch_mode can build one — and it must NOT live inside a session itself, or
-  # kill_session would take out its own pane. Everything else is still started
-  # by hand from `docker compose exec robot01 bash`.
-  #
-  # The sourcing is explicit rather than relying on the image's ~/.bashrc: that
-  # line only runs for *interactive* shells, and this is not one, so a bare
-  # `ros2 launch` would die on `ros2: command not found`. `bash -c` (not `-lc`)
-  # keeps that decision here instead of in the shell's startup files.
-  #
-  # install/setup.bash lives in the bind-mounted workspace, so it does not exist
-  # until the workspace has been built once — on a fresh clone the container
-  # exits immediately. Build first (`docker compose run --rm robot01 bash`, then
-  # colcon build), or read `docker compose logs robot01` for the failure.
-  #
-  # working_dir is already the workspace root, which the launch files depend on:
-  # they read the relative path config/system.ini.
   command:
     - bash
     - -c
@@ -144,10 +123,41 @@ services:
     devices:
       # The USB camera. Not covered by the nvidia runtime's devices.csv (that
       # lists Tegra hardware only), so it needs passing through explicitly.
-      - /dev/video0:/dev/video0
+      #
+      # The node is passed through under the SAME name it has on the host, and
+      # that is load-bearing rather than tidiness. VizionSDK discovers cameras by
+      # scanning /sys/class/video4linux and then opening the /dev/video<N> whose
+      # number matches the sysfs entry — and /sys in here is the *host's* sysfs,
+      # so it lists whatever the kernel actually enumerated. Remapping the node
+      # to a different name inside the container (the old `/dev/video0:/dev/
+      # video0`) therefore leaves VxDiscoverCameraDevices opening a node that
+      # does not exist and the camera node dies with "No Vizion camera found for
+      # device_index 0", with a perfectly good device node sitting next to it.
+      #
+      # The number is NOT stable: this Jetson carries two VCS-AR0234-C units
+      # (usb-3.1 and usb-3.4), each of which claims two video4linux nodes
+      # (index0 = capture, index1 = UVC metadata), and which minor a port gets
+      # depends on probe order. `ls -l /dev/v4l/by-path/` is what maps a physical
+      # port back to a node; the by-path name is the stable half. Hence the
+      # override rather than a hardcoded number — set CAMERA_DEV / CAMERA_META_DEV
+      # in .env when the numbering moves. Compose fails loudly at `up` if the
+      # node is absent, which is the right failure: a silent name mismatch is the
+      # bug this comment exists for.
+      #
+      # Only the usb-3.1 unit is passed through, so it is the SDK's index 0 and
+      # bringup.launch.py's camera_device_index default of 0 addresses it.
+      - ${CAMERA_DEV:-/dev/video1}:${CAMERA_DEV:-/dev/video1}
+      - ${CAMERA_META_DEV:-/dev/video4}:${CAMERA_META_DEV:-/dev/video4}
+    device_cgroup_rules:
+      # Passing a device pins its major:minor into the container's device cgroup.
+      # A camera that re-enumerates while the container is up (a USB reset is
+      # enough) comes back on a different minor, which the cgroup then denies
+      # even after the node is recreated. Allow the whole video4linux major so a
+      # replug only needs the node back, not a container recreate.
+      - "c 81:* rmw"
     group_add:
-      # /dev/video0 is root:video 0660 and the container user is uid 1000, so
-      # without the host's video group the device is present but unreadable.
+      # The video nodes are root:video 0660 and the container user is uid 1000,
+      # so without the host's video group the device is present but unreadable.
       # Overridable because the gid is per-host: `getent group video`.
       - "${VIDEO_GID:-44}"
     volumes:

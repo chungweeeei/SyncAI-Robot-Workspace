@@ -6,7 +6,7 @@ only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
-| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window) | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic) plus the Livox MID360 / MID360s driver |
+| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window) | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic), the Livox MID360 / MID360s driver, and — only under `use_camera:=true` — the VizionSDK camera |
 
 ```
 share/syncai_bringup/
@@ -160,8 +160,10 @@ them), and the bridge reconciles that branch onto the robot tree through
 | Argument | Default | Meaning |
 |---|---|---|
 | `system_config` | `config/system.ini` | INI providing `[system] robot_id` and `[sensor.lidar]` `ip` / `type` |
-| `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for both nodes |
+| `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for every node this file starts |
 | `urdf_file` | `G23.urdf` | File name under `description/` |
+| `use_camera` | `false` | Start the VizionSDK camera node — see below for why the default is `false` |
+| `camera_device_index` | `0` | VizionSDK camera index, from `ros2 run vizionsdk_ros2 list_devices` |
 
 To move the lidar, edit `lidar_top_joint` in the URDF. There used to be a
 `lidar_height` argument feeding a `static_transform_publisher` here; it was
@@ -171,8 +173,10 @@ also carry the 0.25 rad pitch that a height-only argument could not.
 ## Parameters
 
 `params/bringup.yaml` uses `/**/<node_name>:` wildcard keys, so the same file
-works at any namespace. It covers the two node names the launch file assigns:
-`robot_state_publisher` and `livox_lidar_publisher`.
+works at any namespace. It covers the three node names the launch file assigns:
+`robot_state_publisher`, `livox_lidar_publisher` and `vizionsdk_camera`. The
+camera block sits unread on a normal bringup, because its node only exists under
+`use_camera:=true`.
 
 Four values are **not** in the file, because they cannot be static. The launch
 file appends them after `params_file` in each `Node`'s parameter list, so they
@@ -184,6 +188,8 @@ take precedence:
 | `frame_prefix` | needs the resolved `robot_id` |
 | `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/laser` |
 | `user_config_path` | points at the livox JSON the launch file generates per `robot_id` and lidar model |
+| `imu_frame_id` / `image_frame_id` | camera frames, same reason as `frame_id` — they ship as `<robot_id>/camera_imu_link` and `<robot_id>/camera_optical_frame` |
+| `device_index` | comes from the `camera_device_index` argument, so a second camera does not need a params edit |
 
 One value in the file is **not** a driver parameter at all: `host_ip`. The livox
 node declares a fixed parameter set and never reads it (the override is simply
@@ -194,6 +200,87 @@ JSON. It lives here because that is where every other livox setting already is.
 the robot), per the workspace rule: a launch-level override placed after the
 params file would silently win over the YAML value. There is deliberately no
 `use_sim_time` launch argument for that reason.
+
+## The camera (`use_camera`)
+
+The robot carries a **TechNexion VCS-AR0234-C** — an onsemi AR0234 global-shutter
+module on USB, enumerating as a UVC device. `vizionsdk_ros2` drives it through
+TechNexion's closed-source VizionSDK, which has no rosdep key and is installed
+from a `.deb` in the `Dockerfile`; a workspace built outside that image fails at
+configure with `No package 'vizionsdk' found`.
+
+Started only under `use_camera:=true`, and the default is a regression guard, not
+timidity. `/dev/video0` admits exactly one *streaming* opener and
+`scripts/publish_camera.sh` already claims it — that is the RTSP feed into
+MediaMTX that the frontend's WebRTC view renders. Since `bringup.launch.py` is
+window 0 of both session specs, defaulting the camera on would pull that stream
+out from under every robot in the fleet, and it would fail the quiet way:
+gstreamer dies at `S_FMT` with `Device or resource busy`, long after the pane has
+scrolled past.
+
+`publish_image` is separately `false` in the params file. With images off the node
+is an IMU and ISP-control client rather than a capture client, which is the mode
+that has a chance of coexisting with the RTSP publisher — **verify that on the
+hardware before relying on it**, because whether merely opening the device
+disturbs the gstreamer pipeline has not been measured here.
+
+```bash
+ros2 launch syncai_bringup bringup.launch.py use_camera:=true
+ros2 topic hz /<robot_id>/imu/data
+ros2 topic echo /<robot_id>/camera/status --once
+```
+
+Two known rough edges, neither introduced by this launch file:
+
+- **No TF parent.** `description/G23.urdf` has no camera link, so both camera
+  frames are roots in the global tree and no lookup to `<robot_id>/base_link`
+  resolves. Fix it with a joint next to `lidar_top_joint`, the same way the lidar
+  mount extrinsic is carried — not with a `static_transform_publisher` here.
+- **`camera_info` mislabels its distortion model.** The wrapper emits
+  `plumb_bob` for anything that is not `VX_DIST_NONE`
+  (`conversions.hpp:341`) and carries only five radtan coefficients. If the
+  module turns out to have a wide/fisheye lens, that field is wrong and
+  rectification downstream will be too; judge the lens from `fx` and `D[0]`, not
+  from `distortion_model`.
+
+### ISP controls
+
+The node declares 29 `isp.*` parameters, all defaulting to `-1` — "leave the
+camera's current value alone". Only **white balance** is pinned in
+`params/bringup.yaml`:
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| `isp.whitebalance_mode` | `1` | `VX_AWB_MODE_STATUS`: `0` = `MANUAL_TEMPERATURE_WB`, `1` = `AUTO_WB` |
+| `isp.whitebalance_temperature` | `-1` | left alone — only set this with mode `0` |
+
+It is pinned because these are UVC controls stored *in the camera*: they persist
+across open/close for as long as it stays powered, so with no write here the node
+inherits whatever ran last. This camera has already been found parked at
+auto-WB-off with the temperature frozen, which tints everything and reads as a
+broken camera rather than a latched control. `scripts/publish_camera.sh` sets the
+v4l2 equivalents for the same reason — the two are the same physical control
+reached from two directions, so they can and will fight over it.
+
+**Do not pair mode `1` with a temperature.** Writing a temperature into a camera
+running auto white balance is a write the driver may reject, and a rejected ISP
+write at *construction* is fatal — `ApplyIspControl`'s failure path is a
+`std::runtime_error`, so it takes the node down rather than warning. Use mode `0`
+with a temperature, or mode `1` with `-1`.
+
+That hazard is why nothing else is pinned. The legal range for any `isp.*` key
+comes from `VxGetISPImageProcessingRange` at runtime, so it cannot be known from
+a params file. Probe live, where a bad value costs only a rejected parameter set:
+
+```bash
+# Answers "isp.<name> must be between <min> and <max>".
+ros2 param set /<robot_id>/vizionsdk_camera isp.<name> 999999
+ros2 param set /<robot_id>/vizionsdk_camera isp.whitebalance_mode 0
+```
+
+Then pin what the camera confirmed. Note the params file uses the flat
+`isp.whitebalance_mode:` key rather than a nested `isp:` mapping; both parse to
+the same parameter name, and the flat form keeps each key on one commented line.
 
 ## The URDF
 

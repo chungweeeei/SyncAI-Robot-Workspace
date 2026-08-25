@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
   // trusts only `localhost` by default and blocks other origins' dev/HMR
   // requests, which breaks the webpack-hmr WebSocket. Allow the container/LAN
   // origins we actually open the dashboard from.
-  allowedDevOrigins: ["10.8.140.101", "192.168.10.50", "192.168.8.144"],
+  allowedDevOrigins: [],
 };
 
 export default nextConfig;
