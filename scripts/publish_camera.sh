@@ -1,16 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# Publish /dev/video0 to the MediaMTX `camera` path over RTSP.
+# Publish the USB camera to the MediaMTX `camera` path over RTSP.
 #
 # Usage:
 #   bash scripts/publish_camera.sh
 #
-# Run it inside the robot container (the Jetson nv* plugins and /dev/video0 are
-# both available there):
+# Run it inside the robot container (the Jetson nv* plugins and the camera node
+# are both available there):
 #   docker exec -d robot01 bash /home/syncrobotic/robot_ws/scripts/publish_camera.sh
 #
 # Overridable with env vars:
-#   DEVICE=/dev/video0  WIDTH=1280  HEIGHT=720  FRAMERATE=60
+#   DEVICE=/dev/video1  WIDTH=1280  HEIGHT=720  FRAMERATE=60
 #   BITRATE=4000000     RTSP_URL=rtsp://127.0.0.1:8554/camera
 #   AUTO_EXPOSURE=0     EXPOSURE=330   (EXPOSURE only read when AUTO_EXPOSURE=1)
 #   AUTO_WB=1           WB_TEMP=5000   (WB_TEMP only read when AUTO_WB=0)
@@ -22,7 +22,7 @@
 # short IDR interval matters because every WHEP viewer joins mid-stream and
 # cannot decode until the next one arrives. See config/mediamtx.yml.
 #
-# NOTE: /dev/video0 is a V4L2 capture device, so exactly one process may hold
+# NOTE: the camera is a V4L2 capture device, so exactly one process may hold
 # it. A second instance dies with "Device or resource busy" at S_FMT — the
 # pre-flight check below turns that into a readable message.
 #
@@ -33,7 +33,12 @@
 # =============================================================================
 set -euo pipefail
 
-DEVICE="${DEVICE:-/dev/video0}"
+# Default matches CAMERA_DEV in docker-compose.robots.yml — the usb-3.1
+# VCS-AR0234-C. This is NOT /dev/video0: the Jetson enumerates two of these
+# cameras across four video4linux nodes and none of them is 0. `ls -l
+# /dev/v4l/by-path/` maps a physical USB port back to a node when the numbering
+# moves; override DEVICE (and CAMERA_DEV in compose) together when it does.
+DEVICE="${DEVICE:-/dev/video1}"
 WIDTH="${WIDTH:-1280}"
 HEIGHT="${HEIGHT:-720}"
 FRAMERATE="${FRAMERATE:-60}"

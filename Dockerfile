@@ -224,6 +224,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# VizionSDK: the closed-source TechNexion camera SDK that
+# src/third-party/vizionsdk-ros2 links against. It has no rosdep key and is in
+# no distro repo, so `rosdep install` does not cover it and the wrapper's
+# CMakeLists dies at configure time with `No package 'vizionsdk' found`.
+#
+# The .deb ships a CMake config package in /usr/lib/cmake/vizionsdk exporting
+# vizionsdk::VizionSDK, so the wrapper's first branch
+# (`find_package(vizionsdk CONFIG)`) resolves it and none of the
+# CMAKE_PREFIX_PATH / PKG_CONFIG_PATH / LD_LIBRARY_PATH exports its README
+# suggests are needed — those are for the custom-prefix (/opt) install.
+#
+# Installed with `apt-get install ./x.deb` rather than `dpkg -i` so the
+# Depends (libusb-1.0-0, libudev1, v4l-utils, gstreamer) resolve in the same
+# step; the release ships one .deb per arch and the filename is not derivable
+# from uname, hence the case on dpkg's arch, as in the ROS apt line in base.
+#
+# Two postinst side effects worth knowing about:
+#   - it writes /etc/udev/rules.d/88-cyusb.rules for Cypress FX3 USB cameras.
+#     Inert here (no udevd in the container) and unrelated to the CSI camera on
+#     /dev/video0, so it is left in place rather than fought.
+#   - it adds download.technexion.com as an apt source. That is deleted right
+#     after: every other third-party dep in this image is version-pinned, and a
+#     live vendor repo would make the nodesource `apt-get update` below fail
+#     whenever that host is unreachable.
+ARG VIZIONSDK_VERSION=26.8.1
+RUN case "$(dpkg --print-architecture)" in \
+        arm64) VIZIONSDK_DEB="vizionsdk-linuxarm64-${VIZIONSDK_VERSION}.deb" ;; \
+        amd64) VIZIONSDK_DEB="vizionsdk-linux64-${VIZIONSDK_VERSION}.deb" ;; \
+        *) echo "VizionSDK: no release for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o "/tmp/${VIZIONSDK_DEB}" \
+    "https://github.com/TechNexion-Vision/vizionsdk/releases/download/v${VIZIONSDK_VERSION}/${VIZIONSDK_DEB}" && \
+    apt-get update && apt-get install -y --no-install-recommends "/tmp/${VIZIONSDK_DEB}" && \
+    rm -f "/tmp/${VIZIONSDK_DEB}" /etc/apt/sources.list.d/vizionsdk.list && \
+    ldconfig && \
+    rm -rf /var/lib/apt/lists/*
+
 # Prebuilt Livox-SDK2 / GTSAM / Sophus from the cached builder stage.
 COPY --from=deps-builder /usr/local /usr/local
 RUN ldconfig
