@@ -153,8 +153,15 @@ RUN git clone --branch 1.22.10 --depth 1 https://github.com/strasdat/Sophus.git 
 FROM base AS dev
 
 # GUI, build toolchain, PCL/ROS build deps, and operator conveniences.
+#
+# ros-humble-compressed-image-transport is not optional for the camera: the
+# camera node publishes *only* sensor_msgs/CompressedImage on
+# `<robot_id>/image_raw/compressed`, and bare `image_transport` declares the
+# raw transport alone. Without this plugin rviz2's Image display has no way to
+# subscribe at all and simply stays blank -- no error, no warning.
 RUN apt-get update && apt-get install -y \
     ros-humble-rviz2 \
+    ros-humble-compressed-image-transport \
     ros-humble-pcl-conversions \
     ros-humble-pcl-ros \
     ros-humble-pointcloud-to-laserscan \
