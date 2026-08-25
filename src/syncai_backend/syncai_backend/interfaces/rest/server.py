@@ -22,6 +22,7 @@ from syncai_backend.interfaces.rest.routers.map import init_map_router
 from syncai_backend.interfaces.rest.routers.pointcloud import init_pointcloud_router
 from syncai_backend.interfaces.rest.routers.telemetry import init_telemetry_router
 from syncai_backend.interfaces.rest.routers.teleop import init_teleop_router
+from syncai_backend.interfaces.rest.routers.tts import init_tts_router
 
 from syncai_backend.repositories.robot.robot import RobotRepo
 from syncai_backend.repositories.map.map import MapRepo
@@ -33,6 +34,7 @@ from syncai_backend.repositories.task.task_template import TaskTemplateRepo
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
 from syncai_backend.gateways.map.map import MapGateway
+from syncai_backend.gateways.tts.tts import TtsGateway
 
 from syncai_backend.temporal.worker import TemporalWorkerHandle
 
@@ -77,6 +79,7 @@ def init_rest_server(
     telemetry_repo: TelemetryRepo,
     task_template_repo: TaskTemplateRepo,
     worker_handle: TemporalWorkerHandle,
+    tts_gw: TtsGateway,
 ) -> FastAPI:
 
     description = """
@@ -177,6 +180,9 @@ def init_rest_server(
     # control sends normalized velocity frames here. Takes robot_gw, not a
     # repo — it is a command surface, same as the robot router.
     app.include_router(init_teleop_router(logger=logger, robot_gw=robot_gw))
+    # Speech out. A gateway like robot/map, but its downstream is the kokoro
+    # inference session plus the speaker rather than a ROS service.
+    app.include_router(init_tts_router(logger=logger, tts_gw=tts_gw))
 
     return app
 
@@ -194,6 +200,7 @@ def start_rest_server(
     telemetry_repo: TelemetryRepo,
     task_template_repo: TaskTemplateRepo,
     worker_handle: TemporalWorkerHandle,
+    tts_gw: TtsGateway,
 ):
 
     app = init_rest_server(
@@ -209,6 +216,7 @@ def start_rest_server(
         telemetry_repo=telemetry_repo,
         task_template_repo=task_template_repo,
         worker_handle=worker_handle,
+        tts_gw=tts_gw,
     )
 
     def _run():

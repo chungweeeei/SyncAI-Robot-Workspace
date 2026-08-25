@@ -217,6 +217,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# aplay, for the TTS /speak route (syncai_backend's TtsGateway shells out to it
+# rather than pulling in a Python audio stack — sounddevice/simpleaudio would
+# each drag a PortAudio/ALSA -dev dependency in for what one binary does).
+# Playback additionally needs /dev/snd and the host audio group, which come
+# from docker-compose.robots.yml, not from this image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # VizionSDK: the closed-source TechNexion camera SDK that
 # src/third-party/vizionsdk-ros2 links against. It has no rosdep key and is in
 # no distro repo, so `rosdep install` does not cover it and the wrapper's
@@ -263,6 +272,14 @@ RUN ldconfig
 COPY src/syncai_backend/requirements.txt /tmp/syncai_backend_requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/syncai_backend_requirements.txt && \
     rm /tmp/syncai_backend_requirements.txt
+
+# kokoro-onnx (the TTS gateway's engine) goes in --no-deps, AFTER the
+# requirements install put its actual dependencies in place: its metadata pins
+# onnxruntime>=1.20.1 / numpy>=2, both of which requirements.txt deliberately
+# refuses (the long comment there has the why — ORT >= 1.19 heap-corrupts on
+# an Orin with offlined cores). A plain `pip3 install kokoro-onnx` here would
+# "fix" those pins for us and break the image.
+RUN pip3 install --no-cache-dir --no-deps kokoro-onnx
 
 # Node.js 22 for syncai_frontend (Next.js 16). `npm install` / `npm run dev`
 # run at runtime against the mounted workspace; only the node/npm runtime

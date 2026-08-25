@@ -35,6 +35,13 @@
     Web stack (FastAPI + uvicorn) is installed via pip / requirements.txt, not
     rosdep, because Ubuntu 22.04 (jammy) has no reliable apt/rosdep key for
     fastapi. See requirements.txt and the README for setup.
+
+    kokoro-onnx (the TTS gateway's engine) is in the same boat: pip-only, no
+    rosdep key — same precedent as fastmcp in syncai_ros_mcp. It also needs
+    model weights that are NOT pip-installed: ~/robot_ws/models/kokoro/
+    (gitignored; download URLs in gateways/tts/tts.py). The /speak route
+    additionally needs aplay (alsa-utils, Dockerfile dev stage) and /dev/snd
+    passed into the container (docker-compose.robots.yml).
   -->
 
   <test_depend>ament_copyright</test_depend>

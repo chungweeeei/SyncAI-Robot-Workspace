@@ -81,4 +81,11 @@ src/syncai-ros-mcp/
 # from a commit.
 /map/
 
+# TTS model weights (kokoro-onnx: kokoro-v1.0.onnx + voices-v1.0.bin, ~330 MB —
+# downloaded once from the kokoro-onnx GitHub releases, see
+# src/syncai_backend/gateways/tts/tts.py for the exact URLs). Anchored for the
+# same reason as /map/ above: a bare `models/` would swallow any future
+# src/**/models/ package directory.
+/models/
+
 record/

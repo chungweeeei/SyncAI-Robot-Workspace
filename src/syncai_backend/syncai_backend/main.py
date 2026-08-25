@@ -22,6 +22,7 @@ from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
 from syncai_backend.gateways.robot.robot import init_robot_gateway
 from syncai_backend.gateways.map.map import init_map_gateway
 from syncai_backend.gateways.workflow.workflow import init_workflow_gateway
+from syncai_backend.gateways.tts.tts import init_tts_gateway
 
 from syncai_backend.subscribers.robot_state_subscriber import (
     init_robot_state_subscriber,
@@ -91,6 +92,10 @@ class SyncAIBackend(Node):
         # holding a handle that can command the robot to move.
         map_gw = init_map_gateway(logger=logger, node=self)
         workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
+        # Speech out (kokoro-onnx -> the USB speaker). No node handle: nothing
+        # about it is ROS — it exists at this layer because the REST router
+        # needs a long-lived owner for the lazily-loaded inference session.
+        tts_gw = init_tts_gateway(logger=logger)
 
         # One /tf + /tf_static subscription for the whole process, shared by the
         # two subscribers that need transforms. Held on self because this is the
@@ -132,6 +137,7 @@ class SyncAIBackend(Node):
             telemetry_repo=telemetry_repo,
             task_template_repo=task_template_repo,
             worker_handle=worker_handle,
+            tts_gw=tts_gw,
         )
 
 

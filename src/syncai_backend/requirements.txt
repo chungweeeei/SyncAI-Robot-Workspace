@@ -13,5 +13,17 @@ sqlalchemy>=2.0  # ORM (declarative models) + engine for robot_db
 sqlalchemy-utils  # create_database / database_exists in database/postgres.py
 psycopg2-binary  # PostgreSQL driver used by SQLAlchemy engine
 numpy  # OccupancyGrid -> image array conversion
+# --- TTS (gateways/tts) -------------------------------------------------------
+# kokoro-onnx itself is NOT here: its metadata demands onnxruntime>=1.20.1 and
+# numpy>=2, and both are wrong for this machine — ORT >= 1.19's CPU-topology
+# probe corrupts the heap on the Orin whenever nvpmodel keeps cores offline
+# (MODE_30W offlines 8-11; 1.18.1 predates that code and works), and numpy 2
+# would be forced over the ROS ecosystem's 1.26. The API kokoro-onnx actually
+# calls is fine against both pins, so the Dockerfile installs it with
+# --no-deps and its real dependencies are spelled out here instead:
+onnxruntime==1.18.1  # kokoro-onnx runtime — PINNED, see above before bumping
+colorlog  # kokoro-onnx dep
+espeakng-loader  # kokoro-onnx dep (bundled espeak-ng for English G2P)
+phonemizer-fork  # kokoro-onnx dep
 opencv-python-headless  # encode map image to PNG (+ future overlay drawing)
 httpx  # test-only: required by fastapi.testclient.TestClient (see test/)
