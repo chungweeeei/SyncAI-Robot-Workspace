@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import threading
 import wave
@@ -19,12 +20,26 @@ class TtsGateway:
         self.model_path = os.path.expanduser("~/robot_ws/models/kokoro/kokoro-v1.0.onnx")
         self.voices_path = os.path.expanduser("~/robot_ws/models/kokoro/voices-v1.0.bin")
 
-        # ALSA name of the robot's speaker (the Jieli CD002 USB dongle), by
-        # CARD= name rather than card number: the number depends on USB probe
-        # order, the name comes from the device and survives a replug. plughw
-        # rather than hw so ALSA resamples kokoro's 24 kHz to whatever the
-        # dongle actually supports.
-        self.playback_device = "plughw:CARD=CD002AUDIO,DEV=0"
+        # Which ALSA device is the speaker is answered by udev, not here:
+        # syncai_sys_manager's 99-syncai-devices.rules keeps this symlink
+        # pointed at the speaker's pcm node (pcmC<card>D<dev>p), whatever card
+        # number the kernel handed it this boot. ALSA cannot open a /dev path
+        # directly, so _resolve_playback_device() turns the link target back
+        # into a "plughw:<card>,<dev>" name per utterance — per utterance
+        # rather than once here, because a replug mid-run moves the card
+        # number and the link, and a name resolved at construction would go
+        # stale. (The compose file bind-mounts /dev/syncai for exactly this.)
+        self.speaker_pcm_link = "/dev/syncai/speaker_pcm"
+
+        # Fallback for hosts without the udev rules (dev machines, a robot
+        # whose rules are not installed yet): the Jieli CD002 USB dongle by
+        # CARD= name rather than card number — the number depends on USB probe
+        # order, the name comes from the device descriptor and survives a
+        # replug. This is the pre-udev behavior, kept so TTS degrades to
+        # "works if the usual dongle is present" instead of failing. plughw
+        # rather than hw (in both paths) so ALSA resamples kokoro's 24 kHz to
+        # whatever the device actually supports.
+        self.fallback_playback_device = "plughw:CARD=CD002AUDIO,DEV=0"
 
         # Loaded on first use, not here: the .onnx is ~310 MB and construction
         # happens in SyncAIBackend.__init__, where three seconds of session
@@ -40,6 +55,24 @@ class TtsGateway:
         # parameter nor an env var, so if the weights are missing this line is
         # the only pointer to where we looked.
         self._logger.info("[TtsGateway] Using kokoro model", path=self.model_path)
+
+    # --- Playback device ----------------------------------------------------
+    def _resolve_playback_device(self) -> str:
+        """ALSA name of the speaker, via the udev symlink when it exists.
+
+        /dev/syncai/speaker_pcm -> ../snd/pcmC2D0p encodes the live card and
+        device number in its target's name; realpath follows it and the regex
+        lifts the numbers out. Any miss — link absent (rules not installed,
+        speaker unplugged) or a target that is not a pcm node — falls back to
+        the by-name device rather than raising: aplay itself is the error
+        reporter with an actionable message, a broken link should not change
+        that into a Python traceback.
+        """
+        target = os.path.realpath(self.speaker_pcm_link)
+        match = re.fullmatch(r"pcmC(\d+)D(\d+)p", os.path.basename(target))
+        if match is None:
+            return self.fallback_playback_device
+        return f"plughw:{match.group(1)},{match.group(2)}"
 
     # --- Engine ------------------------------------------------------------
     def _ensure_loaded(self) -> Tuple[bool, str]:
@@ -126,7 +159,7 @@ class TtsGateway:
             # per-file banner does not land in the backend pane's multilog on
             # every utterance.
             result = subprocess.run(
-                ["aplay", "-q", "-D", self.playback_device, "-"],
+                ["aplay", "-q", "-D", self._resolve_playback_device(), "-"],
                 input=wav_bytes,
                 capture_output=True,
                 timeout=duration + 10.0,

@@ -48,6 +48,11 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')),
+        # Host-side udev rules (cameras, speaker). Installed to the share dir
+        # for distribution only — udev runs on the host, so activating them is
+        # a manual copy to /etc/udev/rules.d (see the header of the file).
+        (os.path.join('share', package_name, 'udev'),
+            glob('udev/*.rules')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

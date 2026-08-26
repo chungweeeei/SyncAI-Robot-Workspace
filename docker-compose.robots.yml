@@ -121,33 +121,41 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
     devices:
-      # The USB camera. Not covered by the nvidia runtime's devices.csv (that
-      # lists Tegra hardware only), so it needs passing through explicitly.
+      # The USB cameras. Not covered by the nvidia runtime's devices.csv (that
+      # lists Tegra hardware only), so they need passing through explicitly.
       #
-      # The node is passed through under the SAME name it has on the host, and
-      # that is load-bearing rather than tidiness. VizionSDK discovers cameras by
-      # scanning /sys/class/video4linux and then opening the /dev/video<N> whose
-      # number matches the sysfs entry — and /sys in here is the *host's* sysfs,
-      # so it lists whatever the kernel actually enumerated. Remapping the node
-      # to a different name inside the container (the old `/dev/video0:/dev/
-      # video0`) therefore leaves VxDiscoverCameraDevices opening a node that
-      # does not exist and the camera node dies with "No Vizion camera found for
-      # device_index 0", with a perfectly good device node sitting next to it.
+      # The nodes are passed through under the SAME names they have on the
+      # host, and that is load-bearing rather than tidiness. VizionSDK
+      # discovers cameras by scanning /sys/class/video4linux and then opening
+      # the /dev/video<N> whose number matches the sysfs entry — and /sys in
+      # here is the *host's* sysfs, so it lists whatever the kernel actually
+      # enumerated. Remapping a node to a different name inside the container
+      # (the old `/dev/video0:/dev/video0` style) therefore leaves
+      # VxDiscoverCameraDevices opening a node that does not exist and the
+      # camera node dies with "No Vizion camera found for device_index 0",
+      # with a perfectly good device node sitting next to it.
       #
-      # The number is NOT stable: this Jetson carries two VCS-AR0234-C units
-      # (usb-3.1 and usb-3.4), each of which claims two video4linux nodes
+      # Individual numbers are NOT stable: this Jetson carries two
+      # VCS-AR0234-C units (usb-3.1 and usb-3.4), each claiming two nodes
       # (index0 = capture, index1 = UVC metadata), and which minor a port gets
-      # depends on probe order. `ls -l /dev/v4l/by-path/` is what maps a physical
-      # port back to a node; the by-path name is the stable half. Hence the
-      # override rather than a hardcoded number — set CAMERA_DEV / CAMERA_META_DEV
-      # in .env when the numbering moves. Compose fails loudly at `up` if the
-      # node is absent, which is the right failure: a silent name mismatch is the
-      # bug this comment exists for.
+      # depends on probe order. The SET {video0..video3} IS stable, though, so
+      # all four are passed and the old CAMERA_DEV/.env override that
+      # re-pointed the passthrough whenever the numbering moved is gone.
+      # "Which physical camera is which" is answered by the /dev/syncai/*
+      # udev symlinks (see volumes below), not by these entries. Compose still
+      # fails loudly at `up` if a node is absent — the right failure: a camera
+      # that fell off the bus should not come up looking healthy.
       #
-      # Only the usb-3.1 unit is passed through, so it is the SDK's index 0 and
-      # bringup.launch.py's camera_device_index default of 0 addresses it.
-      - ${CAMERA_DEV:-/dev/video0}:${CAMERA_DEV:-/dev/video0}
-      - ${CAMERA_META_DEV:-/dev/video3}:${CAMERA_META_DEV:-/dev/video3}
+      # With both units openable, the SDK's device_index 0 is the
+      # lowest-numbered capture node — the usb-3.1 unit under normal probe
+      # order (ports enumerate in order), which is what bringup.launch.py's
+      # camera_device_index default of 0 has always addressed. If a shuffled
+      # boot is ever observed, the fix is to select by /dev/syncai/camera0 in
+      # the camera node, not to remap names here (see above).
+      - /dev/video0
+      - /dev/video1
+      - /dev/video2
+      - /dev/video3
       # The whole ALSA device tree, for the TTS speaker (syncai_backend's
       # /api/v1/tts/speak plays through aplay). /dev/snd rather than a single
       # pcm node: the target is the USB "Jieli CD002-AUDIO" dongle, whose card
@@ -174,6 +182,17 @@ services:
       # Same again for the sound nodes (root:audio 0660): `getent group audio`.
       - "${AUDIO_GID:-29}"
     volumes:
+      # Stable device names from syncai_sys_manager's udev rules
+      # (udev/99-syncai-devices.rules, installed on the HOST — udev does not
+      # run in here): camera0/camera1 are the capture nodes keyed to USB ports
+      # 2-3.1 / 2-3.4, speaker/speaker_pcm the CD002-AUDIO dongle. Bind-mounted
+      # as a directory rather than passed as devices so udev re-creating a
+      # symlink on replug is visible in here without a container recreate, and
+      # the links resolve because the real /dev/video* and /dev/snd nodes
+      # above keep their host names. If the rules are not installed yet the
+      # mount just comes up empty (docker creates the host dir) — nothing
+      # depends on it at startup.
+      - /dev/syncai:/dev/syncai:ro
       # Size-capped tmpfs backing ROS_LOG_DIR (see x-ros-log-tmpfs).
       - *ros-log-tmpfs
       # Mount the colcon workspace (src/ lives here) into the container.

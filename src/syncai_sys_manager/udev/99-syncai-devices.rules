@@ -1,0 +1,42 @@
+# udev rules for the SyncAI robot's hot-pluggable peripherals.
+#
+# udev runs on the HOST, not in the robot container — install these there:
+#
+#   sudo cp src/syncai_sys_manager/udev/99-syncai-devices.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger
+#
+# The robot container gets the raw /dev/videoN nodes via docker-compose device
+# passthrough; the /dev/syncai/* symlinks created here live on the host and are
+# what the compose file (and any host-side tooling) should reference, so the
+# passthrough no longer depends on kernel enumeration order.
+
+# ── Cameras ──────────────────────────────────────────────────────────────────
+# Both cameras are the same model (TechNexion VCS-AR0234-C, 3407:57d1), so
+# vendor/product IDs cannot tell them apart. We key on the USB port path
+# instead of the device serial number: the port is fixed by the chassis
+# wiring, so a swapped or RMA'd camera keeps its name, whereas serial-based
+# rules would follow the individual unit around.
+#
+#   port 2-3.1 → camera0   (enumerates first; today's /dev/video0)
+#   port 2-3.4 → camera1   (today's /dev/video2)
+#
+# Each UVC camera exposes TWO video4linux nodes: index 0 is the actual video
+# capture node, index 1 is a UVC metadata node that produces no frames. That
+# is why /dev/video1 and /dev/video3 exist but are useless as cameras — the
+# ATTR{index}=="0" match below skips the metadata nodes so the symlinks can
+# never land on one.
+SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", KERNELS=="2-3.1", SYMLINK+="syncai/camera0"
+SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", KERNELS=="2-3.4", SYMLINK+="syncai/camera1"
+
+# ── Speaker ──────────────────────────────────────────────────────────────────
+# USB audio dongle (Jieli CD002-AUDIO, e2b8:0811). Its ALSA card number is
+# whatever enumerates after the Tegra HDA/APE cards (card 2 today) and is not
+# guaranteed stable, but the card *name* "CD002AUDIO" is derived from the USB
+# descriptor and is — so audio consumers (e.g. the backend TTS gateway) should
+# open it as ALSA device "hw:CARD=CD002AUDIO" / "plughw:CARD=CD002AUDIO"
+# rather than by number. The symlinks below exist for presence detection and
+# for recovering the current card number without parsing aplay output: the
+# link target's name embeds it (controlC<N> / pcmC<N>D0p).
+SUBSYSTEM=="sound", KERNEL=="controlC[0-9]*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="e2b8", ATTRS{idProduct}=="0811", SYMLINK+="syncai/speaker"
+SUBSYSTEM=="sound", KERNEL=="pcmC[0-9]*D0p", SUBSYSTEMS=="usb", ATTRS{idVendor}=="e2b8", ATTRS{idProduct}=="0811", SYMLINK+="syncai/speaker_pcm"
