@@ -1,17 +1,3 @@
-"""Text-to-speech via kokoro-onnx (Kokoro-82M).
-
-A gateway rather than a repository: it holds no state anyone else reads — it is
-an outbound surface, same category as the robot/map gateways, except the
-"downstream" is an inference session plus the speaker instead of a ROS service.
-
-The engine is kokoro-onnx, not the hexgrad PyTorch package, on purpose: the
-model is 82M parameters, well inside CPU-real-time on the Orin, and the ONNX
-route avoids dragging torch (and a Jetson-specific torch build) into the
-backend image for it. English voices only for now — kokoro's Mandarin needs
-misaki[zh] and the PyTorch pipeline, so a Chinese-capable engine is a separate
-decision, not a parameter on this one.
-"""
-
 import os
 import subprocess
 import threading
@@ -22,21 +8,17 @@ from typing import List, Optional, Tuple
 import numpy as np
 import structlog
 
-# Where the weights live. Two files, downloaded once (they are gitignored —
-# /models/ at the workspace root):
-#   https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx
-#   https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin
-# Hardcoded expanded-HOME path, the MapCatalogRepo.maps_dir precedent: logged at
-# construction, re-pointed by attribute assignment in tests rather than a
-# constructor argument that would exist only for them.
-_MODELS_DIR = os.path.expanduser("~/robot_ws/models/kokoro")
-
 
 class TtsGateway:
     def __init__(self, logger: structlog.stdlib.BoundLogger):
         self._logger = logger
-        self.model_path = os.path.join(_MODELS_DIR, "kokoro-v1.0.onnx")
-        self.voices_path = os.path.join(_MODELS_DIR, "voices-v1.0.bin")
+
+        # Where the weights live. Two files, downloaded once
+        #   https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx
+        #   https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin
+        self.model_path = os.path.expanduser("~/robot_ws/models/kokoro/kokoro-v1.0.onnx")
+        self.voices_path = os.path.expanduser("~/robot_ws/models/kokoro/voices-v1.0.bin")
+
         # ALSA name of the robot's speaker (the Jieli CD002 USB dongle), by
         # CARD= name rather than card number: the number depends on USB probe
         # order, the name comes from the device and survives a replug. plughw
@@ -60,7 +42,6 @@ class TtsGateway:
         self._logger.info("[TtsGateway] Using kokoro model", path=self.model_path)
 
     # --- Engine ------------------------------------------------------------
-
     def _ensure_loaded(self) -> Tuple[bool, str]:
         """Build the Kokoro session on first call. Caller must hold the lock."""
         if self._kokoro is not None:
@@ -75,30 +56,16 @@ class TtsGateway:
                 )
 
         try:
-            # Imported here, not at module top: kokoro-onnx is a pip-only dep
-            # (see package.xml), and a backend booted before `pip install`
-            # should come up with TTS degraded, not die on import at wiring
-            # time in main.py.
             import onnxruntime as ort
             from kokoro_onnx import Kokoro
 
-            # Our own session via from_session(), not Kokoro(model, voices),
-            # because the thread count must be explicit. The default threadpool
-            # derives per-thread affinities from the sysfs CPU topology, which
-            # on this Orin includes the four cores nvpmodel MODE_30W keeps
-            # offline — every session then logs a pthread_setaffinity_np
-            # failure per thread (and onnxruntime >= 1.19 corrupts the heap
-            # outright probing that topology, which is why requirements.txt
-            # pins 1.18.1). Four threads measured *faster* than eight for a
-            # 4.5 s utterance (4.4 s vs 5.1 s — the extra threads contend),
-            # and it leaves the other online cores to the nav stack.
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 4
             session = ort.InferenceSession(
                 self.model_path, opts, providers=["CPUExecutionProvider"]
             )
             self._kokoro = Kokoro.from_session(session, self.voices_path)
-        except Exception as e:  # noqa: B902 — onnxruntime raises its own zoo
+        except Exception as e:
             return False, f"failed to load kokoro model: {e}"
 
         self._logger.info("[TtsGateway] Kokoro model loaded")
@@ -135,9 +102,6 @@ class TtsGateway:
             except Exception as e:
                 return False, f"synthesis failed: {e}", b""
 
-        # float32 [-1, 1] -> int16 via stdlib wave: soundfile would work too,
-        # but it drags libsndfile into the image for a header we can write in
-        # six lines.
         pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
         buffer = BytesIO()
         with wave.open(buffer, "wb") as wav:
@@ -150,14 +114,8 @@ class TtsGateway:
     def speak(
         self, text: str, voice: str = "af_heart", speed: float = 1.0
     ) -> Tuple[bool, str, Optional[float]]:
-        """Synthesize and play on the robot's speaker.
 
-        Returns (success, message, duration_seconds). Playback needs alsa-utils
-        in the image and /dev/snd + the host audio gid on the container (see
-        docker-compose.robots.yml) — without them synthesis still works and the
-        aplay error lands in `message`.
-        """
-        success, message, wav_bytes = self.synthesize(text, voice=voice, speed=speed)
+        success, message, wav_bytes = self.synthesize(text=text, voice=voice, speed=speed)
         if not success:
             return False, message, None
 

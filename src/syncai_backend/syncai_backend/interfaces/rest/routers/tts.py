@@ -18,9 +18,7 @@ class SynthesizeRequest(BaseModel):
         "af_heart",
         description="Kokoro voice id; the list is at GET /api/v1/tts/voices.",
     )
-    speed: float = Field(
-        1.0, ge=0.5, le=2.0, description="Playback rate multiplier (0.5–2.0)."
-    )
+    speed: float = Field(1.0, ge=0.5, le=2.0, description="Playback rate multiplier (0.5–2.0).")
 
 
 class SpeakResponse(BaseModel):
@@ -32,9 +30,7 @@ class ListVoicesResponse(BaseModel):
     voices: List[str] = Field(..., description="The voice ids the loaded model carries.")
 
 
-def init_tts_router(
-    logger: structlog.stdlib.BoundLogger, tts_gw: TtsGateway
-) -> APIRouter:
+def init_tts_router(logger: structlog.stdlib.BoundLogger, tts_gw: TtsGateway) -> APIRouter:
     tts_router = APIRouter(prefix="", tags=["TTS"])
 
     # Plain (non-async) handlers: synthesis is CPU-bound for up to a few
