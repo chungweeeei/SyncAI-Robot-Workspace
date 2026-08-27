@@ -167,7 +167,6 @@ RUN apt-get update && apt-get install -y \
     ros-humble-pointcloud-to-laserscan \
     ros-humble-teleop-twist-keyboard \
     python3-opencv \
-    python3-scipy \
     python3-colcon-common-extensions \
     python3-rosdep \
     python3-dotenv \

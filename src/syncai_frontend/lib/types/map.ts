@@ -7,9 +7,10 @@
 // `thumbnail` arrives as a path and is made absolute against the backend's host.
 //
 // One map is one directory under the workspace's `map/`, as produced by the
-// FAST-LIO2 PGO save (`map.pcd` + `poses.txt` + `patches/`) and then, separately,
-// by tools/pcd_to_gridmap.py (`gridmap.pgm` + `gridmap.yaml`). Those are two
-// steps a human runs at two different times, which is why `grid` is nullable.
+// FAST-LIO2 PGO save (`map.pcd` + `poses.txt` + `patches/`) and then by the
+// backend's pcd → gridmap conversion (`gridmap.pgm` + `gridmap.yaml`), which
+// runs in the background after the save. The conversion can lag or fail — the
+// window where only the pcd exists is why `grid` is nullable.
 
 import type { MapMetadata } from "@/lib/types/robot";
 

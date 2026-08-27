@@ -13,6 +13,16 @@ sqlalchemy>=2.0  # ORM (declarative models) + engine for robot_db
 sqlalchemy-utils  # create_database / database_exists in database/postgres.py
 psycopg2-binary  # PostgreSQL driver used by SQLAlchemy engine
 numpy  # OccupancyGrid -> image array conversion
+# scipy: helpers/pcd_to_gridmap.py morphology passes (ndimage) — imported at
+# startup via the map router. Range-pinned, and the ceiling is about numpy, not
+# scipy: newer scipy raises its numpy floor, and on a fresh image pip would
+# "helpfully" upgrade numpy past what the ROS ecosystem tolerates (same class
+# of problem as the kokoro-onnx pins below). 1.8–1.10 all accept numpy
+# 1.19–1.26, i.e. whatever the container already has stays. The conversion was
+# verified bit-identical to the retired tools/pcd_to_gridmap.py on 1.8.0 (the
+# apt python3-scipy this line replaced); ndimage's API is stable across the
+# range.
+scipy>=1.8,<1.11
 # --- TTS (gateways/tts) -------------------------------------------------------
 # kokoro-onnx itself is NOT here: its metadata demands onnxruntime>=1.20.1 and
 # numpy>=2, and both are wrong for this machine — ORT >= 1.19's CPU-topology

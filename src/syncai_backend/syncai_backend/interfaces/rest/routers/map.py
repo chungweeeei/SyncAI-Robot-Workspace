@@ -1,8 +1,6 @@
 import hashlib
 import os
 import struct
-import subprocess
-import sys
 import threading
 import uuid
 from enum import Enum
@@ -16,6 +14,7 @@ from pydantic import BaseModel, Field
 from syncai_backend.exceptions import BadRequestError, NotFoundError, UpstreamError
 from syncai_backend.database.models import MapPoint
 from syncai_backend.gateways.map.map import MapGateway
+from syncai_backend.helpers.pcd_to_gridmap import convert_pcd_to_gridmap
 from syncai_backend.helpers.pgm import render_png, render_thumbnail
 from syncai_backend.helpers.pointcloud import (
     cap_points,
@@ -34,43 +33,32 @@ from syncai_backend.repositories.map.map import MapRepo
 MAP_CLOUD_VOXEL_SIZE = 0.3
 MAP_CLOUD_MAX_POINTS = 300000
 
-# The pcd -> gridmap conversion tool, and the recipe POST /api/v1/maps runs it
-# with after a save. ~/robot_ws rather than a cwd-relative path, matching
-# MapCatalogRepo.maps_dir — the byobu panes do start in the workspace root, but
-# the maps root is already pinned this way and the two must agree.
+# The recipe POST /api/v1/maps converts with after a save, fed to
+# helpers.pcd_to_gridmap.convert_pcd_to_gridmap (which replaced shelling out
+# to the since-retired tools/pcd_to_gridmap.py CLI).
 #
-# The flags are the tool docstring's dp1f recipe verbatim, z-bands included.
-# The z-bands are honest defaults, not universals: LIO's z=0 is the lidar
-# mount height at the mapping start pose, so they hold for this robot standing
-# on flat ground, and a site where they don't gets its map re-converted by
-# hand with --stats to pick bands (the conversion is re-runnable; gridmap_raw
-# is not created until the first edit). --free-mode floor and --min-points 2
-# specifically are the two choices the docstring says to keep.
-PCD_TO_GRIDMAP = os.path.expanduser("~/robot_ws/tools/pcd_to_gridmap.py")
-GRIDMAP_RECIPE = [
-    "--zmin",
-    "-0.3",
-    "--zmax",
-    "1.5",
-    "--free-mode",
-    "floor",
-    "--floor-zmin",
-    "-0.95",
-    "--floor-zmax",
-    "-0.25",
-    "--min-points",
-    "2",
-    "--obstacle-close",
-    "2",
-    "--free-close",
-    "5",
-    "--despeckle",
-    "--min-obstacle-size",
-    "12",
-    "--fill-holes",
-    "--max-hole-size",
-    "20000",
-]
+# The values are the dp1f recipe verbatim, z-bands included. The z-bands are
+# honest defaults, not universals: LIO's z=0 is the lidar mount height at the
+# mapping start pose, so they hold for this robot standing on flat ground, and
+# a site where they don't gets its map re-converted by hand — call the helper
+# from a python shell with bands read off the z histogram (the retired CLI's
+# --stats printed it; git history has the CLI). The conversion is re-runnable;
+# gridmap_raw is not created until the first edit. free_mode="floor" and
+# min_points=2 specifically are the two choices worth keeping: "any" marks
+# outdoor ground/roof returns beyond the walls as free on an open site, and
+# min_points=1 doubles the occupied cells with noise instead of wall.
+GRIDMAP_RECIPE = dict(
+    zmin=-0.3,
+    zmax=1.5,
+    free_mode="floor",
+    floor_zmin=-0.95,
+    floor_zmax=-0.25,
+    min_points=2,
+    obstacle_close=2,
+    free_close=5,
+    despeckle_min_size=12,
+    fill_holes_max_size=20000,
+)
 
 
 # --- Schemas ----------------------------------------------------------------
@@ -173,7 +161,7 @@ class MapSummaryResponse(BaseModel):
         None,
         description=(
             "Gridmap geometry, or null when the map has been saved from LIO but "
-            "not yet converted by tools/pcd_to_gridmap.py."
+            "not yet converted to a 2D gridmap."
         ),
     )
     thumbnail: Optional[str] = Field(
@@ -210,8 +198,9 @@ class CreateMapResponse(BaseModel):
         description=(
             "Whether the pcd -> gridmap conversion was started in the "
             "background. Until it finishes (or if it fails, or if false), the "
-            "map lists with grid: null — run tools/pcd_to_gridmap.py by hand "
-            "in that case."
+            "map lists with grid: null — run "
+            "syncai_backend.helpers.pcd_to_gridmap.convert_pcd_to_gridmap "
+            "over its map.pcd by hand in that case."
         ),
     )
     message: str = Field(..., description="What happened, for the operator to read.")
@@ -313,63 +302,33 @@ def _not_modified(request: Request, tag: str) -> bool:
 def _start_grid_conversion(
     logger: structlog.stdlib.BoundLogger, name: str, directory: str
 ) -> bool:
-    """Run pcd_to_gridmap over a just-saved map in a daemon thread.
+    """Kick off the pcd -> gridmap conversion in the background; report whether.
 
-    In the background because the conversion is minutes on a large site
-    (dp1f is 1.3 M points over 80 x 77 m) and, unlike the save itself, nothing
-    downstream is waiting on it: the map is already durable as map.pcd, and
-    ``list_maps`` was built to represent the not-yet-converted state
-    (``grid: null``). Holding the POST open for it would pin a worker thread
-    and invite the client to time out on a request that already succeeded.
-
-    The return value is a STARTED flag, not an outcome — the outcome lands in
-    the log only, and the operator-visible signal is the map's card growing a
-    thumbnail (the maps list re-fetch picks up gridmap.yaml appearing). A
-    failed conversion leaves grid: null, exactly the state a by-hand
-    ``tools/pcd_to_gridmap.py`` run fixes.
-
-    False when the tool or the pcd is missing — the latter guards a stub
-    gateway in tests and a save_maps that lied, the former a deployment where
-    tools/ was not shipped. Both are a log line plus ``grid_pending: false``,
-    never a failure of the POST: the save succeeded.
+    A daemon thread rather than the handler's own thread because the conversion
+    takes tens of seconds on a large site and POST /api/v1/maps must answer as
+    soon as the pcd is on disk. In-process (not a subprocess) since the pipeline
+    moved into helpers.pcd_to_gridmap: the heavy passes are numpy/scipy, which
+    release the GIL, so the FastAPI threadpool keeps serving while it runs. The
+    old 600 s subprocess timeout went with it — the helper bounds the grid size
+    itself, so the pipeline cannot run away.
     """
     pcd_path = os.path.join(directory, "map.pcd")
-    if not os.path.isfile(PCD_TO_GRIDMAP) or not os.path.isfile(pcd_path):
-        logger.warning(
-            "Skipping gridmap conversion",
-            map=name,
-            tool_present=os.path.isfile(PCD_TO_GRIDMAP),
-            pcd_present=os.path.isfile(pcd_path),
-        )
+    if not os.path.isfile(pcd_path):
+        logger.warning("Skipping gridmap conversion: no map.pcd", map=name)
         return False
-
-    # sys.executable rather than "python3": the tool needs numpy/cv2 from the
-    # same environment this process already imports them from.
-    command = [
-        sys.executable,
-        PCD_TO_GRIDMAP,
-        pcd_path,
-        "-o",
-        os.path.join(directory, "gridmap"),
-        *GRIDMAP_RECIPE,
-    ]
 
     def _run() -> None:
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=600.0)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            logger.error("Gridmap conversion did not run", map=name, error=str(exc))
-            return
-
-        if completed.returncode != 0:
-            logger.error(
-                "Gridmap conversion failed",
-                map=name,
-                returncode=completed.returncode,
-                # The tail is where argparse/numpy put the reason; the head of
-                # a long traceback is noise here.
-                stderr=completed.stderr[-2000:],
+            convert_pcd_to_gridmap(
+                logger.bind(map=name),
+                pcd_path,
+                os.path.join(directory, "gridmap"),
+                **GRIDMAP_RECIPE,
             )
+        # ValueError is the helper's own diagnosis (bad bands, oversized
+        # grid); OSError is the pcd or the map directory going away under it.
+        except (ValueError, OSError) as exc:
+            logger.error("Gridmap conversion failed", map=name, error=str(exc))
             return
 
         logger.info("Gridmap conversion finished", map=name)
@@ -452,7 +411,10 @@ def init_map_router(
                 + (
                     " Converting to a 2D gridmap in the background."
                     if grid_pending
-                    else " Convert it with tools/pcd_to_gridmap.py to get a 2D gridmap."
+                    else (
+                        " Convert its map.pcd with "
+                        "syncai_backend.helpers.pcd_to_gridmap to get a 2D gridmap."
+                    )
                 )
             ),
         )
@@ -538,7 +500,8 @@ def init_map_router(
         path = map_catalog_repo.gridmap_path(name)
         if path is None:
             raise NotFoundError(
-                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py over its map.pcd first."
+                f"Map '{name}' has no gridmap. Convert its map.pcd "
+                "(syncai_backend.helpers.pcd_to_gridmap) first."
             )
         try:
             with open(path, "rb") as handle:
@@ -646,7 +609,8 @@ def init_map_router(
         # saving, which matters because map_server re-reads both a few lines down.
         if stored.grid is None:
             raise NotFoundError(
-                f"Map '{name}' has no gridmap. Run tools/pcd_to_gridmap.py over its map.pcd first."
+                f"Map '{name}' has no gridmap. Convert its map.pcd "
+                "(syncai_backend.helpers.pcd_to_gridmap) first."
             )
 
         expected = stored.grid.width * stored.grid.height

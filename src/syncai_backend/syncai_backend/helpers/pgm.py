@@ -18,10 +18,11 @@ Two readers live here on purpose:
   ``helpers/occupancy_grid.py``. Reimplementing a decoder to save one import
   would be worse code for no gain.
 
-The sibling ``gridmap_preview.png`` that ``tools/pcd_to_gridmap.py --preview``
-writes is deliberately ignored: it only exists when somebody remembered the flag
-(one of the maps on the robot has none), and it is full resolution, so it is
-neither reliable nor small.
+The sibling ``gridmap_preview.png`` that the retired ``tools/pcd_to_gridmap.py
+--preview`` used to write is deliberately ignored: it only exists when somebody
+remembered the flag (one of the maps on the robot has none), it is full
+resolution, and nothing produces it any more — ``helpers/pcd_to_gridmap.py``
+did not port the flag. So it is neither reliable nor small.
 """
 
 import os
@@ -127,10 +128,10 @@ def read_pgm_size(path: str) -> Tuple[int, int]:
 def write_pgm(path: str, width: int, height: int, body: bytes) -> bytes:
     r"""Replace ``path`` with a binary PGM of ``body``, atomically.
 
-    The header is byte-identical to what ``tools/pcd_to_gridmap.py`` emits —
-    ``P5\n{w} {h}\n255\n``, no comment line — so an edited map is
-    indistinguishable from a converted one and ``read_pgm_size`` agrees about
-    where the body starts.
+    The header is ``P5\n{w} {h}\n255\n``, no comment line — and since
+    ``helpers/pcd_to_gridmap.py`` writes its output through this same function,
+    an edited map is indistinguishable from a converted one and
+    ``read_pgm_size`` agrees about where the body starts.
 
     **Atomic because three readers can arrive mid-write, and all three are
     live in this stack:**

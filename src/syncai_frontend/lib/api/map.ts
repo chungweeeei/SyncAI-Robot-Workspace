@@ -61,8 +61,8 @@ function toSummary(wire: WireSummary): MapSummary {
  * Fetch, or throw with the backend's own message.
  *
  * The domain-exception handlers return `{detail}`, and those strings are written
- * to be read by an operator ("Map 'x' has no gridmap. Run tools/pcd_to_gridmap.py
- * over its map.pcd first."). The hooks render `error.message` verbatim, so
+ * to be read by an operator ("Map 'x' has no gridmap. Convert its map.pcd
+ * (syncai_backend.helpers.pcd_to_gridmap) first."). The hooks render `error.message` verbatim, so
  * unwrapping `detail` here is what puts the actionable half on screen instead of
  * a status code.
  */
@@ -154,7 +154,7 @@ export async function fetchMapGrid(
   );
   if (!summary.grid) {
     throw new Error(
-      `"${name}" has no gridmap. Run tools/pcd_to_gridmap.py over its map.pcd first.`,
+      `"${name}" has no gridmap. Convert its map.pcd (syncai_backend.helpers.pcd_to_gridmap) first.`,
     );
   }
 

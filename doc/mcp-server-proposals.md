@@ -181,7 +181,7 @@ activity、看 retry 次數、對照 `StepType`(`MOVE` / `ARTIFACT` / `STANDUP` 
 
 ### 提案 6:地圖生產線 MCP
 
-`pgo/save_maps` → `map.pcd` + `patches/` + `poses.txt` → `tools/pcd_to_gridmap.py` →
+`pgo/save_maps` → `map.pcd` + `patches/` + `poses.txt` → `syncai_backend/helpers/pcd_to_gridmap.py` →
 `gridmap.pgm` / `.yaml` → vertex(`VertexType` GENERAL / ARTIFACT / CHARGER / HOME /
 WAITING)。這條線目前一半在 CLI、一半在前端 map editor,而**最後一步是離線的、事後手動
 跑的**——所以一個地圖目錄會有一段時間只有 pcd 沒有 gridmap。

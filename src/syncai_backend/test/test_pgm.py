@@ -92,7 +92,7 @@ def test_write_round_trips_through_read_pgm_size(tmp_path):
 
 
 def test_write_emits_the_canonical_header(tmp_path):
-    """Byte-identical to tools/pcd_to_gridmap.py, comment line included: none."""
+    """The canonical header helpers/pcd_to_gridmap.py emits, comment line included: none."""
     path = tmp_path / "gridmap.pgm"
 
     write_pgm(str(path), 7, 3, b"\xfe" * 21)

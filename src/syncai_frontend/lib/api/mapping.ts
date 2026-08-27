@@ -49,7 +49,8 @@ export interface SaveMapResult {
   /**
    * Whether the pcd → gridmap conversion was started in the background. The
    * map lists with `grid: null` until it finishes; if it never does (or this
-   * is false), the conversion is a by-hand tools/pcd_to_gridmap.py run.
+   * is false), the conversion is a by-hand run of the backend's
+   * `syncai_backend.helpers.pcd_to_gridmap` on the robot.
    */
   grid_pending: boolean;
   /** Operator-facing sentence; render it verbatim. */

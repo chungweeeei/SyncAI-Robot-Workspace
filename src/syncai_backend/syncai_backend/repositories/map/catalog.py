@@ -194,7 +194,7 @@ class MapCatalogRepo:
         values already in range for the existing ones. Rewriting it would be all
         downside: ``yaml.safe_dump`` reformats, losing the ``image: gridmap.pgm``
         spelling and the inline ``origin: [x, y, 0.0]`` that
-        ``tools/pcd_to_gridmap.py`` writes, and ``image:`` *must* stay relative
+        ``helpers/pcd_to_gridmap.py`` writes, and ``image:`` *must* stay relative
         because map_server resolves it against the yaml's own directory. A torn
         yaml is also the one failure the .pgm's atomic write cannot rescue — the
         map stops loading entirely.

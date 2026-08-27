@@ -18,9 +18,6 @@ from typing import Optional
 from rclpy.node import Node
 from rclpy.client import Client
 from nav2_msgs.srv import LoadMap
-
-# FASTLIO2_ROS2's interface package — `interface` really is its name. Declared
-# in package.xml so colcon orders the build; there is no pip/rosdep fallback.
 from interface.srv import SaveMaps
 
 
@@ -62,9 +59,7 @@ def _wait_for_future(future, timeout: Optional[float] = None) -> bool:
 
 class MapGateway:
     def __init__(self, logger: structlog.stdlib.BoundLogger, node: Node):
-
         self._logger = logger
-
         self._node = node
 
         self._service_clients: dict[str, Client] = {}
@@ -72,21 +67,11 @@ class MapGateway:
 
     def register_service_clients(self):
 
-        # Relative name, so it resolves under this node's robot_id namespace to
-        # /<robot_id>/map_server/load_map. The extra `map_server/` segment is the
-        # node name: syncai_map_server prefixes its services with get_name(),
-        # unlike the flat `scan_wifi` / `set_motion_key` names elsewhere.
-        #
-        # This reaches the main instance only. `filter_mask_server` is a second
-        # map_server serving its own load_map for the keepout mask; reloading
-        # that is a different feature, not something to generalise this into.
         load_map_client = self._node.create_client(
             srv_type=LoadMap,
             srv_name="map_server/load_map",
         )
-
-        # Relative name again, with the pgo node's own prefix:
-        # /<robot_id>/pgo/save_maps. Served only while a mapping session is up.
+ㄋ
         save_maps_client = self._node.create_client(
             srv_type=SaveMaps,
             srv_name="pgo/save_maps",
@@ -118,14 +103,6 @@ class MapGateway:
         if not load_map_client.wait_for_service(timeout_sec=5.0):
             return False, "load_map service is not available."
 
-        # map_io.cpp's loadMapYaml expands `~/` only to open the yaml, then
-        # resolves the yaml's relative `image:` key against dirname() of the
-        # string it was handed *unexpanded*. So `~/robot_ws/.../gridmap.yaml`
-        # parses fine and then hands GraphicsMagick a literal `~/...` path,
-        # failing as RESULT_INVALID_MAP_DATA -- which reads like a corrupt image
-        # rather than a path bug. MapCatalogRepo already returns expanded
-        # absolute paths; this is belt-and-braces for a future caller that reads
-        # the INI's `[map] map` instead, because that value is relative.
         map_url = os.path.abspath(os.path.expanduser(yaml_path))
 
         self._logger.info("[MapGateway] Reloading map", map_url=map_url)
@@ -148,47 +125,20 @@ class MapGateway:
         return True, ""
 
     def save_map(self, directory: str) -> tuple[bool, str]:
-        """Ask pgo to serialise its accumulated keyframes into ``directory``.
 
-        The directory must already exist: ``saveMapsCB`` answers
-        ``"<path> IS NOT EXISTS!"`` otherwise — it only ever creates the
-        ``patches/`` subdirectory itself. The caller (MapCatalogRepo's
-        ``create_map_dir``) owns making it, so this method never touches the
-        filesystem beyond the abspath below.
-
-        ``save_patches=True`` always: ``patches/`` + ``poses.txt`` are what a
-        later HBA refinement or ``RefineMap`` needs, they cost disk only, and
-        every existing map directory on this robot carries them.
-
-        A failure here is *usually* "wrong mode": pgo only runs in the mapping
-        session, so in AUTO the wait_for_service below is what fails. The other
-        common answer is ``"NO POSES!"`` — a mapping run that has not moved far
-        enough to bank a single keyframe (10 deg / 0.5 m thresholds).
-        """
         save_maps_client = self._service_clients.get("save_maps")
         if not save_maps_client.wait_for_service(timeout_sec=5.0):
             return False, (
-                "save_maps service is not available — pgo only runs in "
-                "mapping (MANUAL) mode."
+                "save_maps service is not available"
             )
 
-        # Same trap as reload_map's map_url: pgo does no expansion at all, it
-        # hands the string to std::filesystem, so a `~` or a path relative to
-        # the backend's cwd would land somewhere surprising or nowhere.
         file_path = os.path.abspath(os.path.expanduser(directory))
-
         self._logger.info("[MapGateway] Saving map", file_path=file_path)
 
         future = save_maps_client.call_async(
             SaveMaps.Request(file_path=file_path, save_patches=True)
         )
-        # Far above reload_map's 20 s because the handler genuinely works for
-        # its living: it merges every keyframe cloud, voxel-filters the result
-        # and writes a ~20 MB map.pcd plus one small .pcd per keyframe — on
-        # this Jetson, tens of seconds for a large site. A timeout that fired
-        # mid-write would report failure for a save that then completes, so it
-        # errs long; the FastAPI handler parking on this runs on the worker
-        # thread pool, not the event loop.
+
         if not _wait_for_future(future, timeout=180.0):
             return False, "Timeout waiting for pgo/save_maps response"
 

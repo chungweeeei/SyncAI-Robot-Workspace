@@ -179,8 +179,9 @@ export function MapCard({ map }: { map: MapSummary }) {
           {!grid && (
             <p className="mt-2.5 text-[11px] leading-tight text-muted-foreground">
               Saved from LIO but never converted, so the nav stack cannot load it.
-              Run <span className="readout">tools/pcd_to_gridmap.py</span> over
-              its <span className="readout">map.pcd</span> to produce a gridmap.
+              The save normally converts in the background — re-run{" "}
+              <span className="readout">syncai_backend.helpers.pcd_to_gridmap</span>{" "}
+              over its <span className="readout">map.pcd</span> on the robot.
             </p>
           )}
         </div>
