@@ -17,7 +17,8 @@ run it without a checkout next to the install space — the same motivation that
 folded the retired ``tools/pcd_to_gridmap.py`` CLI into a helper):
 
   1. ``segment_traversable``  — split the cloud into flat ground / ramp /
-     obstacle using lidar return intensity plus the surface normal's z.
+     obstacle using lidar return intensity, the surface normal's z, and height
+     above the measured floor level.
   2. ``repair_ground``        — a LIO map samples a continuous floor with holes
      and dashes; merge the coplanar fragments back into whole planes, fill
      their interiors, and stitch across gaps and single steps.
@@ -31,12 +32,11 @@ every backend start, on a robot that mostly never converts a map, is not worth
 it. **Nothing imports this module at startup.** Import it inside the function
 that needs it.
 
-Not wired into ``POST /api/v1/maps``. That route still converts with
-``GRIDMAP_RECIPE``, and switching the fleet's default recipe is a separate
-decision from having this available — the trinary z-band map is what
-``syncai_map_server``, the gridmap editor and every stored ``gridmap_raw.pgm``
-were validated against. Run this by hand on a site where the z-bands do not
-hold:
+``POST /api/v1/maps`` runs this recipe for a **large** site only, and the z-band
+one below the area threshold — see ``GRIDMAP_RECIPE`` and ``pick_recipe`` in
+``routers/map.py`` for why the split falls that way. It is also worth running by
+hand on a site whose grid came out wrong, because ``debug_dir`` is the only way
+to see which stage rejected the floor:
 
     from syncai_backend.helpers.traversable import build_traversable_cloud
     from syncai_backend.helpers.pcd_to_gridmap import convert_traversable_to_gridmap
@@ -44,11 +44,25 @@ hold:
                                     debug_dir="map/dp2f/traversable_debug")
     convert_traversable_to_gridmap(logger, cloud, "map/dp2f/gridmap")
 
-Every default below is the value the offline tool shipped with, which for stage
-2 means the ``__main__`` block's arguments rather than the function signature's
-— the two disagreed (0.02/0.35/0.15/0.22 vs 0.04/0.80/0.07/0.31) and the
-ReadMe's tuning guide documents the ``__main__`` set as the recommended one.
-Failures raise ``ValueError``; the caller decides how to report them.
+Stage 2's defaults are the values the offline tool shipped with, which means the
+``__main__`` block's arguments rather than the function signature's — the two
+disagreed (0.02/0.35/0.15/0.22 vs 0.04/0.80/0.07/0.31) and the ReadMe's tuning
+guide documents the ``__main__`` set as the recommended one.
+
+Stage 1's ground-density defaults are **not** the offline tool's, and the
+measurement that moved them is worth keeping. The tool shipped
+``ground_ror_radius=0.05`` with ``ground_ror_nb_points=3`` — three neighbours
+inside a 5 cm ball, i.e. roughly 500 floor points per m². Run against the
+gridmaps this fleet actually has, that gate keeps 6% of the ground candidates on
+dp1f, 8% on dp2f and 20% on the map that prompted this; the survivors are too
+thin and too fragmented for DBSCAN to assemble a floor, so the recipe produced a
+blob or raised. It is not a density the MID360 reaches on a driven LIO map at
+any map size — the one cloud on the fleet that does clear it samples its floor
+at 1549 points per m², 5–7× the others, and its dominant flat surface is a
+ceiling 8.4 m up. So the radius is 0.25 here, DBSCAN's eps follows it to 0.50,
+and ``ground_min_cluster_points`` drops from 1000 to 200 (at 0.05 the largest
+cluster on that map was 163 points). Failures raise ``ValueError``; the caller
+decides how to report them.
 """
 
 import os
@@ -60,6 +74,11 @@ import open3d as o3d
 import structlog
 from scipy import ndimage
 from scipy.spatial import Delaunay, QhullError, cKDTree
+
+# The only import from the sibling conversion module, and it goes this way round
+# on purpose: pcd_to_gridmap must stay free of open3d (the map router imports it
+# at startup), so shared pure-numpy code lives there and is pulled in here.
+from syncai_backend.helpers.pcd_to_gridmap import floor_level
 
 
 # Field names a PCD may carry the lidar return intensity under. FAST-LIO writes
@@ -109,9 +128,16 @@ def _load_cloud(
         pcd.estimate_normals(
             o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=normal_max_nn)
         )
-        # Normals from PCA are sign-ambiguous, and every threshold below is on
-        # the *signed* z component (ground is nz≈+1, a ceiling is nz≈-1), so
-        # without this the flat floor would split roughly in half.
+        # Normals from PCA are sign-ambiguous — neighbouring floor points come
+        # out ±1 at random — so without this the flat floor would split roughly
+        # in half at every nz threshold below.
+        #
+        # The cost, and it is the reason height gating exists in this module: it
+        # also flattens the one distinction the sign carried. After this, nz ∈
+        # [0, 1] for every point in the cloud, so a ceiling reads nz≈+1 exactly
+        # like a floor. Nothing downstream may infer "faces up" from a positive
+        # nz, and any test written as ``nz < <negative>`` is dead — one was, for
+        # as long as this call has been here.
         pcd.orient_normals_to_align_with_direction(np.array([0.0, 0.0, 1.0]))
     normals = np.asarray(pcd.normals)
 
@@ -163,8 +189,9 @@ def _clean_ground(
     """
     if len(ground.points) == 0:
         raise ValueError(
-            "intensity/normal gate selected no ground points — check the intensity "
-            "percentile window and ground_nz against this site's cloud"
+            "the intensity / normal / height gate selected no ground points — check the "
+            "logged 'ground height band' against this site's cloud, then the intensity "
+            "percentile window and ground_nz"
         )
 
     _, keep = ground.remove_radius_outlier(nb_points=ror_nb_points, radius=ror_radius)
@@ -211,6 +238,8 @@ def _clean_obstacles(
     logger: structlog.stdlib.BoundLogger,
     obstacles: o3d.geometry.PointCloud,
     *,
+    floor_z: float,
+    ceiling_height: float,
     ceiling_nz: float,
     scatter_knn: int,
     max_scattering: float,
@@ -222,9 +251,19 @@ def _clean_obstacles(
     Three passes, each aimed at one thing the LIO map contains that is not an
     obstacle at the robot's height:
 
-    1. **Ceilings.** ``ceiling_nz`` is itself negative (-0.2), so the cut keeps
-       walls (nz≈0) and every upward-facing surface, and drops only the clearly
-       downward-facing ones: overhead structure, beams, the underside of racking.
+    1. **Ceilings.** A near-horizontal surface higher than
+       ``floor_z + ceiling_height``: overhead structure, beams, the underside of
+       racking. Both halves of that test are needed — height alone would delete
+       the top of a tall rack the robot can still collide with the base of, and
+       flatness alone deletes the floor.
+
+       This used to be a pure normal test (``nz < ceiling_nz``, -0.2) and it was
+       **dead code**: ``_load_cloud`` aligns every normal to +z, so no point in
+       any cloud ever had nz below zero, let alone -0.2, and the pass removed
+       exactly nothing. It read as working because it logged a plausible count —
+       the input's, unchanged. ``ceiling_nz`` is kept as the flatness threshold,
+       now compared against \\|nz\\| and positive, since the sign it used to rely
+       on no longer exists by the time this runs.
     2. **Foliage.** The local PCA scattering ratio λ3/Σλ is near 0 for a plane
        and large for a volume of scattered returns, so a tree canopy or its
        shadow scores far above a wall or a sign. This is the only pass that
@@ -240,8 +279,16 @@ def _clean_obstacles(
         return obstacles
 
     normals = np.asarray(obstacles.normals)
-    kept = obstacles.select_by_index(np.flatnonzero(normals[:, 2] > ceiling_nz))
-    logger.info("obstacle ceiling cut", after=len(kept.points), ceiling_nz=ceiling_nz)
+    points = np.asarray(obstacles.points)
+    ceiling = (points[:, 2] > floor_z + ceiling_height) & (np.abs(normals[:, 2]) >= ceiling_nz)
+    kept = obstacles.select_by_index(np.flatnonzero(~ceiling))
+    logger.info(
+        "obstacle ceiling cut",
+        before=len(obstacles.points),
+        after=len(kept.points),
+        cut_above_z=round(floor_z + ceiling_height, 2),
+        flatness=ceiling_nz,
+    )
     if len(kept.points) == 0:
         return kept
 
@@ -270,12 +317,17 @@ def segment_traversable(
     slope_nz: Tuple[float, float] = (0.5, 0.75),
     normal_radius: float = 0.5,
     normal_max_nn: int = 30,
+    ground_z_range: Optional[Tuple[float, float]] = None,
+    ground_z_margin: Tuple[float, float] = (0.5, 0.5),
+    floor_bin_size: float = 0.10,
+    floor_relative_peak: float = 0.20,
     ground_ror_nb_points: int = 3,
-    ground_ror_radius: float = 0.05,
-    ground_dbscan_eps: float = 0.20,
+    ground_ror_radius: float = 0.25,
+    ground_dbscan_eps: float = 0.50,
     ground_dbscan_min_points: int = 20,
-    ground_min_cluster_points: int = 1000,
-    obstacle_ceiling_nz: float = -0.2,
+    ground_min_cluster_points: int = 200,
+    obstacle_ceiling_height: float = 1.8,
+    obstacle_ceiling_nz: float = 0.9,
     obstacle_scatter_knn: int = 25,
     obstacle_max_scattering: float = 0.06,
     obstacle_ror_nb_points: int = 12,
@@ -283,11 +335,20 @@ def segment_traversable(
 ) -> SegmentedCloud:
     """Split a LIO map into traversable ground, ramps and obstacles.
 
-    The gate is intensity **and** normal direction, and it needs both. Intensity
-    alone cannot tell a floor from a same-material wall; the normal alone
-    accepts every flat surface in the building, table tops and pallet tops
-    included. Together they select "flat, and made of what the floor is made
-    of".
+    The gate is intensity **and** normal direction **and** height, and it needs
+    all three. Intensity alone cannot tell a floor from a same-material wall;
+    the normal alone accepts every flat surface in the building, table tops and
+    pallet tops included — and, because ``_load_cloud`` aligns normals to +z,
+    the ceiling as well. Height is what separates the floor from the ceiling
+    (see ``pcd_to_gridmap.floor_level``); the other two select "flat, and made of what the
+    floor is made of".
+
+    ``ground_z_range`` is an absolute ``(zmin, zmax)`` band and is normally left
+    ``None``: the floor level is then estimated per cloud and the band becomes
+    ``floor ± ground_z_margin``. That is the difference between this and the
+    z-band recipe in ``pcd_to_gridmap`` — the band is *measured* here, not a
+    per-site constant, so it still transfers across sites. Pass an explicit
+    range only for a cloud whose logged ``floor_z`` came out wrong.
 
     ``intensity_percentiles`` is a window over the *non-zero* intensities of
     this cloud, not an absolute range: return intensity depends on the lidar
@@ -321,7 +382,36 @@ def segment_traversable(
     else:
         intensity_mask = np.ones(len(nz), dtype=bool)
 
-    ground_mask = intensity_mask & (nz >= ground_nz)
+    flat_mask = intensity_mask & (nz >= ground_nz)
+    # The floor level is measured from the flat candidates, not from the whole
+    # cloud: the cloud's own z histogram is dominated by walls, which span every
+    # height and bias any peak-finding toward whatever the lidar dwelled on.
+    points = np.asarray(pcd.points)
+    if ground_z_range is None:
+        if not flat_mask.any():
+            raise ValueError(
+                "intensity/normal gate selected no flat points — check the intensity "
+                "percentile window and ground_nz against this site's cloud"
+            )
+        floor_z = floor_level(points[flat_mask][:, 2], floor_bin_size, floor_relative_peak)
+        z_lo, z_hi = floor_z - ground_z_margin[0], floor_z + ground_z_margin[1]
+    else:
+        z_lo, z_hi = ground_z_range
+        floor_z = 0.5 * (z_lo + z_hi)
+    ground_mask = flat_mask & (points[:, 2] >= z_lo) & (points[:, 2] <= z_hi)
+    logger.info(
+        "ground height band",
+        floor_z=round(floor_z, 3),
+        z_lo=round(z_lo, 3),
+        z_hi=round(z_hi, 3),
+        measured=ground_z_range is None,
+        flat=int(flat_mask.sum()),
+        in_band=int(ground_mask.sum()),
+    )
+    # Not height-gated, and deliberately: a ramp spans the very heights the band
+    # excludes, so banding it would delete the top of every ramp. `slope` is a
+    # diagnostic — it is never merged into `ground` (see below) — so a ceiling
+    # leaking in here costs nothing.
     slope_mask = intensity_mask & (nz >= slope_nz[0]) & (nz < slope_nz[1])
     # Anything the two gates did not claim, *before* either was denoised — the
     # points a filter drops are noise, not obstacles, and must not reappear here.
@@ -342,6 +432,8 @@ def segment_traversable(
         obstacle=_clean_obstacles(
             logger,
             obstacle_raw,
+            floor_z=floor_z,
+            ceiling_height=obstacle_ceiling_height,
             ceiling_nz=obstacle_ceiling_nz,
             scatter_knn=obstacle_scatter_knn,
             max_scattering=obstacle_max_scattering,

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import struct
 import threading
@@ -6,6 +7,7 @@ import uuid
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
 
+import numpy as np
 import structlog
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response
@@ -14,10 +16,14 @@ from pydantic import BaseModel, Field
 from syncai_backend.exceptions import BadRequestError, NotFoundError, UpstreamError
 from syncai_backend.database.models import MapPoint
 from syncai_backend.gateways.map.map import MapGateway
-# Only the traversability conversion is imported: convert_pcd_to_gridmap is no
-# longer on this route's path (GRIDMAP_RECIPE below explains what it is still
-# for), and importing it unused would just be dead weight at startup.
-from syncai_backend.helpers.pcd_to_gridmap import convert_traversable_to_gridmap
+# Both conversions are on this route's path now — pick_recipe below chooses per
+# map. Neither pulls in open3d (that is why stage 3 lives in this module and not
+# in helpers.traversable), so importing both at startup costs nothing.
+from syncai_backend.helpers.pcd_to_gridmap import (
+    convert_pcd_to_gridmap,
+    convert_traversable_to_gridmap,
+    floor_level,
+)
 from syncai_backend.helpers.pgm import render_png, render_thumbnail
 from syncai_backend.helpers.pointcloud import (
     cap_points,
@@ -36,30 +42,67 @@ from syncai_backend.repositories.map.map import MapRepo
 MAP_CLOUD_VOXEL_SIZE = 0.3
 MAP_CLOUD_MAX_POINTS = 300000
 
-# The recipe POST /api/v1/maps converts with after a save: the traversability
-# pipeline in helpers.traversable (segment the floor by lidar return intensity
-# and surface normal, repair it, then project it) rather than the z-band slicing
-# in helpers.pcd_to_gridmap.
+# POST /api/v1/maps has two recipes and picks between them by site size — see
+# pick_recipe. Neither is a fallback for the other; they answer different
+# questions and disagree about what an unknown cell means, which is exactly why
+# the choice is recorded on disk rather than left implicit.
 #
-# Why the switch. The z-band recipe below classifies a cell by *where* its
-# points are in z, which cannot distinguish a drivable aisle from a kerb top or
-# a ramp — and LIO's z=0 is the lidar mount height at the mapping start pose, so
-# its bands are a per-site guess that only holds for this robot standing on flat
-# ground. The traversability recipe asks what the surface *is* instead, so it
-# transfers across sites without a hand-picked band.
+# **Small site -> the z-band recipe** (GRIDMAP_RECIPE below). It produces a
+# genuine trinary map: walls where obstacles were observed, unknown where
+# nothing was. Two things follow, and both matter more than the recipe's
+# weakness. Unknown is *recoverable* — costmap_layer.cpp:90 lets the obstacle
+# layer's live observations overwrite a NO_INFORMATION master cell, while a
+# LETHAL one can never be lowered, so a map that says "unknown" here can still
+# grow as the robot drives and a map that says "wall" cannot. And a small site
+# is cheap to finish by hand in the gridmap editor, which is how every gridmap
+# on this fleet was actually made: dp2f still carries the pre-edit
+# gridmap_raw.pgm next to the edited gridmap.pgm, and the edit lifted its
+# largest connected free region from 89.1% to 94.4% of all free cells.
 #
-# What that costs, and it is not small: the output has **no unknown cells**. The
-# input cloud is taken as the whole of the drivable world, so every cell it does
-# not cover comes out occupied — including the padding ring, and including any
-# real floor the segmentation wrongly rejected. That is the safe direction (the
-# planner will not route through unobserved space) but it is unforgiving, and it
-# is why the parameters below are left at the helper's defaults: those are the
-# values the pipeline was tuned to in the offline tool this was ported from, and
-# a site that needs them changed needs them changed with the intermediate clouds
-# in front of you, not guessed here.
+# **Large site -> the traversability recipe** (helpers.traversable: segment the
+# floor by lidar return intensity, surface normal and height, repair it, then
+# project it). Nobody hand-edits 6000 m², so the automatic repair has to carry
+# the map, and this is the recipe that has one. It also sidesteps the z-band's
+# real weakness — classifying a cell by *where* its points are in z cannot
+# distinguish a drivable aisle from a kerb top or a ramp, and LIO's z=0 is the
+# lidar mount height at the mapping start pose, so those bands are a per-site
+# guess.
+#
+# What the large-site choice costs, and it is not small: the output has **no
+# unknown cells**. The input cloud is taken as the whole of the drivable world,
+# so every cell it does not cover comes out occupied — the padding ring
+# included, and any real floor the segmentation wrongly rejected included. That
+# is the safe direction for the planner, but it is unforgiving, and by the note
+# above it is also permanent: unobserved area walled off this way can never be
+# cleared by driving there.
+#
+# The parameters stay empty because the helper's own defaults are now the tuned
+# ones (its module docstring carries the measurement that moved them). A site
+# that needs them changed needs them changed with the intermediate clouds in
+# front of you, not guessed here — dp1f is the live example: it converts, and
+# converts well, but its bottom aisle needs a wider TRAVERSABLE_GRID_RECIPE
+# gap_fill_size to bridge a doorway the floor sampling missed.
 TRAVERSABLE_SEGMENT_RECIPE: Dict[str, object] = {}
 TRAVERSABLE_REPAIR_RECIPE: Dict[str, object] = {}
 TRAVERSABLE_GRID_RECIPE: Dict[str, object] = {}
+
+# Footprint area, in m², at or above which a save converts with the
+# traversability recipe instead of the z-band one. The measured areas on this
+# fleet are 814 (warehouse01), 1645 (the map this threshold was set against),
+# 4238 (dp2f) and 6338 (dp1f) m², so 3000 is the widest gap in that spread and
+# puts the two clouds nobody would hand-edit on the automatic-repair side. It is
+# a judgement about hand-editing effort, not a property of either algorithm —
+# move it when the fleet's idea of "small enough to finish by hand" moves.
+LARGE_SITE_AREA_M2 = 3000.0
+
+# Sidecar naming the recipe a stored gridmap came from. Written next to the pgm
+# because the catalogue would otherwise hold maps from two recipes with nothing
+# on disk saying which produced what, and the two disagree about the meaning of
+# an unknown cell — a map with no unknown cells at all is either a
+# traversability output or a z-band output of a fully observed site, and there
+# is no way to tell from the pgm. Tiny, so its effect on the size _walk_stats
+# reports is noise.
+GRIDMAP_RECIPE_SIDECAR = "gridmap.recipe.json"
 
 # Where the segmentation's intermediate clouds go, or None for "do not write
 # them". Off by default because MapCatalogRepo._walk_stats recurses, so five
@@ -70,18 +113,107 @@ TRAVERSABLE_GRID_RECIPE: Dict[str, object] = {}
 TRAVERSABLE_DEBUG_SUBDIR: Optional[str] = None
 
 
+# The z-band recipe's non-band parameters. The bands themselves are below,
+# because they are no longer constants.
+#
+# obstacle_close is 1, not the 2 this recipe shipped with. At 2 the 10 cm
+# morphological closing sealed a doorway a robot had demonstrably driven through
+# — 16 of that map's 212 keyframe poses landed on occupied cells, all within
+# 5-14 cm of free space. At 1 that drops to 9, all of them poses that brushed a
+# wall, and the walls and pillars survive intact. Raising it back closes real
+# gaps at the cost of closing real doors; lower it before raising it.
 GRIDMAP_RECIPE = dict(
-    zmin=-0.3,
-    zmax=1.5,
     free_mode="floor",
-    floor_zmin=-0.95,
-    floor_zmax=-0.25,
     min_points=2,
-    obstacle_close=2,
+    obstacle_close=1,
     free_close=5,
     despeckle_min_size=12,
     fill_holes_max_size=20000,
 )
+
+# The z-band recipe's bands, as offsets from the cloud's **measured** floor
+# level rather than absolute z. These are the numbers every gridmap on the fleet
+# before 2026-08 was built with (-0.95 / -0.25 / -0.3 / 1.5 absolute), minus the
+# floor level of dp1f, the site they were picked on: -0.66. On dp1f they
+# therefore resolve to exactly what they always were.
+#
+# They are offsets because absolute they were a per-site guess by construction —
+# z=0 in a LIO map is the lidar mount height at the mapping start pose, so a
+# different mount, a different chassis or a start pose on a slope moves the
+# whole band while the floor stays where it is. The measured floor levels on
+# this fleet span -0.36 to -0.73, and 37 cm is more than the floor band is wide.
+# Held absolute on the shallowest of those sites, the bands put 26 of 212
+# keyframe poses in unknown space and 35 on occupied cells — the robot's own
+# path, walled off. Recentred, that is 0 and 10. dp1f is unchanged and dp2f
+# moves by 4 cm, which is the raw-cloud estimate disagreeing with the
+# flat-points one (see pcd_to_gridmap.floor_level) and well inside the band.
+GRIDMAP_BANDS_ABOVE_FLOOR = dict(
+    floor_zmin=-0.29,
+    floor_zmax=0.41,
+    zmin=0.36,
+    zmax=2.16,
+)
+
+
+def pick_recipe(
+    logger: structlog.stdlib.BoundLogger, pcd_path: str
+) -> Tuple[str, float, float]:
+    """Choose a conversion recipe from the cloud; report it, the area, the floor.
+
+    Area rather than point count, because the question the threshold is standing
+    in for is "would a person finish this map in the gridmap editor?", and that
+    scales with floor area, not with how long the lidar dwelled. Point *density*
+    would be the natural discriminator for whether the traversability recipe can
+    segment a floor at all, and it is deliberately not used here: after the
+    density gates were retuned it segments every cloud on this fleet, so density
+    no longer decides anything and gating on it would only reintroduce a silent
+    failure mode.
+
+    The floor level comes back from the same read because the z-band branch needs
+    it to place its bands and the cloud is already in memory. The traversability
+    branch measures its own, from flat points rather than from the raw cloud, and
+    ignores this one — the two agree to within 4 cm on this fleet, but the flat
+    estimate is the better-founded of the two and that branch can afford it.
+
+    Reads the cloud, which the chosen conversion then reads again. That is one
+    extra pass over ~20 MB inside a background thread that is about to spend
+    tens of seconds in open3d, against the alternative of threading an array
+    through two conversions whose input types differ.
+    """
+    xyz = read_pcd_xyz(pcd_path)
+    if len(xyz) == 0:
+        raise ValueError(f"point cloud is empty: {pcd_path}")
+    extent = xyz[:, :2].max(axis=0) - xyz[:, :2].min(axis=0)
+    area = float(extent[0] * extent[1])
+    floor_z = floor_level(xyz[:, 2].astype(np.float64))
+    recipe = "traversability" if area >= LARGE_SITE_AREA_M2 else "z-band"
+    logger.info(
+        "picked gridmap recipe",
+        recipe=recipe,
+        footprint_m2=round(area, 1),
+        threshold_m2=LARGE_SITE_AREA_M2,
+        floor_z=round(floor_z, 3),
+        points=len(xyz),
+    )
+    return recipe, area, floor_z
+
+
+def _write_recipe_sidecar(
+    logger: structlog.stdlib.BoundLogger, directory: str, payload: Dict[str, object]
+) -> None:
+    """Record which recipe produced this map's gridmap, next to the gridmap.
+
+    Best-effort: a sidecar that fails to write must not lose a gridmap that
+    converted fine, so this logs and returns rather than raising into the
+    conversion thread's handler.
+    """
+    path = os.path.join(directory, GRIDMAP_RECIPE_SIDECAR)
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError as exc:
+        logger.warning("Could not write gridmap recipe sidecar", path=path, error=str(exc))
 
 
 # --- Schemas ----------------------------------------------------------------
@@ -335,6 +467,11 @@ def _start_grid_conversion(
     600 s subprocess timeout went with it — the helpers bound the grid size
     themselves, so the pipeline cannot run away.
 
+    Which recipe runs is decided in here, not by the caller: pick_recipe needs
+    the cloud, and reading a 20 MB pcd is not work for a request handler. The
+    consequence is that the route cannot report the choice — it is in the log and
+    in the sidecar instead.
+
     The return value only says the thread started, never that the grid appeared:
     a segmentation that rejects the whole floor fails *after* this has answered
     True and the route has 200'd, and shows up as a map that never grows a
@@ -354,30 +491,45 @@ def _start_grid_conversion(
             if TRAVERSABLE_DEBUG_SUBDIR
             else None
         )
+        basename = os.path.join(directory, "gridmap")
         try:
-            # Imported here, not at module scope, and that is load-bearing: this
-            # would be the only module-level import of helpers.traversable in the
-            # backend, and it pulls in open3d (~100 MB). At module scope every
-            # backend start would pay that for a conversion that runs only when
-            # an operator saves a map.
-            #
-            # Inside the try, not just inside the function: an ImportError raised
-            # above it escapes _run entirely, and the handler below never sees it.
-            from syncai_backend.helpers.traversable import build_traversable_cloud
+            recipe, area, floor_z = pick_recipe(bound, pcd_path)
+            if recipe == "traversability":
+                # Imported here, not at module scope, and that is load-bearing:
+                # this would be the only module-level import of
+                # helpers.traversable in the backend, and it pulls in open3d
+                # (~100 MB). At module scope every backend start would pay that
+                # for a conversion that runs only when an operator saves a map.
+                #
+                # Inside the try, not just inside the function: an ImportError
+                # raised above it escapes _run entirely, and the handler below
+                # never sees it. Inside the branch as well, so a small site never
+                # pays the import at all.
+                from syncai_backend.helpers.traversable import build_traversable_cloud
 
-            cloud = build_traversable_cloud(
-                bound,
-                pcd_path,
-                segment=TRAVERSABLE_SEGMENT_RECIPE,
-                repair=TRAVERSABLE_REPAIR_RECIPE,
-                debug_dir=debug_dir,
-            )
-            convert_traversable_to_gridmap(
-                bound,
-                cloud,
-                os.path.join(directory, "gridmap"),
-                **TRAVERSABLE_GRID_RECIPE,
-            )
+                cloud = build_traversable_cloud(
+                    bound,
+                    pcd_path,
+                    segment=TRAVERSABLE_SEGMENT_RECIPE,
+                    repair=TRAVERSABLE_REPAIR_RECIPE,
+                    debug_dir=debug_dir,
+                )
+                convert_traversable_to_gridmap(
+                    bound, cloud, basename, **TRAVERSABLE_GRID_RECIPE
+                )
+                params: Dict[str, object] = {
+                    "segment": dict(TRAVERSABLE_SEGMENT_RECIPE),
+                    "repair": dict(TRAVERSABLE_REPAIR_RECIPE),
+                    "grid": dict(TRAVERSABLE_GRID_RECIPE),
+                }
+            else:
+                bands = {
+                    key: round(offset + floor_z, 3)
+                    for key, offset in GRIDMAP_BANDS_ABOVE_FLOOR.items()
+                }
+                bound.info("z-band recipe bands", floor_z=round(floor_z, 3), **bands)
+                convert_pcd_to_gridmap(bound, pcd_path, basename, **GRIDMAP_RECIPE, **bands)
+                params = {**GRIDMAP_RECIPE, **bands, "floor_z": round(floor_z, 3)}
         # ValueError is a helper's own diagnosis: an empty cloud, an intensity
         # window that selected no ground, no cluster large enough to be a floor,
         # an oversized grid. OSError is the pcd or the map directory going away
@@ -388,10 +540,12 @@ def _start_grid_conversion(
                 map=name,
                 error=str(exc),
                 hint=(
-                    "re-run helpers.traversable.build_traversable_cloud by hand with "
-                    "debug_dir set to inspect the segmentation, or convert this map with "
-                    "helpers.pcd_to_gridmap.convert_pcd_to_gridmap + "
-                    "GRIDMAP_RECIPE (the z-band recipe)"
+                    "check the logged 'picked gridmap recipe' and, for the "
+                    "traversability one, the 'ground height band' under it; then re-run "
+                    "helpers.traversable.build_traversable_cloud by hand with debug_dir "
+                    "set to inspect the segmentation, or convert this map with "
+                    "helpers.pcd_to_gridmap.convert_pcd_to_gridmap + GRIDMAP_RECIPE "
+                    "(the z-band recipe)"
                 ),
             )
             return
@@ -408,7 +562,17 @@ def _start_grid_conversion(
             )
             return
 
-        logger.info("Gridmap conversion finished", map=name)
+        _write_recipe_sidecar(
+            bound,
+            directory,
+            {
+                "recipe": recipe,
+                "footprint_m2": round(area, 1),
+                "threshold_m2": LARGE_SITE_AREA_M2,
+                "params": params,
+            },
+        )
+        logger.info("Gridmap conversion finished", map=name, recipe=recipe)
 
     threading.Thread(target=_run, name=f"pcd-to-gridmap-{name}", daemon=True).start()
     return True

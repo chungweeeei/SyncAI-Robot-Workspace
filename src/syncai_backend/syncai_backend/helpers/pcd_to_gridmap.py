@@ -49,6 +49,42 @@ from syncai_backend.helpers.pgm import write_pgm
 from syncai_backend.helpers.pointcloud import read_pcd_xyz
 
 
+def floor_level(z: np.ndarray, bin_size: float = 0.10, relative_peak: float = 0.20) -> float:
+    """Estimate the floor's height from a histogram of point z.
+
+    Lives here rather than next to either caller because both need it and this
+    module is the open3d-free one. ``helpers.traversable`` measures the floor to
+    tell a floor from a ceiling — aligning normals to +z leaves the two
+    indistinguishable, since both come out nz≈+1 — and the map router measures it
+    to recentre the z-band recipe's bands, which are otherwise a constant that
+    only holds for the robot and start pose they were picked on.
+
+    The **lowest** substantial peak, not the largest: the largest is the floor
+    only when the floor is the best-sampled horizontal surface, and a hall with a
+    big flat ceiling breaks that (one map on this fleet has 173 k flat points on
+    a ceiling 8.4 m up against 7 k on its floor). Taking the lowest bin that
+    clears ``relative_peak`` of the tallest survives that as long as the floor is
+    *substantial*.
+
+    Works on a raw cloud as well as on pre-filtered flat points, which is what
+    lets the z-band recipe use it without estimating normals: a horizontal floor
+    concentrates its points into one or two bins while walls spread across every
+    bin, so the floor still wins its bin. Measured against the fleet's clouds the
+    two agree to within 4 cm (raw vs flat: -0.66/-0.66, -0.73/-0.69,
+    -0.36/-0.36). Callers should log the result — this is an estimate, and a site
+    where it lands wrong needs to be visible rather than silent.
+    """
+    finite = z[np.isfinite(z)]
+    if finite.size == 0:
+        raise ValueError("cannot estimate a floor level from an empty cloud")
+    lo, hi = float(finite.min()), float(finite.max())
+    bins = max(1, int(np.ceil((hi - lo) / bin_size)))
+    hist, edges = np.histogram(finite, bins=bins, range=(lo, lo + bins * bin_size))
+    substantial = np.flatnonzero(hist >= relative_peak * hist.max())
+    first = int(substantial[0])
+    return float(0.5 * (edges[first] + edges[first + 1]))
+
+
 def _disk(radius: int) -> np.ndarray:
     """A disk-shaped structuring element for the morphological passes."""
     yy, xx = np.ogrid[-radius:radius + 1, -radius:radius + 1]

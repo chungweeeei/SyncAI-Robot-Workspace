@@ -618,13 +618,58 @@ def fake_traversable(monkeypatch):
     return module
 
 
+def _sheet(size, step=0.5, z=0.0):
+    """A flat square of points ``size`` metres on a side, as a list of xyz."""
+    axis = np.arange(0.0, size, step)
+    xx, yy = np.meshgrid(axis, axis)
+    return [(float(x), float(y), z) for x, y in zip(xx.ravel(), yy.ravel())]
+
+
 @pytest.fixture
 def saved_map(maps_dir, make_pcd):
-    """A map directory with a map.pcd in it, as pgo/save_maps would leave it."""
-    directory = str(maps_dir / "newmap")
+    """A map directory with a **large-site** map.pcd, as save_maps would leave it.
+
+    Large on purpose, and the size is load-bearing rather than incidental:
+    _start_grid_conversion picks its recipe from the cloud's xy footprint, so a
+    fixture below LARGE_SITE_AREA_M2 would silently route every test that uses
+    this through the z-band branch and stop exercising the traversability one at
+    all. 60 m x 60 m is 3600 m², comfortably over the 3000 m² threshold.
+    """
+    directory = maps_dir / "newmap"
     os.makedirs(directory, exist_ok=True)
-    make_pcd(os.path.join(directory, "map.pcd"))
-    return directory
+    # A Path, not a str: the make_pcd factory writes through Path.write_text.
+    make_pcd(directory / "map.pcd", points=_sheet(60.0, step=2.0))
+    return str(directory)
+
+
+@pytest.fixture
+def small_saved_map(maps_dir, make_pcd):
+    """A map directory whose footprint puts it on the z-band side of the split.
+
+    Carries a floor sheet at a **non-zero** z plus a block standing on it,
+    because the z-band branch is the one under test here and it needs both: a
+    floor to call free and something in the obstacle band to call occupied. The
+    floor at -0.4 rather than 0 is what makes the recentring assertion mean
+    something — held absolute, the shipped bands would land somewhere else.
+
+    A block with real footprint rather than a single column, because
+    ``despeckle_min_size`` is 12 and a column puts all its points in one cell:
+    the obstacle survives the projection and is then deleted as speckle, which
+    reads in the log as a conversion that simply found no obstacles.
+    """
+    directory = maps_dir / "smallmap"
+    os.makedirs(directory, exist_ok=True)
+    floor_z = -0.4
+    points = _sheet(20.0, step=0.2, z=floor_z)
+    block = np.arange(0.0, 1.0, 0.05)
+    points += [
+        (5.0 + float(bx), 5.0 + float(by), floor_z + float(h))
+        for bx in block
+        for by in block
+        for h in np.arange(0.5, 1.5, 0.25)
+    ]
+    make_pcd(directory / "map.pcd", points=points)
+    return str(directory)
 
 
 def test_conversion_writes_a_gridmap_from_the_traversable_cloud(
@@ -692,6 +737,85 @@ def test_conversion_survives_open3d_being_absent(
     _join(conversion_threads)
 
     assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
+
+
+def _sidecar(directory):
+    import json
+
+    path = os.path.join(directory, map_router_module.GRIDMAP_RECIPE_SIDECAR)
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def test_a_large_site_converts_with_the_traversability_recipe(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    """Nobody hand-edits 6000 m², so a large site gets the automatic repair."""
+    map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+    _join(conversion_threads)
+
+    assert len(fake_traversable.calls) == 1
+    side = _sidecar(saved_map)
+    assert side["recipe"] == "traversability"
+    assert side["footprint_m2"] >= map_router_module.LARGE_SITE_AREA_M2
+
+
+def test_a_small_site_converts_with_the_z_band_recipe(
+    logger, small_saved_map, fake_traversable, conversion_threads
+):
+    """And the traversability pipeline is not merely unused — never imported.
+
+    An empty ``calls`` list is the assertion that matters: the open3d import sits
+    inside that branch, so a small site must not pay it.
+    """
+    map_router_module._start_grid_conversion(logger, "smallmap", small_saved_map)
+    _join(conversion_threads)
+
+    assert fake_traversable.calls == []
+    side = _sidecar(small_saved_map)
+    assert side["recipe"] == "z-band"
+    assert side["footprint_m2"] < map_router_module.LARGE_SITE_AREA_M2
+
+
+def test_the_z_band_recipe_produces_a_trinary_map(
+    logger, small_saved_map, fake_traversable, conversion_threads
+):
+    """The reason the split exists: unknown survives, and unknown is recoverable.
+
+    A traversability output has no unknown cells at all — everything the cloud
+    does not cover is wall, permanently, since costmap_layer.cpp:90 can lower a
+    NO_INFORMATION master cell but never a LETHAL one.
+    """
+    map_router_module._start_grid_conversion(logger, "smallmap", small_saved_map)
+    _join(conversion_threads)
+
+    grid = cv2.imread(os.path.join(small_saved_map, "gridmap.pgm"), cv2.IMREAD_UNCHANGED)
+    present = set(np.unique(grid).tolist())
+    assert 205 in present, "no unknown cells — this is not a trinary map"
+    assert 254 in present, "no free cells — the floor band missed the floor"
+    assert 0 in present, "no occupied cells — the obstacle band missed the column"
+
+
+def test_the_z_band_bands_are_recentred_on_the_measured_floor(
+    logger, small_saved_map, fake_traversable, conversion_threads
+):
+    """Absolute bands are a per-site guess; z=0 is only the lidar mount height.
+
+    The fixture's floor is at -0.4, so every band must come back shifted by
+    roughly that much from the offsets — not at the constants the fleet's older
+    maps were built with.
+    """
+    map_router_module._start_grid_conversion(logger, "smallmap", small_saved_map)
+    _join(conversion_threads)
+
+    params = _sidecar(small_saved_map)["params"]
+    floor_z = params["floor_z"]
+    assert floor_z == pytest.approx(-0.4, abs=0.1)
+    for key, offset in map_router_module.GRIDMAP_BANDS_ABOVE_FLOOR.items():
+        assert params[key] == pytest.approx(offset + floor_z, abs=0.01)
+    # The floor band actually brackets the fixture's floor, which is the whole
+    # point of measuring it rather than trusting the constant.
+    assert params["floor_zmin"] < -0.4 < params["floor_zmax"]
 
 
 def test_conversion_is_skipped_without_a_pcd(logger, maps_dir, conversion_threads):
