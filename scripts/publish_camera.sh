@@ -38,7 +38,7 @@ set -euo pipefail
 # cameras across four video4linux nodes and none of them is 0. `ls -l
 # /dev/v4l/by-path/` maps a physical USB port back to a node when the numbering
 # moves; override DEVICE (and CAMERA_DEV in compose) together when it does.
-DEVICE="${DEVICE:-/dev/video1}"
+DEVICE="${DEVICE:-/dev/syncai/camera0}"
 WIDTH="${WIDTH:-1280}"
 HEIGHT="${HEIGHT:-720}"
 FRAMERATE="${FRAMERATE:-60}"
@@ -51,7 +51,7 @@ BITRATE="${BITRATE:-4000000}"
 # resource" — after the encoder has already started, so it reads like an
 # encoding failure rather than an auth one. A hardcoded LAN IP is also wrong for
 # a second reason: it is DHCP-assigned and has already moved once.
-RTSP_URL="${RTSP_URL:-rtsp://192.168.8.160:8554/robot01/camera}"
+RTSP_URL="${RTSP_URL:-rtsp://192.168.8.160:8554/dogB/camera}"
 
 # One IDR every half second, whatever the framerate.
 IDR_INTERVAL=$(( FRAMERATE / 2 ))

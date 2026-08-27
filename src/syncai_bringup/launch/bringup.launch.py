@@ -539,7 +539,7 @@ def generate_launch_description():
 
     declare_use_camera = DeclareLaunchArgument(
         "use_camera",
-        default_value="true",
+        default_value="false",
         description="Start the VizionSDK camera node. Default false: "
         "/dev/video0 takes one streaming opener and scripts/publish_camera.sh "
         "(RTSP -> MediaMTX -> the frontend's WebRTC view) already holds it. "

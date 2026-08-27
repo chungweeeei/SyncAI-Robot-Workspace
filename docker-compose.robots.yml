@@ -99,6 +99,14 @@ services:
     profiles: [ "real" ]
     container_name: robot01
     network_mode: host
+    # Explicit rather than relying on the host's default runtime: this file
+    # used to assume /etc/docker/daemon.json set `"default-runtime": "nvidia"`,
+    # and the assumption broke — the Jetson's daemon.json only *registers* the
+    # nvidia runtime, so the container came up under runc, the L4T userspace
+    # was never injected, and gst-launch died on `no element "nvjpegdec"`
+    # despite the NVIDIA_* env vars below being set. The env vars select what
+    # the nvidia runtime injects; only the runtime itself does the injecting.
+    runtime: nvidia
     environment:
       <<: *robot-env
       # host networking: compose service names don't resolve — use the
@@ -110,7 +118,7 @@ services:
       # Camera encoding. These two are what make the nvidia container runtime
       # bind-mount the L4T userspace in, including the Tegra GStreamer plugins
       # (nvjpegdec / nvvidconv / nvv4l2h264enc) that drive the hardware encoder.
-      # Docker's default runtime here is already `nvidia`, but without these the
+      # The service pins `runtime: nvidia` above, but without these the
       # runtime injects nothing and a pipeline dies on `no element "nvjpegdec"`.
       # The plugin list is not ours: it ships in
       # /etc/nvidia-container-runtime/host-files-for-container.d/drivers.csv.
@@ -152,10 +160,8 @@ services:
       # camera_device_index default of 0 has always addressed. If a shuffled
       # boot is ever observed, the fix is to select by /dev/syncai/camera0 in
       # the camera node, not to remap names here (see above).
-      - /dev/video0
-      - /dev/video1
-      - /dev/video2
-      - /dev/video3
+      - /dev/syncai/camera0
+      - /dev/syncai/camera1
       # The whole ALSA device tree, for the TTS speaker (syncai_backend's
       # /api/v1/tts/speak plays through aplay). /dev/snd rather than a single
       # pcm node: the target is the USB "Jieli CD002-AUDIO" dongle, whose card
