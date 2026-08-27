@@ -387,10 +387,7 @@ def init_map_router(
     map_catalog_repo: MapCatalogRepo,
     map_gw: MapGateway,
 ) -> APIRouter:
-    # One router, one OpenAPI tag: /docs shows a single "Map" section covering
-    # both URL families. Do not re-add a per-route tag for the catalogue half —
-    # FastAPI *appends* a route's tags to the router's, so tagging those routes
-    # "Maps" leaves them ["Map", "Maps"] and listed twice on the docs page.
+
     map_router = APIRouter(prefix="", tags=["Map"])
 
     # --- The loaded map -----------------------------------------------------
@@ -435,39 +432,12 @@ def init_map_router(
 
     @map_router.post("/api/v1/maps", response_model=CreateMapResponse)
     def create_map(request: CreateMapRequest):
-        """Save the mapping run pgo is holding in RAM as a new on-disk map.
 
-        The one endpoint that can only succeed in MANUAL mode: pgo is the sole
-        holder of the keyframes and its save_maps service is the sole
-        serialiser, so in AUTO the gateway reports the service absent and this
-        answers 502 with that explanation. The console calls this BEFORE
-        switching back to AUTO — the switch tears pgo down and an unsaved run
-        is unrecoverable.
-
-        Plain ``def`` like the rest of the router, and here it carries real
-        weight: save_map parks on the pgo response for up to 180 s while it
-        merges and writes the cloud.
-
-        Directory-then-service, with an unwind: save_maps demands an existing
-        directory, so the repo creates it (409 if the name is taken — reusing
-        a directory would let save_maps wipe an existing map's patches/), and
-        a failed save removes it again so a typo'd attempt does not leave a
-        ghost entry in the catalogue.
-
-        The gridmap conversion is started in the background, not awaited — see
-        _start_grid_conversion. ``grid_pending`` mirrors SaveGridmapResponse's
-        ``reloaded``: the request succeeded, one follow-on effect is reported
-        separately.
-        """
         directory = map_catalog_repo.create_map_dir(request.name)
 
         saved, detail = map_gw.save_map(directory)
         if not saved:
             map_catalog_repo.discard_empty_map_dir(request.name)
-            # Uniform 502 for a downstream that did not do the thing, message
-            # forwarded verbatim — same contract as the robot router's
-            # commands. "NO POSES!" and "not available — pgo only runs in
-            # mapping (MANUAL) mode" both reach the operator this way.
             logger.error("Failed to save map", map=request.name, error=detail)
             raise UpstreamError(detail)
 

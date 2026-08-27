@@ -16,6 +16,9 @@
 # next.js
 /.next/
 /out/
+# Config lives in next.config.ts. A next.config.js beside it is build leftover or
+# a tool-generated copy, not something we hand-maintain — keep it untracked.
+/next.config.ts
 
 # production
 /build

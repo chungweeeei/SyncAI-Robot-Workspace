@@ -167,6 +167,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-pointcloud-to-laserscan \
     ros-humble-teleop-twist-keyboard \
     python3-opencv \
+    python3-scipy \
     python3-colcon-common-extensions \
     python3-rosdep \
     python3-dotenv \
@@ -259,9 +260,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     whenever that host is unreachable.
 ARG VIZIONSDK_VERSION=26.8.1
 RUN case "$(dpkg --print-architecture)" in \
-        arm64) VIZIONSDK_DEB="vizionsdk-linuxarm64-${VIZIONSDK_VERSION}.deb" ;; \
-        amd64) VIZIONSDK_DEB="vizionsdk-linux64-${VIZIONSDK_VERSION}.deb" ;; \
-        *) echo "VizionSDK: no release for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    arm64) VIZIONSDK_DEB="vizionsdk-linuxarm64-${VIZIONSDK_VERSION}.deb" ;; \
+    amd64) VIZIONSDK_DEB="vizionsdk-linux64-${VIZIONSDK_VERSION}.deb" ;; \
+    *) echo "VizionSDK: no release for $(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac && \
     curl -fsSL -o "/tmp/${VIZIONSDK_DEB}" \
     "https://github.com/TechNexion-Vision/vizionsdk/releases/download/v${VIZIONSDK_VERSION}/${VIZIONSDK_DEB}" && \

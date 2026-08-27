@@ -63,8 +63,6 @@ Thumbs.db
 # docker bind-mount data (postgres / pgadmin)
 data/
 
-# test repo
-src/syncai_test_node
 
 # Stale standalone clone of the MCP server, kept only as a local scratch copy.
 # The package now lives vendored in-tree at src/syncai_ros_mcp (same project, same

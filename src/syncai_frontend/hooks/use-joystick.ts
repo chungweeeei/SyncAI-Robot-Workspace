@@ -76,16 +76,23 @@ const AT_REST: Snapshot = {
 
 /**
  * Physical key codes, not `event.key`: ZQSD on an AZERTY board should drive by
- * position, the way every game does it. Left stick is WASD, right stick Q/E —
- * screen-space signs, so "left" is negative x and "up" is negative y.
+ * position, the way every game does it. Left (translation) stick is W/S/Q/E,
+ * right (rotation) stick is A/D — screen-space signs, so "left" is negative x
+ * and "up" is negative y.
+ *
+ * A/D rotate and Q/E strafe, not the other way round: A/D under the resting
+ * fingers is the turn in every driving game, and strafing is the rarer command
+ * on a chassis that mostly drives where it is pointed. The earlier binding had
+ * them swapped, which read as sideways drift every time an operator tried to
+ * turn.
  */
 const KEY_AXES: Record<string, { stick: StickId; axis: "x" | "y"; sign: 1 | -1 }> = {
   KeyW: { stick: "left", axis: "y", sign: -1 },
   KeyS: { stick: "left", axis: "y", sign: 1 },
-  KeyA: { stick: "left", axis: "x", sign: -1 },
-  KeyD: { stick: "left", axis: "x", sign: 1 },
-  KeyQ: { stick: "right", axis: "x", sign: -1 },
-  KeyE: { stick: "right", axis: "x", sign: 1 },
+  KeyQ: { stick: "left", axis: "x", sign: -1 },
+  KeyE: { stick: "left", axis: "x", sign: 1 },
+  KeyA: { stick: "right", axis: "x", sign: -1 },
+  KeyD: { stick: "right", axis: "x", sign: 1 },
 };
 
 /**
