@@ -1,21 +1,31 @@
 #!/bin/bash
 # =============================================================================
-# 相機推流（裁切 + 縮放 + MediaMTX 自動管理）
+# 相機推流（裁切 + 縮放 + 推到遠端 MediaMTX）
 #
 # 跟原本的 scripts/publish_camera.sh 的差別：
-#   1. 自己把 MediaMTX container 管好（不存在就建、被刪掉會重建、設定變了會重建）
-#   2. 支援裁切黑邊 + 縮放回指定輸出尺寸（nvvidconv 硬體完成，零 CPU 成本）
-#   3. 修正原本前置檢查對 symlink 失效的問題（那個檢查從來沒攔到過）
-#   4. 推流目標改回 loopback，符合 config/mediamtx.yml 的權限設定
-#   5. 有 start / stop / status / restart 子命令，背景執行
+#   1. 支援裁切黑邊 + 縮放回指定輸出尺寸（nvvidconv 硬體完成，零 CPU 成本）
+#   2. 修正原本前置檢查對 symlink 失效的問題（那個檢查從來沒攔到過）
+#   3. 有 start / stop / status / restart 子命令，背景執行
 #
 # 這是新增的檔案，原本的 scripts/publish_camera.sh 完全不動。
+#
+# -----------------------------------------------------------------------------
+# MediaMTX 不由這支腳本管理
+#
+# 這台機器只當 publisher，伺服器是外部既有的服務，用 MEDIAMTX_RTSP_HOST 指過去。
+# 因此本機不需要 mediamtx 的 image 或 container，也不需要 config/mediamtx.yml
+# —— 那份設定屬於跑伺服器的那台機器。
+#
+# 早期版本會自己 docker run 一個 mediamtx 起來（image 不在就報錯、被 rm 掉會重建、
+# 版本不符會砍掉重建），整段已經移除。理由不是麻煩，是拓樸：串流的匯集點是全隊
+# 共用的一個服務，每台機器各自起一個本機 broker 只會讓觀看端不知道該連哪一台。
+# 要回頭看那段 container 管理的邏輯，翻 git history。
 #
 # -----------------------------------------------------------------------------
 # 用法（在 Jetson 的 host 上跑，不是在 container 裡）
 #
 #   bash scripts/publish_camera_crop.sh            # 啟動（背景），什麼都不用帶
-#   bash scripts/publish_camera_crop.sh stop       # 停止推流與 MediaMTX
+#   bash scripts/publish_camera_crop.sh stop       # 停止推流
 #   bash scripts/publish_camera_crop.sh restart    # 重啟
 #   bash scripts/publish_camera_crop.sh status     # 看目前狀態與觀看網址
 #   bash scripts/publish_camera_crop.sh logs       # 追推流的日誌
@@ -27,7 +37,7 @@
 #   # publish_camera_crop.env
 #   CROP_LEFT="${CROP_LEFT:-80}"
 #   CROP_RIGHT="${CROP_RIGHT:-45}"
-#   MEDIAMTX_RTSP_HOST="${MEDIAMTX_RTSP_HOST:-127.0.0.1}"
+#   MEDIAMTX_RTSP_HOST="${MEDIAMTX_RTSP_HOST:-192.168.8.160}"
 #   MEDIAMTX_RTSP_PORT="${MEDIAMTX_RTSP_PORT:-8554}"
 #   MEDIAMTX_STREAM_PATH="${MEDIAMTX_STREAM_PATH:-camera}"
 #
@@ -46,14 +56,11 @@
 #   CROP_LEFT=0  CROP_RIGHT=0  CROP_TOP=0  CROP_BOTTOM=0  ← 各邊要裁掉的像素數
 #   FIT_OUTPUT_ASPECT=1                                 ← 自動貼合輸出長寬比
 #   BITRATE=4000000
-#   MEDIAMTX_RTSP_HOST=127.0.0.1  MEDIAMTX_RTSP_PORT=8554   ← 推流目標
+#   MEDIAMTX_RTSP_HOST=<遠端伺服器>  MEDIAMTX_RTSP_PORT=8554   ← 推流目標
 #   MEDIAMTX_STREAM_PATH=camera   (等同 STREAM_PATH，設定檔裡用前綴那個名字)
+#   MEDIAMTX_PUBLISH_USER=  MEDIAMTX_PUBLISH_PASS=   ← 伺服器要認證才需要
 #   RTSP_URL=rtsp://<host>:<port>/<path>  ← 直接蓋掉整條 URL，最高優先
 #   MEDIAMTX_WEBRTC_PORT=8889  MEDIAMTX_API_PORT=9997  ← 只影響印出的網址與查詢
-#   MEDIAMTX_IMAGE=bluenviron/mediamtx:1.20.0  ← 版本與 config/mediamtx.yml 綁定
-#   MEDIAMTX_CONTAINER=mediamtx
-#   MEDIAMTX_CONFIG=<repo>/config/mediamtx.yml
-#   SKIP_MEDIAMTX=0   ← 設 1 則完全不碰 MediaMTX，假設外部已備妥
 #   AUTO_EXPOSURE=0  EXPOSURE=330   (EXPOSURE 只在 AUTO_EXPOSURE=1 時生效)
 #   AUTO_WB=1        WB_TEMP=5000   (WB_TEMP 只在 AUTO_WB=0 時生效)
 #   GAIN=1  BRIGHTNESS=16  POWER_LINE_FREQ=1
@@ -83,11 +90,13 @@
 # =============================================================================
 set -euo pipefail
 
-# 腳本自身的絕對路徑與 repo 根目錄。用絕對路徑是必要的：背景啟動時會重新
-# 呼叫自己，相對路徑在換過工作目錄之後就找不到了。
+# 腳本自身的絕對路徑。用絕對路徑是必要的：背景啟動時會重新呼叫自己，相對路徑
+# 在換過工作目錄之後就找不到了。
+#
+# 不再需要 repo 根目錄：那是以前要拿 config/mediamtx.yml 去 bind mount 才算的，
+# MediaMTX 移到遠端之後這支腳本只讀旁邊的 publish_camera_crop.env。
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIRECTORY="$(dirname "$SCRIPT_PATH")"
-REPOSITORY_ROOT="$(dirname "$SCRIPT_DIRECTORY")"
 
 # -----------------------------------------------------------------------------
 # 載入設定，優先序：命令列環境變數 > publish_camera_crop.env > 腳本預設
@@ -174,57 +183,72 @@ FIT_OUTPUT_ASPECT="${FIT_OUTPUT_ASPECT:-1}"
 BITRATE="${BITRATE:-4000000}"
 
 # -----------------------------------------------------------------------------
-# MediaMTX
+# 推流目標（遠端 MediaMTX）
 #
-# 這支腳本自己把 MediaMTX container 管起來。原因是這個 repo 裡雖然有
-# config/mediamtx.yml，但 docker-compose.yml 並沒有對應的服務定義（CLAUDE.md
-# 說有，實際檔案裡只有 postgres / pgadmin / temporal / temporal_ui），整台機器
-# 上也找不到 mediamtx 執行檔。推流總得有地方去，所以在這裡補上。
+# 沒有 host 的預設值可以撿：伺服器是哪一台是佈署決定的事，寫死一個 IP 只會讓
+# 打錯字的那次變成「推去了某個不知道是誰的位址」。所以留白，缺了就在前置檢查
+# 明確擋下來，並指到設定檔。
 #
-# network host 是必要的，有兩個理由：
-#   1. config/mediamtx.yml 的 authInternalUsers 把 publish 限制在 127.0.0.1，
-#      走 bridge 網路的話推流端的來源位址會是 172.x，過不了認證。
-#   2. WebRTC 的 ICE candidate 必須是真實網路介面，bridge 會讓瀏覽器連不上。
+# 三個 port 都在同一台 host 上。RTSP 是真正推流用的；WEBRTC 與 API 只影響印出來
+# 的觀看網址與 status 的查詢。這些值必須跟伺服器那邊 mediamtx.yml 的
+# rtspAddress / webrtcAddress / apiAddress 對上 —— 那個檔案在伺服器上，不在這個
+# repo 裡（repo 裡的 config/mediamtx.yml 是舊的同機佈署留下來的），所以這裡的
+# 值改不改，本機看不出對錯，要去伺服器上核對。
 #
-# 版本刻意 pin 死，不用 latest：config/mediamtx.yml 的設定鍵是對照 v1.20.0 的
-# 預設值逐項校對過的，而 MediaMTX 遇到不認識的鍵會直接拒絕啟動（不是警告，
-# 是啟動失敗）。設定檔裡明確關掉的 moq 就是例子 —— 它在 v1.20.0 預設為 ON，
-# 還會偷偷佔用 8892/8893 三個 port。這類鍵只要在新版改名或移除，容器就再也
-# 起不來，而且會是在某次無關的 docker pull 之後才爆，很難聯想到原因。
-# 設定檔與 image tag 必須一起改。
-# -----------------------------------------------------------------------------
-MEDIAMTX_IMAGE="${MEDIAMTX_IMAGE:-bluenviron/mediamtx:1.20.0}"
-MEDIAMTX_CONTAINER="${MEDIAMTX_CONTAINER:-mediamtx}"
-MEDIAMTX_CONFIG="${MEDIAMTX_CONFIG:-${REPOSITORY_ROOT}/config/mediamtx.yml}"
-SKIP_MEDIAMTX="${SKIP_MEDIAMTX:-0}"
-
-# -----------------------------------------------------------------------------
-# 推流目標
-#
-# 預設 host 是 loopback 而不是 LAN 位址，這是認證問題不是偏好：mediamtx 把
-# publish 限制在 127.0.0.1/::1（config/mediamtx.yml 的 authInternalUsers），
-# 因為推流端永遠同機。連到 LAN IP 的連線會以那個 LAN IP 當來源位址，過不了 ip
-# 比對，rtspclientsink 會在 RECORD 階段死掉並回報 "Not authorized to access
-# resource" —— 而那時編碼器早就跑起來了，所以看起來像編碼失敗而不是認證失敗。
-#
-# 三個 port 的預設值必須跟 config/mediamtx.yml 的 rtspAddress / webrtcAddress /
-# apiAddress 對上；那個檔案是唯一的真相來源，這裡只是它的鏡像。改一邊要改兩邊。
+# 推得上去的前提是伺服器的 authInternalUsers 允許這台機器 publish。本 repo 附的
+# config/mediamtx.yml 把 publish 限制在 127.0.0.1/::1（那是給「伺服器與推流端同
+# 機」的舊佈署寫的），遠端推流不在允許範圍內：rtspclientsink 會在 RECORD 階段死
+# 掉並回報 "Not authorized to access resource" —— 而那時編碼器早就跑起來了，所以
+# 看起來像編碼失敗而不是認證失敗。伺服器端要嘛把這台的 IP 加進 ips，要嘛給一組
+# 帳密（見下方 MEDIAMTX_PUBLISH_USER / MEDIAMTX_PUBLISH_PASS）。
 #
 # STREAM_PATH 收 MEDIAMTX_STREAM_PATH 當第二層來源，是為了讓設定檔裡的推流目標
 # 三個鍵同前綴、擺在一起看得出是一組（host / port / path）。腳本內部與命令列
 # 仍然用 STREAM_PATH —— PID 檔與日誌檔的命名都掛在它身上。
+#
+# 多台機器推同一個伺服器時，path 要帶機器名當前綴（例如 dogA/camera），否則第二
+# 台推上去會跟第一台搶同一條 path，伺服器只留一個 publisher。
 # -----------------------------------------------------------------------------
-MEDIAMTX_RTSP_HOST="${MEDIAMTX_RTSP_HOST:-127.0.0.1}"
+MEDIAMTX_RTSP_HOST="${MEDIAMTX_RTSP_HOST:-}"
 MEDIAMTX_RTSP_PORT="${MEDIAMTX_RTSP_PORT:-8554}"
 MEDIAMTX_WEBRTC_PORT="${MEDIAMTX_WEBRTC_PORT:-8889}"
 MEDIAMTX_API_PORT="${MEDIAMTX_API_PORT:-9997}"
 
 STREAM_PATH="${STREAM_PATH:-${MEDIAMTX_STREAM_PATH:-camera}}"
-RTSP_URL="${RTSP_URL:-rtsp://${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT}/${STREAM_PATH}}"
+
+# 推流帳密是選用的：伺服器改用 ips 白名單放行這台機器時就不必帶。
+#
+# 只有真的有帳號才組進 URL。空的時候不要留成 rtsp://:@host —— 那是一次帶著空帳號
+# 的認證嘗試，mediamtx 會當成認證失敗而不是「匿名」，跟完全不帶不一樣。
+# 密碼裡有 @ : / 之類的字元要先自己做 percent-encoding，URL 的語法不會幫你跳脫。
+MEDIAMTX_PUBLISH_USER="${MEDIAMTX_PUBLISH_USER:-}"
+MEDIAMTX_PUBLISH_PASS="${MEDIAMTX_PUBLISH_PASS:-}"
+
+RTSP_CREDENTIALS=""
+if [[ -n "$MEDIAMTX_PUBLISH_USER" ]]; then
+  RTSP_CREDENTIALS="${MEDIAMTX_PUBLISH_USER}:${MEDIAMTX_PUBLISH_PASS}@"
+fi
+
+RTSP_URL="${RTSP_URL:-rtsp://${RTSP_CREDENTIALS}${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT}/${STREAM_PATH}}"
+
+# 給日誌與 status 用的版本，密碼遮掉。
+#
+# 推流的日誌是留在 /tmp 的檔案、status 是印在終端機上（常常被貼到聊天室裡），
+# 兩個都不該留下密碼。真正交給 gst-launch 的永遠是未遮蔽的 RTSP_URL。
+redact_rtsp_url() {
+  sed -E 's#(rtsp://[^:/@]+):[^@/]*@#\1:***@#' <<< "$1"
+}
+RTSP_URL_DISPLAY="$(redact_rtsp_url "$RTSP_URL")"
 
 # 背景執行用的 PID 檔與日誌檔。用 STREAM_PATH 命名，讓不同路徑可以並存。
-RUNTIME_PID_FILE="${RUNTIME_PID_FILE:-/tmp/publish_camera_${STREAM_PATH}.pid}"
-RUNTIME_LOG_FILE="${RUNTIME_LOG_FILE:-/tmp/publish_camera_${STREAM_PATH}.log}"
+#
+# 檔名裡的斜線要換掉。推到共用伺服器時 path 通常帶機器名前綴（dogB/camera），
+# 直接嵌進檔名會變成 /tmp/publish_camera_dogB/camera.log —— 那個目錄不存在，
+# 於是背景啟動時連日誌都開不起來，而 start 只會回報「啟動後隨即結束」，看不出
+# 是檔名的問題。
+RUNTIME_NAME="${STREAM_PATH//\//_}"
+RUNTIME_PID_FILE="${RUNTIME_PID_FILE:-/tmp/publish_camera_${RUNTIME_NAME}.pid}"
+RUNTIME_LOG_FILE="${RUNTIME_LOG_FILE:-/tmp/publish_camera_${RUNTIME_NAME}.log}"
 
 # 不管幀率設多少，都維持每半秒一個 IDR
 IDR_INTERVAL=$(( FRAMERATE / 2 ))
@@ -446,168 +470,59 @@ build_crop_arguments() {
 }
 
 # =============================================================================
-# MediaMTX 管理
+# 遠端 MediaMTX
 # =============================================================================
 
-# 確認 image 在本機
+# 確認遠端 MediaMTX 的 RTSP port 接受連線
 #
-# 刻意不在這裡自動 docker pull。推流是即時性的操作，中間插一段不知道要跑多久
-# 的下載（還可能因為沒網路而卡住）會讓這支腳本的行為變得不可預測。image 屬於
-# 環境準備的一部分，事先備妥，這裡只負責明確地說出缺了什麼。
-ensure_mediamtx_image() {
-  if docker image inspect "$MEDIAMTX_IMAGE" >/dev/null 2>&1; then
-    log_debug "MediaMTX image 已存在: $MEDIAMTX_IMAGE"
-    return 0
-  fi
-
-  log_error "本機沒有 image: $MEDIAMTX_IMAGE"
-  log_error "  先下載好再跑:  docker pull $MEDIAMTX_IMAGE"
-  log_error "  沒有外網的話從別台機器搬:  docker save $MEDIAMTX_IMAGE | ssh <host> docker load"
-  exit 1
-}
-
-# 用指定的參數建立並啟動 MediaMTX container
+# 這一步不能省，而且理由跟本機佈署時不一樣：以前是等剛 docker run 起來的
+# container 完成 bind，現在伺服器在別台機器上，它可能沒在跑、網路不通，或位址就
+# 是打錯了。少了這個檢查，rtspclientsink 會 connection refused 然後立刻死掉，而
+# start 是背景執行的，使用者只會看到「啟動後隨即結束」，看不出是網路問題。
 #
-# 抽成一個函式是因為底下有兩個地方要建：完全沒有的時候，以及現有的那個不符
-# 預期而被砍掉重建的時候。參數只寫一份，改的時候不會漏掉其中一處。
-create_mediamtx_container() {
-  docker run -d \
-    --name "$MEDIAMTX_CONTAINER" \
-    --network host \
-    --restart unless-stopped \
-    -v "${MEDIAMTX_CONFIG}:/mediamtx.yml:ro" \
-    "$MEDIAMTX_IMAGE" >/dev/null
-}
-
-# 取得 MediaMTX container 的狀態；不存在時回傳 absent
+# 探測的 host/port 一定要跟 RTSP_URL 同一組變數算出來，不能寫死 8554：改了 port
+# 卻探測舊 port，會變成「等到逾時就放棄」或「探到別的服務就衝出去推流」。
 #
-# 不能直接寫成 `docker inspect ... || echo absent`：container 不存在時
-# docker inspect 會先往 stdout 吐一個空行才以非 0 離開，那樣會得到「空行 +
-# absent」兩行，後面的 case 比對就對不上 absent，會誤走到「嘗試 start」的分支。
-# 取第一行、空的才補 absent。
-get_mediamtx_container_state() {
-  local state
-  state="$(docker inspect -f '{{.State.Status}}' "$MEDIAMTX_CONTAINER" 2>/dev/null | head -1)"
-  echo "${state:-absent}"
-}
-
-# 檢查現有 container 是不是用我們要的 image 跑的
+# 重試 8 次（約 2 秒）而不是以前的 10 秒。遠端服務要嘛在跑要嘛不在，不像本機剛
+# 啟動的 container 需要等它 bind；留幾次重試只是為了容忍 wifi 偶發的封包遺失。
 #
-# 這個檢查是為了版本切換：改了 MEDIAMTX_IMAGE 卻沿用舊 container，跑的還是舊
-# 版本，而設定檔已經換成新版的鍵 —— 那種「明明改了卻沒生效」最難查。
-mediamtx_container_matches_image() {
-  local running_image
-  running_image="$(docker inspect -f '{{.Config.Image}}' "$MEDIAMTX_CONTAINER" 2>/dev/null | head -1)"
-  [[ "$running_image" == "$MEDIAMTX_IMAGE" ]]
-}
-
-# 把 MediaMTX container 拉到「正在執行，而且吃的是正確 image 與最新設定」的狀態
-#
-# 每一種可能的狀態都要處理，因為這個 container 不歸 compose 管，隨時可能被人
-# 手動 docker rm 掉、被 docker system prune 掃掉，或是上一次啟動失敗留下一個
-# created / dead 的殼：
-#   image 不符      → 砍掉重建（版本切換）
-#   running         → restart，確保重新讀取 bind mount 進去的設定檔
-#   不存在          → 直接建
-#   其他 (exited/created/paused/dead) → 先試 start，起不來就砍掉重建
-ensure_mediamtx_running() {
-  if [[ ! -f "$MEDIAMTX_CONFIG" ]]; then
-    log_error "找不到 MediaMTX 設定檔: $MEDIAMTX_CONFIG"
+# 只驗證 TCP 連得上，不驗證認證。認證要到 RECORD 階段才會被拒，那時已經在推流
+# process 裡面了 —— 所以認證失敗的症狀請看日誌 (logs)，不會在這裡攔到。
+check_mediamtx_reachable() {
+  if [[ -z "$MEDIAMTX_RTSP_HOST" ]]; then
+    log_error "沒有設定 MEDIAMTX_RTSP_HOST，不知道要推去哪一台 MediaMTX"
+    log_error "  設定檔:  $CONFIG_ENV_FILE"
+    log_error "  或臨時帶:  MEDIAMTX_RTSP_HOST=<伺服器位址> $(basename "$SCRIPT_PATH")"
     exit 1
   fi
-  log_debug "MediaMTX 設定檔: $MEDIAMTX_CONFIG"
 
-  ensure_mediamtx_image
-
-  # 不存在時 docker inspect 會失敗，統一表示成 absent
-  local container_state
-  container_state="$(get_mediamtx_container_state)"
-  log_debug "MediaMTX container 目前狀態: $container_state"
-
-  # image 對不上就直接重建，不管它現在是什麼狀態
-  if [[ "$container_state" != "absent" ]] && ! mediamtx_container_matches_image; then
-    local previous_image
-    previous_image="$(docker inspect -f '{{.Config.Image}}' "$MEDIAMTX_CONTAINER" 2>/dev/null | head -1)"
-    log_warn "現有 container 用的是 $previous_image，與指定的 $MEDIAMTX_IMAGE 不符，重建"
-    docker rm -f "$MEDIAMTX_CONTAINER" >/dev/null 2>&1 || true
-    container_state="absent"
-  fi
-
-  case "$container_state" in
-    running)
-      log_info "MediaMTX ($MEDIAMTX_CONTAINER) 正在執行，重啟以重新載入設定"
-      docker restart "$MEDIAMTX_CONTAINER" >/dev/null
-      ;;
-    absent)
-      log_info "建立並啟動 MediaMTX container ($MEDIAMTX_CONTAINER, $MEDIAMTX_IMAGE)"
-      create_mediamtx_container
-      ;;
-    *)
-      log_info "MediaMTX container 狀態為 $container_state，嘗試啟動"
-      if ! docker start "$MEDIAMTX_CONTAINER" >/dev/null 2>&1; then
-        log_warn "啟動失敗，移除後重建"
-        docker rm -f "$MEDIAMTX_CONTAINER" >/dev/null 2>&1 || true
-        create_mediamtx_container
-      fi
-      ;;
-  esac
-}
-
-# 等 MediaMTX 的 RTSP port 真的開始接受連線
-#
-# 這一步不能省。docker run 回來只代表 container 建立了，MediaMTX 進程還要幾百
-# 毫秒才會 bind 到 RTSP port。太早開始推流的話 rtspclientsink 會 connection
-# refused 而死，而那個錯誤看起來會像設定寫錯，不像時序問題。
-#
-# 探測的 host/port 一定要跟 RTSP_URL 同一組變數算出來，不能寫死 8554：改了
-# port 卻探測舊 port，會變成「等到逾時就放棄」或「探到別的服務就衝出去推流」。
-wait_for_rtsp_ready() {
-  local max_attempts=40      # 40 x 0.25s = 最多等 10 秒
+  local max_attempts=8      # 8 x 0.25s = 最多等 2 秒
   local attempt=0
 
   while [[ "$attempt" -lt "$max_attempts" ]]; do
     if timeout 1 bash -c "cat < /dev/null > /dev/tcp/${MEDIAMTX_RTSP_HOST}/${MEDIAMTX_RTSP_PORT}" 2>/dev/null; then
-      log_info "MediaMTX 已就緒（RTSP ${MEDIAMTX_RTSP_PORT} 接受連線）"
+      log_info "遠端 MediaMTX 可連線（${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT}）"
       return 0
     fi
     attempt=$(( attempt + 1 ))
     sleep 0.25
   done
 
-  log_error "等待 MediaMTX 就緒逾時（10 秒內 ${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT} 沒有回應）"
-  log_error "  看它的日誌:  docker logs $MEDIAMTX_CONTAINER"
+  log_error "連不到遠端 MediaMTX: ${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT}"
+  log_error "  確認伺服器上的 mediamtx 還在跑，而且 rtspAddress 是這個 port"
+  log_error "  確認網路可達:  ping ${MEDIAMTX_RTSP_HOST}"
+  log_error "  位址設定在:  $CONFIG_ENV_FILE (MEDIAMTX_RTSP_HOST / MEDIAMTX_RTSP_PORT)"
   exit 1
 }
 
-# 停掉 MediaMTX container（保留它，下次 start 直接 start 起來就好）
-stop_mediamtx() {
-  local container_state
-  container_state="$(get_mediamtx_container_state)"
-
-  case "$container_state" in
-    absent)
-      log_info "MediaMTX container 不存在，不需要停止"
-      ;;
-    running)
-      log_info "停止 MediaMTX container ($MEDIAMTX_CONTAINER)"
-      docker stop "$MEDIAMTX_CONTAINER" >/dev/null
-      ;;
-    *)
-      log_info "MediaMTX container 已經不在執行中（狀態 $container_state）"
-      ;;
-  esac
-}
-
-# 列出所有可以看串流的網址
+# 列出可以看串流的網址
 #
-# scope global 會濾掉 loopback；一台機器可能有多張網卡，全部列出來省得自己查。
+# 只印伺服器那台的位址。以前這裡是列本機每一張網卡的 IP —— 那是 MediaMTX 跑在本機
+# 時才成立的做法；伺服器搬到遠端之後，印本機 IP 會給出一組連不上的網址，比不印
+# 更糟。
 print_viewing_urls() {
-  local address
-  while read -r address; do
-    [[ -z "$address" ]] && continue
-    log_info "   RTSP   rtsp://${address}:${MEDIAMTX_RTSP_PORT}/${STREAM_PATH}"
-    log_info "   WHEP   http://${address}:${MEDIAMTX_WEBRTC_PORT}/${STREAM_PATH}"
-  done < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+  log_info "   RTSP   rtsp://${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT}/${STREAM_PATH}"
+  log_info "   WHEP   http://${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_WEBRTC_PORT}/${STREAM_PATH}"
 }
 
 # =============================================================================
@@ -744,7 +659,7 @@ cmd_run_pipeline() {
     exit 1
   fi
 
-  log_info "推流 ${DEVICE} 擷取 ${SRC_WIDTH}x${SRC_HEIGHT}@${FRAMERATE} → 輸出 ${OUT_WIDTH}x${OUT_HEIGHT} → ${RTSP_URL}"
+  log_info "推流 ${DEVICE} 擷取 ${SRC_WIDTH}x${SRC_HEIGHT}@${FRAMERATE} → 輸出 ${OUT_WIDTH}x${OUT_HEIGHT} → ${RTSP_URL_DISPLAY}"
   log_info "感測器控制: ${sensor_controls}"
   log_info "位元率 ${BITRATE} bps，IDR 間隔 ${IDR_INTERVAL} 幀（約 0.5 秒）"
 
@@ -772,12 +687,7 @@ cmd_foreground() {
   check_device_not_busy
   check_gstreamer_elements
 
-  if [[ "$SKIP_MEDIAMTX" == "1" ]]; then
-    log_info "SKIP_MEDIAMTX=1，跳過 MediaMTX 的啟動"
-  else
-    ensure_mediamtx_running
-    wait_for_rtsp_ready
-  fi
+  check_mediamtx_reachable
 
   log_info "──────────────────────────────────────────────"
   log_info " 可以從這些網址看到畫面:"
@@ -801,14 +711,9 @@ cmd_start() {
   check_device_not_busy
   check_gstreamer_elements
 
-  # 順序不能反：推流端找不到伺服器會直接死掉，所以 MediaMTX 必須先起來並且
-  # 確認接受連線，才輪到推流。
-  if [[ "$SKIP_MEDIAMTX" == "1" ]]; then
-    log_info "SKIP_MEDIAMTX=1，跳過 MediaMTX 的啟動"
-  else
-    ensure_mediamtx_running
-    wait_for_rtsp_ready
-  fi
+  # 先確認伺服器連得上再開相機：推流端找不到伺服器會直接死掉，而那時相機已經被
+  # 開過一次，restart 之後緊接著再開會撞到 Device or resource busy。
+  check_mediamtx_reachable
 
   log_info "背景啟動推流，日誌寫到 $RUNTIME_LOG_FILE"
 
@@ -837,14 +742,13 @@ cmd_start() {
   log_info " 日誌:  $(basename "$SCRIPT_PATH") logs"
 }
 
-# 停止推流與 MediaMTX
+# 停止推流
+#
+# 只停本機的推流 process。伺服器是別人的、可能還有其他機器在推，這裡不會、也不
+# 應該去動它 —— 以前這支腳本會順手 docker stop 本機那個 container，那在遠端佈署
+# 下等於「停我的攝影機順便把全隊的匯流伺服器關掉」。
 cmd_stop() {
   stop_pipeline
-  if [[ "$SKIP_MEDIAMTX" == "1" ]]; then
-    log_info "SKIP_MEDIAMTX=1，不動 MediaMTX"
-  else
-    stop_mediamtx
-  fi
   log_info "已停止"
 }
 
@@ -857,15 +761,19 @@ cmd_restart() {
 
 # 顯示目前狀態
 cmd_status() {
-  local live_pid container_state
+  local live_pid
   live_pid="$(read_live_pipeline_pid)"
-  container_state="$(get_mediamtx_container_state)"
 
-  echo "MediaMTX"
-  echo "  container : $MEDIAMTX_CONTAINER"
-  echo "  image     : $MEDIAMTX_IMAGE"
-  echo "  狀態      : $container_state"
-  echo "  設定檔    : $MEDIAMTX_CONFIG"
+  echo "MediaMTX（遠端，不由這支腳本管理）"
+  echo "  伺服器    : ${MEDIAMTX_RTSP_HOST:-<未設定>}"
+  echo "  RTSP port : $MEDIAMTX_RTSP_PORT"
+  if [[ -z "$MEDIAMTX_RTSP_HOST" ]]; then
+    echo "  可連線    : -"
+  elif timeout 1 bash -c "cat < /dev/null > /dev/tcp/${MEDIAMTX_RTSP_HOST}/${MEDIAMTX_RTSP_PORT}" 2>/dev/null; then
+    echo "  可連線    : 是"
+  else
+    echo "  可連線    : 否"
+  fi
   echo ""
   echo "推流"
   if [[ -n "$live_pid" ]]; then
@@ -877,33 +785,31 @@ cmd_status() {
   echo "  擷取      : ${SRC_WIDTH}x${SRC_HEIGHT}@${FRAMERATE}"
   echo "  輸出      : ${OUT_WIDTH}x${OUT_HEIGHT}"
   echo "  裁切      : 左${CROP_LEFT} 右${CROP_RIGHT} 上${CROP_TOP} 下${CROP_BOTTOM}"
-  echo "  目標      : $RTSP_URL"
+  echo "  目標      : $RTSP_URL_DISPLAY"
   echo "  日誌      : $RUNTIME_LOG_FILE"
   echo "  設定來源  : $CONFIG_ENV_FILE"
   echo ""
 
-  # 問 MediaMTX 的控制 API 這條 path 到底有沒有真的在收流。
-  # 這是唯一能確認「串流真的活著」的方法 —— process 活著不代表資料有進去。
-  if [[ "$container_state" == "running" ]]; then
+  # 問伺服器的控制 API 這條 path 到底有沒有真的在收流。
+  # 這是唯一能確認「串流真的活著」的方法 —— 本機的 process 活著不代表資料進得去。
+  #
+  # 查不到不代表串流有問題：mediamtx 的 apiAddress 通常只綁在伺服器自己的
+  # loopback（本 repo 的 config/mediamtx.yml 就是這樣），從這台機器問過去本來就
+  # 連不上。所以失敗只印一行提示，不當成錯誤，也不影響 exit code。
+  if [[ -n "$MEDIAMTX_RTSP_HOST" ]]; then
     echo "MediaMTX 回報的 path 狀態"
     if command -v curl >/dev/null 2>&1; then
-      curl -s --max-time 3 "http://127.0.0.1:${MEDIAMTX_API_PORT}/v3/paths/list" 2>/dev/null \
+      curl -s --max-time 3 "http://${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_API_PORT}/v3/paths/list" 2>/dev/null \
         | sed 's/,/,\n/g' | grep -E '"name"|"ready"|"tracks"|"bytesReceived"' | sed 's/^/  /' \
-        || echo "  (查詢失敗)"
+        || echo "  (查詢失敗；控制 API 多半只開在伺服器本機，屬正常)"
     else
       echo "  (沒有 curl，跳過)"
     fi
     echo ""
-  fi
 
-  if [[ "$container_state" == "running" ]]; then
     echo "觀看網址"
-    local address
-    while read -r address; do
-      [[ -z "$address" ]] && continue
-      echo "  RTSP   rtsp://${address}:${MEDIAMTX_RTSP_PORT}/${STREAM_PATH}"
-      echo "  WHEP   http://${address}:${MEDIAMTX_WEBRTC_PORT}/${STREAM_PATH}"
-    done < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    echo "  RTSP   rtsp://${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_RTSP_PORT}/${STREAM_PATH}"
+    echo "  WHEP   http://${MEDIAMTX_RTSP_HOST}:${MEDIAMTX_WEBRTC_PORT}/${STREAM_PATH}"
   fi
 }
 
@@ -921,8 +827,8 @@ cmd_usage() {
 用法: $(basename "$SCRIPT_PATH") [子命令]
 
   (無)        等同 start
-  start       背景啟動 MediaMTX 與推流
-  stop        停止推流與 MediaMTX
+  start       背景啟動推流（MediaMTX 是遠端既有的服務，不由這裡啟動）
+  stop        停止推流（不會動到遠端的 MediaMTX）
   restart     重啟
   status      顯示狀態、串流是否真的在收流、觀看網址
   logs        追推流日誌 (tail -f)
@@ -933,6 +839,7 @@ cmd_usage() {
   裁切與尺寸    CROP_* / SRC_* / OUT_*
   推流目標      MEDIAMTX_RTSP_HOST / MEDIAMTX_RTSP_PORT / MEDIAMTX_STREAM_PATH
                 （或直接帶完整的 RTSP_URL 蓋掉整條）
+  推流認證      MEDIAMTX_PUBLISH_USER / MEDIAMTX_PUBLISH_PASS（伺服器要求才需要）
 命令列上臨時帶的環境變數優先於設定檔。
 USAGE
 }
