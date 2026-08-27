@@ -34,8 +34,17 @@
 #     extrinsic moved into the URDF, because a height-only argument could not
 #     carry the pitch.
 #   * The Livox MID360 / MID360s point cloud, via the livox_ros_driver2 node.
-#   * Optionally the TechNexion VCS-AR0234-C camera's IMU / image / camera_info,
-#     via vizionsdk_ros2. Off by default — see the use_camera argument.
+#   * Optionally a TechNexion camera's image via vizionsdk_ros2 — see the
+#     use_camera argument. Image only: NEITHER unit on this Jetson has usable
+#     intrinsics (VxGetIntrinsics answers "Invalid intrinsics calibration
+#     data"), so camera_info is never published and anything needing a
+#     projection matrix has to get it elsewhere. And NOT the IMU: the
+#     VCS-AR0234-C
+#     answers VxEnableIMUMode with "Reset IMU mode is not supported on this
+#     device", which is why params/bringup.yaml pins publish_imu: false. Leave
+#     it false — the node throws out of its constructor on that error and then
+#     segfaults during teardown (exit code -11), so the useful message scrolls
+#     past behind a crash.
 #
 # The camera is the one sensor here that is NOT started by default, and that is
 # a deliberate regression guard rather than an oversight. /dev/video0 is a V4L2
@@ -495,9 +504,11 @@ def launch_setup(context, *args, **kwargs):
                     {
                         # Appended after the params file so they win over it.
                         # The frames need the resolved robot_id; device_index is
-                        # an argument because the Jetson enumerates two
-                        # VCS-AR0234-C units (usb-3.1 and usb-3.4) and only the
-                        # first is passed into the container today.
+                        # an argument because the Jetson carries two cameras of
+                        # different models and both are reachable in-container
+                        # (docker-compose passes all of /dev/video0..3 through).
+                        # See the argument's declaration for which index is
+                        # which, and for why 1 is not a drop-in for 0.
                         "imu_frame_id": f"{robot_id}/{CAMERA_IMU_FRAME}",
                         "image_frame_id": f"{robot_id}/{CAMERA_OPTICAL_FRAME}",
                         "device_index": int(
@@ -539,7 +550,7 @@ def generate_launch_description():
 
     declare_use_camera = DeclareLaunchArgument(
         "use_camera",
-        default_value="true",
+        default_value="false",
         description="Start the VizionSDK camera node. Default false: "
         "/dev/video0 takes one streaming opener and scripts/publish_camera.sh "
         "(RTSP -> MediaMTX -> the frontend's WebRTC view) already holds it. "
@@ -550,9 +561,15 @@ def generate_launch_description():
         "camera_device_index",
         default_value="0",
         description="VizionSDK camera index, as reported by "
-        "`ros2 run vizionsdk_ros2 list_devices`. The Jetson has two "
-        "VCS-AR0234-C units but docker-compose.robots.yml passes only "
-        "/dev/video0 through, so 0 is the only index reachable in-container",
+        "`ros2 run vizionsdk_ros2 list_devices`. The Jetson carries two "
+        "TechNexion cameras of DIFFERENT models and compose passes all four "
+        "/dev/video* nodes through, so both indices are reachable: 0 is the "
+        "VCS-AR0234-C (/dev/video0, up to 1920x1200), 1 the VCI-AR0144-C "
+        "(/dev/video2, up to 1280x800). 1 is not a drop-in for 0 — that unit "
+        "delivers no frames at all under image_format: auto, which picks UYVY "
+        "1280x800@60 and then times out in VxGetImage; it needs the MJPG the "
+        "YAML already pins. Index 0 at that MJPG 1280x720@60 measures ~58 Hz "
+        "on image_raw/compressed",
     )
 
     return LaunchDescription(

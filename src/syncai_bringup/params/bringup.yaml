@@ -78,11 +78,27 @@
   ros__parameters:
     use_sim_time: false
 
-    # IMU is the reason to run this node at all today: it is the only way to get
-    # the AR0234 module's ISPU out over ROS. Images stay off because the RTSP /
-    # WebRTC path already owns /dev/video0 — flipping publish_image to true is
-    # what makes this node a *streaming* opener and takes the device away from
-    # scripts/publish_camera.sh. See the header of bringup.launch.py.
+    # publish_imu MUST stay false. The plan was the opposite — the IMU was the
+    # reason to run this node at all, as the only way to get the AR0234 module's
+    # ISPU out over ROS — but the unit on this Jetson answers VxEnableIMUMode
+    # with "Reset IMU mode is not supported on this device". vizionsdk_ros2
+    # turns that into a throw out of the constructor and then segfaults in
+    # teardown (exit code -11), so a true here does not degrade to "camera
+    # without IMU", it kills the node. The imu_* settings below are therefore
+    # unread today; they are kept for a module that does support it.
+    #
+    # publish_image being true makes this node a *streaming* opener, which takes
+    # /dev/video0 away from whoever else has it — the device admits exactly one.
+    # scripts/publish_camera.sh (RTSP -> MediaMTX -> the frontend's WebRTC view)
+    # is the documented other consumer, but it is not the only one that has
+    # shown up: a host-side joystick UI outside this repo
+    # (~/controller/src/controller/HTML_joy_controller.py) opens /dev/video0
+    # with OpenCV too, and while it runs this node dies with
+    # "VxStartStreaming failed" / GStreamer EOS. Before blaming the container,
+    # check the device on the HOST:
+    #   v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1
+    # "VIDIOC_REQBUFS returned -1 (Device or resource busy)" means someone else
+    # owns it; `fuser -v /dev/video0` names them.
     publish_imu: false
     publish_image: true
 
@@ -102,9 +118,15 @@
     # Only read when publish_image is true. MJPG rather than UYVY because the
     # node publishes it straight to image_raw/compressed: UYVY would put
     # 1280*720*2 bytes on the wire per frame and still need the separate
-    # yuv422_to_bgr_node to be viewable. 1280x720 at 60 matches the defaults in
-    # scripts/publish_camera.sh, and 60 is not a stylistic choice — this camera
-    # advertises only 60 and 120 fps at 720p, no 30 (v4l2-ctl --list-formats-ext).
+    # yuv422_to_bgr_node to be viewable. Spelling MJPG out also matters for
+    # device_index 1: image_format "auto" picks that unit's UYVY 1280x800@60 and
+    # then never gets a frame (VxGetImage times out at -1 forever, though raw
+    # v4l2-ctl streams the same format fine), while MJPG works.
+    # 1280x720 at 60 matches the defaults in scripts/publish_camera.sh, and 60
+    # is not a stylistic choice — the AR0234 at device_index 0 advertises only
+    # 60 and 120 fps at 720p, no 30 (v4l2-ctl --list-formats-ext). The AR0144 at
+    # index 1 is the other way round (30 and 60, no 120), so 60 is the one rate
+    # both units accept and this block stays valid for either.
     # image_rate_hz 0.0 means "publish at the negotiated format's rate".
     image_format: "MJPG"
     image_width: 1280

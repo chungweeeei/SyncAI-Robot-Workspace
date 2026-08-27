@@ -135,10 +135,12 @@ services:
       # camera node dies with "No Vizion camera found for device_index 0",
       # with a perfectly good device node sitting next to it.
       #
-      # Individual numbers are NOT stable: this Jetson carries two
-      # VCS-AR0234-C units (usb-3.1 and usb-3.4), each claiming two nodes
-      # (index0 = capture, index1 = UVC metadata), and which minor a port gets
-      # depends on probe order. The SET {video0..video3} IS stable, though, so
+      # Individual numbers are NOT stable: this Jetson carries two TechNexion
+      # cameras of DIFFERENT models (VCS-AR0234-C on usb-1, VCI-AR0144-C on
+      # usb-2 — different max resolutions, so not an interchangeable pair),
+      # each claiming two nodes (index0 = capture, index1 = UVC metadata), and
+      # which minor a port gets depends on probe order. The SET
+      # {video0..video3} IS stable, though, so
       # all four are passed and the old CAMERA_DEV/.env override that
       # re-pointed the passthrough whenever the numbering moved is gone.
       # "Which physical camera is which" is answered by the /dev/syncai/*
@@ -147,8 +149,8 @@ services:
       # that fell off the bus should not come up looking healthy.
       #
       # With both units openable, the SDK's device_index 0 is the
-      # lowest-numbered capture node — the usb-3.1 unit under normal probe
-      # order (ports enumerate in order), which is what bringup.launch.py's
+      # lowest-numbered capture node — the usb-1 unit (the AR0234) under normal
+      # probe order (ports enumerate in order), which is what bringup.launch.py's
       # camera_device_index default of 0 has always addressed. If a shuffled
       # boot is ever observed, the fix is to select by /dev/syncai/camera0 in
       # the camera node, not to remap names here (see above).
@@ -184,8 +186,9 @@ services:
     volumes:
       # Stable device names from syncai_sys_manager's udev rules
       # (udev/99-syncai-devices.rules, installed on the HOST — udev does not
-      # run in here): camera0/camera1 are the capture nodes keyed to USB ports
-      # 2-3.1 / 2-3.4, speaker/speaker_pcm the CD002-AUDIO dongle. Bind-mounted
+      # run in here): camera0/camera1 are the capture nodes keyed to the two
+      # cameras' USB product IDs (with camera_ar0234 / camera_ar0144 aliases),
+      # speaker/speaker_pcm the CD002-AUDIO dongle. Bind-mounted
       # as a directory rather than passed as devices so udev re-creating a
       # symlink on replug is visible in here without a container recreate, and
       # the links resolve because the real /dev/video* and /dev/snd nodes

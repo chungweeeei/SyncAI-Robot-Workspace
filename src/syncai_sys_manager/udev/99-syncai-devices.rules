@@ -12,22 +12,37 @@
 # passthrough no longer depends on kernel enumeration order.
 
 # ── Cameras ──────────────────────────────────────────────────────────────────
-# Both cameras are the same model (TechNexion VCS-AR0234-C, 3407:57d1), so
-# vendor/product IDs cannot tell them apart. We key on the USB port path
-# instead of the device serial number: the port is fixed by the chassis
-# wiring, so a swapped or RMA'd camera keeps its name, whereas serial-based
-# rules would follow the individual unit around.
+# Two TechNexion UVC cameras, and they are NOT the same model:
 #
-#   port 2-3.1 → camera0   (enumerates first; today's /dev/video0)
-#   port 2-3.4 → camera1   (today's /dev/video2)
+#   3407:57d1  VCS-AR0234-C → camera0   (1920x1200 max, today's /dev/video0)
+#   3407:0144  VCI-AR0144-C → camera1   (1280x800  max, today's /dev/video2)
+#
+# So the match is on vendor/product ID. An earlier version of these rules keyed
+# on the USB port path instead (KERNELS=="2-3.1" / "2-3.4"), on the assumption
+# that both units were VCS-AR0234-C and only the port could tell them apart.
+# Both halves of that turned out wrong and the rules silently matched nothing —
+# no /dev/syncai/camera* at all, while the speaker rules below worked fine:
+# the second unit is a different model, and the cameras are no longer behind
+# the hub the 2-3.x paths described (they sit directly on 2-1 / 2-2 today).
+# Product IDs also survive a re-cable, which the port path does not — and the
+# port path was never the property we actually cared about.
+#
+# Should the fleet ever carry two units of the SAME model, port-path or serial
+# matching comes back for that pair; keep this file the place that decision is
+# recorded.
+#
+# The differing sensors are load-bearing, not trivia: the two cameras have
+# different maximum resolutions and frame rates, so they are not interchangeable
+# left/right halves of a pair. The model alias on each line exists so a consumer
+# can say which sensor it wants without having to know the numbering.
 #
 # Each UVC camera exposes TWO video4linux nodes: index 0 is the actual video
 # capture node, index 1 is a UVC metadata node that produces no frames. That
 # is why /dev/video1 and /dev/video3 exist but are useless as cameras — the
 # ATTR{index}=="0" match below skips the metadata nodes so the symlinks can
 # never land on one.
-SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", KERNELS=="2-3.1", SYMLINK+="syncai/camera0"
-SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", KERNELS=="2-3.4", SYMLINK+="syncai/camera1"
+SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", SYMLINK+="syncai/camera0", SYMLINK+="syncai/camera_ar0234"
+SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="0144", SYMLINK+="syncai/camera1", SYMLINK+="syncai/camera_ar0144"
 
 # ── Speaker ──────────────────────────────────────────────────────────────────
 # USB audio dongle (Jieli CD002-AUDIO, e2b8:0811). Its ALSA card number is
