@@ -71,7 +71,7 @@ class MapGateway:
             srv_type=LoadMap,
             srv_name="map_server/load_map",
         )
-ㄋ
+
         save_maps_client = self._node.create_client(
             srv_type=SaveMaps,
             srv_name="pgo/save_maps",

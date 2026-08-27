@@ -15,7 +15,18 @@ site needs that again, recover the tool from git history or eyeball the bands
 off the 3D view — the backend itself always converts with the fixed recipe in
 the map router.
 
-Cell classification (unchanged from the tool):
+This module holds two conversions, and they answer opposite questions.
+``convert_pcd_to_gridmap`` classifies cells by height band — the recipe every
+gridmap on the fleet was built with, described below.
+``convert_traversable_to_gridmap`` takes an already-segmented traversable cloud
+(from ``helpers/traversable.py``) and marks everything it does not cover as
+occupied. They share this module because they share an output contract — one
+``.pgm`` plus one ``.yaml`` under the same basename, in the pcd's own frame —
+and because both are pure numpy/scipy: the segmentation pipeline that feeds the
+second one needs open3d, and it stays out of here so the map router's
+module-level import does not pull open3d into every backend start.
+
+Cell classification for ``convert_pcd_to_gridmap`` (unchanged from the tool):
   occupied : >= ``min_points`` points inside the obstacle z-band [zmin, zmax]
   free     : an "observed" cell that is not occupied, where observed depends on
              ``free_mode`` — ``floor`` needs points in [floor_zmin, floor_zmax],
@@ -28,7 +39,7 @@ underlying ``OSError`` — the caller decides how to report them.
 
 import os
 import tempfile
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import structlog
@@ -128,6 +139,45 @@ def _write_yaml_atomic(path: str, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _write_gridmap(
+    logger: structlog.stdlib.BoundLogger,
+    output_basename: str,
+    grid: np.ndarray,
+    origin_xy: np.ndarray,
+    resolution: float,
+) -> None:
+    """Write ``grid`` as ``<basename>.pgm`` plus its ``.yaml``, bottom row first.
+
+    Shared by both conversions in this module so a map is indistinguishable
+    whichever recipe produced it — same header, same yaml key order, same
+    ``origin`` spelling. ``grid`` is indexed ``[row, col]`` with row 0 at
+    **min y**; the flip to pgm order (row 0 = top = max y) happens here, in one
+    place, because getting it wrong hands nav2 a mirrored map that localizes
+    fine near the origin and diverges across the site.
+    """
+    height, width = grid.shape
+    os.makedirs(os.path.dirname(output_basename) or ".", exist_ok=True)
+    pgm_path = output_basename + ".pgm"
+    yaml_path = output_basename + ".yaml"
+    # write_pgm rather than a bare open(.., "wb"): the catalogue and map_server
+    # can read a freshly converted map at any moment, and this also keeps the
+    # header byte-identical to an edited-and-saved one.
+    write_pgm(pgm_path, width, height, np.flipud(grid).tobytes())
+    # Hand-formatted, not yaml.dump — same reason MapCatalogRepo.write_gridmap
+    # never touches this file: image: must stay the relative basename.
+    _write_yaml_atomic(
+        yaml_path,
+        f"image: {os.path.basename(pgm_path)}\n"
+        f"mode: trinary\n"
+        f"resolution: {resolution}\n"
+        f"origin: [{origin_xy[0]:.6f}, {origin_xy[1]:.6f}, 0.0]\n"
+        f"negate: 0\n"
+        f"occupied_thresh: 0.65\n"
+        f"free_thresh: 0.196\n",
+    )
+    logger.info("wrote gridmap", pgm=pgm_path, yaml=yaml_path)
 
 
 def convert_pcd_to_gridmap(
@@ -277,26 +327,104 @@ def convert_pcd_to_gridmap(
         unknown=width * height - occ - fre,
     )
 
-    # Row 0 of a pgm is the TOP of the map (max y) -> flip.
-    img = np.flipud(grid)
+    _write_gridmap(logger, output_basename, grid, min_xy, resolution)
 
-    os.makedirs(os.path.dirname(output_basename) or ".", exist_ok=True)
-    pgm_path = output_basename + ".pgm"
-    yaml_path = output_basename + ".yaml"
-    # write_pgm rather than a bare open(.., "wb"): the catalogue and map_server
-    # can read a freshly converted map at any moment, and this also keeps the
-    # header byte-identical to an edited-and-saved one.
-    write_pgm(pgm_path, width, height, img.tobytes())
-    # Hand-formatted, not yaml.dump — same reason MapCatalogRepo.write_gridmap
-    # never touches this file: image: must stay the relative basename.
-    _write_yaml_atomic(
-        yaml_path,
-        f"image: {os.path.basename(pgm_path)}\n"
-        f"mode: trinary\n"
-        f"resolution: {resolution}\n"
-        f"origin: [{min_xy[0]:.6f}, {min_xy[1]:.6f}, 0.0]\n"
-        f"negate: 0\n"
-        f"occupied_thresh: 0.65\n"
-        f"free_thresh: 0.196\n",
+
+def convert_traversable_to_gridmap(
+    logger: structlog.stdlib.BoundLogger,
+    cloud: Union[str, np.ndarray],
+    output_basename: str,
+    *,
+    resolution: float = 0.05,
+    padding: float = 1.0,
+    gap_fill_size: float = 0.60,
+) -> None:
+    """Project an already-segmented traversable cloud into a 2D grid.
+
+    The counterpart to ``convert_pcd_to_gridmap`` and the third stage of the
+    pipeline in ``helpers/traversable.py`` (read that module's docstring for why
+    there are two recipes). It inverts this one's question: rather than asking
+    which cells hold an obstacle, it takes the input cloud as the definitive
+    statement of where the robot may drive and marks **everything else
+    occupied**.
+
+    That inversion is why the output has no unknown cells. It is the safe
+    direction — unobserved area comes out as wall rather than as free space the
+    planner will route through — but it is also unforgiving: area the
+    segmentation wrongly rejected becomes a wall the robot will not cross, and
+    the ``padding`` ring around the map is solid black by construction. Feed
+    this a repaired ground cloud, not a raw floor slice.
+
+    ``cloud`` is a path to a pcd or an (N, 3) array — the latter is what
+    ``build_traversable_cloud`` returns, and taking it keeps this module free of
+    open3d.
+
+    ``gap_fill_size`` (metres) is the one parameter a site normally needs tuned,
+    and the offline tool's ReadMe says so. It is the widest hole in the input
+    cloud that gets bridged, applied as a morphological closing. Too small and a
+    sparsely sampled aisle reads as a field of obstacles; too large and a real
+    obstacle standing in the middle of the floor gets closed over and
+    disappears — which is the failure to watch for, so lower it if the grid
+    loses obstacles the pcd clearly shows.
+    """
+    xyz = read_pcd_xyz(cloud).astype(np.float32) if isinstance(cloud, str) else cloud
+    xyz = np.asarray(xyz, dtype=np.float32)
+    if xyz.ndim != 2 or xyz.shape[1] < 2:
+        raise ValueError(f"expected an (N, 3) cloud, got shape {xyz.shape}")
+    if len(xyz) == 0:
+        raise ValueError("traversable cloud is empty — the segmentation rejected everything")
+
+    min_xy = xyz[:, :2].min(axis=0) - padding
+    max_xy = xyz[:, :2].max(axis=0) + padding
+    width = int(np.ceil((max_xy[0] - min_xy[0]) / resolution))
+    height = int(np.ceil((max_xy[1] - min_xy[1]) / resolution))
+    if width * height > 200_000_000:
+        raise ValueError(f"grid {width}x{height} too large — wrong resolution?")
+    logger.info(
+        "traversable gridmap geometry",
+        points=len(xyz),
+        width=width,
+        height=height,
+        resolution=resolution,
+        origin_x=round(float(min_xy[0]), 3),
+        origin_y=round(float(min_xy[1]), 3),
     )
-    logger.info("wrote gridmap", pgm=pgm_path, yaml=yaml_path)
+
+    ix = ((xyz[:, 0] - min_xy[0]) / resolution).astype(np.int64).clip(0, width - 1)
+    iy = ((xyz[:, 1] - min_xy[1]) / resolution).astype(np.int64).clip(0, height - 1)
+    free_mask = np.zeros((height, width), dtype=bool)
+    free_mask[iy, ix] = True
+
+    if gap_fill_size > 0:
+        # A disk of this radius, not the offline tool's cv2.MORPH_ELLIPSE of
+        # diameter ceil(gap_fill_size/resolution): the two are the same
+        # structuring element to within a cell, and _disk keeps this module on
+        # scipy alone. opencv is in the backend's requirements, but only the PNG
+        # encoder in helpers/pgm.py needs it and this pass has no reason to
+        # widen that.
+        radius = max(1, int(np.ceil(gap_fill_size / resolution)) // 2)
+        closed = ndimage.binary_closing(free_mask, structure=_disk(radius))
+        logger.info(
+            "traversable gap fill",
+            gap_fill_size=gap_fill_size,
+            radius=radius,
+            added_cells=int(closed.sum() - free_mask.sum()),
+        )
+        free_mask = closed
+
+    # Same nav2 pgm convention as the z-band recipe, so the gridmap editor, the
+    # thumbnail renderer and syncai_map_server all read this map unchanged: 0 =
+    # occupied, 254 = free. 254 and not the offline tool's 255 — 255 is what
+    # helpers/occupancy_grid.py renders a *free* OccupancyGrid cell as, but every
+    # .pgm on this stack writes 254, and read-modify-write through the editor
+    # would otherwise rewrite the values anyway.
+    grid = np.zeros((height, width), dtype=np.uint8)
+    grid[free_mask] = 254
+    free_cells = int(free_mask.sum())
+    logger.info(
+        "traversable gridmap cells",
+        free=free_cells,
+        occupied=width * height - free_cells,
+    )
+
+    _write_gridmap(logger, output_basename, grid, min_xy, resolution)

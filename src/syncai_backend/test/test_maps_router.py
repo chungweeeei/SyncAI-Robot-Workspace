@@ -10,8 +10,12 @@ status-code mapping is the real one. Repos are real, over a tmp_path maps tree a
 in-memory SQLite.
 """
 
+import builtins
 import os
 import struct
+import sys
+import threading
+import types
 
 import pytest
 
@@ -22,10 +26,12 @@ pytest.importorskip("yaml")
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
+import yaml  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from syncai_backend.helpers.system_config import SYSTEM_INI_ENV  # noqa: E402
+from syncai_backend.interfaces.rest.routers import map as map_router_module  # noqa: E402
 from syncai_backend.interfaces.rest.routers.map import init_map_router  # noqa: E402
 from syncai_backend.interfaces.rest.server import (  # noqa: E402
     register_exception_handlers,
@@ -528,3 +534,170 @@ def test_failed_save_unwinds_the_directory(client, map_gw, catalog_repo):
     assert response.status_code == 502
     assert response.json()["detail"] == "NO POSES!"
     assert not os.path.exists(catalog_repo.resolve_dir("newmap"))
+
+
+# --- the background gridmap conversion ---------------------------------------
+#
+# _start_grid_conversion is exercised directly rather than through POST
+# /api/v1/maps: the route answers as soon as the pcd is on disk and the
+# conversion runs on a daemon thread, so going through the client would mean
+# asserting against a race.
+
+
+@pytest.fixture
+def conversion_threads(monkeypatch):
+    """Every Thread the code under test starts, plus anything that escaped one.
+
+    Looking the thread up in ``threading.enumerate()`` by name is the obvious
+    alternative and it is racy in both directions: a conversion that finishes
+    before the lookup is already gone from the list, so "not found" cannot tell
+    "done" from "never started".
+
+    The ``excepthook`` half is what makes the failure cases mean anything. Every
+    assertion there is about a file *not* appearing, and a thread that died on an
+    unhandled exception satisfies that just as well as one that logged and
+    returned — which is exactly how an ImportError raised outside the handler's
+    try block passed as a green test once already.
+    """
+    class _Threads(list):
+        """A list with room for the escaped-exception log."""
+
+        escaped: list
+
+    started = _Threads()
+    escaped = []
+    real_thread = threading.Thread
+
+    def _record(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        started.append(thread)
+        return thread
+
+    monkeypatch.setattr(threading, "Thread", _record)
+    monkeypatch.setattr(threading, "excepthook", lambda args: escaped.append(args))
+    started.escaped = escaped
+    return started
+
+
+def _join(threads, timeout=10.0):
+    """Join every recorded thread and assert none of them died on an exception."""
+    for thread in threads:
+        thread.join(timeout)
+        assert not thread.is_alive(), f"{thread.name} did not finish"
+    assert not threads.escaped, (
+        "an exception escaped the conversion thread: "
+        + ", ".join(f"{a.exc_type.__name__}: {a.exc_value}" for a in threads.escaped)
+    )
+
+
+@pytest.fixture
+def fake_traversable(monkeypatch):
+    """Stand in for helpers.traversable, which needs open3d.
+
+    The route imports it *inside* the thread body, so injecting a module into
+    ``sys.modules`` is enough — and that indirection is itself worth pinning: a
+    module-level import would pull open3d into every backend start.
+    """
+    module = types.ModuleType("syncai_backend.helpers.traversable")
+    module.calls = []
+    module.raises = None
+
+    def build_traversable_cloud(logger, pcd_path, *, segment, repair, debug_dir):
+        module.calls.append(
+            dict(pcd_path=pcd_path, segment=segment, repair=repair, debug_dir=debug_dir)
+        )
+        if module.raises is not None:
+            raise module.raises
+        # A 2 m x 2 m sheet at 5 cm, i.e. a plausible repaired floor.
+        axis = np.arange(0.0, 2.0, 0.05)
+        xx, yy = np.meshgrid(axis, axis)
+        return np.column_stack([xx.ravel(), yy.ravel(), np.zeros(xx.size)])
+
+    module.build_traversable_cloud = build_traversable_cloud
+    monkeypatch.setitem(sys.modules, "syncai_backend.helpers.traversable", module)
+    return module
+
+
+@pytest.fixture
+def saved_map(maps_dir, make_pcd):
+    """A map directory with a map.pcd in it, as pgo/save_maps would leave it."""
+    directory = str(maps_dir / "newmap")
+    os.makedirs(directory, exist_ok=True)
+    make_pcd(os.path.join(directory, "map.pcd"))
+    return directory
+
+
+def test_conversion_writes_a_gridmap_from_the_traversable_cloud(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    started = map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+    _join(conversion_threads)
+
+    assert started is True
+    assert fake_traversable.calls[0]["pcd_path"] == os.path.join(saved_map, "map.pcd")
+    # Both recipes are empty dicts: the pipeline runs at the helper's tuned
+    # defaults, and passing {} is what says so rather than silently omitting it.
+    assert fake_traversable.calls[0]["segment"] == {}
+    assert fake_traversable.calls[0]["repair"] == {}
+    # debug_dir off by default: the intermediates would inflate the size the
+    # catalogue reports for every map.
+    assert fake_traversable.calls[0]["debug_dir"] is None
+    assert os.path.isfile(os.path.join(saved_map, "gridmap.pgm"))
+    grid = yaml.safe_load(open(os.path.join(saved_map, "gridmap.yaml")))
+    assert grid["image"] == "gridmap.pgm"
+
+
+def test_conversion_passes_a_debug_dir_when_one_is_configured(
+    logger, saved_map, fake_traversable, conversion_threads, monkeypatch
+):
+    monkeypatch.setattr(map_router_module, "TRAVERSABLE_DEBUG_SUBDIR", "traversable_debug")
+
+    map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+    _join(conversion_threads)
+
+    assert fake_traversable.calls[0]["debug_dir"] == os.path.join(
+        saved_map, "traversable_debug"
+    )
+
+
+def test_conversion_reports_a_failed_segmentation_instead_of_dying(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    """A site whose intensity window selects no floor raises ValueError. The map
+    ends up without a grid — the route has already answered 200 by then."""
+    fake_traversable.raises = ValueError("intensity/normal gate selected no ground points")
+
+    assert map_router_module._start_grid_conversion(logger, "newmap", saved_map) is True
+    _join(conversion_threads)
+
+    assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
+
+
+def test_conversion_survives_open3d_being_absent(
+    logger, saved_map, conversion_threads, monkeypatch
+):
+    """ImportError is caught on its own: uncaught it would kill the thread and
+    land as a bare traceback with nothing naming the map being saved."""
+    real_import = builtins.__import__
+
+    def _no_open3d(name, *args, **kwargs):
+        if name == "syncai_backend.helpers.traversable":
+            raise ImportError("No module named 'open3d'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "syncai_backend.helpers.traversable", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _no_open3d)
+
+    assert map_router_module._start_grid_conversion(logger, "newmap", saved_map) is True
+    _join(conversion_threads)
+
+    assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
+
+
+def test_conversion_is_skipped_without_a_pcd(logger, maps_dir, conversion_threads):
+    """pgo reported success but wrote nothing: report False, start no thread."""
+    directory = str(maps_dir / "newmap")
+    os.makedirs(directory, exist_ok=True)
+
+    assert map_router_module._start_grid_conversion(logger, "newmap", directory) is False
+    assert list(conversion_threads) == []

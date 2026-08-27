@@ -77,7 +77,9 @@
       "Bash(sudo apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev)",
       "Bash(sudo cmake --install /home/ros/.claude/jobs/ca9e9c65/tmp/livox-sdk2-build)",
       "Bash(sudo ldconfig)",
-      "Bash(awk '{print $5\" bytes\"}')"
+      "Bash(awk '{print $5\" bytes\"}')",
+      "Bash(export SP=/tmp/claude-1000/-home-syncrobotic-SyncAI-Robot-Workspace/d83ac79b-e578-41b6-b66b-ce4fa0cd8d5c/scratchpad)",
+      "Bash(export *)"
     ]
   }
 }

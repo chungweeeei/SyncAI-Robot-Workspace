@@ -23,6 +23,25 @@ numpy  # OccupancyGrid -> image array conversion
 # apt python3-scipy this line replaced); ndimage's API is stable across the
 # range.
 scipy>=1.8,<1.11
+# open3d: helpers/traversable.py (intensity/normal traversability segmentation
+# and ground repair). NOT imported at backend startup — the map router imports
+# helpers/pcd_to_gridmap, which is deliberately open3d-free, and traversable.py
+# is imported inside the function that runs the pipeline. It is here because the
+# pipeline was developed against open3d 0.19 in a standalone tool and porting its
+# KD-tree normal estimation, DBSCAN, covariance estimation and radius filters to
+# cKDTree + ndimage was the rejected alternative (it would have kept the image
+# free of a ~100 MB aarch64 wheel, at the cost of the segmentation no longer
+# being bit-comparable to the offline tool the parameters were tuned in).
+#
+# **Watch the numpy ceiling when bumping this.** The whole point of the scipy pin
+# above is that pip must not drag numpy past the 1.26 the ROS ecosystem
+# tolerates, and open3d's metadata is the other dependency in this file with an
+# opinion about numpy. If `pip install -r requirements.txt` in the container
+# starts resolving numpy 2.x, install open3d the way the Dockerfile installs
+# kokoro-onnx — `--no-deps`, after this file's install — rather than loosening
+# the numpy constraint. The helper only touches open3d's core geometry/io, which
+# needs numpy and nothing else in its dependency list.
+open3d>=0.18,<0.20
 # --- TTS (gateways/tts) -------------------------------------------------------
 # kokoro-onnx itself is NOT here: its metadata demands onnxruntime>=1.20.1 and
 # numpy>=2, and both are wrong for this machine — ORT >= 1.19's CPU-topology

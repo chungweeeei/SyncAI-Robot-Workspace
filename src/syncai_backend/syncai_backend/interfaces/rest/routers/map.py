@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field
 from syncai_backend.exceptions import BadRequestError, NotFoundError, UpstreamError
 from syncai_backend.database.models import MapPoint
 from syncai_backend.gateways.map.map import MapGateway
-from syncai_backend.helpers.pcd_to_gridmap import convert_pcd_to_gridmap
+# Only the traversability conversion is imported: convert_pcd_to_gridmap is no
+# longer on this route's path (GRIDMAP_RECIPE below explains what it is still
+# for), and importing it unused would just be dead weight at startup.
+from syncai_backend.helpers.pcd_to_gridmap import convert_traversable_to_gridmap
 from syncai_backend.helpers.pgm import render_png, render_thumbnail
 from syncai_backend.helpers.pointcloud import (
     cap_points,
@@ -33,20 +36,40 @@ from syncai_backend.repositories.map.map import MapRepo
 MAP_CLOUD_VOXEL_SIZE = 0.3
 MAP_CLOUD_MAX_POINTS = 300000
 
-# The recipe POST /api/v1/maps converts with after a save, fed to
-# helpers.pcd_to_gridmap.convert_pcd_to_gridmap (which replaced shelling out
-# to the since-retired tools/pcd_to_gridmap.py CLI).
+# The recipe POST /api/v1/maps converts with after a save: the traversability
+# pipeline in helpers.traversable (segment the floor by lidar return intensity
+# and surface normal, repair it, then project it) rather than the z-band slicing
+# in helpers.pcd_to_gridmap.
 #
-# The values are the dp1f recipe verbatim, z-bands included. The z-bands are
-# honest defaults, not universals: LIO's z=0 is the lidar mount height at the
-# mapping start pose, so they hold for this robot standing on flat ground, and
-# a site where they don't gets its map re-converted by hand — call the helper
-# from a python shell with bands read off the z histogram (the retired CLI's
-# --stats printed it; git history has the CLI). The conversion is re-runnable;
-# gridmap_raw is not created until the first edit. free_mode="floor" and
-# min_points=2 specifically are the two choices worth keeping: "any" marks
-# outdoor ground/roof returns beyond the walls as free on an open site, and
-# min_points=1 doubles the occupied cells with noise instead of wall.
+# Why the switch. The z-band recipe below classifies a cell by *where* its
+# points are in z, which cannot distinguish a drivable aisle from a kerb top or
+# a ramp — and LIO's z=0 is the lidar mount height at the mapping start pose, so
+# its bands are a per-site guess that only holds for this robot standing on flat
+# ground. The traversability recipe asks what the surface *is* instead, so it
+# transfers across sites without a hand-picked band.
+#
+# What that costs, and it is not small: the output has **no unknown cells**. The
+# input cloud is taken as the whole of the drivable world, so every cell it does
+# not cover comes out occupied — including the padding ring, and including any
+# real floor the segmentation wrongly rejected. That is the safe direction (the
+# planner will not route through unobserved space) but it is unforgiving, and it
+# is why the parameters below are left at the helper's defaults: those are the
+# values the pipeline was tuned to in the offline tool this was ported from, and
+# a site that needs them changed needs them changed with the intermediate clouds
+# in front of you, not guessed here.
+TRAVERSABLE_SEGMENT_RECIPE: Dict[str, object] = {}
+TRAVERSABLE_REPAIR_RECIPE: Dict[str, object] = {}
+TRAVERSABLE_GRID_RECIPE: Dict[str, object] = {}
+
+# Where the segmentation's intermediate clouds go, or None for "do not write
+# them". Off by default because MapCatalogRepo._walk_stats recurses, so five
+# extra clouds would triple the size every catalogue card reports for a map.
+# When a site's grid comes out wrong, that is the moment to want them — set this
+# to a subdirectory name, or better, re-run the pipeline by hand with
+# build_traversable_cloud(..., debug_dir=...) and leave the route alone.
+TRAVERSABLE_DEBUG_SUBDIR: Optional[str] = None
+
+
 GRIDMAP_RECIPE = dict(
     zmin=-0.3,
     zmax=1.5,
@@ -199,8 +222,8 @@ class CreateMapResponse(BaseModel):
             "Whether the pcd -> gridmap conversion was started in the "
             "background. Until it finishes (or if it fails, or if false), the "
             "map lists with grid: null — run "
-            "syncai_backend.helpers.pcd_to_gridmap.convert_pcd_to_gridmap "
-            "over its map.pcd by hand in that case."
+            "syncai_backend.helpers.traversable.build_traversable_cloud over "
+            "its map.pcd by hand in that case."
         ),
     )
     message: str = Field(..., description="What happened, for the operator to read.")
@@ -307,10 +330,17 @@ def _start_grid_conversion(
     A daemon thread rather than the handler's own thread because the conversion
     takes tens of seconds on a large site and POST /api/v1/maps must answer as
     soon as the pcd is on disk. In-process (not a subprocess) since the pipeline
-    moved into helpers.pcd_to_gridmap: the heavy passes are numpy/scipy, which
-    release the GIL, so the FastAPI threadpool keeps serving while it runs. The
-    old 600 s subprocess timeout went with it — the helper bounds the grid size
-    itself, so the pipeline cannot run away.
+    moved into helpers: the heavy passes are numpy/scipy/open3d, which release
+    the GIL, so the FastAPI threadpool keeps serving while it runs. The old
+    600 s subprocess timeout went with it — the helpers bound the grid size
+    themselves, so the pipeline cannot run away.
+
+    The return value only says the thread started, never that the grid appeared:
+    a segmentation that rejects the whole floor fails *after* this has answered
+    True and the route has 200'd, and shows up as a map that never grows a
+    gridmap plus the error below. That is not new to the traversability recipe —
+    bad z-bands failed the same way — but the recipe has more ways to reach it,
+    so the message names the stage.
     """
     pcd_path = os.path.join(directory, "map.pcd")
     if not os.path.isfile(pcd_path):
@@ -318,17 +348,64 @@ def _start_grid_conversion(
         return False
 
     def _run() -> None:
+        bound = logger.bind(map=name)
+        debug_dir = (
+            os.path.join(directory, TRAVERSABLE_DEBUG_SUBDIR)
+            if TRAVERSABLE_DEBUG_SUBDIR
+            else None
+        )
         try:
-            convert_pcd_to_gridmap(
-                logger.bind(map=name),
+            # Imported here, not at module scope, and that is load-bearing: this
+            # would be the only module-level import of helpers.traversable in the
+            # backend, and it pulls in open3d (~100 MB). At module scope every
+            # backend start would pay that for a conversion that runs only when
+            # an operator saves a map.
+            #
+            # Inside the try, not just inside the function: an ImportError raised
+            # above it escapes _run entirely, and the handler below never sees it.
+            from syncai_backend.helpers.traversable import build_traversable_cloud
+
+            cloud = build_traversable_cloud(
+                bound,
                 pcd_path,
-                os.path.join(directory, "gridmap"),
-                **GRIDMAP_RECIPE,
+                segment=TRAVERSABLE_SEGMENT_RECIPE,
+                repair=TRAVERSABLE_REPAIR_RECIPE,
+                debug_dir=debug_dir,
             )
-        # ValueError is the helper's own diagnosis (bad bands, oversized
-        # grid); OSError is the pcd or the map directory going away under it.
-        except (ValueError, OSError) as exc:
-            logger.error("Gridmap conversion failed", map=name, error=str(exc))
+            convert_traversable_to_gridmap(
+                bound,
+                cloud,
+                os.path.join(directory, "gridmap"),
+                **TRAVERSABLE_GRID_RECIPE,
+            )
+        # ValueError is a helper's own diagnosis: an empty cloud, an intensity
+        # window that selected no ground, no cluster large enough to be a floor,
+        # an oversized grid. OSError is the pcd or the map directory going away
+        # under it. RuntimeError is open3d's channel for a cloud it cannot read.
+        except (ValueError, OSError, RuntimeError) as exc:
+            logger.error(
+                "Gridmap conversion failed",
+                map=name,
+                error=str(exc),
+                hint=(
+                    "re-run helpers.traversable.build_traversable_cloud by hand with "
+                    "debug_dir set to inspect the segmentation, or convert this map with "
+                    "helpers.pcd_to_gridmap.convert_pcd_to_gridmap + "
+                    "GRIDMAP_RECIPE (the z-band recipe)"
+                ),
+            )
+            return
+        # Separate, and not folded into the tuple above: this one is an
+        # environment fault, not a bad map. Without it the ImportError would kill
+        # the thread and land as a bare traceback on stderr, where nothing
+        # correlates it with the map that was being saved.
+        except ImportError as exc:
+            logger.error(
+                "Gridmap conversion unavailable: open3d is missing",
+                map=name,
+                error=str(exc),
+                hint="pip3 install -r src/syncai_backend/requirements.txt in the container",
+            )
             return
 
         logger.info("Gridmap conversion finished", map=name)
@@ -413,7 +490,7 @@ def init_map_router(
                     if grid_pending
                     else (
                         " Convert its map.pcd with "
-                        "syncai_backend.helpers.pcd_to_gridmap to get a 2D gridmap."
+                        "syncai_backend.helpers.traversable to get a 2D gridmap."
                     )
                 )
             ),
@@ -501,7 +578,7 @@ def init_map_router(
         if path is None:
             raise NotFoundError(
                 f"Map '{name}' has no gridmap. Convert its map.pcd "
-                "(syncai_backend.helpers.pcd_to_gridmap) first."
+                "(syncai_backend.helpers.traversable) first."
             )
         try:
             with open(path, "rb") as handle:
@@ -610,7 +687,7 @@ def init_map_router(
         if stored.grid is None:
             raise NotFoundError(
                 f"Map '{name}' has no gridmap. Convert its map.pcd "
-                "(syncai_backend.helpers.pcd_to_gridmap) first."
+                "(syncai_backend.helpers.traversable) first."
             )
 
         expected = stored.grid.width * stored.grid.height

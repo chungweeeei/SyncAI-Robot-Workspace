@@ -288,6 +288,28 @@ temporal/     (worker, workflows, activities)
   (drained by a WebSocket stream) and the static localizer map cloud (served over
   REST). The wire format for the WS stream is `[u32 count][f32 xyz…]`, with the
   TF transform to `map` done server-side.
+- **There are two pcd → gridmap recipes.** `POST /api/v1/maps` runs the
+  **traversability** one: `helpers/traversable.py` segments the floor by lidar
+  return intensity plus surface normal, repairs it (coplanar-fragment merge,
+  interior hole fill, Delaunay stitching across seams and single steps), then
+  `convert_traversable_to_gridmap` projects it and marks every cell the cloud
+  does not cover as occupied. Note what that means: the output has **no unknown
+  cells** — the padding ring and any floor the segmentation wrongly rejected all
+  come out as wall. The older recipe, `convert_pcd_to_gridmap` (z-band slicing,
+  trinary occupied/free/unknown), is what every gridmap on the fleet before
+  2026-08 was built with; its dp1f bands survive as `GRIDMAP_RECIPE` in
+  `routers/map.py` and it is now the **manual** route for a site the
+  segmentation cannot handle. It is deliberately *not* an automatic fallback: a
+  silent one would leave the catalogue holding maps from two recipes that
+  disagree about what an unknown cell means, with nothing on disk saying which
+  produced what.
+- `helpers/traversable.py` is the only module that needs open3d, and **nothing
+  imports it at module scope** — `_start_grid_conversion` imports it inside the
+  conversion thread's `try`. Keep it that way, and keep `pcd_to_gridmap.py`
+  open3d-free, or every backend start pays a ~100 MB import for a conversion
+  that only runs when an operator saves a map. Inside the `try`, not merely
+  inside the function: an `ImportError` raised above it escapes the thread and
+  lands as a bare traceback that names no map.
 
 Changing a backend ROS parameter requires restarting the backend.
 
