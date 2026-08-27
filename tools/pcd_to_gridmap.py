@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Convert a 3D point-cloud map (.pcd) into a 2D occupancy grid (pgm + yaml)
-for the nav2 map server.
+for the map server.
 
 The grid is expressed in the SAME frame as the pcd (the SLAM `map` frame),
 so localization TF (map -> odom) lines up with the produced map without any

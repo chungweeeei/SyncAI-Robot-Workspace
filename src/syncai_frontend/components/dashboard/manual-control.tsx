@@ -22,8 +22,8 @@ function formatAxis(value: number): string {
 /**
  * Manual drive panel: two thumbsticks (left = planar translation vx/vy — the
  * G23 can strafe — right = rotation wz) over a readout of the commanded,
- * normalized vector. Pointer and WASD/QE keyboard input, merged in
- * useJoystick.
+ * normalized vector. Pointer and keyboard input (W/S drive, Q/E strafe, A/D
+ * turn), merged in useJoystick.
  *
  * **Armed = sending.** While armed, TeleopFooter keeps a WS teleop channel
  * open and streams `vectorRef` at 10 Hz to the backend, which clamps, scales
@@ -72,7 +72,7 @@ export function ManualControl({ className }: { className?: string }) {
           title={
             armed
               ? "Stop capturing pointer and keyboard input"
-              : "Capture pointer and keyboard (WASD / QE) input"
+              : "Capture pointer and keyboard (WS / QE / AD) input"
           }
           className={cn(
             "flex size-5 items-center justify-center rounded-sm border transition-colors",
@@ -90,7 +90,7 @@ export function ManualControl({ className }: { className?: string }) {
             value={stick.left}
             active={stick.leftActive}
             disabled={!armed}
-            hints={{ up: "W", down: "S", left: "A", right: "D" }}
+            hints={{ up: "W", down: "S", left: "Q", right: "E" }}
             label="Translation stick"
             onPointer={(value) => stick.setPointer("left", value)}
           />
@@ -101,7 +101,7 @@ export function ManualControl({ className }: { className?: string }) {
             active={stick.rightActive}
             disabled={!armed}
             lockY
-            hints={{ left: "Q", right: "E" }}
+            hints={{ left: "A", right: "D" }}
             label="Rotation stick"
             onPointer={(value) => stick.setPointer("right", value)}
           />

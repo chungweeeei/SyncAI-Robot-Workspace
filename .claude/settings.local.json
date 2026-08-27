@@ -76,7 +76,8 @@
       "Bash(git -C /workspace/src/third-party/Livox-SDK2 log --oneline -1)",
       "Bash(sudo apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev)",
       "Bash(sudo cmake --install /home/ros/.claude/jobs/ca9e9c65/tmp/livox-sdk2-build)",
-      "Bash(sudo ldconfig)"
+      "Bash(sudo ldconfig)",
+      "Bash(awk '{print $5\" bytes\"}')"
     ]
   }
 }
