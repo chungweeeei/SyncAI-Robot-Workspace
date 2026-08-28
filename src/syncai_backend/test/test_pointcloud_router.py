@@ -6,8 +6,14 @@ stub). TestClient's websocket_connect runs the endpoint's own loop, so what is
 under test is the actual pump: seq bookkeeping, the wire header, and the two
 endpoints draining two independent repos.
 
-No test waits out the poll interval on an empty repo — every receive is armed
-by an update_frame first, so the pump always has a frame on its next tick.
+Every receive is armed by an update_frame first, so no test depends on a
+timeout to make progress. Since the pump became frame-driven that is load
+bearing rather than merely tidy: on an empty repo it blocks on the repo's
+Event indefinitely, so a receive with nothing seeded would hang instead of
+arriving a poll interval late. It also means `test_stream_sends_a_frame_only_
+once_per_seq` now covers the cross-thread wakeup itself — TestClient runs the
+endpoint on its own loop, so the mid-connection `_seed` reaches the blocked
+pump only via `call_soon_threadsafe`.
 """
 
 import struct
