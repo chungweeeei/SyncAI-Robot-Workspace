@@ -41,7 +41,26 @@
       # distance. Tuned against the inflation layer below (cost_scaling_factor
       # 2.0, inflation_radius 0.5) — raise it to hug the centreline harder at
       # the price of longer paths, lower it if the robot refuses tight gaps.
-      cost_travel_multiplier: 2.0
+      # Lowered 2.0 -> 1.0: at 2.0 the paths bowed noticeably along the
+      # inflation gradient in open space; 1.0 keeps enough cost-awareness to
+      # stay off walls while letting distance dominate, so open-space legs come
+      # out near-straight. Safety clearance still comes from the inflated
+      # footprint, not this weight.
+      cost_travel_multiplier: 1.0
+
+      # Post-search gradient-descent smoother (upstream Smac defaults are
+      # w_data 0.2 / w_smooth 0.3). w_smooth pulls each waypoint toward the
+      # midpoint of its neighbours (straightens), w_data anchors it to the raw
+      # A* path (keeps the search's obstacle clearance). Nudged toward smooth
+      # to iron out the grid-A* staircase; the smoother rejects any update
+      # that lands in lethal/inscribed cost, so this cannot smooth through an
+      # obstacle — but keep w_smooth well below ~0.5 or the anchor term stops
+      # mattering and corners get cut tight against the inflation edge.
+      smoother:
+        w_data: 0.2
+        w_smooth: 0.4
+        max_iterations: 1000
+        do_refinement: true
 
       # 0.05 m maps here are small enough to search at full resolution.
       # Downsampling would also publish a debug "downsampled_costmap" topic.

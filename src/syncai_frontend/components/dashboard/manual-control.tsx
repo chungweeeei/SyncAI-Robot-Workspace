@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { JoystickIcon } from "lucide-react";
+import { GripHorizontalIcon, JoystickIcon } from "lucide-react";
 
 import { overlayPanel } from "@/components/console/instrument";
 import { Thumbstick } from "@/components/dashboard/thumbstick";
@@ -17,6 +17,10 @@ import { cn } from "@/lib/utils";
  */
 function formatAxis(value: number): string {
   return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 /**
@@ -47,6 +51,15 @@ function formatAxis(value: number): string {
  * Every number on this panel is in the cmd hue unconditionally: a joystick has
  * no measured half, so unlike the telemetry rail there is no live/cmd split to
  * draw — cf. the epistemics note in use-locomotion.ts.
+ *
+ * The panel is movable, by the header only. The callers anchor it bottom-right
+ * over the point cloud, which is exactly where the cloud's near-field returns
+ * land when the robot backs toward a wall — the operator has to be able to
+ * shove the panel off whatever it is covering. The body is not a handle:
+ * everything below the header is a control (wells that capture pointers, the
+ * arm button), and a panel that slides when a thumb misses a well would turn
+ * a bad grab into both a motion command and a moved panel. Dragging never
+ * disarms or interrupts the stream — moving the panel mid-drive is the point.
  */
 export function ManualControl({ className }: { className?: string }) {
   const [armed, setArmed] = React.useState(false);
@@ -54,10 +67,98 @@ export function ManualControl({ className }: { className?: string }) {
   // A WS event, not an effect body — the allowed place for setState.
   const handleDrop = React.useCallback(() => setArmed(false), []);
 
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  /**
+   * Displacement from the caller's anchor, applied as a translate so the
+   * `right-3 bottom-3` positioning stays the callers' business — the panel
+   * never rewrites top/left, so at {0,0} it sits exactly where it always did
+   * and the offset survives the caller changing its corner.
+   */
+  const [offset, setOffset] = React.useState({ x: 0, y: 0 });
+  /**
+   * The active grab, thumbstick's gestureRef idiom: pointer identity plus
+   * everything measured once at pointerdown. The clamp range comes from one
+   * getBoundingClientRect against the *window* viewport — not the canvas the
+   * callers anchor us in: the operator drags the panel off the point cloud
+   * precisely because the cloud is where it is in the way, so the whole
+   * screen is legal parking. pointermove never forces layout. A window
+   * resize mid-offset can strand the panel past the edge until the next grab
+   * re-measures and pulls it back in — double-click resets it for free.
+   */
+  const dragRef = React.useRef<{
+    pointerId: number;
+    originX: number;
+    originY: number;
+    baseX: number;
+    baseY: number;
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  } | null>(null);
+
+  const onGrab = (event: React.PointerEvent<HTMLElement>) => {
+    // The arm button lives inside the header; a press on it is a press on it.
+    if (dragRef.current || (event.target as HTMLElement).closest("button")) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      baseX: offset.x,
+      baseY: offset.y,
+      // How far the panel may still travel in each direction before its edge
+      // leaves the window — a panel dragged fully off-screen is unrecoverable.
+      minX: offset.x - rect.left,
+      maxX: offset.x + (window.innerWidth - rect.right),
+      minY: offset.y - rect.top,
+      maxY: offset.y + (window.innerHeight - rect.bottom),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    setOffset({
+      x: clamp(drag.baseX + event.clientX - drag.originX, drag.minX, drag.maxX),
+      y: clamp(drag.baseY + event.clientY - drag.originY, drag.minY, drag.maxY),
+    });
+  };
+
+  // Up, cancel and lost-capture all end the grab; idempotent via the ref
+  // check because pointerup is followed by an implicit lostpointercapture.
+  const onRelease = (event: React.PointerEvent<HTMLElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+  };
+
   return (
-    <div className={cn(overlayPanel, "w-64 p-3", className)}>
-      <header className="mb-3 flex h-4 items-center justify-between gap-2">
-        <h2 className="instrument-label text-muted-foreground">Manual drive</h2>
+    <div
+      ref={panelRef}
+      style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+      className={cn(overlayPanel, "w-64 p-3", className)}
+    >
+      {/* touch-none, or a touch drag scrolls the page and the browser answers
+        * with pointercancel mid-gesture (thumbstick's rule). */}
+      <header
+        onPointerDown={onGrab}
+        onPointerMove={onDrag}
+        onPointerUp={onRelease}
+        onPointerCancel={onRelease}
+        onLostPointerCapture={onRelease}
+        onDoubleClick={() => setOffset({ x: 0, y: 0 })}
+        title="Drag to move · double-click to reset"
+        className="mb-3 flex h-4 cursor-grab touch-none items-center justify-between gap-2 select-none active:cursor-grabbing"
+      >
+        <h2 className="instrument-label flex items-center gap-1.5 text-muted-foreground">
+          {/* The grip is the affordance — a bare label row does not announce
+            * that it can be grabbed. */}
+          <GripHorizontalIcon aria-hidden className="size-3" />
+          Manual drive
+        </h2>
         {/* Pressed = listening, in the cmd hue like every other operator
           * choice (LayerToggle, pick modes). Icon-only, and a joystick rather
           * than a gamepad or a power glyph: the gamepad would promise
