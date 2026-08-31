@@ -74,10 +74,10 @@ export function ScheduleSteps({ scheduleId, source }: ScheduleStepsProps) {
       {drift !== null && (
         <p className="text-[11px] leading-tight text-signal-caution">
           {drift === 0
-            ? "Frozen coordinates match the template."
+            ? "Frozen steps match the template."
             : `${drift} ${drift === 1 ? "step no longer matches" : "steps no longer match"} ` +
               `“${source?.name}”. A scheduled run uses what is frozen below — ` +
-              "delete and re-create the schedule to pick up the current positions."}
+              "delete and re-create the schedule to pick up the current template."}
         </p>
       )}
 
@@ -94,6 +94,11 @@ export function ScheduleSteps({ scheduleId, source }: ScheduleStepsProps) {
               <span className="readout min-w-0 truncate">
                 {step.params.x.toFixed(3)}, {step.params.y.toFixed(3)} ·{" "}
                 {step.params.theta.toFixed(1)}°
+              </span>
+            )}
+            {step.type === "SPEAK" && (
+              <span className="min-w-0 truncate italic" title={step.params.text}>
+                “{step.params.text}”
               </span>
             )}
           </li>
@@ -124,6 +129,12 @@ function findDrift(frozen: readonly TaskStepRequest[], source: TaskTemplate): nu
   return frozen.reduce((count, step, index) => {
     const now = current[index];
     if (!now || now.type !== step.type) return count + 1;
+    // A SPEAK drifts when the template's line was edited after registration —
+    // the frozen copy keeps saying the old sentence, same mechanism as a moved
+    // vertex.
+    if (step.type === "SPEAK" && now.type === "SPEAK") {
+      return step.params.text === now.params.text ? count : count + 1;
+    }
     if (step.type !== "MOVE" || now.type !== "MOVE") return count;
     // Compared at the precision the console displays and dispatches at, so a
     // float-representation difference is not reported as drift.

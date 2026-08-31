@@ -14,6 +14,7 @@ from syncai_backend.temporal.workflows import RobotWorkflow
 from syncai_backend.temporal.activities import RobotActivities
 
 from syncai_backend.gateways.robot.robot import RobotGateway
+from syncai_backend.gateways.tts.tts import TtsGateway
 
 # Mirrors database/postgres.py: same bounded-retry shape for the same reason —
 # on a robot boot the shared docker-compose services (postgres, temporal) may
@@ -108,6 +109,7 @@ async def run_worker(
             activities.execute_move,
             activities.execute_stand,
             activities.execute_lie_down,
+            activities.execute_speak,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=1),
     )
@@ -129,6 +131,7 @@ def start_temporal_worker(
     logger: structlog.stdlib.BoundLogger,
     robot_id: str,
     robot_gw: RobotGateway,
+    tts_gw: TtsGateway,
 ) -> TemporalWorkerHandle:
 
     ready = threading.Event()
@@ -139,7 +142,7 @@ def start_temporal_worker(
         # mid-flight — must land in the handle, or we are back to the silent
         # dead thread this exists to prevent.
         try:
-            activities = RobotActivities(logger=logger, robot_gw=robot_gw)
+            activities = RobotActivities(logger=logger, robot_gw=robot_gw, tts_gw=tts_gw)
             asyncio.run(
                 run_worker(
                     logger,

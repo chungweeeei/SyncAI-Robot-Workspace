@@ -222,10 +222,6 @@ function TemplateStepLine({
   index: number;
   state: TaskStepState | null;
 }) {
-  // resolved_params, not params: this is what a dispatch would actually send, so
-  // showing the snapshot would be showing a number the robot will not drive to.
-  const pose = step.resolved_params;
-
   return (
     <li className="flex items-baseline gap-2 text-[11px]">
       <span className="readout w-3 shrink-0 text-muted-foreground">{index + 1}</span>
@@ -248,9 +244,18 @@ function TemplateStepLine({
           {step.vertex_name}
         </span>
       )}
-      {pose && (
+      {/* resolved_params, not params: this is what a dispatch would actually
+        * send, so showing the snapshot would be showing a number the robot will
+        * not drive to. (For a SPEAK the two are the same by construction.) */}
+      {step.type === "MOVE" && step.resolved_params && (
         <span className="readout min-w-0 truncate">
-          {pose.x.toFixed(3)}, {pose.y.toFixed(3)} · {pose.theta.toFixed(1)}°
+          {step.resolved_params.x.toFixed(3)}, {step.resolved_params.y.toFixed(3)} ·{" "}
+          {step.resolved_params.theta.toFixed(1)}°
+        </span>
+      )}
+      {step.type === "SPEAK" && step.resolved_params && (
+        <span className="min-w-0 truncate italic" title={step.resolved_params.text}>
+          “{step.resolved_params.text}”
         </span>
       )}
       {state && <TaskStatusChip status={state.status} />}

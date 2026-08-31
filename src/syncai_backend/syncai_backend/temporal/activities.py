@@ -7,8 +7,9 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError, CancelledError
 
 
-from syncai_backend.gateways.workflow.schema import StepParams
+from syncai_backend.gateways.workflow.schema import MoveParams, SpeakParams
 from syncai_backend.gateways.robot.robot import MotionKey, RobotGateway
+from syncai_backend.gateways.tts.tts import TtsGateway
 
 
 class ActivityResult(BaseModel):
@@ -22,9 +23,11 @@ class RobotActivities:
         self,
         logger: structlog.stdlib.BoundLogger,
         robot_gw: RobotGateway,
+        tts_gw: TtsGateway,
     ):
         self._logger = logger
         self._robot_gw = robot_gw
+        self._tts_gw = tts_gw
 
     def _wait_for_nav_goal(self, goal_id: str, label: str) -> str:
         """Poll a navigation goal until it reaches a terminal state.
@@ -58,7 +61,7 @@ class RobotActivities:
             raise
 
     @activity.defn
-    def execute_move(self, params: StepParams) -> ActivityResult:
+    def execute_move(self, params: MoveParams) -> ActivityResult:
         yaw = math.radians(params.theta)
         accepted, msg, goal_id = self._robot_gw.move(x=params.x, y=params.y, yaw=yaw)
         if not accepted:
@@ -107,3 +110,37 @@ class RobotActivities:
     @activity.defn
     def execute_lie_down(self) -> ActivityResult:
         return self._set_motion_key(key=MotionKey.LIE_DOWN, label="LieDown")
+
+    @activity.defn
+    def execute_speak(self, params: SpeakParams) -> ActivityResult:
+        """Speak on the robot speaker, blocking until playback finishes.
+
+        This never heartbeats: TtsGateway.speak() sits in one blocking call
+        (synthesis, then aplay for the length of the utterance, plus the
+        one-time ~3 s model load on the first call), so there is no loop to
+        heartbeat from. The workflow therefore drops the heartbeat_timeout
+        for SPEAK steps and relies on a short start_to_close instead — see
+        the per-step options in workflows.py. Same reason it is effectively
+        not cancellable mid-utterance: without heartbeats the worker never
+        learns of a cancel, so a canceled task finishes the sentence it is on
+        before the workflow's CancelledError lands. An utterance is bounded
+        (text is capped at 1000 chars, aplay at duration+10 s), so that is a
+        few seconds of latency, not a hang.
+
+        Only "unknown voice" is the request's fault and non-retryable;
+        everything else (model missing, aplay/device trouble) is treated as
+        possibly transient, same philosophy as the move rejections — the
+        workflow's maximum_attempts=3 bounds the ones that are not.
+        """
+        success, message, duration = self._tts_gw.speak(
+            text=params.text, voice=params.voice, speed=params.speed
+        )
+        if not success:
+            raise ApplicationError(
+                f"Speak failed: {message}",
+                non_retryable=message.startswith("unknown voice"),
+            )
+
+        self._logger.info("[RobotActivity] Speak finished", duration=duration)
+
+        return ActivityResult(success=True, state="succeeded")

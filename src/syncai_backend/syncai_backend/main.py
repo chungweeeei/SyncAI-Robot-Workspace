@@ -94,7 +94,10 @@ class SyncAIBackend(Node):
         workflow_gw = init_workflow_gateway(logger=logger, robot_id=robot_id)
         # Speech out (kokoro-onnx -> the USB speaker). No node handle: nothing
         # about it is ROS — it exists at this layer because the REST router
-        # needs a long-lived owner for the lazily-loaded inference session.
+        # and the Temporal worker's SPEAK activity share one long-lived owner
+        # for the lazily-loaded inference session. One instance on purpose:
+        # its internal lock is what keeps a scheduled SPEAK step and a manual
+        # POST /api/v1/tts/speak from talking over each other.
         tts_gw = init_tts_gateway(logger=logger)
 
         # One /tf + /tf_static subscription for the whole process, shared by the
@@ -123,7 +126,9 @@ class SyncAIBackend(Node):
         # plan is published in the map frame already.
         init_path_subscriber(logger=logger, node=self, telemetry_repo=telemetry_repo)
 
-        worker_handle = start_temporal_worker(logger=logger, robot_id=robot_id, robot_gw=robot_gw)
+        worker_handle = start_temporal_worker(
+            logger=logger, robot_id=robot_id, robot_gw=robot_gw, tts_gw=tts_gw
+        )
         start_rest_server(
             logger=logger,
             workflow_gw=workflow_gw,

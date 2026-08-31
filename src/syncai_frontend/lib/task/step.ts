@@ -24,12 +24,18 @@ export interface StepTypeSpec {
   hint: string;
 }
 
-/** Order is the add row's order; MOVE first because it is the only one with a body. */
+/** Order is the add row's order; the fillable steps first, the bare postures last. */
 export const STEP_TYPES: readonly StepTypeSpec[] = [
   { value: "MOVE", label: "Move", glyph: "M", hint: "Drive to a pose in the map frame." },
+  // "T" because STANDUP already owns "S" — the glyph reads as TTS, and the hint
+  // spells that out so it is not a riddle.
+  { value: "SPEAK", label: "Speak", glyph: "T", hint: "Say a line on the robot speaker (TTS)." },
   { value: "STANDUP", label: "Stand", glyph: "S", hint: "Stand up. Nothing to set." },
   { value: "LIEDOWN", label: "Lie", glyph: "L", hint: "Lie down. Nothing to set." },
 ];
+
+/** Mirrors `SpeakParams.text`'s `max_length` — the backend 422s past this. */
+export const SPEAK_TEXT_MAX = 1000;
 
 const GLYPHS: Record<StepType, string> = STEP_TYPES.reduce(
   (all, spec) => ({ ...all, [spec.value]: spec.glyph }),
@@ -48,6 +54,14 @@ export interface StepDraft {
   x: string;
   y: string;
   theta: string;
+  /**
+   * SPEAK only: what to say. Trimmed on the way out, not on change — trailing
+   * spaces are a state typing legitimately passes through, same argument as the
+   * coordinates. Voice and speed are deliberately not draft fields: the backend
+   * defaults them, and a picker for a voice list the composer would have to
+   * fetch is weight the "announce arrival" use case does not carry.
+   */
+  text: string;
   /**
    * The vertex the numbers were prefilled from, or null once they were hand
    * edited.
@@ -82,7 +96,7 @@ export function newStepDraft(type: StepType): StepDraft {
   nextKey += 1;
   // theta defaults to "0" rather than "": a heading of zero is a real, common
   // answer, whereas a position has no sensible default and must be supplied.
-  return { key: nextKey, type, x: "", y: "", theta: "0", vertexId: null };
+  return { key: nextKey, type, x: "", y: "", theta: "0", text: "", vertexId: null };
 }
 
 /**
@@ -161,6 +175,17 @@ function moveParams(draft: StepDraft): MoveStepParams | null {
 
 /** The operator-facing reason this row cannot be sent, or null. */
 export function stepDraftError(draft: StepDraft): string | null {
+  if (draft.type === "SPEAK") {
+    const text = draft.text.trim();
+    if (!text) return "Needs something to say.";
+    // Checked here rather than left to the backend: past the limit the 422's
+    // detail is a validation array, the exact shape this console keeps off an
+    // operator's screen.
+    if (text.length > SPEAK_TEXT_MAX) {
+      return `Too long — ${text.length} of ${SPEAK_TEXT_MAX} characters.`;
+    }
+    return null;
+  }
   if (draft.type !== "MOVE") return null;
   // No theta *range* check: out-of-range is what normalizeTheta is for, and
   // refusing 270° when the answer is -90° would be inventing a constraint.
@@ -180,6 +205,15 @@ export function stepDraftsSubmittable(drafts: readonly StepDraft[]): boolean {
 
 export function toStepRequest(draft: StepDraft, index: number): TaskStepRequest {
   const id = stepIdFor(index, draft.type);
+  if (draft.type === "SPEAK") {
+    const text = draft.text.trim();
+    // Same contract as the coordinates below: callers gate on
+    // stepDraftsSubmittable, so an empty line here is a programming error.
+    if (!text) throw new Error(`Step ${id} has nothing to say.`);
+    // No voice / speed keys at all — the backend's defaults are the decision,
+    // and sending them would freeze today's defaults into saved templates.
+    return { id, type: "SPEAK", params: { text } };
+  }
   if (draft.type !== "MOVE") return { id, type: draft.type };
 
   const params = moveParams(draft);
@@ -230,14 +264,22 @@ export function toTemplateSteps(
 export function fromTemplateSteps(steps: readonly TemplateStep[]): StepDraft[] {
   return steps.map((step) => {
     const draft = newStepDraft(step.type);
-    const pose = step.resolved_params;
-    return {
-      ...draft,
-      x: pose ? formatDraftPosition(pose.x) : draft.x,
-      y: pose ? formatDraftPosition(pose.y) : draft.y,
-      theta: pose ? formatDraftAngle(pose.theta) : draft.theta,
-      vertexId: step.vertex_id,
-      vertexMissing: step.vertex_status === "MISSING",
-    };
+    if (step.type === "MOVE") {
+      const pose = step.resolved_params;
+      return {
+        ...draft,
+        x: pose ? formatDraftPosition(pose.x) : draft.x,
+        y: pose ? formatDraftPosition(pose.y) : draft.y,
+        theta: pose ? formatDraftAngle(pose.theta) : draft.theta,
+        vertexId: step.vertex_id,
+        vertexMissing: step.vertex_status === "MISSING",
+      };
+    }
+    if (step.type === "SPEAK") {
+      // resolved_params for symmetry with MOVE, though for a SPEAK it is the
+      // snapshot verbatim — there is no vertex to resolve against.
+      return { ...draft, text: step.resolved_params?.text ?? draft.text };
+    }
+    return draft;
   });
 }

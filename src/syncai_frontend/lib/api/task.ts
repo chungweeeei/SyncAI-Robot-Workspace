@@ -77,24 +77,34 @@ export function normalizeTheta(deg: number): number {
 export type Posture = "STANDUP" | "LIEDOWN";
 
 /**
- * The step types the console can author.
- *
- * A deliberate subset of the backend's `StepType`: ARTIFACT is absent because
- * `ArtifactParams` is a discriminated command union (pickup / drop, robot / zone
- * / box indices, a `wait_for` conveyor phase and a timeout) aimed at hardware the
- * console has no other surface for. An ARTIFACT row would be a step the operator
- * cannot fill in.
+ * The step types the console can author — the backend's full `StepType`
+ * vocabulary, since the ARTIFACT removal took the one member the console had no
+ * surface for. (It was a discriminated conveyor-command union an operator could
+ * not have filled in, which is why this used to be a deliberate subset.)
  *
  * `Posture` is reused rather than restating "STANDUP" | "LIEDOWN", so the two
  * cannot drift.
  */
-export type StepType = "MOVE" | Posture;
+export type StepType = "MOVE" | "SPEAK" | Posture;
 
 /** `MoveParams`, verbatim. `theta` in degrees, folded into (-180, 180] on the way out. */
 export interface MoveStepParams {
   x: number;
   y: number;
   theta: number;
+}
+
+/**
+ * `SpeakParams`. `voice` and `speed` are optional because the backend defaults
+ * them (af_heart, 1.0) and the composer only authors the text — they are typed
+ * here so a template that *was* saved with them round-trips instead of being
+ * silently stripped.
+ */
+export interface SpeakStepParams {
+  /** English only for now; 1000 chars max — see `SPEAK_TEXT_MAX` in lib/task/step.ts. */
+  text: string;
+  voice?: string;
+  speed?: number;
 }
 
 /**
@@ -110,6 +120,7 @@ export interface MoveStepParams {
  */
 export type TaskStepRequest =
   | { id: string; type: "MOVE"; params: MoveStepParams }
+  | { id: string; type: "SPEAK"; params: SpeakStepParams }
   | { id: string; type: Posture };
 
 /**

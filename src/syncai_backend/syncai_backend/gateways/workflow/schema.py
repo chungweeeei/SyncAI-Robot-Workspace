@@ -31,6 +31,7 @@ class StepType(str, Enum):
     MOVE = "MOVE"
     STANDUP = "STANDUP"
     LIEDOWN = "LIEDOWN"
+    SPEAK = "SPEAK"
 
 
 class MoveParams(BaseSchema):
@@ -49,11 +50,34 @@ class MoveParams(BaseSchema):
     )
 
 
-# A single-member union since the ARTIFACT removal, kept as an alias on
-# purpose: this is the extension point the next parameterised step type
-# re-widens, and every signature that says StepParams keeps saying what it
-# means.
-StepParams = MoveParams
+# Field constraints mirror the REST router's SynthesizeRequest
+# (routers/tts.py): a SPEAK step and a manual POST /api/v1/tts/speak drive the
+# same TtsGateway, so what one accepts the other must too. All single-word
+# field names, so BaseSchema's camelCase aliasing is a no-op here — same
+# property MoveParams relies on (see the task_template router's serialisation
+# note).
+class SpeakParams(BaseSchema):
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="The text to speak. English only for now (see TtsGateway).",
+        examples=["Delivery arrived"],
+    )
+    voice: str = Field(
+        "af_heart",
+        description="Kokoro voice id; the list is at GET /api/v1/tts/voices.",
+    )
+    speed: float = Field(
+        1.0, ge=0.5, le=2.0, description="Playback rate multiplier (0.5–2.0)."
+    )
+
+
+# Re-widened when SPEAK arrived (it was a single-member alias after the
+# ARTIFACT removal). Pydantic's smart union tells the members apart by their
+# required fields — MoveParams needs x/y/theta, SpeakParams needs text, with
+# no overlap — so no discriminator field is necessary.
+StepParams = MoveParams | SpeakParams
 
 
 # Which params model each step type expects; None means the step takes no
@@ -66,6 +90,7 @@ STEP_PARAMS_TYPE: dict[StepType, Optional[type[BaseModel]]] = {
     StepType.MOVE: MoveParams,
     StepType.STANDUP: None,
     StepType.LIEDOWN: None,
+    StepType.SPEAK: SpeakParams,
 }
 
 
@@ -94,7 +119,7 @@ class Step(BaseSchema):
         default=None,
         description=(
             "Parameters for the step, which vary based on the step type. "
-            "Omitted for STANDUP/LIEDOWN, required for MOVE"
+            "Omitted for STANDUP/LIEDOWN, required for MOVE and SPEAK"
         ),
     )
     status: StepStatus = Field(

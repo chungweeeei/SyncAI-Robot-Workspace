@@ -32,6 +32,7 @@ class RobotWorkflow:
             StepType.MOVE: RobotActivities.execute_move,
             StepType.STANDUP: RobotActivities.execute_stand,
             StepType.LIEDOWN: RobotActivities.execute_lie_down,
+            StepType.SPEAK: RobotActivities.execute_speak,
         }
 
         for step in self._steps:
@@ -48,6 +49,22 @@ class RobotWorkflow:
             # None would fail the worker's argument-count check. The schema
             # guarantees params is None for exactly those step types.
             args = [] if step.params is None else [step.params]
+
+            # SPEAK cannot heartbeat: execute_speak sits in a single blocking
+            # gateway call (synthesis + aplay for the whole utterance), so the
+            # 3s heartbeat_timeout below would kill every attempt before its
+            # first heartbeat could ever arrive. Dead-worker detection for
+            # SPEAK therefore falls to start_to_close alone -- which is also
+            # why it gets a much shorter one than the heartbeating activities:
+            # a worst-case utterance (1000 chars at 0.5x speed, plus the
+            # one-time model load) is minutes, and an hour of a dead worker
+            # silently holding the step would defeat the point of the timeout.
+            if step.type is StepType.SPEAK:
+                start_to_close_timeout = timedelta(minutes=5)
+                heartbeat_timeout = None
+            else:
+                start_to_close_timeout = timedelta(hours=1)
+                heartbeat_timeout = timedelta(seconds=3)
 
             step.status = StepStatus.IN_PROGRESS
             try:
@@ -76,9 +93,10 @@ class RobotWorkflow:
                     # could never fire. A dead worker is caught by the 3s
                     # heartbeat regardless; this bounds the live-but-stuck
                     # case where an attempt heartbeats forever without ever
-                    # reaching a terminal state.
-                    start_to_close_timeout=timedelta(hours=1),
-                    heartbeat_timeout=timedelta(seconds=3),
+                    # reaching a terminal state. (Both values are picked per
+                    # step type above -- SPEAK cannot heartbeat.)
+                    start_to_close_timeout=start_to_close_timeout,
+                    heartbeat_timeout=heartbeat_timeout,
                     cancellation_type=(
                         workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
                     ),

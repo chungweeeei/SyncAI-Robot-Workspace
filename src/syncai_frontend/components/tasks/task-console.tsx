@@ -120,7 +120,9 @@ export function TaskConsole({ robotId }: { robotId: string | null }) {
   const stepReason = !drafts.steps.length
     ? "Add at least one step."
     : !stepsOk
-      ? "Fill in every step's coordinates."
+      ? // Not "coordinates": a SPEAK row fails this for an empty line, and each
+        // row already says exactly what it is missing.
+        "Fill in every step — the marked rows say what is missing."
       : null;
 
   // Only the dispatch path needs a robot id — it is the prefix of the task id.

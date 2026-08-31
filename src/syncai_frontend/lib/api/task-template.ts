@@ -24,7 +24,12 @@
 import { apiUrl } from "@/lib/api/config";
 import { requestJson } from "@/lib/api/http";
 import type { ScheduleTrigger } from "@/lib/api/schedule";
-import type { MoveStepParams, StepType, TaskStepRequest } from "@/lib/api/task";
+import type {
+  MoveStepParams,
+  Posture,
+  SpeakStepParams,
+  TaskStepRequest,
+} from "@/lib/api/task";
 
 /** Mirrors the backend's `max_length=255` and the `String(255)` column. */
 export const TASK_TEMPLATE_NAME_MAX = 255;
@@ -47,19 +52,39 @@ export type TemplateStepRequest = TaskStepRequest & {
  */
 export type VertexRefStatus = "NONE" | "CURRENT" | "MISSING";
 
-/** `TemplateStepResponse`, verbatim. */
-export interface TemplateStep {
+interface TemplateStepBase {
   id: string;
-  type: StepType;
-  /** The snapshot, exactly as it was saved. Null for a posture step. */
-  params: MoveStepParams | null;
   vertex_id: string | null;
   /** Live name when CURRENT, the snapshot label when MISSING, else null. */
   vertex_name: string | null;
   vertex_status: VertexRefStatus;
-  /** What to dispatch right now. Null for a posture step. */
-  resolved_params: MoveStepParams | null;
 }
+
+/**
+ * `TemplateStepResponse`, as a union discriminated on `type` — the same shape
+ * argument as `TaskStepRequest`: `params` under a MOVE is a pose, under a SPEAK
+ * it is a line of text, and one interface with `MoveStepParams |
+ * SpeakStepParams | null` would make every consumer re-prove which it holds.
+ * `params` is the snapshot exactly as saved; `resolved_params` is what a
+ * dispatch should send right now — the two differ only for a MOVE whose vertex
+ * still exists (see the file header).
+ */
+export type TemplateStep =
+  | (TemplateStepBase & {
+      type: "MOVE";
+      params: MoveStepParams | null;
+      resolved_params: MoveStepParams | null;
+    })
+  | (TemplateStepBase & {
+      type: "SPEAK";
+      params: SpeakStepParams | null;
+      resolved_params: SpeakStepParams | null;
+    })
+  | (TemplateStepBase & {
+      type: Posture;
+      params: null;
+      resolved_params: null;
+    });
 
 /** `TaskTemplateResponse`, verbatim. */
 export interface TaskTemplate {
@@ -101,23 +126,33 @@ export type TaskTemplateChanges = Partial<TaskTemplateDraft>;
  * than something with an optional `params`.
  */
 export function toDispatchSteps(steps: readonly TemplateStep[]): TaskStepRequest[] {
-  return steps.map((step) =>
-    step.type === "MOVE"
-      ? {
+  return steps.map((step): TaskStepRequest => {
+    switch (step.type) {
+      case "MOVE":
+        return {
           id: step.id,
-          type: "MOVE" as const,
+          type: "MOVE",
           // Non-null by construction: the backend always resolves a MOVE to
           // either the vertex's pose or the snapshot. Falling back to an origin
           // would be a silent drive to (0, 0), so this throws instead.
-          params: assertParams(step),
-        }
-      : { id: step.id, type: step.type },
-  );
+          params: assertParams(step, "no coordinates"),
+        };
+      case "SPEAK":
+        // Same construction guarantee — a SPEAK's resolved_params is its
+        // snapshot verbatim, and the backend refuses to store one without text.
+        return { id: step.id, type: "SPEAK", params: assertParams(step, "no text") };
+      default:
+        return { id: step.id, type: step.type };
+    }
+  });
 }
 
-function assertParams(step: TemplateStep): MoveStepParams {
+function assertParams<T>(
+  step: TemplateStepBase & { resolved_params: T | null },
+  missing: string,
+): T {
   if (!step.resolved_params) {
-    throw new Error(`Template step "${step.id}" has no coordinates to dispatch.`);
+    throw new Error(`Template step "${step.id}" has ${missing} to dispatch.`);
   }
   return step.resolved_params;
 }

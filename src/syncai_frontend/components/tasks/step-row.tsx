@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import type { ActiveVerticesStatus } from "@/hooks/use-active-map-vertices";
 import { normalizeTheta, type TaskStepState } from "@/lib/api/task";
 import {
+  SPEAK_TEXT_MAX,
   STEP_TYPES,
   formatDraftAngle,
   formatDraftPosition,
@@ -109,9 +110,9 @@ export function StepRow({
         </div>
       </div>
 
-      {/* Coordinates are kept in the draft across a type change, so switching to
-       * STANDUP and back does not lose what was typed — the wire shape is derived
-       * from the type, not stored alongside it. */}
+      {/* Coordinates and the spoken line are kept in the draft across a type
+       * change, so switching to STANDUP and back does not lose what was typed —
+       * the wire shape is derived from the type, not stored alongside it. */}
       {step.type === "MOVE" && (
         <div className="mt-2 space-y-1.5 pl-[26px]">
           <VertexPicker
@@ -162,6 +163,38 @@ export function StepRow({
               hint={foldHint(step.theta)}
             />
           </div>
+        </div>
+      )}
+
+      {step.type === "SPEAK" && (
+        <div className="mt-2 pl-[26px]">
+          <label className="block">
+            <span className="instrument-label text-muted-foreground">Say</span>
+            <Input
+              value={step.text}
+              disabled={disabled}
+              // No maxLength attribute: it would silently truncate a paste, and
+              // a hidden edit is worse than the row error below saying how far
+              // over the limit the text is. Same stance as the coordinate
+              // fields never rewriting under the cursor.
+              onChange={(event) => onPatch({ text: event.target.value })}
+              placeholder="Delivery arrived — please take your items."
+              className="mt-0.5 h-7 rounded-sm text-[13px]"
+            />
+            {/* The counter appears only near the limit — a line short enough
+             * to obviously fit does not need bookkeeping over it. */}
+            {step.text.length > SPEAK_TEXT_MAX - 100 && (
+              <span
+                className={
+                  step.text.trim().length > SPEAK_TEXT_MAX
+                    ? "readout mt-0.5 block text-[11px] text-signal-warn"
+                    : "readout mt-0.5 block text-[11px] text-signal-caution"
+                }
+              >
+                {step.text.length} / {SPEAK_TEXT_MAX}
+              </span>
+            )}
+          </label>
         </div>
       )}
 
