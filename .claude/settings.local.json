@@ -79,7 +79,10 @@
       "Bash(sudo ldconfig)",
       "Bash(awk '{print $5\" bytes\"}')",
       "Bash(export SP=/tmp/claude-1000/-home-syncrobotic-SyncAI-Robot-Workspace/d83ac79b-e578-41b6-b66b-ce4fa0cd8d5c/scratchpad)",
-      "Bash(export *)"
+      "Bash(export *)",
+      "Bash(byobu list-sessions *)",
+      "Bash(tmux list-sessions *)",
+      "Bash(xargs ls)"
     ]
   }
 }
