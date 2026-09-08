@@ -3,21 +3,24 @@
 # (the workspace root), so the workspace mount / instance INIs keep working.
 # Infra services (temporal, postgres, ...) stay in docker-compose.yml.
 #
-# One deployment mode, kept behind the `real` profile so the robot containers
-# are opt-in and never come up as a side effect of starting the infra stack:
+# One deployment mode: the physical robot on this machine's hardware. host
+# networking (lidar UDP on the physical NIC, DDS over lo via
+# config/cyclonedds.xml); infra is reached through the host-published ports on
+# 127.0.0.1 (service names do NOT resolve under network_mode: host).
 #
-#   real  — physical robot on this machine's hardware. host networking
-#           (lidar UDP on the physical NIC, DDS over lo via
-#           cyclonedds_standalone.xml); infra is reached through the
-#           host-published ports on 127.0.0.1 (service names do NOT resolve
-#           under network_mode: host).
+# There are deliberately NO compose profiles here any more. `robot01` used to
+# sit behind a `real` profile whose only job was to be mutually exclusive with
+# the `sim` profile of the Isaac Sim fleet (macvlan dual-homed `*-sim` services
+# on the external syncai-lan network). That fleet was removed — recover it from
+# git history rather than re-deriving it if the simulator comes back — and once
+# it was gone the profile's only remaining effect was that a plain
+# `docker compose up -d` started the infra but silently skipped the robot. On a
+# machine that IS the robot that was a trap, not a feature, so the profile went
+# too. If you ever need the infra without the robot, name the services:
+#   docker compose up -d postgres pgadmin temporal temporal_ui
 #
-# The Isaac Sim fleet (macvlan dual-homed `*-sim` services on the external
-# syncai-lan network) used to live here and was removed; recover it from git
-# history rather than re-deriving it if the simulator comes back.
-#
-# Start explicitly (naming a service auto-enables its profiles):
-#   docker compose up -d robot01
+# Start everything (infra + robot):
+#   docker compose up -d
 #
 # NOTE (X11): DISPLAY=:1 targets the Jetson's local desktop via the unix
 # socket mount. If GUIs fail after a host reboot, check `ls /tmp/.X11-unix`
@@ -96,7 +99,6 @@ services:
   # ---------------------------------------------------------------------
   robot01:
     <<: *robot-common
-    profiles: [ "real" ]
     container_name: robot01
     network_mode: host
     # Explicit rather than relying on the host's default runtime: this file

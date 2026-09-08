@@ -148,7 +148,7 @@ is typically a live robot. Do not run `colcon build` automatically after editing
 leave building to the user unless they explicitly ask.
 
 ```bash
-docker compose -f docker-compose.robots.yml --profile real up -d robot01
+docker compose up -d            # infra + robot01 (docker-compose.yml `include`s the robots file)
 docker compose exec robot01 bash
 # inside, workspace is at /home/syncrobotic/robot_ws and is the cwd
 colcon build --symlink-install
@@ -288,21 +288,36 @@ temporal/     (worker, workflows, activities)
   (drained by a WebSocket stream) and the static localizer map cloud (served over
   REST). The wire format for the WS stream is `[u32 count][f32 xyz…]`, with the
   TF transform to `map` done server-side.
-- **There are two pcd → gridmap recipes.** `POST /api/v1/maps` runs the
-  **traversability** one: `helpers/traversable.py` segments the floor by lidar
-  return intensity plus surface normal, repairs it (coplanar-fragment merge,
-  interior hole fill, Delaunay stitching across seams and single steps), then
-  `convert_traversable_to_gridmap` projects it and marks every cell the cloud
-  does not cover as occupied. Note what that means: the output has **no unknown
-  cells** — the padding ring and any floor the segmentation wrongly rejected all
-  come out as wall. The older recipe, `convert_pcd_to_gridmap` (z-band slicing,
-  trinary occupied/free/unknown), is what every gridmap on the fleet before
-  2026-08 was built with; its dp1f bands survive as `GRIDMAP_RECIPE` in
-  `routers/map.py` and it is now the **manual** route for a site the
-  segmentation cannot handle. It is deliberately *not* an automatic fallback: a
-  silent one would leave the catalogue holding maps from two recipes that
-  disagree about what an unknown cell means, with nothing on disk saying which
-  produced what.
+- **There are two pcd → gridmap recipes, and the default is z-band.**
+  `POST /api/v1/maps` always converts with `convert_pcd_to_gridmap` (z-band
+  slicing, trinary occupied/free/unknown), its bands recentred as offsets from
+  the measured floor level, followed by a pose-connectivity filter: free cells
+  not connected to the keyframe trajectory in `poses.txt` go back to unknown,
+  which is what removes the free space a MID360 paints through glass (5–6% of
+  all free cells on the conference maps, in 600–900 speckle components). The
+  **traversability** recipe (`helpers/traversable.py`: segment the floor by
+  intensity/normal/height, repair it, project it; **no unknown cells** — every
+  cell the cloud does not cover comes out as permanent wall) runs only when an
+  operator asks for it. There is deliberately **no automatic pick** between the
+  two: the bbox-footprint threshold tried in 2026-08 misrouted all three
+  conference-hall saves (glass let the lidar see out-of-hall structure, tripling
+  the bbox over ~450 m² of real floor) into blobs, and any replacement metric
+  would be calibrated on the current fleet's few clouds — while a wrong z-band
+  map is recoverable (unknown is hand-editable and drivable-clearable) and a
+  wrong traversability map is permanently walled. Every conversion writes
+  `gridmap.recipe.json` beside the pgm recording the recipe, both area
+  diagnostics and the parameters.
+- **`POST /api/v1/maps/{name}/grid/convert`** is the manual/override route
+  (frontend: the map card's Rebuild-grid dropdown): pick the recipe, override
+  `gap_fill_size` or the z-band offsets, and pass `debug: true` to get the
+  segmentation's intermediate clouds in `<map>/traversable_debug/` — the tuning
+  interface for a site the defaults cannot handle (the next outdoor venue). One
+  conversion per map at a time (409 `conversion_running`); a hand-edited grid
+  (gridmap_raw.pgm differing from gridmap.pgm) refuses with 409
+  `gridmap_hand_edited` until `overwrite_edits` — and even then the edited grid
+  survives as `gridmap_prev.pgm` (one undo generation, with its yaml, the stale
+  raw moved to `gridmap_prev_raw.pgm`). Re-converting the active map reloads
+  map_server on success.
 - `helpers/traversable.py` is the only module that needs open3d, and **nothing
   imports it at module scope** — `_start_grid_conversion` imports it inside the
   conversion thread's `try`. Keep it that way, and keep `pcd_to_gridmap.py`
@@ -336,20 +351,28 @@ breaking changes relative to model training data — read the relevant guide in
 ## Infrastructure
 
 - **`docker-compose.yml`** — shared services: `postgres` (5432, bind-mounted to
-  `./data/postgres`), `pgadmin` (5050), `temporal` (7233), `temporal_ui` (8081),
-  `mediamtx` (RTSP in / WebRTC out for the camera; `network_mode: host` so ICE
-  candidates are the real interfaces — capture and Tegra H.264 encoding happen
-  outside it and are pushed in over RTSP).
-- **`docker-compose.robots.yml`** — robot containers. One service, `robot01`,
-  behind the `real` profile (`network_mode: host`, loopback-only unicast DDS);
-  the profile only keeps it opt-in, so bringing up the infra stack does not drag
-  a robot up with it. The Isaac Sim fleet (`*-sim` services dual-homed on a
-  `syncai-lan` macvlan) was **removed** — recover it from git history rather
-  than re-deriving it if the simulator comes back. Robot containers also
+  `./data/postgres`), `pgadmin` (5050), `temporal` (7233), `temporal_ui` (8081).
+  There is **no** `mediamtx` service any more: the camera is pushed over RTSP by
+  `scripts/publish_camera_crop.sh` to a MediaMTX that already runs on a remote
+  server (`MEDIAMTX_RTSP_HOST` in `scripts/publish_camera_crop.env`), and the frontend's WebRTC
+  view reads from there. The robot is a publisher only.
+- **`docker-compose.robots.yml`** — robot containers, pulled into
+  `docker-compose.yml` via `include:`. One service, `robot01` (`network_mode:
+  host`, loopback-only unicast DDS), with **no compose profile**: a plain
+  `docker compose up -d` starts infra and robot together. It used to sit behind
+  a `real` profile that existed only to be mutually exclusive with the Isaac Sim
+  fleet's `sim` profile (`*-sim` services dual-homed on a `syncai-lan` macvlan).
+  The fleet was **removed** — recover it from git history rather than
+  re-deriving it if the simulator comes back — and the profile with it, because
+  on the robot itself its only remaining effect was to make `up -d` silently
+  skip the robot. To start infra alone, name the four services. Robot containers also
   bind-mount the host D-Bus socket (so `nmcli` reaches the host NetworkManager —
   needs `apparmor=unconfined` + sudo) and the avahi socket (so `libnss-mdns`
-  resolves `*.local`), and pass through `/dev/video0` plus the host `video` gid
-  for the camera.
+  resolves `*.local`), run with `runtime: nvidia`, and pass through the cameras
+  as `/dev/syncai/camera0` / `camera1` (stable udev symlinks from
+  `src/syncai_sys_manager/udev/99-syncai-devices.rules`, keyed on serial so the
+  two cameras cannot swap on reboot) plus `/dev/snd` for TTS, with the host
+  `video` and `audio` gids added.
 - **CycloneDDS** is the RMW, configured by hand: `config/cyclonedds.xml` —
   loopback only (`lo`), `AllowMulticast=false`, one explicit unicast peer at
   `127.0.0.1`. It is the single config left; `cyclonedds_standalone.xml` went

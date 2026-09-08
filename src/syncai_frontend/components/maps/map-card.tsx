@@ -5,6 +5,7 @@ import Link from "next/link";
 import { BoxIcon, ChevronDownIcon, LayersIcon, PencilIcon } from "lucide-react";
 
 import { Chip, Readout } from "@/components/console/instrument";
+import { GridRebuildControl } from "@/components/maps/grid-rebuild-control";
 import { cn } from "@/lib/utils";
 import type { MapSummary } from "@/lib/types/map";
 
@@ -75,8 +76,10 @@ function MapThumbnail({ map }: { map: MapSummary }) {
  * answer on their own. Extents and byte counts are what you open one card to
  * check, not what you scan four cards for.
  *
- * What never collapses: the "In use" and "No 2D grid" chips. A map the nav stack
- * cannot load must say so with the card shut, or the flag is worthless.
+ * What never collapses: the "In use", "No 2D grid" and "Converting…" chips. A
+ * map the nav stack cannot load must say so with the card shut, or the flag is
+ * worthless — and a conversion in flight is why Edit and Rebuild are greyed, so
+ * hiding it would make the card look broken instead of busy.
  */
 export function MapCard({ map }: { map: MapSummary }) {
   const [open, setOpen] = React.useState(false);
@@ -123,11 +126,15 @@ export function MapCard({ map }: { map: MapSummary }) {
               Point cloud
             </Chip>
           )}
-          {!grid && <Chip tone="caution">No 2D grid</Chip>}
+          {!grid && !map.grid_converting && <Chip tone="caution">No 2D grid</Chip>}
+          {map.grid_converting && <Chip tone="active">Converting…</Chip>}
 
           {/* A map with no gridmap has nothing to paint on, so the link is a
-           * disabled span rather than a route that would land on a guard screen. */}
-          {grid ? (
+           * disabled span rather than a route that would land on a guard screen.
+           * Also disabled mid-conversion: the grid on disk is about to be
+           * replaced, and an editor opened now would save cells onto a map with
+           * different extents. */}
+          {grid && !map.grid_converting ? (
             <Link
               href={`/maps/${encodeURIComponent(map.name)}/edit`}
               className="instrument-label ml-auto flex h-5 items-center gap-1 rounded-sm border border-hairline px-1.5 text-muted-foreground transition-colors hover:bg-elevated hover:text-foreground"
@@ -142,6 +149,12 @@ export function MapCard({ map }: { map: MapSummary }) {
             </span>
           )}
         </div>
+
+        {/* Below the chips rather than among them: it carries its own status
+         * line (the backend's sentence, or an error), which needs the row's
+         * full width. Only for maps with a cloud — without map.pcd there is
+         * nothing to convert and the backend would 400. */}
+        {map.has_pointcloud && <GridRebuildControl map={map} />}
 
         {/* `hidden` rather than unmounting: aria-controls above must keep pointing
          * at an element that exists, and the native attribute is what takes the
@@ -178,10 +191,10 @@ export function MapCard({ map }: { map: MapSummary }) {
 
           {!grid && (
             <p className="mt-2.5 text-[11px] leading-tight text-muted-foreground">
-              Saved from LIO but never converted, so the nav stack cannot load it.
-              The save normally converts in the background — re-run{" "}
-              <span className="readout">syncai_backend.helpers.pcd_to_gridmap</span>{" "}
-              over its <span className="readout">map.pcd</span> on the robot.
+              Saved from LIO but never converted, so the nav stack cannot load
+              it. The save normally converts in the background — use{" "}
+              <span className="readout">Build grid</span> above to run the
+              conversion again.
             </p>
           )}
         </div>

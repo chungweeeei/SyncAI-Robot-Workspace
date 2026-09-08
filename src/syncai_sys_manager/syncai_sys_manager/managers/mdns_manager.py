@@ -13,8 +13,11 @@ from syncai_sys_manager.managers.wifi_manager import WifiNetworkInfo, WifiManage
 PREFERRED_INTERFACE_PREFIXES = ("en", "eth")
 
 # Docker's default bridge address pool; such an address is unreachable from
-# the LAN, so it must never be published (in the robot container eth0 is the
-# compose bridge and eth1 is the syncai-lan macvlan).
+# the LAN, so it must never be published. The robot container runs with
+# network_mode: host now, so this guard is normally inert -- it is kept because
+# it was load-bearing under the retired dual-homed layout (eth0 on the compose
+# bridge, eth1 on the syncai-lan macvlan) and would be again the moment the
+# container is put back on a bridge network.
 DOCKER_BRIDGE_NETWORK = ipaddress.ip_network("172.16.0.0/12")
 
 

@@ -23,10 +23,15 @@ export interface UseMaps {
 /**
  * The map catalogue, through the shared query cache.
  *
- * Not polled, unlike useRobotState: the set of directories under `map/` only
- * changes when someone saves or converts a map, which is a deliberate act and
- * never happens while an operator is looking at this screen. `refresh()` is the
- * escape hatch instead of a timer.
+ * Not polled, unlike useRobotState — with one exception. The set of directories
+ * under `map/` only changes when someone saves or converts a map, which is a
+ * deliberate act and never happens while an operator is looking at this screen,
+ * so `refresh()` is the escape hatch instead of a timer. The exception is a
+ * running gridmap conversion: it is the one server-side process that changes
+ * the catalogue on its own (grid_converting drops, `grid` appears), it has no
+ * other status surface, and the flag itself says when to stop — so the poll
+ * runs only while some map reports `grid_converting` and turns itself off with
+ * the last one.
  *
  * Every observer shares one cache entry and one in-flight request — the
  * dashboard mounting useActiveMap in two components used to cost two GETs; now
@@ -39,6 +44,8 @@ export function useMaps(): UseMaps {
   const { data, isPending, isError } = useQuery({
     queryKey: queryKeys.maps,
     queryFn: ({ signal }) => fetchMaps(signal),
+    refetchInterval: (query) =>
+      query.state.data?.some((map) => map.grid_converting) ? 2000 : false,
   });
 
   // Invalidate rather than refetch(): the entry is shared, so a Refresh pressed

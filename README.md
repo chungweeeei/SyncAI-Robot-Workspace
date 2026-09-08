@@ -77,7 +77,8 @@ cd - && git add src/third-party/behaviortree_cpp_v3 && git commit -m "chore: bum
 ├── config/cyclonedds.xml    # CycloneDDS RMW configuration
 ├── map/                     # test maps (testmap, warehouse) + cartographer pbstream
 ├── Dockerfile               # ubuntu:22.04 + ROS 2 Humble + nav deps
-├── docker-compose.yml       # `robot` service (host networking, X11, workspace mount)
+├── docker-compose.yml       # infra: postgres / pgadmin / temporal / temporal_ui
+├── docker-compose.robots.yml# `robot01` service (host networking, X11, workspace mount); `include`d by the above
 ├── .devcontainer/           # VS Code "Reopen in Container" config
 └── .env                     # local env vars / secrets (gitignored — never commit)
 ```
@@ -98,8 +99,8 @@ git submodule update --init --recursive
 
 ```bash
 # .env supplies UID/GID, ROS_DOMAIN_ID, DISPLAY, etc.
-docker compose up -d robot
-docker compose exec robot bash
+docker compose up -d            # infra (postgres / temporal / ...) + robot01
+docker compose exec robot01 bash
 ```
 
 The workspace is mounted at `/home/syncrobotic/robot_ws`. ROS 2 and the workspace

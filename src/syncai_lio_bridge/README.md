@@ -134,7 +134,7 @@ There is no params YAML; the launch file passes everything inline.
 | `lidar_frame` | `lidar_top` | `<robot_id>/lidar_top` | Must match the URDF's `lidar_top` link |
 | `publish_rate` | `20.0` | `20.0` | Hz |
 | `transform_tolerance` | `0.1` | `0.1` | Seconds the TF stamp is future-dated |
-| `use_sim_time` | — | **`true`** | See the gotcha below |
+| `use_sim_time` | — | **`false`** | No `/clock` on the real robot; pass `use_sim_time:=true` only against a simulator. See the gotcha below |
 
 `transform_tolerance` future-dates the broadcast stamp, the same trick AMCL uses:
 consumers can interpolate up to that far ahead without hitting an extrapolation
@@ -147,13 +147,13 @@ because ROS namespaces topics but not TF frame ids; `map` stays plain.
 ## Running
 
 ```bash
-ros2 launch syncai_lio_bridge lio_bridge.launch.py                       # use_sim_time:=true
-ros2 launch syncai_lio_bridge lio_bridge.launch.py use_sim_time:=false   # real robot
+ros2 launch syncai_lio_bridge lio_bridge.launch.py                       # real robot (use_sim_time:=false)
+ros2 launch syncai_lio_bridge lio_bridge.launch.py use_sim_time:=true    # only against a simulator publishing /clock
 ros2 launch syncai_lio_bridge lio_bridge.launch.py \
     system_config:=config/instances/robot02.ini
 ```
 
-Window 2 of `config/sessions/stack.yaml`, after `sleep: 4` — it needs the
+Window 2 of `config/sessions/start_nav.yaml`, after `sleep: 4` — it needs the
 localizer and `bringup`'s static TF up first.
 
 Checking it:
@@ -176,11 +176,14 @@ throttled message:
 
 ## Gotchas
 
-- **`use_sim_time` defaults to `true`.** On the real robot there is no `/clock`,
-  so `now()` returns zero and every TF stamp and odom header is garbage. The
-  byobu 3D session launches this node with no arguments, i.e. with the sim-time
-  default — while the planner and controller 3D params set `use_sim_time: false`.
-  Pass `use_sim_time:=false` explicitly on hardware.
+- **`use_sim_time` defaults to `false`, and that default is load-bearing.** It
+  used to default to `true` for Isaac Sim, and the byobu session launches this
+  node with no arguments — so on the real robot, where there is no `/clock`,
+  `now()` returned zero and every TF stamp and odom header was garbage while the
+  planner and controller params correctly said `use_sim_time: false`. The
+  default was flipped when the sim fleet was retired; the session spec still
+  passes no override, so do not flip it back without also editing
+  `config/sessions/start_nav.yaml`.
 - **`lidar_frame` must name a real frame.** It comes from the URDF's
   `lidar_top_joint`, published by `bringup`. Without it the node publishes
   *nothing at all* — not even the odom chain — because the extrinsic lookup gates

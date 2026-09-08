@@ -72,10 +72,14 @@ Choosing which IP to advertise is the interesting part:
 
 1. The WiFi interface's address, if it has one.
 2. Otherwise the first address on an `en*` then `eth*` interface —
-3. **skipping anything in `172.16.0.0/12`**, Docker's default bridge pool. In the
-   robot container `eth0` is the compose bridge and `eth1` is the `syncai-lan`
-   macvlan; publishing the bridge address would advertise a name that resolves to
-   an address unreachable from the LAN.
+3. **skipping anything in `172.16.0.0/12`**, Docker's default bridge pool. The
+   robot container runs with `network_mode: host` today, so it sees the host's
+   real NICs and this guard normally never fires. It is kept because it is what
+   made the old dual-homed layout work (the retired Isaac Sim fleet had `eth0` on
+   the compose bridge and `eth1` on the `syncai-lan` macvlan): publishing a
+   bridge address advertises a name that resolves to something unreachable from
+   the LAN, and if the container ever goes back to a bridge network that is still
+   the failure mode.
 
 `avahi-publish` is a long-running daemon, so the manager waits 0.5 s after
 spawning: an exit inside that window means publishing failed (name collision, no

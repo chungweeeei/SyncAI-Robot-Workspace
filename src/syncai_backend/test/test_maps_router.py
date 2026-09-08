@@ -627,13 +627,13 @@ def _sheet(size, step=0.5, z=0.0):
 
 @pytest.fixture
 def saved_map(maps_dir, make_pcd):
-    """A map directory with a **large-site** map.pcd, as save_maps would leave it.
+    """A map directory with a large-site map.pcd, as save_maps would leave it.
 
-    Large on purpose, and the size is load-bearing rather than incidental:
-    _start_grid_conversion picks its recipe from the cloud's xy footprint, so a
-    fixture below LARGE_SITE_AREA_M2 would silently route every test that uses
-    this through the z-band branch and stop exercising the traversability one at
-    all. 60 m x 60 m is 3600 m², comfortably over the 3000 m² threshold.
+    Sized like a warehouse (60 m x 60 m of bbox) because the tests that use it
+    exercise the *traversability* path — which since 2026-09 runs only on
+    request, never by size, so these tests reach it through
+    ``recipe_request="traversability"`` / the re-convert endpoint rather than by
+    making the fixture big enough to trip a threshold that no longer exists.
     """
     directory = maps_dir / "newmap"
     os.makedirs(directory, exist_ok=True)
@@ -675,7 +675,9 @@ def small_saved_map(maps_dir, make_pcd):
 def test_conversion_writes_a_gridmap_from_the_traversable_cloud(
     logger, saved_map, fake_traversable, conversion_threads
 ):
-    started = map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+    started = map_router_module._start_grid_conversion(
+        logger, "newmap", saved_map, recipe_request="traversability"
+    )
     _join(conversion_threads)
 
     assert started is True
@@ -697,7 +699,24 @@ def test_conversion_passes_a_debug_dir_when_one_is_configured(
 ):
     monkeypatch.setattr(map_router_module, "TRAVERSABLE_DEBUG_SUBDIR", "traversable_debug")
 
-    map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+    map_router_module._start_grid_conversion(
+        logger, "newmap", saved_map, recipe_request="traversability"
+    )
+    _join(conversion_threads)
+
+    assert fake_traversable.calls[0]["debug_dir"] == os.path.join(
+        saved_map, "traversable_debug"
+    )
+
+
+def test_conversion_passes_a_debug_dir_when_the_request_asks(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    """debug=True is the per-request tuning interface — the module constant
+    stays None so ordinary conversions never inflate the catalogue's sizes."""
+    map_router_module._start_grid_conversion(
+        logger, "newmap", saved_map, recipe_request="traversability", debug=True
+    )
     _join(conversion_threads)
 
     assert fake_traversable.calls[0]["debug_dir"] == os.path.join(
@@ -712,10 +731,54 @@ def test_conversion_reports_a_failed_segmentation_instead_of_dying(
     ends up without a grid — the route has already answered 200 by then."""
     fake_traversable.raises = ValueError("intensity/normal gate selected no ground points")
 
-    assert map_router_module._start_grid_conversion(logger, "newmap", saved_map) is True
+    assert (
+        map_router_module._start_grid_conversion(
+            logger, "newmap", saved_map, recipe_request="traversability"
+        )
+        is True
+    )
     _join(conversion_threads)
 
     assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
+
+
+def test_a_failed_conversion_releases_the_slot(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    """The registry entry must not outlive the thread, or the map is stuck
+    unconvertible until a backend restart."""
+    fake_traversable.raises = ValueError("no ground")
+    map_router_module._start_grid_conversion(
+        logger, "newmap", saved_map, recipe_request="traversability"
+    )
+    _join(conversion_threads)
+
+    assert not map_router_module._is_converting("newmap")
+    # And a second attempt is accepted rather than 409'd.
+    fake_traversable.raises = None
+    assert (
+        map_router_module._start_grid_conversion(
+            logger, "newmap", saved_map, recipe_request="traversability"
+        )
+        is True
+    )
+    _join(conversion_threads)
+    assert os.path.isfile(os.path.join(saved_map, "gridmap.pgm"))
+
+
+def test_a_running_conversion_conflicts(logger, saved_map):
+    """Two threads writing the same gridmap.pgm would interleave outputs."""
+    from syncai_backend.exceptions import ConflictError
+
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("newmap")
+    try:
+        with pytest.raises(ConflictError) as exc:
+            map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+        assert exc.value.code == "conversion_running"
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("newmap")
 
 
 def test_conversion_survives_open3d_being_absent(
@@ -733,7 +796,12 @@ def test_conversion_survives_open3d_being_absent(
     monkeypatch.delitem(sys.modules, "syncai_backend.helpers.traversable", raising=False)
     monkeypatch.setattr(builtins, "__import__", _no_open3d)
 
-    assert map_router_module._start_grid_conversion(logger, "newmap", saved_map) is True
+    assert (
+        map_router_module._start_grid_conversion(
+            logger, "newmap", saved_map, recipe_request="traversability"
+        )
+        is True
+    )
     _join(conversion_threads)
 
     assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
@@ -747,34 +815,109 @@ def _sidecar(directory):
         return json.load(handle)
 
 
-def test_a_large_site_converts_with_the_traversability_recipe(
-    logger, saved_map, fake_traversable, conversion_threads
+@pytest.fixture
+def glassy_saved_map(maps_dir, make_pcd):
+    """The conference failure in miniature: a huge bbox over a small floor.
+
+    A dense 20 m floor sheet at -0.4 with a block on it (the real hall), plus a
+    handful of points 4 m up and 60 m out — out-of-hall structure seen through
+    glass. The bbox comes out ~3600 m² while the floor stays ~400 m², which is
+    exactly the shape that used to trip the removed footprint threshold into the
+    traversability recipe and produce the 59%-occupied blob.
+    """
+    directory = maps_dir / "glassy"
+    os.makedirs(directory, exist_ok=True)
+    floor_z = -0.4
+    points = _sheet(20.0, step=0.2, z=floor_z)
+    block = np.arange(0.0, 1.0, 0.05)
+    points += [
+        (5.0 + float(bx), 5.0 + float(by), floor_z + float(h))
+        for bx in block
+        for by in block
+        for h in np.arange(0.5, 1.5, 0.25)
+    ]
+    points += [(60.0, 60.0, 4.0), (58.0, 61.0, 4.5), (61.0, 58.0, 5.0)]
+    make_pcd(directory / "map.pcd", points=points)
+    return str(directory)
+
+
+def test_the_default_recipe_is_z_band_whatever_the_footprint(
+    logger, glassy_saved_map, fake_traversable, conversion_threads
 ):
-    """Nobody hand-edits 6000 m², so a large site gets the automatic repair."""
-    map_router_module._start_grid_conversion(logger, "newmap", saved_map)
+    """The conference regression: a glass-inflated bbox must not change the
+    recipe, because no recipe is picked by size any more.
+
+    The empty ``calls`` list is the assertion that matters twice over: the
+    traversability pipeline did not run, and — since the open3d import sits
+    inside that branch — was never even imported.
+    """
+    map_router_module._start_grid_conversion(logger, "glassy", glassy_saved_map)
     _join(conversion_threads)
 
-    assert len(fake_traversable.calls) == 1
-    side = _sidecar(saved_map)
-    assert side["recipe"] == "traversability"
-    assert side["footprint_m2"] >= map_router_module.LARGE_SITE_AREA_M2
+    assert fake_traversable.calls == []
+    side = _sidecar(glassy_saved_map)
+    assert side["recipe"] == "z-band"
+    # Both diagnostics are recorded, and their divergence is the fingerprint of
+    # a glass-inflated cloud: a big bbox over little floor.
+    assert side["footprint_m2"] > 3000.0
+    assert side["floor_area_m2"] < 600.0
+    assert "threshold_m2" not in side
 
 
-def test_a_small_site_converts_with_the_z_band_recipe(
+def test_the_z_band_sidecar_carries_both_area_diagnostics(
     logger, small_saved_map, fake_traversable, conversion_threads
 ):
-    """And the traversability pipeline is not merely unused — never imported.
-
-    An empty ``calls`` list is the assertion that matters: the open3d import sits
-    inside that branch, so a small site must not pay it.
-    """
     map_router_module._start_grid_conversion(logger, "smallmap", small_saved_map)
     _join(conversion_threads)
 
     assert fake_traversable.calls == []
     side = _sidecar(small_saved_map)
     assert side["recipe"] == "z-band"
-    assert side["footprint_m2"] < map_router_module.LARGE_SITE_AREA_M2
+    # A 20 m sheet at 0.2 m spacing: bbox and covered floor agree to within the
+    # 0.5 m measuring cell's boundary over-count.
+    assert side["footprint_m2"] == pytest.approx(400.0, rel=0.15)
+    assert side["floor_area_m2"] == pytest.approx(400.0, rel=0.15)
+    assert "recipe_override" not in side
+    # No poses.txt in the fixture, so the connectivity filter must not claim to
+    # have run.
+    assert "pose_filter" not in side["params"]
+
+
+def test_a_requested_traversability_conversion_records_the_override(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    override = {"requested": "traversability", "picked_by": "test", "reason": None}
+    map_router_module._start_grid_conversion(
+        logger,
+        "newmap",
+        saved_map,
+        recipe_request="traversability",
+        override=override,
+    )
+    _join(conversion_threads)
+
+    assert len(fake_traversable.calls) == 1
+    side = _sidecar(saved_map)
+    assert side["recipe"] == "traversability"
+    assert side["recipe_override"] == override
+
+
+def test_grid_overrides_reach_the_traversable_projection_and_the_sidecar(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    """gap_fill_size is the acknowledged per-site knob (dp1f's bottom aisle);
+    an override must land in the conversion and be readable off the sidecar."""
+    map_router_module._start_grid_conversion(
+        logger,
+        "newmap",
+        saved_map,
+        recipe_request="traversability",
+        grid_overrides={"gap_fill_size": 1.0},
+    )
+    _join(conversion_threads)
+
+    side = _sidecar(saved_map)
+    assert side["params"]["grid"] == {"gap_fill_size": 1.0}
 
 
 def test_the_z_band_recipe_produces_a_trinary_map(
@@ -825,3 +968,292 @@ def test_conversion_is_skipped_without_a_pcd(logger, maps_dir, conversion_thread
 
     assert map_router_module._start_grid_conversion(logger, "newmap", directory) is False
     assert list(conversion_threads) == []
+
+
+# --- the pose-connectivity filter through the conversion ----------------------
+
+
+def test_z_band_conversion_reverts_free_space_the_poses_cannot_reach(
+    logger, maps_dir, make_pcd, conversion_threads
+):
+    """The glass-leak regression in miniature: two floor sheets 8 m apart, poses
+    on one. The undriven, unconnected sheet must come back unknown — 205, not 0,
+    so real driving could still clear it."""
+    directory = maps_dir / "twosheets"
+    os.makedirs(directory)
+    floor_z = -0.4
+    points = _sheet(4.0, step=0.2, z=floor_z)
+    points += [(12.0 + x, y, z) for x, y, z in _sheet(4.0, step=0.2, z=floor_z)]
+    # A block on the driven sheet: the z-band conversion refuses a cloud with an
+    # empty obstacle band.
+    block = np.arange(0.0, 1.0, 0.05)
+    points += [
+        (1.0 + float(bx), 1.0 + float(by), floor_z + float(h))
+        for bx in block
+        for by in block
+        for h in np.arange(0.5, 1.5, 0.25)
+    ]
+    make_pcd(directory / "map.pcd", points=points)
+    (directory / "poses.txt").write_text(
+        "".join(
+            f"{i}.pcd {x} {y} {floor_z} 1 0 0 0\n"
+            for i, (x, y) in enumerate([(2.5, 2.5), (3.0, 2.0), (2.0, 3.0)])
+        )
+    )
+
+    map_router_module._start_grid_conversion(logger, "twosheets", str(directory))
+    _join(conversion_threads)
+
+    side = _sidecar(str(directory))
+    stats = side["params"]["pose_filter"]
+    assert stats["applied"] == 1
+    assert stats["reverted_free_cells"] > 0
+    assert stats["components_kept"] >= 1
+
+    grid = cv2.imread(str(directory / "gridmap.pgm"), cv2.IMREAD_UNCHANGED)
+    meta = yaml.safe_load((directory / "gridmap.yaml").read_text())
+    res, (ox, oy, _) = meta["resolution"], meta["origin"]
+
+    def cell(x, y):
+        # pgm row 0 is max y — the writer's flip.
+        return grid[grid.shape[0] - 1 - int((y - oy) / res), int((x - ox) / res)]
+
+    assert cell(2.5, 2.5) == 254, "the driven sheet lost its free space"
+    assert cell(14.0, 2.0) == 205, "the unreachable sheet is still free"
+
+
+def test_z_band_conversion_survives_a_malformed_poses_txt(
+    logger, maps_dir, make_pcd, conversion_threads
+):
+    """A broken poses.txt costs the filter, never the gridmap."""
+    directory = maps_dir / "badposes"
+    os.makedirs(directory)
+    floor_z = -0.4
+    points = _sheet(4.0, step=0.2, z=floor_z)
+    block = np.arange(0.0, 1.0, 0.05)
+    points += [
+        (1.0 + float(bx), 1.0 + float(by), floor_z + float(h))
+        for bx in block
+        for by in block
+        for h in np.arange(0.5, 1.5, 0.25)
+    ]
+    make_pcd(directory / "map.pcd", points=points)
+    (directory / "poses.txt").write_text("not a pose line\n")
+
+    map_router_module._start_grid_conversion(logger, "badposes", str(directory))
+    _join(conversion_threads)
+
+    assert os.path.isfile(directory / "gridmap.pgm")
+    assert "pose_filter" not in _sidecar(str(directory))["params"]
+
+
+# --- POST /api/v1/maps/{name}/grid/convert ------------------------------------
+
+
+def _post_convert(client, name, payload=None):
+    return client.post(f"/api/v1/maps/{name}/grid/convert", json=payload or {})
+
+
+def test_convert_endpoint_runs_the_requested_traversability_recipe(
+    client, saved_map, fake_traversable, conversion_threads, map_gw
+):
+    response = _post_convert(
+        client, "newmap", {"recipe": "traversability", "reason": "big warehouse"}
+    )
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["started"] is True
+    assert body["recipe"] == "traversability"
+    assert len(fake_traversable.calls) == 1
+    side = _sidecar(saved_map)
+    assert side["recipe"] == "traversability"
+    assert side["recipe_override"]["requested"] == "traversability"
+    assert side["recipe_override"]["reason"] == "big warehouse"
+    assert side["recipe_override"]["picked_by"] == (
+        "POST /api/v1/maps/newmap/grid/convert"
+    )
+    # newmap is not the active map ('full' is): no reload.
+    assert map_gw.calls == []
+
+
+def test_convert_endpoint_defaults_to_z_band(
+    client, maps_dir, saved_map, make_pcd, fake_traversable, conversion_threads
+):
+    """An empty body re-converts with the safe default, whatever the size."""
+    # The 60 m sheet alone has nothing in the obstacle band, so give it a block.
+    points = _sheet(60.0, step=2.0)
+    block = np.arange(0.0, 1.0, 0.05)
+    points += [
+        (1.0 + float(bx), 1.0 + float(by), float(h))
+        for bx in block
+        for by in block
+        for h in np.arange(0.5, 1.5, 0.25)
+    ]
+    make_pcd(maps_dir / "newmap" / "map.pcd", points=points)
+
+    response = _post_convert(client, "newmap")
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    assert response.json()["recipe"] == "z-band"
+    assert fake_traversable.calls == []
+    assert _sidecar(saved_map)["recipe"] == "z-band"
+
+
+def test_convert_endpoint_reloads_the_active_map(
+    client, map_gw, conversion_threads
+):
+    """'full' is the active map; a re-convert that map_server never hears about
+    would leave it serving the grid the operator just replaced."""
+    response = _post_convert(client, "full")
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    assert len(map_gw.calls) == 1
+    assert map_gw.calls[0].endswith("full/gridmap.yaml")
+
+
+def test_convert_endpoint_archives_the_previous_grid(
+    client, maps_dir, conversion_threads
+):
+    previous = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+    previous_yaml = (maps_dir / "full" / "gridmap.yaml").read_bytes()
+
+    response = _post_convert(client, "full")
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    assert "gridmap_prev.pgm" in response.json()["message"]
+    assert (maps_dir / "full" / "gridmap_prev.pgm").read_bytes() == previous
+    assert (maps_dir / "full" / "gridmap_prev.yaml").read_bytes() == previous_yaml
+    # The new conversion really replaced the grid (the fixture's 6x4 became the
+    # pcd's real extent).
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes() != previous
+
+
+def test_convert_endpoint_refuses_to_discard_hand_edits(
+    client, maps_dir, make_pgm, conversion_threads
+):
+    """A raw snapshot differing from the live grid means operator work; silently
+    re-converting over it would destroy it."""
+    make_pgm(maps_dir / "full" / "gridmap_raw.pgm", 6, 4, fill=0)
+
+    response = _post_convert(client, "full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "gridmap_hand_edited"
+    assert list(conversion_threads) == []
+
+
+def test_convert_endpoint_overwrites_hand_edits_only_on_confirmation(
+    client, maps_dir, make_pgm, conversion_threads
+):
+    make_pgm(maps_dir / "full" / "gridmap_raw.pgm", 6, 4, fill=0)
+    edited = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+
+    response = _post_convert(client, "full", {"overwrite_edits": True})
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    # The edited grid survives as the prev generation...
+    assert (maps_dir / "full" / "gridmap_prev.pgm").read_bytes() == edited
+    # ...its stale raw snapshot moved aside with it, so the next editor save
+    # snapshots the *new* conversion rather than trusting a wrong-era raw...
+    assert not (maps_dir / "full" / "gridmap_raw.pgm").exists()
+    assert (maps_dir / "full" / "gridmap_prev_raw.pgm").exists()
+    # ...and the live grid is the fresh conversion.
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes() != edited
+
+
+def test_convert_endpoint_conflicts_while_a_conversion_runs(client):
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("full")
+    try:
+        response = _post_convert(client, "full")
+        assert response.status_code == 409
+        assert response.json()["code"] == "conversion_running"
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("full")
+
+
+def test_grid_converting_is_reported_while_the_slot_is_held(client):
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("full")
+    try:
+        entry = _by_name(client.get("/api/v1/maps").json())["full"]
+        assert entry["grid_converting"] is True
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("full")
+
+    entry = _by_name(client.get("/api/v1/maps").json())["full"]
+    assert entry["grid_converting"] is False
+
+
+def test_convert_endpoint_400s_without_a_pcd(client, maps_dir, conversion_threads):
+    (maps_dir / "full" / "map.pcd").unlink()
+
+    response = _post_convert(client, "full")
+
+    assert response.status_code == 400
+    assert list(conversion_threads) == []
+
+
+def test_convert_endpoint_404s_for_a_missing_map(client):
+    assert _post_convert(client, "nosuchmap").status_code == 404
+
+
+def test_convert_endpoint_rejects_cross_recipe_parameters(client, conversion_threads):
+    z_with_gap = _post_convert(client, "full", {"recipe": "z-band", "gap_fill_size": 1.0})
+    trav_with_bands = _post_convert(
+        client,
+        "full",
+        {"recipe": "traversability", "z_band_offsets": {"zmax": 3.0}},
+    )
+
+    assert z_with_gap.status_code == 400
+    assert trav_with_bands.status_code == 400
+    assert list(conversion_threads) == []
+
+
+def test_convert_endpoint_rejects_inverted_merged_bands(client, conversion_threads):
+    """The override merges over the recipe's other end, so one wrong number can
+    invert a band — that must die here, not half a minute later in the thread."""
+    response = _post_convert(
+        client, "full", {"recipe": "z-band", "z_band_offsets": {"floor_zmax": -0.5}}
+    )
+
+    assert response.status_code == 400
+    assert "floor band is inverted" in response.json()["detail"]
+    assert list(conversion_threads) == []
+
+
+def test_convert_endpoint_422s_an_out_of_range_gap_fill(client, conversion_threads):
+    response = _post_convert(
+        client, "full", {"recipe": "traversability", "gap_fill_size": 5.0}
+    )
+
+    assert response.status_code == 422
+    assert list(conversion_threads) == []
+
+
+def test_convert_endpoint_passes_debug_and_overrides_through(
+    client, saved_map, fake_traversable, conversion_threads
+):
+    response = _post_convert(
+        client,
+        "newmap",
+        {"recipe": "traversability", "gap_fill_size": 1.2, "debug": True},
+    )
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    assert fake_traversable.calls[0]["debug_dir"] == os.path.join(
+        saved_map, "traversable_debug"
+    )
+    side = _sidecar(saved_map)
+    assert side["params"]["grid"] == {"gap_fill_size": 1.2}
+    assert side["recipe_override"]["param_overrides"] == {"gap_fill_size": 1.2}

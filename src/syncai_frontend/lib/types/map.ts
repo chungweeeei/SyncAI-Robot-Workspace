@@ -37,6 +37,13 @@ export interface MapSummary {
   thumbnail: string | null;
   /** `map.pcd` present — the cloud the 3D localizer relocalizes against. */
   has_pointcloud: boolean;
+  /**
+   * A pcd → gridmap conversion for this map is running right now. This is the
+   * only status surface a conversion has — the backend keeps no job resource —
+   * so the catalogue poll watches this flag until it drops and then reads
+   * `grid` for the outcome.
+   */
+  grid_converting: boolean;
   /** Size of the whole `map/<name>/` directory, dominated by the .pcd. */
   size_bytes: number;
   /** ISO 8601, most recently modified file in the directory. */
@@ -44,6 +51,17 @@ export interface MapSummary {
   /** Rows in `map_vertices` naming this map. */
   vertex_count: number;
 }
+
+/**
+ * The two pcd → gridmap recipes the re-convert endpoint accepts.
+ *
+ * No "auto": the backend removed size-based recipe picking after it misrouted
+ * every conference-hall save (glass inflates the cloud's bounding box), so a
+ * request either takes the z-band default or names traversability outright.
+ * z-band is trinary and recoverable; traversability permanently walls off
+ * everything it did not observe, which is why choosing it is an operator act.
+ */
+export type GridRecipe = "z-band" | "traversability";
 
 /**
  * What the robot does when it visits a vertex — the router's `VertexType`.

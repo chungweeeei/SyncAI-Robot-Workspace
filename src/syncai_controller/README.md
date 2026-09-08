@@ -44,8 +44,8 @@ plugins/
   stopped_goal_checker.cpp             GoalChecker (adds "must be stopped")
   position_goal_checker.cpp            GoalChecker (position only)
 plugins.xml                      pluginlib manifest, exported to syncai_nav_core
-params/controller_server_params.yaml       2D / sim
-params/controller_server_3d_params.yaml    3D / real robot
+params/controller_server_params.yaml       the only params file (the former 2D/sim and
+                                           3D/real-robot variants were merged back into it)
 launch/controller_server.launch.py
 ```
 
@@ -296,13 +296,18 @@ few worth reading before touching:
   the rotation.
 - `max_linear_accel: 1.0` — the no-velocity-smoother clamp; 0 → 0.8 m/s in ~0.8 s.
 
-### 2D vs 3D params
+### Params
 
-| | `controller_server_params.yaml` | `controller_server_3d_params.yaml` |
+There is a single `controller_server_params.yaml`. It used to be split into a
+2D/sim file and a `*_3d_params.yaml` for the real robot; the variants were merged
+back once the Isaac Sim fleet was retired, and the values that remain are the
+real-robot ones:
+
+| Parameter | Value | Why |
 |---|---|---|
-| `use_sim_time` | `true` (Isaac Sim) | `false` (real robot, no `/clock`) |
-| `xy_goal_tolerance` | `0.05` | `0.1` — the real robot's floor speed is ~0.3 m/s, so it cannot creep into a 5 cm window |
-| Local costmap sources | `scan` | `scan` **and** `pointlio/body_cloud` |
+| `use_sim_time` | `false` | No `/clock` on the real robot |
+| `xy_goal_tolerance` | `0.15` | The robot's floor speed is ~0.3 m/s, so it cannot creep into a 5 cm window (the old sim value) |
+| Local costmap sources | `scan` **and** `pointlio/body_cloud` | The 3D stack has no laser scan |
 
 On the real 3D robot the `scan` source receives nothing (no scan merger runs
 there); it is kept for setups that do publish one. The pointcloud source
@@ -315,8 +320,6 @@ has established the TF chain.
 
 ```bash
 ros2 launch syncai_controller controller_server.launch.py
-ros2 launch syncai_controller controller_server.launch.py \
-    params_file:=$PWD/src/syncai_controller/params/controller_server_3d_params.yaml
 ros2 launch syncai_controller controller_server.launch.py \
     system_config:=config/instances/robot02.ini
 ```
@@ -366,7 +369,7 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
 - **A plugin load failure calls `exit(-1)`.** A typo in a `.plugin` type string
   takes the whole process down at startup rather than degrading.
 - **The byobu session launches this server on its default params file** —
-  `config/sessions/stack.yaml` passes no `params_file:=` override, for either
+  `config/sessions/start_nav.yaml` passes no `params_file:=` override, for either
   the planner or the controller. That is correct now that the separate
   `*_3d_params.yaml` variants have been merged back into the defaults; it was a
   bug while they were separate (the 3D session silently ran with

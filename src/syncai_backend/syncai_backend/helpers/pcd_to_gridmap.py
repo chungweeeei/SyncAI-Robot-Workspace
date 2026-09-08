@@ -39,7 +39,7 @@ underlying ``OSError`` — the caller decides how to report them.
 
 import os
 import tempfile
-from typing import Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import structlog
@@ -83,6 +83,142 @@ def floor_level(z: np.ndarray, bin_size: float = 0.10, relative_peak: float = 0.
     substantial = np.flatnonzero(hist >= relative_peak * hist.max())
     first = int(substantial[0])
     return float(0.5 * (edges[first] + edges[first + 1]))
+
+
+def read_poses_xy(path: str) -> np.ndarray:
+    """Read the map-frame xy of every keyframe from a pgo ``poses.txt``.
+
+    Lives here rather than in ``helpers.pointcloud`` because its one consumer is
+    the pose-connectivity filter below — ``pointcloud`` is the pcd-wire-format
+    module and a keyframe pose list is not a point cloud.
+
+    The format is what ``pgo/save_maps`` writes next to ``map.pcd``: one line per
+    keyframe, ``<N>.pcd x y z qw qx qy qz``. Only x and y are taken — the filter
+    works on the projected 2D grid, and z/orientation carry nothing it can use.
+    Blank lines are tolerated (a trailing newline is normal); anything else
+    malformed raises ``ValueError`` with the line number, and so does an empty
+    file — a poses.txt with no poses means the save is broken in a way the
+    caller should hear about rather than silently skip.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for lineno, line in enumerate(handle, 1):
+            parts = line.split()
+            if not parts:
+                continue
+            if len(parts) < 3:
+                raise ValueError(
+                    f"{path}:{lineno}: expected '<name> x y z qw qx qy qz', got {line!r}"
+                )
+            try:
+                rows.append((float(parts[1]), float(parts[2])))
+            except ValueError:
+                raise ValueError(
+                    f"{path}:{lineno}: could not parse x/y from {line!r}"
+                )
+    if not rows:
+        raise ValueError(f"no poses in {path}")
+    return np.asarray(rows, dtype=np.float64)
+
+
+def revert_unreachable_free(
+    logger: structlog.stdlib.BoundLogger,
+    grid: np.ndarray,
+    pose_xy: np.ndarray,
+    origin_xy: np.ndarray,
+    resolution: float,
+    *,
+    seed_radius: int = 3,
+) -> Tuple[np.ndarray, Dict[str, int]]:
+    """Turn free cells unreachable from the driven trajectory back to unknown.
+
+    Exists because of the conference-hall maps (2026-09): a MID360 sees straight
+    through glass, so the floor *outside* the hall gets floor-band returns and
+    comes out free — on those three maps 5.4-6.5% of all free cells, spread over
+    700-1100 speckle components the operator would otherwise erase by hand. The
+    robot's own keyframe trajectory is ground truth for "reachable", and pgo
+    already writes it next to the pcd, so seeding a connected-component pass from
+    it removes exactly that leakage without touching anything the robot could
+    actually drive to (free space beyond an undriven doorway stays connected,
+    stays free).
+
+    ``grid`` is in this module's internal orientation — ``[row, col]`` with row 0
+    at **min y**, i.e. *before* ``_write_gridmap``'s flip — and so are the cell
+    coordinates derived from ``pose_xy``. Feeding this a .pgm read back from disk
+    without flipping it would mirror every pose across the map's horizontal
+    midline.
+
+    Reverted cells become 205 (unknown), not 0 (occupied), and that choice is
+    load-bearing: costmap_layer.cpp:90 lets live observations overwrite a
+    NO_INFORMATION master cell but never lower a LETHAL one, so unknown is the
+    recoverable direction — glass leakage walled off as occupied would be
+    permanent. 8-connectivity, matching ``_despeckle``'s labelling, so the two
+    passes agree about what a component is.
+
+    ``seed_radius`` widens each pose to a ``(2r+1)²`` cell window before looking
+    up components. Not a nicety: the band-recentring measurements in the map
+    router record 9-16 keyframe poses per map landing on *occupied* cells within
+    5-14 cm of free space (poses that brushed a wall), and a radius-0 seed would
+    silently drop the component those poses stand in. 3 cells is 15 cm at the
+    fleet's 0.05 m resolution — just past that measured range.
+
+    If no seed window touches any free component at all, the grid comes back
+    **unchanged** (``applied: 0``) with an error in the log: poses that disagree
+    with the map that badly mean the inputs are mismatched, and reverting every
+    free cell to enforce the filter would destroy the map to satisfy a
+    post-process. Skipping leaves exactly the behaviour the fleet had before the
+    filter existed.
+    """
+    free = grid == 254
+    labels, component_count = ndimage.label(free, structure=np.ones((3, 3)))
+    height, width = grid.shape
+
+    cols = ((pose_xy[:, 0] - origin_xy[0]) / resolution).astype(np.int64)
+    rows = ((pose_xy[:, 1] - origin_xy[1]) / resolution).astype(np.int64)
+    inside = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
+    if not inside.all():
+        # Out-of-bounds poses are logged, not fatal: the grid's extent comes from
+        # the *z-banded* slices, so a pose recorded while the lidar saw nothing in
+        # band (a doorway dwell) can legitimately fall outside it.
+        logger.warning(
+            "pose-filter: poses outside the grid",
+            outside=int((~inside).sum()),
+            total=len(pose_xy),
+        )
+    rows, cols = rows[inside], cols[inside]
+
+    seeded: set = set()
+    for row, col in zip(rows, cols):
+        r0, r1 = max(0, row - seed_radius), min(height, row + seed_radius + 1)
+        c0, c1 = max(0, col - seed_radius), min(width, col + seed_radius + 1)
+        seeded.update(np.unique(labels[r0:r1, c0:c1]).tolist())
+    seeded.discard(0)
+
+    stats = {
+        "applied": 0,
+        "poses": int(len(pose_xy)),
+        "poses_in_grid": int(len(rows)),
+        "components_total": int(component_count),
+        "components_kept": len(seeded),
+        "reverted_free_cells": 0,
+    }
+    if not seeded:
+        logger.error(
+            "pose-filter: no pose touches any free component; leaving the grid "
+            "unfiltered — poses.txt and the grid look mismatched",
+            poses_in_grid=len(rows),
+            components_total=int(component_count),
+        )
+        return grid, stats
+
+    keep = np.isin(labels, list(seeded))
+    reverted = free & ~keep
+    grid = grid.copy()
+    grid[reverted] = 205
+    stats["applied"] = 1
+    stats["reverted_free_cells"] = int(reverted.sum())
+    logger.info("pose-filter", **stats)
+    return grid, stats
 
 
 def _disk(radius: int) -> np.ndarray:
@@ -233,7 +369,8 @@ def convert_pcd_to_gridmap(
     free_close: int = 0,
     despeckle_min_size: Optional[int] = None,
     fill_holes_max_size: Optional[int] = None,
-) -> None:
+    pose_seed_xy: Optional[np.ndarray] = None,
+) -> Optional[Dict[str, int]]:
     """Convert a 3D point-cloud map into a 2D occupancy grid (pgm + yaml).
 
     Writes ``<output_basename>.pgm`` and ``<output_basename>.yaml``. The grid
@@ -246,6 +383,12 @@ def convert_pcd_to_gridmap(
     the router's recipe — the recipe stays at the call site where its z-band
     rationale lives. ``despeckle_min_size`` / ``fill_holes_max_size`` are None
     for off, replacing the CLI's flag-plus-size pairs.
+
+    ``pose_seed_xy`` — (N, 2) map-frame keyframe positions (see
+    ``read_poses_xy``) — enables ``revert_unreachable_free`` as the final pass,
+    and its stats are the return value (None when no poses are given, so the
+    pre-existing callers that ignore the return are unaffected). The CLI had no
+    such flag; it postdates the CLI by a year of glass-walled venues.
     """
     if free_mode not in ("floor", "any", "none"):
         raise ValueError(f"unknown free_mode: {free_mode!r}")
@@ -354,6 +497,17 @@ def convert_pcd_to_gridmap(
     if fill_holes_max_size is not None:
         grid = _fill_holes(logger, grid, fill_holes_max_size)
 
+    # Last, after _despeckle and _fill_holes, and the ordering is load-bearing:
+    # _fill_holes turns small enclosed unknown pockets back into free, so run
+    # before it the filter's reverted cells would be resurrected as exactly the
+    # leakage it just removed (a glass-leak blob ringed by free is precisely a
+    # "hole" to that pass).
+    pose_stats: Optional[Dict[str, int]] = None
+    if pose_seed_xy is not None:
+        grid, pose_stats = revert_unreachable_free(
+            logger, grid, np.asarray(pose_seed_xy, dtype=np.float64), min_xy, resolution
+        )
+
     occ = int((grid == 0).sum())
     fre = int((grid == 254).sum())
     logger.info(
@@ -364,6 +518,7 @@ def convert_pcd_to_gridmap(
     )
 
     _write_gridmap(logger, output_basename, grid, min_xy, resolution)
+    return pose_stats
 
 
 def convert_traversable_to_gridmap(

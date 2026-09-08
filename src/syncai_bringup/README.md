@@ -300,7 +300,7 @@ being folded into the shank links.
 
 ## Running
 
-Window 0 of `config/sessions/stack.yaml`, before everything else:
+Window 0 of `config/sessions/start_nav.yaml`, before everything else:
 
 ```bash
 ros2 launch syncai_bringup bringup.launch.py

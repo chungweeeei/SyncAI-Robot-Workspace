@@ -18,7 +18,7 @@
 import { apiUrl } from "@/lib/api/config";
 import { errorDetail } from "@/lib/api/http";
 import type { MapGrid } from "@/lib/map/grid";
-import type { MapSummary } from "@/lib/types/map";
+import type { GridRecipe, MapSummary } from "@/lib/types/map";
 
 /** `GridInfoResponse` — note `origin` is {x, y, yaw}, not a tuple. */
 interface WireGrid {
@@ -35,6 +35,7 @@ interface WireSummary {
   grid: WireGrid | null;
   thumbnail: string | null;
   has_pointcloud: boolean;
+  grid_converting: boolean;
   size_bytes: number;
   modified_at: string;
   vertex_count: number;
@@ -154,7 +155,7 @@ export async function fetchMapGrid(
   );
   if (!summary.grid) {
     throw new Error(
-      `"${name}" has no gridmap. Convert its map.pcd (syncai_backend.helpers.pcd_to_gridmap) first.`,
+      `"${name}" has no gridmap. Rebuild it from the map's card on the Maps screen first.`,
     );
   }
 
@@ -214,4 +215,85 @@ export async function saveMapGrid(
   if (!response.ok) throw new Error(await errorDetail(response));
 
   return (await response.json()) as SaveGridResult;
+}
+
+/**
+ * The convert endpoint's two distinguishable 409s, by their stable `code`.
+ *
+ * "gridmap_hand_edited" is the one the UI reacts to structurally — it opens the
+ * overwrite confirm and retries with `overwriteEdits` — so it must be matched on
+ * the code, not on the detail sentence, which exists to be reworded.
+ * "conversion_running" just renders as the error it is.
+ */
+export type ConvertConflictCode = "conversion_running" | "gridmap_hand_edited";
+
+export class ConvertConflictError extends Error {
+  code: ConvertConflictCode;
+
+  constructor(message: string, code: ConvertConflictCode) {
+    super(message);
+    this.name = "ConvertConflictError";
+    this.code = code;
+  }
+}
+
+/** `ConvertGridResponse`, verbatim. */
+export interface ConvertGridResult {
+  name: string;
+  /** The thread started; the grid appears later or never — poll the catalogue. */
+  started: boolean;
+  recipe: GridRecipe;
+  /** Operator-facing sentence; render it verbatim. */
+  message: string;
+}
+
+/**
+ * (Re)build a map's 2D gridmap from its map.pcd.
+ *
+ * Only `recipe` and the two flags are surfaced here: the endpoint also takes
+ * per-band offsets, gap_fill_size and a debug switch, but those are
+ * tune-with-the-intermediates-in-front-of-you parameters that stay curl/MCP
+ * territory — a dropdown for them would invite guessing numbers the backend's
+ * own comments say not to guess.
+ *
+ * The response only means "started": conversion runs in a background thread and
+ * its status surface is the catalogue's `grid_converting` flag, so callers
+ * invalidate the maps query and let the poll carry the rest.
+ */
+export async function convertMapGrid(
+  name: string,
+  opts: { recipe: GridRecipe; overwriteEdits?: boolean; reason?: string },
+): Promise<ConvertGridResult> {
+  const response = await fetch(
+    apiUrl(`/api/v1/maps/${encodeURIComponent(name)}/grid/convert`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipe: opts.recipe,
+        overwrite_edits: opts.overwriteEdits ?? false,
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      }),
+    },
+  );
+
+  if (response.status === 409) {
+    // Read the body once: errorDetail would consume it without the code.
+    let detail = `${response.status} ${response.statusText}`;
+    let code: string | undefined;
+    try {
+      const body = (await response.json()) as { detail?: string; code?: string };
+      detail = body.detail ?? detail;
+      code = body.code;
+    } catch {
+      /* non-JSON 409 body; fall through to the plain error below */
+    }
+    if (code === "conversion_running" || code === "gridmap_hand_edited") {
+      throw new ConvertConflictError(detail, code);
+    }
+    throw new Error(detail);
+  }
+  if (!response.ok) throw new Error(await errorDetail(response));
+
+  return (await response.json()) as ConvertGridResult;
 }

@@ -175,6 +175,82 @@ class MapCatalogRepo:
                 error=str(exc),
             )
 
+    def gridmap_edited(self, name: str) -> bool:
+        """Report whether this map's gridmap carries hand edits.
+
+        The signal is ``gridmap_raw.pgm`` existing **and differing** from
+        ``gridmap.pgm``. Existence alone is not enough: ``write_gridmap``
+        snapshots the raw copy on the *first* save, so an operator who opened the
+        editor and saved without changing a cell leaves a raw that is
+        byte-identical to the live grid — no edit to protect. The comparison is a
+        full read of two ~1-2 MB files, once, on an operator-initiated request;
+        cheaper proxies (size, mtime) are exactly the ones ``_content_tag`` in
+        the router documents as broken on this filesystem.
+
+        Lives in the repo, not the re-convert endpoint, for the same reason
+        ``write_gridmap`` owns the length check: "does this map hold hand edits"
+        is a property of the store, true for any future caller.
+        """
+        directory = self.resolve_dir(name)
+        raw_path = os.path.join(directory, "gridmap_raw.pgm")
+        grid_path = os.path.join(directory, "gridmap.pgm")
+        if not os.path.isfile(raw_path) or not os.path.isfile(grid_path):
+            return False
+        try:
+            with open(raw_path, "rb") as raw, open(grid_path, "rb") as grid:
+                return raw.read() != grid.read()
+        except OSError as exc:
+            # A file that vanished or turned unreadable mid-check: claim edits.
+            # The caller's next step on True is to refuse a destructive
+            # overwrite, which is the safe answer to "cannot tell".
+            self.logger.warning(
+                "[MapCatalogRepo] Could not compare gridmap with its raw copy",
+                map=name,
+                error=str(exc),
+            )
+            return True
+
+    def archive_gridmap(self, name: str) -> None:
+        """Set the current gridmap aside as ``gridmap_prev.*`` before a re-convert.
+
+        One ``_prev`` generation, overwritten by the next re-conversion — an undo
+        level, deliberately not a version store. Three moves, each load-bearing:
+
+        - ``gridmap.pgm`` is *copied* (not moved) to ``gridmap_prev.pgm`` so the
+          map keeps serving its current grid until the new conversion atomically
+          replaces it — a re-convert of the active map must not leave map_server
+          a window with no file.
+        - ``gridmap.yaml`` is copied along with it. A re-conversion can change
+          the grid's extent and origin, and a prev pgm without the yaml that
+          describes it is unloadable — restoring it would mean guessing geometry.
+        - ``gridmap_raw.pgm`` is **moved** to ``gridmap_prev_raw.pgm``. This one
+          cannot stay: ``write_gridmap`` snapshots to gridmap_raw.pgm only when
+          absent, so a stale raw from the previous conversion would never be
+          refreshed for the new grid and would sit there claiming to be the
+          pristine copy of a file whose dimensions it may not even share.
+
+        ``copy2`` for the copies, same as ``write_gridmap``'s raw snapshot: a
+        fresh mtime would make the archive the newest file under ``_walk_stats``
+        and drag the card's modified_at to now. A map with no gridmap yet (the
+        POST /api/v1/maps path) is a no-op, not an error.
+        """
+        directory = self.resolve_dir(name)
+        grid_path = os.path.join(directory, "gridmap.pgm")
+        if not os.path.isfile(grid_path):
+            return
+
+        shutil.copy2(grid_path, os.path.join(directory, "gridmap_prev.pgm"))
+        yaml_path = os.path.join(directory, "gridmap.yaml")
+        if os.path.isfile(yaml_path):
+            shutil.copy2(yaml_path, os.path.join(directory, "gridmap_prev.yaml"))
+        raw_path = os.path.join(directory, "gridmap_raw.pgm")
+        if os.path.isfile(raw_path):
+            os.replace(raw_path, os.path.join(directory, "gridmap_prev_raw.pgm"))
+        self.logger.info(
+            "[MapCatalogRepo] Archived the gridmap before re-conversion",
+            map=name,
+        )
+
     def write_gridmap(self, name: str, data: bytes) -> bytes:
         """Replace an existing gridmap's cells with ``data``; return the file.
 

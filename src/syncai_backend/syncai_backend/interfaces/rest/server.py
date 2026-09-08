@@ -55,7 +55,13 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ConflictError)
     async def _conflict(_: Request, exc: ConflictError) -> JSONResponse:
-        return _json(status.HTTP_409_CONFLICT, str(exc))
+        # ConflictError optionally carries a machine-readable ``code`` (see the
+        # exception's docstring); it rides next to ``detail`` so clients that
+        # only read ``detail`` keep working.
+        content: dict = {"detail": str(exc)}
+        if getattr(exc, "code", None):
+            content["code"] = exc.code
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=content)
 
     @app.exception_handler(UnauthorizedError)
     async def _unauthorized(_: Request, exc: UnauthorizedError) -> JSONResponse:

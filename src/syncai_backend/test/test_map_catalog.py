@@ -238,3 +238,55 @@ def test_write_gridmap_leaves_gridmap_yaml_untouched(catalog_repo, maps_dir):
     catalog_repo.write_gridmap("full", b"\x00" * 24)
 
     assert yaml_path.read_bytes() == before
+
+
+# --- gridmap_edited / archive_gridmap -----------------------------------------
+
+
+def test_gridmap_edited_is_false_without_a_raw_snapshot(catalog_repo):
+    assert catalog_repo.gridmap_edited("full") is False
+
+
+def test_gridmap_edited_is_false_when_raw_matches_the_grid(catalog_repo, maps_dir):
+    """An operator who opened the editor and saved unchanged cells triggered the
+    snapshot without editing anything — existence alone must not count."""
+    catalog_repo.write_gridmap("full", b"\xfe" * 24)  # snapshot, cells unchanged
+
+    assert catalog_repo.gridmap_edited("full") is False
+
+
+def test_gridmap_edited_is_true_when_the_cells_differ(catalog_repo, maps_dir):
+    catalog_repo.write_gridmap("full", b"\x00" * 24)
+
+    assert catalog_repo.gridmap_edited("full") is True
+
+
+def test_archive_gridmap_sets_the_grid_aside(catalog_repo, maps_dir):
+    grid = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+    meta = (maps_dir / "full" / "gridmap.yaml").read_bytes()
+
+    catalog_repo.archive_gridmap("full")
+
+    # Copies, not moves: the live grid keeps serving until a new conversion
+    # atomically replaces it.
+    assert (maps_dir / "full" / "gridmap.pgm").read_bytes() == grid
+    assert (maps_dir / "full" / "gridmap_prev.pgm").read_bytes() == grid
+    assert (maps_dir / "full" / "gridmap_prev.yaml").read_bytes() == meta
+
+
+def test_archive_gridmap_moves_the_raw_snapshot_aside(catalog_repo, maps_dir):
+    """write_gridmap snapshots only-when-absent, so a stale raw left in place
+    would claim to be the pristine copy of a grid it may not even match."""
+    catalog_repo.write_gridmap("full", b"\x00" * 24)
+    raw = (maps_dir / "full" / "gridmap_raw.pgm").read_bytes()
+
+    catalog_repo.archive_gridmap("full")
+
+    assert not (maps_dir / "full" / "gridmap_raw.pgm").exists()
+    assert (maps_dir / "full" / "gridmap_prev_raw.pgm").read_bytes() == raw
+
+
+def test_archive_gridmap_is_a_noop_without_a_grid(catalog_repo, maps_dir):
+    catalog_repo.archive_gridmap("rawonly")
+
+    assert not (maps_dir / "rawonly" / "gridmap_prev.pgm").exists()
