@@ -19,4 +19,10 @@ export const queryKeys = {
   taskTemplates: ["task-templates"] as const,
   /** GET /api/v1/schedules — Temporal's schedule list. */
   schedules: ["schedules"] as const,
+  /**
+   * GET /api/v1/network/wifi/scan — a ~45 s nmcli rescan on the robot. Fetched
+   * once per Settings visit and on an explicit Rescan only; see useWifiScan for
+   * why it is never refetched on its own.
+   */
+  wifiScan: ["wifi-scan"] as const,
 };

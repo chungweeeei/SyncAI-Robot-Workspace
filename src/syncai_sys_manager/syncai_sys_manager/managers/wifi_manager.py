@@ -33,14 +33,19 @@ class WifiManager:
         self._node = node
         self._logger = node.get_logger()
 
-        self.init_pub()
-        self.init_services()
-        self.init_timer()
-
+        # State before timers. The timers only fire once the node spins, so the
+        # old order (timers first, lock after) happened to work — but it left
+        # the publish and refresh callbacks reading attributes that did not yet
+        # exist at the moment they were registered, an assumption worth not
+        # relying on now that there are two of them.
         self._wifi_status_lock = threading.Lock()
         self._current_wifi_status = WifiStatus(
             bssid="", ssid="", rssi=0, ip_address="", mac_address=""
         )
+
+        self.init_pub()
+        self.init_services()
+        self.init_timer()
 
     def init_pub(self):
 
@@ -78,6 +83,31 @@ class WifiManager:
             callback=self._publish_wifi_status,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
+
+        # The 1 Hz timer above only republishes the cached struct; this one is
+        # what keeps the cache true. Before it existed update_wifi_status() ran
+        # exactly once, at init, so wifi_status — and RobotState.network_status
+        # behind it, which the operator console shows as "connected to" —
+        # reported the boot-time SSID until sys_manager restarted, even after a
+        # successful connect_wifi. 5 s is deliberately slower than the publish:
+        # `nmcli ... --rescan no` is a cheap D-Bus read, but it is still a
+        # subprocess per tick, and nobody needs the SSID at 1 Hz.
+        self._wifi_refresh_timer = self._node.create_timer(
+            timer_period_sec=5.0,
+            callback=self._refresh_wifi_status,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+    def _refresh_wifi_status(self):
+        try:
+            self.update_wifi_status()
+        except Exception as err:
+            # Throttled: a wifi interface that is down would otherwise log this
+            # every 5 s for as long as it stays down.
+            self._logger.warning(
+                f"[WifiManager][refresh_wifi_status] Failed to refresh WiFi status: {err}",
+                throttle_duration_sec=60.0,
+            )
 
     def _publish_wifi_status(self):
         status = self.get_wifi_status()
@@ -239,6 +269,18 @@ class WifiManager:
         self._logger.info(
             f"[WifiManager][connect_wifi] Successfully connected to WiFi network {ssid}"
         )
+        # Refresh now rather than waiting for the 5 s timer, so the very next
+        # wifi_status frame already carries the new SSID and the console's
+        # "Connecting…" clears as soon as the service answers. Best effort: the
+        # join itself succeeded, so a failed status read must not turn the
+        # response into a failure.
+        try:
+            self.update_wifi_status()
+        except Exception as err:
+            self._logger.warning(
+                f"[WifiManager][connect_wifi] Connected to {ssid} but could not "
+                f"refresh WiFi status: {err}"
+            )
         response.success = True
         response.message = ""
         return response

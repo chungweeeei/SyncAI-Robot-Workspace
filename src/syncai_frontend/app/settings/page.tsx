@@ -5,7 +5,7 @@ import { AppearanceSettings } from "@/components/settings/appearance-settings";
 import { NetworkSettings } from "@/components/settings/network-settings";
 
 export default function SettingsPage() {
-  const { state, status } = useConsoleRobotState();
+  const { state } = useConsoleRobotState();
 
   return (
     // Settings is the one screen that scrolls; the shell's <main> does not.
@@ -23,20 +23,10 @@ export default function SettingsPage() {
         </header>
 
         <div className="grid gap-4">
-          {state ? (
-            <NetworkSettings network={state.network_status} />
-          ) : (
-            <div className="rounded-md border border-hairline bg-panel p-4">
-              <p className="instrument-label text-muted-foreground">
-                Network unavailable
-              </p>
-              <p className="mt-2 text-sm">
-                {status === "loading"
-                  ? "Waiting for the first state frame."
-                  : "The robot has not published a state frame, so its current network cannot be read."}
-              </p>
-            </div>
-          )}
+          {/* Not gated on a state frame: scan and connect do not need one, and
+              a console that has never heard from the robot is exactly the one
+              that needs to fix its WiFi. The card degrades its own readout. */}
+          <NetworkSettings />
           <AppearanceSettings />
         </div>
       </div>

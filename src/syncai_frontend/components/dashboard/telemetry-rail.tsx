@@ -5,18 +5,12 @@ import {
   PrimaryReadout,
   Readout,
   SignalBars,
+  rssiToBars,
 } from "@/components/console/instrument";
 import { LocomotionControl } from "@/components/dashboard/locomotion-control";
 import { MotorStatus } from "@/components/dashboard/motor-status";
 import { PostureControl } from "@/components/dashboard/posture-control";
 import type { RobotState } from "@/lib/types/robot";
-
-function rssiToBars(rssi: number): number {
-  if (rssi >= -50) return 4;
-  if (rssi >= -60) return 3;
-  if (rssi >= -70) return 2;
-  return 1;
-}
 
 /**
  * The instrument rail beside the viewport: pose, link, posture, locomotion, motors.

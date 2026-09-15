@@ -7,6 +7,7 @@ import {
   SegmentMeter,
   SignalBars,
   StripDivider,
+  rssiToBars,
   type Tone,
 } from "@/components/console/instrument";
 import { cn } from "@/lib/utils";
@@ -17,13 +18,6 @@ const MODE_TONE: Record<RobotMode, Tone> = {
   MANUAL: "caution",
   MAINTENANCE: "warn",
 };
-
-function rssiToBars(rssi: number): number {
-  if (rssi >= -50) return 4;
-  if (rssi >= -60) return 3;
-  if (rssi >= -70) return 2;
-  return 1;
-}
 
 function batteryTone(pct: number): Tone {
   if (pct < 20) return "warn";

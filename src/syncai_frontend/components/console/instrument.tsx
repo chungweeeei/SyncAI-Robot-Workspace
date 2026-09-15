@@ -169,6 +169,20 @@ export function Chip({
   );
 }
 
+/**
+ * dBm → bars for SignalBars. Lives beside the meter rather than in lib/ because
+ * the thresholds only mean anything against *four* bars: −50 and above is a
+ * full meter, −70 and below is one bar, and a five-bar meter would need
+ * different cut-offs. Every RSSI surface (status strip, telemetry rail, the
+ * WiFi picker) goes through this one so they never disagree about a network.
+ */
+export function rssiToBars(rssi: number): number {
+  if (rssi >= -50) return 4;
+  if (rssi >= -60) return 3;
+  if (rssi >= -70) return 2;
+  return 1;
+}
+
 /** Four-bar RSSI meter. Bars, not a number, is how signal strength is read. */
 export function SignalBars({
   bars,
