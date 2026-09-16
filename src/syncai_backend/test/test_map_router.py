@@ -49,13 +49,23 @@ _MISSING_ID = "00000000-0000-0000-0000-000000000000"
 class _StubMapGateway:
     """Stands in for the LoadMap client, which needs a live map_server.
 
-    Only the vertex routes are exercised here, so it is never called; the three
-    lines are duplicated from test_maps_router.py rather than shared because the
-    two files are deliberately independent by fixture.
+    Only the vertex routes are exercised here, so it is never called; the lines
+    are duplicated from test_maps_router.py rather than shared because the two
+    files are deliberately independent by fixture.
     """
 
     def reload_map(self, yaml_path):
         raise AssertionError("the vertex routes must not reload a map")
+
+    def swap_localizer_map(self, pcd_path, x, y, yaw):
+        raise AssertionError("the vertex routes must not re-point the localizer")
+
+
+class _StubWorkflowGateway:
+    """Only the map switch asks this anything, and that route is not tested here."""
+
+    async def list_active_tasks(self):
+        raise AssertionError("the vertex routes must not query Temporal")
 
 
 @pytest.fixture
@@ -69,6 +79,7 @@ def client(logger, map_repo, catalog_repo, task_template_repo):
             map_catalog_repo=catalog_repo,
             map_gw=_StubMapGateway(),
             task_template_repo=task_template_repo,
+            workflow_gw=_StubWorkflowGateway(),
         )
     )
     return TestClient(app)

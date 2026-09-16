@@ -16,9 +16,10 @@ export default function MapsPage() {
           <p className="mt-1 text-sm text-muted-foreground">
             Maps saved on{" "}
             <span className="readout">{state?.robot_id ?? "this robot"}</span>.
-            The one in use is set in the robot&apos;s instance config and changes
-            only when the stack restarts — nothing on this screen switches it,
-            which is also why it is the one map you cannot rename here.
+            The one in use is marked; switching to another re-points the running
+            stack and survives a restart, but resets the robot&apos;s pose — set
+            an initial pose on the dashboard afterwards. The map in use is the
+            one map you cannot rename or delete here.
           </p>
         </header>
 

@@ -11,7 +11,7 @@ import { queryKeys } from "@/lib/api/query-keys";
 import type { MapSummary } from "@/lib/types/map";
 
 const LOCKED_REASON =
-  "The map in use cannot be renamed: the running stack was launched with this name. Switch maps and restart the stack first.";
+  "The map in use cannot be renamed: the running stack loaded this name. Switch the robot to another map first.";
 const CONVERTING_REASON =
   "Wait for the gridmap conversion to finish before renaming.";
 
@@ -26,12 +26,16 @@ const CONVERTING_REASON =
  * the vertex panel). Enter saves, Escape cancels.
  *
  * **The map in use cannot be renamed here, and that is the backend's rule, not
- * a UI nicety.** map_server and the localizer loaded `map/<name>/…` from the
- * instance INI at launch and cannot be re-pointed; nothing rewrites the INI. So
- * the control is a greyed look-alike on the active card, with the reason in its
- * tooltip, and the endpoint answers 409 `map_active` regardless. Also greyed
- * mid-conversion, for the same reason Edit and Rebuild are: the conversion
- * thread holds the old directory path.
+ * a UI nicety.** map_server and the localizer opened `map/<name>/…` at launch,
+ * so renaming the directory under them would leave both holding a path that no
+ * longer exists. The way out is no longer a stack restart — the card's Switch
+ * control moves the robot to another map, and the old name is renameable the
+ * moment it does — but a rename is not entitled to do that swap itself, which
+ * is why the refusal stands rather than becoming a prompt. So the control is a
+ * greyed look-alike on the active card, with the reason in its tooltip, and the
+ * endpoint answers 409 `map_active` regardless. Also greyed mid-conversion, for
+ * the same reason Edit and Rebuild are: the conversion thread holds the old
+ * directory path.
  *
  * On success this instance goes away: MapLibrary keys cards by name, so the
  * refetch mounts a fresh card under the new name. The backend's sentence (how
@@ -160,7 +164,7 @@ export function MapRenameControl({
       {/* A look-alike span rather than a disabled button when the map is in
         * use: `disabled` would swallow the pointer events the tooltip needs,
         * and the reason is the whole point of showing the control at all. */}
-      {locked || map.grid_converting ? (
+      {locked || map.grid_status === "converting" ? (
         <span
           aria-disabled="true"
           title={locked ? LOCKED_REASON : CONVERTING_REASON}

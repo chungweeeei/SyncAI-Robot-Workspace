@@ -156,6 +156,37 @@ export function panBy(view: View, dx: number, dy: number, rect: Size, size: Grid
 }
 
 /**
+ * Bring one grid point to the viewport centre, holding the zoom.
+ *
+ * For a pose that arrives from somewhere other than the pointer — the robot's own
+ * position — where the operator has no idea which way to drag to find it. The
+ * straddle rule in `clampView` never clips a point that is inside the map, so the
+ * request is always honoured exactly; only a target outside the extent is pulled
+ * back, and nothing asks for one.
+ *
+ * The zoom is deliberately kept rather than reset to fit: the operator zoomed in
+ * for a reason, and a centre-and-refit would answer "where is the robot" by
+ * throwing away the view they were working in.
+ */
+export function centerView(
+  view: View,
+  px: number,
+  py: number,
+  rect: Size,
+  size: GridSize,
+): View {
+  return clampView(
+    {
+      scale: view.scale,
+      ox: rect.width / 2 - px * view.scale,
+      oy: rect.height / 2 - py * view.scale,
+    },
+    rect,
+    size,
+  );
+}
+
+/**
  * Re-clamp a view for a new viewport size, holding the grid point that was at
  * the old viewport centre.
  *

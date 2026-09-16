@@ -1,4 +1,4 @@
-"""Tests for MapGateway: the map router's two service clients.
+"""Tests for MapGateway: the map router's four service clients.
 
 Same seams as test_robot_gateway.py: the node is a MagicMock and futures are
 the hand-completed ``_Future`` below, so no ROS graph (or rclpy.init) is
@@ -27,6 +27,7 @@ pytest.importorskip("nav2_msgs")
 # and sourced, like syncai_common elsewhere in this suite.
 pytest.importorskip("interface")
 
+from builtin_interfaces.msg import Time  # noqa: E402
 from nav2_msgs.srv import LoadMap  # noqa: E402
 from interface.srv import SaveMaps  # noqa: E402
 
@@ -70,9 +71,20 @@ def map_gw(logger) -> MapGateway:
     clients = {
         "map_server/load_map": MagicMock(),
         "pgo/save_maps": MagicMock(),
+        "relocalize": MagicMock(),
+        "relocalize_check": MagicMock(),
     }
     node.create_client.side_effect = lambda srv_type, srv_name: clients[srv_name]
-    return MapGateway(logger=logger, node=node)
+    # Header asserts its stamp is a builtin_interfaces/Time — a bare MagicMock
+    # fails that check when the initialpose seed is built. Same fix as
+    # test_robot_gateway.py, which publishes on the same topic.
+    node.get_clock.return_value.now.return_value.to_msg.return_value = Time()
+    gateway = MapGateway(logger=logger, node=node)
+    # The initialpose publisher is a MagicMock off the mocked node; pin the
+    # subscriber count so the "nobody is listening" warning stays out of the
+    # way of tests that are not about it.
+    gateway._initial_pose_pub.get_subscription_count.return_value = 1
+    return gateway
 
 
 def _arm(map_gw, name, response=None, available=True, completed=True):
@@ -219,3 +231,133 @@ class TestSaveMap:
         assert success is False
         assert message == "Timeout waiting for pgo/save_maps response"
         client.call_async.assert_called_once()
+
+
+class TestSwapLocalizerMap:
+    """The localizer half of a map switch — and the initialpose that must follow."""
+
+    def test_success_loads_the_cloud_then_seeds_through_initialpose(self, map_gw):
+        client = _arm(
+            map_gw,
+            "relocalize",
+            response=SimpleNamespace(success=True, message="relocalize success"),
+        )
+
+        success, message = map_gw.swap_localizer_map("~/robot_ws/map/dp1f/map.pcd",
+                                                     1.0, 2.0, 0.5)
+
+        assert success is True
+        assert message == ""
+        request = client.call_async.call_args.args[0]
+        assert request.pcd_path == os.path.expanduser("~/robot_ws/map/dp1f/map.pcd")
+        assert request.pcd_path.startswith("/")
+        # The guess relocCB is handed is flat on purpose; the initialpose below
+        # is what re-fills roll/pitch/z from the current estimate.
+        assert (request.x, request.y, request.yaw) == (1.0, 2.0, 0.5)
+        assert (request.z, request.roll, request.pitch) == (0.0, 0.0, 0.0)
+
+        # Without this second call the localizer freezes retrying a guess that
+        # cannot pass rough_max_corr_dist against a tilted lidar mount.
+        map_gw._initial_pose_pub.publish.assert_called_once()
+        published = map_gw._initial_pose_pub.publish.call_args.args[0]
+        assert published.header.frame_id == "map"
+        assert published.pose.pose.position.x == 1.0
+        assert published.pose.pose.position.y == 2.0
+
+    def test_a_refused_map_does_not_seed_a_pose(self, map_gw):
+        _arm(
+            map_gw,
+            "relocalize",
+            response=SimpleNamespace(success=False, message="pcd file not found"),
+        )
+
+        success, message = map_gw.swap_localizer_map("/map/gone/map.pcd", 0.0, 0.0, 0.0)
+
+        assert success is False
+        assert "pcd file not found" in message
+        # The old map is still loaded, so re-seeding would move the robot's
+        # estimate inside the map it never left.
+        map_gw._initial_pose_pub.publish.assert_not_called()
+
+    def test_service_unavailable_blames_the_mode(self, map_gw):
+        client = _arm(map_gw, "relocalize", available=False)
+
+        success, message = map_gw.swap_localizer_map("/map/dp1f/map.pcd", 0.0, 0.0, 0.0)
+
+        assert success is False
+        assert "not available" in message
+        client.call_async.assert_not_called()
+        map_gw._initial_pose_pub.publish.assert_not_called()
+
+    def test_timeout_reports_the_relocalize_deadline(self, map_gw, monkeypatch):
+        _arm(map_gw, "relocalize", completed=False)
+        monkeypatch.setattr(map_module, "_wait_for_future", lambda f, timeout: False)
+
+        success, message = map_gw.swap_localizer_map("/map/dp1f/map.pcd", 0.0, 0.0, 0.0)
+
+        assert success is False
+        assert message == "Timeout waiting for relocalize response"
+        map_gw._initial_pose_pub.publish.assert_not_called()
+
+    def test_reload_map_is_left_alone(self, map_gw):
+        _arm(
+            map_gw,
+            "relocalize",
+            response=SimpleNamespace(success=True, message=""),
+        )
+
+        map_gw.swap_localizer_map("/map/dp1f/map.pcd", 0.0, 0.0, 0.0)
+
+        # The router pairs these two; the gateway must not pair them itself, or
+        # the router could not order them or compensate between them.
+        map_gw._service_clients["load_map"].call_async.assert_not_called()
+
+
+class TestLocalizationConverged:
+    """The only surface in the stack that reports whether ICP actually landed."""
+
+    def test_a_converged_localizer_reports_true(self, map_gw):
+        client = _arm(map_gw, "relocalize_check",
+                      response=SimpleNamespace(valid=True))
+
+        assert map_gw.localization_converged(timeout_s=0.1) is True
+        # code=0 is the branch that reports the real localize_success; code=1
+        # is hardcoded true in the node and would answer nothing.
+        assert client.call_async.call_args.args[0].code == 0
+
+    def test_an_unconverged_localizer_reports_false_within_the_budget(self, map_gw):
+        _arm(map_gw, "relocalize_check", response=SimpleNamespace(valid=False))
+
+        # False means "not yet" — registration retries indefinitely — which is
+        # why the budget is short and the caller treats it as a warning.
+        assert map_gw.localization_converged(timeout_s=0.1) is False
+
+    def test_an_absent_service_is_none_not_false(self, map_gw):
+        client = _arm(map_gw, "relocalize_check", available=False)
+
+        assert map_gw.localization_converged(timeout_s=0.1) is None
+        client.call_async.assert_not_called()
+
+    def test_a_timeout_is_none_not_false(self, map_gw, monkeypatch):
+        _arm(map_gw, "relocalize_check", completed=False)
+        monkeypatch.setattr(map_module, "_wait_for_future", lambda f, timeout: False)
+
+        assert map_gw.localization_converged(timeout_s=0.1) is None
+
+
+class TestNavServicesReady:
+    """How the map router tells "wrong mode" from "nav stack is up"."""
+
+    def test_both_services_present(self, map_gw):
+        _arm(map_gw, "relocalize")
+        _arm(map_gw, "load_map")
+
+        assert map_gw.nav_services_ready(timeout_sec=0.01) is True
+
+    @pytest.mark.parametrize("missing", ["relocalize", "load_map"])
+    def test_either_one_missing_is_not_ready(self, map_gw, missing):
+        _arm(map_gw, "relocalize")
+        _arm(map_gw, "load_map")
+        _arm(map_gw, missing, available=False)
+
+        assert map_gw.nav_services_ready(timeout_sec=0.01) is False

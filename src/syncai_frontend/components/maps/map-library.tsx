@@ -45,15 +45,24 @@ function LoadingGrid() {
 }
 
 /**
- * The map catalogue. It shows what is on the robot and says where the choice of
- * the map in use is actually made — there is no backend call that switches or
- * deletes a map. What it can do is rename one: each card carries the control,
- * and the backend's sentence about the rename is held here, because a card is
- * keyed by its name and the renamed one unmounts with the refetch.
+ * The map catalogue: what is on the robot, and which map it is running on.
+ *
+ * That last fact used to come with a caveat this page had to spell out, because
+ * the choice was made in the instance INI and taking effect meant restarting the
+ * stack. It no longer does — the card's Switch control re-points the running
+ * localizer and map_server and rewrites the INI in one call.
+ *
+ * Renaming, deleting and switching are calls: each card carries all three
+ * controls, and the backend's sentence about any of them is held *here*. For a
+ * rename or a delete that is because the card is keyed by its name and both
+ * outcomes unmount it with the refetch. A switch leaves its card mounted, but
+ * its sentence is about the *robot* — where it ended up, and whether it still
+ * needs an initial pose — so it belongs above the grid rather than inside the
+ * card of a map that is now merely one of several.
  */
 export function MapLibrary() {
   const { maps, status } = useMaps();
-  const [lastRename, setLastRename] = React.useState<string | null>(null);
+  const [lastResult, setLastResult] = React.useState<string | null>(null);
 
   if (!maps) {
     if (status === "error") {
@@ -86,18 +95,26 @@ export function MapLibrary() {
     <div>
       {/* The backend's sentence, verbatim — same contract as the other map
         * controls. It says how many vertices and templates followed the name,
-        * which the renamed card cannot show. */}
-      {lastRename && (
+        * or how many went with the deleted map, which neither card is around to
+        * show. One line for both: they are the same kind of answer, and the
+        * second one to arrive is the one worth reading. */}
+      {lastResult && (
         <p
           role="status"
           className="mb-3 text-[11px] leading-tight text-muted-foreground"
         >
-          {lastRename}
+          {lastResult}
         </p>
       )}
       <div className={GRID}>
         {ordered.map((map) => (
-          <MapCard key={map.name} map={map} onRenamed={setLastRename} />
+          <MapCard
+            key={map.name}
+            map={map}
+            onRenamed={setLastResult}
+            onDeleted={setLastResult}
+            onSwitched={setLastResult}
+          />
         ))}
       </div>
     </div>

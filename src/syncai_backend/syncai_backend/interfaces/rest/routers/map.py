@@ -22,6 +22,7 @@ from syncai_backend.exceptions import (
 )
 from syncai_backend.database.models import MapPoint
 from syncai_backend.gateways.map.map import MapGateway
+from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.helpers.pcd_to_gridmap import (
     convert_pcd_to_gridmap,
     convert_traversable_to_gridmap,
@@ -29,13 +30,24 @@ from syncai_backend.helpers.pcd_to_gridmap import (
     read_poses_xy,
 )
 from syncai_backend.helpers.pgm import render_png, render_thumbnail
+from syncai_backend.helpers.system_config import (
+    set_active_map,
+    system_ini_path,
+)
 from syncai_backend.helpers.pointcloud import (
     cap_points,
     pack_xyz_f32,
     read_pcd_xyz,
     voxel_downsample,
 )
-from syncai_backend.repositories.map.catalog import MapCatalogRepo, StoredMap
+from syncai_backend.repositories.map.catalog import (
+    GRID_STATUS_CONVERTING,
+    GRID_STATUS_FAILED,
+    GRID_STATUS_OK,
+    GRIDMAP_RECIPE_SIDECAR,
+    MapCatalogRepo,
+    StoredMap,
+)
 from syncai_backend.repositories.map.map import MapRepo
 from syncai_backend.repositories.task.task_template import TaskTemplateRepo
 
@@ -115,14 +127,24 @@ TRAVERSABLE_GRID_RECIPE: Dict[str, object] = {}
 # ~30 m² on a 570 m² hall — noise for a diagnostic.
 FLOOR_AREA_CELL_M = 0.5
 
-# Sidecar naming the recipe a stored gridmap came from. Written next to the pgm
-# because the catalogue would otherwise hold maps from two recipes with nothing
-# on disk saying which produced what, and the two disagree about the meaning of
-# an unknown cell — a map with no unknown cells at all is either a
-# traversability output or a z-band output of a fully observed site, and there
-# is no way to tell from the pgm. Tiny, so its effect on the size _walk_stats
-# reports is noise.
-GRIDMAP_RECIPE_SIDECAR = "gridmap.recipe.json"
+# GRIDMAP_RECIPE_SIDECAR (imported above, named by the catalogue repo) is where
+# a conversion records itself. Written next to the pgm because the catalogue
+# would otherwise hold maps from two recipes with nothing on disk saying which
+# produced what, and the two disagree about the meaning of an unknown cell — a
+# map with no unknown cells at all is either a traversability output or a z-band
+# output of a fully observed site, and there is no way to tell from the pgm.
+# Tiny, so its effect on the size _walk_stats reports is noise.
+#
+# Since 2026-09 it also carries a ``status``, written at three points in the
+# conversion (converting / ok / failed), and **that is what makes a conversion's
+# outcome visible at all**. Before it, a failure logged and returned: the map
+# came back with grid: null and grid_converting: false, i.e. exactly what a map
+# that was never converted looks like, and the reason existed only in
+# log/stack/<robot_id>/backend/current. A process-local registry could not fix
+# that — _ACTIVE_CONVERSIONS dies with the process, so a backend restarted
+# mid-conversion left the same silence. The record has to be on disk next to the
+# artefact it describes, because that is the only thing that outlives both the
+# thread and the process.
 
 # Where the segmentation's intermediate clouds go when a request asks for them
 # (``debug: true`` on the re-convert endpoint), and the process-wide override:
@@ -247,14 +269,35 @@ def measure_cloud(
     return CloudMeasure(footprint, floor_area, floor_z)
 
 
+def _iso_now() -> str:
+    """UTC, ISO 8601, ``Z``-suffixed — the timestamp spelling the REST layer uses.
+
+    The same shape ``MapSummaryResponse.modified_at`` is serialised with, so the
+    sidecar's timestamps and the catalogue's agree without the client having to
+    parse two conventions.
+    """
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _write_recipe_sidecar(
     logger: structlog.stdlib.BoundLogger, directory: str, payload: Dict[str, object]
 ) -> None:
-    """Record which recipe produced this map's gridmap, next to the gridmap.
+    """Record the state of this map's conversion, next to the gridmap.
+
+    Called three times per conversion — once on entry with ``converting`` and
+    once on the way out with ``ok`` or ``failed`` — so each call overwrites the
+    last, and the file always describes the most recent attempt rather than
+    accumulating history. The one generation that is kept is the previous
+    *successful* record, which ``MapCatalogRepo.archive_gridmap`` moves aside to
+    ``gridmap_prev.recipe.json`` alongside the grid it describes.
 
     Best-effort: a sidecar that fails to write must not lose a gridmap that
     converted fine, so this logs and returns rather than raising into the
-    conversion thread's handler.
+    conversion thread's handler. The cost of that on the ``converting`` write is
+    worth naming — the interrupted-conversion state is derived from it, so a
+    conversion whose first write failed and whose process then died reads as a
+    map that was never converted. Losing the diagnosis is the acceptable half of
+    the trade; losing the grid is not.
     """
     path = os.path.join(directory, GRIDMAP_RECIPE_SIDECAR)
     try:
@@ -358,6 +401,31 @@ class GridInfoResponse(BaseModel):
     height: int = Field(..., description="Grid height in cells.")
 
 
+class GridStatus(str, Enum):
+    """How this map's 2D gridmap stands: the conversion-status surface.
+
+    Five states, of which the sidecar on disk can only ever hold three (see
+    GRID_STATUS_* in the catalogue repo). ``interrupted`` and ``none`` are
+    derived — the first from a sidecar claiming to be mid-conversion with no
+    thread behind it, the second from the absence of both a grid and a record.
+
+    The distinction that matters is between ``none`` and the two failure states.
+    All three leave a map the nav stack cannot load, but they call for different
+    things from the operator: ``none`` means nobody has converted this map yet
+    (press Build grid), ``failed`` means the pipeline rejected this cloud and
+    the reason is in ``grid_error`` (read it before pressing anything), and
+    ``interrupted`` means the backend went away mid-conversion and a retry is
+    very likely to just work. Collapsing them into "no grid" is what this
+    endpoint used to do, and it sent every one of those to the log.
+    """
+
+    NONE = "none"
+    CONVERTING = "converting"
+    OK = "ok"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
 class MapSummaryResponse(BaseModel):
     name: str = Field(..., description="Directory name under the maps root.")
     active: bool = Field(..., description="Whether this is the map the stack was launched with.")
@@ -375,13 +443,34 @@ class MapSummaryResponse(BaseModel):
     has_pointcloud: bool = Field(
         ..., description="Whether map.pcd is present (the 3D localizer's source)."
     )
+    grid_status: GridStatus = Field(
+        ...,
+        description=(
+            "How this map's gridmap stands. This is the conversion-status "
+            "surface: there is no separate status endpoint and no job resource, "
+            "so a client that starts a conversion polls the catalogue until "
+            "this leaves `converting`. Unlike the `grid_converting` flag it "
+            "replaces, the terminal states are distinguishable — `failed` "
+            "carries its reason in `grid_error`, and `interrupted` means the "
+            "backend was restarted mid-conversion."
+        ),
+    )
+    grid_error: Optional[str] = Field(
+        None,
+        description=(
+            "Why the last conversion failed, as the pipeline diagnosed it "
+            "(an empty cloud, an intensity window that selected no ground, an "
+            "oversized grid, a missing open3d). Null for every status other "
+            "than `failed`."
+        ),
+    )
     grid_converting: bool = Field(
         ...,
         description=(
-            "Whether a pcd -> gridmap conversion for this map is running right "
-            "now. This is the conversion-status surface: there is no separate "
-            "status endpoint, a client that started one polls the catalogue "
-            "until this drops back to false and reads `grid` for the outcome."
+            "Deprecated: true exactly when `grid_status` is `converting`. Kept "
+            "for the curl/MCP callers written against it; new clients read "
+            "`grid_status`, which also tells a failed conversion apart from a "
+            "map nobody has converted yet."
         ),
     )
     size_bytes: int = Field(..., description="Total size of the map directory.")
@@ -410,9 +499,10 @@ class CreateMapResponse(BaseModel):
         ...,
         description=(
             "Whether the pcd -> gridmap conversion was started in the "
-            "background. Until it finishes (or if it fails, or if false), the "
-            "map lists with grid: null — POST "
-            "/api/v1/maps/{name}/grid/convert to (re)run the conversion."
+            "background. The map lists with grid: null until it finishes, so "
+            "watch the catalogue's grid_status for the outcome rather than "
+            "treating this as one — POST /api/v1/maps/{name}/grid/convert "
+            "(re)runs a conversion that failed or never started."
         ),
     )
     message: str = Field(..., description="What happened, for the operator to read.")
@@ -438,6 +528,48 @@ class RenameMapResponse(BaseModel):
     )
     templates_moved: int = Field(
         ..., description="Task templates whose map binding was re-keyed."
+    )
+    message: str = Field(..., description="What happened, for the operator to read.")
+
+
+class DeleteMapResponse(BaseModel):
+    """DELETE /api/v1/maps/{name} — what the delete took with it.
+
+    Not the bare ``DeleteResponse`` the vertex delete uses: the card that issued
+    this request unmounts the moment it succeeds, so the count has to travel
+    inside the sentence the map library shows in its place.
+    """
+
+    name: str = Field(..., description="The map that was deleted.")
+    vertices_deleted: int = Field(
+        ..., description="Stored vertices removed along with the map directory."
+    )
+    message: str = Field(..., description="What happened, for the operator to read.")
+
+
+class ActivateMapResponse(BaseModel):
+    """POST /api/v1/maps/{name}/activate — the outcome of a live map switch."""
+
+    name: str = Field(..., description="The map the robot is on now.")
+    previous: Optional[str] = Field(
+        None, description="The map it was on before, if there was one."
+    )
+    switched: bool = Field(
+        ...,
+        description=(
+            "False when the map was already active and nothing was touched — "
+            "the no-op, not a failure."
+        ),
+    )
+    localized: Optional[bool] = Field(
+        ...,
+        description=(
+            "Whether the localizer's registration converged inside the short "
+            "wait after the swap. False means 'not yet' rather than 'never' — it "
+            "retries indefinitely — and null means it could not be asked. Do not "
+            "read RobotState.localization_valid for this: that is TF-presence "
+            "only and reads true against a map the robot was never localized in."
+        ),
     )
     message: str = Field(..., description="What happened, for the operator to read.")
 
@@ -528,7 +660,8 @@ class ConvertGridResponse(BaseModel):
         ...,
         description=(
             "The conversion thread started — same contract as grid_pending: the "
-            "grid appears later or never. Poll the catalogue's grid_converting."
+            "grid appears later or never. Poll the catalogue's grid_status for "
+            "the outcome; a failure lands there as `failed` plus a reason."
         ),
     )
     recipe: GridRecipe = Field(..., description="The recipe that is converting.")
@@ -571,6 +704,46 @@ def _vertex_response(vertex: MapPoint) -> MapVertexResponse:
     )
 
 
+def _grid_status(stored: StoredMap, converting: bool) -> Tuple[GridStatus, Optional[str]]:
+    """Reconcile the on-disk conversion record with the live thread registry.
+
+    Lives here rather than in the repo because it needs both halves and the repo
+    only has one: a sidecar is disk state, "a conversion thread is running" is
+    this process's state, and the answer is a function of the two. Same division
+    as ``active``, which the router resolves because only it can see the INI.
+
+    The order of the checks is the whole of the logic:
+
+    - A live thread wins over everything. Its sidecar already says ``converting``
+      too, but only usually — the write is best-effort and the thread does it
+      itself, so the registry is the authority while the process is up.
+    - A sidecar still saying ``converting`` with no thread behind it is an
+      ``interrupted`` conversion: the process that was running it is gone (a
+      backend restart, a killed byobu pane, a mode switch mid-conversion, since
+      ``switch_mode`` tears down the session the backend is a pane of). Nothing
+      is coming to finish it and nothing would ever clear the flag.
+    - ``failed`` outranks a grid being present, and that combination is real
+      rather than defensive: a *re*-conversion that fails leaves the previous
+      grid on disk, because ``archive_gridmap`` copies it aside instead of
+      moving it precisely so the active map never has a window with no file. The
+      map is loadable and the rebuild did not happen, and saying ``ok`` there
+      would report the stale grid as the requested one.
+    - Otherwise disk decides: a grid is a success (including every map converted
+      before the sidecar carried a status), no grid is ``none``.
+    """
+    if converting:
+        return GridStatus.CONVERTING, None
+
+    record = stored.grid_record
+    if record is not None:
+        if record.status == GRID_STATUS_CONVERTING:
+            return GridStatus.INTERRUPTED, None
+        if record.status == GRID_STATUS_FAILED:
+            return GridStatus.FAILED, record.error
+
+    return (GridStatus.OK if stored.grid is not None else GridStatus.NONE), None
+
+
 def _summary(
     stored: StoredMap, active_name: Optional[str], vertex_count: int
 ) -> MapSummaryResponse:
@@ -589,13 +762,22 @@ def _summary(
         else None
     )
 
+    # Read the registry once and derive both fields from it, rather than asking
+    # twice: the two would otherwise be sampled either side of a conversion
+    # finishing and could disagree, which is the one thing a deprecated alias
+    # must never do.
+    converting = _is_converting(stored.name)
+    status, error = _grid_status(stored, converting)
+
     return MapSummaryResponse(
         name=stored.name,
         active=stored.name == active_name,
         grid=grid,
         thumbnail=(f"/api/v1/maps/{stored.name}/thumbnail" if stored.grid is not None else None),
         has_pointcloud=stored.has_pointcloud,
-        grid_converting=_is_converting(stored.name),
+        grid_status=status,
+        grid_error=error,
+        grid_converting=converting,
         size_bytes=stored.size_bytes,
         modified_at=stored.modified_at.isoformat().replace("+00:00", "Z"),
         vertex_count=vertex_count,
@@ -635,7 +817,12 @@ def _not_modified(request: Request, tag: str) -> bool:
 # so there is nothing a per-router registry would isolate. Membership is what
 # refuses a second concurrent conversion of the same map — two threads writing
 # the same gridmap.pgm would interleave their outputs — and what the catalogue's
-# grid_converting flag reads.
+# `converting` status reads.
+#
+# It is authoritative only while this process is up, and that is not a caveat to
+# work around: a set in memory cannot say anything about a conversion whose
+# process is gone. The sidecar is the half that survives, and _grid_status is
+# where a sidecar mid-conversion with no entry here becomes `interrupted`.
 _ACTIVE_CONVERSIONS: set = set()
 _ACTIVE_CONVERSIONS_LOCK = threading.Lock()
 
@@ -686,8 +873,10 @@ def _start_grid_conversion(
 
     The return value only says the thread started, never that the grid appeared:
     a segmentation that rejects the whole floor fails *after* this has answered
-    True and the route has 200'd, and shows up as a map that never grows a
-    gridmap plus the error below.
+    True and the route has 200'd. What the caller reports is therefore "started",
+    and the outcome arrives through the sidecar the thread writes — which the
+    catalogue reads back as ``grid_status``, so an operator who set a conversion
+    going watches it there rather than in the log.
     """
     pcd_path = os.path.join(directory, "map.pcd")
     if not os.path.isfile(pcd_path):
@@ -722,6 +911,26 @@ def _start_grid_conversion(
     def _run() -> None:
         bound = logger.bind(map=name)
         basename = os.path.join(directory, "gridmap")
+        started_at = _iso_now()
+
+        def _record(status: str, **extra: object) -> Dict[str, object]:
+            """Build a sidecar payload, with the keys every state shares."""
+            payload: Dict[str, object] = {
+                "status": status,
+                "recipe": recipe_request,
+                "started_at": started_at,
+                **extra,
+            }
+            if override is not None:
+                payload["recipe_override"] = override
+            return payload
+
+        # Before any work, so that a process that dies mid-conversion leaves a
+        # record saying so. This is the write the `interrupted` state is derived
+        # from; without it the only trace of an abandoned conversion is a map
+        # that looks like it was never converted at all.
+        _write_recipe_sidecar(bound, directory, _record(GRID_STATUS_CONVERTING))
+
         try:
             # Measured whichever recipe runs: z-band needs floor_z to place its
             # bands, and both areas go into the sidecar as diagnostics.
@@ -796,15 +1005,31 @@ def _start_grid_conversion(
         # an oversized grid. OSError is the pcd or the map directory going away
         # under it. RuntimeError is open3d's channel for a cloud it cannot read.
         except (ValueError, OSError, RuntimeError) as exc:
+            hint = (
+                "for the traversability recipe, re-convert through "
+                "POST /api/v1/maps/{name}/grid/convert with debug: true and "
+                "read the intermediate clouds out of the map directory; the "
+                "z-band recipe is the same endpoint with recipe: 'z-band'"
+            )
             logger.error(
                 "Gridmap conversion failed",
                 map=name,
                 error=str(exc),
-                hint=(
-                    "for the traversability recipe, re-convert through "
-                    "POST /api/v1/maps/{name}/grid/convert with debug: true and "
-                    "read the intermediate clouds out of the map directory; the "
-                    "z-band recipe is the same endpoint with recipe: 'z-band'"
+                hint=hint,
+            )
+            # The same diagnosis the log line carries, put where a client can
+            # reach it. The log is the record for whoever is on the robot; this
+            # is the one the operator console reads back onto the map's card,
+            # and until it existed a failed conversion was indistinguishable
+            # from a map nobody had converted.
+            _write_recipe_sidecar(
+                bound,
+                directory,
+                _record(
+                    GRID_STATUS_FAILED,
+                    error=str(exc),
+                    hint=hint,
+                    finished_at=_iso_now(),
                 ),
             )
             return
@@ -813,23 +1038,43 @@ def _start_grid_conversion(
         # the thread and land as a bare traceback on stderr, where nothing
         # correlates it with the map that was being saved.
         except ImportError as exc:
+            hint = "pip3 install -r src/syncai_backend/requirements.txt in the container"
             logger.error(
                 "Gridmap conversion unavailable: open3d is missing",
                 map=name,
                 error=str(exc),
-                hint="pip3 install -r src/syncai_backend/requirements.txt in the container",
+                hint=hint,
+            )
+            # Worth the operator seeing verbatim rather than as a generic
+            # failure: nothing about this map or its cloud is wrong, and
+            # re-converting it will fail identically until the container is
+            # fixed. The sentence names the fix.
+            _write_recipe_sidecar(
+                bound,
+                directory,
+                _record(
+                    GRID_STATUS_FAILED,
+                    error=(
+                        "the traversability recipe needs open3d, which is not "
+                        f"installed ({exc})"
+                    ),
+                    hint=hint,
+                    finished_at=_iso_now(),
+                ),
             )
             return
 
-        payload: Dict[str, object] = {
-            "recipe": recipe_request,
-            "footprint_m2": round(measure.footprint_m2, 1),
-            "floor_area_m2": round(measure.floor_area_m2, 1),
-            "params": params,
-        }
-        if override is not None:
-            payload["recipe_override"] = override
-        _write_recipe_sidecar(bound, directory, payload)
+        _write_recipe_sidecar(
+            bound,
+            directory,
+            _record(
+                GRID_STATUS_OK,
+                footprint_m2=round(measure.footprint_m2, 1),
+                floor_area_m2=round(measure.floor_area_m2, 1),
+                params=params,
+                finished_at=_iso_now(),
+            ),
+        )
         logger.info("Gridmap conversion finished", map=name, recipe=recipe_request)
 
         if on_success is not None:
@@ -872,6 +1117,7 @@ def init_map_router(
     map_catalog_repo: MapCatalogRepo,
     map_gw: MapGateway,
     task_template_repo: TaskTemplateRepo,
+    workflow_gw: WorkflowGateway,
 ) -> APIRouter:
 
     map_router = APIRouter(prefix="", tags=["Map"])
@@ -954,22 +1200,22 @@ def init_map_router(
 
         - 404 for a map that is not there.
         - 409 ``map_active`` for the map the stack is running on. This is the
-          one that matters. map_server and the FAST-LIO2 localizer were both
-          launched against ``map/<name>/…`` from ``[map] name`` in the instance
-          INI and loaded their files during construction; the localizer cannot
-          be re-pointed at runtime at all, and ``map_gw.reload_map`` would fix
-          only map_server. Nothing in this backend writes the INI
-          (``helpers/system_config.py`` is read-only by design), so renaming
-          the directory would leave the running stack holding a path that no
-          longer exists and leave ``active_name()`` naming a map the catalogue
-          no longer lists — every card would read ``active: false``. Switching
-          maps is an INI edit plus a stack restart, and only after that does
-          the old name become renameable. The UI greys the control for the
-          active map; this is what makes that more than a suggestion.
+          one that matters. map_server and the FAST-LIO2 localizer opened
+          ``map/<name>/…`` during construction, from ``[map] name`` in the
+          instance INI; renaming the directory under them would leave both
+          holding a path that no longer exists, and leave ``active_name()``
+          naming a map the catalogue no longer lists — every card would read
+          ``active: false``. This refusal is not the dead end it used to be:
+          ``POST /api/v1/maps/{name}/activate`` moves the robot onto another map
+          in place, and once it has, the old name is renameable. The refusal
+          stands because that route re-points the two processes *and* rewrites
+          the INI together, and a rename is not entitled to do half of it. The
+          UI greys the control for the active map; this is what makes that more
+          than a suggestion.
         - 409 ``conversion_running`` while a gridmap conversion is in flight.
           The conversion thread closed over the old directory path when it
           started, so a rename under it would make it die with ``OSError`` and
-          leave ``grid_converting`` reading true for a name that is gone.
+          leave the catalogue reporting ``converting`` for a name that is gone.
         - 400 / 409 ``name_taken`` from ``rename_map_dir`` for a bad or
           already-used new name.
 
@@ -987,7 +1233,7 @@ def init_map_router(
             raise ConflictError(
                 f"'{name}' is the map the stack is running on and cannot be "
                 "renamed while it is in use. Switch the robot to another map "
-                "and restart the stack first.",
+                "first.",
                 code="map_active",
             )
         if _is_converting(name):
@@ -1063,6 +1309,405 @@ def init_map_router(
             name=request.name,
             vertices_moved=vertices_moved,
             templates_moved=templates_moved,
+            message=message,
+        )
+
+    @map_router.delete("/api/v1/maps/{name}", response_model=DeleteMapResponse)
+    def delete_map(name: str):
+        """Delete a map: remove its directory and the vertices that name it.
+
+        The refusals are rename's, in the same order and before any mutation,
+        plus one more:
+
+        - 404 for a map that is not there.
+        - 409 ``map_active`` for the map the stack is running on. The argument
+          is rename's (see above) only harder: map_server and the FAST-LIO2
+          localizer opened ``map/<name>/…`` at launch, and where a rename would
+          leave them holding a stale path a delete leaves them holding nothing.
+          Switching away with ``POST /api/v1/maps/{name}/activate`` lifts this
+          one too — but note that it lifts it by loading the *other* map's files,
+          so the map being deleted is genuinely no longer open.
+        - 409 ``conversion_running``. The conversion thread closed over the
+          directory path and would die writing its own sidecar into a directory
+          that is gone, leaving the catalogue with no map and no record.
+        - 409 ``template_bound``, which has no rename counterpart because rename
+          could re-key the templates and this cannot. A template bound to a
+          deleted map is stuck: it will not dispatch, and ``_require_map``
+          refuses to *edit* it because the map it names does not exist, while
+          clearing its ``map_name`` is blocked for any template holding MOVE
+          steps. Deleting the templates instead would take saved work the
+          operator never mentioned. So the map is kept and the operator is told
+          which templates to unbind first — the one refusal that asks for work
+          rather than a map switch.
+
+        **Database first, filesystem last — the inverse of rename, on purpose.**
+        A rename puts the directory first because ``os.rename`` back is a real
+        compensation; ``shutil.rmtree`` has none, so here the irreversible step
+        goes last, once everything that can still fail has already succeeded.
+        The two failure modes are not symmetric:
+
+        - Rows first, ``rmtree`` fails: the map is still on disk, minus its
+          vertices. The operator retries and the delete converges, and those
+          annotations belonged to a map they had just asked to destroy.
+        - Directory first, the ``DELETE`` fails: the map is gone and its rows
+          survive where nothing can reach them (every vertex route resolves the
+          map first, which now 404s) until the next map saved under the same
+          name silently inherits them. That one does not converge, and nobody
+          would trace it back to a delete that half-failed weeks earlier.
+
+        What survives a successful delete and cannot be helped from here: a
+        Temporal schedule registered against this map. Schedules freeze
+        concrete, already-resolved steps and carry ``map_name`` only as a memo
+        fixed at registration, so one keeps firing coordinates from a map that
+        no longer exists. ``template_bound`` catches the templates, not a
+        schedule whose template was deleted afterwards, and reaching the
+        schedules would mean handing this router ``workflow_gw`` for a warning.
+        It is a sentence in the response instead.
+        """
+        _require(name)
+
+        active_name = map_catalog_repo.active_name()
+        if name == active_name:
+            raise ConflictError(
+                f"'{name}' is the map the stack is running on and cannot be "
+                "deleted while it is in use. Switch the robot to another map "
+                "first.",
+                code="map_active",
+            )
+        if _is_converting(name):
+            raise ConflictError(
+                f"A gridmap conversion for '{name}' is running; delete it "
+                "once the conversion has finished.",
+                code="conversion_running",
+            )
+
+        # Strictly this map's templates: include_map_independent=False leaves
+        # the map_name IS NULL rows alone, because a posture-only template runs
+        # anywhere and a map going away means nothing to it.
+        bound = task_template_repo.list_task_templates(
+            map_name=name, include_map_independent=False
+        )
+        if bound:
+            names = ", ".join(sorted(f"'{row.name}'" for row in bound))
+            raise ConflictError(
+                f"{len(bound)} task "
+                f"{'template' if len(bound) == 1 else 'templates'} still "
+                f"{'targets' if len(bound) == 1 else 'target'} '{name}' "
+                f"({names}). Point {'it' if len(bound) == 1 else 'them'} at "
+                "another map or delete "
+                f"{'it' if len(bound) == 1 else 'them'} first — a template "
+                "bound to a map that is gone can neither run nor be edited.",
+                code="template_bound",
+            )
+
+        try:
+            vertices_deleted = map_repo.delete_vertices(name)
+        except Exception as exc:
+            # Nothing to compensate -- that is the whole point of going first --
+            # but the operator has to be told the map is still there, or a
+            # failed delete reads as a delete that worked and did not refresh.
+            logger.error(
+                "Map delete failed while removing its vertices",
+                map=name,
+                error=str(exc),
+            )
+            raise UpstreamError(
+                f"Could not remove the vertices that name '{name}': {exc}. "
+                "The map was left in place; try again."
+            )
+
+        map_catalog_repo.delete_map_dir(name)
+
+        # Keyed by name, and unlike rename's there is no new name to move them
+        # to: drop them or they sit in the process until it restarts.
+        thumbnail_cache.pop(name, None)
+        image_cache.pop(name, None)
+        cloud_cache.pop(name, None)
+
+        logger.info("Deleted map", map=name, vertices_deleted=vertices_deleted)
+        return DeleteMapResponse(
+            name=name,
+            vertices_deleted=vertices_deleted,
+            message=(
+                f"Deleted '{name}' and {vertices_deleted} "
+                f"{'vertex' if vertices_deleted == 1 else 'vertices'}. "
+                "Schedules already registered against this map keep running "
+                "their frozen steps."
+            ),
+        )
+
+    @map_router.post(
+        "/api/v1/maps/{name}/activate", response_model=ActivateMapResponse
+    )
+    async def activate_map(name: str):
+        """Switch the robot onto another map, live, without restarting the stack.
+
+        For most of this file's history the answer to "can I switch maps?" was
+        no: map_server and the localizer read `[map] map` / `[map] pcd` during
+        construction, nothing in this backend wrote the INI, and so rename and
+        delete both told the operator to restart the stack. This is the route
+        that makes those refusals escapable, and it works because both
+        processes turned out to already have a runtime door — `map_server/load_map`
+        re-reads a yaml off disk, and `relocalize` takes a `pcd_path`.
+
+        Three moving parts have to end up agreeing, and the whole design is about
+        what happens when one of them does not:
+
+        - the localizer's point cloud (what the robot matches against),
+        - map_server's occupancy grid (what the planner and both costmaps see),
+        - `[map] name` in the INI (what survives a restart, and what
+          `active_name()` — and therefore every card's `active` flag, the
+          dashboard's vertex scoping and the task templates' map binding —
+          reports right now).
+
+        Order is chosen so the likeliest failure is the cleanest one. The
+        localizer goes first because its refusals happen before it mutates
+        anything (`relocCB` returns early on a missing file, and
+        `ICPLocalizer::loadMap` swaps its buffers only as its last statement), so
+        a bad PCD leaves *nothing* changed. Each later step compensates the
+        earlier ones by putting the old map back. The INI is last and is
+        preflighted for writability, because a swap the INI does not record is
+        the worst of the available outcomes: the stack would be driving on one
+        map while every REST answer named another.
+
+        Every refusal is before any of that. Notably `stack_not_ready`, which is
+        how "the robot is in mapping mode" is detected — service discoverability
+        rather than the cached RobotState's mode, because RobotRepo's write is
+        gated on `localization_valid` and a robot that has lost localization
+        therefore has no cached mode at all. That robot is precisely the one
+        whose operator is reaching for this route.
+
+        What this deliberately does not do is guarantee the robot knows where it
+        is afterwards. `[initial_pose]` is zeroed rather than carried over — a
+        pose measured in the old map's frame is not wrong-looking in the new one,
+        it is wrong-looking nowhere, and it can drop the robot inside a wall with
+        every indicator green. The operator sets the real pose from the
+        dashboard. `localized` reports whether registration converged in the few
+        seconds after the swap, which is the only honest signal available.
+        """
+        stored = _require(name)
+
+        previous = map_catalog_repo.active_name()
+        if name == previous:
+            # The no-op, not a failure — same shape as sys_manager's switch_mode
+            # answering "Already in AUTO; nothing to do". Tearing the localizer
+            # down and rebuilding it onto the map it already holds would only
+            # throw away a good registration.
+            return ActivateMapResponse(
+                name=name,
+                previous=previous,
+                switched=False,
+                localized=None,
+                message=f"'{name}' is already the map the robot is running on.",
+            )
+
+        if _is_converting(name):
+            raise ConflictError(
+                f"A gridmap conversion for '{name}' is running; switch to it "
+                "once the conversion has finished.",
+                code="conversion_running",
+            )
+
+        status, grid_error = _grid_status(stored, False)
+        if status != GridStatus.OK:
+            # map_server throws out of its constructor on an unloadable yaml and
+            # main() has no try/catch, so at *launch* this would take the whole
+            # AUTO session down. Here it would only fail the load_map call, but
+            # refusing up front is what keeps that from being discovered with the
+            # localizer already swapped.
+            detail = f" ({grid_error})" if grid_error else ""
+            raise ConflictError(
+                f"'{name}' has no usable gridmap{detail}. Build one from the "
+                "map's Rebuild-grid control before switching to it.",
+                code="grid_missing",
+            )
+
+        pcd_path = map_catalog_repo.pointcloud_path(name)
+        if pcd_path is None:
+            raise ConflictError(
+                f"'{name}' has no map.pcd, so the localizer has nothing to "
+                "match against. Only a map saved from a mapping run can be "
+                "switched to.",
+                code="pointcloud_missing",
+            )
+
+        yaml_path = map_catalog_repo.gridmap_yaml_path(name)
+        if yaml_path is None:
+            raise ConflictError(
+                f"'{name}' has no gridmap.yaml to hand map_server.",
+                code="grid_missing",
+            )
+
+        ini_path = system_ini_path()
+        if not os.access(ini_path, os.W_OK):
+            # Preflighted so the last step of the swap cannot realistically fail
+            # after the robot has already moved onto the new map.
+            raise ConflictError(
+                f"The system INI ({ini_path}) is not writable, so a switch "
+                "could not be recorded and would not survive a restart.",
+                code="ini_not_writable",
+            )
+
+        try:
+            active_tasks, _ = await workflow_gw.list_active_tasks()
+        except Exception as exc:
+            # Refuse rather than assume idle. The gateway caches for
+            # ACTIVE_TASK_CACHE_TTL_S, so this is a real Temporal outage, and
+            # swapping the map under a robot that might be mid-navigation is not
+            # something to do on an unverified guess.
+            logger.warning(
+                "Could not confirm the robot is idle before a map switch",
+                map=name,
+                error=str(exc),
+            )
+            raise ConflictError(
+                "Could not reach Temporal to confirm no task is running, and a "
+                "map switch under a moving robot is not safe to guess at. Check "
+                "the Tasks page and try again.",
+                code="tasks_unknown",
+            )
+
+        if active_tasks:
+            running = ", ".join(task.id for task in active_tasks)
+            raise ConflictError(
+                f"The robot is running {len(active_tasks)} "
+                f"{'task' if len(active_tasks) == 1 else 'tasks'} ({running}). "
+                "Cancel or wait for it before switching maps.",
+                code="task_running",
+            )
+
+        if not map_gw.nav_services_ready():
+            raise ConflictError(
+                "map_server and the localizer are not reachable, so there is no "
+                "running map to switch. The robot is in mapping mode, or the "
+                "nav stack is down.",
+                code="stack_not_ready",
+            )
+
+        previous_pcd = (
+            map_catalog_repo.pointcloud_path(previous) if previous else None
+        )
+
+        def _restore_localizer(reason: str) -> str:
+            """Put the localizer back on the old cloud. Returns a sentence."""
+            if previous_pcd is None:
+                # Either the INI named no map at all (which is itself what makes
+                # the write below fail, so this is the *likely* pairing, not an
+                # exotic one) or the map it named has since lost its map.pcd.
+                where = (
+                    f"'{previous}' has no map.pcd"
+                    if previous
+                    else "the INI named no previous map"
+                )
+                return (
+                    f" The localizer is now on '{name}' and could not be put "
+                    f"back — {where}."
+                )
+            restored, detail = map_gw.swap_localizer_map(previous_pcd, 0.0, 0.0, 0.0)
+            if restored:
+                return f" The localizer was put back on '{previous}'."
+            logger.error(
+                "Could not restore the localizer after a failed map switch",
+                map=name,
+                previous=previous,
+                reason=reason,
+                error=detail,
+            )
+            return (
+                f" The localizer is still on '{name}' and could not be put back "
+                f"({detail}) — set the map by hand and restart the stack."
+            )
+
+        swapped, detail = map_gw.swap_localizer_map(pcd_path, 0.0, 0.0, 0.0)
+        if not swapped:
+            # Nothing has changed: this is the one step whose failure needs no
+            # compensation at all.
+            logger.error("Map switch failed at the localizer", map=name, error=detail)
+            raise UpstreamError(
+                f"Could not point the localizer at '{name}': {detail}. The robot "
+                f"is still on '{previous}'."
+            )
+
+        reloaded, detail = map_gw.reload_map(yaml_path)
+        if not reloaded:
+            logger.error("Map switch failed at map_server", map=name, error=detail)
+            raise UpstreamError(
+                f"The localizer moved to '{name}' but map_server would not load "
+                f"its gridmap: {detail}." + _restore_localizer("load_map failed")
+            )
+
+        try:
+            set_active_map(name, logger)
+        except (OSError, ValueError) as exc:
+            logger.error(
+                "Map switch failed at the INI write", map=name, error=str(exc)
+            )
+            # Undone in the order they were done, and as statements rather than
+            # inside the message below: built by concatenation these run in
+            # argument-evaluation order, which reads as the reverse of what it
+            # does and would silently flip if the sentences were reordered.
+            restored_cloud = _restore_localizer("INI write failed")
+
+            previous_yaml = (
+                map_catalog_repo.gridmap_yaml_path(previous) if previous else None
+            )
+            if previous_yaml is None:
+                # The map the stack launched on has since lost its gridmap.yaml
+                # (map_server loaded that file to start at all), or the INI named
+                # no map. Say so rather than leave map_server quietly serving a
+                # grid that no longer matches the cloud the localizer went back
+                # to.
+                where = (
+                    f"'{previous}' has no gridmap.yaml"
+                    if previous
+                    else "the INI named no previous map"
+                )
+                restored_grid = (
+                    f" map_server is still serving '{name}' — {where} to put back."
+                )
+            else:
+                back, back_detail = map_gw.reload_map(previous_yaml)
+                restored_grid = (
+                    ""
+                    if back
+                    else f" map_server is still serving '{name}' ({back_detail})."
+                )
+
+            raise UpstreamError(
+                f"The robot moved to '{name}' but the switch could not be "
+                f"recorded in {ini_path}: {exc}."
+                + restored_cloud
+                + restored_grid
+            )
+
+        # Only the vertex-scoping consumers care, and they re-query; the
+        # renderings are keyed by map name, so nothing cached is now stale.
+        localized = map_gw.localization_converged()
+
+        logger.info(
+            "Switched the active map",
+            map=name,
+            previous=previous,
+            localized=localized,
+        )
+
+        message = f"The robot is now on '{name}'"
+        message += f" (was '{previous}')." if previous else "."
+        if localized:
+            message += " The localizer converged on the new map."
+        else:
+            message += (
+                " The pose was reset to the map origin; set an initial pose on "
+                "the dashboard, because the localizer has not converged"
+            )
+            message += (
+                " yet." if localized is False else " and could not be asked."
+            )
+        return ActivateMapResponse(
+            name=name,
+            previous=previous,
+            switched=True,
+            localized=localized,
             message=message,
         )
 
@@ -1151,7 +1796,7 @@ def init_map_router(
             "requested": request.recipe.value,
             "picked_by": f"POST /api/v1/maps/{name}/grid/convert",
             "reason": request.reason,
-            "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "at": _iso_now(),
             "param_overrides": param_overrides,
         }
 

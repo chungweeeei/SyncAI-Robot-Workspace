@@ -14,6 +14,30 @@
 
 import type { MapMetadata } from "@/lib/types/robot";
 
+/**
+ * How a map's 2D gridmap stands — the backend's `GridStatus`.
+ *
+ * The three terminal states that leave a map the nav stack cannot load are
+ * deliberately separate, because they ask different things of the operator:
+ *
+ * - `none` — nobody has converted this map yet. Press Build grid.
+ * - `failed` — the pipeline rejected this cloud, and `grid_error` says why.
+ *   Read it before pressing anything; the same recipe will fail the same way.
+ * - `interrupted` — the backend went away mid-conversion (a restart, or a mode
+ *   switch, which tears down the session the backend is a pane of). Nothing is
+ *   coming to finish it and a retry is very likely to just work.
+ *
+ * Before these existed the catalogue had one boolean, so all three rendered as
+ * "No 2D grid" and the reason a conversion failed lived only in the robot's
+ * backend log. That is the bug this union closes.
+ */
+export type GridStatus =
+  | "none"
+  | "converting"
+  | "ok"
+  | "failed"
+  | "interrupted";
+
 export interface MapSummary {
   /** Directory name under `map/` — the identity everything else keys off. */
   name: string;
@@ -38,10 +62,21 @@ export interface MapSummary {
   /** `map.pcd` present — the cloud the 3D localizer relocalizes against. */
   has_pointcloud: boolean;
   /**
-   * A pcd → gridmap conversion for this map is running right now. This is the
-   * only status surface a conversion has — the backend keeps no job resource —
-   * so the catalogue poll watches this flag until it drops and then reads
-   * `grid` for the outcome.
+   * How this map's gridmap stands. The conversion's only status surface — the
+   * backend keeps no job resource — so a client that starts one watches this
+   * on the catalogue until it leaves `"converting"`.
+   */
+  grid_status: GridStatus;
+  /**
+   * Why the last conversion failed, as the pipeline diagnosed it. Null for
+   * every status other than `"failed"`. Written to be shown to an operator, so
+   * render it verbatim like the backend's other `detail` sentences.
+   */
+  grid_error: string | null;
+  /**
+   * @deprecated True exactly when `grid_status` is `"converting"`. The backend
+   * keeps it for curl/MCP callers written against it; read `grid_status`, which
+   * also tells a failed conversion apart from a map nobody converted yet.
    */
   grid_converting: boolean;
   /** Size of the whole `map/<name>/` directory, dominated by the .pcd. */

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { CrosshairIcon, Trash2Icon } from "lucide-react";
+import { LocateFixedIcon, Trash2Icon } from "lucide-react";
 
 import { Chip, Readout, Segmented, overlayPanel } from "@/components/console/instrument";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import type { MapVertex, VertexType } from "@/lib/types/map";
 import type { PlanarPose } from "@/lib/types/robot";
 
 /**
- * The vertex layer's operator surface: place, name, classify, move, delete.
+ * The vertex layer's operator surface: place, name, classify, re-aim, delete.
  *
  * It floats on the viewport for the same reason GoalControl does — the gesture
  * that produces a pose happens on the map, and moving the readback into a side
@@ -41,13 +41,21 @@ export interface VertexPanelProps {
   /** A staged, uncreated vertex. Mutually exclusive with `selected` in practice. */
   draft: PlanarPose | null;
   selected: MapVertex | null;
-  /** A re-pose of `selected` that has not been written yet. */
+  /**
+   * A re-aim of `selected` that has not been written yet, from a drag on its own
+   * marker. There is no move-to-another-place control here — see the note on
+   * `stagedPose` in MapGridEditor for where that lives instead.
+   */
   stagedPose: PlanarPose | null;
-  /** True while the next press on the map re-places `selected`. */
-  placing: boolean;
+
+  /** Where the robot is standing on this map, or null when it cannot be used. */
+  robotPose: PlanarPose | null;
+  /** Why `robotPose` is null. Shown under the disabled control; see useRobotMapPose. */
+  robotPoseReason: string | null;
+  /** Stage a draft at `robotPose`. Only called while it is non-null. */
+  onUseRobotPose: () => void;
 
   onSelect: (id: string | null) => void;
-  onArmPlace: () => void;
   onCancelDraft: () => void;
   onCreate: (name: string, type: VertexType) => void;
   onSave: (changes: VertexChanges) => void;
@@ -87,7 +95,6 @@ export function VertexPanel(props: VertexPanelProps) {
           initialName=""
           initialType={props.type}
           busy={props.busy}
-          placing={false}
           onTypeChange={props.onTypeChange}
           onSubmit={(name, type) => props.onCreate(name, type)}
           onCancel={props.onCancelDraft}
@@ -102,7 +109,6 @@ export function VertexPanel(props: VertexPanelProps) {
           initialName={selected.name}
           initialType={selected.type}
           busy={props.busy}
-          placing={props.placing}
           onSubmit={(name, type) => {
             const changes: VertexChanges = {};
             if (name !== selected.name) changes.name = name;
@@ -115,7 +121,6 @@ export function VertexPanel(props: VertexPanelProps) {
             props.onSave(changes);
           }}
           onCancel={() => props.onSelect(null)}
-          onArmPlace={props.onArmPlace}
           onDelete={props.onDelete}
         />
         {/* Kept below the form so the selection can move without closing it
@@ -138,6 +143,30 @@ export function VertexPanel(props: VertexPanelProps) {
               options={TYPE_OPTIONS}
               onChange={props.onTypeChange}
             />
+          </div>
+
+          {/* The second way to produce a pose, for the stop you mark by driving
+            * to it: the operator parks the robot on the spot — a dock, a charger,
+            * a doorway they had to squeeze through — and takes the pose off the
+            * robot instead of hunting for the cell it is standing on. It stages a
+            * draft like a press on the map does, rather than creating the vertex
+            * outright, so naming and typing it stay one flow with the placed
+            * kind, and a mis-press is a Cancel rather than a row to delete. */}
+          <div>
+            <button
+              type="button"
+              disabled={!props.robotPose || props.busy}
+              onClick={props.onUseRobotPose}
+              className="instrument-label flex h-7 w-full items-center justify-center gap-1.5 rounded-sm border border-hairline text-muted-foreground transition-colors hover:bg-elevated hover:text-foreground disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            >
+              <LocateFixedIcon className="size-3.5" aria-hidden />
+              Use robot position
+            </button>
+            {!props.robotPose && props.robotPoseReason && (
+              <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                {props.robotPoseReason}
+              </p>
+            )}
           </div>
 
           <VertexList
@@ -212,26 +241,22 @@ function VertexForm({
   initialName,
   initialType,
   busy,
-  placing,
   onTypeChange,
   onSubmit,
   onCancel,
-  onArmPlace,
   onDelete,
 }: {
   kind: "create" | "edit";
   pose: PlanarPose;
-  /** Edit mode only: the pose shown is staged, not what the row holds. */
+  /** Edit mode only: the heading shown is staged, not what the row holds. */
   moved?: boolean;
   initialName: string;
   initialType: VertexType;
   busy: boolean;
-  placing: boolean;
   /** Create mode only: keep the shell's next-placement type in step. */
   onTypeChange?: (type: VertexType) => void;
   onSubmit: (name: string, type: VertexType) => void;
   onCancel: () => void;
-  onArmPlace?: () => void;
   onDelete?: () => void;
 }) {
   const [name, setName] = React.useState(initialName);
@@ -283,23 +308,6 @@ function VertexForm({
         <Readout label="Y" value={pose.y.toFixed(2)} unit="m" tone="cmd" />
         <Readout label="Heading" value={pose.theta.toFixed(1)} unit="°" tone="cmd" />
       </div>
-
-      {kind === "edit" && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onArmPlace}
-          className={cn(
-            "instrument-label flex h-7 items-center justify-center gap-1.5 rounded-sm border transition-colors disabled:opacity-50",
-            placing
-              ? "border-signal-cmd/50 bg-signal-cmd/12 text-signal-cmd"
-              : "border-hairline text-muted-foreground hover:bg-elevated hover:text-foreground",
-          )}
-        >
-          <CrosshairIcon className="size-3.5" aria-hidden />
-          {placing ? "Press the map" : "Move"}
-        </button>
-      )}
 
       <div className="flex gap-1.5">
         <button

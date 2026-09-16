@@ -41,10 +41,13 @@ import type { GridRecipe, MapSummary } from "@/lib/types/map";
  * either way, and the dialog says so. A `conversion_running` 409 and every
  * other failure just render as the backend's own sentence.
  *
- * There is no local "converting" state to hold: success invalidates the maps
- * query, the catalogue answers with `grid_converting: true`, and useMaps' poll
- * carries the card from there. Mutation-as-async-callback with local busy/error,
- * same as SaveMapControl — this codebase does not use useMutation.
+ * There is no local "converting" state to hold, and no completion to report
+ * either: success invalidates the maps query, the catalogue answers with
+ * `grid_status: "converting"`, and useMaps' poll carries the card through to
+ * `ok` or to `failed` with its reason. What this control owns is the request —
+ * everything after it belongs to the card. Mutation-as-async-callback with
+ * local busy/error, same as SaveMapControl — this codebase does not use
+ * useMutation.
  */
 export function GridRebuildControl({ map }: { map: MapSummary }) {
   const queryClient = useQueryClient();
@@ -67,8 +70,9 @@ export function GridRebuildControl({ map }: { map: MapSummary }) {
           overwriteEdits,
         });
         setMessage(result.message);
-        // The catalogue now reports grid_converting; invalidating is what
-        // starts useMaps' poll and flips this card to its Converting… state.
+        // The catalogue now reports grid_status "converting"; invalidating is
+        // what starts useMaps' poll and flips this card to its Converting…
+        // state, and then to the outcome when the poll sees it land.
         void queryClient.invalidateQueries({ queryKey: queryKeys.maps });
       } catch (cause) {
         if (
@@ -87,7 +91,11 @@ export function GridRebuildControl({ map }: { map: MapSummary }) {
     [map.name, queryClient],
   );
 
-  const disabled = busy || map.grid_converting || !map.has_pointcloud;
+  // Every state but "converting" is rebuildable, failures included — a failed
+  // conversion is in fact the state most likely to want this control, with the
+  // other recipe.
+  const disabled =
+    busy || map.grid_status === "converting" || !map.has_pointcloud;
 
   return (
     <div className="mt-2 space-y-1.5">

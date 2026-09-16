@@ -98,7 +98,7 @@ prefixed with the robot name so several robots can publish to one MediaMTX.
 |---|---|
 | `syncai_backend` | Python. FastAPI **and** rclpy in one process (`MultiThreadedExecutor`), port **3000**. Temporal worker for task orchestration. Also owns TTS (kokoro-onnx → `aplay`, weights in `models/kokoro/`), task templates + schedules, the wifi bridge to `sys_manager`, and the teleop / telemetry / point-cloud WebSockets. Declares **no** ROS parameters. |
 | `syncai_frontend` | Next.js 16 + shadcn-style ui + raw three.js, dev server on port **3001**. Not an ament package (no `package.xml`). |
-| `syncai_ros_mcp` | Python (`ament_python`). MCP server exposing the ROS 2 graph as MCP tools over HTTP, port **8000** (`/mcp`). One process: `rclpy.spin()` owns the main thread, FastMCP runs on a background daemon thread. The topic/service tools read the live graph through the node; the task/map tools (`tools/tasks.py`, `tools/maps.py`) are thin REST clients for `syncai_backend` (`SYNCAI_BACKEND_BASE_URL`, default `http://localhost:3000`). The map tools target the **nested** `/api/v1/maps/{name}/...` routes — the flat `/api/v1/map/...` routes they were first written against no longer exist (every call 404'd), so each tool takes a `map_name`, vertex bodies carry no `map_name`, and `get_map_image` returns raw PNG bytes via `_backend.request_bytes` rather than a base64 envelope. No tool wraps `PATCH /api/v1/maps/{name}` (rename) or `GET /api/v1/active_tasks` yet. **Started by nothing** — it is in no session spec and not in compose; run it by hand with `ros2 run syncai_ros_mcp mcp_server_node`. Because it is started with `ros2 run` and has no launch file, it lives in the **root namespace**: its topic/service tools take full `/<robot_id>/...` names. |
+| `syncai_ros_mcp` | Python (`ament_python`). MCP server exposing the ROS 2 graph as MCP tools over HTTP, port **8000** (`/mcp`). One process: `rclpy.spin()` owns the main thread, FastMCP runs on a background daemon thread. The topic/service tools read the live graph through the node; the task/map tools (`tools/tasks.py`, `tools/maps.py`) are thin REST clients for `syncai_backend` (`SYNCAI_BACKEND_BASE_URL`, default `http://localhost:3000`). The map tools target the **nested** `/api/v1/maps/{name}/...` routes — the flat `/api/v1/map/...` routes they were first written against no longer exist (every call 404'd), so each tool takes a `map_name`, vertex bodies carry no `map_name`, and `get_map_image` returns raw PNG bytes via `_backend.request_bytes` rather than a base64 envelope. No tool wraps `PATCH /api/v1/maps/{name}` (rename), `POST /api/v1/maps/{name}/activate` (switch the running map) or `GET /api/v1/active_tasks` yet. **Started by nothing** — it is in no session spec and not in compose; run it by hand with `ros2 run syncai_ros_mcp mcp_server_node`. Because it is started with `ros2 run` and has no launch file, it lives in the **root namespace**: its topic/service tools take full `/<robot_id>/...` names. |
 
 `syncai_ros_mcp` is **vendored** (source committed here) even though it started
 as the submodule `chungweeeei/SyncAI-ROS-MCP`; it was folded in on purpose: it
@@ -133,7 +133,9 @@ resolved value is used as the **node namespace**.
 `config/system.ini` inside the container. That file has exactly four sections:
 `[system]` (`robot_id`), `[map]` (`name`, plus `pcd` / `map` paths written with
 configparser interpolation as `map/%(name)s/map.pcd` and
-`map/%(name)s/gridmap.yaml`, so switching maps is a one-line `name:` edit),
+`map/%(name)s/gridmap.yaml`, so switching maps is a one-line `name:` edit —
+which is what the backend's `set_active_map` writes, and why it rewrites that
+one line in place rather than round-tripping the file through configparser),
 `[initial_pose]`, and `[sensor.lidar]` `ip` + `type` (the lidar's address and
 model, `mid360` or `mid360s` — `syncai_bringup` renders the livox driver's
 config JSON from them). The former `[artifacts]` section is gone with the
@@ -393,11 +395,56 @@ temporal/     (worker, workflows, activities)
   basenames); a future sidecar that embeds the path forces `rename_map_dir` to
   start rewriting it. Filesystem first, database second; a DB failure moves the
   directory back. Refusals, all before any mutation: 409 `map_active` for the
-  map the stack is running on (map_server and the localizer loaded its files at
-  launch, the localizer cannot be re-pointed, and nothing in the backend writes
-  the INI — switching maps is an INI edit plus a stack restart), 409
+  map the stack is running on (map_server and the localizer opened its files at
+  launch, so the directory cannot move under them — switch the robot to another
+  map first, which is a live call now, not a stack restart), 409
   `conversion_running`, 409 `name_taken`. Temporal schedule memos keep the old
   `map_name` label on purpose (display-only, never re-registered).
+- **Map switch** (`POST /api/v1/maps/{name}/activate`, frontend: the map card's
+  top-left corner tile, swap arrows in the slot the in-use badge occupies on the
+  map the robot is already on) is the verb that
+  lifts `map_active` on both of the above, and the only thing in the workspace
+  that writes the instance INI
+  (`helpers/system_config.py`'s `set_active_map`; the module was read-only by
+  design until this). A **live swap, no session restart**: `relocalize`
+  takes a `pcd_path`, `map_server/load_map` re-reads a yaml, and the INI write is
+  what makes the choice survive a restart. Three things have to agree — the
+  localizer's cloud, map_server's grid, and `[map] name` — so the order is chosen
+  around failure: the localizer goes first because its refusals happen before it
+  mutates anything, and each later step compensates the earlier ones. Two
+  non-obvious constraints. `relocalize` returning success is a **receipt, not a
+  result** — registration runs async at 5 Hz with no deadline, and
+  `relocalize_check` is the only surface that reports it (the backend
+  is its first caller; `RobotState.localization_valid` is TF-presence only and
+  reads true against a map the robot was never localized in). And `relocCB` takes
+  the request's raw 6-DOF, bypassing the `applyPlanarGuess` tilt correction, so
+  the swap **must** be followed by an `initialpose` publish or the tilted lidar
+  mount freezes the localizer retrying a flat guess forever. `[initial_pose]` is
+  zeroed with the switch and the operator re-seeds from the dashboard. Refusals,
+  all before any mutation: 409 `grid_missing` / `pointcloud_missing` /
+  `conversion_running` / `ini_not_writable` / `task_running` / `tasks_unknown`
+  (Temporal unreachable — refuse rather than assume idle) / `stack_not_ready`,
+  the last being how "the robot is in mapping mode" is detected, by service
+  discoverability rather than the cached mode, which a robot that has lost
+  localization does not have. Not guarded: a goal sent straight from the
+  dashboard rather than dispatched as a task.
+- **Map delete** (`DELETE /api/v1/maps/{name}`, frontend: the X in the map
+  card's corner, behind an alert dialog) is `MapRepo.delete_vertices` then
+  `MapCatalogRepo.delete_map_dir`'s `shutil.rmtree`, in that order — **the
+  inverse of the rename, deliberately.** A rename puts the filesystem first
+  because `os.rename` back is a real compensation; `rmtree` has none, so the
+  irreversible step goes last, and the residue of the other ordering is worse:
+  vertex rows outliving their directory are unreachable (every vertex route
+  resolves the map first) until the next map saved under that name silently
+  inherits them. Refusals are the rename's first two plus 409 `template_bound`,
+  which exists because a rename can re-key `task_templates.map_name` and a
+  delete cannot: a template naming a map that is gone will not dispatch, cannot
+  be edited (`_require_map` rejects the map), and cannot have its `map_name`
+  cleared if it holds MOVE steps — so the map stays and the operator is told
+  which templates to unbind. Not covered, and a sentence in the response
+  instead: a Temporal schedule registered from a since-deleted template keeps
+  firing its frozen steps, and reaching those would mean handing the map router
+  `workflow_gw` for a warning.
 - Point clouds are cached in single-slot repos: the live `pointlio/body_cloud`
   (drained by WS `/api/v1/robot/pointcloud/stream`) and, during mapping, pgo's
   merged `pgo/map_cloud` (WS `/api/v1/robot/pointcloud/map/stream`). A saved
@@ -423,6 +470,22 @@ temporal/     (worker, workflows, activities)
   wrong traversability map is permanently walled. Every conversion writes
   `gridmap.recipe.json` beside the pgm recording the recipe, both area
   diagnostics and the parameters.
+- **A conversion's outcome is disk state, and the catalogue is the only status
+  surface.** The thread writes `gridmap.recipe.json` three times — `status:
+  converting` before any work, then `ok` (recipe, params, diagnostics) or
+  `failed` (the pipeline's `error` plus a `hint`) — and `MapCatalogRepo` reads
+  it back so `GET /api/v1/maps` reports `grid_status` (`none` / `converting` /
+  `ok` / `failed` / `interrupted`) and `grid_error` per map. There is no job
+  resource and no status endpoint: a client that starts a conversion polls the
+  catalogue, which is also what makes the answer survive a page reload. The
+  record is on disk rather than in the process because it has to outlive both
+  the thread and the backend — `switch_mode` tears down the byobu session the
+  backend is a pane of, and `_ACTIVE_CONVERSIONS` dies with it; a sidecar left
+  saying `converting` with nothing in that registry is what the router reports
+  as `interrupted`. The registry still wins while the process is up.
+  `grid_converting` is the deprecated boolean this replaced, kept for curl/MCP
+  callers; under it a failed conversion was indistinguishable from a map nobody
+  had converted and its reason existed only in the backend log.
 - **`POST /api/v1/maps/{name}/grid/convert`** is the manual/override route
   (frontend: the map card's Rebuild-grid dropdown): pick the recipe, override
   `gap_fill_size` or the z-band offsets, and pass `debug: true` to get the
@@ -432,8 +495,13 @@ temporal/     (worker, workflows, activities)
   (gridmap_raw.pgm differing from gridmap.pgm) refuses with 409
   `gridmap_hand_edited` until `overwrite_edits` — and even then the edited grid
   survives as `gridmap_prev.pgm` (one undo generation, with its yaml, the stale
-  raw moved to `gridmap_prev_raw.pgm`). Re-converting the active map reloads
-  map_server on success.
+  raw moved to `gridmap_prev_raw.pgm` and the outgoing recipe record to
+  `gridmap_prev.recipe.json`, since the incoming conversion overwrites the live
+  sidecar before it does any work). Re-converting the active map reloads
+  map_server on success. Note the grid is *copied* aside, not moved, so the
+  active map never has a window with no file — which is why a failed
+  re-conversion leaves a loadable map and `grid_status: failed` at the same
+  time.
 - `helpers/traversable.py` is the only module that needs open3d, and **nothing
   imports it at module scope** — `_start_grid_conversion` imports it inside the
   conversion thread's `try`. Keep it that way, and keep `pcd_to_gridmap.py`
@@ -456,8 +524,9 @@ Next.js 16 (dev server on port 3001), shadcn-style components on
 `@base-ui/react`, **raw three.js** for the 3D point-cloud view (no
 react-three-fiber). Routes: `/` (dashboard: point cloud + telemetry rail, goal /
 initial-pose / posture / manual joystick controls), `/mapping` (mode switch,
-save map), `/maps` (map library, per-card Rebuild-grid dropdown and inline
-Rename — greyed for the active map, which the backend refuses too) and
+save map), `/maps` (map library, per-card Rebuild-grid dropdown, inline Rename,
+and a Switch corner tile — Rename is greyed for the active map, which the backend
+refuses too, and Switch is the control that un-greys it) and
 `/maps/[name]/edit` (gridmap editor), `/tasks` (templates, dispatch, schedules),
 `/settings` (wifi via the backend's network router, appearance),
 `/model-preview`. There is **no camera component** — nothing in the frontend

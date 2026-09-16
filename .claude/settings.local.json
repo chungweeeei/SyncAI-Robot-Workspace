@@ -88,7 +88,15 @@
       "Bash(chmod +x /home/syncrobotic/SyncAI-Robot-Workspace/scripts/attach.sh)",
       "Bash(bash -n /home/syncrobotic/SyncAI-Robot-Workspace/scripts/attach.sh)",
       "Bash(cat)",
-      "Bash(bash -ic 'type robot')"
+      "Bash(bash -ic 'type robot')",
+      "Bash(timeout 600 node_modules/.bin/tsc --noEmit)",
+      "Bash(echo \"=== exit: $?\")",
+      "Bash(timeout 60 curl -s http://127.0.0.1:3000/api/v1/maps)",
+      "Bash(echo \"=== exit $?\")",
+      "Bash(curl -s --max-time 5 http://localhost:3000/api/v1/robot/state)",
+      "Bash(curl -s --max-time 5 http://localhost:3000/api/v1/maps)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" --max-time 90 http://localhost:3001/maps/dp2f/edit)",
+      "Bash(curl -s --max-time 30 http://localhost:3001/maps)"
     ]
   }
 }

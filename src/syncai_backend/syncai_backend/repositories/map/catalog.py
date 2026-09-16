@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -18,6 +19,24 @@ from syncai_backend.helpers.system_config import active_map_name
 # lands, so it rejects everything that is not obviously a directory name.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
+# Sidecar recording the last pcd -> gridmap conversion of a map: which recipe
+# ran, its measurements, and — since 2026-09 — how it ended. The REST layer
+# writes it (routers/map.py owns the conversion), this repo reads it back, and
+# the filename lives here rather than there because the on-disk layout of a map
+# directory is this repo's vocabulary: it is the module that already knows what
+# ``gridmap.pgm``, ``gridmap_raw.pgm`` and the ``gridmap_prev.*`` generation are
+# called.
+GRIDMAP_RECIPE_SIDECAR = "gridmap.recipe.json"
+GRIDMAP_RECIPE_SIDECAR_PREV = "gridmap_prev.recipe.json"
+
+# The ``status`` values the sidecar can carry. Deliberately only the three a
+# conversion itself can write: "a thread is running" is process state, not disk
+# state, so "interrupted" is not one of them — it is what the REST layer
+# *derives* from a sidecar that says ``converting`` with no thread behind it.
+GRID_STATUS_CONVERTING = "converting"
+GRID_STATUS_OK = "ok"
+GRID_STATUS_FAILED = "failed"
+
 
 @dataclass(frozen=True)
 class GridInfo:
@@ -28,12 +47,35 @@ class GridInfo:
 
 
 @dataclass(frozen=True)
+class GridRecord:
+    """How the last conversion of this map ended, per its sidecar.
+
+    Only the two fields a caller outside this repo acts on. The sidecar also
+    carries the recipe, its parameters and the area diagnostics, which are for
+    whoever is reading files on the robot — reflecting all of it through the
+    catalogue would be an API surface nobody asked for.
+
+    ``error`` is the pipeline's own diagnosis of a failure, and is None for
+    every other status.
+    """
+
+    status: str
+    error: Optional[str]
+
+
+@dataclass(frozen=True)
 class StoredMap:
     name: str
     grid: Optional[GridInfo]
     has_pointcloud: bool
     size_bytes: int
     modified_at: datetime
+    # None for a map with no sidecar at all: every map saved before 2026-09, and
+    # every map whose conversion never started. A grid with no record is a
+    # successful conversion as far as anyone can tell from disk — see the REST
+    # layer's _grid_status, which is where the reconciliation with the live
+    # conversion registry happens.
+    grid_record: Optional[GridRecord]
 
 
 class MapCatalogRepo:
@@ -221,6 +263,39 @@ class MapCatalogRepo:
         self.logger.info("[MapCatalogRepo] Renamed map directory", map=old, new_name=new)
         return dst
 
+    def delete_map_dir(self, name: str) -> None:
+        """Remove ``map/<name>/`` and everything under it. There is no undo.
+
+        ``shutil.rmtree``, deliberately unlike ``discard_empty_map_dir``'s
+        ``rmdir`` right above. That one is the unwind of a save that failed and
+        must never destroy data it did not create, so it leaves a non-empty
+        directory alone; this one *is* the destruction the operator asked for,
+        and a map directory is never empty in practice — ``map.pcd``,
+        ``poses.txt``, ``patches/`` and the gridmap family all have to go
+        together. Half a map is not a state anything here can read.
+
+        ``resolve_dir`` is what makes this safe to hang off a URL path segment:
+        the name is regex-checked and the resolved path is confined under the
+        maps root before an ``rmtree`` ever sees it.
+
+        What this does *not* touch, and the caller must: the ``map_vertices``
+        rows keyed on the bare directory name. ``task_templates.map_name`` is
+        the caller's problem too — the router refuses the delete outright while
+        a template still names the map, since a template pointing at a map that
+        is gone can neither run nor be edited back into shape.
+
+        Refusing to delete the *active* map is the router's job, not this
+        repo's, for the reason ``rename_map_dir`` gives: "which map is the stack
+        running on" is INI state this repo only reads through ``active_name()``,
+        and every 409 for the route belongs in one place.
+        """
+        path = self.resolve_dir(name)
+        if not os.path.isdir(path):
+            raise NotFoundError(f"No map named '{name}' on this robot.")
+
+        shutil.rmtree(path)
+        self.logger.info("[MapCatalogRepo] Deleted map directory", map=name)
+
     def gridmap_edited(self, name: str) -> bool:
         """Report whether this map's gridmap carries hand edits.
 
@@ -274,6 +349,13 @@ class MapCatalogRepo:
           absent, so a stale raw from the previous conversion would never be
           refreshed for the new grid and would sit there claiming to be the
           pristine copy of a file whose dimensions it may not even share.
+        - ``gridmap.recipe.json`` is **moved** to ``gridmap_prev.recipe.json``,
+          for the same reason as the raw and one more. The incoming conversion
+          overwrites the sidecar with its own ``converting`` record before it
+          does any work, so left in place the previous recipe record would be
+          destroyed — and if the conversion then fails, the grid still being
+          served is the archived one with nothing on disk saying which recipe
+          and which parameters produced it.
 
         ``copy2`` for the copies, same as ``write_gridmap``'s raw snapshot: a
         fresh mtime would make the archive the newest file under ``_walk_stats``
@@ -292,6 +374,9 @@ class MapCatalogRepo:
         raw_path = os.path.join(directory, "gridmap_raw.pgm")
         if os.path.isfile(raw_path):
             os.replace(raw_path, os.path.join(directory, "gridmap_prev_raw.pgm"))
+        sidecar_path = os.path.join(directory, GRIDMAP_RECIPE_SIDECAR)
+        if os.path.isfile(sidecar_path):
+            os.replace(sidecar_path, os.path.join(directory, GRIDMAP_RECIPE_SIDECAR_PREV))
         self.logger.info(
             "[MapCatalogRepo] Archived the gridmap before re-conversion",
             map=name,
@@ -379,7 +464,49 @@ class MapCatalogRepo:
             has_pointcloud=os.path.isfile(os.path.join(path, "map.pcd")),
             size_bytes=size_bytes,
             modified_at=datetime.fromtimestamp(newest_mtime, tz=timezone.utc),
+            grid_record=self._read_grid_record(name, path),
         )
+
+    def _read_grid_record(self, name: str, path: str) -> Optional[GridRecord]:
+        """Read how the last conversion ended off the sidecar, or None.
+
+        None means "the sidecar says nothing usable", which covers four cases
+        that all want the same treatment: no sidecar (a map saved before the
+        status field existed, or one whose conversion never started), a sidecar
+        written by that older code and so carrying no ``status``, an unreadable
+        one, and a malformed one. In each, what the map *has* is the only
+        evidence — a grid on disk or not.
+
+        Never raises. This runs once per map on every catalogue listing, and a
+        conversion is writing this exact file in another thread while it does;
+        a half-written sidecar caught mid-write must degrade one card's status
+        detail, not fail the listing that every screen depends on.
+        """
+        sidecar = os.path.join(path, GRIDMAP_RECIPE_SIDECAR)
+        try:
+            with open(sidecar, "r", encoding="utf-8") as handle:
+                document = json.load(handle)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError, which is what a torn write
+            # looks like. Logged at debug rather than warning: it is expected
+            # while a conversion is in flight, and the poll behind this runs
+            # every two seconds.
+            self.logger.debug(
+                "[MapCatalogRepo] Unreadable gridmap recipe sidecar",
+                map=name,
+                error=str(exc),
+            )
+            return None
+
+        if not isinstance(document, dict):
+            return None
+        status = document.get("status")
+        if not isinstance(status, str):
+            return None
+        error = document.get("error")
+        return GridRecord(status=status, error=error if isinstance(error, str) else None)
 
     def _read_grid(self, name: str, path: str) -> Optional[GridInfo]:
         """Read geometry from gridmap.yaml + the .pgm header, or None.

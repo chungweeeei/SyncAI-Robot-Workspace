@@ -11,6 +11,7 @@ in-memory SQLite.
 """
 
 import builtins
+import json
 import os
 import struct
 import sys
@@ -52,14 +53,53 @@ class _StubMapGateway:
         self.result = (True, "")
         self.save_calls = []
         self.save_result = (True, "")
+        # The map-switch surface. `order` records every ROS step across both
+        # clients in sequence, because for a switch the ordering *is* the
+        # contract: the localizer moves before map_server so that the likeliest
+        # failure leaves nothing changed.
+        self.order = []
+        self.swap_calls = []
+        self.swap_result = (True, "")
+        self.services_ready = True
+        self.converged = True
 
     def reload_map(self, yaml_path):
         self.calls.append(yaml_path)
+        self.order.append(("reload_map", yaml_path))
         return self.result
 
     def save_map(self, directory):
         self.save_calls.append(directory)
         return self.save_result
+
+    def nav_services_ready(self, timeout_sec=2.0):
+        return self.services_ready
+
+    def swap_localizer_map(self, pcd_path, x, y, yaw):
+        self.swap_calls.append((pcd_path, x, y, yaw))
+        self.order.append(("swap_localizer_map", pcd_path))
+        return self.swap_result
+
+    def localization_converged(self, timeout_s=3.0):
+        return self.converged
+
+
+class _StubWorkflowGateway:
+    """Stands in for the Temporal visibility query behind the task_running gate.
+
+    `error` is how the "Temporal is down" refusal is exercised: list_active_tasks
+    raises for real in that case rather than returning an empty list, and the
+    difference between those two is the whole point of the tasks_unknown code.
+    """
+
+    def __init__(self):
+        self.tasks = []
+        self.error = None
+
+    async def list_active_tasks(self):
+        if self.error is not None:
+            raise self.error
+        return self.tasks, "2026-09-16T00:00:00Z"
 
 
 @pytest.fixture
@@ -68,7 +108,21 @@ def map_gw():
 
 
 @pytest.fixture
-def client(logger, catalog_repo, map_repo, map_gw, task_template_repo, tmp_path, monkeypatch):
+def workflow_gw():
+    return _StubWorkflowGateway()
+
+
+@pytest.fixture
+def client(
+    logger,
+    catalog_repo,
+    map_repo,
+    map_gw,
+    workflow_gw,
+    task_template_repo,
+    tmp_path,
+    monkeypatch,
+):
     """A client whose active map is 'full', set through the INI env override."""
     ini = tmp_path / "system.ini"
     ini.write_text("[system]\nrobot_id: robot01\n\n[map]\nname: full\n")
@@ -83,6 +137,7 @@ def client(logger, catalog_repo, map_repo, map_gw, task_template_repo, tmp_path,
             map_catalog_repo=catalog_repo,
             map_gw=map_gw,
             task_template_repo=task_template_repo,
+            workflow_gw=workflow_gw,
         )
     )
     return TestClient(app)
@@ -93,6 +148,19 @@ _OCTET = {"Content-Type": "application/octet-stream"}
 
 def _by_name(body):
     return {entry["name"]: entry for entry in body}
+
+
+def _plant_sidecar(directory, payload):
+    """Write a conversion record into a map directory, as a conversion would.
+
+    Planted rather than produced by a real conversion for the status tests: the
+    states worth pinning are the ones no single run can reach on demand — a
+    record left behind by a process that no longer exists, and one written by a
+    version of this code that had no status field.
+    """
+    path = directory / map_router_module.GRIDMAP_RECIPE_SIDECAR
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 # --- /api/v1/maps -----------------------------------------------------------
@@ -131,6 +199,124 @@ def test_list_nulls_grid_for_an_unconverted_map(client):
 
     assert entry["grid"] is None
     assert entry["thumbnail"] is None
+
+
+# --- grid_status --------------------------------------------------------------
+#
+# The conversion-status surface. There is no job resource and no status
+# endpoint: a client that starts a conversion watches this field on the
+# catalogue, so every state a conversion can leave a map in has to be
+# reachable through it — including the two that outlive the process.
+
+
+def test_list_reports_ok_for_a_converted_map(client):
+    entry = _by_name(client.get("/api/v1/maps").json())["full"]
+
+    assert entry["grid_status"] == "ok"
+    assert entry["grid_error"] is None
+    assert entry["grid_converting"] is False
+
+
+def test_list_reports_none_for_a_map_nobody_converted(client):
+    """Distinct from `failed`, and that is the point of the enum: this one wants
+    Build grid pressed, a failure wants its reason read first."""
+    entry = _by_name(client.get("/api/v1/maps").json())["rawonly"]
+
+    assert entry["grid_status"] == "none"
+    assert entry["grid_error"] is None
+
+
+def test_list_reports_ok_for_a_sidecar_written_before_the_status_field(
+    client, maps_dir
+):
+    """Every map converted before 2026-09 has a sidecar with no `status` key.
+    The grid on disk is then the only evidence, and it says the run worked."""
+    _plant_sidecar(maps_dir / "full", {"recipe": "z-band", "footprint_m2": 400.0})
+
+    assert _by_name(client.get("/api/v1/maps").json())["full"]["grid_status"] == "ok"
+
+
+def test_list_reports_a_failed_conversion_with_its_reason(client, maps_dir):
+    """The whole point of the sidecar carrying a status: before it, this map was
+    indistinguishable from one nobody had converted and the reason lived only in
+    log/stack/<robot_id>/backend/current."""
+    _plant_sidecar(
+        maps_dir / "rawonly",
+        {
+            "status": "failed",
+            "recipe": "z-band",
+            "error": "obstacle band selected no points",
+        },
+    )
+
+    entry = _by_name(client.get("/api/v1/maps").json())["rawonly"]
+
+    assert entry["grid_status"] == "failed"
+    assert entry["grid_error"] == "obstacle band selected no points"
+    assert entry["grid"] is None
+
+
+def test_a_failed_reconversion_reports_failed_over_the_grid_it_left_behind(
+    client, maps_dir
+):
+    """archive_gridmap *copies* the live grid aside rather than moving it, so the
+    active map never has a window with no file — which means a failed re-convert
+    leaves a loadable map whose grid is the old one. Reporting `ok` there would
+    present that stale grid as the rebuild the operator asked for."""
+    _plant_sidecar(
+        maps_dir / "full",
+        {"status": "failed", "recipe": "traversability", "error": "no ground"},
+    )
+
+    entry = _by_name(client.get("/api/v1/maps").json())["full"]
+
+    assert entry["grid_status"] == "failed"
+    assert entry["grid_error"] == "no ground"
+    # Still loadable, and still listed with its geometry.
+    assert entry["grid"] is not None
+
+
+def test_list_reports_an_abandoned_conversion_as_interrupted(client, maps_dir):
+    """A record saying `converting` with nothing in the registry behind it: the
+    process running it is gone (a backend restart, or a switch_mode that tore
+    down the byobu session the backend is a pane of). Nothing is coming to
+    finish it, so the state has to say so rather than read as in-flight."""
+    _plant_sidecar(maps_dir / "rawonly", {"status": "converting", "recipe": "z-band"})
+
+    entry = _by_name(client.get("/api/v1/maps").json())["rawonly"]
+
+    assert entry["grid_status"] == "interrupted"
+    assert entry["grid_converting"] is False
+    assert entry["grid_error"] is None
+
+
+def test_a_running_conversion_outranks_whatever_the_sidecar_says(client, maps_dir):
+    """The registry is authoritative while this process is up. The sidecar write
+    is best-effort, so a conversion whose record never landed — or landed as the
+    previous run's failure — must still report as running."""
+    _plant_sidecar(maps_dir / "rawonly", {"status": "failed", "error": "last time"})
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("rawonly")
+    try:
+        entry = _by_name(client.get("/api/v1/maps").json())["rawonly"]
+        assert entry["grid_status"] == "converting"
+        assert entry["grid_error"] is None
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("rawonly")
+
+
+def test_list_survives_a_half_written_sidecar(client, maps_dir):
+    """A conversion writes this file while the console's two-second catalogue
+    poll reads it, so a torn read is expected traffic, not a corrupt map."""
+    (maps_dir / "rawonly" / map_router_module.GRIDMAP_RECIPE_SIDECAR).write_text(
+        '{"status": "conv'
+    )
+
+    response = client.get("/api/v1/maps")
+
+    assert response.status_code == 200
+    assert _by_name(response.json())["rawonly"]["grid_status"] == "none"
 
 
 def test_list_counts_vertices_of_that_map_only(client, map_repo):
@@ -667,6 +853,136 @@ def test_rename_drops_the_cached_renderings_of_the_old_name(client, maps_dir, ma
     assert client.get("/api/v1/maps/hall/pointcloud").status_code == 200
 
 
+# --- DELETE /api/v1/maps/{name} ----------------------------------------------
+#
+# Same fixture geometry as the rename block: 'full' is the active map, so
+# 'rawonly' is the one a delete is allowed to touch.
+
+
+def _delete(client, name):
+    return client.delete(f"/api/v1/maps/{name}")
+
+
+def test_delete_removes_the_directory_and_its_vertices(client, maps_dir, map_repo):
+    map_repo.create_vertices(map="rawonly", vertices=[
+        {"name": "dock", "type": "GENERAL", "x": 0.0, "y": 0.0, "theta": 0.0},
+        {"name": "home", "type": "HOME", "x": 1.0, "y": 0.0, "theta": 0.0},
+    ])
+    # A vertex on another map must survive: the DELETE is filtered by map.
+    map_repo.create_vertices(map="full", vertices=[
+        {"name": "charger", "type": "CHARGER", "x": 2.0, "y": 0.0, "theta": 0.0},
+    ])
+
+    response = _delete(client, "rawonly")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "rawonly"
+    assert body["vertices_deleted"] == 2
+    assert "Deleted 'rawonly' and 2 vertices" in body["message"]
+    assert "Schedules already registered" in body["message"]
+
+    assert not (maps_dir / "rawonly").exists()
+    assert "rawonly" not in _by_name(client.get("/api/v1/maps").json())
+    assert map_repo.list_vertices(map="rawonly") == []
+    assert len(map_repo.list_vertices(map="full")) == 1
+
+
+def test_delete_of_a_missing_map_is_a_404(client):
+    assert _delete(client, "nope").status_code == 404
+
+
+def test_delete_refuses_the_active_map(client, maps_dir):
+    response = _delete(client, "full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "map_active"
+    assert (maps_dir / "full" / "gridmap.pgm").is_file()
+
+
+def test_delete_refuses_while_a_conversion_is_running(client, maps_dir):
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("rawonly")
+    try:
+        response = _delete(client, "rawonly")
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("rawonly")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "conversion_running"
+    assert (maps_dir / "rawonly" / "map.pcd").is_file()
+
+
+def test_delete_refuses_while_a_task_template_is_bound(
+    client, maps_dir, map_repo, task_template_repo
+):
+    """The one refusal that asks for work rather than a restart."""
+    map_repo.create_vertices(map="rawonly", vertices=[
+        {"name": "dock", "type": "GENERAL", "x": 0.0, "y": 0.0, "theta": 0.0},
+    ])
+    task_template_repo.create_task_template(
+        name="patrol", description="", map_name="rawonly", steps=[]
+    )
+
+    response = _delete(client, "rawonly")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == "template_bound"
+    assert "'patrol'" in body["detail"]
+    # Nothing was touched -- the refusal comes before either store is written.
+    assert (maps_dir / "rawonly" / "map.pcd").is_file()
+    assert len(map_repo.list_vertices(map="rawonly")) == 1
+
+
+def test_delete_ignores_map_independent_templates(client, maps_dir, task_template_repo):
+    """map_name IS NULL is a run-anywhere template; no map going away concerns it."""
+    task_template_repo.create_task_template(
+        name="stand up", description="", map_name=None, steps=[]
+    )
+
+    assert _delete(client, "rawonly").status_code == 200
+    assert not (maps_dir / "rawonly").exists()
+
+
+@pytest.mark.parametrize("name", ["../evil", "a/b", ".", "x" * 65])
+def test_delete_rejects_bad_names(client, maps_dir, name):
+    response = _delete(client, name)
+
+    # Separators never reach the route (FastAPI does not match the path), the
+    # rest die in resolve_dir or as a missing map. Nothing is ever a 200.
+    assert response.status_code in (400, 404, 405, 422)
+    assert (maps_dir / "rawonly").is_dir()
+
+
+def test_delete_leaves_the_directory_when_the_database_fails(
+    client, maps_dir, map_repo, monkeypatch
+):
+    """Rows first, rmtree last: a failed DELETE must not cost the map."""
+    def _boom(map):
+        raise RuntimeError("database is away")
+
+    monkeypatch.setattr(map_repo, "delete_vertices", _boom)
+
+    response = _delete(client, "rawonly")
+
+    assert response.status_code == 502
+    assert (maps_dir / "rawonly" / "map.pcd").is_file()
+
+
+def test_delete_drops_the_cached_renderings(client, maps_dir, make_pcd):
+    """Warm the cloud cache, delete, and check the entry does not outlive the map."""
+    make_pcd(maps_dir / "rawonly" / "map.pcd")
+    assert client.get("/api/v1/maps/rawonly/pointcloud").status_code == 200
+
+    assert _delete(client, "rawonly").status_code == 200
+
+    # The caches are closure-local to init_map_router, so this is the only way
+    # to observe them: a stale entry would answer 200 for a map that is gone.
+    assert client.get("/api/v1/maps/rawonly/pointcloud").status_code == 404
+
+
 # --- the background gridmap conversion ---------------------------------------
 #
 # _start_grid_conversion is exercised directly rather than through POST
@@ -873,6 +1189,116 @@ def test_conversion_reports_a_failed_segmentation_instead_of_dying(
     assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
 
 
+# --- what a conversion records about itself -----------------------------------
+#
+# The sidecar is the only thing a conversion leaves that outlives its thread and
+# its process, so it is also the only place an outcome can be read back from.
+# These tests pin the three states it writes; the catalogue tests above pin how
+# they are reported.
+
+
+def test_a_conversion_records_itself_before_doing_any_work(
+    logger, small_saved_map, conversion_threads, monkeypatch
+):
+    """The `converting` record has to land before the pipeline runs, not after.
+
+    It is what an abandoned conversion is detected by, and a conversion is
+    abandoned precisely when it never reaches its own ending — so a record
+    written on the way out would be missing in the one case it exists for.
+    Blocking inside measure_cloud is what makes "before" observable at all; the
+    real thing is over in tens of seconds and nothing can be asserted mid-run.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    real_measure = map_router_module.measure_cloud
+
+    def _blocking(bound, pcd_path):
+        entered.set()
+        assert release.wait(10.0), "the test never released the conversion"
+        return real_measure(bound, pcd_path)
+
+    monkeypatch.setattr(map_router_module, "measure_cloud", _blocking)
+
+    map_router_module._start_grid_conversion(logger, "smallmap", small_saved_map)
+    assert entered.wait(10.0), "the conversion thread never reached measure_cloud"
+
+    mid_run = _sidecar(small_saved_map)
+    assert mid_run["status"] == "converting"
+    assert mid_run["recipe"] == "z-band"
+    assert mid_run["started_at"].endswith("Z")
+    # No ending recorded yet, which is exactly what `interrupted` keys off.
+    assert "finished_at" not in mid_run
+
+    release.set()
+    _join(conversion_threads)
+
+    assert _sidecar(small_saved_map)["status"] == "ok"
+
+
+def test_a_successful_conversion_records_ok_and_keeps_the_diagnostics(
+    logger, small_saved_map, conversion_threads
+):
+    map_router_module._start_grid_conversion(logger, "smallmap", small_saved_map)
+    _join(conversion_threads)
+
+    side = _sidecar(small_saved_map)
+    assert side["status"] == "ok"
+    assert side["started_at"].endswith("Z")
+    assert side["finished_at"] >= side["started_at"]
+    assert "error" not in side
+    # The status is additive: everything the sidecar carried before it still has
+    # to be there, because the recipe record is what tells two maps converted by
+    # different recipes apart.
+    assert side["recipe"] == "z-band"
+    assert side["params"]["floor_z"] == pytest.approx(-0.4, abs=0.1)
+
+
+def test_a_failed_conversion_records_the_reason(
+    logger, saved_map, fake_traversable, conversion_threads
+):
+    """The same sentence the log line carries, put where a client can read it."""
+    fake_traversable.raises = ValueError("intensity/normal gate selected no ground points")
+
+    map_router_module._start_grid_conversion(
+        logger, "newmap", saved_map, recipe_request="traversability"
+    )
+    _join(conversion_threads)
+
+    side = _sidecar(saved_map)
+    assert side["status"] == "failed"
+    assert "selected no ground points" in side["error"]
+    assert side["recipe"] == "traversability"
+    assert side["finished_at"].endswith("Z")
+    assert not os.path.exists(os.path.join(saved_map, "gridmap.pgm"))
+
+
+def test_a_missing_open3d_is_recorded_as_a_failure_naming_the_fix(
+    logger, saved_map, conversion_threads, monkeypatch
+):
+    """An environment fault, not a bad cloud: re-converting this map will fail
+    identically until the container is fixed, so the operator has to be told
+    which of the two it is rather than being invited to retry."""
+    real_import = builtins.__import__
+
+    def _no_open3d(name, *args, **kwargs):
+        if name == "syncai_backend.helpers.traversable":
+            raise ImportError("No module named 'open3d'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "syncai_backend.helpers.traversable", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _no_open3d)
+
+    map_router_module._start_grid_conversion(
+        logger, "newmap", saved_map, recipe_request="traversability"
+    )
+    _join(conversion_threads)
+
+    side = _sidecar(saved_map)
+    assert side["status"] == "failed"
+    assert "open3d" in side["error"]
+    assert "pip3 install" in side["hint"]
+
+
 def test_a_failed_conversion_releases_the_slot(
     logger, saved_map, fake_traversable, conversion_threads
 ):
@@ -939,8 +1365,6 @@ def test_conversion_survives_open3d_being_absent(
 
 
 def _sidecar(directory):
-    import json
-
     path = os.path.join(directory, map_router_module.GRIDMAP_RECIPE_SIDECAR)
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -1264,6 +1688,32 @@ def test_convert_endpoint_archives_the_previous_grid(
     assert (maps_dir / "full" / "gridmap.pgm").read_bytes() != previous
 
 
+def test_convert_endpoint_archives_the_previous_recipe_record(
+    client, maps_dir, conversion_threads
+):
+    """The incoming conversion overwrites the sidecar with its own `converting`
+    record before it does any work, so the outgoing one has to move aside with
+    the grid it describes — otherwise a re-convert that then fails leaves a map
+    serving the archived grid with nothing on disk saying how it was made."""
+    _plant_sidecar(
+        maps_dir / "full",
+        {"status": "ok", "recipe": "z-band", "params": {"floor_z": -0.4}},
+    )
+
+    response = _post_convert(client, "full")
+    _join(conversion_threads)
+
+    assert response.status_code == 200
+    prev = json.loads(
+        (maps_dir / "full" / "gridmap_prev.recipe.json").read_text(encoding="utf-8")
+    )
+    assert prev["recipe"] == "z-band"
+    assert prev["params"] == {"floor_z": -0.4}
+    # ...and the live record is the new run's, not the archived one.
+    assert _sidecar(str(maps_dir / "full"))["status"] == "ok"
+    assert "params" in _sidecar(str(maps_dir / "full"))
+
+
 def test_convert_endpoint_refuses_to_discard_hand_edits(
     client, maps_dir, make_pgm, conversion_threads
 ):
@@ -1310,17 +1760,22 @@ def test_convert_endpoint_conflicts_while_a_conversion_runs(client):
             map_router_module._ACTIVE_CONVERSIONS.discard("full")
 
 
-def test_grid_converting_is_reported_while_the_slot_is_held(client):
+def test_grid_status_is_converting_while_the_slot_is_held(client):
+    """Both fields, read from one sample of the registry: `grid_converting` is a
+    deprecated alias of `grid_status == "converting"`, and an alias that can
+    disagree with what it aliases is worse than no alias."""
     with map_router_module._ACTIVE_CONVERSIONS_LOCK:
         map_router_module._ACTIVE_CONVERSIONS.add("full")
     try:
         entry = _by_name(client.get("/api/v1/maps").json())["full"]
+        assert entry["grid_status"] == "converting"
         assert entry["grid_converting"] is True
     finally:
         with map_router_module._ACTIVE_CONVERSIONS_LOCK:
             map_router_module._ACTIVE_CONVERSIONS.discard("full")
 
     entry = _by_name(client.get("/api/v1/maps").json())["full"]
+    assert entry["grid_status"] == "ok"
     assert entry["grid_converting"] is False
 
 
@@ -1388,3 +1843,290 @@ def test_convert_endpoint_passes_debug_and_overrides_through(
     side = _sidecar(saved_map)
     assert side["params"]["grid"] == {"gap_fill_size": 1.2}
     assert side["recipe_override"]["param_overrides"] == {"gap_fill_size": 1.2}
+
+
+# --- POST /api/v1/maps/{name}/activate --------------------------------------
+#
+# The fixture INI pins `full` active, and `full` is the only fixture map with a
+# gridmap, so most switch tests point the INI at `rawonly` first and switch *to*
+# `full`. Writing the file rather than re-parameterising the fixture is
+# deliberate: `active_map_name` re-reads the INI on every call, which is the
+# property the route depends on and therefore one worth exercising.
+
+_INTERPOLATED_INI = (
+    "[system]\nrobot_id: robot01\n\n"
+    "# which map the stack loads\n"
+    "[map]\n"
+    "name: rawonly\n"
+    "pcd: map/%(name)s/map.pcd\n"
+    "map: map/%(name)s/gridmap.yaml\n\n"
+    "[initial_pose]\n"
+    "x: 3.25\ny: -1.5\nz: 0.0\nyaw: 1.57\n"
+)
+
+
+def _point_ini_at(monkeypatch, tmp_path, text):
+    ini = tmp_path / "system.ini"
+    ini.write_text(text)
+    monkeypatch.setenv(SYSTEM_INI_ENV, str(ini))
+    return ini
+
+
+def _activate(client, name):
+    return client.post(f"/api/v1/maps/{name}/activate")
+
+
+def test_activate_the_active_map_is_a_noop(client, map_gw):
+    response = _activate(client, "full")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["switched"] is False
+    assert body["previous"] == "full"
+    # The point of the no-op: a good registration is not thrown away.
+    assert map_gw.order == []
+
+
+def test_activate_unknown_map_is_a_404(client, map_gw):
+    assert _activate(client, "nosuchmap").status_code == 404
+    assert map_gw.order == []
+
+
+def test_activate_refuses_a_map_with_no_gridmap(client, map_gw, monkeypatch, tmp_path):
+    _point_ini_at(monkeypatch, tmp_path, "[system]\nrobot_id: robot01\n\n[map]\nname: full\n")
+
+    response = _activate(client, "rawonly")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "grid_missing"
+    assert map_gw.order == []
+
+
+def test_activate_refuses_a_map_with_no_pointcloud(
+    client, map_gw, maps_dir, make_pgm, make_gridmap_yaml, monkeypatch, tmp_path
+):
+    gridonly = maps_dir / "gridonly"
+    gridonly.mkdir()
+    make_pgm(gridonly / "gridmap.pgm", 6, 4)
+    make_gridmap_yaml(gridonly / "gridmap.yaml", origin=(0.0, 0.0, 0.0))
+
+    response = _activate(client, "gridonly")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "pointcloud_missing"
+    assert map_gw.order == []
+
+
+def test_activate_refuses_while_a_conversion_runs(client, map_gw, monkeypatch, tmp_path):
+    _point_ini_at(monkeypatch, tmp_path, "[system]\nrobot_id: robot01\n\n[map]\nname: rawonly\n")
+
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("full")
+    try:
+        response = _activate(client, "full")
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "conversion_running"
+    assert map_gw.order == []
+
+
+def test_activate_refuses_while_a_task_is_running(
+    client, map_gw, workflow_gw, monkeypatch, tmp_path
+):
+    _point_ini_at(monkeypatch, tmp_path, "[system]\nrobot_id: robot01\n\n[map]\nname: rawonly\n")
+    workflow_gw.tasks = [types.SimpleNamespace(id="task-7")]
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "task_running"
+    assert "task-7" in response.json()["detail"]
+    assert map_gw.order == []
+
+
+def test_activate_refuses_when_temporal_cannot_be_reached(
+    client, map_gw, workflow_gw, monkeypatch, tmp_path
+):
+    """A Temporal outage must not be read as "nothing is running"."""
+    _point_ini_at(monkeypatch, tmp_path, "[system]\nrobot_id: robot01\n\n[map]\nname: rawonly\n")
+    workflow_gw.error = RuntimeError("connection refused")
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "tasks_unknown"
+    assert map_gw.order == []
+
+
+def test_activate_refuses_when_the_nav_stack_is_not_up(
+    client, map_gw, monkeypatch, tmp_path
+):
+    """How "the robot is in mapping mode" is detected."""
+    _point_ini_at(monkeypatch, tmp_path, "[system]\nrobot_id: robot01\n\n[map]\nname: rawonly\n")
+    map_gw.services_ready = False
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "stack_not_ready"
+    assert map_gw.order == []
+
+
+def test_activate_moves_the_localizer_before_map_server(
+    client, map_gw, maps_dir, monkeypatch, tmp_path
+):
+    ini = _point_ini_at(monkeypatch, tmp_path, _INTERPOLATED_INI)
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["switched"] is True
+    assert body["name"] == "full"
+    assert body["previous"] == "rawonly"
+    assert body["localized"] is True
+
+    # The ordering is the contract: the localizer's failure is the clean one, so
+    # it goes first.
+    assert [step for step, _ in map_gw.order] == ["swap_localizer_map", "reload_map"]
+    assert map_gw.order[0][1] == str(maps_dir / "full" / "map.pcd")
+    assert map_gw.order[1][1] == str(maps_dir / "full" / "gridmap.yaml")
+    # Zeroed, not carried over from the old map's frame.
+    assert map_gw.swap_calls[0][1:] == (0.0, 0.0, 0.0)
+
+    written = ini.read_text()
+    assert "name: full" in written
+    # The whole reason the writer edits lines instead of round-tripping through
+    # ConfigParser: expanding this would pin pcd/map at the *old* map forever.
+    assert "pcd: map/%(name)s/map.pcd" in written
+    assert "map: map/%(name)s/gridmap.yaml" in written
+    assert "# which map the stack loads" in written
+    # A pose measured in rawonly's frame means nothing in full's.
+    assert "x: 0.0" in written and "yaw: 0.0" in written
+    assert "3.25" not in written
+
+
+def test_activate_puts_the_localizer_back_when_map_server_refuses(
+    client, map_gw, maps_dir, monkeypatch, tmp_path
+):
+    ini = _point_ini_at(monkeypatch, tmp_path, _INTERPOLATED_INI)
+    map_gw.result = (False, "map_server rejected gridmap.yaml")
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 502
+    assert [step for step, _ in map_gw.order] == [
+        "swap_localizer_map",
+        "reload_map",
+        "swap_localizer_map",
+    ]
+    # Back onto the map it came from, not left straddling two.
+    assert map_gw.order[2][1] == str(maps_dir / "rawonly" / "map.pcd")
+    assert "name: rawonly" in ini.read_text()
+
+
+def test_activate_rolls_back_both_steps_when_the_ini_cannot_be_written(
+    client, map_gw, maps_dir, make_pcd, make_pgm, make_gridmap_yaml,
+    monkeypatch, tmp_path,
+):
+    """The INI write is preflighted, so reaching it and failing must undo the rest.
+
+    `previous` here is a fully converted map, unlike the pcd-only `rawonly` the
+    other switch tests come from: a map the stack actually launched on must have
+    had a gridmap.yaml, and it is the rollback of *both* ROS steps that this
+    covers.
+    """
+    prior = maps_dir / "prior"
+    prior.mkdir()
+    make_pcd(prior / "map.pcd")
+    make_pgm(prior / "gridmap.pgm", 6, 4)
+    make_gridmap_yaml(prior / "gridmap.yaml", origin=(0.0, 0.0, 0.0))
+    _point_ini_at(
+        monkeypatch, tmp_path, _INTERPOLATED_INI.replace("name: rawonly", "name: prior")
+    )
+
+    def _boom(name, logger):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(map_router_module, "set_active_map", _boom)
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 502
+    assert [step for step, _ in map_gw.order] == [
+        "swap_localizer_map",
+        "reload_map",
+        "swap_localizer_map",
+        "reload_map",
+    ]
+    assert map_gw.order[2][1] == str(prior / "map.pcd")
+    assert map_gw.order[3][1] == str(prior / "gridmap.yaml")
+
+
+def test_activate_says_so_when_the_old_grid_cannot_be_restored(
+    client, map_gw, monkeypatch, tmp_path
+):
+    """Rolling back onto a map with no gridmap.yaml leaves a mismatch worth naming."""
+    _point_ini_at(monkeypatch, tmp_path, _INTERPOLATED_INI)
+
+    def _boom(name, logger):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(map_router_module, "set_active_map", _boom)
+
+    response = _activate(client, "full")
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "no gridmap.yaml to put back" in detail
+    # The localizer still went back; only the grid could not.
+    assert [step for step, _ in map_gw.order] == [
+        "swap_localizer_map",
+        "reload_map",
+        "swap_localizer_map",
+    ]
+
+
+def test_activate_refuses_when_the_ini_is_not_writable(
+    client, map_gw, monkeypatch, tmp_path
+):
+    ini = _point_ini_at(monkeypatch, tmp_path, _INTERPOLATED_INI)
+    os.chmod(ini, 0o444)
+    try:
+        response = _activate(client, "full")
+    finally:
+        os.chmod(ini, 0o644)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "ini_not_writable"
+    assert map_gw.order == []
+
+
+def test_activate_reports_an_unconverged_localizer(
+    client, map_gw, monkeypatch, tmp_path
+):
+    """A swap that lands but does not converge is a success with a warning."""
+    _point_ini_at(monkeypatch, tmp_path, _INTERPOLATED_INI)
+    map_gw.converged = False
+
+    body = _activate(client, "full").json()
+
+    assert body["switched"] is True
+    assert body["localized"] is False
+    assert "set an initial pose" in body["message"]
+
+
+def test_activate_reports_an_unreachable_localizer_check(
+    client, map_gw, monkeypatch, tmp_path
+):
+    _point_ini_at(monkeypatch, tmp_path, _INTERPOLATED_INI)
+    map_gw.converged = None
+
+    body = _activate(client, "full").json()
+
+    assert body["switched"] is True
+    assert body["localized"] is None
+    assert "could not be asked" in body["message"]

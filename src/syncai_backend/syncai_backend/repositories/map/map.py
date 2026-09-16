@@ -5,7 +5,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Optional, TypedDict
 
-from sqlalchemy import Engine, select, update
+from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from syncai_backend.database.models import MapPoint, _utcnow
@@ -121,6 +121,28 @@ class MapRepo:
                 .where(MapPoint.map == old_map)
                 .values(map=new_map, updated_at=_utcnow())
             )
+            session.commit()
+            return result.rowcount
+
+    def delete_vertices(self, map: str) -> int:
+        """Delete every vertex of ``map``; return how many rows went.
+
+        The cascade half of a map delete, and the counterpart to
+        ``move_vertices``: ``map_vertices.map`` holds the bare directory name
+        with no foreign key behind it, so nothing removes these rows when the
+        directory goes. Left behind they are not merely untidy — they are
+        unreachable (every vertex route resolves the map first and now 404s) and
+        they would be silently adopted by the next map saved under the same
+        name, handing a fresh mapping run someone else's waypoints.
+
+        One ``DELETE`` statement rather than a loop over ``delete_vertex``, for
+        the same reason ``move_vertices`` is one ``UPDATE``: this is a
+        whole-map operation with one legitimate caller, and the router is
+        holding a half-deleted map while it runs. No ``updated_at`` to set —
+        the rows are gone, not changed.
+        """
+        with self._session(op="delete_vertices") as session:
+            result = session.execute(delete(MapPoint).where(MapPoint.map == map))
             session.commit()
             return result.rowcount
 

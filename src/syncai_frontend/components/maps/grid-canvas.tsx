@@ -19,6 +19,7 @@ import { vertexGlyph } from "@/lib/map/vertex";
 import {
   CELL_GRID_MIN_SCALE,
   cellAt,
+  centerView,
   fitView,
   gridToScreen,
   gridToWorld,
@@ -81,6 +82,13 @@ interface Palette {
    * *draft* vertex uses `cmd`, like every other value the operator is setting.
    */
   vertex: string;
+  /**
+   * The robot's own footprint. `signal-live` by the console's rule — it is a
+   * measured, valid value, the one thing on this canvas that is neither stored
+   * nor being commanded — which is also what keeps it from being read as a
+   * vertex at a glance.
+   */
+  live: string;
 }
 
 /*
@@ -98,6 +106,7 @@ const PALETTES: Record<"light" | "dark", Palette> = {
     cellGrid: "#b9c6ce",
     cmd: "#0a6d94",
     vertex: "#2f4a58",
+    live: "#12784a",
   },
   dark: {
     well: "#22282c",
@@ -105,6 +114,7 @@ const PALETTES: Record<"light" | "dark", Palette> = {
     cellGrid: "#3a444b",
     cmd: "#45c8f0",
     vertex: "#a8bcc7",
+    live: "#4fd98d",
   },
 };
 
@@ -135,6 +145,30 @@ const MIN_RING_PX = 6;
  */
 const VERTEX_DOT_RADIUS = 4.5;
 const VERTEX_ARROW_PX = 18;
+
+/*
+ * The robot's footprint, in metres, drawn to scale — the opposite choice from the
+ * vertex markers above, and for the opposite reason: a vertex is a pose and has
+ * no size, while "will this stop fit" is most of what the operator is asking when
+ * they look at where the robot is standing. Full extents from the global
+ * costmap's half-extents (planner_server_params.yaml, 0.35 x 0.22), which is the
+ * shape the planner actually reasons with — note it disagrees with the local
+ * costmap's (0.28 x 0.20); that drift is flagged in the package READMEs, and this
+ * marker is a picture, not a clearance guarantee.
+ */
+const ROBOT_LENGTH_M = 0.7;
+const ROBOT_WIDTH_M = 0.44;
+
+/**
+ * Smallest the footprint is ever drawn, measured along the robot's length.
+ *
+ * Same idea as MIN_RING_PX: at fit scale on the 1602x1502 maps a 0.7 m robot is
+ * about 7 px, and the one thing this marker must never do is be untraceable at
+ * the zoom where you are looking for it. The aspect ratio is held, so below this
+ * size the shape stops being to scale and becomes a glyph — which is honest, in
+ * that at 7 px nothing could be read as a clearance anyway.
+ */
+const MIN_ROBOT_LENGTH_PX = 14;
 /** Click slop around a marker centre. Comfortably larger than the dot itself. */
 const VERTEX_HIT_RADIUS = 11;
 /** Below this drag distance the gesture is a click and the heading is kept. */
@@ -184,6 +218,18 @@ export interface GridCanvasProps {
    */
   fitNonce: number;
   /**
+   * A map-frame point to bring to the centre of the viewport, holding the zoom.
+   *
+   * Identity is the trigger — a fresh object means "do it now", the same job
+   * `fitNonce` does with a counter — so the shell hands one over per request and
+   * leaves it in place afterwards. Null means nothing has asked.
+   *
+   * It exists for the robot-position capture: that draft appears without a
+   * pointer gesture, so its marker can land anywhere, including off screen, and
+   * an operator with a staged pose they cannot see has no way to judge it.
+   */
+  focus: { x: number; y: number } | null;
+  /**
    * Once per completed stroke, never mid-drag. The grid and the mirror are already
    * updated by then; the shell's only job is to record the patch.
    */
@@ -195,17 +241,20 @@ export interface GridCanvasProps {
 
   /** Vertices already stored for this map. Drawn in every mode. */
   vertices: MapVertex[];
+  /**
+   * Where the robot is standing on this map, or null when that is not knowable
+   * (another map loaded, not localized, no state) — see useRobotMapPose.
+   *
+   * Drawn in every mode, like the vertices: it is the answer to "which end of the
+   * corridor am I looking at", which is as useful with a brush in hand as it is
+   * while placing stops. It is never interactive — nothing on this canvas can
+   * move the robot, and hit-testing ignores it entirely.
+   */
+  robotPose: PlanarPose | null;
   /** Staged, not-yet-created vertex. Drawn in the commanded hue. */
   draft: PlanarPose | null;
   /** Highlighted, and the one the panel is editing. */
   selectedId: string | null;
-  /**
-   * True while the panel has armed a re-place of the selected vertex.
-   *
-   * It suppresses marker hit-testing for the duration, so the operator can drop
-   * the vertex on top of another one without the press being captured by it.
-   */
-  placing: boolean;
   /** Fired on pointer-down, before any drag, so selection feels immediate. */
   onVertexPick: (id: string | null) => void;
   /** Fired once on pointer-up with the finished pose. */
@@ -332,6 +381,11 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
     const current = propsRef.current;
     drawPreview(ctx, view, session, gestureRef.current, current, palette);
     drawBrushRing(ctx, view, gestureRef.current, hoverRef.current, current, palette);
+    // Under the vertex layer: the markers are what this screen edits, and a stop
+    // placed where the robot is standing must not disappear beneath it.
+    if (current.robotPose) {
+      drawRobot(ctx, view, session.meta, current.robotPose, palette);
+    }
     // Last, so markers sit above the shape preview rather than under it.
     drawVertices(ctx, view, session.meta, gestureRef.current, current, palette);
 
@@ -368,13 +422,40 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
    */
   React.useEffect(() => {
     requestDraw();
-  }, [props.vertices, props.draft, props.selectedId, props.mode, requestDraw]);
+  }, [
+    props.vertices,
+    props.draft,
+    props.selectedId,
+    props.mode,
+    // Once a second at most, and only when the robot has actually moved — the
+    // hook memoises the pose on its values, so a parked robot costs no frames.
+    props.robotPose,
+    requestDraw,
+  ]);
 
   // Fit: drop the transform and let draw() rebuild it from the current rect.
   React.useEffect(() => {
     viewRef.current = null;
     requestDraw();
   }, [props.fitNonce, requestDraw]);
+
+  /**
+   * Centre on a point the shell asked for, if there is a view to move.
+   *
+   * Before the first paint there is neither a transform nor a measured rect, and
+   * nothing to do: draw() then builds the fit view, which has the whole map —
+   * and so the target — on screen anyway.
+   */
+  const focus = props.focus;
+  React.useEffect(() => {
+    if (!focus) return;
+    const view = viewRef.current;
+    const rect = rectRef.current;
+    if (!view || !rect) return;
+    const { px, py } = worldToGrid(focus.x, focus.y, session.meta);
+    viewRef.current = centerView(view, px, py, rect, session.grid);
+    requestDraw();
+  }, [focus, session, requestDraw]);
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -528,10 +609,8 @@ export const GridCanvas = React.memo(function GridCanvas(props: GridCanvasProps)
       (mode === "grid" && tool === "pan");
 
     if (!panning && mode === "vertex") {
-      const { placing, draft } = propsRef.current;
-      // Suppressed while a re-place is armed, so the selected vertex can be
-      // dropped on top of an existing one without the press being stolen by it.
-      const hit = placing ? null : vertexAt(view, cx, cy);
+      const { draft } = propsRef.current;
+      const hit = vertexAt(view, cx, cy);
 
       // An existing vertex anchors at its *stored* position, not at the press
       // point. The press has to land within VERTEX_HIT_RADIUS of the marker, so
@@ -970,6 +1049,77 @@ function drawVertices(
       dashed: true,
     });
   }
+
+  ctx.restore();
+}
+
+/**
+ * The robot where it is standing right now: its footprint, pointed at its heading.
+ *
+ * A footprint outline rather than another ring-and-arrow marker, because it has to
+ * be distinguishable from the vertices at a glance in a place where it will often
+ * be sitting on top of one — the operator's usual reason for opening this screen
+ * with the robot live is to mark the spot it is parked on. Shape, hue and size all
+ * say "not a vertex": the vertices are pointed rings in the neutral vertex hue at a
+ * fixed pixel size, this is a body in `live` green that grows with the zoom.
+ *
+ * The nose is part of the outline rather than a separate arrow so that the whole
+ * mark is one shape — at the zoom levels where the body is only a dozen pixels
+ * across, a detached arrowhead reads as a second object.
+ */
+function drawRobot(
+  ctx: CanvasRenderingContext2D,
+  view: View,
+  meta: MapMetadata,
+  pose: PlanarPose,
+  palette: Palette,
+): void {
+  const at = vertexScreen(view, meta, pose.x, pose.y);
+  // px per metre: cells per metre from the map, screen px per cell from the view.
+  const pxPerM = view.scale / meta.resolution;
+  const length = Math.max(ROBOT_LENGTH_M * pxPerM, MIN_ROBOT_LENGTH_PX);
+  const width = length * (ROBOT_WIDTH_M / ROBOT_LENGTH_M);
+  const halfLength = length / 2;
+  const halfWidth = width / 2;
+
+  ctx.save();
+  ctx.translate(at.cx, at.cy);
+  // Negated: the pose is CCW from +x in the map frame and screen y grows downward,
+  // the same flip worldToGrid does for position.
+  ctx.rotate(-(pose.theta * Math.PI) / 180);
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.setLineDash([]);
+
+  // Body pointing down +x (i.e. +x is now "up the heading"): a rectangle whose
+  // front edge is pulled out to a nose. The nose eats a fifth of the length, so a
+  // square-on view still reads as a rectangle rather than as an arrow.
+  const nose = halfLength * 0.4;
+  const body = new Path2D();
+  body.moveTo(halfLength, 0);
+  body.lineTo(halfLength - nose, -halfWidth);
+  body.lineTo(-halfLength, -halfWidth);
+  body.lineTo(-halfLength, halfWidth);
+  body.lineTo(halfLength - nose, halfWidth);
+  body.closePath();
+
+  // Haloed first, like every other mark here: the grid beneath is blitted
+  // literally, so neither hue is legible over both free space and obstacles.
+  ctx.strokeStyle = MARKER_HALO;
+  ctx.lineWidth = 3.5;
+  ctx.stroke(body);
+
+  // A wash rather than a solid fill: this is the one mark that covers cells
+  // instead of pointing at one, and an operator has to be able to see the
+  // obstacle it is parked against through it.
+  ctx.fillStyle = palette.live;
+  ctx.globalAlpha = 0.22;
+  ctx.fill(body);
+  ctx.globalAlpha = 1;
+
+  ctx.strokeStyle = palette.live;
+  ctx.lineWidth = 1.5;
+  ctx.stroke(body);
 
   ctx.restore();
 }

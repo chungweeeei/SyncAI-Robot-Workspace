@@ -9,11 +9,13 @@ import {
   type EditTool,
   type VertexGesture,
 } from "@/components/maps/grid-canvas";
+import { ManualControl } from "@/components/dashboard/manual-control";
 import { GridStatus } from "@/components/maps/grid-status";
 import { GridToolbar, type SaveState } from "@/components/maps/grid-toolbar";
 import { VertexPanel } from "@/components/maps/vertex-panel";
 import { useMapGrid } from "@/hooks/use-map-grid";
 import { useMapVertices, type UseMapVertices } from "@/hooks/use-map-vertices";
+import { useRobotMapPose } from "@/hooks/use-robot-map-pose";
 import { saveMapGrid } from "@/lib/api/map";
 import type { VertexChanges } from "@/lib/api/vertex";
 import { FREE, countValues, type GridValue, type ValueCounts } from "@/lib/map/grid";
@@ -164,9 +166,32 @@ function EditorSurface({
   const [vertexType, setVertexType] = React.useState<VertexType>(DEFAULT_VERTEX_TYPE);
   const [draft, setDraft] = React.useState<PlanarPose | null>(null);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  /** A re-pose of the selected vertex, awaiting Save. */
+  /**
+   * A re-aim of the selected vertex, awaiting Save.
+   *
+   * Only ever a new *heading* now: a vertex is re-aimed by dragging on its own
+   * marker, which anchors at the stored position (see GridCanvas's pointer-down).
+   * Moving one to a different place is the dashboard's job — there the stop is
+   * drawn over the live cloud, which is the view that can actually show it half
+   * inside a wall.
+   */
   const [stagedPose, setStagedPose] = React.useState<PlanarPose | null>(null);
-  const [placing, setPlacing] = React.useState(false);
+  /** The last point the shell asked the canvas to centre on; see GridCanvas.focus. */
+  const [focus, setFocus] = React.useState<{ x: number; y: number } | null>(null);
+
+  /**
+   * The robot's pose, when it is a pose on the map open here.
+   *
+   * It is both the source of the panel's capture button and what the canvas
+   * draws the robot's footprint from, so the two can never disagree about where
+   * the robot is — the mark on the map is the pose the button would stage.
+   *
+   * Read at 1 Hz from the console's shared poll, so this component re-renders at
+   * that rate; the hook memoises on the values, so a parked robot costs one
+   * bailed-out memo compare and no repaint. See useRobotMapPose for why it is
+   * not the 20 Hz telemetry socket.
+   */
+  const { pose: robotPose, reason: robotPoseReason } = useRobotMapPose(session.name);
 
   // Destructured because the hook returns a fresh object each render: passing
   // `vertices.create` inline would give GridCanvas a new callback identity every
@@ -195,7 +220,6 @@ function EditorSurface({
     setDraft(null);
     setSelectedId(null);
     setStagedPose(null);
-    setPlacing(false);
   }, []);
 
   const changeMode = React.useCallback(
@@ -209,21 +233,10 @@ function EditorSurface({
   );
 
   /**
-   * Arm — or disarm — a re-place of the selected vertex.
-   *
-   * A toggle rather than `setPlacing(true)`, and that is the only usable shape:
-   * once armed, VertexForm relabels the button to "Press the map", so a
-   * set-only handler would make pressing it again a no-op and leave the operator
-   * with no way out except actually moving the vertex or changing mode. Same
-   * pattern as the dashboard's pick modes (see `armPick` in pointcloud-view).
-   */
-  const armPlace = React.useCallback(() => setPlacing((armed) => !armed), []);
-
-  /**
    * Make `id` the subject of the panel, dropping whatever the last one was.
    *
-   * Selecting is also how you leave a draft, a staged pose or an armed re-place:
-   * none of the three survives a change of subject.
+   * Selecting is also how you leave a draft or a staged re-aim: neither survives
+   * a change of subject.
    */
   const selectVertex = React.useCallback(
     (id: string | null) => {
@@ -232,23 +245,6 @@ function EditorSurface({
       clearVertexError();
     },
     [clearVertexEdit, clearVertexError],
-  );
-
-  const pickVertex = React.useCallback(
-    (id: string | null) => {
-      // While a re-place is armed the canvas suppresses marker hit-testing, so
-      // `id` is always null here — and acting on it would clear the very
-      // selection the press is about to move.
-      //
-      // The guard lives on this wrapper rather than in selectVertex because the
-      // panel calls the same "select" for its list rows AND for the edit form's
-      // Close button, and those have to keep working while armed — Close is the
-      // operator's way out, so making it dead exactly then would be the worst
-      // possible moment for it.
-      if (placing) return;
-      selectVertex(id);
-    },
-    [placing, selectVertex],
   );
 
   const handleVertexGesture = React.useCallback(
@@ -263,18 +259,31 @@ function EditorSurface({
         return;
       }
 
-      if (placing) {
-        setStagedPose(pose);
-        setPlacing(false);
-        return;
-      }
-
       setSelectedId(null);
       setStagedPose(null);
       setDraft(pose);
     },
-    [placing, vertexList],
+    [vertexList],
   );
+
+  /**
+   * Stage a draft where the robot is standing, and go and look at it.
+   *
+   * A snapshot, not a live binding: `robotPose` keeps moving after this, and a
+   * draft that crept across the map while its name was being typed would be a
+   * vertex nobody placed. The same clearing as a press on the map — a draft and
+   * a selection are mutually exclusive — so it is usable with a vertex already
+   * open in the form.
+   */
+  const placeAtRobot = React.useCallback(() => {
+    if (!robotPose) return;
+    setSelectedId(null);
+    setStagedPose(null);
+    setDraft(robotPose);
+    // A fresh object every press, because identity is what triggers the canvas:
+    // pressing again after panning away has to bring the marker back.
+    setFocus({ x: robotPose.x, y: robotPose.y });
+  }, [robotPose]);
 
   const createFromDraft = React.useCallback(
     async (name: string, type: VertexType) => {
@@ -461,14 +470,15 @@ function EditorSurface({
         brush={brush}
         spacePan={spacePan}
         fitNonce={fitNonce}
+        focus={focus}
         onStrokeCommit={commitPatch}
         onHover={setHover}
         onScaleChange={setScale}
         vertices={vertexList}
+        robotPose={robotPose}
         draft={draft}
         selectedId={selectedId}
-        placing={placing}
-        onVertexPick={pickVertex}
+        onVertexPick={selectVertex}
         onVertexGesture={handleVertexGesture}
       />
 
@@ -498,7 +508,7 @@ function EditorSurface({
         *
         * Mounted only in vertex mode, because unmounting discards nothing that the
         * mode switch was not already discarding — changeMode("grid") clears draft
-        * / selectedId / stagedPose / placing, and VertexForm is keyed on "draft"
+        * / selectedId / stagedPose, and VertexForm is keyed on "draft"
         * or selected.id, so its local name/type state is already gone by then. The
         * one thing worth keeping across the toggle, `vertexType`, lives up here
         * for exactly that reason. Left mounted it would cover 240 px of map in the
@@ -515,10 +525,10 @@ function EditorSurface({
           draft={draft}
           selected={selected}
           stagedPose={stagedPose}
-          placing={placing}
-          // selectVertex, not pickVertex: this one also backs the form's Close.
+          robotPose={robotPose}
+          robotPoseReason={robotPoseReason}
+          onUseRobotPose={placeAtRobot}
           onSelect={selectVertex}
-          onArmPlace={armPlace}
           // A draft and a selection are mutually exclusive by construction, so
           // clearing the whole vertex edit *is* "drop the draft".
           onCancelDraft={clearVertexEdit}
@@ -527,6 +537,24 @@ function EditorSurface({
           onDelete={deleteSelected}
         />
       )}
+
+      {/* The other half of "Use robot position": the pose you capture is the one
+        * you drove the robot to, and without a drive panel here that meant
+        * leaving the editor for the dashboard between every stop — which on a
+        * dirty gridmap means answering the back button's confirm, losing the
+        * view, and coming back to re-find the corridor.
+        *
+        * Vertex mode only, matching VertexPanel: it belongs to the stop-placing
+        * flow, and a drive panel over a screen where the operator is painting
+        * cells is a joystick nobody asked for. Leaving the mode therefore also
+        * stops the robot — the panel unmounts, the channel closes, and the
+        * backend's watchdog zeroes cmd_vel — which is the safe direction for a
+        * mode switch to fail in.
+        *
+        * It comes up disarmed and takes no keyboard until it is armed (see
+        * ManualControl), so it cannot eat this editor's shortcuts; its WASD/QE/AD
+        * set does not overlap Space / 0 / Ctrl+Z in any case. */}
+      {mode === "vertex" && <ManualControl className="absolute right-3 bottom-3" />}
 
       <GridStatus
         className="absolute bottom-3 left-3"

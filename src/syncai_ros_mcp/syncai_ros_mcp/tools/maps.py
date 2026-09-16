@@ -8,6 +8,9 @@ directory name, and the vertex routes are nested under their owning map:
 * ``GET    /api/v1/maps``                          -> catalogue of stored maps
 * ``GET    /api/v1/maps/{name}``                   -> one map's summary
 * ``PATCH  /api/v1/maps/{name}``                   -> rename a map (no tool here yet)
+* ``DELETE /api/v1/maps/{name}``                   -> delete a map (no tool here yet --
+                                                     an unconfirmable rmtree of a
+                                                     mapping run is not an agent's to make)
 * ``GET    /api/v1/maps/{name}/image``             -> gridmap as raw PNG bytes
 * ``GET    /api/v1/maps/{name}/vertices``          -> list vertices (optional type filter)
 * ``POST   /api/v1/maps/{name}/vertices``          -> create one or more vertices

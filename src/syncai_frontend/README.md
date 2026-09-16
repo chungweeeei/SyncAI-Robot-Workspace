@@ -22,9 +22,9 @@ and the backend can share a host without a proxy.
 | Route | What it is |
 |---|---|
 | `/` | Dashboard: `PointCloudView` (live cloud, map, robot mesh, route, vertices) left, `TelemetryRail` right. Gated on `GET /api/v1/robot/state` — no state, no panels. |
-| `/mapping` | Mapping mode: switch `AUTO`/`MANUAL`, drive, watch pgo's "map so far" stream, save the map. |
-| `/maps` | The map library (`MapLibrary`): catalogue cards, thumbnails, Rebuild-grid, inline Rename (greyed on the map in use — the backend refuses it too). |
-| `/maps/[name]/edit` | The gridmap editor — replaces a step that used to be done in GIMP. |
+| `/mapping` | Mapping mode: switch `AUTO`/`MANUAL`, drive, watch pgo's "map so far" stream, save the map and watch its 2D grid build. |
+| `/maps` | The map library (`MapLibrary`): catalogue cards, thumbnails, per-card gridmap state (and why a conversion failed), Rebuild-grid, inline Rename, Delete as an X in the card's corner (Rename and Delete are greyed on the map in use — the backend refuses them too; Delete confirms in an alert dialog that names the map and counts the vertices and megabytes going with it), and **Switch**, which is what un-greys the other two. Switch is the card's top-left corner tile, in the same slot as the in-use badge and never shown beside it: a solid check where the robot is, swap arrows on every map it could move to. (Not an unfilled check — that reads as "already done, greyed out", which is a state this control genuinely has for maps it cannot switch to.) It is a live call — it re-points the running localizer and map_server and rewrites the instance INI, no stack restart — and its alert dialog carries the one consequence an unlabelled arrow cannot: the pose resets to the new map's origin, so set an initial pose on the dashboard afterwards. All three controls hand their result sentence up to one line above the grid. |
+| `/maps/[name]/edit` | The gridmap editor — replaces a step that used to be done in GIMP. Its Vertex mode also places stops, either by pressing the map and dragging to aim or, for a stop you mark by driving to it, with **Use robot position**. The robot's own footprint is drawn (to scale, `signal-live`, in both modes) wherever it is standing — both it and the button are offered only while the robot is localized on *this* map, and the button names the reason when it is not. Vertex mode also carries `ManualControl` (bottom right), so driving to the next stop does not mean leaving the editor; leaving the mode unmounts it, which closes the teleop channel and stops the robot. |
 | `/model-preview` | Backend-free preview of the G23 GLB inside the real canvas, for checking scale / up-axis / forward-axis of a re-baked asset. |
 | `/settings` | Appearance + wifi (`nmcli` through the backend). |
 | `/tasks` | Task console: template library, step composer, dispatch, schedules, the active run. |
@@ -70,6 +70,17 @@ The shell in `app/layout.tsx` runs exactly **two polls** for the whole console
 (`RobotStateProvider` at 1 Hz, `ActiveTaskProvider` at 2 s); pages read those
 providers rather than polling on their own, so the header can never disagree
 with the rail.
+
+**The one self-cancelling poll is the gridmap conversion.** Saving a map starts
+a pcd → gridmap conversion in a backend thread that runs for tens of seconds
+after the POST has answered, and it has no push channel — the backend keeps no
+job resource and a conversion finishing is not a ROS topic. So `hooks/use-maps.ts`
+re-reads the catalogue every 2 s while any map reports `grid_status:
+"converting"` and stops with the last one; the status is both the trigger and
+the off switch. `useMapConversion(name)` is the same query entry scoped to one
+map, which is how `/mapping`'s save control reports the outcome without a second
+request — and it is why a failed conversion now says so on screen instead of
+only in the robot's backend log.
 
 ## The robot mesh
 

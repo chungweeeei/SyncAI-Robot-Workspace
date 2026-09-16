@@ -18,7 +18,7 @@
 import { apiUrl } from "@/lib/api/config";
 import { errorDetail, requestJson } from "@/lib/api/http";
 import type { MapGrid } from "@/lib/map/grid";
-import type { GridRecipe, MapSummary } from "@/lib/types/map";
+import type { GridRecipe, GridStatus, MapSummary } from "@/lib/types/map";
 
 /** `GridInfoResponse` — note `origin` is {x, y, yaw}, not a tuple. */
 interface WireGrid {
@@ -35,6 +35,8 @@ interface WireSummary {
   grid: WireGrid | null;
   thumbnail: string | null;
   has_pointcloud: boolean;
+  grid_status: GridStatus;
+  grid_error: string | null;
   grid_converting: boolean;
   size_bytes: number;
   modified_at: string;
@@ -257,8 +259,10 @@ export interface ConvertGridResult {
  * own comments say not to guess.
  *
  * The response only means "started": conversion runs in a background thread and
- * its status surface is the catalogue's `grid_converting` flag, so callers
- * invalidate the maps query and let the poll carry the rest.
+ * its status surface is the catalogue's `grid_status`, so callers invalidate the
+ * maps query and let the poll carry the rest — including a failure, which lands
+ * there as `"failed"` with the reason in `grid_error` rather than as a rejected
+ * promise here.
  */
 export async function convertMapGrid(
   name: string,
@@ -328,4 +332,135 @@ export function renameMap(
     apiUrl(`/api/v1/maps/${encodeURIComponent(name)}`),
     { method: "PATCH", body: JSON.stringify({ name: newName }) },
   );
+}
+
+/** `DeleteMapResponse`, verbatim. */
+export interface DeleteMapResult {
+  name: string;
+  vertices_deleted: number;
+  /** Operator-facing sentence; render it verbatim. */
+  message: string;
+}
+
+/**
+ * Delete a map: `map/<name>/` and the vertices bound to it go, together.
+ *
+ * Four refusals come back as 409s. Three are rename's — `map_active` (the card
+ * never offers Delete for the running map, so seeing it means the catalogue was
+ * stale) and `conversion_running` — plus `template_bound`, which is the only
+ * one that asks the operator to do something rather than wait: a task template
+ * still names this map, and a template bound to a map that is gone can neither
+ * run nor be edited. As with `renameMap`, none of them has a structured retry,
+ * so there is no error class; the backend's sentence names the templates and
+ * the control shows it.
+ *
+ * Unlike the vertex and task-template deletes, this one parses its body: the
+ * card unmounts on success, so the sentence and the vertex count are the only
+ * record of what happened and the library renders them in the card's place.
+ */
+export function deleteMap(name: string): Promise<DeleteMapResult> {
+  return requestJson<DeleteMapResult>(
+    apiUrl(`/api/v1/maps/${encodeURIComponent(name)}`),
+    { method: "DELETE" },
+  );
+}
+
+/**
+ * The 409s the Switch-map control reacts to structurally rather than just
+ * showing.
+ *
+ * Unlike `renameMap`/`deleteMap`, whose refusals all reduce to "read this
+ * sentence", a switch is refused for reasons that are *temporary* in different
+ * ways, and the control words its retry affordance from the code: a conversion
+ * or a running task clears on its own, a missing gridmap needs the operator to
+ * go and build one, and `stack_not_ready` usually means the robot is in mapping
+ * mode — a different page. The sentence is still what gets rendered; the code is
+ * what decides whether anything is offered alongside it.
+ */
+export type ActivateConflictCode =
+  | "conversion_running"
+  | "grid_missing"
+  | "pointcloud_missing"
+  | "ini_not_writable"
+  | "task_running"
+  | "tasks_unknown"
+  | "stack_not_ready";
+
+const ACTIVATE_CONFLICT_CODES: readonly string[] = [
+  "conversion_running",
+  "grid_missing",
+  "pointcloud_missing",
+  "ini_not_writable",
+  "task_running",
+  "tasks_unknown",
+  "stack_not_ready",
+];
+
+export class ActivateConflictError extends Error {
+  code: ActivateConflictCode;
+
+  constructor(message: string, code: ActivateConflictCode) {
+    super(message);
+    this.name = "ActivateConflictError";
+    this.code = code;
+  }
+}
+
+/** `ActivateMapResponse`, verbatim. */
+export interface ActivateMapResult {
+  name: string;
+  /** The map the robot was on, if it was on one. */
+  previous: string | null;
+  /** False when it was already active — the no-op, not a failure. */
+  switched: boolean;
+  /**
+   * Whether the localizer's registration converged in the seconds after the
+   * swap. `false` means "not yet" (it retries indefinitely), `null` means it
+   * could not be asked. Do not substitute `localization_valid` from telemetry:
+   * that is TF-presence only and reads true against a map the robot was never
+   * localized in.
+   */
+  localized: boolean | null;
+  /** Operator-facing sentence; render it verbatim. */
+  message: string;
+}
+
+/**
+ * Switch the robot onto another map, live.
+ *
+ * The verb the maps library lacked for most of its life. It re-points the
+ * running localizer and map_server and rewrites `[map] name` in the instance
+ * INI, so the swap holds now *and* survives a restart — which is also why it is
+ * what lifts the `map_active` refusal on Rename and Delete.
+ *
+ * Two things the caller has to carry into its UI. The robot's pose is reset to
+ * the map origin, because a pose measured in the old map's frame means nothing
+ * in the new one; and a 200 does not mean the robot knows where it is — read
+ * `localized`, and expect to tell the operator to set an initial pose.
+ */
+export async function activateMap(name: string): Promise<ActivateMapResult> {
+  const response = await fetch(
+    apiUrl(`/api/v1/maps/${encodeURIComponent(name)}/activate`),
+    { method: "POST" },
+  );
+
+  if (response.status === 409) {
+    // Read the body once: errorDetail would consume it without the code.
+    let detail = `${response.status} ${response.statusText}`;
+    let code: string | undefined;
+    try {
+      const body = (await response.json()) as { detail?: string; code?: string };
+      detail = body.detail ?? detail;
+      code = body.code;
+    } catch {
+      /* non-JSON 409 body; fall through to the plain error below */
+    }
+    if (code && ACTIVATE_CONFLICT_CODES.includes(code)) {
+      throw new ActivateConflictError(detail, code as ActivateConflictCode);
+    }
+    throw new Error(detail);
+  }
+  if (!response.ok) throw new Error(await errorDetail(response));
+
+  return (await response.json()) as ActivateMapResult;
 }
