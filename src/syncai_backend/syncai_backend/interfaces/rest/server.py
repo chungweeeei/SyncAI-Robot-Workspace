@@ -101,7 +101,7 @@ def init_rest_server(
         CORSMiddleware,
         allow_origins=["*"],
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["Content-Type", "Content-Length", "Authorization"],
     )
 
@@ -143,13 +143,16 @@ def init_rest_server(
     app.include_router(init_network_router(logger=logger, robot_gw=robot_gw))
     # Serves /api/v1/maps/...: the catalogue on disk plus the vertex table. The
     # gateway is here for the save path only — writing a gridmap has to tell the
-    # running map_server to re-read it.
+    # running map_server to re-read it. The template repo is here for the rename
+    # path only: task_templates.map_name keys on the directory name, so a map
+    # that changes its name has to carry its templates with it.
     app.include_router(
         init_map_router(
             logger=logger,
             map_repo=map_repo,
             map_catalog_repo=map_catalog_repo,
             map_gw=map_gw,
+            task_template_repo=task_template_repo,
         )
     )
     # Serves /api/v1/task_templates: the operator's library of re-dispatchable

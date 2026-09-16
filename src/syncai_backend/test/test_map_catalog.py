@@ -290,3 +290,67 @@ def test_archive_gridmap_is_a_noop_without_a_grid(catalog_repo, maps_dir):
     catalog_repo.archive_gridmap("rawonly")
 
     assert not (maps_dir / "rawonly" / "gridmap_prev.pgm").exists()
+
+
+# --- rename_map_dir -----------------------------------------------------------
+
+
+def test_rename_map_dir_moves_the_directory_and_its_files(catalog_repo, maps_dir):
+    grid = (maps_dir / "full" / "gridmap.pgm").read_bytes()
+
+    new_dir = catalog_repo.rename_map_dir("full", "hall")
+
+    assert new_dir == str(maps_dir / "hall")
+    assert not (maps_dir / "full").exists()
+    assert (maps_dir / "hall" / "gridmap.pgm").read_bytes() == grid
+    assert (maps_dir / "hall" / "map.pcd").is_file()
+    # The catalogue follows the directory: same geometry under the new name.
+    assert catalog_repo.get_map("full") is None
+    assert catalog_repo.get_map("hall").grid is not None
+
+
+def test_rename_map_dir_leaves_gridmap_yaml_untouched(catalog_repo, maps_dir):
+    """No file inside a map names the map, so nothing is rewritten on rename."""
+    before = (maps_dir / "full" / "gridmap.yaml").read_bytes()
+
+    catalog_repo.rename_map_dir("full", "hall")
+
+    assert (maps_dir / "hall" / "gridmap.yaml").read_bytes() == before
+
+
+def test_rename_map_dir_rejects_the_same_name(catalog_repo, maps_dir):
+    from syncai_backend.exceptions import BadRequestError
+
+    with pytest.raises(BadRequestError):
+        catalog_repo.rename_map_dir("full", "full")
+    assert (maps_dir / "full").is_dir()
+
+
+@pytest.mark.parametrize("new", ["../evil", "a/b", "", ".", "..", "x" * 65])
+def test_rename_map_dir_rejects_an_unsafe_new_name(catalog_repo, maps_dir, new):
+    from syncai_backend.exceptions import BadRequestError
+
+    with pytest.raises(BadRequestError):
+        catalog_repo.rename_map_dir("full", new)
+    assert (maps_dir / "full").is_dir()
+
+
+def test_rename_map_dir_of_a_missing_map_raises_not_found(catalog_repo, maps_dir):
+    from syncai_backend.exceptions import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        catalog_repo.rename_map_dir("nope", "hall")
+    assert not (maps_dir / "hall").exists()
+
+
+def test_rename_map_dir_refuses_an_existing_target(catalog_repo, maps_dir):
+    """POSIX rename onto an empty directory would succeed; the check must not."""
+    from syncai_backend.exceptions import ConflictError
+
+    (maps_dir / "empty").mkdir()
+
+    with pytest.raises(ConflictError) as excinfo:
+        catalog_repo.rename_map_dir("full", "empty")
+    assert excinfo.value.code == "name_taken"
+    assert (maps_dir / "full" / "gridmap.pgm").is_file()
+    assert list((maps_dir / "empty").iterdir()) == []

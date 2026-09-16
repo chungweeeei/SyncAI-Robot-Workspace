@@ -13,7 +13,12 @@
     use_sim_time: false
 
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
-    # Lowered to match the slow Isaac Sim clock (~35 Hz / 0.58x real-time).
+    # This is a warning threshold only — nothing throttles or aborts on it.
+    # 20 Hz (50 ms) is a generous ceiling: the BT's RateController only asks
+    # for a replan at 1 Hz, so the warning is a canary for a pathological
+    # Smac search (a huge unknown region, a goal buried in lethal cost), not a
+    # cadence anyone is trying to hit. A Smac plan on a 0.05 m hall map
+    # normally lands well under it.
     expected_planner_frequency: 20.0
 
     # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
@@ -95,11 +100,16 @@
     track_unknown_space: true
     resolution: 0.05
 
-    # Robot footprint: rectangular MiR250 chassis at scale 0.7 (real 0.80 x
-    # 0.58 m -> sim 0.56 x 0.40 m -> half-extents 0.28 x 0.20). Matches the
-    # local_costmap footprint in controller_server_params.yaml; rescale both
-    # together if SyncAI-Omniverse sim_config.yaml robots[*].scale changes.
-    # (A circular robot_radius=0.22 was oversized and made RPP reject valid
+    # Robot footprint: rectangle with half-extents 0.35 x 0.22 (0.70 x 0.44 m
+    # overall) around base_link for the G23 chassis. NOTE: the controller's
+    # local_costmap in controller_server_params.yaml still carries the older
+    # 0.28 x 0.20 rectangle — the two are supposed to be one footprint and
+    # currently are not. As long as the global one is the larger, the planner
+    # is the conservative side and RPP will not reject its paths; enlarge the
+    # local one without also enlarging this one and RPP starts refusing valid
+    # paths ("collision ahead!"). Reconcile them to one rectangle rather than
+    # editing either in isolation. (A circular robot_radius=0.22 was tried
+    # before the rectangle and was oversized enough to make RPP reject valid
     # paths through ~0.6 m gaps.)
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01

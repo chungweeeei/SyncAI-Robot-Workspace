@@ -59,7 +59,7 @@ class _StubMapGateway:
 
 
 @pytest.fixture
-def client(logger, map_repo, catalog_repo):
+def client(logger, map_repo, catalog_repo, task_template_repo):
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(
@@ -68,6 +68,7 @@ def client(logger, map_repo, catalog_repo):
             map_repo=map_repo,
             map_catalog_repo=catalog_repo,
             map_gw=_StubMapGateway(),
+            task_template_repo=task_template_repo,
         )
     )
     return TestClient(app)

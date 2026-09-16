@@ -224,6 +224,13 @@ logged as an error.
 Enable it in the planner params by adding a `filters:` line; see
 `syncai_planner`'s params.
 
+The filter/layer distinction exists only at the config level. In
+`costmap_plugins.xml` `KeepoutFilter` is registered with
+`base_class_type="syncai_costmap_2d::Layer"`, exactly like `StaticLayer` — there
+is no separate `CostmapFilter` base class for pluginlib to key on. What makes it
+a filter is the `filters:` list it is named in, which decides *when* it runs
+(after the layers, on the combined grid) and that `clear*` never touches it.
+
 ## Interfaces
 
 With the costmap node at `/<robot_id>/<costmap_name>`:
@@ -284,6 +291,17 @@ that square.
 | `plugins` / `filters` | `["static_layer"]` / `[]` | |
 | `map_topic` | `<parent>/map` | Default for the static layer |
 | `always_send_full_costmap` | `false` | Full grid every publish instead of incremental updates |
+| `lethal_cost_threshold` | `100` | Read by `StaticLayer::interpretValue`: an occupancy value `>=` this becomes `LETHAL_OBSTACLE`. Declared on the costmap node, not the layer, so it is shared by every static layer the node hosts |
+| `unknown_cost_value` | `255` (`0xff`) | The occupancy byte the static layer treats as "unknown" — `-1` in `OccupancyGrid` arrives as `255` once cast to `unsigned char`. It becomes `NO_INFORMATION` with `track_unknown_space`, `FREE_SPACE` without |
+| `trinary_costmap` | `true` | Static layer collapses everything below the lethal threshold to `FREE_SPACE`. Set `false` to keep a linear ramp (`value / lethal_cost_threshold × 254`) — only useful for maps that already encode a cost gradient, which `syncai_map_server` does not produce |
+| `use_maximum` | `false` | Static layer writes its cells with **true overwrite** (the map wins, even over a higher cost already in the master grid). `true` switches to a max-merge so earlier plugins' obstacles survive under the map's free space |
+| `observation_sources` | `""` | **Dead at this level.** Carried over from nav2, where the node-level declaration is a legacy; the `ObstacleLayer` declares and reads its own `<layer>.observation_sources`, and nothing reads the node-level one. Set it on the layer |
+
+`observation_sources` aside, the last four all belong to the static layer's map
+interpretation, yet are declared on the costmap node rather than under
+`static_layer.` — a nav2 inheritance, kept so that copied nav2 params files keep
+working. Put them at the costmap level, not under the layer name, or they are
+silently ignored.
 
 An invalid `footprint` string does not fail — it logs an error and silently falls
 back to `robot_radius`, which is a much smaller robot. Check the startup log if
@@ -338,9 +356,18 @@ correctly); renaming it means touching its two includes.
   or the topic connects and never delivers.
 - **`update_frequency: 0.0` disables the update thread** — the costmap is created,
   publishes nothing, and never becomes current, which reads like a TF problem.
-- **Footprints must agree across costmaps.** The planner's global costmap and the
-  controller's local costmap use the same rectangle; if they diverge, RPP rejects
-  paths the planner considers valid.
+- **Footprints must agree across costmaps — and today they do not.** The
+  planner's global costmap (`syncai_planner/params/planner_server_params.yaml`)
+  carries `[[0.35,0.22],…]` while the controller's local costmap
+  (`syncai_controller/params/controller_server_params.yaml`) still has
+  `[[0.28,0.20],…]`. The global one was enlarged and the local one was not
+  followed, so the two YAML comments telling you to "rescale both together" are
+  each pointing at a file that disagrees with them. The failure mode when the
+  *local* footprint is the larger one is RPP rejecting paths the planner considers
+  valid ("collision ahead!"); with the current mismatch it is the other way round —
+  the planner keeps 7 cm more clearance than the controller checks, so the
+  controller is the permissive side. Reconcile them to one rectangle before
+  tuning anything else that depends on clearance.
 - **`inflation_radius` smaller than the inscribed radius** leaves lethal cells the
   planner will happily route the robot's corners through.
 - `package.xml` still carries `TODO: Package description` and

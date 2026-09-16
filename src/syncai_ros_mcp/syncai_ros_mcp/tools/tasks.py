@@ -4,9 +4,18 @@ Unlike the other tool modules (which introspect the live ROS 2 graph), these
 tools are thin HTTP clients for ``syncai_backend``'s task API
 (``interfaces/rest/routers/task.py``):
 
-* ``POST   /api/v1/tasks``       -> create/queue a task
-* ``GET    /api/v1/tasks/{id}``  -> read per-step task state
-* ``DELETE /api/v1/tasks/{id}``  -> request task cancellation
+* ``POST   /api/v1/tasks``        -> create/queue a task
+* ``GET    /api/v1/tasks/{id}``   -> read per-step task state
+* ``DELETE /api/v1/tasks/{id}``   -> request task cancellation
+* ``GET    /api/v1/active_tasks`` -> executions running on this robot's queue
+  (identity + provenance only; no tool wraps it yet — poll get_task_state for
+  per-step detail)
+
+A step's ``type`` is one of the backend's ``StepType`` values
+(``gateways/workflow/schema.py``): ``MOVE``, ``STANDUP``, ``LIEDOWN``,
+``SPEAK``. The step-level validation lives in the backend (a mismatched params
+shape is a 422); ``create_task`` only checks that the list is non-empty, so a
+new step type needs no change here beyond the description.
 
 The backend base URL defaults to ``http://localhost:3000`` (the port
 ``syncai_backend`` binds in ``interfaces/rest/server.py``) and can be overridden
@@ -27,14 +36,25 @@ def register_task_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         description=(
             "Create and queue a task on the SyncAI backend (POST /api/v1/tasks).\n"
-            "A task is an ordered list of steps. Each step is "
-            "{'id': str, 'type': 'MOVE', 'params': {...}} where "
-            "params depend on the type:\n"
+            "A task is an ordered list of steps, run in order by the robot's "
+            "Temporal workflow. Each step is {'id': str, 'type': str, 'params': {...}} "
+            "where type is one of MOVE / STANDUP / LIEDOWN / SPEAK and params "
+            "depend on the type:\n"
             "  MOVE     -> {'x': float, 'y': float, 'theta': float}  "
-            "# theta in degrees, -180 < theta <= 180\n"
+            "# map-frame metres; theta in degrees, -180 < theta <= 180\n"
+            "  STANDUP  -> no params (omit the key)  # gait controller stands the robot up\n"
+            "  LIEDOWN  -> no params (omit the key)  # gait controller lies the robot down\n"
+            "  SPEAK    -> {'text': str, 'voice': str, 'speed': float}  "
+            "# text 1-1000 chars, English only; voice defaults to 'af_heart' "
+            "(list: GET /api/v1/tts/voices); speed 0.5-2.0, default 1.0\n"
+            "STANDUP/LIEDOWN reject any params; MOVE/SPEAK require them "
+            "(the backend answers 422 otherwise).\n"
             "Example:\n"
-            "create_task(task_id='robot01-task-001', steps=[{'id': 'step1', 'type': 'MOVE', "
-            "'params': {'x': 1.0, 'y': 2.0, 'theta': 90.0}}])"
+            "create_task(task_id='robot01-task-001', steps=[\n"
+            "  {'id': 'step1', 'type': 'STANDUP'},\n"
+            "  {'id': 'step2', 'type': 'MOVE', 'params': {'x': 1.0, 'y': 2.0, 'theta': 90.0}},\n"
+            "  {'id': 'step3', 'type': 'SPEAK', 'params': {'text': 'Delivery arrived'}},\n"
+            "  {'id': 'step4', 'type': 'LIEDOWN'}])"
         ),
         annotations=ToolAnnotations(title="Create Task"),
     )
@@ -44,10 +64,14 @@ def register_task_tools(mcp: FastMCP) -> None:
 
         Args:
             task_id (str): Unique task identifier (e.g. 'robot01-task-001').
-            steps (list): Ordered steps, each a dict with 'id', 'type', and
-                'params'. Must contain at least one step.
+            steps (list): Ordered steps, each a dict with 'id', 'type'
+                (MOVE / STANDUP / LIEDOWN / SPEAK) and, for MOVE and SPEAK
+                only, 'params' (see the tool description for each shape).
+                Must contain at least one step.
             timestamp (int): Unix epoch seconds. Defaults to the current time
-                when omitted.
+                when omitted. The backend no longer reads it (its TaskRequest
+                dropped the field; unknown fields are ignored), kept so
+                existing callers keep working.
 
         Returns:
             dict: The backend TaskResponse ({'id', 'status', 'message'}) on

@@ -129,9 +129,12 @@
     height: 3
     resolution: 0.05
 
-    # Robot footprint: rectangular chassis half-extents 0.28 x 0.20. Matches
-    # the global_costmap footprint in planner_server_3d_params.yaml; rescale
-    # both together, else RPP spam-rejects valid paths ("collision ahead!").
+    # Robot footprint: rectangular chassis half-extents 0.28 x 0.20. Meant to
+    # match the global_costmap footprint in planner_server_params.yaml, which
+    # has since grown to 0.35 x 0.22 without this one following — the two are
+    # currently different rectangles for one robot. Rescale both together:
+    # if this (local) one ends up the larger, RPP spam-rejects valid paths
+    # ("collision ahead!").
     footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
     footprint_padding: 0.01
 
@@ -164,7 +167,7 @@
 
       # 3D LiDAR obstacle source: Point-LIO's per-scan body cloud — the only
       # live source on the real robot. Mirrors the global costmap's pointcloud
-      # source in planner_server_3d_params.yaml.
+      # source in planner_server_params.yaml.
       pointcloud:
         # Relative name: resolves to /<robot_id>/pointlio/body_cloud in the
         # robot_id-namespaced launch.

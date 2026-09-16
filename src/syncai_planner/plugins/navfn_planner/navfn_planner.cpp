@@ -95,17 +95,17 @@ nav_msgs::msg::Path NavfnPlanner::createPlan(
     unsigned int mx, my;
 
     /**
-     * costmap -> worldToMap 是將世界座標(map)的位置轉成格子的index
+     * costmap -> worldToMap converts a position in world (map) coordinates to grid indices
      */
     costmap_->worldToMap(start.pose.position.x, start.pose.position.y, mx, my);
 
-    // 透過轉出來的index確認在該格子上的cost是否有障礙物
+    // Use the resulting indices to check whether the cost at that cell is an obstacle
     if (costmap_->getCost(mx, my) == syncai_costmap_2d::LETHAL_OBSTACLE) {
       RCLCPP_WARN(
         logger_, "[NavfnPlanner][%s] Failed to create a unique pose path because of obstacles",
         __func__);
 
-      // 如果是障礙物就直接 return empty path
+      // If it is an obstacle, return an empty path straight away
       return path;
     }
 
@@ -129,7 +129,9 @@ nav_msgs::msg::Path NavfnPlanner::createPlan(
 
   /**
    * start generate global path
-   * @param tolerance 是「goal 到不了的時候,允許退而求其次的範圍」- 以公尺為單位，定義在 goal 周圍可以接受的替代落點距離。
+   * @param tolerance The range within which we may settle for less when the goal cannot be
+   *        reached - in meters, the acceptable distance around the goal for a substitute end
+   *        point.
    */
   if (!makePlan(start.pose, goal.pose, tolerance_, path)) {
     RCLCPP_WARN(
@@ -203,8 +205,8 @@ bool NavfnPlanner::makePlan(
   planner_->setGoal(map_start);
 
   /**
-   * calcNavFnAstar() 或 calcNavFnDijkstra() 並非直接計算出可走的path, 
-   * 而是計算potential field, 也就是從 goal 開始往外擴散的 cost gradient。
+   * calcNavFnAstar() / calcNavFnDijkstra() do not directly compute a drivable path; they
+   * compute the potential field, i.e. the cost gradient propagating outward from the goal.
    */
   if (use_astar_) {
     planner_->calcNavFnAstar();
@@ -216,7 +218,7 @@ bool NavfnPlanner::makePlan(
   geometry_msgs::msg::Pose p, best_pose;
   bool found_legal = false;
 
-  // 計算完potential field後，檢查goal是否reachable
+  // With the potential field computed, check whether the goal is reachable
   p = goal;
   double potential = getPointPotential(p.position);
   if (potential < POT_HIGH) {
@@ -255,7 +257,9 @@ bool NavfnPlanner::makePlan(
   // whether can extract a plan to the best pose found
   // extract the plan
   if (getPlanFromPotential(best_pose, plan)) {
-    // 把plan的終點修成「精確的 goal 座標 」，因為剛從grid map extract出來的plan，終點會是「離 goal 最近的可行走點」，但不一定是「精確的 goal 座標 」
+    // Snap the end of the plan to the exact goal coordinates: a plan freshly extracted from
+    // the grid map ends at the traversable cell nearest the goal, which is not necessarily the
+    // exact goal coordinates.
     smoothApproachToGoal(best_pose, plan);
 
     // If use_final_approach_orientation=true, interpolate the last pose orientation from the

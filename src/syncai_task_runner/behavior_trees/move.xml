@@ -1,5 +1,5 @@
 <!--
-  Navigate-to-pose with periodic replanning (~0.333 Hz, every 3 s) and
+  Navigate-to-pose with periodic replanning (1 Hz, every second) and
   contextual recovery,
   based on nav2's navigate_to_pose_w_replanning_and_recovery.xml but without
   its outer system-level RecoveryNode: a planner / controller failure clears

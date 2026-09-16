@@ -17,7 +17,8 @@ export default function MapsPage() {
             Maps saved on{" "}
             <span className="readout">{state?.robot_id ?? "this robot"}</span>.
             The one in use is set in the robot&apos;s instance config and changes
-            only when the stack restarts — nothing on this screen switches it.
+            only when the stack restarts — nothing on this screen switches it,
+            which is also why it is the one map you cannot rename here.
           </p>
         </header>
 

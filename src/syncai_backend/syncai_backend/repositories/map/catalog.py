@@ -175,6 +175,52 @@ class MapCatalogRepo:
                 error=str(exc),
             )
 
+    def rename_map_dir(self, old: str, new: str) -> str:
+        """Move ``map/<old>/`` to ``map/<new>/``; return the new absolute path.
+
+        A rename is one ``os.rename`` of the directory and nothing else, and that
+        rests on a property worth stating so nobody breaks it by accident:
+        **no file inside a map directory names the map or holds an absolute
+        path.** ``gridmap.yaml`` says ``image: gridmap.pgm`` (the relative
+        basename, hand-formatted by ``helpers/pcd_to_gridmap.py`` precisely so
+        map_server resolves it against the yaml's own directory), ``poses.txt``
+        lists bare patch basenames, ``gridmap.recipe.json`` holds only
+        measurements and parameters. If a future sidecar ever embeds the map's
+        path, this method has to start rewriting it.
+
+        What this does *not* touch, and the caller must: the ``map_vertices``
+        and ``task_templates`` rows that key on the bare directory name — the
+        filesystem is the catalogue, but the name is also a foreign key by
+        convention in two tables with no constraint backing it.
+
+        Both names go through ``resolve_dir``: the new one is a URL body, not a
+        path segment, but it ends up on the filesystem all the same, and the
+        pattern's comment already says it "has to hold when the write endpoint
+        lands". Refusing an existing target is a check rather than a syscall
+        guarantee — POSIX ``rename`` onto an existing *empty* directory quietly
+        succeeds, so unlike ``create_map_dir`` there is no ``exist_ok=False`` to
+        lean on. The check→act window is accepted, the same way
+        ``write_gridmap`` accepts its own; two operators renaming onto the same
+        name in the same millisecond is not the failure this fleet has.
+
+        Refusing to rename the *active* map is the router's job, not this
+        repo's: "which map is the stack running on" is INI state the repo only
+        reads through ``active_name()``, and keeping the refusal beside the
+        conversion-in-flight check puts every 409 for this route in one place.
+        """
+        src = self.resolve_dir(old)
+        dst = self.resolve_dir(new)
+        if old == new:
+            raise BadRequestError(f"Map '{old}' is already named {new!r}.")
+        if not os.path.isdir(src):
+            raise NotFoundError(f"No map named '{old}' on this robot.")
+        if os.path.exists(dst):
+            raise ConflictError(f"A map named '{new}' already exists.", code="name_taken")
+
+        os.rename(src, dst)
+        self.logger.info("[MapCatalogRepo] Renamed map directory", map=old, new_name=new)
+        return dst
+
     def gridmap_edited(self, name: str) -> bool:
         """Report whether this map's gridmap carries hand edits.
 

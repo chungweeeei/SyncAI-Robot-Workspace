@@ -1,5 +1,6 @@
-# The robot's aggregated status, published at 10 Hz by syncai_robot_state on the
-# relative topic `robot_state` (so it lands on <robot_id>/robot_state).
+# The robot's aggregated status, published by syncai_robot_state on the relative
+# topic `robot_state` (so it lands on <robot_id>/robot_state) — at 1 Hz as
+# shipped (params publish_rate: 1.0; the code default is 10 Hz).
 #
 # One message, one publisher, one consumer: syncai_backend, which re-serialises
 # a SUBSET of it for GET /api/v1/robot/state. That REST payload is a frozen
@@ -11,7 +12,8 @@
 # Kept in seconds because it is passed through verbatim to
 # GET /api/v1/robot/state, whose consumers already treat it as seconds.
 #
-# At 10 Hz that means ten consecutive messages share one timestamp value. It is
+# At the 1 Hz shipped publish rate it advances by one per message; at the 10 Hz
+# code default ten consecutive messages share one timestamp value. Either way it is
 # a wall clock for display, not a sequence number: it cannot order samples or
 # measure the publish rate -- and motor_status.timestamp below is whole seconds
 # too, so it is no help either. Subscribe motor_states directly for sub-second
@@ -72,8 +74,8 @@ bool localization_valid
 # fields explicitly and must keep doing so: there is no longer a separate message
 # type stopping a widened MotorState from leaking.
 #
-# Do NOT build motion from q/dq here — this is a 10 Hz diagnostic snapshot and
-# `timestamp` at the top of this message has whole-second resolution, so the
+# Do NOT build motion from q/dq here — this is a 1 Hz (10 Hz at most) diagnostic
+# snapshot and `timestamp` at the top of this message has whole-second resolution, so the
 # samples cannot even be ordered from it. The high-rate joint channel is the
 # backend telemetry WebSocket, which subscribes motor_states directly for that
 # reason.

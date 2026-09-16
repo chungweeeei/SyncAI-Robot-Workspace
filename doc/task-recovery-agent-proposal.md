@@ -1,215 +1,230 @@
-# 任務自癒迴圈提案:失敗 → 歸因 → 調參 → 重試
+# Task Self-Healing Loop Proposal: Fail → Attribute → Tune → Retry
 
-> 對象:`src/syncai_device_agent/`(deepagents runtime)+ `syncai_backend` 的 Temporal
->       `RobotWorkflow`
-> 相關:`doc/deep-agent-proposal.md`(agent 側接線 / tool vs skill 的判準,本文沿用)
->       `doc/mcp-server-proposals.md` §2 範例 B(`explain_task` 四來源因果鏈)
->       `doc/gridmap-tuning-agent-proposal.md`(同構迴圈的離線安全版,建議先做那個)
-> 狀態:**提案,尚未實作**。所需的兩個工具(失敗脈絡 / 參數讀寫)在 `syncai_ros_mcp`
->       都還不存在,見 §2。
+> Target: `src/syncai_device_agent/` (the deepagents runtime) + the Temporal `RobotWorkflow` in
+>       `syncai_backend`
+> Related: `doc/deep-agent-proposal.md` (agent-side wiring / the tool vs skill criteria, which this document follows)
+>       `doc/mcp-server-proposals.md` §2 example B (the four-source causal chain of `explain_task`)
+>       `doc/gridmap-tuning-agent-proposal.md` (the offline, safe version of the same loop; build that one first)
+> Status: **proposal, not implemented**. Neither of the two tools required (failure context / parameter
+>       read-write) exists yet in `syncai_ros_mcp`; see §2.
 
-這份筆記回答一個問題:「任務失敗後,讓 agent 查日誌、分析、調參數、再跑一次」這個迴圈
-做不做得到。
+*Note: `src/syncai_device_agent/` was removed from the workspace in commit 99141a6; this proposal predates that removal.*
 
-先說結論:**做得到,但成功的版本不是「一個會自己跑迴圈的 agent」。** 迴圈歸 Temporal,
-判斷歸 agent,執行權歸白名單 —— 三者分開,這個題目才成立。而且真正的難點不在 agent
-框架,在**歸因**:大多數任務失敗根本不是調參數能解決的,一個會反射性調參的 agent 會在
-那些情況下把參數改壞、而問題還在。
+This note answers one question: is the loop "after a task fails, have the agent read the logs, analyse, adjust
+parameters, and run again" achievable?
+
+The conclusion up front: **it is, but the version that succeeds is not "an agent that runs its own loop".** The
+loop belongs to Temporal, the judgment belongs to the agent, and the authority to act belongs to a whitelist — only
+with the three separated does this problem hold together. And the genuinely hard part is not the agent framework;
+it is **attribution**: most task failures are not something parameter tuning can fix at all, and an agent that
+reflexively tunes parameters will, in those cases, break the parameters while the problem remains.
 
 ---
 
-## 0. 心智模型:agent 不管迴圈
+## 0. Mental model: the agent does not own the loop
 
-最容易寫錯的版本,是讓 agent 自己 while 迴圈:
-
-```
-❌ agent: 查日誌 → 調參 → 重跑 → 沒過 → 再查 → 再調 → …
-```
-
-LLM 管狀態機不可靠:會無限重試、會忘記自己試過什麼、process 掛掉整個迴圈就斷,而且沒有
-任何一步是可稽核的。
-
-正確的分法是把控制權留在 Temporal —— `RobotWorkflow` 本來就在做這件事(依序執行 step、
-依 `StepType` 分派、暴露 workflow query、支援取消,task queue 依 `robot_id` 分流):
+The version most easily written wrong is letting the agent run its own while loop:
 
 ```
-Temporal RobotWorkflow  ←── 管迴圈:重試次數、退避、逾時、狀態持久化、可取消
+❌ agent: read logs → tune → rerun → fails → read again → tune again → …
+```
+
+An LLM is an unreliable state machine: it retries indefinitely, forgets what it has already tried, the whole loop
+dies when the process dies, and not a single step is auditable.
+
+The correct split keeps control in Temporal — `RobotWorkflow` already does this (runs steps in order, dispatches by
+`StepType`, exposes a workflow query, supports cancellation, task queue partitioned by `robot_id`):
+
+```
+Temporal RobotWorkflow  ←── owns the loop: retry count, backoff, timeouts, state persistence, cancellable
         │
-        │  step 失敗 → 呼叫一個 activity
+        │  step fails → call one activity
         ▼
-   DiagnoseActivity ──→ deepagent(單次呼叫,不是迴圈)
-        │                輸入:結構化失敗脈絡
-        │                輸出:一個結構化決定
+   DiagnoseActivity ──→ deepagent (a single call, not a loop)
+        │                input: structured failure context
+        │                output: one structured decision
         ▼
    { action: "retry_as_is" | "adjust_param" | "abort_and_escalate", … }
 ```
 
-**Agent 只當決策節點:被呼叫一次、給一個判斷、結束。** 這樣才有重試上限、每次嘗試的完整
-審計紀錄、中途可取消,而且 agent 掛掉不會弄壞 workflow。
+**The agent is only a decision node: called once, gives one judgment, done.** That is what yields a retry cap, a
+complete audit record of every attempt, mid-course cancellation, and a workflow that is not corrupted when the agent
+dies.
 
-這也符合 `deep-agent-proposal.md` §0 的分層:agent process 只講 HTTP,不碰 rclpy、不進
-DDS domain,所以它可以跑在 fleet 側,被 Temporal activity 用 HTTP 叫起來。
+This also matches the layering of `deep-agent-proposal.md` §0: the agent process speaks only HTTP, touches no rclpy,
+and does not enter the DDS domain, so it can run on the fleet side and be invoked over HTTP by a Temporal activity.
 
 ---
 
-## 1. 第一個要想清楚的是歸因,不是調參
+## 1. The first thing to get right is attribution, not tuning
 
-這是整份提案的核心。任務失敗大致分五類,**只有最後一類調參數有意義**:
+This is the core of the whole proposal. Task failures fall roughly into five classes, and **only the last one is
+where parameter tuning means anything**:
 
-| 類型 | 這個 stack 的典型樣態 | 調參數有用嗎 | 正確動作 |
+| Class | Typical form in this stack | Does tuning help | Correct action |
 |---|---|---|---|
-| 環境暫時性 | 路被人擋住、門關著、障礙物暫留在 costmap | ❌ | 退避後原樣重試,**參數不要動** |
-| 定位 | LIO 漂移、`map → odom` 修正跳動、初始位姿沒設(`UNINITIALIZED`) | ❌ | 重定位 / 重設初始位姿 |
-| 硬體 | `syncai_driver_manager` 的 UDP telemetry 斷、電量 <20%(`WARNING`) | ❌ | 停止並升級給人 |
-| 地圖 / 任務設定 | 目標 vertex 落在 keepout filter 內、根本不可達 | ❌ | 改任務或改地圖,不是改參數 |
-| **真的是參數** | inflation 太厚導致窄道規劃不出路徑、lookahead 讓過彎超調、goal checker 容忍度過嚴而 `FollowPath` 逾時 | ✅ | 單一參數微調後重試 |
+| Transient environment | Path blocked by a person, door closed, obstacle lingering in the costmap | ❌ | Back off and retry as-is; **do not touch parameters** |
+| Localization | LIO drift, jumping `map → odom` correction, initial pose never set (`UNINITIALIZED`) | ❌ | Relocalize / reset the initial pose |
+| Hardware | `syncai_driver_manager` UDP telemetry dropped, battery <20% (`WARNING`) | ❌ | Stop and escalate to a human |
+| Map / task configuration | Target vertex lies inside the keepout filter, or is simply unreachable | ❌ | Change the task or the map, not the parameters |
+| **Genuinely parameters** | Inflation too thick so no path through a narrow corridor; lookahead causes corner overshoot; goal checker tolerance too strict so `FollowPath` times out | ✅ | Fine-tune a single parameter and retry |
 
-⚠️ 如果 agent 對每種失敗都反射性地「調參數再試一次」,它會在前四類**把參數改壞,而且
-原問題還在**。這比不修更糟,因為現場會多出一個沒人知道的變因。
+⚠️ If the agent reflexively "tunes a parameter and tries again" for every kind of failure, in the first four classes
+it will **break the parameters while the original problem remains**. That is worse than not fixing anything,
+because the site now has an extra variable nobody knows about.
 
-所以這個 agent 最重要的能力不是「會調參」,而是**會分類、而且敢說「這個我不該碰」**。
-skill / system prompt 的篇幅應該大部分花在「什麼時候不要動參數」,預設輸出應偏向
-`retry_as_is` 或 `abort_and_escalate`,`adjust_param` 是需要舉證的例外。
+So this agent's most important capability is not "can tune" but **can classify, and dares to say "I should not
+touch this"**. Most of the skill / system prompt should be spent on "when not to touch parameters"; the default
+output should lean toward `retry_as_is` or `abort_and_escalate`, with `adjust_param` the exception that must be
+argued for.
 
-`mcp-server-proposals.md` §2 範例 B 提到的那條部落知識(`low_level_mode` 全零是歧義的,
-要先確認 `motor_status.timestamp` 在前進)正是這一層的東西 —— 它屬於 SOP,不屬於任何
-單一 tool。
+The piece of tribal knowledge mentioned in `mcp-server-proposals.md` §2 example B (an all-zero `low_level_mode` is
+ambiguous; confirm `motor_status.timestamp` is advancing first) belongs at exactly this layer — it is part of the
+SOP, not of any single tool.
 
 ---
 
-## 2. 缺口:兩類工具都還不存在
+## 2. The gap: neither class of tool exists yet
 
-`syncai_ros_mcp` 現有的工具是 topic / service / task / map 四組(`get_topics`、
-`get_topic_details`、`publish_once`、`subscribe_once`、`get_services`、`call_service`、
-`create_task`、`get_task_state`、`cancel_task`、maps)。這個迴圈需要的兩類**都沒有**:
+The tools `syncai_ros_mcp` has today come in four groups: topic / service / task / map (`get_topics`,
+`get_topic_details`, `publish_once`, `subscribe_once`, `get_services`, `call_service`, `create_task`,
+`get_task_state`, `cancel_task`, maps). Of the two classes this loop needs, **it has neither**:
 
-| 需要 | 現況 | 建議做法 |
+| Need | Current state | Suggested approach |
 |---|---|---|
-| 讀失敗脈絡 | ❌ 只有 `get_task_state`,拿得到狀態拿不到死因 | `get_task_failure(task_id)`,見下 |
-| 讀 / 改參數 | ❌ 只能用 `call_service` 硬打 `/set_parameters`,agent 不好用也不安全 | `get_params(node)` / `set_param(...)`,見 §3 |
+| Read failure context | ❌ Only `get_task_state`, which gives the state but not the cause of death | `get_task_failure(task_id)`, see below |
+| Read / write parameters | ❌ Only hitting `/set_parameters` raw via `call_service`; awkward and unsafe for the agent | `get_params(node)` / `set_param(...)`, see §3 |
 
-### 2.1 先用 Temporal history,不要先做日誌 parsing
+### 2.1 Use Temporal history first, not log parsing
 
-直覺會想「查日誌」,但日誌應該是**第二層**。第一層是 Temporal 的 workflow history —— 那是
-**結構化的失敗資料**:哪一個 step、什麼 `StepType`、第幾次重試、什麼時候失敗。讓 LLM 去
-grep `log/stack/<robot_id>/<name>/` 底下 16 MiB × 10 gzip 輪替的 multilog,又貴又不準,
-而且那些輸出會直接撐爆 context。
+Intuition says "read the logs", but logs should be the **second layer**. The first layer is Temporal's workflow
+history — that is **structured failure data**: which step, what `StepType`, which retry, when it failed. Letting the
+LLM grep the 16 MiB × 10 gzip-rotated multilog under `log/stack/<robot_id>/<name>/` is expensive and inaccurate,
+and the output will blow up the context outright.
 
-建議的工具形狀:
+Suggested tool shape:
 
 ```
 get_task_failure(task_id) -> {
   failed_step: {index, type, target_vertex, started_at, failed_at},
-  attempt: 1,                       # workflow 已經重試過幾次
-  nav_result_code: ...,             # MOVE step 才有
-  robot_state_at_failure: {...},    # 電量 / state / pose 是否有效
-  log_window: {node, from, to},     # ← 只給座標,不給內容
+  attempt: 1,                       # how many times the workflow has already retried
+  nav_result_code: ...,             # MOVE steps only
+  robot_state_at_failure: {...},    # battery / state / whether the pose was valid
+  log_window: {node, from, to},     # ← coordinates only, no content
 }
 ```
 
-`log_window` 只回傳「該去哪裡撈」,agent 判斷需要時再呼叫 `tail_logs` 拿實際文字。這是
-漸進揭露,配合 deepagents 內建的 filesystem 工具把大輸出落到檔案而不是 context。
+`log_window` returns only "where to go digging"; the agent calls `tail_logs` for the actual text when it judges
+that necessary. This is progressive disclosure, combined with deepagents' built-in filesystem tools to spill large
+output to files instead of context.
 
-與 `mcp-server-proposals.md` §2 範例 B 的關係:那個 `explain_task` 是**給人看的敘事**,
-這個 `get_task_failure` 是**給 workflow 吃的機器可讀版**。兩者共用同一組資料來源,值得
-一起實作、共用內部函式,但輸出形狀不同,不要合併成一個工具。
+Relationship to `mcp-server-proposals.md` §2 example B: that `explain_task` is a **narrative for humans**; this
+`get_task_failure` is the **machine-readable version for the workflow to consume**. They share the same data
+sources and are worth implementing together with shared internal functions, but the output shapes differ — do not
+merge them into one tool.
 
 ---
 
-## 3. 哪些參數真的能動態改(已查證)
+## 3. Which parameters can actually be changed dynamically (verified)
 
-好消息是這個 stack 的動態參數支援比預期完整。以下是原始碼查證結果:
+The good news is that this stack's dynamic-parameter support is more complete than expected. Source-code
+verification results:
 
-| 節點 / plugin | 動態參數 | 證據 |
+| Node / plugin | Dynamic parameters | Evidence |
 |---|---|---|
-| Regulated Pure Pursuit | ✅ 22 個 | `plugins/regulated_pure_pursuit_controller/…cpp:210` |
-| controller_server 本體 | ✅ | `src/controller_server.cpp:205` |
-| goal checker / progress checker | ✅ 全部四個 plugin | `plugins/*_goal_checker.cpp`、`*_progress_checker.cpp` |
-| costmap(含 obstacle / inflation / static layer) | ✅ | `costmap_2d_ros.cpp:274` 及各 layer |
+| Regulated Pure Pursuit | ✅ 22 of them | `plugins/regulated_pure_pursuit_controller/…cpp:210` |
+| controller_server itself | ✅ | `src/controller_server.cpp:205` |
+| goal checker / progress checker | ✅ all four plugins | `plugins/*_goal_checker.cpp`, `*_progress_checker.cpp` |
+| costmap (including obstacle / inflation / static layers) | ✅ | `costmap_2d_ros.cpp:274` and each layer |
 | smac_planner_2d | ✅ | `plugins/smac_planner/smac_planner_2d.cpp` |
-| **`syncai_backend` 的 ROS 參數** | ❌ **要重啟** | CLAUDE.md「Changing a backend ROS parameter requires restarting the backend」 |
+| **ROS parameters of `syncai_backend`** | ❌ **requires a restart** | CLAUDE.md: "Changing a backend ROS parameter requires restarting the backend" |
 
-⚠️ **但「動態可調」不等於「應該開放給 agent 調」。** RPP 的動態清單裡包含
-`desired_linear_vel`、`max_linear_accel`、`max_angular_accel` —— 正因為它們改得動,才必須
-在白名單裡**明確排除**。這些直接決定一台四足機器人的動能,人工專屬。
+⚠️ **But "dynamically tunable" is not the same as "should be opened to the agent".** RPP's dynamic list includes
+`desired_linear_vel`, `max_linear_accel`, `max_angular_accel` — precisely because they can be changed, they must be
+**explicitly excluded** from the whitelist. These directly determine the kinetic energy of a quadruped robot;
+humans only.
 
-建議的初版白名單(保守,寧可太窄):
+Suggested first-version whitelist (conservative; better too narrow):
 
-| 參數 | 上下限 | 適用失敗樣態 |
+| Parameter | Bounds | Applicable failure form |
 |---|---|---|
-| `inflation_layer.inflation_radius` | 依機身尺寸給區間 | 窄道規劃不出路徑 |
-| `<goal_checker>.xy_goal_tolerance` | 上限鎖死 | `FollowPath` 到點判定過嚴而逾時 |
-| `<goal_checker>.yaw_goal_tolerance` | 上限鎖死 | 同上 |
-| `RPP.lookahead_dist` / `min_` / `max_` | 窄區間 | 過彎超調 / 貼牆 |
+| `inflation_layer.inflation_radius` | Interval derived from the body dimensions | No path through a narrow corridor |
+| `<goal_checker>.xy_goal_tolerance` | Upper bound locked | `FollowPath` times out because the arrival check is too strict |
+| `<goal_checker>.yaw_goal_tolerance` | Upper bound locked | Same as above |
+| `RPP.lookahead_dist` / `min_` / `max_` | Narrow interval | Corner overshoot / hugging walls |
 
-`desired_linear_vel`、`max_*_accel`、`allow_reversing`、以及任何 costmap 的 topic /
-frame 類參數:**永不開放**。
-
----
-
-## 4. 護欄(六條,從第一版就要有)
-
-1. **白名單**:只有 §3 表列參數可改,其餘一律拒絕。守門邏輯寫在 `set_param` 工具**內部**,
-   不是寫在 prompt 裡。
-2. **範圍上下限**:每個參數帶 min/max,越界直接拒絕並回報。
-3. **一次只改一個參數**:否則出事無法歸因。
-4. **重試次數上限**:同一任務最多自動嘗試 2 次,之後一律 `abort_and_escalate`。這條由
-   Temporal 執行,不靠 agent 自律。
-5. **必回滾**:任務結束(成功或放棄)一律把參數還原。**絕不允許 agent 的臨時調整永久留在
-   系統裡** —— 否則三個月後沒人知道現場的參數為什麼跟 repo 裡的不一樣。
-6. **全程留痕**:每次 `adjust_param` 寫一筆(任務、失敗原因、參數、前後值、結果),這是
-   之後回頭檢討 agent 判斷準不準的唯一依據。
-
-⚠️ 沿用 `deep-agent-proposal.md` §4 的警告:`interrupt_on` 是 UX 不是安全邊界。護欄 1、2
-的正確位置在 **MCP server 側的 `set_param` 工具內**,agent 側的核准機制是疊在上面的第二層。
+`desired_linear_vel`, `max_*_accel`, `allow_reversing`, and any costmap topic / frame parameter: **never opened**.
 
 ---
 
-## 5. Agent 的輸出必須是結構化的
+## 4. Guardrails (six of them, from the first version onward)
 
-deepagents 的 `response_format` 可以強制輸出 schema,不要讓它回一段散文給 workflow 解析:
+1. **Whitelist**: only the parameters tabulated in §3 may change; everything else is refused. The gatekeeping logic
+   lives **inside** the `set_param` tool, not in the prompt.
+2. **Range bounds**: every parameter carries a min/max; out-of-range is refused outright and reported.
+3. **One parameter per change**: otherwise nothing can be attributed when something goes wrong.
+4. **Retry cap**: at most 2 automatic attempts for the same task, then always `abort_and_escalate`. Temporal
+   enforces this; it does not rely on the agent's self-discipline.
+5. **Mandatory rollback**: when a task ends (success or abandonment), parameters are always restored. **An agent's
+   temporary adjustment is never allowed to remain permanently in the system** — otherwise three months later
+   nobody knows why the site's parameters differ from the repo's.
+6. **Full audit trail**: every `adjust_param` writes one record (task, failure reason, parameter, before/after
+   values, outcome); it is the only basis for reviewing later how accurate the agent's judgments were.
+
+⚠️ Carrying over the warning from `deep-agent-proposal.md` §4: `interrupt_on` is UX, not a safety boundary. The
+correct place for guardrails 1 and 2 is **inside the `set_param` tool on the MCP server side**; the agent-side
+approval mechanism is a second layer stacked on top.
+
+---
+
+## 5. The agent's output must be structured
+
+deepagents' `response_format` can enforce an output schema; do not let it return a paragraph of prose for the
+workflow to parse:
 
 ```python
 class RecoveryDecision(BaseModel):
     action: Literal["retry_as_is", "adjust_param", "abort_and_escalate"]
     category: Literal["transient", "localization", "hardware", "map_or_task", "tuning"]
-    reason: str                      # 給人看的一句話
-    changes: list[ParamChange] = []  # 只有 action == adjust_param 時非空
+    reason: str                      # one sentence for humans
+    changes: list[ParamChange] = []  # non-empty only when action == adjust_param
     confidence: Literal["low", "medium", "high"]
 ```
 
-`category` 欄位不只是給人看的 —— 它讓你事後能統計「agent 把多少 transient 誤判成
-tuning」,那是決定要不要進 §6 Phase 2 的關鍵數字。
+The `category` field is not only for humans — it lets you count afterwards "how many transients did the agent
+misclassify as tuning", which is the key number for deciding whether to enter Phase 2 in §6.
 
 ---
 
-## 6. 三階段落地
+## 6. Three-phase landing
 
-| 階段 | 做什麼 | 風險 | 出場條件 |
+| Phase | What it does | Risk | Exit condition |
 |---|---|---|---|
-| **Phase 0** | 只診斷。失敗時產出分析 + 「我本來會怎麼做」,**不執行**。跑兩週 | 零 | 累積到足夠案例,誤判率可量化 |
-| **Phase 1** | 建議 + 人工核准。`set_param` 掛 `interrupt_on`,人在迴圈裡按確認 | 低 | 連續 N 次核准都是「同意」 |
-| **Phase 2** | 白名單內自動,護欄六條全開 | 中 | — |
+| **Phase 0** | Diagnose only. On failure, produce an analysis + "what I would have done", **without executing**. Run for two weeks | Zero | Enough cases accumulated that the misclassification rate can be quantified |
+| **Phase 1** | Recommend + human approval. `set_param` behind `interrupt_on`; a human in the loop presses confirm | Low | N consecutive approvals are all "agree" |
+| **Phase 2** | Automatic within the whitelist, all six guardrails on | Medium | — |
 
-Phase 0 的真正產出不是修好的任務,是**資料**:你會知道它的歸因準不準、哪一類失敗它會誤判。
-沒有這份底氣就直接讓它改參數,是在賭。
+The real output of Phase 0 is not repaired tasks; it is **data**: you learn whether its attribution is accurate and
+which failure classes it misjudges. Letting it change parameters without that confidence is gambling.
 
-Phase 1 需要 HITL 的 approve/reject UI —— `deep-agent-proposal.md` §4 已指出 operator
-console(Next.js frontend `:3001`)是自然落點。這是接任何 mutating 工具前的共同前置。
+Phase 1 needs the HITL approve/reject UI — `deep-agent-proposal.md` §4 already identifies the operator console
+(Next.js frontend `:3001`) as the natural home. That is the shared prerequisite before wiring up any mutating tool.
 
 ---
 
-## 7. 與其他 proposal 的關係
+## 7. Relationship to the other proposals
 
-| 文件 | 回答 |
+| Document | Answers |
 |---|---|
-| `mcp-server-proposals.md` | 出了什麼問題 / 這件事對不對(診斷面,MCP server 層) |
-| `roboneuron-application-proposal.md` | 機器人怎麼被當成一組 typed 能力(控制面,MCP server 層) |
-| `deep-agent-proposal.md` | 誰來呼叫這些工具、tool vs skill 怎麼分(agent 層,**接線**) |
-| **本文件** | **agent 拿這些工具做什麼:一個會自癒的任務迴圈(agent 層,應用)** |
-| `gridmap-tuning-agent-proposal.md` | 同一個迴圈形狀的離線版,零實體風險 |
+| `mcp-server-proposals.md` | What went wrong / is this right (diagnostic plane, MCP server layer) |
+| `roboneuron-application-proposal.md` | How the robot is treated as a set of typed capabilities (control plane, MCP server layer) |
+| `deep-agent-proposal.md` | Who calls these tools, how tools vs skills are split (agent layer, **wiring**) |
+| **This document** | **What the agent does with those tools: a self-healing task loop (agent layer, application)** |
+| `gridmap-tuning-agent-proposal.md` | The offline version of the same loop shape, zero physical risk |
 
-實作順序上,本提案**不建議當第一個做的 agent**。它的迴圈形狀(執行 → 量測 → 歸因 →
-調參 → 重試 → 收斂或放棄)與 `gridmap-tuning-agent-proposal.md` 完全同構,差別只在那裡的
-「執行」是跑一次離線投影,這裡的「執行」是一台四足機器人走出去。**先在離線題目把骨架、
-收斂條件、放棄條件、白名單機制練熟**,搬過來時就只剩安全問題要煩惱,不必同時煩惱架構。
+In terms of implementation order, this proposal is **not recommended as the first agent to build**. Its loop shape
+(execute → measure → attribute → tune → retry → converge or give up) is exactly isomorphic to
+`gridmap-tuning-agent-proposal.md`; the only difference is that "execute" there means running an offline projection
+once, and here it means a quadruped robot walking out the door. **Rehearse the skeleton, convergence condition,
+give-up condition, and whitelist mechanism on the offline problem first**; when it is carried over, only the safety
+questions remain to worry about, not the architecture at the same time.

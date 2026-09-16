@@ -49,12 +49,13 @@
 # The camera is the one sensor here that is NOT started by default, and that is
 # a deliberate regression guard rather than an oversight. /dev/video0 is a V4L2
 # capture device that admits exactly one streaming opener, and it already has
-# one: scripts/publish_camera.sh feeds MediaMTX over RTSP, which is what the
-# frontend's WebRTC view consumes. bringup.launch.py is window 0 of BOTH session
-# specs, so defaulting the camera node on would take that stream away from every
-# robot in the fleet the next time it came up, and it would fail the quiet way —
-# gstreamer dies at S_FMT with "Device or resource busy" long after the pane has
-# scrolled. Turn it on per-run with use_camera:=true once you have decided which
+# one: scripts/publish_camera_crop.sh feeds the remote MediaMTX over RTSP from
+# the host, which is what the frontend's WebRTC view consumes. bringup.launch.py
+# is window 0 of BOTH session specs, so defaulting the camera node on would take
+# that stream away from every robot in the fleet the next time it came up, and
+# it would fail the quiet way — gstreamer dies at S_FMT with "Device or resource
+# busy" long after the pane has scrolled. Turn it on per-run with
+# use_camera:=true once you have decided which
 # of the two consumers owns the device.
 #
 # robot_id is read from the system config INI at launch time, same convention as
@@ -552,8 +553,9 @@ def generate_launch_description():
         "use_camera",
         default_value="false",
         description="Start the VizionSDK camera node. Default false: "
-        "/dev/video0 takes one streaming opener and scripts/publish_camera.sh "
-        "(RTSP -> MediaMTX -> the frontend's WebRTC view) already holds it. "
+        "/dev/video0 takes one streaming opener and scripts/publish_camera_crop.sh "
+        "(host-side RTSP -> remote MediaMTX -> the frontend's WebRTC view) already "
+        "holds it. "
         "Set true only when this node, not that script, owns the camera",
     )
 

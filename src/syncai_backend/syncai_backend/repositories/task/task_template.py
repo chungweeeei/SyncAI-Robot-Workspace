@@ -5,10 +5,10 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any, Optional
 
-from sqlalchemy import Engine, or_, select
+from sqlalchemy import Engine, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from syncai_backend.database.models import TaskTemplate
+from syncai_backend.database.models import TaskTemplate, _utcnow
 
 
 class TaskTemplateRepo:
@@ -132,6 +132,34 @@ class TaskTemplateRepo:
             session.commit()
             session.refresh(row)
             return row
+
+    def rebind_map(self, old_name: str, new_name: str) -> int:
+        """Point every template bound to ``old_name`` at ``new_name``; return how many.
+
+        The other cascade half of a map rename (``MapRepo.move_vertices`` is the
+        first). Without it a rename silently disables every task bound to the
+        map: the router's dispatch guard compares ``map_name`` against the
+        active map by string, so a template still naming the old directory
+        would refuse to run on a map that is right there under its new name.
+
+        ``map_name IS NULL`` rows are map-independent and are not touched — the
+        ``WHERE`` is an equality, and NULL never equals anything. The step
+        blobs need no rewriting: a MOVE step references its vertex by UUID, and
+        the UUID survives ``move_vertices``.
+
+        What this cannot reach: the ``map_name`` frozen into a Temporal
+        schedule's memo at registration. That is a display label the schedule
+        router documents as unvalidated, and it stays stale on purpose rather
+        than re-registering every schedule from here.
+        """
+        with self._session("rebind_map") as session:
+            result = session.execute(
+                update(TaskTemplate)
+                .where(TaskTemplate.map_name == old_name)
+                .values(map_name=new_name, updated_at=_utcnow())
+            )
+            session.commit()
+            return result.rowcount
 
     def delete_task_template(self, task_id: uuid.UUID) -> bool:
         with self._session("delete_task_template") as session:

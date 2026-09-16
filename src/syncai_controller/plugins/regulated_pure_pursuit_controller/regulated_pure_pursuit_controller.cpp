@@ -294,11 +294,11 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
 
   linear_vel = desired_linear_vel_;
 
-  // Make sure we're in compliance with basic constraints。
-  // Constraints 主要有三個分支：
-  // 1. 到目標點附近，原地轉到朝向goal heading。
-  // 2. 偏離路徑朝向太多，先原地轉向到Local Path上。
-  // 3. 正常路徑追蹤。
+  // Make sure we're in compliance with basic constraints.
+  // The constraints split into three branches:
+  // 1. Near the goal: rotate in place to face the goal heading.
+  // 2. Heading deviates too far from the path: first rotate in place onto the local path.
+  // 3. Normal path tracking.
   double angle_to_heading;
   bool is_rotating_to_heading = false;
   if (shouldRotateToGoalHeading(carrot_pose)) {
@@ -314,15 +314,19 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
       linear_vel, sign);
   }
 
-  // 線速度加速度限制：這個 stack 的 cmd_vel 沒有經過 velocity smoother，
-  // 必須由 controller 自己保證線速度的 kinematic feasibility。角速度在兩條分支
-  // 各自夾制：旋轉分支在 rotateToHeading() 內，追蹤分支在下面的 curvature 之後。
+  // Linear acceleration limit: cmd_vel in this stack does not pass through a velocity
+  // smoother, so the controller itself has to guarantee the kinematic feasibility of the
+  // linear velocity. Angular velocity is clamped separately in each branch: the rotation
+  // branch inside rotateToHeading(), the tracking branch below, after the curvature step.
   //
-  // 基準用「上一個 cycle 的命令速度」last_cmd_vel_，不是量測速度 speed。
-  // speed 來自未平滑的 Point-LIO twist，四足步態讓軀幹前後晃 ±0.2~0.5 m/s，
-  // 若以量測值為基準，命令會被拉著一起晃、甚至在 allow_reversing=false 時被
-  // 壓成負值，形成 命令晃→狗晃更大→量測晃更大 的正回授。以自身上個命令為
-  // 基準則只保證命令軌跡本身的加速度可行，不與步態噪聲耦合。
+  // The reference is the previous cycle's commanded velocity, last_cmd_vel_, not the
+  // measured velocity `speed`. `speed` comes from the unsmoothed Point-LIO twist, and the
+  // quadruped gait rocks the trunk fore/aft by +-0.2~0.5 m/s. Referencing the measurement
+  // would drag the command along with that rocking, and with allow_reversing=false could
+  // even squash it negative, closing a positive feedback loop: command oscillates -> dog
+  // rocks harder -> measurement oscillates harder. Referencing our own previous command
+  // only guarantees that the commanded trajectory itself is acceleration-feasible, without
+  // coupling to gait noise.
   const double min_feasible_linear_speed =
     last_cmd_vel_.linear.x - max_linear_accel_ * control_duration_;
   const double max_feasible_linear_speed =
@@ -331,24 +335,28 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
 
   if (!is_rotating_to_heading) {
     // Apply curvature to angular velocity after constraining linear velocity:
-    // 用 clamp 後的線速度算角速度，維持追蹤弧線的曲率不變。
+    // compute the angular velocity from the clamped linear velocity so the curvature of the
+    // tracked arc stays unchanged.
     angular_vel = linear_vel * curvature;
 
-    // 角速度加速度限制。rotateToHeading() 內部已有同樣的 clamp，但追蹤分支原本
-    // 沒有，於是「退出原地旋轉」的那一個 cycle 是斷崖：實機量到 wz 1.300 ->
-    // 0.235（≈ -21 rad/s²），而進入旋轉那側因為走 rotateToHeading() 反而是每
-    // cycle +0.16 的平滑爬升。斷崖退出還會餵出震盪 —— 退出後航向轉過頭，下一個
-    // cycle 就反向重新進入 rotate-to-heading（量到 wz +1.300 -> +0.024 -> -0.064
-    // -> ... -> -0.815），也就是 controller_server_params.yaml 裡
-    // regulated_linear_scaling_min_speed 註解警告過的 weaving。
+    // Angular acceleration limit. rotateToHeading() already has the same clamp internally,
+    // but the tracking branch originally did not, so the one cycle that exits rotate-in-place
+    // was a cliff: on the real robot wz measured 1.300 -> 0.235 (~ -21 rad/s^2), whereas the
+    // entry side, going through rotateToHeading(), ramps smoothly at +0.16 per cycle. The
+    // cliff exit also feeds oscillation: after exiting, the heading overshoots and the next
+    // cycle re-enters rotate-to-heading in the opposite direction (measured wz +1.300 ->
+    // +0.024 -> -0.064 -> ... -> -0.815), i.e. exactly the weaving that the
+    // regulated_linear_scaling_min_speed comment in controller_server_params.yaml warns about.
     //
-    // 代價：受夾制的那幾個 cycle 內 (v, w) 不再精確等於路徑曲率，出彎會走稍寬
-    // 一點的弧 —— 與上面線性夾制同一種取捨。退出時航向誤差上限是
-    // rotate_to_heading_min_angle (0.25 rad)，而 1.3 rad/s 以 3.2 rad/s² 洩掉約
-    // 多轉 0.26 rad，數量級相抵。
+    // Cost: during the few clamped cycles (v, w) no longer exactly equals the path curvature,
+    // so the robot swings a slightly wider arc coming out of a turn -- the same trade-off as
+    // the linear clamp above. The heading error on exit is bounded by
+    // rotate_to_heading_min_angle (0.25 rad), while bleeding 1.3 rad/s off at 3.2 rad/s^2
+    // overturns by about 0.26 rad; the two are of the same order and cancel out.
     //
-    // 只加在這個分支：rotateToHeading() 的 sqrt(2αθ) 是一條「為了停得住」的減速
-    // 上限，在它之後再套一次對稱的加速度夾制會把速度往回拉、抵消該上限。
+    // Added only in this branch: rotateToHeading()'s sqrt(2*alpha*theta) is a deceleration
+    // ceiling that exists "so we can still stop in time"; applying a symmetric acceleration
+    // clamp after it would pull the velocity back up and defeat that ceiling.
     const double min_feasible_angular_speed =
       last_cmd_vel_.angular.z - max_angular_accel_ * control_duration_;
     const double max_feasible_angular_speed =
@@ -356,8 +364,10 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
   }
 
-  // 剛算好的(v, w) 定義了一條弧線，在真的執行之前，先在costmap上模擬機器人沿這條弧線走的過程中 footprint 會不會壓到障礙物。
-  // 這裡可以在經過regulate後知道預測出來的路徑會不會撞到障礙物，算是一個安全的檢查機制。
+  // The (v, w) just computed defines an arc. Before actually executing it, simulate the robot
+  // driving along that arc on the costmap and check whether the footprint would touch an
+  // obstacle anywhere along the way. This tells us, after regulation, whether the predicted
+  // path collides with an obstacle -- a safety check.
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
     throw syncai_nav_core::PlannerException(
@@ -463,7 +473,8 @@ geometry_msgs::msg::PoseStamped RegulatedPurePursuitController::getLookAheadPoin
     goal_pose_it = std::prev(transformed_plan.poses.end());
   } else if (use_interpolation_ && goal_pose_it != transformed_plan.poses.begin()) {
     auto prev_pose_it = std::prev(goal_pose_it);
-    // 插值簡單來說就是在解一個幾何方程式：線段與圓的交點，這個交點當作前看點讓機器人追該點
+    // Interpolation here simply solves a geometric equation: the intersection of the segment
+    // with the lookahead circle. That intersection becomes the lookahead point the robot chases.
     auto point = circleSegmentIntersection(
       prev_pose_it->pose.position, goal_pose_it->pose.position, lookahead_dist);
     geometry_msgs::msg::PoseStamped pose;
@@ -483,7 +494,7 @@ bool RegulatedPurePursuitController::isCollisionImminent(
   // Note(stevemacenski): This may be a bit unusual, but the robot_pose is in
   // odom frame and the carrot_pose is in robot base frame.
 
-  // 檢查機器人「此刻」的footprint是否有壓在 LETHAL 障礙物上
+  // Check whether the robot's footprint, right now, is already on a LETHAL obstacle
   if (
     inCollision(
       robot_pose.pose.position.x, robot_pose.pose.position.y,
@@ -637,11 +648,14 @@ void RegulatedPurePursuitController::applyConstraints(
   const double & curvature, const geometry_msgs::msg::Twist & /*curr_speed*/,
   const double & pose_cost, const nav_msgs::msg::Path & path, double & linear_vel, double & sign)
 {
-  // 正常路徑追蹤下，根據曲率和障礙物成本對線速度進行約束。
-  // 相較於傳統的pure pursuit controller，這裡就是多出來的部分。主要有三個調節器。
-  // 1. 曲率調節：迴轉半徑，按比例線性降速 -> 過彎減速。
-  // 2. 障礙物鄰近調節： 透過 local costmap 的 inflation layer，算出離障礙物的距離。
-  // 3. 接近目標減速，按「到終點距離」線性減速。
+  // Under normal path tracking, constrain the linear velocity by curvature and obstacle cost.
+  // Compared with a classic pure pursuit controller this is the extra part. There are three
+  // regulators:
+  // 1. Curvature regulation: scale speed down linearly with the turning radius -> slow down
+  //    through turns.
+  // 2. Obstacle proximity regulation: derive the distance to the nearest obstacle from the
+  //    local costmap's inflation layer.
+  // 3. Approach slowdown: scale speed down linearly with the distance to the goal.
   double curvature_vel = linear_vel;
   double cost_vel = linear_vel;
 
@@ -669,9 +683,9 @@ void RegulatedPurePursuitController::applyConstraints(
   }
 
   // Use the lowest of the 2 constraint heuristics, but above the minimum translational speed
-  // 一開始的兩個調節器都是算出一個上限值，要同時滿足就取最嚴的
-  // - curvature_vel:「這個彎這麼急，最多只能開到速度X」
-  // - cost_vel：「離障礙物這麼近，最多只能開到Y」
+  // The first two regulators each produce an upper bound; to satisfy both, take the stricter:
+  // - curvature_vel: "a turn this sharp allows at most speed X"
+  // - cost_vel: "this close to an obstacle allows at most speed Y"
   linear_vel = std::min(cost_vel, curvature_vel);
   linear_vel = std::max(linear_vel, regulated_linear_scaling_min_speed_);
 
@@ -726,10 +740,13 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
 {
   /**
    * @brief Transforms the global plan into the robot's frame of reference.
-   * 這個function主要解決了3個問題：
-   *    1. global plan 在 map frame,但 pure pursuit 的數學(找 lookahead 點、算曲率)在 robot frame
-   *    2. 完整路徑可能幾百公尺,但控制器只關心 local costmap 範圍內的部分
-   *    3. 走過的路徑要丟掉，不然每個ComputeVelocityCommands function都要重複處理
+   * This function solves three problems:
+   *    1. The global plan is in the map frame, but the pure pursuit math (finding the
+   *       lookahead point, computing curvature) works in the robot frame.
+   *    2. The full path may be hundreds of meters long, but the controller only cares about
+   *       the part inside the local costmap.
+   *    3. The part already driven has to be dropped, otherwise every
+   *       computeVelocityCommands() call would reprocess it.
    */
   if (global_plan_.poses.empty()) {
     throw syncai_nav_core::PlannerException("Received plan with zero length");
@@ -745,18 +762,19 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
   // We'll discard points on the plan that are outside the local costmap
   double max_costmap_extent = getCostmapMaxExtent();
 
-  // 用沿利累積距離，劃出允許搜尋的範圍上限
+  // Use the integrated distance along the path to bound the range allowed for the search
   auto closest_pose_upper_bound = syncai_util::geometry_utils::first_after_integrated_distance(
     global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
 
-  // 在上面找出的範圍內找離機器人最近的路徑點
+  // Within the range found above, find the path point closest to the robot
   auto transformation_begin = syncai_util::geometry_utils::min_by(
     global_plan_.poses.begin(), closest_pose_upper_bound,
     [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
       return euclidean_distance(robot_pose, ps);
     });
 
-  // 從 transformation_begin 往後掃，找到第一個離機器人直線距離超過 local costmap 範圍的點，作為 transformation_end
+  // Scan forward from transformation_begin and take the first point whose straight-line
+  // distance from the robot exceeds the local costmap extent as transformation_end
   auto transformation_end = std::find_if(
     transformation_begin, global_plan_.poses.end(),
     [&](const auto & pose) { return euclidean_distance(pose, robot_pose) > max_costmap_extent; });
@@ -772,7 +790,7 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
     return transformed_pose;
   };
 
-  // 把上面篩選出來範圍的path逐點transform到robot frame上
+  // Transform the path range selected above into the robot frame, point by point
   nav_msgs::msg::Path transformed_plan;
   std::transform(
     transformation_begin, transformation_end, std::back_inserter(transformed_plan.poses),

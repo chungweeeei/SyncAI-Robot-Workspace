@@ -6,6 +6,7 @@ import { BoxIcon, ChevronDownIcon, LayersIcon, PencilIcon } from "lucide-react";
 
 import { Chip, Readout } from "@/components/console/instrument";
 import { GridRebuildControl } from "@/components/maps/grid-rebuild-control";
+import { MapRenameControl } from "@/components/maps/map-rename-control";
 import { cn } from "@/lib/utils";
 import type { MapSummary } from "@/lib/types/map";
 
@@ -80,8 +81,19 @@ function MapThumbnail({ map }: { map: MapSummary }) {
  * map the nav stack cannot load must say so with the card shut, or the flag is
  * worthless — and a conversion in flight is why Edit and Rebuild are greyed, so
  * hiding it would make the card look broken instead of busy.
+ *
+ * The title is the one editable value on the card (MapRenameControl), except on
+ * the map in use: the stack was launched with that name and nothing here can
+ * re-point it, so the control is greyed there and the backend refuses anyway.
  */
-export function MapCard({ map }: { map: MapSummary }) {
+export function MapCard({
+  map,
+  onRenamed,
+}: {
+  map: MapSummary;
+  /** Forwarded to the rename control; see MapRenameControl for why it goes up. */
+  onRenamed?: (message: string) => void;
+}) {
   const [open, setOpen] = React.useState(false);
   const grid = map.grid;
   const detailsId = `map-${map.name}-details`;
@@ -100,9 +112,7 @@ export function MapCard({ map }: { map: MapSummary }) {
 
       <div className="px-3 py-3">
         <header className="flex items-center gap-2">
-          <h2 className="readout min-w-0 flex-1 truncate text-[15px] font-medium">
-            {map.name}
-          </h2>
+          <MapRenameControl map={map} onRenamed={onRenamed} />
           {map.active && <Chip tone="cmd">In use</Chip>}
           <button
             type="button"

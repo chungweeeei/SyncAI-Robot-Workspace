@@ -152,10 +152,57 @@ vy = (linear.y  >= 0) ? linear.y  * scale_left   : linear.y  * scale_right;
 wz = (angular.z >= 0) ? angular.z * scale_turn_l : angular.z * scale_turn_r;
 ```
 
-All six are `std::atomic<double>` (default `1.0`) because `set_speed_scale`
-writes them from the services callback group while `cmd_vel` reads them from its
-own. They are **not** ROS parameters — they exist only in memory and reset to
-`1.0` on restart.
+All six are `std::atomic<double>` because `set_speed_scale` writes them from the
+services callback group while `cmd_vel` reads them from its own. They are **ROS
+parameters** — `scale_fwd`, `scale_back`, `scale_left`, `scale_right`,
+`scale_turn_l`, `scale_turn_r`, each defaulting to `1.0` — declared in
+`initParameters()` and loaded from `params/driver_manager_params.yaml` at
+startup, so the calibration survives a restart. That was not always so: they
+used to be hard-coded `1.0` with `set_speed_scale` as the only way to change
+them, and since nothing in the stack calls that service on startup, the
+correction was silently never applied. `set_speed_scale` still overrides all
+six at runtime — and *that* override is what is **not** persisted. It writes the
+atomics, not the parameters, so a restart returns to the YAML values.
+
+### Velocity-scale calibration
+
+The shipped values are `scale_fwd: 1.40`, `scale_turn_l: 1.40`,
+`scale_turn_r: 1.40`, and `1.0` for `scale_back` / `scale_left` / `scale_right`
+(unmeasured — the nav stack never commands them: `allow_reversing` is `false`
+and `min_y_velocity_threshold` gates strafe). They were calibrated on robot01
+against `/odom`, where yaw comes from the lidar IMU gyro (a direct measurement)
+and forward speed is differentiated from the LIO pose (the softer number). Only
+steady-state points count — a bin taken while the command is still ramping
+measures the ramp, not the gain — and the two navigation runs that held a
+plateau long enough were:
+
+| Run | Scales in force | Command | Measured | Ratio |
+|---|---|---|---|---|
+| A | `1.00` | `0.80` m/s | `0.624` | `0.78` (n=153) |
+| A | `1.00` | `1.30` rad/s | `0.695` | `0.53` (n=125) |
+| B | `1.15` fwd / `1.67` turn | `0.60` m/s | `0.495` | `0.82` (n=321) |
+| B | `1.15` fwd / `1.67` turn | `0.65` rad/s | `0.776` | `1.19` (n=202) |
+
+The shipped `1.40`s fold run B's residual back into its scales: `1.15 / 0.82`
+and `1.67 / 1.19` both land on `1.40`.
+
+**Known weak.** That is one plateau per axis per run, and the two runs do not
+agree. Run B reached `0.776` rad/s from an `AXES` value of `1.09`, which is more
+output from less input than run A's `0.695` at `AXES 1.30` — so the response is
+not a fixed gain, and an earlier reading of it as "gain plus a hard ceiling at
+0.69" was wrong (that curve was built from ramp transients). Until someone runs
+an open-loop sweep — hold each of `vx` 0.2..0.6 and `wz` 0.2..1.0 for 3–5 s and
+record the plateaus — treat these as a **working correction, not a
+calibration**.
+
+This is also why `syncai_controller`'s commands are modest: its
+`controller_server_params.yaml` lowered `desired_linear_vel` from `0.8` to
+`0.60` and `rotate_to_heading_angular_vel` from `1.3` to `0.65`, so that the
+commanded rate stays inside the range that has actually been measured (and, for
+rotate-to-heading, so its exit test is judged against a rate within ~20% of
+reality rather than one the robot delivers at half speed). The two packages'
+values are **one calibration**: raise either controller speed only together
+with a fresh scale measurement at the new command.
 
 ## Threading
 
@@ -211,7 +258,7 @@ implementation:
 
 ## Parameters
 
-The four UDP endpoint settings are the whole parameter surface:
+Ten parameters: the four UDP endpoint settings and the six velocity scales.
 
 | Parameter | Default | Config |
 |---|---|---|
@@ -219,9 +266,18 @@ The four UDP endpoint settings are the whole parameter surface:
 | `telemetry_recv_port` | `50012` | `50010` |
 | `command_target_ip` | `192.168.1.120` | `192.168.1.120` |
 | `command_target_port` | `50051` | `50051` |
+| `scale_fwd` | `1.0` | `1.40` |
+| `scale_back` | `1.0` | `1.0` (unmeasured) |
+| `scale_left` | `1.0` | `1.0` (unmeasured) |
+| `scale_right` | `1.0` | `1.0` (unmeasured) |
+| `scale_turn_l` | `1.0` | `1.40` |
+| `scale_turn_r` | `1.0` | `1.40` |
 
-None are dynamically reconfigurable — they are read once in the constructor,
-before the sockets are opened, so a change needs a restart.
+None are dynamically reconfigurable through `ros2 param set` — all are read
+once in the constructor. The UDP settings are consumed before the sockets are
+opened, so a change needs a restart; the scales are copied into their atomics,
+and the only runtime path onto them is the `set_speed_scale` service (which
+does not write back to the parameters — see "Velocity-scale calibration").
 
 The published `BatteryState` sets only `header.stamp`, never a `frame_id`, so
 this node has no frame parameter and the launch file does no `<robot_id>/`
@@ -264,8 +320,11 @@ any section parses.
 - **`cmd_vel` has no watchdog.** If the controller stops publishing, this node
   simply stops sending `AXES` — it does not send a stop command. Whether the
   robot halts is up to the gait controller's own timeout.
-- **Speed scales are not persisted.** After a restart every gain is `1.0` again,
-  and the robot tracks velocity asymmetrically until `set_speed_scale` is called.
+- **`set_speed_scale` overrides are not persisted.** The six scales are ROS
+  parameters read from `params/driver_manager_params.yaml` at startup, so the
+  *calibrated* values survive a restart — but anything written at runtime
+  through `set_speed_scale` lives only in the atomics and is gone the next time
+  the node comes up. A value worth keeping belongs in the YAML.
 - **`IMUState.timestamp` is nanoseconds**, from `now().nanoseconds()` — a third
   convention alongside `RobotState` (seconds) and `ArtifactState` (milliseconds).
   Check the producer before doing arithmetic across messages.

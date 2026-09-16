@@ -16,7 +16,7 @@
 // needs no encoder at all, and the raw path cannot be colour-managed.
 
 import { apiUrl } from "@/lib/api/config";
-import { errorDetail } from "@/lib/api/http";
+import { errorDetail, requestJson } from "@/lib/api/http";
 import type { MapGrid } from "@/lib/map/grid";
 import type { GridRecipe, MapSummary } from "@/lib/types/map";
 
@@ -296,4 +296,36 @@ export async function convertMapGrid(
   if (!response.ok) throw new Error(await errorDetail(response));
 
   return (await response.json()) as ConvertGridResult;
+}
+
+/** `RenameMapResponse`, verbatim. */
+export interface RenameMapResult {
+  old_name: string;
+  name: string;
+  vertices_moved: number;
+  templates_moved: number;
+  /** Operator-facing sentence; render it verbatim. */
+  message: string;
+}
+
+/**
+ * Rename a map: `map/<name>/` becomes `map/<newName>/` on the robot, and the
+ * vertices and task templates bound to the old name follow it.
+ *
+ * Three refusals come back as 409s — `map_active` (the map the stack is
+ * running on; the card never offers Rename for it, so seeing this means the
+ * catalogue was stale), `conversion_running` and `name_taken` — plus a 400 for
+ * a name the catalogue's rule rejects. None of them has a structured retry the
+ * way the convert endpoint's `gridmap_hand_edited` does, so there is no error
+ * class here: the backend's sentence is written to be shown, and the control
+ * shows it.
+ */
+export function renameMap(
+  name: string,
+  newName: string,
+): Promise<RenameMapResult> {
+  return requestJson<RenameMapResult>(
+    apiUrl(`/api/v1/maps/${encodeURIComponent(name)}`),
+    { method: "PATCH", body: JSON.stringify({ name: newName }) },
+  );
 }

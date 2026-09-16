@@ -174,3 +174,35 @@ def test_delete_is_idempotent_in_its_return_value(task_template_repo):
     )
     assert task_template_repo.delete_task_template(task_id=row.id) is True
     assert task_template_repo.delete_task_template(task_id=row.id) is False
+
+
+def test_rebind_map_moves_bound_templates_and_leaves_independent_ones(
+    task_template_repo,
+):
+    """``map_name IS NULL`` rows are run-anywhere templates; equality never matches NULL."""
+    bound = task_template_repo.create_task_template(
+        name="patrol", description="", map_name="old", steps=_steps("1-move")
+    )
+    other = task_template_repo.create_task_template(
+        name="elsewhere", description="", map_name="other", steps=_steps("1-move")
+    )
+    free = task_template_repo.create_task_template(
+        name="stand", description="", map_name=None, steps=_steps("1-standup")
+    )
+
+    moved = task_template_repo.rebind_map("old", "new")
+
+    assert moved == 1
+    assert task_template_repo.get_task_template(task_id=bound.id).map_name == "new"
+    assert task_template_repo.get_task_template(task_id=other.id).map_name == "other"
+    assert task_template_repo.get_task_template(task_id=free.id).map_name is None
+    # The step blob references vertices by UUID, so it is not rewritten.
+    assert task_template_repo.get_task_template(task_id=bound.id).steps == _steps("1-move")
+
+
+def test_rebind_map_of_an_unknown_map_moves_nothing(task_template_repo):
+    task_template_repo.create_task_template(
+        name="patrol", description="", map_name="dp2f", steps=_steps("1-move")
+    )
+
+    assert task_template_repo.rebind_map("ghost", "new") == 0

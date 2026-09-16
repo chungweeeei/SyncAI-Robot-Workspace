@@ -21,7 +21,9 @@ syncai_sys_manager ────────────────────�
 
 ### Robot state aggregate
 
-`RobotState` is published at 10 Hz by `syncai_robot_state` on the relative topic
+`RobotState` is published at 1 Hz as shipped (`publish_rate: 1.0` in
+`syncai_robot_state/params/robot_state_params.yaml`; the code default is 10 Hz)
+by `syncai_robot_state` on the relative topic
 `robot_state` (BEST_EFFORT, KeepLast(1)) and consumed by `syncai_backend`, which
 re-serialises **a subset** of it for `GET /api/v1/robot/state`. It nests seven of
 the other messages:
@@ -295,11 +297,6 @@ ros2 interface list | grep syncai_common
   `std_msgs/Int32MultiArray` has no header either and the telemetry link carries no
   clock, so there is no timestamp available anywhere on that path — which is why
   that message can say what the controller reports but never when.
-- **`syncai_backend` imports `syncai_common` but does not declare it** in its
-  `package.xml`. It works because both live in the same workspace and the install
-  space is sourced as a whole, but colcon has no reason to build this package
-  first — an explicit `<exec_depend>syncai_common</exec_depend>` there would make
-  the ordering real.
 - **Constant-only messages (`RobotMode`, `RobotStatus`) generate a publishable
   type with zero fields.** Publishing one is legal and meaningless; they exist
   purely as a constant namespace for `RobotState`'s `uint8` fields.

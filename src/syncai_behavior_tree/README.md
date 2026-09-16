@@ -42,7 +42,7 @@ include/syncai_behavior_tree/
 src/behavior_tree_engine.cpp
 plugins/…                      one .cpp per plugin library; each ends in BT_REGISTER_NODES
 examples/demo.cpp
-docs/                          design notes (Chinese) — see "Further reading"
+docs/                          design notes (English) — see "Further reading"
 ```
 
 ## BehaviorTreeEngine
@@ -260,20 +260,20 @@ specialisation shows up as an XML parse error at tree-load time.
 
 ## The tree in use
 
-`syncai_task_runner/behavior_trees/move.xml` — replanning at 0.333 Hz with
+`syncai_task_runner/behavior_trees/move.xml` — replanning at 1 Hz with
 contextual recovery:
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">
-  <RateController hz="0.333">
+  <RateController hz="1.0">
     <RecoveryNode number_of_retries="1" name="ComputePathToPose">
       <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-      <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
   <RecoveryNode number_of_retries="1" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
-    <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+    <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>
 </PipelineSequence>
 ```
@@ -341,7 +341,7 @@ Only the ament linters run under `colcon test`; there are no unit tests.
 
 ## Further reading
 
-`docs/` holds longer design notes (in Chinese) written while porting:
+`docs/` holds longer design notes (in English) written while porting:
 
 - [`docs/behavior_tree_tick_notes.md`](docs/behavior_tree_tick_notes.md) — how
   `tickRoot()` → `executeTick()` → `tick()` recursion works, `SequenceNode`'s

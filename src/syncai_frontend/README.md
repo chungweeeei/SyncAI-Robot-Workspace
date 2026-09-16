@@ -1,36 +1,119 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# syncai_frontend
 
-## Getting Started
+The operator console for one SyncAI robot. It is a browser client of
+`syncai_backend` and nothing else: every byte it shows comes from that
+process's REST/WebSocket surface on port **3000**, and it holds no robot state
+of its own beyond what a page needs to render.
 
-First, run the development server:
+- **Next.js 16.2.10** (App Router) + **React 19**. The pinned Next has breaking
+  changes relative to what models were trained on — read the relevant guide in
+  `node_modules/next/dist/docs/` before writing Next.js code (see `AGENTS.md`).
+- **shadcn-style UI** (`components/ui/`) built on `@base-ui/react`, Tailwind 4.
+- **TanStack Query** for every REST read.
+- **Raw three.js** for the 3D view — no react-three-fiber. WebRTC streaming of
+  the view was considered and deferred.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Dev server and production server both listen on **3001**
+(`next dev -p 3001` / `next start -p 3001` in `package.json`), so the console
+and the backend can share a host without a proxy.
+
+## Routes (`app/`)
+
+| Route | What it is |
+|---|---|
+| `/` | Dashboard: `PointCloudView` (live cloud, map, robot mesh, route, vertices) left, `TelemetryRail` right. Gated on `GET /api/v1/robot/state` — no state, no panels. |
+| `/mapping` | Mapping mode: switch `AUTO`/`MANUAL`, drive, watch pgo's "map so far" stream, save the map. |
+| `/maps` | The map library (`MapLibrary`): catalogue cards, thumbnails, Rebuild-grid, inline Rename (greyed on the map in use — the backend refuses it too). |
+| `/maps/[name]/edit` | The gridmap editor — replaces a step that used to be done in GIMP. |
+| `/model-preview` | Backend-free preview of the G23 GLB inside the real canvas, for checking scale / up-axis / forward-axis of a re-baked asset. |
+| `/settings` | Appearance + wifi (`nmcli` through the backend). |
+| `/tasks` | Task console: template library, step composer, dispatch, schedules, the active run. |
+
+## Layering
+
+```
+app/          route shells; almost no logic ("chrome only" — a component owns the page)
+components/   console/ (shell: nav rail, status strip, shared providers), dashboard/,
+              mapping/, maps/, tasks/, settings/, ui/ (shadcn primitives)
+hooks/        one hook per backend interaction (use-maps, use-active-tasks, use-teleop-sender…)
+lib/api/      typed fetchers per backend router + config.ts + query-keys.ts
+lib/ros/      the WebSocket clients (telemetry, point cloud, teleop) and their frame decoders
+lib/robot/    G23 joint table (URDF link names ↔ GLB node names)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Backend addressing.** Every backend path goes through `apiUrl()` / `wsUrl()`
+from `lib/api/config.ts` — never a literal host. Resolution order:
+`NEXT_PUBLIC_API_BASE` / `NEXT_PUBLIC_WS_BASE` if set; otherwise the page's own
+hostname on port 3000 (what makes `http://<robot-ip>:3001` work on the LAN);
+otherwise `http://localhost:3000` for SSR / build time. The WS base is derived
+from the HTTP one by swapping the scheme. Even `<img src>` for map thumbnails is
+absolutised through `apiUrl`, because a relative URL would resolve against the
+frontend's own origin.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**REST reads go through TanStack Query.** One `QueryClient` lives in
+`components/query-provider.tsx` with `retry: false` and
+`refetchOnWindowFocus: false` — the poll intervals *are* the retry policy, and
+the status indicators exist to report a failure the moment it happens. Every
+cache key lives in `lib/api/query-keys.ts`, so cache *sharing* between hooks is a
+decision visible in one place: the gridmap editor and the dashboard read the
+same `mapVertices` entry, which is what makes a vertex moved on one screen
+already current on the other. Add new keys there, never inline in a hook.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**The WebSocket streams stay outside TanStack** — a push stream has nothing to
+refetch. `hooks/use-telemetry.ts` (pose ~20 Hz, joints, path) and
+`hooks/use-teleop-sender.ts` (outbound `{vx, vy, wz}` at ~10 Hz) are React
+state; the point cloud additionally bypasses React entirely: frames
+(`[u32 count][f32 xyz…]`, ~10 Hz × a few hundred KB) go straight into three.js
+buffers in `components/dashboard/pointcloud-canvas.tsx`.
 
-## Learn More
+The shell in `app/layout.tsx` runs exactly **two polls** for the whole console
+(`RobotStateProvider` at 1 Hz, `ActiveTaskProvider` at 2 s); pages read those
+providers rather than polling on their own, so the header can never disagree
+with the rail.
 
-To learn more about Next.js, take a look at the following resources:
+## The robot mesh
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`public/models/g23.glb` is **generated**, by `scripts/urdf2glb.py` at the
+workspace root, from `src/syncai_bringup/description/G23.urdf` and its STLs.
+Two invariants the canvas depends on: GLB node names **equal URDF link names**
+(that is how joint angles from the telemetry stream find their mesh — see
+`lib/robot/g23-joints.ts`), and the coordinates stay **Z-up** in the ROS
+convention rather than glTF's nominal +Y-up, because the canvas builds a Z-up
+world so map coordinates pass straight through. The script runs `gltfpack`
+(meshopt compression), which the canvas decodes with `MeshoptDecoder`. Re-bake
+after any URDF change; `/model-preview` is where to check the result.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Fonts
 
-## Deploy on Vercel
+`app/layout.tsx` loads Archivo and IBM Plex Mono through `next/font`. Archivo's
+`axes: ["wdth"]` is load-bearing: without it `next/font` ships the weight-only
+subset and the condensed `.instrument-label` style in `globals.css` silently
+renders at normal width.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Running
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm install
+npm run dev        # http://<host>:3001, HMR
+npm run build && npm start
+```
+
+On the robot, `NodeManager` starts `npm run dev` in the `frontend` window of
+both session specs (`config/sessions/*.yaml`) with `cwd: src/syncai_frontend`.
+
+**`next.config.ts` `allowedDevOrigins` hardcodes LAN IPs.** Next 16 only trusts
+`localhost` for dev/HMR requests, so opening the dashboard from another origin
+(the container's bridge IP, a robot's LAN address) breaks the HMR WebSocket
+unless that origin is listed. Edit it per robot / network. Note the package's
+`.gitignore` names `/next.config.ts`; the file is tracked anyway, so edits still
+show up in `git status` — do not commit a per-site IP list by accident.
+
+**Ports differ between package.json and the Dockerfile.** `package.json` pins
+3001 for both `dev` and `start`. The `Dockerfile` (multi-stage, `output:
+"standalone"`, `node server.js`) sets `PORT=3000` and `EXPOSE 3000` — the
+standalone server ignores `package.json` scripts, so a container built from it
+comes up on 3000, colliding with the backend if both run on one host network.
+Nothing in this workspace runs that image today (the sessions use `npm run dev`);
+if it is ever deployed, either pass `-e PORT=3001` or fix the Dockerfile, and
+set `NEXT_PUBLIC_API_BASE` since the same-hostname fallback assumes the backend
+is on 3000 of the page's host.

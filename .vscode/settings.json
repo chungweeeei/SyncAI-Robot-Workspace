@@ -1,9 +1,9 @@
 {
-  // 切換焦點時自動存檔 —— 這個模式才會觸發 formatOnSave
-  // (afterDelay 打字自動存不會套用格式)
+  // Auto-save on focus change -- this is the only autoSave mode that triggers
+  // formatOnSave (afterDelay saves while typing and does not apply formatting)
   "files.autoSave": "onFocusChange",
   "editor.formatOnSave": true,
-  // 用 clang-format,並讀取 repo 根目錄的 .clang-format 設定
+  // Use clang-format, reading the .clang-format config at the repo root
   "C_Cpp.formatting": "clangFormat",
   "C_Cpp.clang_format_style": "file",
   "[cpp]": {
@@ -21,5 +21,5 @@
     "/opt/ros/humble/local/lib/python3.10/dist-packages"
   ],
   "ROS2.distro": "humble",
-  "cmake.sourceDirectory": "/home/syncrobotic/Documents/SyncAI-Robot-Workspace/src/syncai_map_server"
+  "cmake.sourceDirectory": "/home/syncrobotic/SyncAI-Robot-Workspace/src/syncai_map_server"
 }

@@ -14,10 +14,14 @@
     base_frame: "base_link"
     # TF lookup tolerance in seconds.
     transform_tolerance: 0.1
-    # Publish rate for robot_state, in Hz. 10 Hz because the readers are
-    # operators watching joint temperatures or chasing a localization dropout.
-    # Raising it does not make the message more orderable — RobotState.timestamp
-    # has whole-second resolution.
+    # Publish rate for robot_state, in Hz. The code default is 10.0; this was
+    # lowered to 1 Hz because the readers are operators watching joint
+    # temperatures or chasing a localization dropout, and a once-a-second status
+    # aggregate is plenty for that — anything needing sub-second data (the
+    # backend's telemetry WebSocket) subscribes motor_states / odom directly.
+    # Raising it does not make the message more orderable either:
+    # RobotState.timestamp has whole-second resolution, so above 1 Hz
+    # consecutive messages simply repeat it.
     publish_rate: 1.0
     # How often to poll sys_manager's get_mode for RobotState.mode, in Hz. Kept
     # slow on purpose: every call spawns `byobu has-session` subprocesses in
@@ -32,8 +36,9 @@
     # it does not lie the robot down.
     #
     # The two values must differ: entering at 20% and only clearing above 25%
-    # stops a pack sitting on the threshold from flipping the state ten times a
-    # second at the 10 Hz publish rate. A clear value <= the warn value is
-    # rejected at startup and both fall back to 20/25.
+    # stops a pack sitting on the threshold from flipping the state on every
+    # publish — once a second at the 1 Hz shipped above, ten times a second at
+    # the 10 Hz code default. A clear value <= the warn value is rejected at
+    # startup and both fall back to 20/25.
     low_battery_warn_percentage: 20.0
     low_battery_clear_percentage: 25.0

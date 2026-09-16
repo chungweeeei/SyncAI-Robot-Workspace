@@ -16,8 +16,9 @@ using namespace std::chrono_literals;
 /**
  * @brief Abstract class representing a service based BT node
  * @tparam ServiceT Type of service
- * @details ActionNodeBase就是不靠 BehaviorTree的框架，自己手寫 tick() + halt()
- *          用 template<class ServiceT> 主要是讓這個 class 可以被用來建立不同 service type 的 BT Node
+ * @details ActionNodeBase means no scaffolding from the BehaviorTree framework: tick() + halt()
+ *          are hand-written here. The template<class ServiceT> is what lets this one class
+ *          build BT nodes for different service types.
  */
 template <class ServiceT>
 class BtServiceNode : public BT::ActionNodeBase
@@ -36,9 +37,11 @@ public:
     service_name_(service_name),
     service_node_name_(service_node_name)
   {
-    // config() 是從 BT::TreeNode 繼承來的method，function會回傳這個 node 的 NodeConfiguration也就是constructor收到的那個conf
-    // 這裡 ->template 是在告訴compiler 「config()回傳的 NodeConfiguration裡的 blackboard 是一個 template type」
-    // 因為 blackboard 是一個 pointer to a template class Blackboard::Ptr
+    // config() is inherited from BT::TreeNode and returns this node's NodeConfiguration, i.e.
+    // the conf the constructor received.
+    // The ->template here tells the compiler that the get<> called on the blackboard inside
+    // that NodeConfiguration is a member template, because blackboard is a Blackboard::Ptr
+    // (a pointer to a template class) and we are inside a class template.
     // - Get rclcpp::Node shared pointer from the blackboard
     node_ = config().blackboard->template get<rclcpp::Node::SharedPtr>("node");
     callback_group_ =
@@ -49,15 +52,16 @@ public:
     auto bt_loop_duration =
       config().blackboard->template get<std::chrono::milliseconds>("bt_loop_duration");
 
-    // 整個 service call 的總時長（從送出 request 開始計算到放棄）
+    // Total budget for the whole service call (from sending the request until giving up)
     server_timeout_ =
       config().blackboard->template get<std::chrono::milliseconds>("server_timeout");
     getInput<std::chrono::milliseconds>("server_timeout", server_timeout_);
     wait_for_service_timeout_ =
       config().blackboard->template get<std::chrono::milliseconds>("wait_for_service_timeout");
 
-    // 單次 tick 最多 spin 多久，每次 tick 不能無限期卡住 tree thread，否則 run() 迴圈轉不動（不能檢查 cancel、不能跑 onLoop）。
-    // 所以限制「每 tick 最多花半個 loop 週期去等」，等不到就先回RUNNING、下一圈再來。
+    // How long a single tick may spin at most. A tick must not block the tree thread forever,
+    // or the run() loop stops turning (no cancel check, no onLoop). So each tick spends at most
+    // half a loop period waiting; if nothing arrives it returns RUNNING and retries next round.
     max_timeout_ = std::chrono::duration_cast<std::chrono::milliseconds>(bt_loop_duration * 0.5);
 
     // Now that we have node_ to use, register the service client for this BT service
@@ -85,7 +89,7 @@ public:
       service_node_name_.c_str());
   }
 
-  // C++11的語法，意思是明確「刪除」這個 default constructor (無參數建構模式)
+  // C++11 syntax: explicitly delete the default (no-argument) constructor
   BtServiceNode() = delete;
 
   virtual ~BtServiceNode() {}
@@ -148,10 +152,12 @@ public:
     setStatus(BT::NodeStatus::IDLE);
   }
 
-  // 真正在繼承這個 BtServiceNode 需要實作的business logic 是底下這三個
-  // - on_tick()               // 填寫 request 內容（從 port / blackboard 讀值塞進 service request內），或者社 should_send_request_ = false 來跳過
-  // - on_completion()         // 處理 service 的回應（檢查結果、寫回blackboard），回傳最終 SUCCESS / FAILURE
-  // - on_wait_for_result()    // 等待回應期間每次 timeout 時做的事
+  // The business logic a BtServiceNode subclass actually has to implement is these three hooks:
+  // - on_tick()               // fill in the request (read ports / blackboard into the service
+  //                           // request), or set should_send_request_ = false to skip sending
+  // - on_completion()         // handle the service response (check the result, write back to
+  //                           // the blackboard) and return the final SUCCESS / FAILURE
+  // - on_wait_for_result()    // what to do on each timeout while waiting for the response
 
   /**
    * @brief Function to perform some user-defined operation on tick
@@ -188,7 +194,7 @@ public:
     if (remaining > std::chrono::milliseconds(0)) {
       auto timeout = remaining > max_timeout_ ? max_timeout_ : remaining;
 
-      // 主動「驅動 executor 去處理事件，把 response 變成 ready 的 future」
+      // Actively drive the executor to process events so the response turns into a ready future
       rclcpp::FutureReturnCode rc;
       rc = callback_group_executor_.spin_until_future_complete(future_result_, timeout);
       if (rc == rclcpp::FutureReturnCode::SUCCESS) {

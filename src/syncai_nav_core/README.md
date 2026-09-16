@@ -21,7 +21,7 @@ depend on, so neither has to depend on the other.
 
 | Header | Class | Implemented by |
 |---|---|---|
-| `global_planner.hpp` | `GlobalPlanner` | `syncai_planner`: `NavfnPlanner`, `StraightLinePlanner` |
+| `global_planner.hpp` | `GlobalPlanner` | `syncai_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (the one the shipped params select) |
 | `controller.hpp` | `Controller` | `syncai_controller`: `RegulatedPurePursuitController` |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker`, `StoppedGoalChecker`, `PositionGoalChecker` |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker`, `PoseProgressChecker` |
@@ -32,11 +32,23 @@ depend on, so neither has to depend on the other.
 there is no separate error channel.
 
 **`Controller`** — `initialize(node, name, tf, costmap_ros)`, `setPlan(path)`,
-`computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`, and
-`setSpeedLimit(limit, percentage)`. The goal checker is passed **into** the
+`reset()`, `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`,
+and `setSpeedLimit(limit, percentage)`. The goal checker is passed **into** the
 controller so it can read the tolerances (RPP uses the xy tolerance to decide
 when to switch into rotate-to-goal-heading) — the two plugins are coupled by
 design, through this interface rather than directly.
+
+`setPlan()` is not only the goal-start hook: it is also the **mid-navigation
+replan path**. The BT re-ticks `FollowPath` with a fresh path once a second,
+which reaches the controller server as an action preempt and lands in
+`setPlan()` again, so a plugin must read it as "the path changed", never as "a
+new goal started". Per-goal state goes in `reset()` instead, which the server
+calls once when a goal is accepted, before the first `setPlan()`, and never
+again for that goal. `reset()` has a no-op default body rather than being pure
+virtual — only plugins that carry state across control cycles need it (RPP's
+acceleration-clamp baseline), and making it pure would have broken every
+existing plugin `.so` for nothing. Clearing that baseline in `setPlan()` instead
+is what produced the cmd_vel sawtooth on every replan.
 
 **`GoalChecker`** — `initialize(node, plugin_name, costmap_ros)`, `reset()`,
 `isGoalReached(query_pose, goal_pose, velocity)`, and `getTolerances(...)`.

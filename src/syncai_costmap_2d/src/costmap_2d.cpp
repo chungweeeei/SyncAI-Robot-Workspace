@@ -88,7 +88,7 @@ void Costmap2D::resetMaps()
 {
   std::unique_lock<mutex_t> lock(*access_);
 
-  // memset => 把每一塊記憶體區域中的每一個byte都設定成同一個assigned value
+  // memset => set every byte of the memory region to the same assigned value
   memset(costmap_, default_value_, size_x_ * size_y_ * sizeof(unsigned char));
 }
 

@@ -1,21 +1,21 @@
 # === Goal ===
-# 此 task 的唯一識別碼，等同於 backend / REST 的 task_id（例如 uuid4().hex）。
+# Unique identifier of this task, identical to the backend / REST task_id (e.g. uuid4().hex).
 string uuid
-# backend / client 發出請求的時間（Unix epoch，毫秒）。
+# Time the backend / client issued the request (Unix epoch, milliseconds).
 int64 timestamp
-# 要載入並 tick 的完整 BehaviorTree XML（inline 字串，不是檔案路徑）。
+# The complete BehaviorTree XML to load and tick (an inline string, not a file path).
 string behavior_tree
 ---
 # === Result ===
-# 樹執行的最終結果。
+# Final outcome of the tree execution.
 bool success
-# 人類可讀的細節（失敗時為錯誤訊息，成功時為摘要）。
+# Human-readable detail (the error message on failure, a summary on success).
 string message
-# 樹結束的時間（Unix epoch，毫秒）。
+# Time the tree finished (Unix epoch, milliseconds).
 int64 finished_timestamp
 ---
 # === Feedback ===
-# 目前執行狀態，例如 "RUNNING"。
+# Current execution status, e.g. "RUNNING".
 string status
-# 從開始 tick 到現在經過的毫秒數。
+# Milliseconds elapsed since ticking began.
 int64 elapsed_ms

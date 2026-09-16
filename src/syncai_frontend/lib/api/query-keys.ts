@@ -9,7 +9,7 @@
 export const queryKeys = {
   /** GET /api/v1/robot/state — the console's single 1 Hz poll. */
   robotState: ["robot-state"] as const,
-  /** GET /api/v1/tasks/active — the console's single 2 s poll. */
+  /** GET /api/v1/active_tasks — the console's single 2 s poll. */
   activeTasks: ["active-tasks"] as const,
   /** GET /api/v1/maps — the catalogue, read by every screen that needs the active map. */
   maps: ["maps"] as const,

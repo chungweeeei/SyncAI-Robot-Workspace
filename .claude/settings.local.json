@@ -82,7 +82,13 @@
       "Bash(export *)",
       "Bash(byobu list-sessions *)",
       "Bash(tmux list-sessions *)",
-      "Bash(xargs ls)"
+      "Bash(xargs ls)",
+      "Bash(byobu -v)",
+      "Bash(tmux -V)",
+      "Bash(chmod +x /home/syncrobotic/SyncAI-Robot-Workspace/scripts/attach.sh)",
+      "Bash(bash -n /home/syncrobotic/SyncAI-Robot-Workspace/scripts/attach.sh)",
+      "Bash(cat)",
+      "Bash(bash -ic 'type robot')"
     ]
   }
 }

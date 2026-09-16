@@ -94,7 +94,7 @@ windows:
         log: driver_manager
 
 
-  # ---------- Window 7: robot_state / backend ----------
+  # ---------- Window 5: robot_state / backend ----------
   - name: backend
     panes:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py
@@ -103,7 +103,7 @@ windows:
         sleep: 2
         log: backend
 
-  # ---------- Window 8: frontend dev server (Next.js, 3001) ----------
+  # ---------- Window 6: frontend dev server (Next.js, 3001) ----------
   # cwd is the package dir, not the workspace root — npm needs its package.json.
   # `npm run dev` (not `start`): this variant exists for UI work, so hot reload
   # is the point. First start after a fresh container is slow while Next

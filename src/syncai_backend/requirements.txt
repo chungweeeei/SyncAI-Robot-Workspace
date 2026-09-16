@@ -6,9 +6,8 @@ fastapi
 structlog  # logger.py / all modules log through structlog
 python-dotenv  # main.py `import dotenv` (.env loading in dev)
 uvicorn[standard]
-pydantic>=2.11  # validate_by_name / validate_by_alias 需 2.11+
+pydantic>=2.11  # validate_by_name / validate_by_alias need 2.11+
 temporalio
-requests  # ArtifactGateway -> artifact backend REST API
 sqlalchemy>=2.0  # ORM (declarative models) + engine for robot_db
 sqlalchemy-utils  # create_database / database_exists in database/postgres.py
 psycopg2-binary  # PostgreSQL driver used by SQLAlchemy engine

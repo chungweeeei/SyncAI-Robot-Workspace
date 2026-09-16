@@ -37,6 +37,7 @@ from syncai_backend.helpers.pointcloud import (
 )
 from syncai_backend.repositories.map.catalog import MapCatalogRepo, StoredMap
 from syncai_backend.repositories.map.map import MapRepo
+from syncai_backend.repositories.task.task_template import TaskTemplateRepo
 
 
 # Decimation for a stored map.pcd. Same numbers the point-cloud subscriber
@@ -413,6 +414,30 @@ class CreateMapResponse(BaseModel):
             "map lists with grid: null — POST "
             "/api/v1/maps/{name}/grid/convert to (re)run the conversion."
         ),
+    )
+    message: str = Field(..., description="What happened, for the operator to read.")
+
+
+class RenameMapRequest(BaseModel):
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description=(
+            "The new directory name (letters, digits, dot, dash, underscore). "
+            "map/<old>/ becomes map/<name>/ on the robot."
+        ),
+    )
+
+
+class RenameMapResponse(BaseModel):
+    old_name: str = Field(..., description="The name the map had before the rename.")
+    name: str = Field(..., description="The name it has now.")
+    vertices_moved: int = Field(
+        ..., description="Stored vertices re-keyed from old_name to name."
+    )
+    templates_moved: int = Field(
+        ..., description="Task templates whose map binding was re-keyed."
     )
     message: str = Field(..., description="What happened, for the operator to read.")
 
@@ -846,6 +871,7 @@ def init_map_router(
     map_repo: MapRepo,
     map_catalog_repo: MapCatalogRepo,
     map_gw: MapGateway,
+    task_template_repo: TaskTemplateRepo,
 ) -> APIRouter:
 
     map_router = APIRouter(prefix="", tags=["Map"])
@@ -918,6 +944,126 @@ def init_map_router(
                     )
                 )
             ),
+        )
+
+    @map_router.patch("/api/v1/maps/{name}", response_model=RenameMapResponse)
+    def rename_map(name: str, request: RenameMapRequest):
+        """Rename a map: move its directory and re-key the rows that name it.
+
+        Every refusal comes before any mutation, in this order:
+
+        - 404 for a map that is not there.
+        - 409 ``map_active`` for the map the stack is running on. This is the
+          one that matters. map_server and the FAST-LIO2 localizer were both
+          launched against ``map/<name>/…`` from ``[map] name`` in the instance
+          INI and loaded their files during construction; the localizer cannot
+          be re-pointed at runtime at all, and ``map_gw.reload_map`` would fix
+          only map_server. Nothing in this backend writes the INI
+          (``helpers/system_config.py`` is read-only by design), so renaming
+          the directory would leave the running stack holding a path that no
+          longer exists and leave ``active_name()`` naming a map the catalogue
+          no longer lists — every card would read ``active: false``. Switching
+          maps is an INI edit plus a stack restart, and only after that does
+          the old name become renameable. The UI greys the control for the
+          active map; this is what makes that more than a suggestion.
+        - 409 ``conversion_running`` while a gridmap conversion is in flight.
+          The conversion thread closed over the old directory path when it
+          started, so a rename under it would make it die with ``OSError`` and
+          leave ``grid_converting`` reading true for a name that is gone.
+        - 400 / 409 ``name_taken`` from ``rename_map_dir`` for a bad or
+          already-used new name.
+
+        Filesystem first, database second. The directory move is the step most
+        likely to fail (target exists, permissions), and failing there needs no
+        compensation. The two repos run separate sessions, so there is no single
+        transaction to lean on for the DB half; if either UPDATE fails the
+        directory is moved back, because a renamed map whose vertices still
+        answer to the old name is worse than a rename that did not happen.
+        """
+        _require(name)
+
+        active_name = map_catalog_repo.active_name()
+        if name == active_name:
+            raise ConflictError(
+                f"'{name}' is the map the stack is running on and cannot be "
+                "renamed while it is in use. Switch the robot to another map "
+                "and restart the stack first.",
+                code="map_active",
+            )
+        if _is_converting(name):
+            raise ConflictError(
+                f"A gridmap conversion for '{name}' is running; rename it "
+                "once the conversion has finished.",
+                code="conversion_running",
+            )
+
+        new_dir = map_catalog_repo.rename_map_dir(name, request.name)
+
+        try:
+            vertices_moved = map_repo.move_vertices(name, request.name)
+            templates_moved = task_template_repo.rebind_map(name, request.name)
+        except Exception as exc:
+            # Best-effort compensation. A second failure here is logged and
+            # reported, not raised over the first: the operator needs the
+            # sentence about the database, and the log needs the path state.
+            old_dir = os.path.join(os.path.dirname(new_dir), name)
+            try:
+                os.rename(new_dir, old_dir)
+                restored = True
+            except OSError as undo_exc:
+                restored = False
+                logger.error(
+                    "Could not move the map directory back after a failed rename",
+                    map=name,
+                    new_name=request.name,
+                    error=str(undo_exc),
+                )
+            logger.error(
+                "Map rename failed while re-keying database rows",
+                map=name,
+                new_name=request.name,
+                directory_restored=restored,
+                error=str(exc),
+            )
+            raise UpstreamError(
+                f"Could not re-key the rows that name '{name}': {exc}. "
+                + (
+                    "The map directory was left under its old name."
+                    if restored
+                    else f"The directory is now map/{request.name}/ but the "
+                    f"database still says '{name}' — fix by hand."
+                )
+            )
+
+        # The renderings are keyed by name. A stale entry under the old name
+        # would never be *served* (_png_response re-hashes the file before
+        # consulting the cache) but it would sit there forever; drop it.
+        thumbnail_cache.pop(name, None)
+        image_cache.pop(name, None)
+        cloud_cache.pop(name, None)
+
+        logger.info(
+            "Renamed map",
+            map=name,
+            new_name=request.name,
+            vertices_moved=vertices_moved,
+            templates_moved=templates_moved,
+        )
+        message = (
+            f"Renamed '{name}' to '{request.name}'. Moved {vertices_moved} "
+            f"{'vertex' if vertices_moved == 1 else 'vertices'} and "
+            f"{templates_moved} task {'template' if templates_moved == 1 else 'templates'}."
+        )
+        if templates_moved:
+            # The schedule memo is frozen at registration and is a display
+            # label only (see routers/schedule.py); nothing here re-registers.
+            message += " Schedules already registered keep the old map label."
+        return RenameMapResponse(
+            old_name=name,
+            name=request.name,
+            vertices_moved=vertices_moved,
+            templates_moved=templates_moved,
+            message=message,
         )
 
     @map_router.post(

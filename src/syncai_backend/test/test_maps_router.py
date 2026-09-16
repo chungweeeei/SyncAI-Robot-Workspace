@@ -68,7 +68,7 @@ def map_gw():
 
 
 @pytest.fixture
-def client(logger, catalog_repo, map_repo, map_gw, tmp_path, monkeypatch):
+def client(logger, catalog_repo, map_repo, map_gw, task_template_repo, tmp_path, monkeypatch):
     """A client whose active map is 'full', set through the INI env override."""
     ini = tmp_path / "system.ini"
     ini.write_text("[system]\nrobot_id: robot01\n\n[map]\nname: full\n")
@@ -82,6 +82,7 @@ def client(logger, catalog_repo, map_repo, map_gw, tmp_path, monkeypatch):
             map_repo=map_repo,
             map_catalog_repo=catalog_repo,
             map_gw=map_gw,
+            task_template_repo=task_template_repo,
         )
     )
     return TestClient(app)
@@ -534,6 +535,136 @@ def test_failed_save_unwinds_the_directory(client, map_gw, catalog_repo):
     assert response.status_code == 502
     assert response.json()["detail"] == "NO POSES!"
     assert not os.path.exists(catalog_repo.resolve_dir("newmap"))
+
+
+# --- PATCH /api/v1/maps/{name} ------------------------------------------------
+#
+# The client fixture pins the active map to 'full', so 'rawonly' is the map a
+# rename is allowed to touch.
+
+
+def _rename(client, name, new_name):
+    return client.patch(f"/api/v1/maps/{name}", json={"name": new_name})
+
+
+def test_rename_moves_the_directory_and_lists_under_the_new_name(
+    client, maps_dir, map_repo, task_template_repo
+):
+    map_repo.create_vertices(map="rawonly", vertices=[
+        {"name": "dock", "type": "GENERAL", "x": 0.0, "y": 0.0, "theta": 0.0},
+        {"name": "home", "type": "HOME", "x": 1.0, "y": 0.0, "theta": 0.0},
+    ])
+    task_template_repo.create_task_template(
+        name="patrol", description="", map_name="rawonly", steps=[]
+    )
+
+    response = _rename(client, "rawonly", "hall")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["old_name"] == "rawonly"
+    assert body["name"] == "hall"
+    assert body["vertices_moved"] == 2
+    assert body["templates_moved"] == 1
+    assert "Renamed 'rawonly' to 'hall'" in body["message"]
+    assert "Schedules already registered" in body["message"]
+
+    assert not (maps_dir / "rawonly").exists()
+    assert (maps_dir / "hall" / "map.pcd").is_file()
+    listing = _by_name(client.get("/api/v1/maps").json())
+    assert "rawonly" not in listing
+    assert listing["hall"]["vertex_count"] == 2
+    assert listing["hall"]["active"] is False
+    assert map_repo.list_vertices(map="rawonly") == []
+    assert len(map_repo.list_vertices(map="hall")) == 2
+
+
+def test_rename_message_without_templates_has_no_schedule_caveat(client):
+    body = _rename(client, "rawonly", "hall").json()
+
+    assert body["templates_moved"] == 0
+    assert "Schedules" not in body["message"]
+
+
+def test_rename_refuses_the_active_map(client, maps_dir):
+    response = _rename(client, "full", "hall")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "map_active"
+    assert (maps_dir / "full" / "gridmap.pgm").is_file()
+    assert not (maps_dir / "hall").exists()
+
+
+def test_rename_refuses_while_a_conversion_is_running(client, maps_dir):
+    with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+        map_router_module._ACTIVE_CONVERSIONS.add("rawonly")
+    try:
+        response = _rename(client, "rawonly", "hall")
+    finally:
+        with map_router_module._ACTIVE_CONVERSIONS_LOCK:
+            map_router_module._ACTIVE_CONVERSIONS.discard("rawonly")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "conversion_running"
+    assert (maps_dir / "rawonly").is_dir()
+
+
+def test_rename_refuses_a_taken_name(client, maps_dir):
+    response = _rename(client, "rawonly", "full")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "name_taken"
+    assert (maps_dir / "rawonly").is_dir()
+    assert (maps_dir / "full" / "gridmap.pgm").is_file()
+
+
+def test_rename_to_the_same_name_is_a_400(client, maps_dir):
+    response = _rename(client, "rawonly", "rawonly")
+
+    assert response.status_code == 400
+    assert (maps_dir / "rawonly").is_dir()
+
+
+@pytest.mark.parametrize("new_name", ["../evil", "a/b", "", ".", "x" * 65])
+def test_rename_rejects_bad_new_names(client, maps_dir, new_name):
+    response = _rename(client, "rawonly", new_name)
+
+    # Length/emptiness die in the schema (422), separators in resolve_dir (400).
+    assert response.status_code in (400, 422)
+    assert (maps_dir / "rawonly").is_dir()
+
+
+def test_rename_of_a_missing_map_is_a_404(client):
+    assert _rename(client, "nope", "hall").status_code == 404
+
+
+def test_rename_moves_the_directory_back_when_the_database_fails(
+    client, maps_dir, map_repo, monkeypatch
+):
+    """The two stores cannot share a transaction, so the filesystem is undone."""
+    def _boom(old_map, new_map):
+        raise RuntimeError("database is away")
+
+    monkeypatch.setattr(map_repo, "move_vertices", _boom)
+
+    response = _rename(client, "rawonly", "hall")
+
+    assert response.status_code == 502
+    assert "left under its old name" in response.json()["detail"]
+    assert (maps_dir / "rawonly" / "map.pcd").is_file()
+    assert not (maps_dir / "hall").exists()
+
+
+def test_rename_drops_the_cached_renderings_of_the_old_name(client, maps_dir, make_pcd):
+    """Warm the cloud cache under the old name, rename, and check nothing is left keyed on it."""
+    # 'full' is active; give 'rawonly' a proper cloud and read it so it caches.
+    make_pcd(maps_dir / "rawonly" / "map.pcd")
+    assert client.get("/api/v1/maps/rawonly/pointcloud").status_code == 200
+
+    assert _rename(client, "rawonly", "hall").status_code == 200
+
+    assert client.get("/api/v1/maps/rawonly/pointcloud").status_code == 404
+    assert client.get("/api/v1/maps/hall/pointcloud").status_code == 200
 
 
 # --- the background gridmap conversion ---------------------------------------

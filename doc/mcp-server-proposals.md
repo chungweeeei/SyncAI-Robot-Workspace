@@ -1,317 +1,330 @@
-# MCP Server 應用提案
+# MCP Server Application Proposals
 
-> 對象:這個 workspace 裡「還沒有人做」的 MCP 工具層
-> 相關:`src/syncai_ros_mcp/`(已存在的 runtime server,見 §6 的關係說明)
-> 狀態:**提案,尚未實作**。這份文件是設計討論的落點,不是既有行為的說明書。
+> Target: the MCP tool layer in this workspace that "nobody has built yet"
+> Related: `src/syncai_ros_mcp/` (the existing runtime server; see §6 for how they relate)
+> Status: **proposal, not implemented**. This document is where the design discussion lands; it is not a manual for existing behaviour.
 
-這份筆記回答兩個問題:在這個 workspace 裡,一個 MCP server 能提供什麼**現在拿不到**
-的東西;以及當一個 server 同時握有 **ROS 工具**和 **REST 工具**時,多出來的價值在哪。
+This note answers two questions: what an MCP server in this workspace can provide that **cannot be obtained
+today**; and where the extra value lies when one server holds both **ROS tools** and **REST tools** at the same
+time.
 
 ---
 
-## 0. 心智模型:MCP server 不是 API proxy
+## 0. Mental model: an MCP server is not an API proxy
 
-把 REST endpoint 一對一包成 MCP tool,是最容易做也最沒有價值的做法——agent 本來就能
-發 HTTP。值得包成工具的只有三種東西:
+Wrapping REST endpoints one-to-one as MCP tools is the easiest and least valuable thing to do — the agent can
+already make HTTP calls. Only three kinds of thing are worth wrapping as tools:
 
-| 類型 | 為什麼非工具不可 |
+| Type | Why it has to be a tool |
 |---|---|
-| **跨來源關聯** | 答案要同時看日誌、DDS、REST、Temporal 才拼得出來 |
-| **內含判斷** | 原始資料倒出來 agent 也讀不懂,需要把部落知識編碼進去 |
-| **CLI 摸不到的狀態** | gzip 輪替的 multilog、Temporal workflow history、活的 TF 樹 |
+| **Cross-source correlation** | The answer only comes together by looking at logs, DDS, REST and Temporal at once |
+| **Embedded judgment** | Dumping the raw data gives the agent nothing it can read; the tribal knowledge has to be encoded |
+| **State the CLI cannot reach** | gzip-rotated multilog, Temporal workflow history, the live TF tree |
 
-這個 workspace 三種都很多,原因是結構性的:**沒有 lifecycle manager**。開機順序靠
-`config/sessions/*.yaml` 的 `sleep` 偏移編碼,每個節點起來就是 active,於是「整套 stack
-現在健康嗎」這個問題**沒有任何單一來源可以問**。
-
----
-
-## 1. 這個 workspace 的四類把手
-
-| 把手 | 位置 | 目前只能怎麼取用 |
-|---|---|---|
-| 10 個子系統的持久化日誌 | `log/stack/<robot_id>/<name>/`(mapping 走 `mapping/` 子樹),multilog 16 MiB × 10 gzip 輪替 | 手動 `tail current` / `zcat @*.s`,自己對時間戳 |
-| 活的 ROS graph + TF + action server | DDS,全部 namespace 在 `<robot_id>/` 下 | `ros2 topic/node/param/service` CLI |
-| 每台機的 backend REST / WS | 各機 `:3000`(real profile 是 `network_mode: host`) | curl / 前端 `:3001` |
-| 編排狀態 | Temporal `:7233`,task queue 依 `robot_id` 分流 | Temporal UI `:8081` |
-
-有一個細節特別值得注意:`syncai_sys_manager` 的 `MonitorManager` **只把記憶體 / 磁碟用量
-打到 stdout,不發 topic**——這是刻意的,因為 `ROS_LOG_DIR` 是 tmpfs,byobu 的
-`pipe-pane` 才是持久記錄。也就是說**機器人的資源歷史只存在於日誌裡**,沒有任何程式化的
-取用路徑。這件事直接決定了 §3 的第一順位。
+This workspace has plenty of all three, and the reason is structural: **there is no lifecycle manager**. Startup
+order is encoded in the `sleep` offsets of `config/sessions/*.yaml`, every node is active the moment it comes up,
+and so the question "is the whole stack healthy right now" has **no single source that can be asked**.
 
 ---
 
-## 2. ROS 工具 + REST 工具混在同一個 server:這才是核心價值
+## 1. The four classes of handle in this workspace
 
-答案是肯定的,但理由不是「兩種都支援比較方便」,而是**兩邊回答的是不同種類的問題**:
-
-| | ROS 工具 | REST 工具 |
+| Handle | Location | Only way to reach it today |
 |---|---|---|
-| 回答 | 「**現在**這一瞬間的物理狀態」 | 「**被記錄下來**的意圖與歷史」 |
-| 資料 | TF、costmap、action 回饋、`cmd_vel` | vertex、task、schedule、地圖 metadata |
-| 來源 | DDS(易失、高頻、無歷史) | Postgres(持久、低頻、有 id) |
-| 需要 | 同 DDS domain 的 rclpy process | 只要 HTTP 到得了 `:3000` |
+| Persistent logs of 10 subsystems | `log/stack/<robot_id>/<name>/` (mapping goes under the `mapping/` subtree), multilog 16 MiB × 10 gzip rotation | Manual `tail current` / `zcat @*.s`, aligning timestamps by hand |
+| Live ROS graph + TF + action servers | DDS, everything namespaced under `<robot_id>/` | The `ros2 topic/node/param/service` CLI |
+| Per-robot backend REST / WS | `:3000` on each robot (the real profile is `network_mode: host`) | curl / the frontend on `:3001` |
+| Orchestration state | Temporal `:7233`, task queue partitioned by `robot_id` | Temporal UI `:8081` |
 
-真正有價值的工具是**跨過這條線**的那些——單一介面做不到,而且 agent 自己串會串錯:
+One detail deserves particular attention: the `MonitorManager` in `syncai_sys_manager` **only prints memory /
+disk usage to stdout; it publishes no topic** — deliberately, because `ROS_LOG_DIR` is a tmpfs and the byobu
+`pipe-pane` capture is the persistent record. In other words, **the robot's resource history exists only in the
+logs**, with no programmatic access path whatsoever. That fact directly decides the first priority in §3.
 
-**範例 A:地圖 vertex 可達性驗證(機器人完全不用動)**
+---
+
+## 2. ROS tools + REST tools in the same server: this is the core value
+
+The answer is yes, but the reason is not "supporting both is more convenient"; it is that **the two sides answer
+different kinds of question**:
+
+| | ROS tools | REST tools |
+|---|---|---|
+| Answer | "The physical state at **this** instant" | "The **recorded** intent and history" |
+| Data | TF, costmap, action feedback, `cmd_vel` | vertices, tasks, schedules, map metadata |
+| Source | DDS (volatile, high-rate, no history) | Postgres (persistent, low-rate, has ids) |
+| Requires | An rclpy process on the same DDS domain | Only HTTP reachability to `:3000` |
+
+The genuinely valuable tools are the ones that **cross that line** — a single interface cannot do it, and an agent
+stitching it together on its own will get it wrong:
+
+**Example A: map vertex reachability verification (the robot does not move at all)**
 
 ```
 verify_vertices(map_name)
-  REST : GET /api/v1/maps/{name}  → 取出所有 vertex 與座標
-  ROS  : 對每個 vertex 呼叫 planner 的 ComputePathToPose action
-  ROS  : 讀 TF map → <robot_id>/base_link 拿目前位置當起點
-  判斷 : 哪些 CHARGER / HOME 現在規劃不出路徑、路徑長度是否異常
+  REST : GET /api/v1/maps/{name}  → fetch every vertex and its coordinates
+  ROS  : call the planner's ComputePathToPose action for each vertex
+  ROS  : read TF map → <robot_id>/base_link to use the current position as the start
+  Judge: which CHARGER / HOME points cannot be planned to right now; is any path length anomalous
 ```
 
-REST 那半知道「應該有哪些點」,ROS 那半知道「現在到不到得了」。合起來是一句
-「地圖改完了,幫我驗一下」——分開就是二十次手動操作。
+The REST half knows "which points should exist"; the ROS half knows "whether they are reachable right now".
+Together they are the single sentence "I changed the map, verify it for me" — apart, they are twenty manual
+operations.
 
-**範例 B:任務失敗的完整因果**
+**Example B: the complete causal chain of a task failure**
 
 ```
 explain_task(task_id)
-  REST     : GET /api/v1/tasks/{id}        → 步驟清單與宣稱的狀態
-  Temporal : workflow history              → 哪個 activity 失敗、retry 幾次
-  ROS      : navigate_to_pose 的 result code
-  日誌     : 同一時間窗的 controller / lio_bridge 輸出
+  REST     : GET /api/v1/tasks/{id}        → step list and the claimed state
+  Temporal : workflow history              → which activity failed, how many retries
+  ROS      : the navigate_to_pose result code
+  Logs     : controller / lio_bridge output for the same time window
 ```
 
-四個來源各自只有一片。目前要回答「為什麼這個任務卡住」得開四個視窗。
+Each of the four sources holds only one piece. Today, answering "why is this task stuck" means opening four
+windows.
 
-**範例 C:狀態的雙重驗證**
+**Example C: double verification of state**
 
-`RobotState.msg` 裡有兩組東西刻意並存:commanded 與 measured。`SetPolicyMode` /
-`SetMotionKey` 是**單向 UDP,沒有 ack**,而 `low_level_mode` 是從 gait controller 的
-telemetry 讀回來的**實測值**。一個工具同時發命令(REST)並確認實測值是否跟上(ROS),
-就把「命令送出去了」變成「命令生效了」——這是 REST 單獨永遠給不出的保證。
+`RobotState.msg` deliberately carries two sets of fields side by side: commanded and measured. `SetPolicyMode` /
+`SetMotionKey` are **one-way UDP with no ack**, while `low_level_mode` is the **measured value** read back from the
+gait controller's telemetry. A tool that both sends the command (REST) and confirms the measured value followed
+(ROS) turns "the command was sent" into "the command took effect" — a guarantee REST alone can never give.
 
-⚠️ 但 `low_level_mode` 全零是**歧義**的:它既是「還沒收到第一筆」也是合法的
-「PPO / Stand」,而且**不帶任何 freshness 資訊**。任何做這種確認的工具都必須自己處理
-這個歧義(例如先確認 `motor_status.timestamp` 在前進),不能直接把全零當成一個讀數。
+⚠️ But an all-zero `low_level_mode` is **ambiguous**: it is both "no first sample received yet" and the legitimate
+"PPO / Stand", and it **carries no freshness information at all**. Any tool doing this kind of confirmation must
+handle the ambiguity itself (for example, first confirm that `motor_status.timestamp` is advancing) and cannot take
+all-zero as a reading at face value.
 
 ---
 
-## 3. 提案清單(按價值排序)
+## 3. Proposal list (ordered by value)
 
-### 提案 1:日誌考古 MCP ★ 建議先做
+### Proposal 1: Log archaeology MCP ★ recommended first
 
-**痛點是實測的。** 這個 stack 的故障幾乎都是跨 pane 的因果鏈:LIO 掉了 → lio_bridge
-沒 TF → controller 拒 goal → task_runner 回報失敗。**四個 pane 四種說法**,而且沒有任何
-讀取工具(舊的 `scripts/tailog.sh` 已隨 `byobu_session*.sh` 一起刪掉)。加上 §1 那個
-`MonitorManager` 只寫 stdout 的事實,日誌是機器人資源歷史的**唯一**來源。
-
-```
-list_subsystems()                  → 哪些 pane 有日誌、各自最後一筆的時間
-tail(subsystem, lines, level)      → 自動跨 current + @*.s 輪替檔,自動解 gzip
-grep_logs(pattern, since, until)   → 跨子系統搜尋
-timeline(since, until)             → 把所有 pane 依時間合併成一條軸
-resource_history(since)            → 從 sys_manager 的 pane 抽出記憶體 / 磁碟曲線
-```
-
-`timeline` 是核心,不是 `tail` 的方便版:它做的是**時間對齊**,而那正是人工最容易做錯
-的一步。
-
-- 宿主:機器人本機(需要檔案系統)
-- 風險:**零**,純唯讀
-- 注意:multilog 的 `@*.s` 是 gzip,`current` 不是;時間戳格式由 multilog 的 `t` flag 決定
-
-### 提案 2:Stack doctor — 開機健檢 MCP
-
-把 `CLAUDE.md` 裡的部落知識變成可執行的**判斷**,而不只是把 graph 倒出來:
+**The pain is measured, not hypothetical.** Almost every failure in this stack is a cross-pane causal chain: LIO
+drops → lio_bridge has no TF → controller rejects the goal → task_runner reports failure. **Four panes, four
+stories**, and no reading tool at all (the old `scripts/tailog.sh` was deleted along with `byobu_session*.sh`).
+Add the fact from §1 that `MonitorManager` writes only to stdout, and the logs are the **only** source of the
+robot's resource history.
 
 ```
-check_stack()   → 依 start_nav.yaml 的期望清單比對實際節點
-                  + TF 鏈 map → <robot_id>/odom → <robot_id>/base_link 是否完整
-                  + compute_path_to_pose / follow_path / navigate_to_pose 是否 advertise
-                  + 主要 topic 的實際發佈頻率
-                  + 依 sleep 順序推斷「最可能的元凶是哪一環」
-check_params()  → 節點的 live param 對照 params YAML,列出差異
-check_identity()→ node namespace / TF frame prefix 是否都等於 [system] robot_id
+list_subsystems()                  → which panes have logs, and the time of each one's last entry
+tail(subsystem, lines, level)      → automatically spans current + the @*.s rotations, transparently gunzips
+grep_logs(pattern, since, until)   → search across subsystems
+timeline(since, until)             → merge every pane onto a single time axis
+resource_history(since)            → extract the memory / disk curves from sys_manager's pane
 ```
 
-`check_params` 專治那個已知陷阱:launch 的 `Node` 加了 `name=` 會讓 `planner_server`
-和它內部的 `global_costmap` 撞成同一個名字,**內部 costmap 靜默失去全部參數**。這種 bug
-目前只能靠人記得。`check_identity` 治的是另一個:TF frame 名稱**不會**被 ROS
-namespace,所以 launch 必須顯式覆寫,漏了就會安靜地錯。
+`timeline` is the core, not a convenience version of `tail`: what it does is **time alignment**, which is exactly
+the step humans get wrong most easily.
 
-- 宿主:機器人本機(需要 rclpy + 看得到 DDS)
-- 風險:低(唯讀,但要留意 §5 的 spin 執行緒問題)
+- Host: the robot itself (needs the filesystem)
+- Risk: **zero**, purely read-only
+- Note: multilog's `@*.s` files are gzip, `current` is not; the timestamp format is decided by multilog's `t` flag
 
-### 提案 3:車隊 / 容器維運 MCP
+### Proposal 2: Stack doctor — startup health-check MCP
 
-`docker-compose.robots.yml` 已經有 real profile 的 `robot01` / `robot02` 加 sim profile
-的三台,但**每台的 backend 各自是一個 `:3000`,沒有任何東西站在它們之上**。這一層天然
-是 MCP:
+Turn the tribal knowledge in `CLAUDE.md` into executable **judgments**, rather than merely dumping the graph:
 
 ```
-list_robots() / robot_state(robot_id)   → 聚合各機 :3000(real 走 host 網路 + mDNS *.local)
-dispatch(task, prefer=idle)             → 依電量 / 狀態選機(Temporal queue 本來就依 robot_id 分流)
+check_stack()   → compare the actual nodes against the expected list in start_nav.yaml
+                  + is the TF chain map → <robot_id>/odom → <robot_id>/base_link complete
+                  + are compute_path_to_pose / follow_path / navigate_to_pose advertised
+                  + the actual publish rate of the main topics
+                  + infer "which link is the most likely culprit" from the sleep ordering
+check_params()  → compare each node's live params against the params YAML and list the differences
+check_identity()→ do the node namespace / TF frame prefix all equal [system] robot_id
+```
+
+`check_params` targets a known trap: adding `name=` to a launch `Node` makes `planner_server` and its internal
+`global_costmap` collide on the same name, and **the internal costmap silently loses all its parameters**. Today
+that bug is caught only if someone remembers it. `check_identity` targets another: TF frame names are **not**
+namespaced by ROS, so the launch file must override them explicitly, and a missed override fails silently.
+
+- Host: the robot itself (needs rclpy + visibility of DDS)
+- Risk: low (read-only, but mind the spin-thread problem in §5)
+
+### Proposal 3: Fleet / container operations MCP
+
+`docker-compose.robots.yml` already has `robot01` / `robot02` in the real profile plus three in the sim profile,
+but **each robot's backend is its own `:3000`, and nothing stands above them**. That layer is naturally MCP:
+
+```
+list_robots() / robot_state(robot_id)   → aggregate each robot's :3000 (real goes over the host network + mDNS *.local)
+dispatch(task, prefer=idle)             → pick a robot by battery / state (the Temporal queue is already partitioned by robot_id)
 compose_up / down / logs(service)
 rebuild(package)
 ```
 
-順帶解掉一個實際麻煩:容器重建會清掉手裝的 build 依賴(Sophus / GTSAM 是從源碼編的),
-這個復原流程可以包成一個工具。
+It also solves a real nuisance along the way: recreating a container wipes the hand-installed build dependencies
+(Sophus / GTSAM are compiled from source), and that recovery procedure can be wrapped as a tool.
 
-- 宿主:**開發機 / 車隊側**,不是機器人本機
-- 風險:中(`compose down` 會停掉一台真機)
+- Host: **the dev machine / fleet side**, not the robot
+- Risk: medium (`compose down` stops a real robot)
 
-### 提案 4:Temporal 任務考古 MCP
+### Proposal 4: Temporal task archaeology MCP
 
-`RobotWorkflow` 有 query 和取消,REST 也有 task / schedule,但「這個任務為什麼卡住」的
-答案在 workflow history 裡,目前只有 UI `:8081` 看得到。列出執行中 workflow、解釋失敗的
-activity、看 retry 次數、對照 `StepType`(`MOVE` / `ARTIFACT` / `STANDUP` / `LIEDOWN`)。
+`RobotWorkflow` has queries and cancellation, and REST has tasks / schedules, but the answer to "why is this task
+stuck" lives in the workflow history, which today is visible only in the UI on `:8081`. List running workflows,
+explain the failed activity, see the retry count, map against `StepType` (`MOVE` / `ARTIFACT` / `STANDUP` /
+`LIEDOWN`).
 
-- 宿主:任何 HTTP/gRPC 到得了 `:7233` 的地方
-- 風險:唯讀為主;`reset` / `terminate` 屬於「會動的」等級
+- Host: anywhere with HTTP/gRPC reachability to `:7233`
+- Risk: mostly read-only; `reset` / `terminate` belong to the "moves things" tier
 
-### 提案 5:導航調參實驗 MCP(只對 sim 開)
+### Proposal 5: Navigation parameter-tuning experiment MCP (sim only)
 
-13 個 params YAML,RPP controller 加 costmap inflation 是純試誤。做成 agent 迴圈才有意思:
-改 live param → 發一次 `NavigateToPose` → 從實際 topic 收集指標(路徑長度、耗時、最小
-障礙距離、`cmd_vel` 抖動)→ 回傳評分。
+13 params YAML files; RPP controller plus costmap inflation is pure trial and error. It only gets interesting as an
+agent loop: change a live param → send one `NavigateToPose` → collect metrics from the actual topics (path length,
+elapsed time, minimum obstacle distance, `cmd_vel` jitter) → return a score.
 
-注意 controller **自己 clamp 線加速度**,stack 裡沒有 velocity smoother,所以 `cmd_vel`
-的抖動指標直接反映 controller 參數,中間沒有東西幫它擦屁股。
+Note that the controller **clamps linear acceleration itself**; there is no velocity smoother in the stack, so the
+`cmd_vel` jitter metric reflects the controller parameters directly, with nothing in between cleaning up after it.
 
-- 宿主:機器人本機或 sim 容器
-- 風險:**高——會動的機器人**。建議硬性限定 sim profile
+- Host: the robot itself or a sim container
+- Risk: **high — a moving robot**. Recommend hard-restricting to the sim profile
 
-### 提案 6:地圖生產線 MCP
+### Proposal 6: Map production line MCP
 
 `pgo/save_maps` → `map.pcd` + `patches/` + `poses.txt` → `syncai_backend/helpers/pcd_to_gridmap.py` →
-`gridmap.pgm` / `.yaml` → vertex(`VertexType` GENERAL / ARTIFACT / CHARGER / HOME /
-WAITING)。這條線目前一半在 CLI、一半在前端 map editor,而**最後一步是離線的、事後手動
-跑的**——所以一個地圖目錄會有一段時間只有 pcd 沒有 gridmap。
+`gridmap.pgm` / `.yaml` → vertices (`VertexType` GENERAL / ARTIFACT / CHARGER / HOME / WAITING). This line is
+currently half CLI, half frontend map editor, and **the last step is offline and run manually after the fact** — so
+a map directory spends a while with only a pcd and no gridmap.
 
-最有價值的能力是 §2 範例 A 的**可達性驗證**。
+The most valuable capability is the **reachability verification** of §2 example A.
 
-- 宿主:機器人本機(pcd 檔在那裡)+ REST
-- 風險:低(產生新檔案,不覆蓋既有地圖)
+- Host: the robot itself (the pcd files live there) + REST
+- Risk: low (produces new files; does not overwrite existing maps)
 
-### 提案 7:rosbag / LIO 回放 MCP
+### Proposal 7: rosbag / LIO replay MCP
 
-`doc/record-lidar.md` 的錄包流程(`/livox/lidar`、`/livox/imu`,zstd 壓縮,2 GB split)
-目前是手貼指令。錄製、列包、看包內容、拿包重跑 LIO 比對漂移。對 FAST-LIO2 調參有用,
-但比較窄。
+The bag-recording procedure in `doc/record-lidar.md` (`/livox/lidar`, `/livox/imu`, zstd compression, 2 GB
+splits) is currently hand-pasted commands. Record, list bags, inspect bag contents, rerun LIO on a bag to compare
+drift. Useful for FAST-LIO2 tuning, but comparatively narrow.
 
-值得一提的關聯:`pgo_node` 是**唯一**能存地圖的東西,keyframe 全在 RAM,mapping 跑完
-沒存就沒了,**事後只能靠回放 bag 補救**。這讓錄包從「調參的方便工具」變成「唯一的保險」。
-
----
-
-## 4. 反面意見:不該做成 MCP 的東西
-
-**「repo 慣例 lint」不該做成 MCP。** 檢查 subscriber 有沒有寫死絕對 topic、
-`use_sim_time` 有沒有被 launch 蓋掉、TF frame 參數有沒有 override——這些用現成的檔案
-工具就能做,寫成 skill 或 subagent 比 MCP 直接。唯一值得 MCP 的是**「這個檔案跟 nav2
-上游差在哪」**:這是一個 port,一半的問題是「這段是我們改的還是原生的」,而回答它需要
-一份上游 checkout,那才是真的外部狀態。
-
-**不要做 `cmd_vel` 連續遙控。** `syncai_driver_manager` 那條 UDP 是**單向、無 ack**,
-安全停機路徑靠人 Ctrl-C 那個 pane。把 LLM 放進 10 Hz 速度迴圈是壞主意。單發的 motion
-key / nav goal 可以(它們有明確的終止條件),連續速度控制不行。
-
-**不要包 `/api/v1/robot/state` 就當成一個提案。** 那是一對一的 REST proxy,agent 自己
-curl 就好。要包就包成「帶判斷」的版本:例如同時檢查 `localization_valid`、
-`motor_status.timestamp` 是否在前進、`low_level_mode` 是否有意義,然後回傳一句結論。
+One connection worth mentioning: `pgo_node` is the **only** thing that can save a map, the keyframes are all in
+RAM, and if a mapping run finishes without saving, the map is gone — **the only after-the-fact remedy is replaying
+a bag**. That turns bag recording from "a convenience for tuning" into "the only insurance".
 
 ---
 
-## 5. 架構決策(實作前必須先定的)
+## 4. Counter-arguments: things that should not be MCP
 
-**5.1 server 跑在哪一台,決定了它能做什麼**
+**"Repo convention lint" should not be an MCP.** Checking whether a subscriber hard-codes an absolute topic,
+whether `use_sim_time` is overridden by launch, whether the TF frame parameters are overridden — all of this can be
+done with ordinary file tools, and a skill or subagent is more direct than an MCP. The only thing worth an MCP is
+**"how does this file differ from nav2 upstream"**: this is a port, half the questions are "did we change this or
+is it original", and answering that needs an upstream checkout — that is genuinely external state.
 
-三種宿主需求互斥,硬塞進一個 process 會很難看:
+**Do not build continuous `cmd_vel` teleoperation.** The UDP link in `syncai_driver_manager` is **one-way, no
+ack**, and the safe-shutdown path relies on a human hitting Ctrl-C in that pane. Putting an LLM inside a 10 Hz
+velocity loop is a bad idea. One-shot motion keys / nav goals are fine (they have explicit termination conditions);
+continuous velocity control is not.
 
-| 提案 | 需要 |
+**Do not wrap `/api/v1/robot/state` and call it a proposal.** That is a one-to-one REST proxy; the agent can curl
+it itself. If it is wrapped at all, wrap the version "with judgment": for example, check `localization_valid`,
+whether `motor_status.timestamp` is advancing, and whether `low_level_mode` is meaningful at the same time, then
+return a one-sentence conclusion.
+
+---
+
+## 5. Architecture decisions (to be settled before implementation)
+
+**5.1 Which machine the server runs on decides what it can do**
+
+The three hosting requirements are mutually exclusive, and forcing them into one process would be ugly:
+
+| Proposal | Needs |
 |---|---|
-| 1、2、6 | 機器人本機的檔案系統 / 行程 / DDS |
-| 3 | 跨機視野 + docker socket |
-| 4 | 只要到得了 Temporal |
+| 1, 2, 6 | The robot's filesystem / processes / DDS |
+| 3 | Cross-robot visibility + the docker socket |
+| 4 | Only reachability to Temporal |
 
-建議:**先開一個新 server 只做提案 1 + 2**(同宿主、唯讀、依賴最少),跑順了再決定 3
-要不要獨立成 fleet-side server。
+Recommendation: **start a new server doing only proposals 1 + 2** (same host, read-only, fewest dependencies), and
+once it runs smoothly decide whether 3 should become a standalone fleet-side server.
 
-**5.2 rclpy 與 MCP 的執行緒關係**
+**5.2 The threading relationship between rclpy and MCP**
 
-既有的 pattern 是 `rclpy.spin()` 佔主執行緒、FastMCP 跑背景 daemon thread。任何新的
-ROS 工具都必須遵守同一件事:**工具函式不能阻塞 spin**。等 action 結果、等 service
-回應、`wait_for_message` 這類操作要走自己的 callback group,否則會鎖死那個它正在等的
-callback。這是提案 2 和 5 最容易踩的坑。
+The existing pattern is `rclpy.spin()` owning the main thread with FastMCP on a background daemon thread. Every new
+ROS tool must obey the same rule: **a tool function must not block spin**. Waiting on an action result, waiting on
+a service response, `wait_for_message` and the like must go through their own callback group, otherwise they
+deadlock the very callback they are waiting on. This is the trap proposals 2 and 5 are most likely to fall into.
 
-**5.3 工具要分級,而且分級要出現在名字裡**
+**5.3 Tools must be tiered, and the tier must appear in the name**
 
 ```
 read-only     : list_*, get_*, check_*, explain_*, tail, timeline
-mutating      : set_*, dispatch, create_*        → 需要確認
-destructive   : compose_down, kill_session, delete_*  → 預設不開放
+mutating      : set_*, dispatch, create_*        → requires confirmation
+destructive   : compose_down, kill_session, delete_*  → not exposed by default
 ```
 
-`/api/v1/robot/set_motion_key` 的 `'4'` (ESTOP) 就是一個現成的教訓:schema 接受它,但
-backend **刻意不轉發**。工具層必須複製這種明確拒絕,而不是安靜地放過去。
+The `'4'` (ESTOP) of `/api/v1/robot/set_motion_key` is a ready-made lesson: the schema accepts it, but the backend
+**deliberately does not forward it**. The tool layer must replicate that explicit refusal rather than silently
+letting it through.
 
-**5.4 `robot_id` 是每個工具的隱含參數**
+**5.4 `robot_id` is an implicit parameter of every tool**
 
-單一 DDS domain 可以有好幾台機器。per-robot server 從 `config/system.ini` 解析一次就好;
-fleet-side server(提案 3)**每個工具都得顯式收 `robot_id`**,而且不能猜。
-
----
-
-## 6. 與既有 `syncai_ros_mcp` 的關係
-
-既有那個 server 是**通用的 ROS graph 反射層**:`get_topics` / `get_services` /
-`publish_once` / `subscribe_once` / `call_service`,加上 vertex 與 task 的 REST 薄包裝。
-它回答的是「這個 graph 裡有什麼」。
-
-這份文件的提案回答的是**「現在出了什麼問題」**和**「這件事對不對」**。差別是判斷,不是
-資料——所以不是取代關係。實作時的判準:如果一個工具只是把某個介面倒出來,它屬於既有
-server;如果它需要跨來源關聯、或需要把部落知識編碼成結論,它屬於新的。
+A single DDS domain can host several robots. A per-robot server resolves it once from `config/system.ini` and is
+done; a fleet-side server (proposal 3) **must take `robot_id` explicitly in every tool**, and must never guess.
 
 ---
 
-## 7. 建議的落地順序
+## 6. Relationship to the existing `syncai_ros_mcp`
 
-1. **提案 1**(日誌考古)——唯讀、零風險、當天就有回報,而且補上一個已經被刪掉的工具
-2. **提案 2**(stack doctor)——同宿主,把 `CLAUDE.md` 的知識變成可執行的判斷
-3. 觀察 agent 實際靠這兩個解掉了什麼,再決定 **3 / 4** 誰先
-4. **提案 5**(調參)最後,而且只對 sim
+The existing server is a **generic ROS graph reflection layer**: `get_topics` / `get_services` / `publish_once` /
+`subscribe_once` / `call_service`, plus thin REST wrappers for vertices and tasks. It answers "what is in this
+graph".
+
+The proposals in this document answer **"what is wrong right now"** and **"is this right"**. The difference is
+judgment, not data — so this is not a replacement relationship. The criterion at implementation time: if a tool
+merely dumps some interface, it belongs to the existing server; if it needs cross-source correlation, or needs to
+encode tribal knowledge into a conclusion, it belongs to the new one.
 
 ---
 
-## 8. Agent 串接:deepagents(LangChain)
+## 7. Suggested landing order
 
-上面所有提案講的都是「工具長什麼樣」;這一節回答「誰來呼叫這些工具」。結論:
-**互動式診斷不需要寫任何程式**——Claude Code 本身就是 MCP client:
+1. **Proposal 1** (log archaeology) — read-only, zero risk, pays back the same day, and restores a tool that was
+   already deleted
+2. **Proposal 2** (stack doctor) — same host, turns the knowledge in `CLAUDE.md` into executable judgments
+3. Observe what the agent actually solves with those two, then decide which of **3 / 4** comes first
+4. **Proposal 5** (tuning) last, and only against sim
+
+---
+
+## 8. Agent wiring: deepagents (LangChain)
+
+Everything above is about "what the tools look like"; this section answers "who calls them". Conclusion:
+**interactive diagnosis needs no code at all** — Claude Code is itself an MCP client:
 
 ```bash
 claude mcp add --transport http syncai http://robot01.local:8000/mcp
 ```
 
-deepagents 值得寫的場景是**嵌入式 / 自動化 agent**:排程健檢、operator console
-內建的對話式診斷、backend 觸發的自動故障分析。先確定「誰在什麼時候呼叫這個
-agent」,再決定要不要自己養一個 harness。
+The scenario where deepagents is worth writing is the **embedded / automated agent**: scheduled health checks,
+conversational diagnosis built into the operator console, automatic fault analysis triggered by the backend. First
+settle "who calls this agent, and when", then decide whether to raise a harness of your own.
 
-### 8.1 為什麼是 deepagents
+### 8.1 Why deepagents
 
-三個理由,都直接對到這份文件既有的設計:
+Three reasons, each mapping directly onto a design already in this document:
 
-1. **MCP 接線是一行 config。** deepagents 透過 `langchain-mcp-adapters` 的
-   `MultiServerMCPClient` 吃 MCP tools,支援 streamable HTTP——`syncai_ros_mcp`
-   正是 FastMCP over HTTP(port 8000),直接對上。
-2. **`interrupt_on` 直接落地 §5.3 的工具分級。** read-only / mutating /
-   destructive 三級制可以宣告式地寫成核准政策,不用自己寫 gate。
-3. **planning + subagents 適合提案 1、2 的任務形狀。**「任務為什麼卡住」是跨
-   日誌 / DDS / Temporal 的多步驟因果鏈,正是它 todo-planning 的用途;它的
-   virtual filesystem 也能承接大段日誌輸出,不把主 context 撐爆。
+1. **MCP wiring is one line of config.** deepagents consumes MCP tools through `MultiServerMCPClient` from
+   `langchain-mcp-adapters`, with streamable HTTP support — `syncai_ros_mcp` is exactly FastMCP over HTTP (port
+   8000), a direct match.
+2. **`interrupt_on` is a direct landing of the tool tiers in §5.3.** The read-only / mutating / destructive
+   three-tier scheme can be written declaratively as an approval policy, with no hand-written gate.
+3. **planning + subagents fit the task shape of proposals 1 and 2.** "Why is the task stuck" is a multi-step
+   causal chain across logs / DDS / Temporal, which is exactly what its todo-planning is for; its virtual
+   filesystem can also absorb large chunks of log output without blowing up the main context.
 
-架構上乾淨的一點:agent process 只跟 `:8000` 講 HTTP,**完全不碰 rclpy**,
-所以 §5.2 的 spin 執行緒問題與它無關——那始終是 MCP server 側的責任。agent
-可以跑在開發機或 fleet 側任何到得了機器人的地方。
+The architecturally clean point: the agent process speaks HTTP to `:8000` only and **never touches rclpy**, so
+the spin-thread problem of §5.2 does not concern it — that is always the MCP server's responsibility. The agent can
+run on a dev machine or anywhere on the fleet side that can reach the robot.
 
-### 8.2 最小接線
+### 8.2 Minimal wiring
 
 ```python
 import asyncio
@@ -323,7 +336,7 @@ async def main():
     client = MultiServerMCPClient({
         "robot01": {
             "transport": "http",
-            "url": "http://robot01.local:8000/mcp",  # mDNS 容器已經解得到
+            "url": "http://robot01.local:8000/mcp",  # the container already resolves mDNS
         },
     })
     tools = await client.get_tools()
@@ -331,58 +344,57 @@ async def main():
     agent = create_deep_agent(
         model="anthropic:claude-opus-5",
         tools=tools,
-        system_prompt="你是 SyncAI 四足機器人的維運助理...",
-        interrupt_on=INTERRUPT_POLICY,   # 見 8.3
-        checkpointer=MemorySaver(),      # HITL 必需;上生產換 Postgres checkpointer
+        system_prompt="You are the operations assistant for the SyncAI quadruped robot...",
+        interrupt_on=INTERRUPT_POLICY,   # see 8.3
+        checkpointer=MemorySaver(),      # required for HITL; switch to a Postgres checkpointer in production
     )
     result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": "檢查 robot01 現在的導航狀態"}]},
+        {"messages": [{"role": "user", "content": "Check robot01's current navigation state"}]},
         config={"configurable": {"thread_id": "1"}},
     )
 
 asyncio.run(main())
 ```
 
-模型字串用 `anthropic:claude-opus-5`。checkpointer 上生產要換持久化的
-Postgres checkpointer——這個 stack 剛好已經有 Postgres(`:5432`)。
+The model string is `anthropic:claude-opus-5`. In production the checkpointer must be swapped for a persistent
+Postgres checkpointer — this stack conveniently already has Postgres (`:5432`).
 
-### 8.3 工具分級 → `interrupt_on` 政策
+### 8.3 Tool tiers → `interrupt_on` policy
 
-§5.3 的分級直接翻譯:
+A direct translation of the tiers in §5.3:
 
 ```python
 INTERRUPT_POLICY = {
-    # read-only:不攔
+    # read-only: do not intercept
     "get_topics": False, "tail": False, "timeline": False, "check_stack": False,
-    # mutating:要人核准
+    # mutating: requires human approval
     "create_task":    {"allowed_decisions": ["approve", "reject"]},
     "set_motion_key": {"allowed_decisions": ["approve", "edit", "reject"]},
-    # destructive:核准制,或乾脆不暴露
+    # destructive: approval-gated, or simply not exposed
     "switch_mode":    {"allowed_decisions": ["approve", "reject"]},
 }
 ```
 
-進階:`when` predicate(langchain ≥ 1.3.3)可以做條件式攔截,例如只攔
-`set_motion_key` 中 key 為危險值的呼叫,其餘放行。
+Advanced: the `when` predicate (langchain ≥ 1.3.3) allows conditional interception, e.g. intercept only those
+`set_motion_key` calls whose key is a dangerous value and let the rest through.
 
-⚠️ **`interrupt_on` 是 UX,不是安全邊界。** 攔截發生在 agent client 側;任何
-直接打 `:8000` 的東西都繞得過去。§5.3 那個教訓(backend 刻意不轉發 ESTOP
-`'4'`)的正確位置仍然在 **server 側**——deepagents 的核准機制是疊在上面的
-第二層,不是替代。
+⚠️ **`interrupt_on` is UX, not a safety boundary.** The interception happens on the agent client side; anything
+that hits `:8000` directly bypasses it. The correct place for the lesson in §5.3 (the backend deliberately not
+forwarding ESTOP `'4'`) is still the **server side** — the deepagents approval mechanism is a second layer stacked
+on top, not a replacement.
 
-### 8.4 多機器人的坑
+### 8.4 The multi-robot trap
 
-`MultiServerMCPClient` 同時掛 robot01 / robot02 時,兩邊的 `get_topics`、
-`tail` **同名衝突**。最省事的做法是**一台機器人一個 agent instance**——跟
-Temporal task queue 按 `robot_id` 分流的哲學一致。要單一 agent 管全 fleet,
-就回到 §5.4:fleet-side server 每個工具顯式收 `robot_id`,而不是把多個
-per-robot server 疊在同一個 client 裡。
+When `MultiServerMCPClient` mounts robot01 / robot02 at the same time, both sides' `get_topics` and `tail`
+**collide on name**. The least-effort fix is **one agent instance per robot** — consistent with the philosophy of
+partitioning the Temporal task queue by `robot_id`. If a single agent must manage the whole fleet, fall back to
+§5.4: a fleet-side server where every tool takes `robot_id` explicitly, rather than stacking several per-robot
+servers inside one client.
 
-### 8.5 與落地順序的配合
+### 8.5 Fit with the landing order
 
-跟 §7 的順序天然配對:提案 1、2 全是唯讀工具,先做 agent + 全部
-`interrupt_on: False`,零風險跑起來驗證價值;等到要暴露 mutating 工具
-(create_task、switch_mode)時,checkpointer + interrupt 的骨架已經在了,
-只是加幾行分級設定。注意 HITL 的 approve / reject flow 需要 UI 端點——
-operator console(Next.js frontend)是自然的落點,這是接 mutating 工具前
-要先做的一件事。
+This pairs naturally with the order in §7: proposals 1 and 2 are all read-only tools, so build the agent first with
+everything at `interrupt_on: False` and run it at zero risk to validate the value; by the time mutating tools
+(create_task, switch_mode) are to be exposed, the checkpointer + interrupt skeleton is already in place and it is
+only a few lines of tier configuration. Note that the HITL approve / reject flow needs a UI endpoint — the operator
+console (the Next.js frontend) is the natural home, and that is one thing to do before wiring up mutating tools.

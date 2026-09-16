@@ -168,12 +168,15 @@ void RobotStateNode::initParameters()
   RCLCPP_INFO(
     this->get_logger(), "[RobotStateNode][%s] publish_rate: %f Hz", __func__, publish_rate_);
 
-  // 1 Hz, deliberately an order of magnitude below publish_rate. Every get_mode
-  // call makes sys_manager spawn `byobu has-session` subprocesses (one per known
-  // session spec), so polling this at the 10 Hz publish rate would be ~20
-  // subprocesses a second on the manager for a value that changes on the
-  // timescale of a mode switch — tens of seconds of byobu commands and sleep
-  // offsets. One second of staleness on a mode chip is invisible next to that.
+  // 1 Hz, deliberately decoupled from publish_rate rather than tied to it. Every
+  // get_mode call makes sys_manager spawn `byobu has-session` subprocesses (one
+  // per known session spec), so polling this at the 10 Hz code-default publish
+  // rate would be ~20 subprocesses a second on the manager for a value that
+  // changes on the timescale of a mode switch — tens of seconds of byobu
+  // commands and sleep offsets. The shipped params file sets publish_rate to
+  // 1.0 as well, so today the two happen to coincide; the point is that raising
+  // publish_rate must not drag this poll up with it. One second of staleness on
+  // a mode chip is invisible next to a mode switch.
   this->declare_parameter("mode_poll_rate", 1.0);
   this->get_parameter("mode_poll_rate", mode_poll_rate_);
   RCLCPP_INFO(

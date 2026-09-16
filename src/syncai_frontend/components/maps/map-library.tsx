@@ -45,12 +45,15 @@ function LoadingGrid() {
 }
 
 /**
- * The map catalogue. Read-only this round: there is no backend call that switches
- * or deletes a map, so the page shows what is on the robot and says where the
- * choice is actually made.
+ * The map catalogue. It shows what is on the robot and says where the choice of
+ * the map in use is actually made — there is no backend call that switches or
+ * deletes a map. What it can do is rename one: each card carries the control,
+ * and the backend's sentence about the rename is held here, because a card is
+ * keyed by its name and the renamed one unmounts with the refetch.
  */
 export function MapLibrary() {
   const { maps, status } = useMaps();
+  const [lastRename, setLastRename] = React.useState<string | null>(null);
 
   if (!maps) {
     if (status === "error") {
@@ -80,10 +83,23 @@ export function MapLibrary() {
   });
 
   return (
-    <div className={GRID}>
-      {ordered.map((map) => (
-        <MapCard key={map.name} map={map} />
-      ))}
+    <div>
+      {/* The backend's sentence, verbatim — same contract as the other map
+        * controls. It says how many vertices and templates followed the name,
+        * which the renamed card cannot show. */}
+      {lastRename && (
+        <p
+          role="status"
+          className="mb-3 text-[11px] leading-tight text-muted-foreground"
+        >
+          {lastRename}
+        </p>
+      )}
+      <div className={GRID}>
+        {ordered.map((map) => (
+          <MapCard key={map.name} map={map} onRenamed={setLastRename} />
+        ))}
+      </div>
     </div>
   );
 }

@@ -108,3 +108,38 @@ def test_delete_removes_vertex(map_repo):
 
 def test_delete_missing_returns_false(map_repo):
     assert map_repo.delete_vertex(_MISSING_ID) is False
+
+
+def test_move_vertices_rekeys_only_that_map(map_repo):
+    a = _create(map_repo, name="a", map="old")
+    b = _create(map_repo, name="b", map="old")
+    other = _create(map_repo, name="c", map="other")
+
+    moved = map_repo.move_vertices("old", "new")
+
+    assert moved == 2
+    assert {v.id for v in map_repo.list_vertices(map="new")} == {a.id, b.id}
+    assert map_repo.list_vertices(map="old") == []
+    assert map_repo.get_vertex(other.id).map == "other"
+
+
+def test_move_vertices_bumps_updated_at_and_keeps_ids(map_repo):
+    """A Core UPDATE skips ``onupdate``; the repo sets updated_at itself."""
+    created = _create(map_repo, map="old")
+    # Read back before moving: SQLite hands timestamps back naive, so the
+    # comparison has to be between two rows that took the same path.
+    before = map_repo.get_vertex(created.id)
+
+    map_repo.move_vertices("old", "new")
+
+    after = map_repo.get_vertex(created.id)
+    assert after.id == before.id
+    assert after.created_at == before.created_at
+    assert after.updated_at >= before.updated_at
+
+
+def test_move_vertices_of_an_unknown_map_moves_nothing(map_repo):
+    _create(map_repo, map="warehouse")
+
+    assert map_repo.move_vertices("ghost", "new") == 0
+    assert len(map_repo.list_vertices(map="warehouse")) == 1

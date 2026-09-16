@@ -1,13 +1,13 @@
 # syncai_robot_state
 
 One node, `syncai_robot_state`, that aggregates the robot's scattered status
-sources into a single `syncai_common/RobotState` at **10 Hz** on the relative
-topic `robot_state` (so it lands on `<robot_id>/robot_state`). One publisher, one
+sources into a single `syncai_common/RobotState` at **1 Hz as shipped** (10 Hz
+code default) on the relative topic `robot_state` (so it lands on `<robot_id>/robot_state`). One publisher, one
 timer, and `syncai_backend` as its only consumer — which makes this node the thing
 that decides what the operator UI can show.
 
 ```
-        TF: map → <robot_id>/base_link  ─────┐   (from syncai_lio_bridge / syncai_amcl)
+        TF: map → <robot_id>/base_link  ─────┐   (from syncai_lio_bridge)
         odom          (nav_msgs/Odometry) ───┤
         battery_state (BatteryState)  ───────┼──►  syncai_robot_state
         wifi_status   (WifiStatus)    ───────┤            (10 Hz)
@@ -103,7 +103,7 @@ lookup so they cannot disagree.
 
 `RUNNING` and `ERROR` are not derived yet. **`CHARGING` cannot be**: the driver
 hardcodes `BatteryState.power_supply_status` to `UNKNOWN`
-(`syncai_driver_manager.cpp:301`), and the only other candidate is the sign of
+(`syncai_driver_manager.cpp:318`), and the only other candidate is the sign of
 `current`, whose convention is undocumented in both this port and the reference
 implementation. Deriving it is a hardware-observation task, not a coding one.
 
@@ -274,7 +274,7 @@ to best-effort would stop matching this subscription **silently**; check it with
 
 | Parameter | Default | Set by the launch file |
 |---|---|---|
-| `robot_id` | `""` | `[system] robot_id` from the INI |
+| `robot_id` | `""` (yaml: `default_robot`) | `[system] robot_id` from the INI |
 | `map` | `""` (yaml: `dp2f_full`) | `[map] map` from the INI, when present |
 | `global_frame` | `map` | — (stays unprefixed) |
 | `base_frame` | `base_link` | `<robot_id>/base_link` |
@@ -305,7 +305,7 @@ Started in the byobu sessions' `state_backend` window, alongside the backend.
 
 ```bash
 ros2 topic echo /<robot_id>/robot_state --once   # joint temps, state, localization_valid
-ros2 topic hz /<robot_id>/robot_state            # should be a steady 10 Hz
+ros2 topic hz /<robot_id>/robot_state            # steady 1 Hz as shipped (10 Hz code default)
 curl http://localhost:3000/api/v1/robot/state    # the public subset, through the backend
 ```
 
@@ -370,8 +370,10 @@ ros2 topic pub -r 2 /<robot_id>/battery_state sensor_msgs/msg/BatteryState \
   the nanoseconds the `motor_states` topic carries. So the same `MotorStates` type
   means two different units depending on where you read it — the topic keeps
   nanoseconds because the backend's telemetry WebSocket needs sub-second ordering.
-- **At 10 Hz `timestamp` repeats.** Whole seconds means ten consecutive messages
-  carry the same value, so it cannot order samples or measure the rate. It stays
+- **`timestamp` cannot order samples.** It is whole seconds: at 1 Hz as shipped
+  it advances by exactly one per message, and at the 10 Hz code default ten
+  consecutive messages carry the same value — either way it cannot measure the
+  rate or order anything finer than a second. It stays
   seconds because it is passed verbatim to the frozen REST payload — and
   `motor_status.timestamp` is no help either now that it is seconds too. Subscribe
   `motor_states` directly if you need sub-second resolution, which is exactly what

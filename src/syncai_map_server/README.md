@@ -20,8 +20,11 @@ map/<name>/gridmap.yaml + .pgm
             │
             ▼
        map_server ──/<robot_id>/map (latched)──►  syncai_costmap_2d StaticLayer
-            ▲                                     syncai_amcl
-            │ load_map (service)                  syncai_backend  ──► GET /api/v1/map/image
+            ▲                                     syncai_backend  ──► GET /api/v1/map/image
+            │ load_map (service)
+            │   (localization itself is FAST-LIO2's `localizer` + syncai_lio_bridge,
+            │    which match against the [map] pcd, not this grid — the grid is
+            │    for planning and display only)
             │
        map_saver ──save_map (service)──► writes <name>.pgm + <name>.yaml
 
@@ -162,10 +165,16 @@ ros2 launch syncai_map_server map_saver.launch.py
 ros2 launch syncai_map_server costmap_filter_info.launch.py
 ```
 
-`map_server` is window 1 (`localization`) in both byobu sessions and must come up
-**before** the planner, whose global costmap static layer blocks on the latched
-map. `costmap_filter_info` is only launched in the 2D session — the 3D planner
-params have no keepout filter configured yet.
+`map_server` is in window 1 of the nav session (`config/sessions/start_nav.yaml`)
+and must come up **before** the planner, whose global costmap static layer blocks
+on the latched map. The mapping session (`start_mapping.yaml`) does not run it at
+all — it runs `pgo` to *build* the map that this node needs to exist, and
+`map_server` throws in its constructor when the file is absent.
+`costmap_filter_info.launch.py` is launched by **neither** session spec (the 2D
+session that used to carry it went away with `bringup_2d`), and the planner
+params have no keepout filter configured. Enabling keepouts therefore means both
+adding the `filters:` line to `planner_server_params.yaml` and starting this
+launch file by hand, or adding it as a pane to `start_nav.yaml`.
 
 ```bash
 ros2 topic echo /<robot_id>/map --once --qos-durability transient_local

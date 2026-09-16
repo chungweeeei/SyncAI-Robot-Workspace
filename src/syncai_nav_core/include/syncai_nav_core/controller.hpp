@@ -19,7 +19,8 @@ namespace syncai_nav_core
  * @class Controller
  * @brief controller interface that acts as a virtual base class for all controller plugins.
  * Unlike nav2_core, plugins receive a plain rclcpp::Node and there is no
- * activate/deactivate/cleanup: configure() does the full setup and teardown
+ * activate/deactivate/cleanup: initialize() (nav2's configure()) does the full
+ * setup and teardown
  * happens in the plugin destructor.
  */
 class Controller
@@ -47,7 +48,7 @@ public:
    * @param path The global plan
    *
    * Called both when a goal starts and on every mid-navigation replan (the BT
-   * re-ticks FollowPath with a fresh path at ~0.333 Hz, which reaches the
+   * re-ticks FollowPath with a fresh path at 1 Hz, which reaches the
    * controller as an action preempt). A plugin must therefore treat this as
    * "the path changed", never as "a new goal started" — per-goal state belongs
    * in reset(). Not distinguishing the two is what produced the cmd_vel

@@ -11,8 +11,10 @@
 # works for any robot_id: the launch file reads robot_id from config/system.ini
 # and uses it as the node namespace.
 #
-# What is NOT here, and why — these three are computed at launch time and are
-# appended AFTER this file in the Node's parameters list, so they win:
+# What is NOT here, and why — these four are computed at launch time and are
+# appended AFTER this file in the Node's parameters list, so they win (the
+# camera block has three more of its own — imu_frame_id, image_frame_id and
+# device_index — noted above that block):
 #   * robot_description  - the URDF text, read off disk from description/
 #   * frame_prefix       - needs the resolved robot_id
 #   * frame_id           - same; TF frame names are NOT namespaced by ROS, so
@@ -89,11 +91,11 @@
     #
     # publish_image being true makes this node a *streaming* opener, which takes
     # /dev/video0 away from whoever else has it — the device admits exactly one.
-    # scripts/publish_camera.sh (RTSP -> MediaMTX -> the frontend's WebRTC view)
-    # is the documented other consumer, but it is not the only one that has
-    # shown up: a host-side joystick UI outside this repo
-    # (~/controller/src/controller/HTML_joy_controller.py) opens /dev/video0
-    # with OpenCV too, and while it runs this node dies with
+    # scripts/publish_camera_crop.sh (host-side GStreamer -> RTSP -> the remote
+    # MediaMTX -> the frontend's WebRTC view) is the documented other consumer,
+    # but it is not the only one that has shown up: a host-side joystick UI
+    # outside this repo (~/controller/src/controller/HTML_joy_controller.py)
+    # opens /dev/video0 with OpenCV too, and while it runs this node dies with
     # "VxStartStreaming failed" / GStreamer EOS. Before blaming the container,
     # check the device on the HOST:
     #   v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1
@@ -122,11 +124,13 @@
     # device_index 1: image_format "auto" picks that unit's UYVY 1280x800@60 and
     # then never gets a frame (VxGetImage times out at -1 forever, though raw
     # v4l2-ctl streams the same format fine), while MJPG works.
-    # 1280x720 at 60 matches the defaults in scripts/publish_camera.sh, and 60
-    # is not a stylistic choice — the AR0234 at device_index 0 advertises only
-    # 60 and 120 fps at 720p, no 30 (v4l2-ctl --list-formats-ext). The AR0144 at
-    # index 1 is the other way round (30 and 60, no 120), so 60 is the one rate
-    # both units accept and this block stays valid for either.
+    # 60 matches the FRAMERATE default in scripts/publish_camera_crop.sh (which
+    # captures the full 1920x1200 and crops on the host; the 1280x720 here is
+    # this node's own choice), and 60 is not a stylistic choice — the AR0234 at
+    # device_index 0 advertises only 60 and 120 fps at 720p, no 30
+    # (v4l2-ctl --list-formats-ext). The AR0144 at index 1 is the other way
+    # round (30 and 60, no 120), so 60 is the one rate both units accept and
+    # this block stays valid for either.
     # image_rate_hz 0.0 means "publish at the negotiated format's rate".
     image_format: "MJPG"
     image_width: 1280
@@ -154,8 +158,8 @@
     # so with no write here the node inherits whatever the last process left
     # behind — and the camera has already been found parked at auto-WB-off with
     # the temperature frozen, which tints everything and reads as "the camera is
-    # broken". scripts/publish_camera.sh sets the v4l2 equivalents for exactly
-    # this reason; this block is the ROS-side half of the same fix, aimed at the
+    # broken". scripts/publish_camera_crop.sh sets the v4l2 equivalents for
+    # exactly this reason; this block is the ROS-side half of the same fix, aimed at the
     # same physical control on the same camera.
     #
     # The values are VX_AWB_MODE_STATUS from the SDK's VxPublicTypes.hpp, which

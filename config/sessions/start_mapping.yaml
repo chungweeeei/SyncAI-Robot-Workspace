@@ -8,13 +8,13 @@
 # existing map during construction and die without one, so it cannot be used to
 # create the map it needs. This spec is the other half of that loop.
 #
-# The pipeline (doc/fastlio2-pgo-pipeline.md §5):
+# The pipeline (from §5 of the FAST-LIO2 PGO pipeline note, no longer in doc/):
 #
 #   bringup (MID360 + lidar_top static TF)
 #     -> pgo_launch.py      # include()s pointlio_launch.py, the LIO front end
 #     -> drive by hand      # teleop -> driver_manager -> gait controller
 #     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt
-#     -> tools/pcd_to_gridmap.py     =>  gridmap.pgm + gridmap.yaml
+#     -> syncai_backend/helpers/pcd_to_gridmap.py  =>  gridmap.pgm + gridmap.yaml
 #
 # The last step is offline and run later, by hand — which is why a map directory
 # spends time holding a map.pcd with no gridmap yet.
@@ -33,7 +33,8 @@
 #   * planner / controller / task_runner — the robot is teleoperated here. Their
 #                   absence also removes the "teleop races the controller"
 #                   hazard that the old byobu_session_dev.sh warned about.
-#   * hba         — offline refinement, and shelved (see the pipeline doc §3.5)
+#   * hba         — offline refinement, and shelved (see §3.5 of the FAST-LIO2 PGO
+#                   pipeline note, no longer in doc/)
 #
 # robot_state / backend / frontend ARE here, although earlier revisions excluded
 # them as nav-oriented: the operator console is the mapping UI now. Switching

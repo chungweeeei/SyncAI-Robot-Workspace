@@ -184,11 +184,15 @@ overshooting.
 
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
 cost us once: `setPlan()` is also the mid-navigation replan path. The BT's
-`RateController hz="0.333"` in `move.xml` hands `FollowPath` a fresh path every
-~3 s, which reaches the server as an action preempt and lands in
+`RateController hz="1.0"` in `move.xml` hands `FollowPath` a fresh path every
+~1 s, which reaches the server as an action preempt and lands in
 `updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
 clamped the very next command to a single accel step, so the command re-ramped
-from ~0 every 3 s. Measured on the real robot over a two-goal run:
+from ~0 on every replan. Measured on the real robot over a two-goal run (at the
+time the BT replanned every ~3 s and RPP was still configured with
+`desired_linear_vel: 0.8` / `rotate_to_heading_angular_vel: 1.3` — hence the
+0.8 m/s and 1.3 rad/s plateaus below; today's values are 0.60 / 0.65, see
+"Velocity-scale calibration"):
 
 ```
 t= 3.150  vx +0.650 -> +0.050    (/plan published at 3.058)
@@ -209,7 +213,9 @@ the constant 1.3 rad/s plateau was cut to 0.16 and needed 8 cycles to climb back
 The angular clamp is applied twice, once per branch: inside `rotateToHeading()`
 for in-place rotation, and again after `angular_vel = linear_vel * curvature` for
 path tracking. The second one was missing originally, which made *exiting*
-rotation a cliff while *entering* it was smooth:
+rotation a cliff while *entering* it was smooth (trace measured at the old
+`rotate_to_heading_angular_vel: 1.3` plateau — the mechanism is unchanged at
+0.65, only the numbers are smaller):
 
 ```
 entering rotation                    leaving rotation
@@ -268,10 +274,10 @@ Server-level (`/**/controller_server`):
 | Parameter | Default | Notes |
 |---|---|---|
 | `controller_frequency` | `20.0` | Control loop rate; also `1/f` is RPP's `control_duration_`, the `dt` in both accel clamps |
-| `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero |
+| `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
-| `min_theta_velocity_threshold` | `0.0001` | |
-| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever |
+| `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
+| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `0.3`**, which is materially different from the default: at `0.0` the first `PlannerException` out of RPP ("collision ahead!", a transform failure) fails the goal outright; at `0.3` the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once 300 ms have passed since the last valid command — six control cycles of grace for a transient TF hiccup or a single sway-induced collision flag, with the robot braking rather than coasting through them |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
 | `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` |
@@ -294,7 +300,36 @@ few worth reading before touching:
 - `rotate_to_heading_min_angle: 0.25` — lowered from 45°, which used to hand over
   to path tracking so far off-heading that the robot drove away and re-triggered
   the rotation.
-- `max_linear_accel: 1.0` — the no-velocity-smoother clamp; 0 → 0.8 m/s in ~0.8 s.
+- `max_linear_accel: 1.0` — the no-velocity-smoother clamp; 0 → 0.60 m/s in ~0.6 s.
+
+### Velocity-scale calibration
+
+Two RPP speeds were lowered because the gait controller does not deliver the
+speed it is commanded, and the controller's geometry silently assumes it does:
+
+- `desired_linear_vel`: **0.8 → 0.60**. At 0.8 the robot actually made
+  0.62 m/s (ratio 0.78), so pure pursuit was computing its arcs
+  (`w = v · curvature`) for a speed a quarter higher than reality.
+- `rotate_to_heading_angular_vel`: **1.3 → 0.65**. At 1.3 it delivered
+  0.695 rad/s (ratio 0.53) — the controller believed every in-place turn was
+  finishing about twice as fast as it was, exited rotate-to-heading still
+  off-heading, and re-entered. That is the weave the angular-clamp fix above
+  only partly explained.
+
+The per-direction correction itself does **not** live here. It is
+`syncai_driver_manager`'s `scale_fwd` / `scale_back` / `scale_left` /
+`scale_right` / `scale_turn_l` / `scale_turn_r` (`driver_manager_params.yaml`,
+currently 1.40 / 1.0 / 1.0 / 1.0 / 1.40 / 1.40), multiplied into `cmd_vel`
+before it goes over UDP; see the "Per-direction speed scaling" section of
+[`syncai_driver_manager/README.md`](../syncai_driver_manager/README.md). The
+two packages' values are **one calibration**: the RPP speeds were chosen to sit
+inside the range where the plateaus were measured, and the scale factors fold
+the residual error at *those* commands back in. The response is not a fixed
+gain — the two measurement runs disagree with each other, and the gait
+controller's tracking falls off as the command grows — so raising either speed
+here without a fresh plateau measurement at the new command (hold it 3–5 s,
+record what odom settles at) reintroduces exactly the mismatch these numbers
+were lowered to remove.
 
 ### Params
 
@@ -360,9 +395,15 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
   the robot physically fails to track the command, the clamp will not notice and
   will keep ramping. That is intentional (gait noise), but it means the clamp is
   not a safety feature.
-- **Footprints must match the global costmap.** `syncai_planner`'s
-  `global_costmap` uses the same rectangle; if they diverge, RPP rejects paths
-  the planner considers valid, spamming "collision ahead!".
+- **Footprints must match the global costmap — and currently do not.** The
+  local costmap here is `[[0.28, 0.20], …]`; `syncai_planner`'s `global_costmap`
+  was enlarged to `[[0.35, 0.22], …]` and this file was not followed, even though
+  both YAML comments say "rescale both together". Today the planner is the
+  conservative side, so RPP does not reject its paths — the "collision ahead!"
+  spam happens when the *local* rectangle is the larger — but the controller is
+  checking 7 cm less clearance than the planner assumed, and anyone growing this
+  footprint to match will re-tune against a different robot than the planner
+  sees until both agree. Reconcile them to one rectangle.
 - **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
   spin has no timeout: if an observation source stops publishing, the control
   loop stalls there with the goal still active rather than failing.

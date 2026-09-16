@@ -1,0 +1,79 @@
+# =============================================================================
+# One-shot workspace build: `colcon build` of every ROS 2 package in a
+# throwaway container made from the SAME dev image the robot runs. The
+# frontend is not built here (not an ament package; `npm install` in
+# src/syncai_frontend is its whole build).
+#
+#   docker compose -f docker-compose.build.yaml run --rm build
+#   docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_planner
+#   BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build
+#
+# Anything after `build` is appended to `colcon build --symlink-install` (the
+# service uses an entrypoint, not a command, precisely so that `run` appends
+# instead of replacing). The steps themselves live in
+# scripts/build.sh, which is equally runnable from inside robot01
+# (`docker compose exec robot01 scripts/build.sh`) — this file only
+# provides the container to run it in.
+#
+# Why a separate compose file rather than a service in docker-compose.yml:
+# docker-compose.yml `include`s the robots file and a plain `docker compose
+# up -d` starts every service it knows about. A build step is not something to
+# `up`; it runs to completion and exits. It also gets its own project `name`,
+# so `run`/`down` against this file never touch robot01 or the infra and
+# compose does not warn about them as "orphans".
+#
+# Why the SAME image and not a slimmer builder: the build artefacts land in the
+# bind-mounted ./build and ./install that robot01 loads at runtime, so the
+# compiler, ROS packages and every -dev header have to be exactly what robot01
+# has, or a .so built here links against something robot01 lacks. That is also
+# why the script does NOT `rosdep install` by default — apt packages installed
+# into this container are gone when it exits and never reach robot01. Missing
+# deps belong in the Dockerfile; the script's `rosdep check` tells you which.
+#
+# The build block duplicates x-robot-common in docker-compose.robots.yml on
+# purpose (compose `extends` would drag the robot's devices / nvidia runtime /
+# X11 mounts along, and lists cannot be un-merged). Keep the two in sync; the
+# canonical image build stays `docker compose build robot01`. `run` only builds
+# the image when it is missing — pass --build to force a rebuild.
+#
+# The live robot keeps running while this builds — that is no different from
+# today's `docker compose exec robot01 colcon build`, and the same caveat
+# applies: --symlink-install swaps .so files under running nodes, so restart
+# the affected session (switch_mode) afterwards. Do not run two builds at once;
+# they share ./build.
+# =============================================================================
+
+name: syncai-build
+
+services:
+  build:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    image: syncai-robot-base
+    # Host uid/gid so ./build, ./install, ./log and node_modules stay owned by
+    # the host user (HOME in the image is world-writable for exactly this).
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /home/syncrobotic/robot_ws
+    # No network to create or tear down for a one-shot container; rosdep
+    # reaches the internet through the host stack like robot01 does.
+    network_mode: host
+    entrypoint: ["scripts/build.sh"]
+    environment:
+      # Step toggles, all read by scripts/build.sh:
+      #   BUILD_COLCON    1 | 0          colcon build --symlink-install
+      #   BUILD_ROSDEP    check | install | off
+      #                   check   = report unmet rosdep keys, never install (default)
+      #                   install = rosdep install -r -y into THIS container only,
+      #                             to get a build through while the Dockerfile
+      #                             is being fixed — robot01 will still lack them
+      BUILD_COLCON: "${BUILD_COLCON:-1}"
+      BUILD_ROSDEP: "${BUILD_ROSDEP:-check}"
+      # Same reasons as x-robot-env: plain-text logs, prompt Python output.
+      RCUTILS_COLORIZED_OUTPUT: "0"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # The colcon workspace, at the path every launch file / colcon.meta /
+      # ruff.toml assumes (cwd = workspace root, see CLAUDE.md).
+      - .:/home/syncrobotic/robot_ws

@@ -231,7 +231,7 @@ def _despeckle(
     logger: structlog.stdlib.BoundLogger, grid: np.ndarray, min_obstacle_size: int
 ) -> np.ndarray:
     """Remove occupied blobs smaller than ``min_obstacle_size`` cells (sensor
-    noise, dynamic-object残影). Real walls/racks form large connected components
+    noise, dynamic-object ghosting). Real walls/racks form large connected components
     and are untouched. Removed cells become free (they sit in observed space)."""
     occ = grid == 0
     labels, _ = ndimage.label(occ, structure=np.ones((3, 3)))

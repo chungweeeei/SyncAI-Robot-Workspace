@@ -9,7 +9,8 @@
     odom_topic: odom
     transform_tolerance: 0.1
 
-    # BT engine loop: 10 ms => the whole tree is ticked at 100 Hz.
+    # BT engine loop period in ms: 50 ms => the whole tree is ticked at 20 Hz.
+    # This value also becomes every BT node's per-tick spin budget (halved).
     bt_loop_duration: 50
     # How long (ms) a BT action/service client waits on its server per goal.
     default_server_timeout: 20

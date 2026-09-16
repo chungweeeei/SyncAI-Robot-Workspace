@@ -1,170 +1,185 @@
-# 點雲 → gridmap 參數調校 agent 提案
+# Point Cloud → Gridmap Parameter-Tuning Agent Proposal
 
-> 對象:離線地圖產線(`config/system.ini` 的 `[map]` pcd / gridmap paths)
->       + `src/syncai_device_agent/`(deepagents runtime)
-> 相關:`doc/task-recovery-agent-proposal.md`(同構迴圈,但那個會讓機器人動)
->       `doc/deep-agent-proposal.md`(agent 側接線 / tool vs skill 的判準)
-> 狀態:**提案,尚未實作**。§6 有兩件事需要先確認。
+> Target: the offline map production line (the `[map]` pcd / gridmap paths in `config/system.ini`)
+>       + `src/syncai_device_agent/` (the deepagents runtime)
+> Related: `doc/task-recovery-agent-proposal.md` (the same loop shape, but that one makes the robot move)
+>       `doc/deep-agent-proposal.md` (agent-side wiring / the tool vs skill criteria)
+> Status: **proposal, not implemented**. §6 lists two things that must be confirmed first.
 
-這份筆記回答:3D 點雲壓成 2D gridmap 這件事,適不適合做成 agent。
+*Note: `src/syncai_device_agent/` was removed from the workspace in commit 99141a6; this proposal predates that removal.*
 
-先說結論:**投影本身不適合,選參數適合。** 而且因為這個題目離線、可量測、零實體風險,
-它是 `task-recovery-agent-proposal.md` 那個迴圈的安全練習場 —— **建議把它當作這個
-workspace 的第一個真正 agent 迴圈**,先於任何會讓機器人動起來的東西。
+This note answers one question: is flattening a 3D point cloud into a 2D gridmap a good fit for an agent?
+
+The conclusion up front: **the projection itself is not; choosing the parameters is.** And because this problem is
+offline, measurable, and carries zero physical risk, it is the safe practice ground for the loop in
+`task-recovery-agent-proposal.md` — **the recommendation is to make this the first real agent loop in this
+workspace**, ahead of anything that makes the robot move.
 
 ---
 
-## 0. 心智模型:一次確定性操作不需要 agent
+## 0. Mental model: a single deterministic operation does not need an agent
 
 ```
-❌ agent → convert_pcd_to_gridmap(input.pcd) → 完成
+❌ agent → convert_pcd_to_gridmap(input.pcd) → done
 ```
 
-這是一支腳本,不是 agent。LLM 在中間唯一做的事是「決定呼叫哪個函式」,而那根本沒有選擇。
-**把單一確定性操作包成 tool 再套一個 agent,只是多了一層貴且慢的殼。** 這跟
-`mcp-server-proposals.md` §0 說的「把 REST endpoint 一對一包成 MCP tool 最沒價值」是同一個
-道理。
+That is a script, not an agent. The only thing the LLM does in the middle is "decide which function to call", and
+there is no choice to make. **Wrapping a single deterministic operation as a tool and putting an agent around it only
+adds an expensive, slow shell.** This is the same argument as `mcp-server-proposals.md` §0: wrapping REST endpoints
+one-to-one as MCP tools is the least valuable thing you can do.
 
-有價值的是**參數**。z 切片高度、resolution、佔據閾值、離群點濾除半徑…… 這些沒有一組
-通用值,每個場地都不一樣:
+What has value is the **parameters**. Z-slice height, resolution, occupancy threshold, outlier-removal radius…
+there is no universal set of values for these; every site is different:
 
-| 參數偏差 | 後果 |
+| Parameter off | Consequence |
 |---|---|
-| z 下界太低 | 地面雜訊被當成障礙物,整張圖髒掉 |
-| z 上界太高 | 桌子、棧板、矮平台在圖上消失,機器人會撞上去 |
-| 濾除半徑太大 | 細柱子、桌腳被吃掉 |
-| 佔據閾值太鬆 | 牆體有洞,AMCL 比對與 costmap 都會漏 |
+| z lower bound too low | Floor noise is treated as obstacles; the whole map gets dirty |
+| z upper bound too high | Tables, pallets, low platforms vanish from the map; the robot will hit them |
+| Filter radius too large | Thin pillars and table legs get eaten |
+| Occupancy threshold too loose | Walls have holes; both AMCL matching and the costmap leak |
 
-「跑一次 → 看結果 → 判斷哪裡不對 → 調參數 → 再跑」——**這才是 agent loop 的形狀**,而且
-判斷那一步確實需要判斷力,不是查表。
-
----
-
-## 1. 現狀:判斷力目前在人身上
-
-前端有一整組手動修圖工具:`components/maps/map-grid-editor.tsx`、`grid-canvas.tsx`、
-`grid-toolbar.tsx`,搭配 `app/maps/[name]/edit/page.tsx`。也就是說目前的流程是:
-
-```
-FAST-LIO2 / PGO / HBA → .pcd → (投影) → gridmap → 人用眼睛看 → 手動塗改或改參數重跑
-```
-
-這個迴圈每建一次圖就跑一遍,每個場地都要重來,而且判斷依據大多沒有被記錄下來 —— 換一個
-人做,就要重新累積一次經驗。這正是值得交給 agent 的形狀:**重複、需要判斷、但判斷有客觀
-依據**。
+"Run once → look at the result → judge what is wrong → adjust parameters → run again" — **that is the shape of an
+agent loop**, and the judging step genuinely requires judgment, not a table lookup.
 
 ---
 
-## 2. 為什麼這是最好的第一個 agent 迴圈
+## 1. Current state: the judgment lives in a human
 
-**(a) 零實體風險。** 純檔案處理,機器人不會動。錯了重跑,成本只有 CPU 時間。可以放心把
-permissions 開鬆一點觀察它會做什麼 —— 這在真機上不可能。
-
-**(b) 有客觀評估指標。** 這是迴圈能不能成立的關鍵,見 §3。agent 必須能自我評估「這次比
-上次好還是壞」,否則它只是在亂試。
-
-**(c) 天然涵蓋 deepagents 的全部核心概念。** tools / backend / permissions 在這個題目裡
-都是必要的而非硬湊,見 §4。
-
-**(d) 它是 `task-recovery-agent-proposal.md` 的安全同構版。** 兩者迴圈形狀完全一樣:
+The frontend has a whole set of manual grid-editing tools: `components/maps/map-grid-editor.tsx`, `grid-canvas.tsx`,
+`grid-toolbar.tsx`, together with `app/maps/[name]/edit/page.tsx`. In other words, the current flow is:
 
 ```
-執行 → 量測 → 歸因 → 調參 → 重試 → 收斂或放棄
+FAST-LIO2 / PGO / HBA → .pcd → (projection) → gridmap → a human eyeballs it → paints by hand or changes parameters and reruns
 ```
 
-差別只在「執行」是跑一次離線投影,還是一台四足機器人走出去。**骨架、收斂條件、放棄條件、
-參數白名單全部可以在這裡練熟再搬過去。**
+This loop runs once per map build, has to be redone for every site, and the basis for the judgments is mostly never
+recorded — hand it to a different person and the experience has to be accumulated all over again. That is exactly
+the shape worth handing to an agent: **repetitive, requires judgment, but the judgment has an objective basis**.
 
 ---
 
-## 3. 評估指標決定 loop 成不成立
+## 2. Why this is the best first agent loop
 
-沒有量化指標,agent 就只能「看圖說故事」,迴圈不會收斂。建議做一個工具:
+**(a) Zero physical risk.** Pure file processing; the robot does not move. If it goes wrong, rerun — the cost is CPU
+time. You can afford to loosen permissions and watch what it does, which is impossible on a real robot.
+
+**(b) There are objective evaluation metrics.** This is what decides whether the loop can exist at all; see §3. The
+agent must be able to self-assess "was this attempt better or worse than the last one", otherwise it is just
+thrashing.
+
+**(c) It naturally covers all of deepagents' core concepts.** tools / backend / permissions are all necessary in
+this problem rather than contrived; see §4.
+
+**(d) It is the safe isomorph of `task-recovery-agent-proposal.md`.** The two loops have exactly the same shape:
+
+```
+execute → measure → attribute → tune → retry → converge or give up
+```
+
+The only difference is whether "execute" means running an offline projection once, or a quadruped walking out the
+door. **The skeleton, convergence condition, give-up condition, and parameter whitelist can all be rehearsed here
+and then carried over.**
+
+---
+
+## 3. The evaluation metrics decide whether the loop holds
+
+Without quantitative metrics the agent can only "tell stories about a picture", and the loop will not converge.
+Suggested tool:
 
 ```
 evaluate_gridmap(path) -> {
-  unknown_ratio,        # -1 格佔比
-  free_connectivity,    # 自由空間連通元件數 / 最大元件佔比:該通的走道有沒有斷
-  wall_breaks,          # 牆體斷裂數
-  wall_thickness,       # 牆厚分布(過厚 = inflation 或 z 範圍太寬)
-  speckle_count,        # 孤立佔據格數量(雜訊指標)
-  diff_vs_reference,    # 與上一版地圖 / CAD 的差異(可選)
+  unknown_ratio,        # share of -1 cells
+  free_connectivity,    # number of free-space connected components / share of the largest: are corridors that should connect actually connected
+  wall_breaks,          # number of wall breaks
+  wall_thickness,       # wall-thickness distribution (too thick = inflation or z range too wide)
+  speckle_count,        # number of isolated occupied cells (noise indicator)
+  diff_vs_reference,    # difference against the previous map version / CAD (optional)
 }
 ```
 
-⚠️ **主訊號必須是數字,圖片是佐證。** 模型看得懂 pgm,把渲染圖一起餵進去對「哪裡看起來
-不對」有幫助,但**不要讓視覺判斷當唯一依據** —— 它不穩定,而且沒辦法用來比較兩次嘗試的
-優劣。指標負責收斂,圖片負責解釋。
+⚠️ **The primary signal must be numeric; images are supporting evidence.** The model can read a pgm, and feeding
+the rendered image alongside helps with "where does it look wrong", but **do not let visual judgment be the sole
+basis** — it is unstable, and it cannot be used to rank two attempts. Metrics drive convergence; images explain.
 
-指標之間會互相拉扯(降低 unknown 通常會提高 speckle),所以 skill 裡要寫清楚優先順序,
-例如:連通性 > 牆體完整 > 雜訊 > 未知格佔比。這個優先順序是部落知識,屬於 SOP。
+The metrics pull against each other (lowering unknown usually raises speckle), so the skill has to spell out the
+priority order, for example: connectivity > wall integrity > noise > unknown-cell share. That priority order is
+tribal knowledge and belongs in the SOP.
 
 ---
 
-## 4. 配置:三個概念各自對應到什麼
+## 4. Configuration: what each of the three concepts maps to
 
-| 概念 | 這裡怎麼用 |
+| Concept | How it is used here |
 |---|---|
-| **tools** | `run_projection(params)`、`evaluate_gridmap(path)`、`diff_maps(a, b)` |
-| **backend** | `CompositeBackend`:default `StateBackend`(中間資料)+ `FilesystemBackend` 指向工作目錄(真的 .pcd / .pgm)+ `/memories/` 走 `StoreBackend` |
-| **permissions** | `deny` 覆蓋 `/input/**`;`deny` 觸碰 `config/`;`interrupt` 寫入 `/approved/**` |
-| （不需要） | sandbox。除非投影要跑 open3d / PCL 而你不想裝在本機 |
+| **tools** | `run_projection(params)`, `evaluate_gridmap(path)`, `diff_maps(a, b)` |
+| **backend** | `CompositeBackend`: default `StateBackend` (intermediate data) + `FilesystemBackend` pointed at the working directory (the real .pcd / .pgm) + `/memories/` via `StoreBackend` |
+| **permissions** | `deny` overwriting `/input/**`; `deny` touching `config/`; `interrupt` on writes to `/approved/**` |
+| (not needed) | sandbox. Unless the projection has to run open3d / PCL and you do not want it installed locally |
 
-`/memories/` 是這個題目最有價值的副產品:累積「B1 倉庫這個場地用 z=[0.15, 1.2]」這類
-場地級知識。跑過三個場地之後,第四次就有前例可參考而不是從零猜 —— 這才是 `StoreBackend`
-真正發揮價值的樣子,比記使用者名字實用得多。
+`/memories/` is the most valuable by-product of this problem: it accumulates site-level knowledge such as "the B1
+warehouse site uses z=[0.15, 1.2]". After three sites, the fourth run has precedents to consult instead of guessing
+from zero — that is what `StoreBackend` genuinely earning its place looks like, far more useful than remembering a
+user's name.
 
 ---
 
-## 5. 目錄佈局與護欄
+## 5. Directory layout and guardrails
 
 ```
-工作目錄(FilesystemBackend root)
-├── input/site_b1.pcd        ← permissions: 唯讀。重生成本是重新建一次圖
-├── candidates/              ← agent 自由寫
+working directory (FilesystemBackend root)
+├── input/site_b1.pcd        ← permissions: read-only. Regeneration cost is a full re-mapping run
+├── candidates/              ← agent writes freely
 │   ├── attempt_01.{pgm,params.json,metrics.json}
 │   └── attempt_02.…
-└── approved/                ← permissions: interrupt,要人核准才寫入
+└── approved/                ← permissions: interrupt; requires human approval before writing
 ```
 
-第一版任務敘述:
+First-version task statement:
 
-> 用 `/input/site_b1.pcd` 產生一張可用的 2D gridmap。每次嘗試把參數與評估指標存進
-> `/candidates/`,最多 5 次。收斂了就報告哪一組最好、為什麼;沒收斂就說你試了什麼、卡在哪。
+> Produce a usable 2D gridmap from `/input/site_b1.pcd`. For every attempt, save the parameters and evaluation
+> metrics into `/candidates/`, at most 5 attempts. If it converges, report which set is best and why; if it does
+> not, say what you tried and where you got stuck.
 
-護欄(與 `task-recovery-agent-proposal.md` §4 同一套習慣,刻意保持一致):
+Guardrails (the same set of habits as `task-recovery-agent-proposal.md` §4, deliberately kept consistent):
 
-1. **次數上限 5 次** —— 否則它會一直調下去。
-2. **參數白名單 + 範圍** —— 例如 z 切片限 0～2 m,別讓它交出物理上荒謬的值。
-3. **原始資料唯讀** —— `.pcd` 覆蓋不掉,那是重建一次圖才拿得回來的東西。
-4. **產出隔離** —— agent 只寫 `/candidates/`,進 `/approved/` 一律要人核准。
-5. **每次嘗試留痕** —— params + metrics 成對存檔,否則無法比較也無法回頭檢討。
-
----
-
-## 6. 待確認
-
-實作前要先釐清兩件事(本文件未查證):
-
-1. **目前 `.pcd → gridmap` 是誰做的?** 可能在 `FASTLIO2_ROS2` submodule
-   (`chungweeeei/SyncAI-Fast-LIO2`,含 LIO + PGO + HBA + localizer)、`scripts/`、或
-   `syncai_sys_manager` 的 map manager 裡。
-2. **它能不能用 CLI 帶參數跑?** 這是整個提案的前提 —— agent 無法呼叫的東西就無法迭代。
-   如果目前是寫死參數或埋在 GUI 流程裡,**第一步不是寫 agent,是先把它變成一支可帶參數
-   的 CLI**。那一步本身就有價值,即使最後不做 agent。
+1. **Attempt cap of 5** — otherwise it will keep tuning forever.
+2. **Parameter whitelist + ranges** — e.g. limit the z-slice to 0–2 m; do not let it hand back physically absurd
+   values.
+3. **Raw data read-only** — the `.pcd` cannot be overwritten; that is something only a full re-mapping run can
+   bring back.
+4. **Output isolation** — the agent writes only to `/candidates/`; anything entering `/approved/` requires human
+   approval.
+5. **Every attempt leaves a trace** — params + metrics are saved as a pair, otherwise attempts cannot be compared
+   and there is nothing to review afterwards.
 
 ---
 
-## 7. 與其他 proposal 的關係
+## 6. To be confirmed
 
-| 文件 | 回答 |
+Two things need clarifying before implementation (not verified in this document):
+
+1. **Who currently does `.pcd → gridmap`?** Possibly the `FASTLIO2_ROS2` submodule
+   (`chungweeeei/SyncAI-Fast-LIO2`, containing LIO + PGO + HBA + localizer), `scripts/`, or the map manager in
+   `syncai_sys_manager`.
+2. **Can it be run from the CLI with parameters?** This is the premise of the whole proposal — something the agent
+   cannot invoke cannot be iterated on. If the parameters are currently hard-coded or buried in a GUI flow, **the
+   first step is not writing an agent; it is turning that into a parameterised CLI**. That step has value in its
+   own right, even if the agent is never built.
+
+---
+
+## 7. Relationship to the other proposals
+
+| Document | Answers |
 |---|---|
-| `mcp-server-proposals.md` | 出了什麼問題(診斷面,MCP server 層) |
-| `roboneuron-application-proposal.md` | 機器人怎麼被當成 typed 能力(控制面,MCP server 層) |
-| `deep-agent-proposal.md` | 誰來呼叫工具、tool vs skill 怎麼分(agent 層,接線) |
-| `task-recovery-agent-proposal.md` | 線上任務自癒迴圈(agent 層,**會動的**) |
-| **本文件** | **離線地圖產線的調參迴圈(agent 層,不會動的)** |
+| `mcp-server-proposals.md` | What went wrong (diagnostic plane, MCP server layer) |
+| `roboneuron-application-proposal.md` | How the robot is treated as typed capabilities (control plane, MCP server layer) |
+| `deep-agent-proposal.md` | Who calls the tools, how tools vs skills are split (agent layer, wiring) |
+| `task-recovery-agent-proposal.md` | Online task self-healing loop (agent layer, **moves the robot**) |
+| **This document** | **Parameter-tuning loop for the offline map production line (agent layer, does not move the robot)** |
 
-一個結構性差異值得指出:本提案**不需要 MCP server**。它的工具是本機 CLI 包裝,不碰 ROS
-graph、不碰 DDS、不需要機器人開機。所以它可以完全獨立於前三份文件的落地進度推進 ——
-這也是它適合當第一個練習的原因之一。
+One structural difference is worth pointing out: this proposal **does not need the MCP server**. Its tools are
+local CLI wrappers; they touch neither the ROS graph nor DDS, and do not need the robot powered on. So it can
+proceed entirely independently of the landing progress of the first three documents — which is one more reason it
+suits being the first exercise.

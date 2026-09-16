@@ -114,14 +114,14 @@ real navigation.
 
 ## The behavior tree
 
-`behavior_trees/move.xml` — replanning at 0.333 Hz with contextual recovery:
+`behavior_trees/move.xml` — replanning at 1 Hz with contextual recovery:
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">
-  <RateController hz="0.333">
+  <RateController hz="1.0">
     <RecoveryNode number_of_retries="1" name="ComputePathToPose">
       <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-      <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
   <RecoveryNode number_of_retries="1" name="FollowPath">
@@ -152,7 +152,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
-| `plugin_lib_names` | six BT node libraries | Must list every library whose tags `move.xml` uses |
+| `plugin_lib_names` | six BT node libraries | Must list every library whose tags `move.xml` uses. `syncai_behavior_tree` builds a seventh, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — `move.xml` has no `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time |
 | `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 
@@ -214,9 +214,6 @@ ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
   a visualization topic.
 - **Preemption with a different BT is rejected, not queued.** The current goal
   keeps running and the pending one is terminated.
-- **The `bt_loop_duration` comment in the params file is stale**: it says
-  "10 ms => the whole tree is ticked at 100 Hz" but the value is `50`, i.e. 20 Hz.
-  That value also halves into every BT node's per-tick spin budget.
 - **`src/.gitkeep` and `include/syncai_task_runner/.gitkeep` are leftovers** from
   when those directories were empty.
 

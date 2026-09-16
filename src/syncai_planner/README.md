@@ -110,10 +110,15 @@ to `plugin:` in the params file.
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `tolerance` | `0.5` (config: `0.3`) | If the goal cell is unreachable, search a square of ±tolerance around it for the nearest reachable pose |
+| `tolerance` | `0.5` | If the goal cell is unreachable, search a square of ±tolerance around it for the nearest reachable pose |
 | `use_astar` | `false` | `false` = Dijkstra (full expansion), `true` = A* (heuristic, faster, less optimal) |
 | `allow_unknown` | `true` | Plan through `NO_INFORMATION` cells |
 | `use_final_approach_orientation` | `false` | Set the last pose's yaw to the path's approach direction instead of the requested goal yaw |
+
+These are code defaults only. NavFn is no longer configured anywhere —
+`planner_server_params.yaml` mentions it in a trailing comment as the fallback
+to point `GridBased.plugin` at, and that is the extent of its presence in the
+config.
 
 Three behaviours worth knowing:
 
@@ -159,16 +164,19 @@ costmap's inflation layer.
 
 | Parameter | Default | Config | Notes |
 |---|---|---|---|
-| `tolerance` | `0.125` | `0.3` | Goal tolerance in metres |
-| `allow_unknown` | `true` | `true` | Plan through `NO_INFORMATION` |
-| `cost_travel_multiplier` | `1.0` | `2.0` | Weight on costmap cost vs. distance. **Not** called `cost_penalty` — that was the Hybrid spelling |
+| `tolerance` | `0.125` | `0.5` | Goal tolerance in metres — accept a goal within this distance of the requested pose |
+| `allow_unknown` | `true` | `false` | Plan through `NO_INFORMATION`. **Disabled** in the shipped config, so the prose about planning through unknown describes a behaviour that is off. The YAML records no rationale, but the consequence is worth knowing: the global costmap has `track_unknown_space: true` and the z-band gridmap converter deliberately returns glass-painted free space to unknown, so with this off A* cannot route through exactly the cells the converter declined to vouch for — turning it back on re-opens them |
+| `cost_travel_multiplier` | `1.0` | `1.0` | Weight on costmap cost vs. distance, applied as `1.0 + cost_travel_multiplier × cell_cost / 252`; `0.0` degenerates to plain distance A*. Lowered from `2.0` (commit `8376bf4`): at 2.0 paths bowed visibly along the inflation gradient in open space; 1.0 keeps enough cost-awareness to stay off walls while distance dominates, so open-space legs come out near-straight — clearance still comes from the inflated footprint, not this weight. **Not** called `cost_penalty` — that was the Hybrid spelling |
 | `downsample_costmap` | `false` | `false` | Publishes `downsampled_costmap` when on |
 | `downsampling_factor` | `1` | `1` | |
 | `max_iterations` | `1000000` | `1000000` | |
 | `max_on_approach_iterations` | `1000` | `1000` | Refinement budget once inside tolerance |
 | `max_planning_time` | `2.0` | `2.0` | Hard cutoff in `createPath()`, and the smoother gets whatever is left |
 | `use_final_approach_orientation` | `false` | `false` | Same reasoning as NavFn's |
-| `smoother.{tolerance,max_iterations,w_data,w_smooth,do_refinement}` | see params | defaults | **Sub-namespace** — read as `GridBased.smoother.*` |
+| `smoother.w_data` | `0.2` | `0.2` | **Sub-namespace** — read as `GridBased.smoother.*`. Anchors each waypoint to the raw A* path (keeps the search's obstacle clearance) |
+| `smoother.w_smooth` | `0.3` | `0.4` | Pulls each waypoint toward the midpoint of its neighbours (straightens). Nudged up from the upstream 0.3 to iron out the grid-A* staircase; the smoother rejects any update landing in lethal/inscribed cost, so it cannot smooth *through* an obstacle — but keep it well below ~0.5, past which the anchor term stops mattering and corners get cut tight against the inflation edge |
+| `smoother.max_iterations` | `1000` | `1000` | |
+| `smoother.do_refinement` | `true` | `true` | Up to four extra smoothing passes on the result |
 
 Behaviours worth knowing:
 
@@ -229,7 +237,7 @@ Two gotchas:
 | Parameter | Default | Notes |
 |---|---|---|
 | `planner_plugins` | `["GridBased"]` | IDs; each needs `<id>.plugin` naming the type |
-| `expected_planner_frequency` | `1.0` (config: `10.0`) | Warning threshold only |
+| `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT only asks for a replan at 1 Hz, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
 
 `expected_planner_frequency` is the only parameter the *server's* dynamic
 callback handles, and it takes the same mutex the plan cycle holds.
@@ -243,9 +251,15 @@ restart either way.
 `rolling_window: false`, `track_unknown_space: true`, `global_frame: map`, and
 a low `update_frequency: 1.0` (the static map rarely changes).
 
-The footprint is a rectangle with half-extents 0.28 × 0.20 and **must stay in
-sync with the local costmap** in `syncai_controller`. A circular
-`robot_radius: 0.22` was tried and was oversized enough that RPP rejected valid
+The footprint is a rectangle with half-extents 0.35 × 0.22 and **should stay
+in sync with the local costmap** in `syncai_controller` — which it currently
+does not: `controller_server_params.yaml` still carries 0.28 × 0.20. The global
+costmap was enlarged and the local one was not followed, so the planner keeps
+more clearance than the controller checks; the failure that motivated the
+"keep them equal" rule (RPP rejecting paths the planner considered valid) needs
+the mismatch the other way round, but two rectangles for one robot is still a
+bug waiting for whoever tunes clearance next. A circular `robot_radius: 0.22`
+was tried before the rectangle and was oversized enough that RPP rejected valid
 paths through ~0.6 m gaps.
 
 ### Notes on the current config

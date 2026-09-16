@@ -14,13 +14,13 @@ uses.
 | `simple_action_server.hpp` | header-only | The action-server wrapper behind every action in the stack | behavior_tree, controller, planner |
 | `node_utils.hpp` | mixed | Parameter/plugin/namespace helpers | behavior_tree, controller, costmap_2d, planner, task_runner |
 | `robot_utils.hpp` | compiled | `getCurrentPose`, pose transforms, twist validation | controller, costmap_2d, robot_state, task_runner |
-| `geometry_utils.hpp` | header-only | Distances, path length, iterator helpers | amcl, controller, map_server, planner, task_runner |
+| `geometry_utils.hpp` | header-only | Distances, path length, iterator helpers | controller, map_server, planner, task_runner |
 | `node_thread.hpp` | compiled | Spin a node or executor on a background thread | controller, costmap_2d, planner |
 | `odometry_utils.hpp` | compiled | `OdomSmoother` — time-windowed average twist | task_runner |
 | `odom_subscriber.hpp` | header-only | `OdomSubscriber` — latest planar twist | controller |
 | `line_iterator.hpp` | header-only | Bresenham ray tracing | costmap_2d |
-| `validate_messages.hpp` | header-only | NaN/inf/consistency checks for common msgs | amcl, costmap_2d |
-| `string_utils.hpp` | compiled | `split`, `strip_leading_slash` | amcl |
+| `validate_messages.hpp` | header-only | NaN/inf/consistency checks for common msgs | costmap_2d (only `plugins/static_layer.cpp`) |
+| `string_utils.hpp` | compiled | `split`, `strip_leading_slash` | *nobody* — no consumer left in `src/`; kept from the `nav2_util` port (its user was AMCL, which went with the 2D bringup) |
 | `occ_grid_values.hpp` | header-only | `OCC_GRID_UNKNOWN/FREE/OCCUPIED` (−1 / 0 / 100) | costmap_2d, map_server |
 
 ## SimpleActionServer

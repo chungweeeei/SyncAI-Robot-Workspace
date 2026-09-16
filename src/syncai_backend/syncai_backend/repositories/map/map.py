@@ -5,10 +5,10 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Optional, TypedDict
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from syncai_backend.database.models import MapPoint
+from syncai_backend.database.models import MapPoint, _utcnow
 
 
 class VertexFields(TypedDict):
@@ -98,6 +98,31 @@ class MapRepo:
 
             session.commit()
             return vertex
+
+    def move_vertices(self, old_map: str, new_map: str) -> int:
+        """Re-key every vertex of ``old_map`` to ``new_map``; return how many.
+
+        The cascade half of a map rename: ``map_vertices.map`` holds the bare
+        directory name with no foreign key behind it, so when the directory
+        moves the rows have to be told. A separate method rather than widening
+        ``update_vertex``'s ``allowed`` set, because that set *is* the
+        per-vertex API surface and "move one vertex to another map" is
+        deliberately not on it (the MCP tools document a move as delete +
+        create). This is a whole-map operation with one legitimate caller.
+
+        One ``UPDATE`` statement, not a load-modify-save loop: a conference map
+        carries dozens of vertices and the router is holding a half-renamed map
+        while this runs. ``updated_at`` is set by hand because ``onupdate``
+        fires for ORM unit-of-work flushes, not for a Core bulk update.
+        """
+        with self._session(op="move_vertices") as session:
+            result = session.execute(
+                update(MapPoint)
+                .where(MapPoint.map == old_map)
+                .values(map=new_map, updated_at=_utcnow())
+            )
+            session.commit()
+            return result.rowcount
 
     def delete_vertex(self, vertex_id: uuid.UUID) -> bool:
         with self._session(op="delete_vertex") as session:

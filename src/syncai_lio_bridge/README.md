@@ -75,12 +75,16 @@ publishes nothing.
 map-frame pose minus the odom-frame pose:
 
 ```
-map→base  =  (map→lio_odom) · (odom→base)
+map→base  =  (map→lio_odom) · (lio_odom→base)
 map→odom  =  P2D(map→base) · P2D(odom→base)⁻¹
 ```
 
-Both operands are projected to 2D *before* the composition, so the result stays
-planar and consistent with the `odom → base_link` that was just broadcast.
+The first line composes the **unprojected** LIO transforms, so `map→base` is
+the full 3D pose; it is projected only once, in the second line, where both
+operands of the subtraction are 2D. That keeps the result planar and consistent
+with the `odom → base_link` that was just broadcast, without throwing away the
+tilt before the map-frame composition (projecting `lio_odom→base` first and
+then multiplying by a tilted `map→lio_odom` would not give the same planar pose).
 
 ### Everything is projected to 2D
 

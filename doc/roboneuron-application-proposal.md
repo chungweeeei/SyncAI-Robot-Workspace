@@ -1,211 +1,218 @@
-# RoboNeuron 機制在本 workspace 的應用提案
+# Applying the RoboNeuron Mechanisms to This Workspace
 
-> 對象:`src/syncai_ros_mcp/`(既有的 MCP runtime server)
-> 相關:`doc/mcp-server-proposals.md`(另一組提案,關係見 §7)
-> 論文:RoboNeuron: A Middle-Layer Infrastructure for Agent-Driven Orchestration
-> in Embodied AI(arXiv:2512.10394v2,中科院自動化所)
-> 狀態:**提案,尚未實作**。
+> Target: `src/syncai_ros_mcp/` (the existing MCP runtime server)
+> Related: `doc/mcp-server-proposals.md` (another set of proposals; see §7 for how they relate)
+> Paper: RoboNeuron: A Middle-Layer Infrastructure for Agent-Driven Orchestration
+> in Embodied AI (arXiv:2512.10394v2, Institute of Automation, Chinese Academy of Sciences)
+> Status: **proposal, not implemented**.
 
-RoboNeuron 是一層接在「LLM agent 的 MCP tool calling」與「ROS2 middleware」之間的
-基礎設施。這份筆記回答一個問題:**它的哪些機制值得搬進這個 workspace,哪些不值得**。
+RoboNeuron is an infrastructure layer that sits between "an LLM agent's MCP tool calling" and "the ROS2
+middleware". This note answers one question: **which of its mechanisms are worth bringing into this workspace, and
+which are not**.
 
-先說結論:這個 stack 其實已經有 RoboNeuron 的骨架——`syncai_ros_mcp` 就是它的
-control plane,Temporal backend 承擔了 lifecycle 治理。真正值得補的是三個機制:
-**schema-based tool derivation、typed 能力工具、以及「穩定邊界內切換」的語意**。
-而且有一個現成的完美對應:**gait policy 切換就是我們的 inference switching**。
+The conclusion up front: this stack already has RoboNeuron's skeleton — `syncai_ros_mcp` is its control plane, and
+the Temporal backend carries the lifecycle governance. What is genuinely worth adding are three mechanisms:
+**schema-based tool derivation, typed capability tools, and the semantics of "switching inside a stable
+boundary"**. And there is a ready-made perfect match: **gait policy switching is our inference switching**.
 
 ---
 
-## 0. 論文機制速覽(只列會用到的)
+## 0. Quick tour of the paper's mechanisms (only the ones used here)
 
-| 機制 | 論文的做法 | 一句話 |
+| Mechanism | What the paper does | In one sentence |
 |---|---|---|
-| Schema-based tool derivation(Alg. 1) | 從 ROS message 定義自動推導 tool signature,註冊 `(name, Σ, Encoder, Publisher)` 到 registry | agent 看到的是 typed tool,不是萬用 publish |
-| Direct path | tool call → 驗證 → 編碼 → 發佈,支援帶 step duration 的短命令序列 | 一次性低延遲原語 |
-| Closed-loop path(PIC) | perception–inference–control 三模組,topic 串接,固定 action contract | 長時閉環行為 |
-| Lifecycle control | 每個長時模組獨立 OS process(`spawn`),stop tool 先 bounded wait 再強制終止 | 閉環是被治理的服務,不是沒人管的背景任務 |
-| Stable inference boundary | VLA 專屬邏輯關在 inference 模組內,換 backend / runtime / 加速 preset 不動周邊 topic 接線 | topology-preserving switching |
+| Schema-based tool derivation (Alg. 1) | Derive tool signatures automatically from ROS message definitions; register `(name, Σ, Encoder, Publisher)` into a registry | The agent sees typed tools, not a generic publish |
+| Direct path | tool call → validate → encode → publish; supports short command sequences with step durations | One-shot, low-latency primitives |
+| Closed-loop path (PIC) | perception–inference–control as three modules, chained over topics, with a fixed action contract | Long-running closed-loop behaviour |
+| Lifecycle control | Each long-running module is its own OS process (`spawn`); the stop tool does a bounded wait, then force-terminates | A closed loop is a governed service, not an unattended background task |
+| Stable inference boundary | VLA-specific logic is confined inside the inference module; swapping backend / runtime / acceleration preset leaves the surrounding topic wiring untouched | topology-preserving switching |
 
-論文自己的定位聲明很重要:它**不是** task planner,編排交給外部 LLM agent。這跟我們的
-架構剛好同構:LLM agent → MCP → Temporal workflow → BT navigator。所以套用它不需要
-動任何任務編排的設計。
+The paper's own positioning statement matters: it is **not** a task planner; orchestration is left to an external
+LLM agent. That is exactly isomorphic to our architecture: LLM agent → MCP → Temporal workflow → BT navigator. So
+adopting it requires no change to any task-orchestration design.
 
 ---
 
-## 1. 對照表:論文概念 ↔ 本 stack 現狀
+## 1. Correspondence table: paper concepts ↔ current state of this stack
 
-| RoboNeuron 機制 | 我們的現狀 | 缺口 |
+| RoboNeuron mechanism | Our current state | Gap |
 |---|---|---|
-| MCP 統一 tool 介面 | ✅ `syncai_ros_mcp`(FastMCP, port 8000) | 已有 |
-| Schema-based tool derivation | ❌ 只有萬用 `publish_once(topic, msg_type, dict)` | **最大缺口,見 §2** |
-| Direct path(驗證→編碼→發佈) | ⚠️ 有,但無 typed 驗證、無序列發佈 | §4 |
-| Closed-loop path + lifecycle | ⚠️ Temporal task(create/get/cancel)+ byobu `switch_mode` | §5,粒度粗但骨架在 |
-| Stable boundary / backend switching | ⚠️ `SetPolicyMode`(PPO/HIMLOCO/CHAMP/ISSAC)存在但沒暴露給 agent | **就差一層,見 §3** |
-| Stop tool(bounded wait → 強制) | ⚠️ driver_manager 有 safe-shutdown 路徑,但不是 agent tool | §4 |
-| PIC(perception–inference–control) | ❌ 無相機、無 VLA(`src/` 裡沒有任何 torch/onnx/Image 消費者) | **暫不適用,見 §6** |
+| Unified MCP tool interface | ✅ `syncai_ros_mcp` (FastMCP, port 8000) | Already have it |
+| Schema-based tool derivation | ❌ Only the generic `publish_once(topic, msg_type, dict)` | **Biggest gap, see §2** |
+| Direct path (validate → encode → publish) | ⚠️ Exists, but no typed validation, no sequence publishing | §4 |
+| Closed-loop path + lifecycle | ⚠️ Temporal tasks (create/get/cancel) + byobu `switch_mode` | §5; coarse-grained but the skeleton is there |
+| Stable boundary / backend switching | ⚠️ `SetPolicyMode` (PPO/HIMLOCO/CHAMP/ISSAC) exists but is not exposed to the agent | **Just one layer short, see §3** |
+| Stop tool (bounded wait → force) | ⚠️ driver_manager has a safe-shutdown path, but it is not an agent tool | §4 |
+| PIC (perception–inference–control) | ❌ No camera, no VLA (nothing under `src/` consumes torch/onnx/Image) | **Not applicable yet, see §6** |
 
 ---
 
-## 2. 提案 A:Schema-based Tool Derivation → 新增 `tools/registry.py` ★ 核心
+## 2. Proposal A: Schema-based tool derivation → add `tools/registry.py` ★ core
 
-這是論文的核心貢獻,也正好打中既有實作的三個痛點。現在 agent 要讓機器人動,得這樣:
+This is the paper's core contribution, and it lands squarely on three pain points of the existing implementation.
+Today, for the agent to move the robot, it has to do this:
 
 ```
 publish_once(topic='/robot01/cmd_vel', msg_type='geometry_msgs/msg/Twist',
              msg={'linear': {'x': 0.3}})
 ```
 
-1. **agent 必須自己拼絕對 topic 名**——直接違反 CLAUDE.md 的鐵律(never hardcode
-   `/<robot_id>/…`)。根本原因是 `mcp_server_node.py` **沒有 namespace**,agent 被迫
-   用絕對名。這不是 agent 的錯,是工具面逼它犯規。
-2. **沒有 argument schema**——`set_message_fields` 失敗才報錯,agent 只能瞎猜欄位。
-3. **每次呼叫都要 agent 重新想 msg_type 字串**——正是論文說的 interface drift 來源。
+1. **The agent has to assemble the absolute topic name itself** — a direct violation of the iron rule in CLAUDE.md
+   (never hardcode `/<robot_id>/…`). The root cause is that `mcp_server_node.py` **has no namespace**, so the agent
+   is forced to use absolute names. That is not the agent's fault; the tool surface forces it to break the rule.
+2. **There is no argument schema** — the error surfaces only when `set_message_fields` fails, so the agent can only
+   guess the fields.
+3. **The agent has to re-derive the msg_type string on every call** — exactly the source of interface drift the
+   paper describes.
 
-### 做法(對應論文 Algorithm 1)
+### Approach (corresponding to the paper's Algorithm 1)
 
-- 新增 capability manifest,建議 `config/capabilities.yaml`。每個 entry:
-  `{tool_name, topic(相對名), msg_type, description, qos}`。放 config 而不是寫死在
-  Python,跟 `config/sessions/*.yaml` 的「window list 是 data」哲學一致。
-- `registry.py` 啟動時對每個 entry:`get_message()` →
-  `get_fields_and_field_types()` 遞迴展開(`topics.py` 的 `get_message_details`
-  **已經寫好這段遞迴**,抽出來重用,不要抄一份)→ 動態生成 pydantic model 當
-  argument schema → 建**常駐** publisher 綁 relative topic → `mcp.tool()` 註冊。
-- **把 MCP node 放進 `robot_id` namespace**(跟其他 launch 一樣讀
-  `config/system.ini`)。registry 的 relative topic 自動解析到 `/<robot_id>/…`,
-  agent 從此不知道 namespace 的存在。這正是論文 Case I「同一個 velocity tool 綁到
-  不同平台」在我們 fleet 上的意義:**同一份 manifest,robot01 / robot02 各跑一個
-  MCP server,tool 面完全相同**。
+- Add a capability manifest, suggested location `config/capabilities.yaml`. Each entry:
+  `{tool_name, topic (relative name), msg_type, description, qos}`. Putting it in config rather than hard-coding it
+  in Python is consistent with the "the window list is data" philosophy of `config/sessions/*.yaml`.
+- On startup, `registry.py` does the following for each entry: `get_message()` → recursively expand
+  `get_fields_and_field_types()` (`get_message_details` in `topics.py` **already has this recursion written**;
+  extract and reuse it, do not copy it) → dynamically generate a pydantic model as the argument schema → create a
+  **persistent** publisher bound to the relative topic → register via `mcp.tool()`.
+- **Put the MCP node inside the `robot_id` namespace** (reading `config/system.ini` like every other launch file).
+  The registry's relative topics then resolve automatically to `/<robot_id>/…`, and the agent no longer knows the
+  namespace exists. This is exactly what the paper's Case I, "the same velocity tool bound to different platforms",
+  means on our fleet: **one manifest, one MCP server each on robot01 / robot02, an identical tool surface**.
 
-附帶收益:registry entry 帶 per-topic QoS,順手解掉 `topics.py` 裡那個已註記的
-TODO——map topic 需要 TRANSIENT_LOCAL 卻被寫死 VOLATILE。
+A side benefit: registry entries carry per-topic QoS, which incidentally resolves the TODO already noted in
+`topics.py` — the map topic needs TRANSIENT_LOCAL but is hard-coded VOLATILE.
 
-萬用的 `publish_once` / `subscribe_once` **留著**當 escape hatch:論文 Fig. 1 也保留
-了通往低層的 Direct Path。判準:manifest 裡有的能力走 typed tool,沒有的才落回萬用
-工具。
+The generic `publish_once` / `subscribe_once` **stay** as an escape hatch: the paper's Fig. 1 also keeps a Direct
+Path down to the low level. Criterion: a capability that is in the manifest goes through the typed tool; only those
+that are not fall back to the generic tools.
 
-第一批 manifest entries:`cmd_vel`(Twist)、relocalize 的 initial pose,加上 §3 的
-locomotion 工具(那些是 service,不走這個 topic registry,但共用「typed + 能力卡」
-的呈現方式)。
+The first batch of manifest entries: `cmd_vel` (Twist), the initial pose for relocalize, plus the locomotion tools
+of §3 (those are services and do not go through this topic registry, but they share the "typed + capability card"
+presentation).
 
-## 3. 提案 B:gait policy 切換 = 我們的 topology-preserving switching → 新增 `tools/locomotion.py`
+## 3. Proposal B: gait policy switching = our topology-preserving switching → add `tools/locomotion.py`
 
-論文的 "topology-preserving inference switching" 是:換 backend,但觀測流、action
-contract、下游接線全部不動。我們的 gait controller 就是這個結構:
+The paper's "topology-preserving inference switching" means: swap the backend, but the observation stream, the
+action contract, and the downstream wiring all stay put. Our gait controller has exactly this structure:
 
-- `cmd_vel` 進、步態出——固定契約
-- `SetPolicyMode`(0 PPO / 1 HIMLOCO / 2 CHAMP / 3 ISSAC)——**backend switch**,
-  切 RL policy 完全不動 nav stack 的任何接線
-- `SetMotionKey` / `SetSpeedScale`——runtime preset
+- `cmd_vel` in, gait out — a fixed contract
+- `SetPolicyMode` (0 PPO / 1 HIMLOCO / 2 CHAMP / 3 ISSAC) — the **backend switch**; swapping the RL policy leaves
+  every piece of nav-stack wiring untouched
+- `SetMotionKey` / `SetSpeedScale` — runtime presets
 
-它們目前只有萬用 `call_service` 摸得到。建議做成 typed tools:
-
-```
-set_locomotion_policy(policy)   # 送 SetPolicyMode 並回讀實測值,見下
-set_motion_state(key)           # 同上
-emergency_stop()                # 對應論文 Case I 的 stop_base 能力卡
-```
-
-### 必須寫進 tool 行為的 caveat:COMMANDED vs MEASURED
-
-這些 service 底層是**單向 UDP、無 ack**(`udpSend()` 丟棄 `sendto()` 的回傳),回
-`success` 只代表「送出去了」。`RobotLowLevelMode.msg` 的註解已經把這件事寫得很透。
-所以 tool 的正確設計是:呼叫後**訂一次 `mode` topic(或讀
-`RobotState.low_level_mode`)回報實測值**,agent 拿到的是 commanded + measured 兩個
-值。這比論文做得更誠實——論文的 backend switch 是進程內的,我們的跨了一條不可靠
-鏈路。
-
-⚠️ 兩個既有文件已記錄的坑,工具必須處理而不是放過:
-
-- `low_level_mode` 全零是歧義的(「還沒收到第一筆」vs 合法的「PPO / Stand」),且無
-  freshness 資訊。回讀前先確認 `motor_status.timestamp` 在前進。
-- `policy_state` 沒有 sentinel;`motion_state == 8` 是 controller 自己的 UNKNOWN。
-  表外的整數(例如 MPC)要原樣傳回,不 clamp、不當錯誤——`RobotLowLevelMode.msg`
-  對此有明確的設計決策。
-- ESTOP:backend 的 `set_motion_key` schema 接受 `'4'` 但**刻意不轉發**
-  (`doc/mcp-server-proposals.md` §5.3 記錄過)。`emergency_stop()` 要走 ROS service
-  那條路,而且是獨立工具、不藏在 `set_motion_state` 的參數空間裡。
-
-## 4. 提案 C:序列發佈 + 停止語意 → direct path 補完
-
-論文 III-B:direct path 支援「帶 step duration 的短命令序列」,結尾有明確終止。對
-四足這不是 nice-to-have:單發一個 Twist 之後的行為取決於 gait controller 的
-watchdog,agent 一次 `publish_once` 要嘛沒效果、要嘛效果不可控。
+Today these are reachable only through the generic `call_service`. Suggested typed tools:
 
 ```
-move_base_timed(vx, wz, duration_s)   # 10 Hz 連續發佈,時間到自動發零速 Twist
+set_locomotion_policy(policy)   # send SetPolicyMode and read back the measured value, see below
+set_motion_state(key)           # likewise
+emergency_stop()                # corresponds to the stop_base capability card in the paper's Case I
 ```
 
-registry tool 支援 optional 的 `sequence: [{msg, duration}]`,**結尾永遠補一個
-zero-Twist**——把論文的 scripted motion 和 stop 語意合在一起。
+### A caveat that must be written into the tool behaviour: COMMANDED vs MEASURED
 
-### 與 `mcp-server-proposals.md` §4 的張力,以及為什麼不衝突
+Underneath, these services are **one-way UDP with no ack** (`udpSend()` discards the return value of `sendto()`),
+so a `success` return only means "it was sent". The comments in `RobotLowLevelMode.msg` already spell this out
+thoroughly. The correct tool design is therefore: after the call, **subscribe once to the `mode` topic (or read
+`RobotState.low_level_mode`) and report the measured value**, so the agent receives both a commanded and a measured
+value. This is more honest than the paper — the paper's backend switch is in-process, whereas ours crosses an
+unreliable link.
 
-那份文件明確反對「`cmd_vel` 連續遙控」,理由是把 LLM 放進 10 Hz 速度迴圈是壞主意。
-這個提案**不是**那個東西,判準正好是那份文件自己給的:「單發的 motion key / nav goal
-可以(它們有明確的終止條件)」。`move_base_timed` 的終止條件在**工具內部**——
-duration 用完、zero-Twist 收尾,LLM 不在迴圈裡,它只發起一次有界的動作。真正被禁止
-的是「agent 每 100 ms 決定一次速度」,那個仍然不做。
+⚠️ Two traps already recorded in existing documents that the tool must handle rather than let through:
 
-儘管如此,仍建議兩道護欄:`duration_s` 上限(例如 5 s)寫死在工具裡;真機 profile
-下要求 manifest 顯式開啟這個工具(sim 預設開)。
+- An all-zero `low_level_mode` is ambiguous ("no first sample received yet" vs the legitimate "PPO / Stand") and
+  carries no freshness information. Confirm `motor_status.timestamp` is advancing before reading back.
+- `policy_state` has no sentinel; `motion_state == 8` is the controller's own UNKNOWN. Integers outside the table
+  (e.g. MPC) must be passed through as-is, not clamped, not treated as errors — `RobotLowLevelMode.msg` records an
+  explicit design decision on this.
+- ESTOP: the backend's `set_motion_key` schema accepts `'4'` but **deliberately does not forward it** (recorded in
+  `doc/mcp-server-proposals.md` §5.3). `emergency_stop()` must go through the ROS service path, and be a standalone
+  tool rather than hidden inside the parameter space of `set_motion_state`.
 
-## 5. 提案 D:lifecycle 暴露,而不是重造 spawn 機制
+## 4. Proposal C: sequence publishing + stop semantics → completing the direct path
 
-論文用 `spawn` + stop tool 管長時模組。**不需要照抄**——stack 已有兩層現成的
-lifecycle,只是 agent 摸不到:
+Paper III-B: the direct path supports "short command sequences with step durations", with an explicit termination
+at the end. For a quadruped this is not a nice-to-have: the behaviour after a single Twist depends on the gait
+controller's watchdog, so one `publish_once` from the agent either has no effect or has an uncontrollable one.
 
-- **粗粒度**:`NodeManager` 的 byobu session。加 `tools/lifecycle.py`:
-  `get_robot_mode()` / `switch_robot_mode(mode)` 包 `GetMode` / `SwitchMode` service
-  client。tool description 必須帶上論文式的語意警告:switch 是毀滅性長操作(~40 條
-  byobu 命令);MANUAL 切走會丟掉未存的地圖(`pgo_node` keyframes 在 RAM,
-  `save_maps` 是唯一的序列化路徑);MAINTENANCE 不可切入。這些 `SwitchMode.srv` 的
-  註解裡都有,搬進 description 就好。
-- **細粒度(閉環任務)**:`tasks.py` 的 create/get/cancel 走 Temporal,這**已經是**
-  論文說的 "explicitly governed system service, not an unmanaged background task"
-  ——workflow query 就是論文的 "agent monitors progress",cancellation 就是 stop
-  tool。**這塊不用動**,是我們比論文原型更強的地方。
+```
+move_base_timed(vx, wz, duration_s)   # publish continuously at 10 Hz; automatically send a zero Twist when time is up
+```
 
-## 6. 反面意見:暫時不要做 PIC
+The registry tool supports an optional `sequence: [{msg, duration}]`, and **always appends a zero-Twist at the
+end** — merging the paper's scripted motion with its stop semantics.
 
-PIC 的前提是有視覺流 + VLA policy。這個 stack 目前**沒有相機、沒有 ROS 側的模型推理**
-(G23 的 RL policy 跑在 gait controller 上,不在 ROS 側)。硬套 PIC 沒有掛載點。
+### The tension with `mcp-server-proposals.md` §4, and why it is not a conflict
 
-但值得**預留契約**:未來若加 VLA(語意目標導航、機械臂),照論文的做法先定死 action
-contract topic(論文用 `Float64MultiArray` 載 6-DoF delta + gripper),把推理模組關
-在邊界裡。到時 perception = 新增相機 driver node,control = 既有的
-controller / task_runner,只補中間那格,周邊不重接。
+That document explicitly opposes "continuous `cmd_vel` teleoperation", on the grounds that putting an LLM inside a
+10 Hz velocity loop is a bad idea. This proposal is **not** that thing, and the criterion is the one that document
+itself gives: "one-shot motion keys / nav goals are fine (they have explicit termination conditions)". The
+termination condition of `move_base_timed` is **inside the tool** — the duration runs out and the zero-Twist closes
+it off; the LLM is not in the loop, it only initiates one bounded motion. What is genuinely forbidden is "the agent
+decides a velocity every 100 ms", and that is still not done.
 
-另一個論文沒有、但我們遲早需要的擴充:**action tools**。論文自承只做了 topic-based
-exposure(service / action 是 future work),而這個 stack 的核心入口偏偏是 action
-(`NavigateToPose`、`ExecuteTask`)。目前 agent 只能繞道 backend REST。若要讓 agent
-直接下導航目標(不經 Temporal 排程),得自己寫 send_goal / feedback / cancel——超出
-論文範圍,且 Temporal 路徑夠用的話可以放最後。實作時注意
-`mcp-server-proposals.md` §5.2 的執行緒鐵律:等 action 結果不能阻塞 spin。
+Nonetheless, two guardrails are recommended: a `duration_s` cap (e.g. 5 s) hard-coded into the tool; and under the
+real-robot profile, require the manifest to explicitly enable this tool (sim enabled by default).
+
+## 5. Proposal D: expose the lifecycle, rather than rebuild the spawn mechanism
+
+The paper manages long-running modules with `spawn` + a stop tool. **No need to copy that** — the stack already has
+two ready-made lifecycle layers; the agent just cannot reach them:
+
+- **Coarse-grained**: `NodeManager`'s byobu sessions. Add `tools/lifecycle.py`: `get_robot_mode()` /
+  `switch_robot_mode(mode)` wrapping `GetMode` / `SwitchMode` service clients. The tool description must carry the
+  paper-style semantic warnings: a switch is a destructive, long operation (~40 byobu commands); switching away from
+  MANUAL drops an unsaved map (`pgo_node` keyframes live in RAM; `save_maps` is the only serialisation path);
+  MAINTENANCE cannot be switched into. All of this is in the comments of `SwitchMode.srv`; just move it into the
+  description.
+- **Fine-grained (closed-loop tasks)**: create/get/cancel in `tasks.py` go through Temporal, and that **already
+  is** what the paper calls an "explicitly governed system service, not an unmanaged background task" — the
+  workflow query is the paper's "agent monitors progress", and cancellation is the stop tool. **Nothing to change
+  here**; this is where we are stronger than the paper's prototype.
+
+## 6. Counter-argument: do not build PIC for now
+
+PIC presupposes a vision stream + a VLA policy. This stack currently has **no camera and no ROS-side model
+inference** (the G23's RL policy runs on the gait controller, not on the ROS side). Forcing PIC in has no mount
+point.
+
+But it is worth **reserving the contract**: if a VLA is added in future (semantic goal navigation, a manipulator),
+follow the paper and first pin down the action-contract topic (the paper carries a 6-DoF delta + gripper in a
+`Float64MultiArray`), confining the inference module inside the boundary. At that point perception = a newly added
+camera driver node, control = the existing controller / task_runner; only the middle cell is filled in, and the
+surroundings are not rewired.
+
+Another extension the paper lacks but we will need sooner or later: **action tools**. The paper admits it only did
+topic-based exposure (services / actions are future work), while this stack's core entry points happen to be
+actions (`NavigateToPose`, `ExecuteTask`). Today the agent can only detour through the backend REST. Letting the
+agent issue navigation goals directly (without Temporal scheduling) means writing send_goal / feedback / cancel
+ourselves — outside the paper's scope, and if the Temporal path suffices it can go last. When implementing, mind the
+threading iron rule of `mcp-server-proposals.md` §5.2: waiting on an action result must not block spin.
 
 ---
 
-## 7. 與 `mcp-server-proposals.md` 的關係
+## 7. Relationship to `mcp-server-proposals.md`
 
-兩份文件互補,不重疊:那份回答「**出了什麼問題**」(日誌考古、stack doctor、跨來源
-關聯),屬於診斷面;這份回答「**agent 怎麼把機器人當成一組 typed 能力來用**」,屬於
-控制面。共用的判斷已交叉引用:commanded vs measured 的雙重驗證(那邊 §2 範例 C =
-這邊 §3)、工具分級與 ESTOP 的明確拒絕(那邊 §5.3)、rclpy spin 執行緒(那邊 §5.2)。
+The two documents are complementary and do not overlap: that one answers "**what went wrong**" (log archaeology,
+stack doctor, cross-source correlation) and belongs to the diagnostic plane; this one answers "**how the agent uses
+the robot as a set of typed capabilities**" and belongs to the control plane. The shared judgments are already
+cross-referenced: commanded vs measured double verification (their §2 example C = our §3), tool tiers and the
+explicit ESTOP refusal (their §5.3), the rclpy spin thread (their §5.2).
 
-實作判準:工具只是把某個介面 typed 化 → 屬於這份;工具需要跨來源關聯或把部落知識
-編碼成結論 → 屬於那份。
+Implementation criterion: a tool that merely types an existing interface → belongs to this document; a tool that
+needs cross-source correlation or encodes tribal knowledge into a conclusion → belongs to that one.
 
 ---
 
-## 8. 建議的落地順序
+## 8. Suggested landing order
 
-1. **提案 A**(registry + manifest + MCP node 加 namespace)——一次解掉 typed
-   tools、namespace 違規、QoS TODO 三件事
-2. **提案 B**(locomotion,帶 measured-state 回讀)——工作量小、示範性最強,這就是
-   我們的 topology-preserving switching demo
-3. **提案 C**(timed sequence + zero-Twist 收尾)——安全性
-4. **提案 D**(get_mode / switch_mode)
-5. Action tools(視需求,最後)
+1. **Proposal A** (registry + manifest + namespacing the MCP node) — solves typed tools, the namespace violation,
+   and the QoS TODO in one go
+2. **Proposal B** (locomotion, with measured-state read-back) — small effort, most demonstrative; this is our
+   topology-preserving switching demo
+3. **Proposal C** (timed sequence + zero-Twist close-off) — safety
+4. **Proposal D** (get_mode / switch_mode)
+5. Action tools (as needed, last)
 
-A + B 合計約 300–400 行 Python,全部落在 `syncai_ros_mcp` 這個 vendored package 裡,
-不碰 C++ nav stack 一行——符合論文的定位:middleware 層加東西,既有 control stack
-完全不重接。
+A + B together are roughly 300–400 lines of Python, all landing in the vendored `syncai_ros_mcp` package, without
+touching a single line of the C++ nav stack — matching the paper's positioning: add things at the middleware layer,
+and the existing control stack is not rewired at all.
