@@ -32,9 +32,18 @@ class MapCloudSubscriber:
       ``cap_points`` (a stride) stays as the one wire-size guard.
 
     The single-slot repo semantics fit exactly: each message is a complete
-    replacement (a loop closure moves the *whole* map, so deltas are
-    impossible), and the accumulated state resets for free because the backend
-    process is restarted with every mapping session.
+    replacement -- a loop closure moves the *whole* map, so deltas are
+    impossible.
+
+    Clearing used to come for free, because the backend process was restarted
+    with every mapping session and nothing could survive that. ``POST
+    /api/v1/mapping/reset`` broke that assumption: it discards the map with the
+    backend left running, so the slot now has to be cleared explicitly. pgo
+    does it by publishing an empty merge, which is why an empty cloud is
+    handled here rather than ignored -- and why the reset's REST handler does
+    *not* reach into the repo itself. The signal travels the topic, so it
+    reaches every dashboard and rviz alike, not only the client that pressed
+    the button.
     """
 
     def __init__(
@@ -77,6 +86,21 @@ class MapCloudSubscriber:
             msg, field_names=("x", "y", "z"), skip_nans=True
         )
         if points.shape[0] == 0:
+            # An empty merge is a MESSAGE, not a non-event: pgo publishes one
+            # from reset_mapping to say the map has been discarded, and it is
+            # the only thing that tells a browser (or rviz) to stop drawing a
+            # map that no longer exists. This used to `return`, which swallowed
+            # exactly that frame and left every console showing the old map
+            # until the new run banked its first keyframe -- tens of seconds of
+            # the console asserting something false.
+            #
+            # A NaN-only cloud lands here too (skip_nans drops the rows before
+            # this check) and is treated identically. That is the right call:
+            # both mean "there is nothing to draw", and inventing a distinction
+            # would need a second signal pgo does not send.
+            self._streaming = False
+            self._map_cloud_repo.update_frame(num_points=0, data=b"")
+            self._logger.info("map cloud cleared", frame=msg.header.frame_id)
             return
 
         points = cap_points(points=points, max_points=self._max_points)

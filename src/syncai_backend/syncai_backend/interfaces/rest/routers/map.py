@@ -508,6 +508,17 @@ class CreateMapResponse(BaseModel):
     message: str = Field(..., description="What happened, for the operator to read.")
 
 
+class ResetMappingResponse(BaseModel):
+    reset: bool = Field(
+        ...,
+        description=(
+            "True on any 200 — pgo dropped its keyframes and the LIO front end "
+            "is re-initialising. A failure is a 502, never a 200 with false."
+        ),
+    )
+    message: str = Field(..., description="What happened, for the operator to read.")
+
+
 class RenameMapRequest(BaseModel):
     name: str = Field(
         ...,
@@ -1191,6 +1202,33 @@ def init_map_router(
                 )
             ),
         )
+
+    @map_router.post("/api/v1/mapping/reset", response_model=ResetMappingResponse)
+    def reset_mapping_run():
+        """Discard the run in the robot's memory and start a new map.
+
+        The one route here that touches no file: it is about the *run*, not the
+        catalogue, which is why it sits under /api/v1/mapping/ rather than
+        /api/v1/maps/. Nothing on disk changes, so a client has no cache to
+        invalidate afterwards.
+
+        No request body, and no `save first` flag. A save is POST /api/v1/maps
+        and is a separate, deliberate act: the main use for this route is
+        abandoning a run that went wrong in its first thirty seconds, and a
+        combined endpoint would force a throwaway name and a throwaway
+        directory onto exactly that case. It would also owe a compound answer
+        for "the save worked but the reset did not", which nothing here wants.
+
+        Failures are 502 with pgo's own sentence, same as a failed save. The
+        one an operator actually hits is the wrong mode — pgo only exists in a
+        mapping session — and the gateway words it that way.
+        """
+        ok, detail = map_gw.reset_mapping()
+        if not ok:
+            logger.error("Failed to reset the mapping run", error=detail)
+            raise UpstreamError(detail)
+
+        return ResetMappingResponse(reset=True, message=detail)
 
     @map_router.patch("/api/v1/maps/{name}", response_model=RenameMapResponse)
     def rename_map(name: str, request: RenameMapRequest):

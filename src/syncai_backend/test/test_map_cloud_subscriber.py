@@ -11,7 +11,10 @@ deliberately NOT a copy of the live-cloud one:
   never worth delivering — each message replaces the map wholesale);
 * each merge REPLACES the single slot (a loop closure moves the whole map, so
   deltas are impossible) with num_points/bytes agreeing;
-* empty clouds are ignored and NaN rows are dropped before packing.
+* an EMPTY cloud is a message, not a non-event: pgo publishes one from
+  reset_mapping to say the map has been discarded, so it clears the slot
+  rather than being skipped. NaN rows are dropped before packing, which
+  means a NaN-only cloud lands on that same clearing path.
 
 pack_xyz_f32 / cap_points have their own tests in test_pointcloud.py; this file
 only asserts the slot's resulting floats.
@@ -164,12 +167,46 @@ def test_each_merge_replaces_the_slot_wholesale(wire, repo):
     assert repo.get_latest(after_seq=frame.seq) is None
 
 
-def test_empty_cloud_leaves_the_slot_untouched(wire, repo):
+def test_an_empty_merge_clears_the_slot(wire, repo):
+    # pgo's reset publishes exactly this, and it is the only thing that tells a
+    # browser to stop drawing a map that no longer exists. This used to assert
+    # the opposite (the callback returned early), which left every console
+    # showing the discarded map until the new run banked its first keyframe.
+    _, callback = wire
+
+    callback(make_cloud([(1.0, 1.0, 1.0)]))
+    callback(make_cloud(np.zeros((0, 3))))
+
+    frame = repo.get_latest()
+    assert frame.num_points == 0
+    assert frame.data == b""
+    # The seq MUST advance: the WS pump is seq-driven, so a same-seq write is
+    # one no connected client would ever be handed.
+    assert frame.seq == 2
+
+
+def test_an_empty_merge_before_any_map_is_still_a_frame(wire, repo):
+    # No special case for "nothing was there anyway" — a late subscriber that
+    # joins after the reset still needs to be told the map is empty.
     _, callback = wire
 
     callback(make_cloud(np.zeros((0, 3))))
 
-    assert repo.get_latest() is None
+    frame = repo.get_latest()
+    assert (frame.num_points, frame.data) == (0, b"")
+
+
+def test_a_nan_only_cloud_clears_the_slot_too(wire, repo):
+    # skip_nans drops the rows before the count check, so this reaches the same
+    # path. Right call: both mean "there is nothing to draw", and splitting them
+    # would need a second signal pgo does not send.
+    _, callback = wire
+
+    callback(make_cloud([(1.0, 1.0, 1.0)]))
+    callback(make_cloud([(float("nan"), 0.0, 0.0)], is_dense=False))
+
+    frame = repo.get_latest()
+    assert (frame.num_points, frame.data) == (0, b"")
 
 
 def test_nan_points_are_dropped_before_packing(wire, repo):

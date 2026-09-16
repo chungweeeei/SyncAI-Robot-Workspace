@@ -53,6 +53,14 @@ class _StubMapGateway:
         self.result = (True, "")
         self.save_calls = []
         self.save_result = (True, "")
+        # Kept separate from save_*, deliberately: the tests below assert that
+        # saving and resetting never reach into each other.
+        self.reset_calls = []
+        self.reset_result = (
+            True,
+            "Map discarded. The new one starts building once the lidar has "
+            "re-levelled.",
+        )
         # The map-switch surface. `order` records every ROS step across both
         # clients in sequence, because for a switch the ordering *is* the
         # contract: the localizer moves before map_server so that the likeliest
@@ -71,6 +79,10 @@ class _StubMapGateway:
     def save_map(self, directory):
         self.save_calls.append(directory)
         return self.save_result
+
+    def reset_mapping(self, reset_lio=True):
+        self.reset_calls.append(reset_lio)
+        return self.reset_result
 
     def nav_services_ready(self, timeout_sec=2.0):
         return self.services_ready
@@ -721,6 +733,66 @@ def test_failed_save_unwinds_the_directory(client, map_gw, catalog_repo):
     assert response.status_code == 502
     assert response.json()["detail"] == "NO POSES!"
     assert not os.path.exists(catalog_repo.resolve_dir("newmap"))
+
+
+def test_create_map_does_not_reset_the_run(client, map_gw):
+    # Saving and resetting are two deliberate acts. This is the test that keeps
+    # anyone from "helpfully" folding the reset into the save, which would make
+    # the common case (abandon a bad run without saving) impossible to express.
+    _post_map(client, {"name": "newmap"})
+
+    assert map_gw.reset_calls == []
+
+
+# --- POST /api/v1/mapping/reset -----------------------------------------------
+
+
+def test_reset_mapping_calls_the_gateway(client, map_gw):
+    response = client.post("/api/v1/mapping/reset")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reset"] is True
+    # The backend adds nothing: pgo's sentence is what the console renders.
+    assert body["message"] == (
+        "Map discarded. The new one starts building once the lidar has re-levelled."
+    )
+    # Always with the LIO front end — a graph-only reset would start the new map
+    # wherever the old run had drifted to.
+    assert map_gw.reset_calls == [True]
+
+
+def test_reset_mapping_takes_no_body(client, map_gw):
+    # Guards the console against a future required field: the button sends a
+    # bodyless POST and must keep working.
+    assert client.post("/api/v1/mapping/reset").status_code == 200
+    assert map_gw.reset_calls == [True]
+
+
+def test_reset_mapping_reports_the_gateway_refusal(client, map_gw):
+    # The one an operator actually hits: pgo only exists in a mapping session.
+    map_gw.reset_result = (
+        False,
+        "pgo/reset_mapping is not available — starting a new map needs the "
+        "robot in MANUAL (mapping) mode.",
+    )
+
+    response = client.post("/api/v1/mapping/reset")
+
+    assert response.status_code == 502
+    assert "MANUAL" in response.json()["detail"]
+
+
+def test_reset_mapping_does_not_touch_the_catalogue(client, map_gw, catalog_repo):
+    # The route is about the *run*, not the map library — which is why it sits
+    # under /api/v1/mapping/ and why a client has no cache to invalidate after
+    # it. If this ever fails, the route has grown a disk side effect.
+    before = {entry.name for entry in catalog_repo.list_maps()}
+
+    assert client.post("/api/v1/mapping/reset").status_code == 200
+
+    assert {entry.name for entry in catalog_repo.list_maps()} == before
+    assert map_gw.save_calls == []
 
 
 # --- PATCH /api/v1/maps/{name} ------------------------------------------------

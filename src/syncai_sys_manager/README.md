@@ -37,7 +37,6 @@ stack it brings up starts talking to it.
 | `MdnsManager` | The `avahi-publish` child process advertising `<robot_id>.local` |
 | `MonitorManager` | A 1 Hz log line of host memory and disk usage (reporting only) |
 | `NodeManager` | `switch_mode` / `get_mode` services, and the byobu sessions that *are* the robot stack |
-| `map_manager.py` | **Empty file** (0 bytes), a placeholder; nothing implements it |
 
 ## WifiManager
 
@@ -372,8 +371,10 @@ their sources.
 - **RSSI is derived, not measured.** `ceil(signal/2 - 100)` is an approximation of
   dBm from NetworkManager's 0–100 quality percentage, so do not treat it as a
   calibrated reading.
-- **`map_manager.py` is an empty file.** Map handling lives in
-  `syncai_map_server` and the backend's map router instead.
+- **There is no map manager here.** The `map_manager.py` placeholder was
+  deleted in `9e1772f` after sitting empty since the package was written — map
+  handling lives in `syncai_map_server` and the backend's map router, and a
+  mapping run's lifecycle (save, and now reset) is `pgo_node`'s.
 - **NodeManager gotchas.** `switch_mode` kills the byobu session the backend is
   a pane of, so a `POST /api/v1/robot/mode` normally ends in a dropped connection
   rather than a response — the backend treats "dispatched, no answer" as

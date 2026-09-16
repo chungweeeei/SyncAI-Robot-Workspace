@@ -13,10 +13,10 @@ NavigateToPose.
 The clients split by session, which is worth knowing before debugging any of
 them: ``map_server/load_map``, ``relocalize`` and ``relocalize_check``
 exist only in the nav (AUTO) session,
-``pgo/save_maps`` only in the mapping (MANUAL) one. A "service is not available"
-from one of them usually means "wrong mode", not "broken stack" -- which is
-exactly what ``POST /api/v1/maps/{name}/activate`` turns into its
-``stack_not_ready`` refusal.
+``pgo/save_maps`` and ``pgo/reset_mapping`` only in the mapping (MANUAL) one. A
+"service is not available" from one of them usually means "wrong mode", not
+"broken stack" -- which is exactly what ``POST /api/v1/maps/{name}/activate``
+turns into its ``stack_not_ready`` refusal.
 """
 
 import math
@@ -31,7 +31,7 @@ from rclpy.qos import QoSProfile
 from geometry_msgs.msg import Point, Pose, PoseWithCovarianceStamped, Quaternion
 from std_msgs.msg import Header
 from nav2_msgs.srv import LoadMap
-from interface.srv import IsValid, Relocalize, SaveMaps
+from interface.srv import IsValid, Relocalize, ResetMapping, SaveMaps
 
 
 # LoadMap.srv carries no `message` field -- only `uint8 result` and the grid --
@@ -96,6 +96,16 @@ class MapGateway:
             srv_name="pgo/save_maps",
         )
 
+        # pgo_node declares this one with the node name in the path for the same
+        # reason save_maps carries it: both are `create_service("...")` inside
+        # the /<robot_id>/pgo namespace, so the prefix is the namespace, not the
+        # node. Whatever is true of save_maps is true of this -- they are two
+        # lines apart in pgo_node's constructor.
+        reset_mapping_client = self._node.create_client(
+            srv_type=ResetMapping,
+            srv_name="pgo/reset_mapping",
+        )
+
         # Bare names, unlike load_map's. The localizer declares these with
         # plain `create_service("relocalize", ...)` (localizer_node.cpp:99-108),
         # so they resolve against its *namespace* and land at
@@ -121,6 +131,7 @@ class MapGateway:
             {
                 "load_map": load_map_client,
                 "save_maps": save_maps_client,
+                "reset_mapping": reset_mapping_client,
                 "relocalize": relocalize_client,
                 "relocalize_check": relocalize_check_client,
             }
@@ -330,6 +341,62 @@ class MapGateway:
             return False, "Timeout waiting for pgo/save_maps response"
 
         response = future.result()
+        return response.success, response.message
+
+    def reset_mapping(self, reset_lio: bool = True) -> tuple[bool, str]:
+        """Discard the map built so far and start a new one, restarting nothing.
+
+        The counterpart to ``save_map``, and the other half of a mapping run's
+        lifecycle: pgo holds its keyframes in RAM, so this throws away whatever
+        has not been saved and there is no way back short of replaying a bag.
+        Saving first is the caller's decision, kept deliberately separate --
+        the common use is abandoning a run that went wrong in its first thirty
+        seconds, where an automatic save would only litter the catalogue.
+
+        ``reset_lio`` is True for every operator-facing call. False resets the
+        pose graph alone and leaves pointlio's odometry running, which is a
+        bag-replay affordance rather than something the console offers: the new
+        map's origin follows the odometry origin, so a graph-only reset starts
+        the map wherever the old run had drifted to.
+
+        pgo owns the ordering -- pause, reset the front end, rebuild the graph,
+        then gate on the boundary timestamp it got back -- so this is one call
+        with one verdict and nothing here to sequence. A failure means the
+        pose graph was left exactly as it was; there is no partial reset.
+
+        The 30 s deadline, like the 20 s and 180 s ones above, is a budget
+        rather than a guess: up to ~1 s joining an in-flight map merge, pgo's
+        own 5 s cap on the pointlio round trip, and then freeing the keyframe
+        clouds -- hundreds of MB after a long run. Generous, still bounded, and
+        it holds a FastAPI worker thread for the duration.
+        """
+        reset_client = self._service_clients.get("reset_mapping")
+        if not reset_client.wait_for_service(timeout_sec=5.0):
+            # Named the same way save_maps names it, and for the same reason:
+            # both live only in the mapping session, so "missing" means the
+            # wrong mode far more often than a broken stack.
+            return False, (
+                "pgo/reset_mapping is not available — starting a new map needs "
+                "the robot in MANUAL (mapping) mode."
+            )
+
+        self._logger.info("[MapGateway] Resetting the mapping run", reset_lio=reset_lio)
+
+        future = reset_client.call_async(ResetMapping.Request(reset_lio=reset_lio))
+
+        if not _wait_for_future(future, timeout=30.0):
+            return False, "Timeout waiting for pgo/reset_mapping response"
+
+        response = future.result()
+        if response.success:
+            # The receipt that something was actually discarded. Zero means the
+            # run had banked no keyframes yet, which is a materially different
+            # outcome from resetting a twenty-minute drive.
+            self._logger.info(
+                "[MapGateway] Mapping run reset",
+                dropped_key_poses=response.dropped_key_poses,
+                lio_last_odom_time=response.lio_last_odom_time,
+            )
         return response.success, response.message
 
 

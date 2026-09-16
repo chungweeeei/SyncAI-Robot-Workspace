@@ -25,6 +25,16 @@
 # bag. That single fact is why the "lio" window is not optional, and why
 # recording a bag of the drive is worth considering for a long run.
 #
+# Starting a NEW map does not mean restarting this window (and cannot be done by
+# switching modes either — switch_mode refuses to rebuild the mode already
+# live). pgo/reset_mapping does it in place: it pauses intake, resets pointlio
+# over pointlio/reset, rebuilds the pose graph and discards the old run's tail
+# by timestamp. The console's "New map" control is the operator's route to it.
+# Whatever has not been saved is still gone — the reset is deliberate data
+# loss — and the robot must be STANDING STILL, because pointlio re-runs a
+# static, gravity-aligning IMU init and one done in motion tilts the new map
+# permanently.
+#
 # Deliberately NOT here, all for the same reason — they need a finished map:
 #   * map_server  — loads [map] map in its constructor and throws if absent
 #   * localizer   — its launch returns [] and starts nothing without [map] pcd

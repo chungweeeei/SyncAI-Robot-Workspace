@@ -79,3 +79,35 @@ export function saveMap(name: string): Promise<SaveMapResult> {
     body: JSON.stringify({ name }),
   });
 }
+
+export interface ResetMappingResult {
+  /** True on any 200 — pgo dropped its keyframes. A failure is a 502. */
+  reset: boolean;
+  /** Operator-facing sentence; render it verbatim. */
+  message: string;
+}
+
+/**
+ * Discard the run in the robot's memory and start a new map.
+ *
+ * The counterpart to `saveMap`, and irreversible: pgo holds the keyframes in
+ * RAM, so whatever has not been saved is gone. Saving is a separate call on
+ * purpose — the common use is abandoning a run that went wrong early, where an
+ * automatic save would only litter the catalogue.
+ *
+ * Unlike `switchRobotMode` above, this request does NOT outlive its server:
+ * nothing is torn down, the backend answers normally, and a network error here
+ * is a real failure rather than a switch in progress. Treat it as one.
+ *
+ * Nothing on disk changes, so there is no map-catalogue cache to invalidate.
+ *
+ * The robot must be STANDING STILL when this lands: the LIO front end re-runs a
+ * static, gravity-aligning IMU initialisation, and one done in motion tilts the
+ * new map permanently with no error anywhere. The confirmation copy is the only
+ * thing that can say so.
+ */
+export function resetMappingRun(): Promise<ResetMappingResult> {
+  return requestJson<ResetMappingResult>(apiUrl("/api/v1/mapping/reset"), {
+    method: "POST",
+  });
+}

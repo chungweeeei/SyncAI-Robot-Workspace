@@ -90,7 +90,7 @@ prefixed with the robot name so several robots can publish to one MediaMTX.
 |---|---|
 | `syncai_driver_manager` | **UDP bridge to the gait controller.** Sends `cmd_vel` with a per-direction velocity-scale correction (the gait controller tracks commands asymmetrically). The six scales (`scale_fwd` … `scale_turn_r`) are **ROS parameters** loaded from `params/driver_manager_params.yaml` (1.40 fwd / 1.40 turn today) and survive restarts; a runtime `set_speed_scale` override is what does *not* persist. The YAML records the two plateau runs behind them and flags them as a working correction, not a calibration. Receives ASCII telemetry, and owns the safe-shutdown path (`triggerSafeShutdown()`: safety lock + MODE X / lie down) — which still has **zero call sites**. |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motor_states / TF into `syncai_common/RobotState`. The code default is 10 Hz but the shipped params file sets `publish_rate: 1.0`, so it runs at **1 Hz**. Also derives the `state` field: `UNINITIALIZED` (no pose) / `WARNING` (battery <20%, cleared above 25% — latched with hysteresis) / `IDLE`. Reports only — no threshold here commands the robot. |
-| `syncai_sys_manager` | Python. Five managers behind ROS services: wifi (`scan_wifi` / `connect_wifi`, `wifi_status` at 1 Hz from a cache refreshed every 5 s), mDNS (`avahi-publish <robot_id>.local`), conf (declares `robot_id`), monitor (host memory / disk to stdout at 1 Hz), and **node** (`NodeManager` — byobu session lifecycle, `switch_mode` / `get_mode`; see "Running the stack"). `map_manager.py` is an empty placeholder. Also ships the host udev rules (`udev/99-syncai-devices.rules`). |
+| `syncai_sys_manager` | Python. Five managers behind ROS services: wifi (`scan_wifi` / `connect_wifi`, `wifi_status` at 1 Hz from a cache refreshed every 5 s), mDNS (`avahi-publish <robot_id>.local`), conf (declares `robot_id`), monitor (host memory / disk to stdout at 1 Hz), and **node** (`NodeManager` — byobu session lifecycle, `switch_mode` / `get_mode`; see "Running the stack"). Also ships the host udev rules (`udev/99-syncai-devices.rules`). |
 
 ### Application layer
 
@@ -290,7 +290,10 @@ ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode "{mode: 2
 were somehow up, leaving one behind would leave `get_mode` ambiguous), and
 refuses to rebuild the mode that is already live — in `MANUAL` that would drop an
 unsaved map on the floor, because `pgo_node` accumulates its keyframes in RAM and
-`save_maps` is the only thing that serialises them. `sys_manager` itself runs
+`save_maps` is the only thing that serialises them. That refusal is why
+**starting a new map is not a mode switch**: `POST /api/v1/mapping/reset` →
+`pgo/reset_mapping` does it in place instead, with nothing restarted (see the
+backend section). `sys_manager` itself runs
 **outside** both specs — it is the robot container's main process
 (`command:` in `docker-compose.robots.yml` runs `ros2 launch syncai_sys_manager
 sys_manager.launch.py`), so `docker compose up -d robot01` brings the stack up
@@ -450,7 +453,28 @@ temporal/     (worker, workflows, activities)
   merged `pgo/map_cloud` (WS `/api/v1/robot/pointcloud/map/stream`). A saved
   map's `map.pcd` is served over REST (`GET /api/v1/maps/{name}/pointcloud`). The
   wire format for the WS streams is `[u32 count][f32 xyz…]`, with the TF
-  transform to `map` done server-side.
+  transform to `map` done server-side. An **empty** `pgo/map_cloud` merge is a
+  message, not a non-event — pgo sends one from `reset_mapping` — so
+  `MapCloudSubscriber` clears its slot on it rather than skipping it. Clearing
+  used to come free with the backend restarting on every mode switch; an
+  in-place reset ended that.
+- **Starting a new map: `POST /api/v1/mapping/reset` → `pgo/reset_mapping`.**
+  Nothing is restarted. pgo orchestrates all of it so the caller makes one call
+  and gets one verdict: pause intake, reset the LIO front end over
+  `pointlio/reset`, rebuild `SimplePGO`, then drop everything stamped at or
+  before the boundary the front end reported. Pausing *first* is the whole
+  design — while pointlio's odometry jumps back to the origin pgo is not
+  consuming, so the discontinuity has nowhere to land, and no sleep or slack
+  window is involved. The only fallible step (the `ResetLIO` round trip) runs
+  before anything is destroyed, so a failure leaves the pose graph untouched and
+  says so; there is no half-reset. It is deliberately **not** a flag on `POST
+  /api/v1/maps`: the common use is abandoning a run that went wrong in its first
+  thirty seconds, and a combined route would force a throwaway map directory
+  onto exactly that case. The route lives under `/api/v1/mapping/` because it
+  touches no file. **The robot must be stationary** — pointlio re-runs a static,
+  gravity-aligning IMU init, and one done in motion tilts the new map for its
+  whole life with no error anywhere; that is said in the srv, the REST message
+  and the console's confirm dialog, and nowhere enforced.
 - **There are two pcd → gridmap recipes, and the default is z-band.**
   `POST /api/v1/maps` always converts with `convert_pcd_to_gridmap` (z-band
   slicing, trinary occupied/free/unknown), its bands recentred as offsets from
@@ -524,9 +548,12 @@ Next.js 16 (dev server on port 3001), shadcn-style components on
 `@base-ui/react`, **raw three.js** for the 3D point-cloud view (no
 react-three-fiber). Routes: `/` (dashboard: point cloud + telemetry rail, goal /
 initial-pose / posture / manual joystick controls), `/mapping` (mode switch,
-save map), `/maps` (map library, per-card Rebuild-grid dropdown, inline Rename,
-and a Switch corner tile — Rename is greyed for the active map, which the backend
-refuses too, and Switch is the control that un-greys it) and
+save map, start a new map — the page owns the unsaved-run rule and drives one
+confirm dialog from it for both destructive acts, and re-arms that rule after a
+reset by hand, since `reported` never changes across one), `/maps` (map library,
+per-card Rebuild-grid dropdown, inline Rename, and a Switch corner tile — Rename
+is greyed for the active map, which the backend refuses too, and Switch is the
+control that un-greys it) and
 `/maps/[name]/edit` (gridmap editor), `/tasks` (templates, dispatch, schedules),
 `/settings` (wifi via the backend's network router, appearance),
 `/model-preview`. There is **no camera component** — nothing in the frontend

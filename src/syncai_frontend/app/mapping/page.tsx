@@ -7,6 +7,7 @@ import { Segmented, overlayPanel } from "@/components/console/instrument";
 import { ManualControl } from "@/components/dashboard/manual-control";
 import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
 import { ModeControl } from "@/components/mapping/mode-control";
+import { ResetRunControl } from "@/components/mapping/reset-run-control";
 import { SaveMapControl } from "@/components/mapping/save-map-control";
 import {
   AlertDialog,
@@ -19,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useModeSwitch } from "@/hooks/use-mode-switch";
 import { useTelemetry } from "@/hooks/use-telemetry";
-import type { SwitchableMode } from "@/lib/api/mapping";
+import { resetMappingRun, type SwitchableMode } from "@/lib/api/mapping";
 import type { StreamStatus } from "@/lib/types/stream";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +45,14 @@ const CAMERA_OPTIONS = [
   { value: "move" as const, label: "Move" },
   { value: "focus" as const, label: "Focus" },
 ];
+
+// The two ways to lose the run, and the only part of their copy that does not
+// depend on whether it was saved. Out here so the dialog's JSX carries one
+// conditional instead of one per line of text.
+const CONFIRM_COPY = {
+  leave: { title: "Leave mapping without saving?", confirm: "Discard and switch" },
+  reset: { title: "Start a new map?", confirm: "Discard and start over" },
+} as const;
 
 /** One stream-health row: dot in the three link tones, then the label. */
 function StreamPill({
@@ -89,11 +98,14 @@ function StreamPill({
  * robot model needs the telemetry pose, which mapping's TF chain may not
  * provide; the clouds are the primary instrument either way.
  *
- * The one rule this page owns: leaving MANUAL with an unsaved run loses the
- * run (pgo holds it in RAM; sys_manager will not stop you), so that switch
- * asks first. `savedRun` resets whenever a new MANUAL run starts, tracked by
- * watching `reported` change — the adjust-during-render pattern, same as
- * VertexMoveDialog's `shown`.
+ * The one rule this page owns: losing the run in the robot's memory is always
+ * confirmed here, because pgo holds it in RAM and nothing downstream will stop
+ * you. Two ways to lose it, one dialog — leaving MANUAL, and starting a new map
+ * over the top of it. `savedRun` is the rule's input, and it re-arms on two
+ * events that look nothing alike: a new MANUAL run, tracked by watching
+ * `reported` change (the adjust-during-render pattern, same as
+ * VertexMoveDialog's `shown`), and a successful reset, which has to say so
+ * explicitly because `reported` never moves across one.
  */
 export default function MappingPage() {
   const control = useModeSwitch();
@@ -105,7 +117,20 @@ export default function MappingPage() {
   const [cameraMode, setCameraMode] = React.useState<"move" | "focus">("move");
   const [topDownNonce, setTopDownNonce] = React.useState(0);
   const [savedRun, setSavedRun] = React.useState(false);
-  const [confirmingLeave, setConfirmingLeave] = React.useState(false);
+  // One dialog, two questions. Both ask "you are about to lose this run" and
+  // differ only in what happens next, so a second AlertDialog block would be
+  // two copies of the same copy, drifting apart at the first reword.
+  const [confirming, setConfirming] = React.useState<null | "leave" | "reset">(
+    null,
+  );
+  const [resetBusy, setResetBusy] = React.useState(false);
+  const [resetError, setResetError] = React.useState<string | null>(null);
+  const [resetDone, setResetDone] = React.useState<string | null>(null);
+  // Bumped on every successful reset and used as SaveMapControl's key, which
+  // remounts it. Remounting is the least code that says "different run": it
+  // clears the "Saved 'foo' / 2D grid ready" line, which would otherwise sit
+  // under a brand-new empty map claiming it was already saved.
+  const [runNonce, setRunNonce] = React.useState(0);
 
   const { reported, pending, switchTo } = control;
 
@@ -125,7 +150,7 @@ export default function MappingPage() {
       if (mode === "AUTO" && reported === "MANUAL" && !savedRun) {
         // The guard, not the switch: sys_manager would happily rebuild AUTO
         // over an unsaved run and the map would be unrecoverable.
-        setConfirmingLeave(true);
+        setConfirming("leave");
         return;
       }
       void switchTo(mode);
@@ -133,10 +158,44 @@ export default function MappingPage() {
     [reported, pending, savedRun, switchTo],
   );
 
-  const discardAndLeave = React.useCallback(() => {
-    setConfirmingLeave(false);
+  const runReset = React.useCallback(async () => {
+    setConfirming(null);
+    setResetBusy(true);
+    setResetError(null);
+    setResetDone(null);
+    try {
+      const result = await resetMappingRun();
+      setResetDone(result.message);
+      // The line that makes the leave-guard keep working. Its usual re-arm
+      // watches `reported` change, and `reported` stays MANUAL straight through
+      // a reset — so without this, an operator who saves map A, resets, drives
+      // map B and then switches to Nav gets no warning and loses B silently.
+      setSavedRun(false);
+      setRunNonce((n) => n + 1);
+    } catch (cause) {
+      setResetError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setResetBusy(false);
+    }
+  }, []);
+
+  // Confirmed even when the run IS saved: a misclick costs the run either way,
+  // and "it was saved" says nothing about the minutes driven since the save.
+  const requestReset = React.useCallback(() => setConfirming("reset"), []);
+
+  // Falls back to the leave copy while `confirming` is null, which is only the
+  // frame in which the dialog is closing — reading it then would otherwise mean
+  // guarding every line of copy for a state the operator never sees.
+  const confirmCopy = CONFIRM_COPY[confirming ?? "leave"];
+
+  const confirmDialog = React.useCallback(() => {
+    if (confirming === "reset") {
+      void runReset();
+      return;
+    }
+    setConfirming(null);
     void switchTo("AUTO");
-  }, [switchTo]);
+  }, [confirming, runReset, switchTo]);
 
   return (
     <div className="flex h-full flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
@@ -224,33 +283,55 @@ export default function MappingPage() {
         className="w-full shrink-0 border-t border-hairline bg-panel lg:h-full lg:w-72 lg:overflow-y-auto lg:border-t-0 lg:border-l"
       >
         <ModeControl control={control} onSelect={selectMode} />
-        <SaveMapControl enabled={mapping} onSaved={() => setSavedRun(true)} />
+        <SaveMapControl
+          key={runNonce}
+          enabled={mapping}
+          onSaved={() => setSavedRun(true)}
+        />
+        <ResetRunControl
+          enabled={mapping}
+          busy={resetBusy}
+          error={resetError}
+          done={resetDone}
+          onRequest={requestReset}
+        />
       </aside>
 
       <AlertDialog
-        open={confirmingLeave}
+        open={confirming !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirmingLeave(false);
+          if (!open) setConfirming(null);
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Leave mapping without saving?</AlertDialogTitle>
+            <AlertDialogTitle>{confirmCopy.title}</AlertDialogTitle>
             <AlertDialogDescription>
-              This run&apos;s map exists only in the robot&apos;s memory.
-              Switching to Nav discards it — there is no way to get it back.
+              {confirming === "reset" ? (
+                <>
+                  {savedRun
+                    ? "Anything driven since the last save is discarded."
+                    : "This run's map is discarded — it exists only in the robot's memory."}{" "}
+                  Keep the robot still while the lidar re-levels itself.
+                </>
+              ) : (
+                <>
+                  This run&apos;s map exists only in the robot&apos;s memory.
+                  Switching to Nav discards it — there is no way to get it back.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setConfirmingLeave(false)}
+              onClick={() => setConfirming(null)}
             >
               Keep mapping
             </Button>
-            <Button variant="destructive" size="sm" onClick={discardAndLeave}>
-              Discard and switch
+            <Button variant="destructive" size="sm" onClick={confirmDialog}>
+              {confirmCopy.confirm}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

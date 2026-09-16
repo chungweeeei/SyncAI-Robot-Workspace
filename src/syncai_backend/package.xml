@@ -25,7 +25,8 @@
   <exec_depend>syncai_common</exec_depend>
   <!--
     FASTLIO2_ROS2's interface package (yes, it is genuinely named `interface`):
-    the map gateway imports interface.srv.SaveMaps to trigger pgo's map save.
+    the map gateway imports interface.srv.SaveMaps to trigger pgo's map save,
+    and interface.srv.ResetMapping to discard a run and start a new map.
     Same rationale as syncai_common above — build ordering plus honesty about
     a runtime import.
   -->

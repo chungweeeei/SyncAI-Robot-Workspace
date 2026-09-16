@@ -1,4 +1,4 @@
-"""Tests for MapGateway: the map router's four service clients.
+"""Tests for MapGateway: the map router's five service clients.
 
 Same seams as test_robot_gateway.py: the node is a MagicMock and futures are
 the hand-completed ``_Future`` below, so no ROS graph (or rclpy.init) is
@@ -29,7 +29,7 @@ pytest.importorskip("interface")
 
 from builtin_interfaces.msg import Time  # noqa: E402
 from nav2_msgs.srv import LoadMap  # noqa: E402
-from interface.srv import SaveMaps  # noqa: E402
+from interface.srv import ResetMapping, SaveMaps  # noqa: E402
 
 from syncai_backend.gateways.map import map as map_module  # noqa: E402
 from syncai_backend.gateways.map.map import (  # noqa: E402
@@ -71,6 +71,7 @@ def map_gw(logger) -> MapGateway:
     clients = {
         "map_server/load_map": MagicMock(),
         "pgo/save_maps": MagicMock(),
+        "pgo/reset_mapping": MagicMock(),
         "relocalize": MagicMock(),
         "relocalize_check": MagicMock(),
     }
@@ -231,6 +232,120 @@ class TestSaveMap:
         assert success is False
         assert message == "Timeout waiting for pgo/save_maps response"
         client.call_async.assert_called_once()
+
+
+class TestResetMapping:
+    """The other exit from a run: discard it and start a new map."""
+
+    def test_success_passes_pgos_answer_through(self, map_gw):
+        client = _arm(
+            map_gw,
+            "reset_mapping",
+            SimpleNamespace(
+                success=True,
+                message=(
+                    "Map discarded. The new one starts building once the "
+                    "lidar has re-levelled."
+                ),
+                lio_last_odom_time=1234.5,
+                dropped_key_poses=42,
+            ),
+        )
+
+        success, message = map_gw.reset_mapping()
+
+        assert (success, message) == (
+            True,
+            "Map discarded. The new one starts building once the lidar has "
+            "re-levelled.",
+        )
+        request = client.call_async.call_args[0][0]
+        assert isinstance(request, ResetMapping.Request)
+
+    def test_resets_the_lio_front_end_by_default(self, map_gw):
+        # The console never resets the pose graph alone: the new map's origin
+        # follows the odometry origin, so a graph-only reset would start the map
+        # wherever the old run had drifted to.
+        client = _arm(
+            map_gw,
+            "reset_mapping",
+            SimpleNamespace(
+                success=True, message="ok", lio_last_odom_time=0.0, dropped_key_poses=0
+            ),
+        )
+
+        map_gw.reset_mapping()
+
+        assert client.call_async.call_args[0][0].reset_lio is True
+
+    def test_graph_only_reset_is_still_reachable(self, map_gw):
+        # Not offered by the console, but it is the bag-replay affordance and
+        # the srv field exists for it.
+        client = _arm(
+            map_gw,
+            "reset_mapping",
+            SimpleNamespace(
+                success=True, message="ok", lio_last_odom_time=0.0, dropped_key_poses=0
+            ),
+        )
+
+        map_gw.reset_mapping(reset_lio=False)
+
+        assert client.call_async.call_args[0][0].reset_lio is False
+
+    def test_pgo_refusal_passes_through_verbatim(self, map_gw):
+        # A failed reset means the graph was left exactly as it was — pgo does
+        # the irreversible step last — so the message is the whole diagnosis.
+        _arm(
+            map_gw,
+            "reset_mapping",
+            SimpleNamespace(
+                success=False,
+                message="Timed out waiting for the LIO reset; map kept",
+                lio_last_odom_time=0.0,
+                dropped_key_poses=0,
+            ),
+        )
+
+        assert map_gw.reset_mapping() == (
+            False,
+            "Timed out waiting for the LIO reset; map kept",
+        )
+
+    def test_service_unavailable_blames_the_mode(self, map_gw):
+        client = _arm(map_gw, "reset_mapping", available=False)
+
+        success, message = map_gw.reset_mapping()
+
+        assert success is False
+        assert "not available" in message
+        assert "MANUAL" in message
+        client.call_async.assert_not_called()
+
+    def test_timeout_reports_the_reset_deadline(self, map_gw, monkeypatch):
+        client = _arm(map_gw, "reset_mapping", completed=False)
+        monkeypatch.setattr(map_module, "_wait_for_future", lambda f, timeout: False)
+
+        success, message = map_gw.reset_mapping()
+
+        assert success is False
+        assert message == "Timeout waiting for pgo/reset_mapping response"
+        client.call_async.assert_called_once()
+
+    def test_a_reset_does_not_touch_save_maps(self, map_gw):
+        # The two are separate acts, and the gateway holds a distinct client
+        # per service precisely so this is provable.
+        _arm(
+            map_gw,
+            "reset_mapping",
+            SimpleNamespace(
+                success=True, message="ok", lio_last_odom_time=0.0, dropped_key_poses=0
+            ),
+        )
+
+        map_gw.reset_mapping()
+
+        map_gw._service_clients["save_maps"].call_async.assert_not_called()
 
 
 class TestSwapLocalizerMap:
