@@ -38,7 +38,7 @@
     fastapi. See requirements.txt and the README for setup.
 
     kokoro-onnx (the TTS gateway's engine) is in the same boat: pip-only, no
-    rosdep key — same precedent as fastmcp in syncai_ros_mcp. It also needs
+    rosdep key, for the same jammy reason as fastapi. It also needs
     model weights that are NOT pip-installed: ~/robot_ws/models/kokoro/
     (gitignored; download URLs in gateways/tts/tts.py). The /speak route
     additionally needs aplay (alsa-utils, Dockerfile dev stage) and /dev/snd

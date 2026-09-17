@@ -159,8 +159,9 @@ class TaskState(BaseSchema):
 class TaskSource(str, Enum):
     """Who started a running task.
 
-    DIRECT, not OPERATOR: `POST /api/v1/tasks` is also how syncai_ros_mcp
-    dispatches, so "an operator did this" would be a claim the backend cannot
+    DIRECT, not OPERATOR: `POST /api/v1/tasks` is a plain REST route and the
+    console is not its only caller (curl and any external bridge dispatch the
+    same way), so "an operator did this" would be a claim the backend cannot
     make. All it can tell apart is "someone called the endpoint" from "a
     Temporal schedule fired", and the latter only because the schedule
     machinery stamps its own search attribute on the run.

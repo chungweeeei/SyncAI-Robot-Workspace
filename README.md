@@ -64,7 +64,6 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
 | `syncai_backend` | Python. FastAPI + rclpy in one process (port **3000**), Temporal worker (tasks, templates, schedules), map catalogue + pcd → gridmap conversion, TTS, WebSocket streams |
 | `syncai_frontend` | Next.js operator console (port **3001**): dashboard with 3D point cloud, mapping, map library (rebuild grid, rename) + gridmap editor, tasks, settings |
-| `syncai_ros_mcp` | MCP server as a ROS 2 node (port **8000**): topics / services / tasks / maps (catalogue, image, vertices) as MCP tools over the backend's REST API. Not started by anything — run by hand |
 
 ### Third-party (`src/third-party/`)
 
@@ -113,7 +112,7 @@ cd - && git add src/third-party/behaviortree_cpp_v3 && git commit -m "chore: bum
 ├── docker-compose.robots.yml     # robot01 (host networking, nvidia runtime, cameras, audio, D-Bus, avahi); `include`d above
 ├── docker-compose.build.yaml     # standalone one-shot `colcon build` service (same image, own project name; no frontend)
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
-├── ruff.toml                     # Python lint config for all three Python packages
+├── ruff.toml                     # Python lint config for both Python packages
 ├── .devcontainer/                # VS Code "Reopen in Container"
 └── .env                          # compose env + secrets (gitignored — never commit)
 ```
@@ -179,7 +178,6 @@ does; robot01 picks the new `install/` up on the next session (re)build
 
 ```bash
 rosdep install --from-paths src --ignore-src -r -y   # declared deps
-python3 -m pip install "fastmcp>=3.4.4"              # pip-only dep of syncai_ros_mcp
 colcon build --symlink-install                       # or: scripts/build.sh
 source install/setup.bash
 

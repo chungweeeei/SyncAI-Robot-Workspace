@@ -1,12 +1,13 @@
 # Ruff config for every Python package in this workspace
-# (syncai_backend, syncai_sys_manager, syncai_ros_mcp).
+# (syncai_backend, syncai_sys_manager).
 #
 # Why this file exists at all: nothing here was ever linted by config, so Ruff
 # fell back to its own built-in defaults — and those defaults grew. The
 # 2026 VSCode extension bundles ruff 0.16, whose default rule set now includes
 # isort, PL*, UP*, TRY*, BLE*, SIM* and friends (`ruff check --isolated` enables
-# ~414 rules). That turned into 471 in-editor warnings across the three
-# packages overnight, 72 of them `I001` alone, with no code change behind it.
+# ~414 rules). That turned into 471 in-editor warnings across the workspace's
+# Python packages overnight, 72 of them `I001` alone, with no code change behind
+# it.
 #
 # So this is the Python counterpart to `.clang-format`: the rule set is pinned
 # here rather than inherited from whatever Ruff version the editor happens to

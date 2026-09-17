@@ -98,16 +98,17 @@ prefixed with the robot name so several robots can publish to one MediaMTX.
 |---|---|
 | `syncai_backend` | Python. FastAPI **and** rclpy in one process (`MultiThreadedExecutor`), port **3000**. Temporal worker for task orchestration. Also owns TTS (kokoro-onnx → `aplay`, weights in `models/kokoro/`), task templates + schedules, the wifi bridge to `sys_manager`, and the teleop / telemetry / point-cloud WebSockets. Declares **no** ROS parameters. |
 | `syncai_frontend` | Next.js 16 + shadcn-style ui + raw three.js, dev server on port **3001**. Not an ament package (no `package.xml`). |
-| `syncai_ros_mcp` | Python (`ament_python`). MCP server exposing the ROS 2 graph as MCP tools over HTTP, port **8000** (`/mcp`). One process: `rclpy.spin()` owns the main thread, FastMCP runs on a background daemon thread. The topic/service tools read the live graph through the node; the task/map tools (`tools/tasks.py`, `tools/maps.py`) are thin REST clients for `syncai_backend` (`SYNCAI_BACKEND_BASE_URL`, default `http://localhost:3000`). The map tools target the **nested** `/api/v1/maps/{name}/...` routes — the flat `/api/v1/map/...` routes they were first written against no longer exist (every call 404'd), so each tool takes a `map_name`, vertex bodies carry no `map_name`, and `get_map_image` returns raw PNG bytes via `_backend.request_bytes` rather than a base64 envelope. No tool wraps `PATCH /api/v1/maps/{name}` (rename), `POST /api/v1/maps/{name}/activate` (switch the running map) or `GET /api/v1/active_tasks` yet. **Started by nothing** — it is in no session spec and not in compose; run it by hand with `ros2 run syncai_ros_mcp mcp_server_node`. Because it is started with `ros2 run` and has no launch file, it lives in the **root namespace**: its topic/service tools take full `/<robot_id>/...` names. |
 
-`syncai_ros_mcp` is **vendored** (source committed here) even though it started
-as the submodule `chungweeeei/SyncAI-ROS-MCP`; it was folded in on purpose: it
-is developed only against this workspace, and the submodule indirection meant
-every change needed two commits and left the workspace pinning a stale pointer.
 Every `src/syncai_*` package is in-tree; everything under `src/third-party/` is a
-submodule. `FastMCP` is a pip-only dependency (no rosdep key), so `rosdep
-install` does not cover it — `python3 -m pip install "fastmcp>=3.4.4"` into the
-same interpreter `ros2 run` uses.
+submodule.
+
+`syncai_ros_mcp` — a vendored MCP server that exposed the ROS 2 graph and the
+backend's REST API as MCP tools over HTTP on port 8000 — **was removed**, because
+this version has no use for it: it was in no session spec and not in compose, so
+nothing ever started it, and nothing in the stack imported or called it. Recover
+it from git history rather than re-deriving it if the agent work resumes. Its
+`FastMCP` pip dependency went with it, which leaves Sophus / GTSAM (source builds
+for `FASTLIO2_ROS2`) as the only manual dependency `rosdep` does not cover.
 
 ### Third-party (`src/third-party/`)
 
@@ -214,8 +215,8 @@ X11 mounts along) — keep the two in sync.
 
 Recreating a robot container wipes hand-installed build dependencies (the ones
 not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
-plus any manual deps (Sophus / GTSAM are built from source for `FASTLIO2_ROS2`;
-`fastmcp` via pip for `syncai_ros_mcp`).
+plus any manual deps (Sophus / GTSAM are built from source for
+`FASTLIO2_ROS2`).
 
 The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
@@ -326,8 +327,7 @@ go to separate subtrees, which is what stops the two from interleaving two
 multilogs into one directory. The 2D / AMCL session was retired along with
 `bringup_2d.launch.py`. Neither spec has an rviz2 window (the robot has no
 display; `config/rviz2/<robot_id>.rviz` is for running rviz2 from a
-workstation), a camera window (the RTSP publisher runs on the host), or a
-`syncai_ros_mcp` window.
+workstation) or a camera window (the RTSP publisher runs on the host).
 
 There is no log-reading helper. Read a subsystem back by hand — multilog writes
 `current` plus gzipped rotations (16 MiB × 10):
@@ -642,7 +642,7 @@ breaking changes relative to model training data — read the relevant guide in
 - C++ formatting is pinned by `.clang-format` (ROS 2 style, 100 columns).
   Python is linted by the root `ruff.toml` (py310, rule set pinned on purpose
   — no package under `src/` carries its own ruff/pyproject config, so this file
-  governs all three Python packages; it exists because a ruff upgrade's growing
+  governs both Python packages; it exists because a ruff upgrade's growing
   defaults produced 471 spurious in-editor warnings overnight).
 - Comments and docs are written in **English**. Comments in this codebase
   explain **why**, often at length, and frequently record a past bug or a
@@ -650,7 +650,11 @@ breaking changes relative to model training data — read the relevant guide in
   change with no rationale is out of place here. The last Chinese remnants
   (BT plugin comments, `ExecuteTask.action`, the camera script's log strings,
   the `doc/` proposals) were translated in 2026-09; anything new in another
-  language is a regression, log strings included.
+  language is a regression, log strings included. The one exception is a
+  `*.zh-TW.md` **translation** sitting beside an English original that stays the
+  canonical copy and carries the content — `doc/webrtc-worker-proposal.zh-TW.md`
+  is the only one today. Edit the English file first; a zh-TW file that has
+  drifted is worse than none, so either update both or delete the translation.
 - `build/`, `install/`, `log/`, `data/`, `.env`, `record/` (hand-recorded
   rosbags), the whole of `/map/` (LIO output: `map.pcd`, `poses.txt`,
   `patches/`, generated `gridmap.*`) and `/models/` (TTS weights) are
@@ -667,14 +671,23 @@ breaking changes relative to model training data — read the relevant guide in
   the tree, and its `.env.example` says `ROS_DOMAIN_ID=0` while the stack pins
   domain 1). `skills-lock.json` at the root is Claude Code tooling metadata,
   not stack config.
-- `doc/` holds five design **proposals** (none implemented) on agent / MCP
-  integration: deep-agent wiring, a gridmap-tuning agent, MCP server design,
-  RoboNeuron mechanisms, and a task-recovery loop. Three of them target
-  `src/syncai_device_agent/`, which was removed in commit `99141a6`. The
+- `doc/` holds six design **proposals** (none implemented). Five are on agent /
+  MCP integration: deep-agent wiring, a gridmap-tuning agent, MCP server design,
+  RoboNeuron mechanisms, and a task-recovery loop. Three of those target
+  `src/syncai_device_agent/`, which was removed in commit `99141a6`, and four
+assume `src/syncai_ros_mcp/`, removed later — both are in git history. The
+sixth,
+  `webrtc-worker-proposal.md`, is unrelated to the other five: it covers the
+  camera path (a self-built Go + pion WHEP worker in `src/syncai_webrtc/` that
+  owns the capture/crop/encode pipeline as a supervised `gst-launch-1.0` child
+  and relays its RTP to browsers; it deliberately ignores the host-side
+  `publish_camera_crop.sh` path) and records why the "Go `.so` + zero-copy into
+  Python" framing it came from was not adopted. The
   FAST-LIO2 design notes that used to live here (`fastlio2-pgo-pipeline.md`;
   `config/sessions/start_mapping.yaml` still cites its §3.5 / §5 by section
   number, noting that the file is gone) are no longer in the tree — check git
-  history.
+  history. `webrtc-worker-proposal.zh-TW.md` is a translation of the sixth, not
+  a seventh proposal; see the English-docs convention above.
 
 ## Tests
 
@@ -682,8 +695,8 @@ breaking changes relative to model training data — read the relevant guide in
 `src/syncai_backend/test/`: every REST router, the Temporal workflow /
 activities / worker, both pcd → gridmap recipes, the map catalogue, TF and the
 telemetry / point-cloud streams). `syncai_sys_manager` has
-`test_wifi_manager.py`. The C++ packages and `syncai_ros_mcp` have only the
-ament linter tests that come with the package templates.
+`test_wifi_manager.py`. The C++ packages have only the ament linter tests that
+come with the package templates.
 
 ```bash
 colcon test --packages-select <package_name>

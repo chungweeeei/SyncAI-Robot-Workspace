@@ -64,11 +64,10 @@ Thumbs.db
 data/
 
 
-# Stale standalone clone of the MCP server, kept only as a local scratch copy.
-# The package now lives vendored in-tree at src/syncai_ros_mcp (same project, same
-# git lineage — this copy's HEAD 599526f is an ancestor of the vendored 828cf71).
-# Two working copies of one ament package would give colcon a duplicate
-# `syncai_ros_mcp`, so the directory also carries a COLCON_IGNORE marker.
+# Standalone clone of the MCP server (chungweeeei/SyncAI-ROS-MCP), if anyone keeps
+# one here as a local scratch copy. It is a different repository's working tree and
+# must never be committed into this one; the vendored in-tree copy it used to
+# shadow (src/syncai_ros_mcp) was removed, and lives in git history now.
 src/syncai-ros-mcp/
 
 # LIO map output (pcd / gridmap / poses — regenerated, not tracked).
