@@ -72,7 +72,8 @@ class RobotActivities:
         state = self._wait_for_nav_goal(goal_id=goal_id, label="Move")
 
         if state != "succeeded":
-            raise ApplicationError(f"move ended in {state}", non_retryable=False)
+            raise ApplicationError(f"move ended in {state}", non_retryable=False
+            )
 
         return ActivityResult(success=True, goal_id=goal_id, state=state)
 

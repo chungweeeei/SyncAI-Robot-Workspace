@@ -40,7 +40,17 @@ export interface VertexPanelProps {
 
   /** A staged, uncreated vertex. Mutually exclusive with `selected` in practice. */
   draft: PlanarPose | null;
+  /** The subject of the editing form: the selection, when it holds exactly one. */
   selected: MapVertex | null;
+  /**
+   * Everything highlighted on the canvas, from the Select tool's band.
+   *
+   * At one entry this is just `selected.id` and the form is what is shown; at
+   * more, the form gives way to the band block, because renaming, retyping and
+   * re-aiming have no meaning spread across a set. Delete does, and is the one
+   * thing that block offers.
+   */
+  selectedIds: readonly string[];
   /**
    * A re-aim of `selected` that has not been written yet, from a drag on its own
    * marker. There is no move-to-another-place control here — see the note on
@@ -57,14 +67,18 @@ export interface VertexPanelProps {
 
   onSelect: (id: string | null) => void;
   onCancelDraft: () => void;
+  /** Drop the band selection without touching anything on the map. */
+  onClearSelection: () => void;
   onCreate: (name: string, type: VertexType) => void;
   onSave: (changes: VertexChanges) => void;
+  /** Deletes everything in `selectedIds` — one vertex from the form, or a band. */
   onDelete: () => void;
   className?: string;
 }
 
 export function VertexPanel(props: VertexPanelProps) {
-  const { vertices, status, error, draft, selected, className } = props;
+  const { vertices, status, error, draft, selected, selectedIds, className } = props;
+  const band = selectedIds.length > 1;
 
   return (
     <div className={cn(overlayPanel, "flex w-60 flex-col gap-2 p-2.5", className)}>
@@ -99,6 +113,15 @@ export function VertexPanel(props: VertexPanelProps) {
           onSubmit={(name, type) => props.onCreate(name, type)}
           onCancel={props.onCancelDraft}
         />
+      ) : band ? (
+        <BandBlock
+          vertices={vertices}
+          selectedIds={selectedIds}
+          busy={props.busy}
+          onSelect={props.onSelect}
+          onClear={props.onClearSelection}
+          onDelete={props.onDelete}
+        />
       ) : selected ? (
         <>
         <VertexForm
@@ -128,7 +151,7 @@ export function VertexPanel(props: VertexPanelProps) {
          * it with that vertex's values. */}
         <VertexList
           vertices={vertices}
-          selectedId={selected.id}
+          selectedIds={selectedIds}
           onSelect={props.onSelect}
           empty={null}
         />
@@ -171,13 +194,19 @@ export function VertexPanel(props: VertexPanelProps) {
 
           <VertexList
             vertices={vertices}
-            selectedId={null}
+            selectedIds={selectedIds}
             onSelect={props.onSelect}
             empty={status === "ok" ? "No vertices on this map yet." : null}
           />
 
+          {/* The panel is the only place the tool row's icons are spelled out.
+            * Worth the four lines: "why does pressing the map do nothing" is the
+            * question the unarmed default buys, and this is where an operator
+            * looking at the vertex layer is already looking. */}
           <p className="text-[11px] leading-tight text-muted-foreground">
-            In Vertex mode, press the map and drag to aim.
+            Arm <span className="text-foreground">Place</span> to stage a vertex — press
+            the map, drag to aim. <span className="text-foreground">Select</span> drags a
+            box over several; Shift adds. Escape returns to Pan.
           </p>
         </>
       )}
@@ -185,14 +214,91 @@ export function VertexPanel(props: VertexPanelProps) {
   );
 }
 
+/**
+ * What a band selection can do, which is delete.
+ *
+ * Deliberately not a cut-down copy of VertexForm. A name, a type and a heading
+ * are each one value, and offering them over a set would mean either a "mixed"
+ * state for every field or silently flattening five vertices onto one operator's
+ * last keystroke — and the vertex layer writes through with no undo (see
+ * hooks/use-map-vertices.ts), so flattening would be permanent. Narrowing to one
+ * vertex is a click on any row, and that is where editing lives.
+ */
+function BandBlock({
+  vertices,
+  selectedIds,
+  busy,
+  onSelect,
+  onClear,
+  onDelete,
+}: {
+  vertices: MapVertex[];
+  selectedIds: readonly string[];
+  busy: boolean;
+  onSelect: (id: string) => void;
+  onClear: () => void;
+  onDelete: () => void;
+}) {
+  const count = selectedIds.length;
+  // The band holds ids; the names are what the confirm has to show, and a
+  // selection can outlive a row another screen deleted (the list is shared with
+  // the dashboard — see lib/api/query-keys.ts), so it is resolved, not assumed.
+  const names = vertices
+    .filter((vertex) => selectedIds.includes(vertex.id))
+    .map((vertex) => vertex.name);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="instrument-label text-signal-cmd">{count} selected</span>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onClear}
+          className="instrument-label rounded-sm border border-hairline px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-elevated hover:text-foreground disabled:opacity-50"
+        >
+          Clear
+        </button>
+      </div>
+
+      <VertexList
+        vertices={vertices}
+        selectedIds={selectedIds}
+        onSelect={onSelect}
+        empty={null}
+      />
+
+      <button
+        type="button"
+        disabled={busy || count === 0}
+        onClick={() => {
+          // The same confirm the single delete uses, listing what it is about to
+          // take: a count alone is not enough to check a band against, since the
+          // band was drawn on the map and the map is behind this panel.
+          const listed = names.length > 6 ? `${names.slice(0, 6).join(", ")}, …` : names.join(", ");
+          if (window.confirm(`Delete ${count} vertices (${listed})? This cannot be undone.`)) {
+            onDelete();
+          }
+        }}
+        className="instrument-label flex h-7 items-center justify-center gap-1.5 rounded-sm border border-signal-warn/50 text-signal-warn transition-colors hover:bg-signal-warn/12 disabled:opacity-50"
+      >
+        <Trash2Icon className="size-3.5" aria-hidden />
+        Delete {count}
+      </button>
+    </div>
+  );
+}
+
 function VertexList({
   vertices,
-  selectedId,
+  selectedIds,
   onSelect,
   empty,
 }: {
   vertices: MapVertex[];
-  selectedId: string | null;
+  /** Every highlighted row, so a band lights all of its members here too. */
+  selectedIds: readonly string[];
+  /** Picking a row always narrows to that one vertex, band or not. */
   onSelect: (id: string) => void;
   empty: string | null;
 }) {
@@ -213,7 +319,7 @@ function VertexList({
             onClick={() => onSelect(vertex.id)}
             className={cn(
               "flex w-full items-center gap-1.5 rounded-sm px-1 py-0.5 text-left transition-colors",
-              vertex.id === selectedId
+              selectedIds.includes(vertex.id)
                 ? "bg-signal-cmd/12 text-signal-cmd"
                 : "hover:bg-elevated",
             )}

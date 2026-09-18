@@ -85,4 +85,9 @@ src/syncai-ros-mcp/
 # src/**/models/ package directory.
 /models/
 
-record/
+# Hand- and API-recorded rosbags (record/<name>/*.db3 + metadata.yaml, written
+# by POST /api/v1/recordings or by `ros2 bag record` in a shell). Anchored with
+# a leading slash for the reason /map/ and /models/ above give: a bare
+# `record/` matches a directory of that name at any depth, and would silently
+# swallow a future src/**/record/ package directory.
+/record/

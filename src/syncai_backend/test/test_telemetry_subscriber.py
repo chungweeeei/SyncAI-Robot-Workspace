@@ -1,4 +1,4 @@
-"""Tests for TelemetrySubscriber: raw odom / motor_states -> TelemetryRepo.
+"""Tests for TelemetrySubscriber: raw odom / lio_odom / motor_states -> TelemetryRepo.
 
 What is pinned:
 
@@ -19,7 +19,12 @@ What is pinned:
   spells the difference out). The repo's wire format uses seconds, so the 1e-9
   scale here is load-bearing and has a documented temptation to "fix".
 
-* Both subscriptions use RELATIVE topic names (namespace inheritance —
+* The mapping-mode pose path (``pointlio/lio_odom``), which is the only pose
+  the console gets during a mapping run: the full 3x3 composition through the
+  tilted lidar mount, and the rule that a live ``odom`` feed silences it —
+  both topics are published in AUTO and the two must never take turns.
+
+* All subscriptions use RELATIVE topic names (namespace inheritance —
   CLAUDE.md) and best-effort QoS: motor_states' publisher is SensorDataQoS and
   a reliable subscriber would simply never match it.
 """
@@ -43,6 +48,9 @@ from tf2_ros import TransformException  # noqa: E402
 
 from syncai_common.msg import MotorState, MotorStates  # noqa: E402
 
+from syncai_backend.helpers.pointcloud import (  # noqa: E402
+    quat_to_rotation_matrix,
+)
 from syncai_backend.repositories.telemetry.telemetry import (  # noqa: E402
     init_telemetry_repo,
 )
@@ -71,17 +79,43 @@ class _FakeTfBuffer:
     ``transform=None`` plays the not-yet-relocalized buffer by raising
     TransformException — the exact exception type a real Buffer raises when
     map->odom has never been published, and the only one the callback catches.
+
+    ``transforms`` answers per (target, source) pair, for the mapping path:
+    that one composes two different lookups, so a single answer would hide a
+    swapped pair. A pair that is not in the dict raises, like an absent branch
+    of the real tree.
     """
 
-    def __init__(self, transform=None):
+    def __init__(self, transform=None, transforms=None):
         self.transform = transform
+        self.transforms = transforms
         self.lookups = []
 
     def lookup_transform(self, target_frame, source_frame, time):
         self.lookups.append((target_frame, source_frame, time))
+        if self.transforms is not None:
+            try:
+                return self.transforms[(target_frame, source_frame)]
+            except KeyError:
+                raise TransformException(
+                    f"{target_frame}->{source_frame} not in the buffer"
+                ) from None
         if self.transform is None:
             raise TransformException("map->odom not in the buffer")
         return self.transform
+
+
+def _quat_from_matrix(rot):
+    """(x, y, z, w) of a rotation matrix — Shepperd's w-branch, which is all
+    the test poses need (none of them is near a 180 deg turn)."""
+    w = math.sqrt(max(0.0, 1.0 + rot[0][0] + rot[1][1] + rot[2][2])) / 2.0
+    s = 4.0 * w
+    return (
+        (rot[2][1] - rot[1][2]) / s,
+        (rot[0][2] - rot[2][0]) / s,
+        (rot[1][0] - rot[0][1]) / s,
+        w,
+    )
 
 
 def _quat_for_yaw(yaw):
@@ -143,15 +177,18 @@ def subs(logger, node, repo, tf_buffer):
     return {sub.topic: sub for sub in node.subscriptions}
 
 
-def test_subscribes_to_the_relative_odom_and_motor_states_topics(subs):
-    # Relative names, so both inherit the robot_id namespace (CLAUDE.md).
-    assert set(subs) == {"odom", "motor_states"}
+def test_subscribes_to_the_relative_pose_and_motor_states_topics(subs):
+    # Relative names, so all three inherit the robot_id namespace (CLAUDE.md).
+    assert set(subs) == {"odom", "pointlio/lio_odom", "motor_states"}
     assert subs["odom"].msg_type is Odometry
+    # The mapping-mode pose feed: same type, different frames and different
+    # arithmetic (see the composition tests below).
+    assert subs["pointlio/lio_odom"].msg_type is Odometry
     assert subs["motor_states"].msg_type is MotorStates
 
 
-def test_qos_is_best_effort_keep_last_on_both_feeds(subs):
-    for topic in ("odom", "motor_states"):
+def test_qos_is_best_effort_keep_last_on_every_feed(subs):
+    for topic in ("odom", "pointlio/lio_odom", "motor_states"):
         qos = subs[topic].qos_profile
         # motor_states' publisher is SensorDataQoS: a reliable subscriber here
         # would not be QoS-compatible and would simply never receive a sample.
@@ -239,6 +276,147 @@ def test_pose_streaming_resumes_when_the_correction_appears(subs, repo, tf_buffe
     subs["odom"].callback(_odom(x=1.0, y=1.0))
 
     assert repo.get_pose().x == pytest.approx(1.0)
+
+
+# --- pose: the mapping run's lio_odom, composed through the lidar mount -------
+
+
+def _tf(x=0.0, y=0.0, z=0.0, quat=(0.0, 0.0, 0.0, 1.0)):
+    tf = TransformStamped()
+    tf.transform.translation.x = float(x)
+    tf.transform.translation.y = float(y)
+    tf.transform.translation.z = float(z)
+    tf.transform.rotation.x, tf.transform.rotation.y = quat[0], quat[1]
+    tf.transform.rotation.z, tf.transform.rotation.w = quat[2], quat[3]
+    return tf
+
+
+def _pitch_quat(pitch):
+    """Pure-y quaternion — the shape of the G23's tilted lidar mount."""
+    return (0.0, math.sin(pitch / 2.0), 0.0, math.cos(pitch / 2.0))
+
+
+def _lio_odom(x, y, z=0.0, quat=(0.0, 0.0, 0.0, 1.0), sec=100, nanosec=0):
+    msg = _odom(x=x, y=y, z=z, sec=sec, nanosec=nanosec)
+    msg.header.frame_id = "robot01/pointlio_odom"
+    msg.child_frame_id = "robot01/pointlio_body"
+    msg.pose.pose.orientation.x, msg.pose.pose.orientation.y = quat[0], quat[1]
+    msg.pose.pose.orientation.z, msg.pose.pose.orientation.w = quat[2], quat[3]
+    return msg
+
+
+MOUNT_PITCH = math.radians(12.0)
+MOUNT = {
+    # base_link -> lidar_top, the URDF mount: forward, up, and pitched down.
+    ("robot01/base_link", "robot01/lidar_top"): _tf(
+        x=0.2, z=0.4, quat=_pitch_quat(MOUNT_PITCH)
+    ),
+    # map -> pointlio_odom, which pgo broadcasts during a mapping run.
+    ("map", "robot01/pointlio_odom"): _tf(),
+}
+
+
+@pytest.fixture
+def mapping_tf():
+    """A mapping run's TF tree: pgo's map->odom plus bringup's mount."""
+    return _FakeTfBuffer(transforms=dict(MOUNT))
+
+
+@pytest.fixture
+def mapping_subs(logger, node, repo, mapping_tf):
+    init_telemetry_subscriber(
+        logger=logger, node=node, telemetry_repo=repo, tf_buffer=mapping_tf
+    )
+    return {sub.topic: sub for sub in node.subscriptions}
+
+
+def test_lio_pose_is_reported_at_base_link_not_at_the_lidar(mapping_subs, repo):
+    """The mount extrinsic is taken back out, all six degrees of it.
+
+    The robot stands at the map origin, so pointlio — whose body frame IS the
+    lidar — reports the mount itself: 0.2 m forward, 0.4 m up, pitched down 12
+    deg. Everything must come back out: (0, 0, 0) with zero heading. Feeding
+    the lidar pose through instead would draw the robot a fifth of a metre
+    ahead of itself and floating, which on a mapping run reads as drift.
+    """
+    mapping_subs["pointlio/lio_odom"].callback(
+        _lio_odom(x=0.2, y=0.0, z=0.4, quat=_pitch_quat(MOUNT_PITCH))
+    )
+
+    pose = repo.get_pose()
+    assert (pose.x, pose.y, pose.z) == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+    assert pose.yaw_deg == pytest.approx(0.0, abs=1e-9)
+
+
+def test_lio_yaw_survives_the_tilt(mapping_subs, repo):
+    """Heading comes out of the composed rotation, not out of added yaws.
+
+    The robot has turned 90 deg on the spot, so the lidar sits 0.2 m along
+    map's +y. Composing the tilt as a yaw — the planar shortcut the odom path
+    is allowed — would leave the pitch smeared into the heading here; the 3x3
+    composition gives exactly 90.
+    """
+    turn = math.pi / 2.0
+    # map_T_lidar for a robot at the origin yawed 90 deg: the mount rotated
+    # onto +y, and the mount's pitch applied after that yaw.
+    yaw_q = _quat_for_yaw(turn)
+    rot = quat_to_rotation_matrix(*yaw_q) @ quat_to_rotation_matrix(
+        *_pitch_quat(MOUNT_PITCH)
+    )
+    quat = _quat_from_matrix(rot)
+
+    mapping_subs["pointlio/lio_odom"].callback(
+        _lio_odom(x=0.0, y=0.2, z=0.4, quat=quat)
+    )
+
+    pose = repo.get_pose()
+    assert (pose.x, pose.y, pose.z) == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+    assert pose.yaw_deg == pytest.approx(90.0)
+
+
+def test_lio_pose_asks_for_both_halves_of_the_split_tree(mapping_subs, mapping_tf):
+    mapping_subs["pointlio/lio_odom"].callback(_lio_odom(x=0.0, y=0.0))
+
+    # The namespace prefix is read off the body frame, never configured — an
+    # upstream rename of the LIO frames must not need an edit in the backend.
+    assert mapping_tf.lookups == [
+        ("map", "robot01/pointlio_odom", rclpy.time.Time()),
+        ("robot01/base_link", "robot01/lidar_top", rclpy.time.Time()),
+    ]
+
+
+def test_a_missing_mapping_transform_drops_the_sample_without_raising(
+    mapping_subs, repo, mapping_tf
+):
+    # pgo has not broadcast map->pointlio_odom yet (it publishes nothing until
+    # the builder reaches MAPPING). Same rule as the odom path: drop, do not
+    # raise into the executor at 20 Hz.
+    del mapping_tf.transforms[("map", "robot01/pointlio_odom")]
+
+    mapping_subs["pointlio/lio_odom"].callback(_lio_odom(x=1.0, y=1.0))
+
+    assert repo.get_pose() is None
+
+
+def test_a_live_odom_feed_silences_the_lio_fallback(mapping_subs, repo, mapping_tf):
+    """In AUTO both topics publish; lio_bridge's is the one that counts.
+
+    The stack navigates by the odom feed, so a console drawing the LIO front
+    end's raw solution would be showing a second opinion of where the robot is
+    — most visibly right after a relocalize, when the two disagree by whatever
+    the correction just absorbed.
+    """
+    mapping_tf.transforms[("map", "robot01/odom")] = _tf(x=5.0)
+    mapping_subs["odom"].callback(_odom(x=0.0, y=0.0))
+    assert repo.get_pose().x == pytest.approx(5.0)
+
+    mapping_subs["pointlio/lio_odom"].callback(_lio_odom(x=0.2, y=0.0, z=0.4))
+
+    # Unchanged, and the lookup was never even attempted.
+    assert repo.get_pose().x == pytest.approx(5.0)
+    assert ("map", "robot01/pointlio_odom") not in [
+        (target, source) for target, source, _ in mapping_tf.lookups
+    ]
 
 
 # --- joints: motor_states reduced to {joint name: position} -------------------

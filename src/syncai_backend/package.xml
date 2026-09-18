@@ -31,6 +31,16 @@
     a runtime import.
   -->
   <exec_depend>interface</exec_depend>
+  <!--
+    `ros2 bag record`, which the recording gateway spawns as a child process.
+    It is already here transitively — ros-humble-ros-base depends on
+    ros-humble-rosbag2 — so nothing installs because of this line; it is
+    declared because a package that shells out to a command should say which
+    package owns it, and because an image built on ros-core rather than
+    ros-base would otherwise fail at the first POST /api/v1/recordings instead
+    of at rosdep time.
+  -->
+  <exec_depend>ros2bag</exec_depend>
 
   <!--
     Web stack (FastAPI + uvicorn) is installed via pip / requirements.txt, not

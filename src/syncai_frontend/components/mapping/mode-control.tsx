@@ -24,9 +24,11 @@ const MODES: readonly { value: SwitchableMode; label: string }[] = [
  * has no link at all — the caption owns saying that, so the dead status strip
  * during a switch reads as the described behaviour instead of a fault.
  *
- * Selection goes through `onSelect` rather than straight to the hook: the page
- * owns the one rule that may stop a switch (leaving MANUAL with an unsaved
- * map) and this control has no way to know whether the run was saved.
+ * Selection goes through `onSelect` rather than straight to the hook, and no
+ * press here commands anything on its own: the page confirms every switch in an
+ * alert dialog first, and it is the only place that knows how loud that dialog
+ * has to be (leaving MANUAL with an unsaved map is a different question from
+ * the same switch with the map already on disk).
  */
 export function ModeControl({
   control,

@@ -364,7 +364,8 @@ temporal/     (worker, workflows, activities)
   `POST /api/v1/robot/mode` → `sys_manager` `switch_mode`, initial pose, motion
   key, policy mode), `network` (wifi scan/connect → `sys_manager`), `map`
   (catalogue, save, rename, grid convert, vertices, image/thumbnail,
-  pointcloud), `tts`
+  pointcloud), `recording` (`/api/v1/recordings` — `ros2 bag record` as a
+  supervised child, one at a time; see below), `tts`
   (`voices` / `synthesize` / `speak`), and the WebSockets `telemetry`,
   `pointcloud` (live + mapping map cloud) and `teleop`.
 - `RobotWorkflow` (Temporal) runs a task's steps in order, dispatching by
@@ -526,6 +527,20 @@ temporal/     (worker, workflows, activities)
   active map never has a window with no file — which is why a failed
   re-conversion leaves a loadable map and `grid_status: failed` at the same
   time.
+- **Bag recording is a subprocess, and the child deliberately shares this
+  process's group.** `gateways/recording` spawns `ros2 bag record` (stdout
+  inherited, never a pipe nobody drains) and `repositories/recording` is the
+  `record/` catalogue, in `MapCatalogRepo`'s shape. Given its own session the
+  recorder would outlive a `switch_mode` — which tears down the byobu session
+  the backend is a pane of — and be unstoppable through any route, since the
+  only handle on it is a slot in memory; sharing the group means the teardown
+  takes it too and the half-written directory reports `interrupted`, derived
+  the way a map's is. Stopping walks SIGINT → SIGTERM → SIGKILL, and only the
+  first lets rosbag2 write `metadata.yaml`; without it the bag needs
+  `ros2 bag reindex`. Relative topics in the request are expanded under
+  `robot_id`, so a request body is fleet-portable, and nothing checks that a
+  topic exists — the recorder waits for one, which is what lets it be armed
+  before bringup and also what makes a typo a silent empty bag.
 - `helpers/traversable.py` is the only module that needs open3d, and **nothing
   imports it at module scope** — `_start_grid_conversion` imports it inside the
   conversion thread's `try`. Keep it that way, and keep `pcd_to_gridmap.py`
@@ -548,14 +563,18 @@ Next.js 16 (dev server on port 3001), shadcn-style components on
 `@base-ui/react`, **raw three.js** for the 3D point-cloud view (no
 react-three-fiber). Routes: `/` (dashboard: point cloud + telemetry rail, goal /
 initial-pose / posture / manual joystick controls), `/mapping` (mode switch,
-save map, start a new map — the page owns the unsaved-run rule and drives one
-confirm dialog from it for both destructive acts, and re-arms that rule after a
-reset by hand, since `reported` never changes across one), `/maps` (map library,
+save map, start a new map — the page confirms every one of those in one alert
+dialog, including a plain mode switch either way, and owns the unsaved-run rule
+that escalates the copy when leaving MANUAL would lose the map; it re-arms that
+rule after a reset by hand, since `reported` never changes across one), `/maps` (map library,
 per-card Rebuild-grid dropdown, inline Rename, and a Switch corner tile — Rename
 is greyed for the active map, which the backend refuses too, and Switch is the
 control that un-greys it) and
-`/maps/[name]/edit` (gridmap editor), `/tasks` (templates, dispatch, schedules),
-`/settings` (wifi via the backend's network router, appearance),
+`/maps/[name]/edit` (gridmap editor; its header title is a second rename surface — double-click or F2, Enter to save — refused while the grid is dirty, because the rename navigates and the reload drops the buffer), `/recordings` (bag recording: start /
+stop / list / delete, with the recorder panel's face driven by
+`GET /api/v1/recordings/active` rather than by a local started-it flag, so a
+recording begun from a shell shows correctly), `/tasks` (templates, dispatch,
+schedules), `/settings` (wifi via the backend's network router, appearance),
 `/model-preview`. There is **no camera component** — nothing in the frontend
 speaks WebRTC/WHEP yet; the RTSP stream the robot publishes is viewed through
 MediaMTX's own WebRTC page for now. The backend base URLs come only from

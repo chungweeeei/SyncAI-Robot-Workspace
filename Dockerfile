@@ -209,6 +209,15 @@ RUN apt-get update && apt-get install -y \
 #   - gstreamer1.0-tools: gst-inspect-1.0 / gst-launch-1.0, without which there
 #                         is no way to tell a missing element from a missing
 #                         command when debugging a pipeline in here
+#   - gstreamer1.0-alsa : alsasink, for the WebRTC worker's WHIP branch (the
+#                         operator's microphone out of the USB speaker). NOT in
+#                         plugins-base despite living in that source package,
+#                         and its absence fails the pipeline string at parse
+#                         time rather than at playback. pulsesink exists in
+#                         this image and is a trap: there is no PulseAudio
+#                         daemon here, and the speaker is reached as
+#                         plughw:CARD=CD002AUDIO, the same by-name device the
+#                         TTS gateway resolves to.
 #
 # NOT included, and not installable from apt: the Tegra elements (nvjpegdec,
 # nvvidconv, nvv4l2h264enc) live in nvidia-l4t-gstreamer and there is no L4T apt
@@ -223,6 +232,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-rtsp \
     gstreamer1.0-tools \
+    gstreamer1.0-alsa \
     && rm -rf /var/lib/apt/lists/*
 
 # aplay, for the TTS /speak route (syncai_backend's TtsGateway shells out to it

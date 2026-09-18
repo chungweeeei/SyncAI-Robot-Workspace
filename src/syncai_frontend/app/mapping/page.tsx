@@ -1,9 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { Grid2x2Icon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  Grid2x2Icon,
+  MapIcon,
+  NavigationIcon,
+  RotateCcwIcon,
+  Trash2Icon,
+} from "lucide-react";
 
-import { Segmented, overlayPanel } from "@/components/console/instrument";
+import { overlayPanel } from "@/components/console/instrument";
 import { ManualControl } from "@/components/dashboard/manual-control";
 import { PointCloudCanvas } from "@/components/dashboard/pointcloud-canvas";
 import { ModeControl } from "@/components/mapping/mode-control";
@@ -41,18 +48,83 @@ const MAP_STATUS_LABEL: Record<StreamStatus, string> = {
   error: "Map error",
 };
 
-const CAMERA_OPTIONS = [
-  { value: "move" as const, label: "Move" },
-  { value: "focus" as const, label: "Focus" },
-];
+/*
+ * There is no camera-mode control here, unlike the dashboard's viewport
+ * (components/dashboard/pointcloud-view.tsx, which keeps both). The canvas runs
+ * on its `cameraMode` default, Move, and Focus — the mode that keeps the camera
+ * locked on the robot — is not offered on this screen for now.
+ *
+ * Mapping is the one screen where the view is not about where the robot is. The
+ * operator is driving it around to grow a cloud, and what they are reading is
+ * the shape of the room that has been covered so far and the hole that has not;
+ * a camera that rides the robot takes exactly that judgement away, and the run
+ * is long enough that it is the judgement the whole screen is for. The
+ * top-down button beside where this used to sit is the framing that question
+ * actually wants.
+ */
 
-// The two ways to lose the run, and the only part of their copy that does not
-// depend on whether it was saved. Out here so the dialog's JSX carries one
-// conditional instead of one per line of text.
+/**
+ * What the operator is about to do, once they have said yes.
+ *
+ * `unsaved` is frozen when the dialog opens rather than read at render: it is
+ * the reason the dialog says what it says, and a save landing underneath an
+ * open dialog must not rewrite the question being asked.
+ */
+type Confirming =
+  | { kind: "reset" }
+  | { kind: "switch"; to: SwitchableMode; unsaved: boolean };
+
+/**
+ * The four questions this page can ask, keyed by `confirmKey` below.
+ *
+ * `leave` and `reset` are the two ways to lose the run; `MANUAL` and `AUTO` are
+ * the plain mode switches, which destroy nothing but do tear the whole stack
+ * down for ~30 s. Hence `destructive`: the red is spent only where something is
+ * actually unrecoverable, so it keeps meaning that (same rule as the map
+ * library's Switch-vs-Delete dialogs).
+ */
 const CONFIRM_COPY = {
-  leave: { title: "Leave mapping without saving?", confirm: "Discard and switch" },
-  reset: { title: "Start a new map?", confirm: "Discard and start over" },
+  leave: {
+    title: "Leave mapping without saving?",
+    // `body: null` means the dialog writes its own line — the reset copy is the
+    // one that depends on state (`savedRun`).
+    body: "This run's map is only in the robot's memory. Switching discards it for good.",
+    icon: Trash2Icon,
+    confirm: "Discard and switch",
+    cancel: "Keep mapping",
+    destructive: true,
+  },
+  reset: {
+    title: "Start a new map?",
+    body: null,
+    icon: RotateCcwIcon,
+    confirm: "Discard and start over",
+    cancel: "Keep mapping",
+    destructive: true,
+  },
+  MANUAL: {
+    title: "Switch to Mapping mode?",
+    body: "The stack restarts: anything running now stops and the console drops its link for ~30 s.",
+    icon: MapIcon,
+    confirm: "Switch to Mapping",
+    cancel: "Cancel",
+    destructive: false,
+  },
+  AUTO: {
+    title: "Switch to Nav mode?",
+    body: "The stack restarts on the active map: anything running now stops and the console drops its link for ~30 s.",
+    icon: NavigationIcon,
+    confirm: "Switch to Nav",
+    cancel: "Cancel",
+    destructive: false,
+  },
 } as const;
+
+/** Which copy a pending confirmation reads. */
+function confirmKey(confirming: Confirming): keyof typeof CONFIRM_COPY {
+  if (confirming.kind === "reset") return "reset";
+  return confirming.unsaved ? "leave" : confirming.to;
+}
 
 /** One stream-health row: dot in the three link tones, then the label. */
 function StreamPill({
@@ -98,10 +170,14 @@ function StreamPill({
  * robot model needs the telemetry pose, which mapping's TF chain may not
  * provide; the clouds are the primary instrument either way.
  *
- * The one rule this page owns: losing the run in the robot's memory is always
- * confirmed here, because pgo holds it in RAM and nothing downstream will stop
- * you. Two ways to lose it, one dialog — leaving MANUAL, and starting a new map
- * over the top of it. `savedRun` is the rule's input, and it re-arms on two
+ * The one rule this page owns: **every act that rebuilds or discards something
+ * goes through one confirm dialog**, because nothing downstream will stop you —
+ * sys_manager takes `switch_mode` at its word and pgo holds the run in RAM. So
+ * both mode segments confirm, not just the one that loses a map: a switch in
+ * either direction tears the stack down for ~30 s and stops whatever the robot
+ * was doing, which is not something to hand to a stray tap on a touchscreen.
+ * What differs is how loud the dialog is — `savedRun` is what escalates leaving
+ * MANUAL from "the stack restarts" to "the map is gone". It re-arms on two
  * events that look nothing alike: a new MANUAL run, tracked by watching
  * `reported` change (the adjust-during-render pattern, same as
  * VertexMoveDialog's `shown`), and a successful reset, which has to say so
@@ -114,15 +190,12 @@ export default function MappingPage() {
   const [mapCloudStatus, setMapCloudStatus] =
     React.useState<StreamStatus>("connecting");
   const [showMapSoFar, setShowMapSoFar] = React.useState(true);
-  const [cameraMode, setCameraMode] = React.useState<"move" | "focus">("move");
   const [topDownNonce, setTopDownNonce] = React.useState(0);
   const [savedRun, setSavedRun] = React.useState(false);
-  // One dialog, two questions. Both ask "you are about to lose this run" and
-  // differ only in what happens next, so a second AlertDialog block would be
-  // two copies of the same copy, drifting apart at the first reword.
-  const [confirming, setConfirming] = React.useState<null | "leave" | "reset">(
-    null,
-  );
+  // One dialog, every question. They all ask "you are about to interrupt the
+  // robot" and differ only in what happens next, so a second AlertDialog block
+  // would be a copy of the same copy, drifting apart at the first reword.
+  const [confirming, setConfirming] = React.useState<Confirming | null>(null);
   const [resetBusy, setResetBusy] = React.useState(false);
   const [resetError, setResetError] = React.useState<string | null>(null);
   const [resetDone, setResetDone] = React.useState<string | null>(null);
@@ -144,18 +217,23 @@ export default function MappingPage() {
 
   const mapping = reported === "MANUAL" && !pending;
 
+  // No segment commands a switch directly — every one of them opens the dialog
+  // and the operator's second tap is what reaches sys_manager. The one press
+  // that still does nothing is the mode already reported: re-selecting it is
+  // not a request (sys_manager refuses to rebuild the live mode anyway), so
+  // asking about it would be a dialog whose yes does nothing.
   const selectMode = React.useCallback(
     (mode: SwitchableMode) => {
       if (mode === reported && !pending) return;
-      if (mode === "AUTO" && reported === "MANUAL" && !savedRun) {
-        // The guard, not the switch: sys_manager would happily rebuild AUTO
-        // over an unsaved run and the map would be unrecoverable.
-        setConfirming("leave");
-        return;
-      }
-      void switchTo(mode);
+      setConfirming({
+        kind: "switch",
+        to: mode,
+        // Only leaving MANUAL can lose a run — and only towards AUTO, since
+        // re-selecting MANUAL to cancel a pending switch keeps the run alive.
+        unsaved: mode === "AUTO" && reported === "MANUAL" && !savedRun,
+      });
     },
-    [reported, pending, savedRun, switchTo],
+    [reported, pending, savedRun],
   );
 
   const runReset = React.useCallback(async () => {
@@ -181,20 +259,29 @@ export default function MappingPage() {
 
   // Confirmed even when the run IS saved: a misclick costs the run either way,
   // and "it was saved" says nothing about the minutes driven since the save.
-  const requestReset = React.useCallback(() => setConfirming("reset"), []);
+  const requestReset = React.useCallback(
+    () => setConfirming({ kind: "reset" }),
+    [],
+  );
 
-  // Falls back to the leave copy while `confirming` is null, which is only the
-  // frame in which the dialog is closing — reading it then would otherwise mean
-  // guarding every line of copy for a state the operator never sees.
-  const confirmCopy = CONFIRM_COPY[confirming ?? "leave"];
+  // The last question asked, held past the dialog closing so its copy does not
+  // change under the close animation (adjust-during-render, as above). Reading
+  // `confirming` directly would mean guarding every line of text for the null
+  // frame the operator never sees.
+  const [shown, setShown] = React.useState<Confirming>({ kind: "reset" });
+  if (confirming && confirming !== shown) setShown(confirming);
+  const confirmCopy = CONFIRM_COPY[confirmKey(shown)];
+  const ConfirmIcon = confirmCopy.icon;
 
   const confirmDialog = React.useCallback(() => {
-    if (confirming === "reset") {
+    if (!confirming) return;
+    if (confirming.kind === "reset") {
       void runReset();
       return;
     }
+    const target = confirming.to;
     setConfirming(null);
-    void switchTo("AUTO");
+    void switchTo(target);
   }, [confirming, runReset, switchTo]);
 
   return (
@@ -206,7 +293,6 @@ export default function MappingPage() {
         <PointCloudCanvas
           pose={pose}
           joints={joints}
-          cameraMode={cameraMode}
           topDownNonce={topDownNonce}
           onStatus={setCloudStatus}
           mapCloudStream={showMapSoFar}
@@ -234,12 +320,6 @@ export default function MappingPage() {
         </div>
 
         <div className="absolute bottom-3 left-3 flex items-center gap-2">
-          <Segmented
-            value={cameraMode}
-            options={CAMERA_OPTIONS}
-            onChange={setCameraMode}
-            className={overlayPanel}
-          />
           <button
             type="button"
             onClick={() => setTopDownNonce((n) => n + 1)}
@@ -307,30 +387,33 @@ export default function MappingPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>{confirmCopy.title}</AlertDialogTitle>
             <AlertDialogDescription>
-              {confirming === "reset" ? (
+              {confirmCopy.body ?? (
                 <>
                   {savedRun
                     ? "Anything driven since the last save is discarded."
-                    : "This run's map is discarded — it exists only in the robot's memory."}{" "}
-                  Keep the robot still while the lidar re-levels itself.
-                </>
-              ) : (
-                <>
-                  This run&apos;s map exists only in the robot&apos;s memory.
-                  Switching to Nav discards it — there is no way to get it back.
+                    : "This run's map is discarded for good."}{" "}
+                  Keep the robot still while the lidar re-levels.
                 </>
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setConfirming(null)}
-            >
-              Keep mapping
+            {/* Icon and label both, the house pattern (see the map library's
+              * delete and switch dialogs): the glyph tells the two buttons
+              * apart at a glance, the word is what makes the committing one
+              * unmistakable. The confirm glyph is the one the action already
+              * wears elsewhere on this page — RotateCcw is ResetRunControl's
+              * own button — so the dialog reads as that control continued. */}
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(null)}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              {confirmCopy.cancel}
             </Button>
-            <Button variant="destructive" size="sm" onClick={confirmDialog}>
+            <Button
+              variant={confirmCopy.destructive ? "destructive" : "default"}
+              size="sm"
+              onClick={confirmDialog}
+            >
+              <ConfirmIcon data-icon="inline-start" />
               {confirmCopy.confirm}
             </Button>
           </AlertDialogFooter>

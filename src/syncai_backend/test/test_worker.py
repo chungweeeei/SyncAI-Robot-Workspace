@@ -122,7 +122,9 @@ def test_worker_run_dying_marks_dead():
     # the handle instead of vanishing with the thread.
     _StubWorker.run_error = RuntimeError("poller exploded")
 
-    handle = start_temporal_worker(logger, robot_id="robot01", robot_gw=MagicMock())
+    handle = start_temporal_worker(
+        logger, robot_id="robot01", robot_gw=MagicMock(), tts_gw=MagicMock()
+    )
     handle.thread.join(timeout=10)
 
     assert not handle.thread.is_alive()
@@ -151,6 +153,10 @@ def test_health_projects_worker_state():
         telemetry_repo=MagicMock(),
         task_template_repo=MagicMock(),
         worker_handle=handle,
+        tts_gw=MagicMock(),
+        webrtc_gw=MagicMock(),
+        recording_gw=MagicMock(),
+        recording_catalog_repo=MagicMock(),
     )
     client = TestClient(app)
 

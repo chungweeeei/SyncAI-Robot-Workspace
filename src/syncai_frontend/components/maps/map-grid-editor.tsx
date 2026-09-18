@@ -8,6 +8,7 @@ import {
   type EditMode,
   type EditTool,
   type VertexGesture,
+  type VertexTool,
 } from "@/components/maps/grid-canvas";
 import { ManualControl } from "@/components/dashboard/manual-control";
 import { GridStatus } from "@/components/maps/grid-status";
@@ -51,6 +52,25 @@ const DEFAULT_BRUSH = 7;
  * make it the only way.
  */
 const DEFAULT_TOOL: EditTool = "pan";
+
+/**
+ * Vertex mode opens in Pan too, for the same reason and one more.
+ *
+ * The same reason: the first thing an operator does on arriving is drag the map
+ * to the corner they came for, and until this existed that drag placed a vertex
+ * — a whole staged draft, panel and all — because vertex mode had no unarmed
+ * state at all. Every press on bare map was a placement.
+ *
+ * The one more: unlike a stray brush stroke, a stray vertex is not undoable.
+ * The vertex layer writes through to the backend and has no history (see
+ * hooks/use-map-vertices.ts), so the only reason the old behaviour was
+ * survivable is that a draft still needs a name typed before it becomes a row.
+ * That is a confirmation step, not a safe default.
+ *
+ * Placing therefore costs one click on the Tool row, and Escape gives the map
+ * back — the same trade grid mode makes for its brush.
+ */
+const DEFAULT_VERTEX_TOOL: VertexTool = "pan";
 
 /**
  * Loads the map and shows the guard states; EditorSurface does the editing.
@@ -127,6 +147,7 @@ function EditorSurface({
 }) {
   const [mode, setMode] = React.useState<EditMode>("grid");
   const [tool, setTool] = React.useState<EditTool>(DEFAULT_TOOL);
+  const [vertexTool, setVertexTool] = React.useState<VertexTool>(DEFAULT_VERTEX_TOOL);
   // Free by default: erasing phantom obstacles is the reason this screen exists.
   const [value, setValue] = React.useState<GridValue>(FREE);
   const [brush, setBrush] = React.useState<number>(DEFAULT_BRUSH);
@@ -165,7 +186,18 @@ function EditorSurface({
    */
   const [vertexType, setVertexType] = React.useState<VertexType>(DEFAULT_VERTEX_TYPE);
   const [draft, setDraft] = React.useState<PlanarPose | null>(null);
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  /**
+   * Every highlighted vertex, not just the one the form is editing.
+   *
+   * A list rather than a nullable id because the Select tool's band produces
+   * sets, and rather than a Set because it is handed to GridCanvas, which is
+   * memoized — React state keeps its identity between changes, a Set rebuilt in
+   * a render would not. One entry is the ordinary case and behaves exactly as
+   * the old single selection did; the panel only opens its editing form at
+   * exactly one, because none of what that form does (rename, retype, re-aim)
+   * has a sensible meaning spread across several.
+   */
+  const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   /**
    * A re-aim of the selected vertex, awaiting Save.
    *
@@ -214,17 +246,24 @@ function EditorSurface({
     clearError: clearVertexError,
   } = vertices;
 
+  const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
   const selected = vertexList.find((vertex) => vertex.id === selectedId) ?? null;
 
   const clearVertexEdit = React.useCallback(() => {
     setDraft(null);
-    setSelectedId(null);
+    setSelectedIds([]);
     setStagedPose(null);
   }, []);
 
   const changeMode = React.useCallback(
     (next: EditMode) => {
       setMode(next);
+      // Both directions land unarmed. Arriving in vertex mode still holding
+      // Place from last time means the drag that was meant as "show me the other
+      // end of the corridor" stages a vertex instead — which is the whole thing
+      // DEFAULT_VERTEX_TOOL exists to stop, and a mode toggle is exactly when it
+      // would come back.
+      setVertexTool(DEFAULT_VERTEX_TOOL);
       // Back to grid mode with a draft still staged would leave a dashed marker
       // on the canvas and no panel to commit or dismiss it.
       if (next === "grid") clearVertexEdit();
@@ -241,10 +280,47 @@ function EditorSurface({
   const selectVertex = React.useCallback(
     (id: string | null) => {
       clearVertexEdit();
-      setSelectedId(id);
+      setSelectedIds(id ? [id] : []);
       clearVertexError();
     },
     [clearVertexEdit, clearVertexError],
+  );
+
+  /**
+   * Shift-click on a marker: add it, or drop it if it is already in.
+   *
+   * The half of multi-select a rectangle cannot do — three stops scattered down
+   * a corridor have no band that catches them and nothing else. Toggling down to
+   * exactly one is not a special case: the panel simply opens its editing form
+   * again, because that is what one selected vertex means everywhere else.
+   */
+  const toggleVertex = React.useCallback(
+    (id: string) => {
+      setDraft(null);
+      setStagedPose(null);
+      clearVertexError();
+      setSelectedIds((current) =>
+        current.includes(id)
+          ? current.filter((other) => other !== id)
+          : [...current, id],
+      );
+    },
+    [clearVertexError],
+  );
+
+  /** A finished band. `additive` is Shift: union rather than replace. */
+  const selectMany = React.useCallback(
+    (ids: string[], additive: boolean) => {
+      setDraft(null);
+      setStagedPose(null);
+      clearVertexError();
+      setSelectedIds((current) =>
+        additive
+          ? [...current, ...ids.filter((id) => !current.includes(id))]
+          : ids,
+      );
+    },
+    [clearVertexError],
   );
 
   const handleVertexGesture = React.useCallback(
@@ -259,7 +335,7 @@ function EditorSurface({
         return;
       }
 
-      setSelectedId(null);
+      setSelectedIds([]);
       setStagedPose(null);
       setDraft(pose);
     },
@@ -277,7 +353,7 @@ function EditorSurface({
    */
   const placeAtRobot = React.useCallback(() => {
     if (!robotPose) return;
-    setSelectedId(null);
+    setSelectedIds([]);
     setStagedPose(null);
     setDraft(robotPose);
     // A fresh object every press, because identity is what triggers the canvas:
@@ -304,10 +380,28 @@ function EditorSurface({
     [selectedId, updateVertex],
   );
 
+  /**
+   * Delete everything selected — one vertex from the form, or a whole band.
+   *
+   * One request per id, run in series. Not caution about the LAN: useMapVertices
+   * has a single `busy` flag and a single `error` slot for the whole hook, so
+   * concurrent writes would race the flag and leave the panel showing whichever
+   * failure happened to land last. In series, the first failure stops the run
+   * with the rest still selected, which is both an honest report and the state a
+   * retry wants. There is no batch endpoint to use instead — only create takes a
+   * list; PUT and DELETE are per id (see lib/api/vertex.ts).
+   */
   const deleteSelected = React.useCallback(async () => {
-    if (!selectedId) return;
-    if (await removeVertex(selectedId)) clearVertexEdit();
-  }, [selectedId, removeVertex, clearVertexEdit]);
+    for (let index = 0; index < selectedIds.length; index += 1) {
+      if (!(await removeVertex(selectedIds[index]))) {
+        // The failed one stays selected with everything after it, so the count in
+        // the panel is what is left to do rather than what was asked for.
+        setSelectedIds(selectedIds.slice(index));
+        return;
+      }
+    }
+    clearVertexEdit();
+  }, [selectedIds, removeVertex, clearVertexEdit]);
 
   React.useEffect(() => {
     onDirtyChange?.(dirty);
@@ -398,6 +492,28 @@ function EditorSurface({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      /*
+       * Escape is deliberately above the typing guard, unlike every other
+       * shortcut here.
+       *
+       * A staged draft autofocuses VertexPanel's name field, so an Escape that
+       * respected the guard would be dead in precisely the state an operator
+       * presses it in — "I did not mean to place that". Nothing in this editor's
+       * fields wants Escape for itself, so there is nothing to swallow.
+       *
+       * It does both halves of "put the mouse back": it drops whatever is staged
+       * and disarms both tool axes. One press, not two, because the operator
+       * pressing it wants the map back and does not care which of the two states
+       * is the one holding it.
+       */
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearVertexEdit();
+        setTool(DEFAULT_TOOL);
+        setVertexTool(DEFAULT_VERTEX_TOOL);
+        return;
+      }
+
       // VertexPanel's name field is the case this was written in anticipation of:
       // `0` and Space are single-key shortcuts, and an editor's shortcuts are
       // exactly what silently eats typing. Ctrl+Z falls through to the field too,
@@ -446,7 +562,7 @@ function EditorSurface({
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [undo, redo, fit]);
+  }, [undo, redo, fit, clearVertexEdit]);
 
   /**
    * Covers reload and tab close only. The App Router has no navigation blocker, so
@@ -466,6 +582,7 @@ function EditorSurface({
         session={session}
         mode={mode}
         tool={tool}
+        vertexTool={vertexTool}
         value={value}
         brush={brush}
         spacePan={spacePan}
@@ -477,8 +594,10 @@ function EditorSurface({
         vertices={vertexList}
         robotPose={robotPose}
         draft={draft}
-        selectedId={selectedId}
+        selectedIds={selectedIds}
         onVertexPick={selectVertex}
+        onVertexToggle={toggleVertex}
+        onMarquee={selectMany}
         onVertexGesture={handleVertexGesture}
       />
 
@@ -491,6 +610,8 @@ function EditorSurface({
         onModeChange={changeMode}
         tool={tool}
         onToolChange={setTool}
+        vertexTool={vertexTool}
+        onVertexToolChange={setVertexTool}
         value={value}
         onValueChange={setValue}
         brush={brush}
@@ -508,7 +629,7 @@ function EditorSurface({
         *
         * Mounted only in vertex mode, because unmounting discards nothing that the
         * mode switch was not already discarding — changeMode("grid") clears draft
-        * / selectedId / stagedPose, and VertexForm is keyed on "draft"
+        * / selectedIds / stagedPose, and VertexForm is keyed on "draft"
         * or selected.id, so its local name/type state is already gone by then. The
         * one thing worth keeping across the toggle, `vertexType`, lives up here
         * for exactly that reason. Left mounted it would cover 240 px of map in the
@@ -524,14 +645,17 @@ function EditorSurface({
           onTypeChange={setVertexType}
           draft={draft}
           selected={selected}
+          selectedIds={selectedIds}
           stagedPose={stagedPose}
           robotPose={robotPose}
           robotPoseReason={robotPoseReason}
           onUseRobotPose={placeAtRobot}
           onSelect={selectVertex}
           // A draft and a selection are mutually exclusive by construction, so
-          // clearing the whole vertex edit *is* "drop the draft".
+          // clearing the whole vertex edit *is* "drop the draft", and the same
+          // call is what the band selection's Clear does.
           onCancelDraft={clearVertexEdit}
+          onClearSelection={clearVertexEdit}
           onCreate={createFromDraft}
           onSave={saveSelected}
           onDelete={deleteSelected}

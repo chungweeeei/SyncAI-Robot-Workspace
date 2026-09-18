@@ -18,11 +18,14 @@ from syncai_backend.repositories.task.task_template import init_task_template_re
 from syncai_backend.repositories.map.catalog import init_map_catalog_repo
 from syncai_backend.repositories.pointcloud.pointcloud import init_pointcloud_repo
 from syncai_backend.repositories.telemetry.telemetry import init_telemetry_repo
+from syncai_backend.repositories.recording.catalog import init_recording_catalog_repo
 
 from syncai_backend.gateways.robot.robot import init_robot_gateway
 from syncai_backend.gateways.map.map import init_map_gateway
 from syncai_backend.gateways.workflow.workflow import init_workflow_gateway
 from syncai_backend.gateways.tts.tts import init_tts_gateway
+from syncai_backend.gateways.webrtc.webrtc import init_webrtc_gateway
+from syncai_backend.gateways.recording.recording import init_recording_gateway
 
 from syncai_backend.subscribers.robot_state_subscriber import (
     init_robot_state_subscriber,
@@ -83,6 +86,9 @@ class SyncAIBackend(Node):
         # (the high-rate channel the 3D viewer uses instead of the frozen,
         # whole-second-resolution GET /api/v1/robot/state contract).
         telemetry_repo = init_telemetry_repo(logger=logger)
+        # The bags on disk, as opposed to the one being written. Filesystem
+        # only; no engine, no ROS — the map catalogue's shape.
+        recording_catalog_repo = init_recording_catalog_repo(logger=logger)
 
         robot_gw = init_robot_gateway(logger=logger, node=self)
         # LoadMap client, so an edited gridmap can be pushed into the running
@@ -99,6 +105,33 @@ class SyncAIBackend(Node):
         # its internal lock is what keeps a scheduled SPEAK step and a manual
         # POST /api/v1/tts/speak from talking over each other.
         tts_gw = init_tts_gateway(logger=logger)
+        # WHEP signalling for the camera stream. No node handle, same as the
+        # TTS gateway: nothing about it is ROS. One instance because two things
+        # need a single owner -- the worker's sync.Once InitWorker, and the
+        # single-viewer slot that lets a new WHEP request preempt a browser tab
+        # that died without sending DELETE.
+        #
+        # Construction loads nothing. The dlopen -- and with it the Go runtime
+        # and its signal handlers, into this rclpy process, with no dlclose to
+        # undo it -- happens on the first WHEP request, so a boot that never
+        # streams never pays for any of it.
+        webrtc_gw = init_webrtc_gateway(logger=logger)
+        # `ros2 bag record` as a supervised child. No node handle, for the same
+        # reason as the two gateways above: nothing in it is ROS from this
+        # process's side — the recorder runs its own node, out of process, so a
+        # bag of the 20 Hz lidar cloud never shares this executor with the
+        # telemetry and TF callbacks.
+        #
+        # robot_id rather than the node, though, and it is load-bearing: it is
+        # what expands a relative topic in the request (`livox/lidar`) into the
+        # namespaced one the recorder must subscribe to. The records_dir is
+        # taken off the repo so the two halves of the feature cannot end up
+        # pointed at different directories.
+        recording_gw = init_recording_gateway(
+            logger=logger,
+            robot_id=robot_id,
+            records_dir=recording_catalog_repo.records_dir,
+        )
 
         # One /tf + /tf_static subscription for the whole process, shared by the
         # two subscribers that need transforms. Held on self because this is the
@@ -143,6 +176,9 @@ class SyncAIBackend(Node):
             task_template_repo=task_template_repo,
             worker_handle=worker_handle,
             tts_gw=tts_gw,
+            webrtc_gw=webrtc_gw,
+            recording_gw=recording_gw,
+            recording_catalog_repo=recording_catalog_repo,
         )
 
 

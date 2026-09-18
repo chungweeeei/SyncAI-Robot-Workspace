@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  CircleDotIcon,
   CompassIcon,
   ListChecksIcon,
   MapIcon,
@@ -27,6 +28,11 @@ const navItems = [
   // workflow's own order: drive, build, then manage what was saved.
   { title: "Mapping", href: "/mapping", icon: CompassIcon },
   { title: "Maps", href: "/maps", icon: MapIcon },
+  // With Maps rather than next to Mapping: both are libraries of what the robot
+  // has kept, and the operator reaches for a bag the way they reach for a map —
+  // afterwards, by name. Its place in the workflow is upstream of both, but a
+  // rail is a list of screens, not a sequence.
+  { title: "Recordings", href: "/recordings", icon: CircleDotIcon },
   { title: "Tasks", href: "/tasks", icon: ListChecksIcon },
   { title: "Settings", href: "/settings", icon: SlidersHorizontalIcon },
 ];

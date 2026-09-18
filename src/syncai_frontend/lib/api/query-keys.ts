@@ -20,6 +20,20 @@ export const queryKeys = {
   /** GET /api/v1/schedules — Temporal's schedule list. */
   schedules: ["schedules"] as const,
   /**
+   * GET /api/v1/recordings — the bag catalogue. Shared by the list and by the
+   * recorder panel's "did the bag I just stopped come out playable" read, so
+   * stopping a recording updates both from one request.
+   */
+  recordings: ["recordings"] as const,
+  /**
+   * GET /api/v1/recordings/active — the live recorder, polled on its own.
+   *
+   * Deliberately NOT folded into `recordings`: it is the 1 Hz tick behind the
+   * elapsed readout, and the catalogue it would drag along walks every bag
+   * directory on the robot to answer.
+   */
+  activeRecording: ["active-recording"] as const,
+  /**
    * GET /api/v1/network/wifi/scan — a ~45 s nmcli rescan on the robot. Fetched
    * once per Settings visit and on an explicit Rescan only; see useWifiScan for
    * why it is never refetched on its own.

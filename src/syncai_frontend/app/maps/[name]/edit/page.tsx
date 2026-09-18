@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 
 import { MapGridEditor } from "@/components/maps/map-grid-editor";
+import { MapTitleRename } from "@/components/maps/map-title-rename";
 
 /**
  * The gridmap editor.
@@ -23,10 +24,12 @@ export default function MapEditPage() {
   const name = params.name;
 
   /**
-   * Mirrored out of the editor for one reason: the App Router has no navigation
+   * Mirrored out of the editor for two reasons. The App Router has no navigation
    * blocker, so `beforeunload` in the editor catches a reload or a tab close but
-   * cannot see a client-side navigation. The back button is the one in-app exit
-   * from this screen, so it has to ask.
+   * cannot see a client-side navigation, and the back button is the one in-app
+   * exit from this screen, so it has to ask. The title's rename needs the same
+   * bit for a related reason — it navigates, and what it navigates to reloads
+   * the grid; see MapTitleRename.
    */
   const [dirty, setDirty] = React.useState(false);
 
@@ -51,10 +54,7 @@ export default function MapEditPage() {
         >
           <ArrowLeftIcon className="size-3.5" aria-hidden />
         </button>
-        <div className="min-w-0">
-          <p className="instrument-label text-muted-foreground">Gridmap editor</p>
-          <h1 className="readout truncate text-[15px] font-medium">{name}</h1>
-        </div>
+        <MapTitleRename name={name} dirty={dirty} />
       </header>
 
       <div className="min-h-0 flex-1">

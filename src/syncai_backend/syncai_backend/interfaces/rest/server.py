@@ -23,6 +23,8 @@ from syncai_backend.interfaces.rest.routers.pointcloud import init_pointcloud_ro
 from syncai_backend.interfaces.rest.routers.telemetry import init_telemetry_router
 from syncai_backend.interfaces.rest.routers.teleop import init_teleop_router
 from syncai_backend.interfaces.rest.routers.tts import init_tts_router
+from syncai_backend.interfaces.rest.routers.webrtc import init_webrtc_router
+from syncai_backend.interfaces.rest.routers.recording import init_recording_router
 
 from syncai_backend.repositories.robot.robot import RobotRepo
 from syncai_backend.repositories.map.map import MapRepo
@@ -30,11 +32,14 @@ from syncai_backend.repositories.map.catalog import MapCatalogRepo
 from syncai_backend.repositories.pointcloud.pointcloud import PointCloudRepo
 from syncai_backend.repositories.telemetry.telemetry import TelemetryRepo
 from syncai_backend.repositories.task.task_template import TaskTemplateRepo
+from syncai_backend.repositories.recording.catalog import RecordingCatalogRepo
 
 from syncai_backend.gateways.workflow.workflow import WorkflowGateway
 from syncai_backend.gateways.robot.robot import RobotGateway
 from syncai_backend.gateways.map.map import MapGateway
 from syncai_backend.gateways.tts.tts import TtsGateway
+from syncai_backend.gateways.webrtc.webrtc import WebRtcGateway
+from syncai_backend.gateways.recording.recording import RecordingGateway
 
 from syncai_backend.temporal.worker import TemporalWorkerHandle
 
@@ -86,6 +91,9 @@ def init_rest_server(
     task_template_repo: TaskTemplateRepo,
     worker_handle: TemporalWorkerHandle,
     tts_gw: TtsGateway,
+    webrtc_gw: WebRtcGateway,
+    recording_gw: RecordingGateway,
+    recording_catalog_repo: RecordingCatalogRepo,
 ) -> FastAPI:
 
     description = """
@@ -103,6 +111,14 @@ def init_rest_server(
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["Content-Type", "Content-Length", "Authorization"],
+        # Location is not in the CORS-safelisted response header set, so
+        # without this the browser strips it from what JavaScript can see: the
+        # header is on the wire and visible in devtools, but
+        # response.headers.get("Location") returns null. A WHEP client then
+        # never learns its session URL and never sends DELETE, and the symptom
+        # is the worst kind -- video plays fine and teardown never works,
+        # leaking a camera session per page load.
+        expose_headers=["Location"],
     )
 
     register_exception_handlers(app=app)
@@ -196,6 +212,27 @@ def init_rest_server(
     # Speech out. A gateway like robot/map, but its downstream is the kokoro
     # inference session plus the speaker rather than a ROS service.
     app.include_router(init_tts_router(logger=logger, tts_gw=tts_gw))
+    # Video out, as WHEP. The backend owns the signalling only -- SDP
+    # exchange, the Location header, CORS; the media path lives inside a Go
+    # c-shared library this process dlopens on the first request. That is the
+    # first FFI in this workspace and it is not free; see gateways/webrtc.
+    app.include_router(init_webrtc_router(logger=logger, webrtc_gw=webrtc_gw))
+    # Bag recording. A gateway and a catalogue repo rather than one or the
+    # other, because the two halves of a recording's state live in different
+    # places and neither can answer alone: the gateway owns the `ros2 bag
+    # record` child (which recording is live, and the only handle that can stop
+    # it), while the repo owns record/ on disk (which bags exist, and what their
+    # metadata.yaml says). "A directory with no metadata and no process behind
+    # it was interrupted" is a sentence only the router can say, and it says it
+    # by holding both -- the same split as the map router's conversion registry
+    # against its sidecar.
+    app.include_router(
+        init_recording_router(
+            logger=logger,
+            recording_gw=recording_gw,
+            recording_catalog_repo=recording_catalog_repo,
+        )
+    )
 
     return app
 
@@ -214,6 +251,9 @@ def start_rest_server(
     task_template_repo: TaskTemplateRepo,
     worker_handle: TemporalWorkerHandle,
     tts_gw: TtsGateway,
+    webrtc_gw: WebRtcGateway,
+    recording_gw: RecordingGateway,
+    recording_catalog_repo: RecordingCatalogRepo,
 ):
 
     app = init_rest_server(
@@ -230,6 +270,9 @@ def start_rest_server(
         task_template_repo=task_template_repo,
         worker_handle=worker_handle,
         tts_gw=tts_gw,
+        webrtc_gw=webrtc_gw,
+        recording_gw=recording_gw,
+        recording_catalog_repo=recording_catalog_repo,
     )
 
     def _run():
