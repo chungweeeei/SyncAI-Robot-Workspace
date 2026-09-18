@@ -32,7 +32,7 @@ repositories:
     # import that silently pulls new LIO code onto a robot is not reproducible.
     type: git
     url: git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
-    version: 14f7bef18b1618cef295916dcc81992e630778dd
+    version: dev
   src/third-party/Livox-SDK2:
     # One commit past upstream v1.3.1, so there is no tag to name.
     # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into
