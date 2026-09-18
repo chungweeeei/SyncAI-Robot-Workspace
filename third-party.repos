@@ -1,0 +1,57 @@
+# Third-party sources for src/third-party/, managed with vcstool (not submodules).
+#
+#   vcs import src < third-party.repos          # populate a fresh clone
+#   vcs import src < third-party.repos --force  # re-checkout after changing a pin below
+#   vcs status src                              # what is actually checked out
+#
+# Paths are relative to the import target (`src`), which is why every key starts
+# with `third-party/`. Run it from the workspace root, like everything else here.
+#
+# Never add --shallow: three of the pins below are commit SHAs, and a shallow
+# clone can only fetch named refs (branches/tags), so the checkout would fail.
+#
+# `src/third-party/` is gitignored -- these repos are materialised, not committed.
+# To bump one, edit its `version` here and commit that one-line diff; the old
+# two-commit submodule dance (checkout inside, commit the pointer outside) is gone.
+#
+# After EVERY import, regenerate the livox driver's package.xml -- the repo ships
+# only package_ROS1.xml / package_ROS2.xml and its own build.sh is what copies one
+# into place, so without this step every ament package in the workspace fails to
+# configure (see CLAUDE.md, "Build"):
+#
+#   cp -f src/third-party/livox_ros_driver2/package_ROS2.xml \
+#         src/third-party/livox_ros_driver2/package.xml
+repositories:
+  src/third-party/behaviortree_cpp_v3:
+    type: git
+    url: https://github.com/BehaviorTree/BehaviorTree.CPP.git
+    version: "3.8.8"
+  src/third-party/FASTLIO2_ROS2:
+    # Private fork (SSH -- the only entry here that needs credentials). Pinned to a
+    # SHA on branch `dev` rather than to `dev` itself: the branch tip moves, and an
+    # import that silently pulls new LIO code onto a robot is not reproducible.
+    type: git
+    url: git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
+    version: 14f7bef18b1618cef295916dcc81992e630778dd
+  src/third-party/Livox-SDK2:
+    # One commit past upstream v1.3.1, so there is no tag to name.
+    # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into
+    # /usr/local, where livox_ros_driver2's find_library picks it up); the robot
+    # Dockerfile pins a different one. Keep them in mind when bumping this.
+    type: git
+    url: https://github.com/Livox-SDK/Livox-SDK2.git
+    version: 68ae1e1dc77f61f03c95d7c2809831e198d0aedd
+  src/third-party/livox_ros_driver2:
+    type: git
+    url: https://github.com/Livox-SDK/livox_ros_driver2.git
+    version: "1.2.6"
+  src/third-party/small_gicp:
+    type: git
+    url: https://github.com/koide3/small_gicp.git
+    version: v1.0.1
+  src/third-party/vizionsdk-ros2:
+    # Branch `main`, no tags upstream -- pinned to the SHA for the same reason as
+    # FASTLIO2_ROS2 above. Links against the VizionSDK .deb the robot image installs.
+    type: git
+    url: https://github.com/TechNexion-Vision/vizionsdk-ros2.git
+    version: 8a0df2fddcabe51830a211846467f283eb0edac8
