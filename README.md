@@ -119,16 +119,12 @@ cd - && git add src/third-party/behaviortree_cpp_v3 && git commit -m "chore: bum
 
 ## Getting started
 
-### 1. Clone (with submodules)
+### 1. VCS import submodules
 
 ```bash
-git clone --recursive <repo-url>
-# already cloned without --recursive:
-git submodule update --init --recursive
+sudo apt update && sudo apt install python3-vcstool -y
+vcs import < third-party.repos
 ```
-
-`FASTLIO2_ROS2` is a private SSH remote; the clone fails without a GitHub key
-that can read it.
 
 ### 2. Pick the robot identity
 
