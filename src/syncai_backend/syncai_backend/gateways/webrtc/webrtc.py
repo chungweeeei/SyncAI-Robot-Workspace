@@ -14,9 +14,9 @@ import structlog
 #   go build -buildmode=c-shared -o dist/libsyncai_worker.so ./cmd/lib
 #
 # and copied into the workspace by hand, the same arrangement as the kokoro
-# weights under models/ and the frontend's npm install: an artifact the build
-# does not produce and git does not carry (*.so is gitignored), reachable in
-# the container through the workspace bind mount.
+# weights under models/: an artifact the build does not produce and git does
+# not carry (*.so is gitignored), reachable in the container through the
+# workspace bind mount.
 _DEFAULT_LIB = os.path.expanduser("~/robot_ws/lib/libsyncai_worker.so")
 
 # Applied with setdefault immediately before InitWorker, never after: the

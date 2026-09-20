@@ -2,8 +2,8 @@
 
 A ROS 2 Humble software stack for the SyncAI robot (G23 quadruped / AMR
 chassis), covering the full vertical: Livox lidar + camera drivers, FAST-LIO2
-odometry and localization, a **non-lifecycle port of Navigation2**, a
-Temporal-backed task orchestration backend, and a Next.js operator console.
+odometry and localization, a **non-lifecycle port of Navigation2**, and a
+Temporal-backed task orchestration backend.
 
 The nav2 servers (map server, costmap, planner, controller, BT navigator) were
 re-implemented as plain `rclcpp::Node`s instead of lifecycle nodes, so the stack
@@ -63,7 +63,6 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState` |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
 | `syncai_backend` | Python. FastAPI + rclpy in one process (port **3000**), Temporal worker (tasks, templates, schedules), map catalogue + pcd → gridmap conversion, TTS, WebSocket streams |
-| `syncai_frontend` | Next.js operator console (port **3001**): dashboard with 3D point cloud, mapping, map library (rebuild grid, rename) + gridmap editor, tasks, settings |
 
 ### Third-party (`src/third-party/`)
 
@@ -101,16 +100,14 @@ cd - && git add src/third-party/behaviortree_cpp_v3 && git commit -m "chore: bum
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yaml
 │   ├── publish_camera_crop.sh    # host-side camera → RTSP publisher (GStreamer → remote MediaMTX)
 │   ├── publish_camera_crop.env   # its per-robot settings (crop, stream path, MediaMTX host)
-│   ├── urdf2glb.py               # bakes G23.urdf into the frontend's public/models/g23.glb
 │   └── release/                  # offline release bundle for the IPC (currently non-functional, see CLAUDE.md)
-├── doc/                          # design proposals (agent / MCP integration; not implemented)
 ├── map/                          # LIO map output per map name (map.pcd, poses.txt, gridmap.*) — gitignored
 ├── models/kokoro/                # TTS weights (~330 MB, downloaded once) — gitignored
 ├── log/stack/<robot_id>/         # multilog capture of every byobu pane — gitignored
 ├── Dockerfile                    # multi-stage: base → deps-builder (GTSAM/Sophus/Livox-SDK2) → dev
 ├── docker-compose.yml            # infra: postgres (5432) / pgadmin (5050) / temporal (7233) / temporal_ui (8081)
 ├── docker-compose.robots.yml     # robot01 (host networking, nvidia runtime, cameras, audio, D-Bus, avahi); `include`d above
-├── docker-compose.build.yaml     # standalone one-shot `colcon build` service (same image, own project name; no frontend)
+├── docker-compose.build.yaml     # standalone one-shot `colcon build` service (same image, own project name)
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
 ├── ruff.toml                     # Python lint config for both Python packages
 ├── .devcontainer/                # VS Code "Reopen in Container"
@@ -164,10 +161,8 @@ BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build     
 It runs `scripts/build.sh`: submodule sanity check, restore the
 `livox_ros_driver2` `package.xml` if missing, `rosdep check` (report only —
 see below), then `colcon build --symlink-install`. Toggles: `BUILD_COLCON`
-(`1`/`0`), `BUILD_ROSDEP` (`check`/`install`/`off`). ROS packages only — the
-frontend is not an ament package; its build is `npm install` in
-`src/syncai_frontend` (see its README). The container exits when the build
-does; robot01 picks the new `install/` up on the next session (re)build
+(`1`/`0`), `BUILD_ROSDEP` (`check`/`install`/`off`). The container exits when
+the build does; robot01 picks the new `install/` up on the next session (re)build
 (`switch_mode`).
 
 **By hand**, from the workspace root inside the container:
@@ -210,8 +205,8 @@ Nothing has to be launched by hand. The robot container's main process is
 `ros2 launch syncai_sys_manager sys_manager.launch.py`; on start it builds the
 **AUTO** byobu session (`syncai-dev`) from `config/sessions/start_nav.yaml`:
 bringup → map_server + localizer → lio_bridge → planner + controller →
-task_runner → driver_manager → robot_state + backend → frontend, with `sleep`
-offsets standing in for the missing lifecycle manager.
+task_runner → driver_manager → robot_state + backend, with `sleep` offsets
+standing in for the missing lifecycle manager.
 
 ```bash
 # from the HOST: attach to whichever session is live (syncai-dev in AUTO,
@@ -230,19 +225,19 @@ correct across a `sys_manager` restart. `switch_mode` kills every session before
 building the target one and refuses to rebuild the mode that is already live
 (in MANUAL that would drop the unsaved map).
 
-Then open the operator console at `http://<robot>:3001` (backend REST at
-`:3000`, Temporal UI at `:8081`, pgAdmin at `:5050`). Navigation goals, mode
-switches, teleop, and map saving all go through the console / backend; a raw
-`NavigateToPose` goal to `/<robot_id>/task_runner` works too.
+The backend's REST / WebSocket API is on `:3000` (Temporal UI at `:8081`,
+pgAdmin at `:5050`). Navigation goals, mode switches, teleop, and map saving
+all go through it; a raw `NavigateToPose` goal to `/<robot_id>/task_runner`
+works too.
 
 **Mapping loop.** Switch to MANUAL (the mapping session runs bringup + PGO +
-driver_manager + backend + frontend, and none of the localization / planning
-nodes), drive the robot, then save the map from the console
+driver_manager + backend, and none of the localization / planning nodes),
+drive the robot, then save the map
 (`POST /api/v1/maps` → `pgo/save_maps` + pcd → gridmap conversion into
 `map/<name>/`). Set `[map] name` in the instance INI to the new map and switch
-back to AUTO. The gridmap can be rebuilt with a different recipe from the map
-card, or hand-edited in the gridmap editor. A map can also be renamed from its
-card (`PATCH /api/v1/maps/{name}`): the directory moves and the vertices and
+back to AUTO. The gridmap can be rebuilt with a different recipe
+(`POST /api/v1/maps/{name}/grid/convert`). A map can also be renamed
+(`PATCH /api/v1/maps/{name}`): the directory moves and the vertices and
 task templates bound to it follow — except for the map the stack is currently
 running on, which the backend refuses (409 `map_active`) because map_server and
 the localizer loaded its files at launch. Switch maps and restart first.

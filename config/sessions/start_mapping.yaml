@@ -29,7 +29,7 @@
 # switching modes either — switch_mode refuses to rebuild the mode already
 # live). pgo/reset_mapping does it in place: it pauses intake, resets pointlio
 # over pointlio/reset, rebuilds the pose graph and discards the old run's tail
-# by timestamp. The console's "New map" control is the operator's route to it.
+# by timestamp. POST /api/v1/mapping/reset is the operator's route to it.
 # Whatever has not been saved is still gone — the reset is deliberate data
 # loss — and the robot must be STANDING STILL, because pointlio re-runs a
 # static, gravity-aligning IMU init and one done in motion tilts the new map
@@ -46,8 +46,8 @@
 #   * hba         — offline refinement, and shelved (see §3.5 of the FAST-LIO2 PGO
 #                   pipeline note, no longer in doc/)
 #
-# robot_state / backend / frontend ARE here, although earlier revisions excluded
-# them as nav-oriented: the operator console is the mapping UI now. Switching
+# robot_state / backend ARE here, although earlier revisions excluded them as
+# nav-oriented: the backend's REST/WS API is the mapping interface. Switching
 # modes (POST /api/v1/robot/mode), teleop (WS /api/v1/robot/teleop -> cmd_vel),
 # the live cloud view (WS /api/v1/robot/pointcloud/stream) and the save-map call
 # (POST /api/v1/maps -> pgo/save_maps) all go through the backend — without it a
@@ -56,14 +56,15 @@
 #   * robot_state reports state=UNINITIALIZED for the whole run (its pose wants
 #     map -> base_link, and mapping's TF chain ends at pointlio_body). Its mode
 #     field is the reason it is here at all — sourced from get_mode, it is what
-#     the console's mode chip reads.
+#     GET /api/v1/robot/state reports as the live mode.
 #   * backend needs postgres, which lives in the infra compose stack
 #     (docker-compose.yml) and is up regardless of which session exists.
 #   * The backend's cloud stream works unchanged: pgo broadcasts
 #     map -> <robot_id>/pointlio_odom itself, so the TF-to-map path resolves
 #     without the localizer.
-# The replaced keyboard-teleop window is gone for good: the console's teleop
-# channel covers it without a pane where a stray keypress is a motion command.
+# The replaced keyboard-teleop window is gone for good: the backend's teleop
+# channel (WS /api/v1/robot/teleop) covers it without a pane where a stray
+# keypress is a motion command.
 #
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
 # starts in the workspace root so the relative config/system.ini resolves. In
@@ -124,7 +125,7 @@ windows:
   # ---------- Window 3: robot_state / backend ----------
   # Same pairing as start_nav.yaml's backend window. robot_state's pose lookup
   # never succeeds here (see the header) — it is present for battery / motors /
-  # wifi and above all for RobotState.mode, which the console polls to know the
+  # wifi and above all for RobotState.mode, which a client polls to know the
   # switch to MANUAL landed. The backend sleep mirrors start_nav.yaml; the
   # services it fronts (teleop, cloud stream, save_maps) all tolerate their
   # upstream nodes arriving later.
@@ -135,16 +136,3 @@ windows:
       - cmd: ros2 launch syncai_backend backend.launch.py
         sleep: 2
         log: mapping/backend
-
-  # ---------- Window 4: frontend dev server (Next.js, 3001) ----------
-  # cwd is the package dir, not the workspace root — npm needs its package.json.
-  # The same dev server as start_nav.yaml: switch_mode kills it with the rest of
-  # the nav session, so the mapping session has to bring its own or the operator
-  # loses the console for the whole run. The already-loaded page in the browser
-  # survives the gap (it is a client-side app); this pane is what serves it
-  # again on reload.
-  - name: frontend
-    cwd: src/syncai_frontend
-    panes:
-      - cmd: npm run dev
-        log: mapping/frontend

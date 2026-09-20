@@ -6,8 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A ROS 2 Humble software stack for the SyncAI robot (G23 quadruped / AMR chassis),
 covering the full vertical: sensor drivers, LIO odometry, a **non-lifecycle port
-of Navigation2**, a Temporal-backed task orchestration backend, and a Next.js
-operator UI.
+of Navigation2**, and a Temporal-backed task orchestration backend.
 
 Two things shape almost every decision here:
 
@@ -97,7 +96,6 @@ prefixed with the robot name so several robots can publish to one MediaMTX.
 | Package | Role |
 |---|---|
 | `syncai_backend` | Python. FastAPI **and** rclpy in one process (`MultiThreadedExecutor`), port **3000**. Temporal worker for task orchestration. Also owns TTS (kokoro-onnx → `aplay`, weights in `models/kokoro/`), task templates + schedules, the wifi bridge to `sys_manager`, and the teleop / telemetry / point-cloud WebSockets. Declares **no** ROS parameters. |
-| `syncai_frontend` | Next.js 16 + shadcn-style ui + raw three.js, dev server on port **3001**. Not an ament package (no `package.xml`). |
 
 Every `src/syncai_*` package is in-tree; everything under `src/third-party/` is a
 submodule.
@@ -148,10 +146,9 @@ back-compat with instance INIs written before the MID360s arrived.
 
 The C++ packages' launch files use the relative path `config/system.ini`, which
 works because **processes are expected to run with the workspace root as their
-cwd** — the session specs start every pane in the workspace root (the frontend
-window sets `cwd: src/syncai_frontend` explicitly), and `colcon.meta` and
-`ruff.toml` rely on the same assumption. The Python packages (`syncai_backend`,
-`syncai_sys_manager`) instead default to the absolute
+cwd** — the session specs start every pane in the workspace root, and
+`colcon.meta` and `ruff.toml` rely on the same assumption. The Python packages
+(`syncai_backend`, `syncai_sys_manager`) instead default to the absolute
 `~/robot_ws/config/system.ini` (`SYNCAI_SYSTEM_INI` / `system_config:=`), so
 they do not depend on the cwd.
 
@@ -206,10 +203,8 @@ must be what robot01 has. It therefore only `rosdep check`s by default
 (`BUILD_ROSDEP=check`) — an apt install into a throwaway container never
 reaches robot01, so a missing dep is a `Dockerfile` change. The script also
 restores the `livox_ros_driver2` `package.xml` when a submodule update has
-deleted it and refuses to start on empty submodule dirs. It builds **ROS
-packages only** — the frontend is not an ament package and its `npm install`
-stays a separate, by-hand step. It is equally runnable inside
-robot01 (`scripts/build.sh`). Its `build:` block duplicates
+deleted it and refuses to start on empty submodule dirs. It is equally
+runnable inside robot01 (`scripts/build.sh`). Its `build:` block duplicates
 `x-robot-common` (compose `extends` would drag the devices / nvidia runtime /
 X11 mounts along) — keep the two in sync.
 
@@ -221,7 +216,7 @@ plus any manual deps (Sophus / GTSAM are built from source for
 The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
 — keep it free of anything that changes often so its cache survives) → `dev`
-(rviz2, colcon, byobu, Node.js, the VizionSDK `.deb`; the workspace is
+(rviz2, colcon, byobu, the VizionSDK `.deb`; the workspace is
 bind-mounted at `~/robot_ws` and built by hand). Compose builds `target: dev`.
 The production stages (`ws-builder` / `nav-runtime` / `backend-runtime`) were
 **removed** during the dev phase; `scripts/release/` still references them and
@@ -262,8 +257,8 @@ The stack comes up as a **byobu session, one per operating mode**, built by
 `src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py`. There is no
 launcher script any more — `scripts/byobu_session*.sh` and the
 `scripts/byobu_session.py` that replaced them are both gone, and so is
-`scripts/tailog.sh`. A ROS node is the entrypoint instead, which is what lets the
-operator console bring the stack up and switch modes remotely.
+`scripts/tailog.sh`. A ROS node is the entrypoint instead, which is what lets a
+remote client bring the stack up and switch modes over a ROS service.
 
 An operating mode **is** a session:
 
@@ -310,21 +305,20 @@ bash). The schema is documented in the `NodeManager` docstring (`session`,
 is where the startup ordering lives, since there is no lifecycle manager. The
 nav session's windows, in order: `bringup` → `localization` (map_server +
 localizer) → `lio_bridge` → `plan_ctrl` (planner + controller) → `task_runner`
-→ `driver_manager` → `backend` (robot_state + backend) → `frontend`
-(`cwd: src/syncai_frontend`, `npm run dev`). Sessions are built **detached** —
-no `attach-session`, because the caller is a ROS node with no TTY.
+→ `driver_manager` → `backend` (robot_state + backend). Sessions are built
+**detached** — no `attach-session`, because the caller is a ROS node with no TTY.
 
 The two specs are counterparts, not variants. `start_nav.yaml` *localizes*
 against an existing map — map_server and the FAST-LIO2 localizer both load one
 during construction and die without it — so it cannot build the map it needs;
 `start_mapping.yaml` is the other half of that loop: `bringup` → `lio` (`pgo`)
-→ `driver_manager` → `backend` (robot_state + backend) → `frontend`, and
-deliberately **no** map_server / localizer / lio_bridge / planner / controller /
-task_runner / hba. The backend and frontend *are* in the mapping session because
-the operator console is the mapping UI: mode switch, teleop over WebSocket, the
-live `pgo/map_cloud` stream and save-map all go through the backend. Their logs
-go to separate subtrees, which is what stops the two from interleaving two
-multilogs into one directory. The 2D / AMCL session was retired along with
+→ `driver_manager` → `backend` (robot_state + backend), and deliberately **no**
+map_server / localizer / lio_bridge / planner / controller / task_runner / hba.
+The backend *is* in the mapping session because its API is the mapping
+interface: mode switch, teleop over WebSocket, the live `pgo/map_cloud` stream
+and save-map all go through it. Their logs go to separate subtrees, which is
+what stops the two from interleaving two multilogs into one directory. The
+2D / AMCL session was retired along with
 `bringup_2d.launch.py`. Neither spec has an rviz2 window (the robot has no
 display; `config/rviz2/<robot_id>.rviz` is for running rviz2 from a
 workstation) or a camera window (the RTSP publisher runs on the host).
@@ -337,8 +331,8 @@ tail -f log/stack/<robot_id>/planner/current
 zcat log/stack/<robot_id>/planner/@*.s | less
 ```
 
-There is no keyboard-teleop window any more: the console's teleop channel
-(backend WebSocket `/api/v1/robot/teleop` → `cmd_vel`) covers it without a pane
+There is no keyboard-teleop window any more: the backend's teleop channel
+(WebSocket `/api/v1/robot/teleop` → `cmd_vel`) covers it without a pane
 where a stray keypress is a motion command. The schema still supports
 `enter: false` (pre-type a command without executing it) but no spec uses it
 today. Both specs set `select:` to `bringup` because its log is the first thing
@@ -388,8 +382,8 @@ temporal/     (worker, workflows, activities)
   Vertex routes are nested under `/api/v1/maps/{name}/vertices` and the request
   bodies carry **no** `map_name` — the URL owns the map, so a body cannot name a
   different one. Moving a vertex between maps is a delete and a create.
-- **Map rename** (`PATCH /api/v1/maps/{name}`, frontend: the map card's inline
-  Rename control) is one `os.rename` of `map/<old>/` plus two bulk `UPDATE`s:
+- **Map rename** (`PATCH /api/v1/maps/{name}`) is one `os.rename` of
+  `map/<old>/` plus two bulk `UPDATE`s:
   `MapRepo.move_vertices` re-keys `map_vertices.map` and
   `TaskTemplateRepo.rebind_map` re-keys `task_templates.map_name` — the
   directory name is a foreign key by convention in both tables, with no
@@ -404,9 +398,7 @@ temporal/     (worker, workflows, activities)
   map first, which is a live call now, not a stack restart), 409
   `conversion_running`, 409 `name_taken`. Temporal schedule memos keep the old
   `map_name` label on purpose (display-only, never re-registered).
-- **Map switch** (`POST /api/v1/maps/{name}/activate`, frontend: the map card's
-  top-left corner tile, swap arrows in the slot the in-use badge occupies on the
-  map the robot is already on) is the verb that
+- **Map switch** (`POST /api/v1/maps/{name}/activate`) is the verb that
   lifts `map_active` on both of the above, and the only thing in the workspace
   that writes the instance INI
   (`helpers/system_config.py`'s `set_active_map`; the module was read-only by
@@ -424,16 +416,15 @@ temporal/     (worker, workflows, activities)
   the request's raw 6-DOF, bypassing the `applyPlanarGuess` tilt correction, so
   the swap **must** be followed by an `initialpose` publish or the tilted lidar
   mount freezes the localizer retrying a flat guess forever. `[initial_pose]` is
-  zeroed with the switch and the operator re-seeds from the dashboard. Refusals,
+  zeroed with the switch and the operator re-seeds it by hand. Refusals,
   all before any mutation: 409 `grid_missing` / `pointcloud_missing` /
   `conversion_running` / `ini_not_writable` / `task_running` / `tasks_unknown`
   (Temporal unreachable — refuse rather than assume idle) / `stack_not_ready`,
   the last being how "the robot is in mapping mode" is detected, by service
   discoverability rather than the cached mode, which a robot that has lost
-  localization does not have. Not guarded: a goal sent straight from the
-  dashboard rather than dispatched as a task.
-- **Map delete** (`DELETE /api/v1/maps/{name}`, frontend: the X in the map
-  card's corner, behind an alert dialog) is `MapRepo.delete_vertices` then
+  localization does not have. Not guarded: a goal sent straight to
+  `task_runner` rather than dispatched as a task.
+- **Map delete** (`DELETE /api/v1/maps/{name}`) is `MapRepo.delete_vertices` then
   `MapCatalogRepo.delete_map_dir`'s `shutil.rmtree`, in that order — **the
   inverse of the rename, deliberately.** A rename puts the filesystem first
   because `os.rename` back is a real compensation; `rmtree` has none, so the
@@ -474,8 +465,8 @@ temporal/     (worker, workflows, activities)
   onto exactly that case. The route lives under `/api/v1/mapping/` because it
   touches no file. **The robot must be stationary** — pointlio re-runs a static,
   gravity-aligning IMU init, and one done in motion tilts the new map for its
-  whole life with no error anywhere; that is said in the srv, the REST message
-  and the console's confirm dialog, and nowhere enforced.
+  whole life with no error anywhere; that is said in the srv and the REST
+  message, and nowhere enforced.
 - **There are two pcd → gridmap recipes, and the default is z-band.**
   `POST /api/v1/maps` always converts with `convert_pcd_to_gridmap` (z-band
   slicing, trinary occupied/free/unknown), its bands recentred as offsets from
@@ -511,10 +502,10 @@ temporal/     (worker, workflows, activities)
   `grid_converting` is the deprecated boolean this replaced, kept for curl/MCP
   callers; under it a failed conversion was indistinguishable from a map nobody
   had converted and its reason existed only in the backend log.
-- **`POST /api/v1/maps/{name}/grid/convert`** is the manual/override route
-  (frontend: the map card's Rebuild-grid dropdown): pick the recipe, override
-  `gap_fill_size` or the z-band offsets, and pass `debug: true` to get the
-  segmentation's intermediate clouds in `<map>/traversable_debug/` — the tuning
+- **`POST /api/v1/maps/{name}/grid/convert`** is the manual/override route:
+  pick the recipe, override `gap_fill_size` or the z-band offsets, and pass
+  `debug: true` to get the segmentation's intermediate clouds in
+  `<map>/traversable_debug/` — the tuning
   interface for a site the defaults cannot handle (the next outdoor venue). One
   conversion per map at a time (409 `conversion_running`); a hand-edited grid
   (gridmap_raw.pgm differing from gridmap.pgm) refuses with 409
@@ -556,52 +547,6 @@ workspace `.env` via python-dotenv), so changing any of it means restarting the
 backend. `src/syncai_backend/test/` holds ~40 pytest files (routers, Temporal
 workflows/activities, both gridmap recipes); the conversion tests need open3d
 and scipy.
-
-## Frontend (`syncai_frontend`)
-
-Next.js 16 (dev server on port 3001), shadcn-style components on
-`@base-ui/react`, **raw three.js** for the 3D point-cloud view (no
-react-three-fiber). Routes: `/` (dashboard: point cloud + telemetry rail, goal /
-initial-pose / posture / manual joystick controls), `/mapping` (mode switch,
-save map, start a new map — the page confirms every one of those in one alert
-dialog, including a plain mode switch either way, and owns the unsaved-run rule
-that escalates the copy when leaving MANUAL would lose the map; it re-arms that
-rule after a reset by hand, since `reported` never changes across one), `/maps` (map library,
-per-card Rebuild-grid dropdown, inline Rename, and a Switch corner tile — Rename
-is greyed for the active map, which the backend refuses too, and Switch is the
-control that un-greys it) and
-`/maps/[name]/edit` (gridmap editor; its header title is a second rename surface — double-click or F2, Enter to save — refused while the grid is dirty, because the rename navigates and the reload drops the buffer), `/recordings` (bag recording: start /
-stop / list / delete, with the recorder panel's face driven by
-`GET /api/v1/recordings/active` rather than by a local started-it flag, so a
-recording begun from a shell shows correctly), `/tasks` (templates, dispatch,
-schedules), `/settings` (wifi via the backend's network router, appearance),
-`/model-preview`. There is **no camera component** — nothing in the frontend
-speaks WebRTC/WHEP yet; the RTSP stream the robot publishes is viewed through
-MediaMTX's own WebRTC page for now. The backend base URLs come only from
-`NEXT_PUBLIC_API_BASE` / `NEXT_PUBLIC_WS_BASE` (`lib/api/config.ts`, falling back
-to the page hostname on port 3000); never hardcode a host. `next.config.ts`
-hardcodes `allowedDevOrigins` LAN IPs that must be edited per robot or HMR
-breaks.
-
-The robot mesh `public/models/g23.glb` is a **build artifact**: regenerate it
-with `scripts/urdf2glb.py` after editing `src/syncai_bringup/description/G23.urdf`.
-Two invariants are load-bearing — GLB node names must equal URDF link names
-(the canvas looks links up by name to apply joint angles) and coordinates stay
-ROS Z-up.
-
-REST reads go through **TanStack Query**: one `QueryClient` in
-`components/query-provider.tsx` (retry and focus-refetch are off on purpose —
-the poll intervals are the retry policy), and every cache key lives in
-`lib/api/query-keys.ts` so cache *sharing* between hooks is a decision visible
-in one place (the gridmap editor and the dashboard read the same vertices
-entry). The WebSocket streams (telemetry, point cloud) stay outside it — a push
-stream has nothing to refetch; see `hooks/use-telemetry.ts`, and the point
-cloud additionally bypasses React state entirely (20 Hz × few-hundred-KB frames
-go straight into three.js buffers in `PointCloudCanvas`).
-
-`src/syncai_frontend/AGENTS.md` warns that the pinned Next.js version has
-breaking changes relative to model training data — read the relevant guide in
-`node_modules/next/dist/docs/` before writing Next.js code.
 
 ## Infrastructure
 
@@ -667,13 +612,13 @@ breaking changes relative to model training data — read the relevant guide in
   explain **why**, often at length, and frequently record a past bug or a
   rejected alternative. Match that density when editing — a bare parameter
   change with no rationale is out of place here. The last Chinese remnants
-  (BT plugin comments, `ExecuteTask.action`, the camera script's log strings,
-  the `doc/` proposals) were translated in 2026-09; anything new in another
-  language is a regression, log strings included. The one exception is a
-  `*.zh-TW.md` **translation** sitting beside an English original that stays the
-  canonical copy and carries the content — `doc/webrtc-worker-proposal.zh-TW.md`
-  is the only one today. Edit the English file first; a zh-TW file that has
-  drifted is worse than none, so either update both or delete the translation.
+  (BT plugin comments, `ExecuteTask.action`, the camera script's log strings)
+  were translated in 2026-09; anything new in another language is a regression,
+  log strings included. The one exception would be a `*.zh-TW.md` **translation**
+  sitting beside an English original that stays the canonical copy and carries
+  the content; there is none in the tree today. Edit the English file first — a
+  zh-TW file that has drifted is worse than none, so either update both or
+  delete the translation.
 - `build/`, `install/`, `log/`, `data/`, `.env`, `record/` (hand-recorded
   rosbags), the whole of `/map/` (LIO output: `map.pcd`, `poses.txt`,
   `patches/`, generated `gridmap.*`) and `/models/` (TTS weights) are
@@ -682,31 +627,20 @@ breaking changes relative to model training data — read the relevant guide in
   live in the container — the session name follows the mode, so a hardcoded
   alias is wrong half the time), `build.sh` (in-image: the build
   steps behind `docker-compose.build.yaml`, see Build), `publish_camera_crop.sh` + `.env` (host-side
-  camera publisher, see Infrastructure), `urdf2glb.py` (robot mesh for the frontend, see
-  Frontend), and `release/` (`build_images.sh` / `save_images.sh` /
+  camera publisher, see Infrastructure), and `release/` (`save_images.sh` /
   `load_and_up.sh` / `.env.example` — an offline release bundle for the
   customer IPC that is currently **non-functional**: it needs the removed
   production Dockerfile stages and a `docker-compose.prod.yml` that is not in
   the tree, and its `.env.example` says `ROS_DOMAIN_ID=0` while the stack pins
   domain 1). `skills-lock.json` at the root is Claude Code tooling metadata,
   not stack config.
-- `doc/` holds six design **proposals** (none implemented). Five are on agent /
-  MCP integration: deep-agent wiring, a gridmap-tuning agent, MCP server design,
-  RoboNeuron mechanisms, and a task-recovery loop. Three of those target
-  `src/syncai_device_agent/`, which was removed in commit `99141a6`, and four
-assume `src/syncai_ros_mcp/`, removed later — both are in git history. The
-sixth,
-  `webrtc-worker-proposal.md`, is unrelated to the other five: it covers the
-  camera path (a self-built Go + pion WHEP worker in `src/syncai_webrtc/` that
-  owns the capture/crop/encode pipeline as a supervised `gst-launch-1.0` child
-  and relays its RTP to browsers; it deliberately ignores the host-side
-  `publish_camera_crop.sh` path) and records why the "Go `.so` + zero-copy into
-  Python" framing it came from was not adopted. The
-  FAST-LIO2 design notes that used to live here (`fastlio2-pgo-pipeline.md`;
-  `config/sessions/start_mapping.yaml` still cites its §3.5 / §5 by section
-  number, noting that the file is gone) are no longer in the tree — check git
-  history. `webrtc-worker-proposal.zh-TW.md` is a translation of the sixth, not
-  a seventh proposal; see the English-docs convention above.
+- **There is no `doc/` any more.** It held design notes and unimplemented
+  proposals — the FAST-LIO2 PGO pipeline note (`config/sessions/start_mapping.yaml`
+  still cites its §3.5 / §5 by section number), five agent / MCP integration
+  proposals, and a WebRTC worker proposal for the camera path. Recover any of
+  them from git history rather than re-deriving them; design rationale that has
+  to survive belongs in the code or a package README, which is where the rest of
+  this codebase keeps it.
 
 ## Tests
 

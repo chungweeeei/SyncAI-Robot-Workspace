@@ -14,8 +14,7 @@ from syncai_sys_manager.managers.conf_manager import ConfManager
 
 # One session spec per operating mode. The mode vocabulary is RobotMode's
 # (MAINTENANCE / MANUAL / AUTO), reused rather than redeclared so this manager,
-# RobotState.mode, the backend's REST layer and the frontend all speak the same
-# constants.
+# RobotState.mode and the backend's REST layer all speak the same constants.
 #
 # MAINTENANCE is deliberately absent: there is no session for "nothing running".
 # It is what get_mode *reports* when neither session exists, not a mode you can
@@ -400,9 +399,10 @@ class NodeManager:
             )
             return False
 
-        # Panes inherit the window's cwd. Most windows want the workspace root
-        # (relative config paths); the frontend window overrides it, because npm
-        # needs the directory its package.json lives in.
+        # Panes inherit the window's cwd, defaulting to the workspace root
+        # (which is what the relative config paths resolve against). A window
+        # sets `cwd:` only when its command needs a different directory; no
+        # spec does today, but the schema keeps it.
         cwd = os.path.abspath(window.get("cwd", "."))
 
         if first:

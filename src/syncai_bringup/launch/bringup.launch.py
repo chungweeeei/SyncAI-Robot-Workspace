@@ -24,8 +24,8 @@
 #     LIO). The fixed joints (the 4 *_Ankle plus lidar_top_joint) go to
 #     /tf_static; the 12 revolute leg joints would only appear on /tf once
 #     /joint_states is published, and nothing does that on purpose — live joint
-#     angles reach their only consumer (the frontend 3D model) over
-#     syncai_driver_manager's motor_states instead.
+#     angles are published as syncai_driver_manager's motor_states instead, which
+#     is where any consumer (a 3D viewer, telemetry) reads them from.
 #   * lidar_top_joint carries the MID360 mount extrinsic (including the 0.25 rad
 #     physical tilt), which syncai_lio_bridge looks up as
 #     <robot_id>/base_link -> <robot_id>/lidar_top to map the LIO body pose onto
@@ -50,7 +50,7 @@
 # a deliberate regression guard rather than an oversight. /dev/video0 is a V4L2
 # capture device that admits exactly one streaming opener, and it already has
 # one: scripts/publish_camera_crop.sh feeds the remote MediaMTX over RTSP from
-# the host, which is what the frontend's WebRTC view consumes. bringup.launch.py
+# the host, which is where the stream is viewed. bringup.launch.py
 # is window 0 of BOTH session specs, so defaulting the camera node on would take
 # that stream away from every robot in the fleet the next time it came up, and
 # it would fail the quiet way — gstreamer dies at S_FMT with "Device or resource
@@ -554,8 +554,7 @@ def generate_launch_description():
         default_value="false",
         description="Start the VizionSDK camera node. Default false: "
         "/dev/video0 takes one streaming opener and scripts/publish_camera_crop.sh "
-        "(host-side RTSP -> remote MediaMTX -> the frontend's WebRTC view) already "
-        "holds it. "
+        "(host-side RTSP -> remote MediaMTX) already holds it. "
         "Set true only when this node, not that script, owns the camera",
     )
 

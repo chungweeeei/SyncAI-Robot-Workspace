@@ -116,9 +116,8 @@ a state that flaps is one nobody can act on. A clear value at or below the warn
 value is rejected at startup and both fall back to 20/25.
 
 20% is not a new number — it is the threshold in `syncai_driver_manager`'s
-unwired `soc < 20%` safety TODO, the one the reference GaitMPC bridge acts on, and
-the one the frontend status strip already hardcodes for its battery colour. This
-node is where the *judgement* now lives.
+unwired `soc < 20%` safety TODO, and the one the reference GaitMPC bridge acts
+on. This node is where the *judgement* now lives.
 
 **This node only reports.** Crossing the threshold does not lie the robot down or
 block `cmd_vel`; `syncai_driver_manager::triggerSafeShutdown()` still has zero
@@ -163,10 +162,10 @@ which the subscription callbacks write from other threads.
 - **`WARNING` carries no reason.** With one condition, `ros2 topic echo` shows
   `battery_status` alongside it, so the cause is visible. A second `WARNING`
   condition (motor over-temperature, say) will need a reason field or bitmask.
-- **The frontend still has its own copy of the 20% rule**
-  (`status-strip.tsx:27-31`, `< 20 → warn`, `< 40 → caution`, no hysteresis). It
-  cannot read `state` — the REST payload does not expose the field — so this
-  duplication is knowingly left in place.
+- **`state` is not exposed over REST**, so an API client that wants a
+  low-battery indication has to re-derive it from `battery_status` and ends up
+  with a second, un-hysteresised copy of the 20% rule. Putting `state` in the
+  `GET /api/v1/robot/state` payload is what would retire that duplication.
 - **`low_level_mode` has no freshness information at all**, and this node
   republishes whatever it last heard on every tick, forever.
   `syncai_driver_manager` publishes `mode` only when a telemetry datagram happens
@@ -203,8 +202,8 @@ pose: a stale pose with no age attached gets read as a live one, whereas the map
 origin is an obviously suspicious value.
 
 `GET /api/v1/robot/state` still answers **404** "Robot state is not available
-yet" during this window, and the frontend still gates its dashboard on that 404.
-That is now enforced one layer up — `RobotStateSubscriber` drops samples whose
+yet" during this window, which is the signal a client gates on. That is now
+enforced one layer up — `RobotStateSubscriber` drops samples whose
 `localization_valid` is false instead of writing them to `RobotRepo` — rather
 than by this node staying silent.
 
@@ -365,7 +364,7 @@ ros2 topic pub -r 2 /<robot_id>/battery_state sensor_msgs/msg/BatteryState \
   An empty nlohmann json dumps to that, not to `""` or `"N/A"`, which is what the
   backend parses defensively against.
 - **`timestamp` is seconds**, unlike `ArtifactState` / `ExecuteTask` which are
-  milliseconds. The frontend multiplies by 1000; see `syncai_common`'s README.
+  milliseconds — a client has to scale it; see `syncai_common`'s README.
   `motor_status.timestamp` is **also seconds here**, scaled down by this node from
   the nanoseconds the `motor_states` topic carries. So the same `MotorStates` type
   means two different units depending on where you read it — the topic keeps

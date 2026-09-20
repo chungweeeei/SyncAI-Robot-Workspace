@@ -2,11 +2,6 @@
 # =============================================================================
 # Build every ROS 2 package in the workspace with colcon.
 #
-# The frontend (src/syncai_frontend) is deliberately NOT part of this: it is
-# not an ament package, its dependencies are managed by npm in its own
-# directory, and the session spec starts it with `npm run dev` against the
-# mounted tree. `cd src/syncai_frontend && npm install` is its whole build.
-#
 # Runs INSIDE the robot image, either as the entrypoint of the one-shot
 # service in docker-compose.build.yaml
 #

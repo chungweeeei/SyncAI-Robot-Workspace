@@ -33,9 +33,6 @@ doc/
 .claude/
 .github/
 
-# frontend build outputs (frontend has its own build context + .dockerignore)
-src/syncai_frontend/node_modules/
-src/syncai_frontend/.next/
 
 # python / misc caches
 **/__pycache__/

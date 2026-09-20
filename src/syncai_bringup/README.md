@@ -50,9 +50,8 @@ TF tree with `frame_prefix: <robot_id>/`. What actually reaches TF:
   `/joint_states`, and **nothing in this workspace does** — so the legs are
   absent from TF. That is deliberate, not a gap: live joint angles already come
   up from the gait controller on `syncai_driver_manager`'s `motor_states`
-  (`syncai_common/MotorStates`), and the consumer that needs them — the
-  frontend's 3D robot model — subscribes to that directly rather than going
-  through TF. Bridging `motor_states` into `/joint_states` would only duplicate
+  (`syncai_common/MotorStates`), and the consumers that need them — a 3D robot
+  model, telemetry — subscribe to that directly rather than going through TF. Bridging `motor_states` into `/joint_states` would only duplicate
   the same data into a tree nothing reads: the planar nav stack only needs
   `base_link`, and LIO only needs `lidar_top`.
 
@@ -216,9 +215,9 @@ configure with `No package 'vizionsdk' found`.
 Started only under `use_camera:=true`, and the default is a regression guard, not
 timidity. `/dev/video0` admits exactly one *streaming* opener and
 `scripts/publish_camera_crop.sh` already claims it — the host-side GStreamer
-pipeline that pushes the camera over RTSP to the remote MediaMTX the frontend's
-WebRTC view renders (there is no MediaMTX in this compose; the robot is a
-publisher only). Since `bringup.launch.py` is window 0 of both session specs,
+pipeline that pushes the camera over RTSP to the remote MediaMTX the stream is
+viewed through (there is no MediaMTX in this compose; the robot is a publisher
+only). Since `bringup.launch.py` is window 0 of both session specs,
 defaulting the camera on would pull that stream out from under every robot in
 the fleet, and it would fail the quiet way: gstreamer dies at `S_FMT` with
 `Device or resource busy`, long after the pane has scrolled past.

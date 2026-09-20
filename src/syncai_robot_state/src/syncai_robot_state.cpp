@@ -184,9 +184,8 @@ void RobotStateNode::initParameters()
 
   // Low-battery hysteresis, in percent. 20% is not a new number: it is the
   // threshold in syncai_driver_manager's unwired
-  // "TODO: trigger safety shutdown when soc < 20%", the one the reference
-  // implementation (GaitMPC udp_ros_bridge) acts on, and the one the frontend's
-  // status strip already hardcodes for its battery colour.
+  // "TODO: trigger safety shutdown when soc < 20%", and the one the reference
+  // implementation (GaitMPC udp_ros_bridge) acts on.
   this->declare_parameter("low_battery_warn_percentage", 20.0);
   this->get_parameter("low_battery_warn_percentage", low_battery_warn_percentage_);
   this->declare_parameter("low_battery_clear_percentage", 25.0);

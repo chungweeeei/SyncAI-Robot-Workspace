@@ -25,8 +25,9 @@ INCLUDE_MAP=1
 [ "${2:-}" = "--no-map" ] && INCLUDE_MAP=0
 
 # NOTE: syncai-nav / syncai-backend are omitted — their Dockerfile stages were
-# removed during the dev phase (see build_images.sh). Re-add them here when the
-# stages come back.
+# removed during the dev phase. Re-add them here when the stages come back
+# (build_images.sh, which built only the now-removed frontend image, is gone
+# with it — recover it from git history).
 PRODUCT_IMAGES=(
   "syncai-robot:latest"
 )

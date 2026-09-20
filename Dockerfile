@@ -3,7 +3,7 @@
 #
 #   base            shared runtime floor (ros-base + cyclonedds + uid-1000 user)
 #     ├─ deps-builder  GTSAM / Sophus / Livox-SDK2 → /usr/local  (slow, cached)
-#     └─ dev           the interactive dev image: rviz2, colcon, byobu, Node.js,
+#     └─ dev           the interactive dev image: rviz2, colcon, byobu,
 #                      -dev headers. Workspace bind-mounted at ~/robot_ws and
 #                      built by hand (colcon). Compose target: dev.
 #
@@ -266,8 +266,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     /dev/video0, so it is left in place rather than fought.
 #   - it adds download.technexion.com as an apt source. That is deleted right
 #     after: every other third-party dep in this image is version-pinned, and a
-#     live vendor repo would make the nodesource `apt-get update` below fail
-#     whenever that host is unreachable.
+#     live vendor repo would make every later `apt-get update` fail whenever
+#     that host is unreachable.
 ARG VIZIONSDK_VERSION=26.8.1
 RUN case "$(dpkg --print-architecture)" in \
     arm64) VIZIONSDK_DEB="vizionsdk-linuxarm64-${VIZIONSDK_VERSION}.deb" ;; \
@@ -299,12 +299,6 @@ RUN pip3 install --no-cache-dir -r /tmp/syncai_backend_requirements.txt && \
 # "fix" those pins for us and break the image.
 RUN pip3 install --no-cache-dir --no-deps kokoro-onnx
 
-# Node.js 22 for syncai_frontend (Next.js 16). `npm install` / `npm run dev`
-# run at runtime against the mounted workspace; only the node/npm runtime
-# needs to live in the image.
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble

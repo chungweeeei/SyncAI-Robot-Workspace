@@ -51,7 +51,6 @@ Done. Quick checks:
   docker logs -f nav                                  # nav stack bringup
   docker logs -f backend                              # DB + temporal connect
   curl http://127.0.0.1:3000/health                   # backend REST
-  http://<ipc>:3001                                   # web UI
 
 Debug UIs (temporal-ui :8081, pgadmin :5050):
   docker compose -f docker-compose.prod.yml --profile debug up -d

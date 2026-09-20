@@ -4,15 +4,15 @@ The robot's application-layer process: a **FastAPI REST/WebSocket server and an
 rclpy ROS 2 node running inside one Python process**, plus a **Temporal worker**
 that executes multi-step tasks.
 
-It is the only thing the operator UI (`syncai_frontend`) talks to. Everything the
-UI needs — robot state, the map, the point clouds, task submission, mode
-switching, wifi setup, speech — is served from here, and every ROS interaction
-(nav goals, motion keys, wifi services, `switch_mode`, `save_maps`) happens on
-this side of the boundary.
+It is the whole operator-facing surface of the robot. Everything a client needs
+— robot state, the map, the point clouds, task submission, mode switching, wifi
+setup, speech — is served from here, and every ROS interaction (nav goals,
+motion keys, wifi services, `switch_mode`, `save_maps`) happens on this side of
+the boundary.
 
 ```
                     HTTP :3000 / WebSocket
-  syncai_frontend  ────────────────────────►  syncai_backend  ──── ROS 2 ────►  nav stack,
+  any API client   ────────────────────────►  syncai_backend  ──── ROS 2 ────►  nav stack,
                                                     │                            robot_state,
                                                     │                            LIO / localizer,
                                                     ├──── gRPC ──►  Temporal     system_manager
@@ -201,8 +201,8 @@ controller's startup sentinel — over REST they are the same `"UNKNOWN"`.
 before they reach `RobotRepo`. The publisher now emits on every tick, including
 before the localizer has been relocalized, where `localization_status` is zeroed
 rather than a real pose. Without that guard the endpoint would return 200 with
-the robot apparently parked on the map origin instead of the 404 the frontend
-gates its dashboard on.
+the robot apparently parked on the map origin instead of the 404 a client can
+gate on.
 
 **Action client:** `navigate_to_pose` (`nav2_msgs/NavigateToPose`) — served by
 `syncai_task_runner`. `RobotGateway` keeps a goal-id → `MoveGoal` table so an
@@ -297,7 +297,7 @@ registered in `server.py` map them to HTTP:
 |---|---|
 | `NotFoundError` | 404 |
 | `BadRequestError` | 400 |
-| `ConflictError` | **409**, with an optional machine-readable `code` next to `detail` (`conversion_running` / `gridmap_hand_edited` on the re-convert route). The frontend confirms-and-retries only the latter, and matching on prose that exists to be reworded was the rejected alternative |
+| `ConflictError` | **409**, with an optional machine-readable `code` next to `detail` (`conversion_running` / `gridmap_hand_edited` on the re-convert route). A client is expected to confirm-and-retry only the latter, and matching on prose that exists to be reworded was the rejected alternative |
 | `UnauthorizedError` | 401 |
 | `UpstreamError` | **502 Bad Gateway** (these all mean a downstream — Temporal or a ROS service — failed) |
 
@@ -307,7 +307,7 @@ registered in `server.py` map them to HTTP:
 [ uint32 LE point_count ][ float32 LE x, y, z ] * point_count      # map frame
 ```
 
-The frontend reads this straight into a three.js `BufferGeometry`. Both WS
+A browser client can read this straight into a typed array. Both WS
 streams share one `_pump`: it is **frame-driven**, waiting on the single-slot
 repo's notification rather than polling (polling cost ~50 ms of queueing latency
 and ~5 % dropped frames from two unsynchronised 10 Hz clocks beating), and the

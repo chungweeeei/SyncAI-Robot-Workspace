@@ -48,8 +48,8 @@ namespace syncai_robot_state
 // slow rate and the last answer is cached, with no interpretation added here.
 // sys_manager is the only party that can know the mode (it DERIVES it by asking
 // byobu, and never stores it), so asking is the only honest implementation — the
-// previous one hardcoded AUTO, which made the frontend's mode chip a lie
-// whenever a mapping session was live.
+// previous one hardcoded AUTO, which made the reported mode a lie whenever a
+// mapping session was live.
 //
 // It only ever reports. No threshold here commands the robot to do anything.
 class RobotStateNode : public rclcpp::Node

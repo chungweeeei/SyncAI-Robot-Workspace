@@ -279,7 +279,7 @@ ros2 interface list | grep syncai_common
 - **Timestamp units are not uniform.** `ArtifactState` and `ExecuteTask` are in
   milliseconds; `RobotState.timestamp` is in **seconds** (`now().seconds()` cast
   to `uint64`), because it is passed through verbatim to
-  `GET /api/v1/robot/state` and the frontend already multiplies by 1000. Both of
+  `GET /api/v1/robot/state`, where a client scales it. Both of
   `RobotState`'s timestamps are seconds — but `motor_status.timestamp` only because
   `syncai_robot_state` scales it on the way in, while the **same `MotorStates`
   message on the `motor_states` topic carries nanoseconds** (the topic keeps them
