@@ -13,10 +13,12 @@
 # during construction and die without one, so this spec cannot build the map it
 # needs. See start_mapping.yaml for the other half of that loop.
 #
-# The frontend pane runs `npm run dev` (Next.js dev server on 3001) rather than a
-# pre-built `npm start`, so UI edits hot-reload — this is still the spec being
-# driven during development. There is no rviz2 window: on the robot itself there
-# is no display, and the operator console on 3001 covers the same ground.
+# There is no frontend window: `syncai_frontend` left this workspace in 2026-09
+# (the operator console is developed and served from its own repository), so
+# nothing in this session listens on 3001 any more — the backend on 3000 is the
+# console's only contact with the robot, and a console pointed at this host
+# needs nothing else from it. There is no rviz2 window either: on the robot
+# itself there is no display, and the console covers the same ground.
 #
 # Startup order matters (there is no lifecycle manager): map_server / LIO ->
 # lio_bridge -> planner/controller -> task_runner, which is what the `sleep:`
@@ -30,9 +32,10 @@
 # `ros2 service call /<robot_id>/localizer/relocalize ...` the manual one.
 #
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
-# starts in the workspace root so the relative config/system.ini resolves. The
-# frontend pane is the one exception — it starts in src/syncai_frontend, which
-# is where its package.json lives.
+# starts in the workspace root so the relative config/system.ini resolves. No
+# window sets `cwd:` any more — the frontend pane was the one exception (it had
+# to start where its package.json lived) and went with the package; the schema
+# still supports the key.
 #
 # Logs go to log/stack/<robot_id>/<name>/. start_mapping.yaml writes the
 # mapping/ subtree instead, so the two specs cannot interleave two multilogs
@@ -94,7 +97,10 @@ windows:
         log: driver_manager
 
 
-  # ---------- Window 5: robot_state / backend ----------
+  # ---------- Window 6: robot_state / backend ----------
+  # Last window: the backend is the console's whole surface on the robot (REST +
+  # WebSockets on 3000). The frontend dev server that used to follow it here is
+  # gone with `syncai_frontend` — see the header.
   - name: backend
     panes:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py
@@ -102,14 +108,3 @@ windows:
       - cmd: ros2 launch syncai_backend backend.launch.py
         sleep: 2
         log: backend
-
-  # ---------- Window 6: frontend dev server (Next.js, 3001) ----------
-  # cwd is the package dir, not the workspace root — npm needs its package.json.
-  # `npm run dev` (not `start`): this variant exists for UI work, so hot reload
-  # is the point. First start after a fresh container is slow while Next
-  # compiles.
-  - name: frontend
-    cwd: src/syncai_frontend
-    panes:
-      - cmd: npm run dev
-        log: frontend

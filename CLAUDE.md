@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A ROS 2 Humble software stack for the SyncAI robot (G23 quadruped / AMR chassis),
 covering the full vertical: sensor drivers, LIO odometry, a **non-lifecycle port
-of Navigation2**, a Temporal-backed task orchestration backend, and a Next.js
-operator UI.
+of Navigation2**, and a Temporal-backed task orchestration backend whose REST /
+WebSocket API is the contract the operator console (out of tree, see "Operator
+console") is built against.
 
 Two things shape almost every decision here:
 
@@ -96,8 +97,12 @@ prefixed with the robot name so several robots can publish to one MediaMTX.
 
 | Package | Role |
 |---|---|
-| `syncai_backend` | Python. FastAPI **and** rclpy in one process (`MultiThreadedExecutor`), port **3000**. Temporal worker for task orchestration. Also owns TTS (kokoro-onnx → `aplay`, weights in `models/kokoro/`), task templates + schedules, the wifi bridge to `sys_manager`, and the teleop / telemetry / point-cloud WebSockets. Declares **no** ROS parameters. |
-| `syncai_frontend` | Next.js 16 + shadcn-style ui + raw three.js, dev server on port **3001**. Not an ament package (no `package.xml`). |
+| `syncai_backend` | Python. FastAPI **and** rclpy in one process (`MultiThreadedExecutor`), port **3000**. Temporal worker for task orchestration. Also owns TTS (kokoro-onnx → `aplay`, weights in `models/kokoro/`), task templates + schedules, the wifi bridge to `sys_manager`, and the teleop / telemetry / point-cloud WebSockets. Declares **no** ROS parameters. **The only thing the operator console talks to** — see "Operator console" below. |
+
+`syncai_frontend` (the Next.js operator console, dev server on 3001) **was
+removed from this workspace in 2026-09** and lives in its own repository; it
+was never an ament package, so nothing in the ROS build changed. The port
+`3001` no longer belongs to anything here.
 
 Every `src/syncai_*` package is in-tree; everything under `src/third-party/` is a
 submodule.
@@ -148,12 +153,12 @@ back-compat with instance INIs written before the MID360s arrived.
 
 The C++ packages' launch files use the relative path `config/system.ini`, which
 works because **processes are expected to run with the workspace root as their
-cwd** — the session specs start every pane in the workspace root (the frontend
-window sets `cwd: src/syncai_frontend` explicitly), and `colcon.meta` and
-`ruff.toml` rely on the same assumption. The Python packages (`syncai_backend`,
-`syncai_sys_manager`) instead default to the absolute
-`~/robot_ws/config/system.ini` (`SYNCAI_SYSTEM_INI` / `system_config:=`), so
-they do not depend on the cwd.
+cwd** — the session specs start every pane in the workspace root (no window
+sets `cwd:` today; the frontend window was the one that did, and it left with
+the package), and `colcon.meta` and `ruff.toml` rely on the same assumption.
+The Python packages (`syncai_backend`, `syncai_sys_manager`) instead default to
+the absolute `~/robot_ws/config/system.ini` (`SYNCAI_SYSTEM_INI` /
+`system_config:=`), so they do not depend on the cwd.
 
 Three rules follow from namespacing:
 
@@ -207,11 +212,10 @@ must be what robot01 has. It therefore only `rosdep check`s by default
 reaches robot01, so a missing dep is a `Dockerfile` change. The script also
 restores the `livox_ros_driver2` `package.xml` when a submodule update has
 deleted it and refuses to start on empty submodule dirs. It builds **ROS
-packages only** — the frontend is not an ament package and its `npm install`
-stays a separate, by-hand step. It is equally runnable inside
-robot01 (`scripts/build.sh`). Its `build:` block duplicates
-`x-robot-common` (compose `extends` would drag the devices / nvidia runtime /
-X11 mounts along) — keep the two in sync.
+packages only**, which since the frontend left the workspace is everything
+under `src/`. It is equally runnable inside robot01 (`scripts/build.sh`). Its
+`build:` block duplicates `x-robot-common` (compose `extends` would drag the
+devices / nvidia runtime / X11 mounts along) — keep the two in sync.
 
 Recreating a robot container wipes hand-installed build dependencies (the ones
 not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
@@ -310,19 +314,22 @@ bash). The schema is documented in the `NodeManager` docstring (`session`,
 is where the startup ordering lives, since there is no lifecycle manager. The
 nav session's windows, in order: `bringup` → `localization` (map_server +
 localizer) → `lio_bridge` → `plan_ctrl` (planner + controller) → `task_runner`
-→ `driver_manager` → `backend` (robot_state + backend) → `frontend`
-(`cwd: src/syncai_frontend`, `npm run dev`). Sessions are built **detached** —
-no `attach-session`, because the caller is a ROS node with no TTY.
+→ `driver_manager` → `backend` (robot_state + backend). There is no `frontend`
+window in either spec any more — the console is served from outside the
+workspace, so a mode switch no longer interrupts it (it used to be a pane of
+the session being killed, which is why each spec carried its own dev server).
+Sessions are built **detached** — no `attach-session`, because the caller is a
+ROS node with no TTY.
 
 The two specs are counterparts, not variants. `start_nav.yaml` *localizes*
 against an existing map — map_server and the FAST-LIO2 localizer both load one
 during construction and die without it — so it cannot build the map it needs;
 `start_mapping.yaml` is the other half of that loop: `bringup` → `lio` (`pgo`)
-→ `driver_manager` → `backend` (robot_state + backend) → `frontend`, and
-deliberately **no** map_server / localizer / lio_bridge / planner / controller /
-task_runner / hba. The backend and frontend *are* in the mapping session because
-the operator console is the mapping UI: mode switch, teleop over WebSocket, the
-live `pgo/map_cloud` stream and save-map all go through the backend. Their logs
+→ `driver_manager` → `backend` (robot_state + backend), and deliberately **no**
+map_server / localizer / lio_bridge / planner / controller / task_runner / hba.
+The backend *is* in the mapping session because the operator console is the
+mapping UI: mode switch, teleop over WebSocket, the live `pgo/map_cloud` stream
+and save-map all go through the backend. Their logs
 go to separate subtrees, which is what stops the two from interleaving two
 multilogs into one directory. The 2D / AMCL session was retired along with
 `bringup_2d.launch.py`. Neither spec has an rviz2 window (the robot has no
@@ -388,8 +395,8 @@ temporal/     (worker, workflows, activities)
   Vertex routes are nested under `/api/v1/maps/{name}/vertices` and the request
   bodies carry **no** `map_name` — the URL owns the map, so a body cannot name a
   different one. Moving a vertex between maps is a delete and a create.
-- **Map rename** (`PATCH /api/v1/maps/{name}`, frontend: the map card's inline
-  Rename control) is one `os.rename` of `map/<old>/` plus two bulk `UPDATE`s:
+- **Map rename** (`PATCH /api/v1/maps/{name}`; in the console, the map card's
+  inline Rename control) is one `os.rename` of `map/<old>/` plus two bulk `UPDATE`s:
   `MapRepo.move_vertices` re-keys `map_vertices.map` and
   `TaskTemplateRepo.rebind_map` re-keys `task_templates.map_name` — the
   directory name is a foreign key by convention in both tables, with no
@@ -404,8 +411,8 @@ temporal/     (worker, workflows, activities)
   map first, which is a live call now, not a stack restart), 409
   `conversion_running`, 409 `name_taken`. Temporal schedule memos keep the old
   `map_name` label on purpose (display-only, never re-registered).
-- **Map switch** (`POST /api/v1/maps/{name}/activate`, frontend: the map card's
-  top-left corner tile, swap arrows in the slot the in-use badge occupies on the
+- **Map switch** (`POST /api/v1/maps/{name}/activate`; in the console, the map
+  card's top-left corner tile, swap arrows in the slot the in-use badge occupies on the
   map the robot is already on) is the verb that
   lifts `map_active` on both of the above, and the only thing in the workspace
   that writes the instance INI
@@ -432,8 +439,8 @@ temporal/     (worker, workflows, activities)
   discoverability rather than the cached mode, which a robot that has lost
   localization does not have. Not guarded: a goal sent straight from the
   dashboard rather than dispatched as a task.
-- **Map delete** (`DELETE /api/v1/maps/{name}`, frontend: the X in the map
-  card's corner, behind an alert dialog) is `MapRepo.delete_vertices` then
+- **Map delete** (`DELETE /api/v1/maps/{name}`; in the console, the X in the
+  map card's corner, behind an alert dialog) is `MapRepo.delete_vertices` then
   `MapCatalogRepo.delete_map_dir`'s `shutil.rmtree`, in that order — **the
   inverse of the rename, deliberately.** A rename puts the filesystem first
   because `os.rename` back is a real compensation; `rmtree` has none, so the
@@ -512,7 +519,7 @@ temporal/     (worker, workflows, activities)
   callers; under it a failed conversion was indistinguishable from a map nobody
   had converted and its reason existed only in the backend log.
 - **`POST /api/v1/maps/{name}/grid/convert`** is the manual/override route
-  (frontend: the map card's Rebuild-grid dropdown): pick the recipe, override
+  (in the console, the map card's Rebuild-grid dropdown): pick the recipe, override
   `gap_fill_size` or the z-band offsets, and pass `debug: true` to get the
   segmentation's intermediate clouds in `<map>/traversable_debug/` — the tuning
   interface for a site the defaults cannot handle (the next outdoor venue). One
@@ -557,51 +564,36 @@ backend. `src/syncai_backend/test/` holds ~40 pytest files (routers, Temporal
 workflows/activities, both gridmap recipes); the conversion tests need open3d
 and scipy.
 
-## Frontend (`syncai_frontend`)
+## Operator console (out of tree)
 
-Next.js 16 (dev server on port 3001), shadcn-style components on
-`@base-ui/react`, **raw three.js** for the 3D point-cloud view (no
-react-three-fiber). Routes: `/` (dashboard: point cloud + telemetry rail, goal /
-initial-pose / posture / manual joystick controls), `/mapping` (mode switch,
-save map, start a new map — the page confirms every one of those in one alert
-dialog, including a plain mode switch either way, and owns the unsaved-run rule
-that escalates the copy when leaving MANUAL would lose the map; it re-arms that
-rule after a reset by hand, since `reported` never changes across one), `/maps` (map library,
-per-card Rebuild-grid dropdown, inline Rename, and a Switch corner tile — Rename
-is greyed for the active map, which the backend refuses too, and Switch is the
-control that un-greys it) and
-`/maps/[name]/edit` (gridmap editor; its header title is a second rename surface — double-click or F2, Enter to save — refused while the grid is dirty, because the rename navigates and the reload drops the buffer), `/recordings` (bag recording: start /
-stop / list / delete, with the recorder panel's face driven by
-`GET /api/v1/recordings/active` rather than by a local started-it flag, so a
-recording begun from a shell shows correctly), `/tasks` (templates, dispatch,
-schedules), `/settings` (wifi via the backend's network router, appearance),
-`/model-preview`. There is **no camera component** — nothing in the frontend
-speaks WebRTC/WHEP yet; the RTSP stream the robot publishes is viewed through
-MediaMTX's own WebRTC page for now. The backend base URLs come only from
-`NEXT_PUBLIC_API_BASE` / `NEXT_PUBLIC_WS_BASE` (`lib/api/config.ts`, falling back
-to the page hostname on port 3000); never hardcode a host. `next.config.ts`
-hardcodes `allowedDevOrigins` LAN IPs that must be edited per robot or HMR
-breaks.
+The Next.js operator console (`syncai_frontend`: dashboard with the 3D point
+cloud, `/mapping`, `/maps` + the gridmap editor, `/recordings`, `/tasks`,
+`/settings`) **was removed from this workspace in 2026-09** and is developed in
+its own repository. What that means for this repo:
 
-The robot mesh `public/models/g23.glb` is a **build artifact**: regenerate it
-with `scripts/urdf2glb.py` after editing `src/syncai_bringup/description/G23.urdf`.
-Two invariants are load-bearing — GLB node names must equal URDF link names
-(the canvas looks links up by name to apply joint angles) and coordinates stay
-ROS Z-up.
-
-REST reads go through **TanStack Query**: one `QueryClient` in
-`components/query-provider.tsx` (retry and focus-refetch are off on purpose —
-the poll intervals are the retry policy), and every cache key lives in
-`lib/api/query-keys.ts` so cache *sharing* between hooks is a decision visible
-in one place (the gridmap editor and the dashboard read the same vertices
-entry). The WebSocket streams (telemetry, point cloud) stay outside it — a push
-stream has nothing to refetch; see `hooks/use-telemetry.ts`, and the point
-cloud additionally bypasses React state entirely (20 Hz × few-hundred-KB frames
-go straight into three.js buffers in `PointCloudCanvas`).
-
-`src/syncai_frontend/AGENTS.md` warns that the pinned Next.js version has
-breaking changes relative to model training data — read the relevant guide in
-`node_modules/next/dist/docs/` before writing Next.js code.
+- **The backend's REST / WebSocket API on port 3000 is the contract.** Every
+  console control maps to a route named in the backend section above; changing
+  a route, a response shape or a 409 code is a cross-repo change now, not a
+  same-commit edit, so say so in the commit message and keep the old shape
+  working until the console has moved. `server.py` already serves
+  `allow_origins=["*"]`, so a console on another host needs nothing from the
+  robot beyond the port.
+- **Nothing here serves port 3001 any more.** Neither session spec has a
+  `frontend` window (they used to carry one each, so the console survived
+  `switch_mode` killing the other session — moot for a console served
+  elsewhere), the `Dockerfile`'s Node.js runtime is now only there for
+  `scripts/urdf2glb.py`'s `npx gltfpack` step, and `scripts/build.sh` /
+  `docker-compose.build.yaml` build every package under `src/`.
+- **The robot mesh is still built from here.** `scripts/urdf2glb.py` bakes
+  `src/syncai_bringup/description/G23.urdf` into a GLB the console loads as
+  `public/models/g23.glb`; regenerate and hand it over after editing the URDF.
+  Two invariants are load-bearing on the console side — GLB node names must
+  equal URDF link names (the canvas looks links up by name to apply joint
+  angles) and coordinates stay ROS Z-up.
+- The "in the console, …" hints in the backend section describe the console's
+  controls as they were when it left, kept because they say *which* route a
+  UI verb hits. Treat them as a pointer to that repo, not as something to
+  verify here.
 
 ## Infrastructure
 
@@ -682,8 +674,8 @@ breaking changes relative to model training data — read the relevant guide in
   live in the container — the session name follows the mode, so a hardcoded
   alias is wrong half the time), `build.sh` (in-image: the build
   steps behind `docker-compose.build.yaml`, see Build), `publish_camera_crop.sh` + `.env` (host-side
-  camera publisher, see Infrastructure), `urdf2glb.py` (robot mesh for the frontend, see
-  Frontend), and `release/` (`build_images.sh` / `save_images.sh` /
+  camera publisher, see Infrastructure), `urdf2glb.py` (robot mesh for the
+  console's 3D view, see "Operator console"), and `release/` (`build_images.sh` / `save_images.sh` /
   `load_and_up.sh` / `.env.example` — an offline release bundle for the
   customer IPC that is currently **non-functional**: it needs the removed
   production Dockerfile stages and a `docker-compose.prod.yml` that is not in
