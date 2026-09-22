@@ -24,8 +24,8 @@ Three things shape almost every decision here:
    See "The robot_id convention" below — this is the single most common source of
    mistakes when editing launch files or params.
 3. **The operator API is not in this repo.** `syncai_backend` moved to
-   `SyncAI-Robot-Backend` in 2026-09 and `syncai_frontend` to its own repository
-   just before it. Every REST route, WebSocket and 409 code named in this file is
+   `chungweeeei/SyncAI-Robot-Backend` in 2026-09 and `syncai_frontend` to
+   `chungweeeei/SyncAI-Robot-Frontend` just before it. Every REST route, WebSocket and 409 code named in this file is
    documentation of a *consumer* of this stack, not of code you can edit here —
    and changing a service, topic, message or map-directory layout the backend
    calls is a cross-repository change. See "Out of tree" for what that means in
@@ -118,7 +118,7 @@ stack's behaviours it depends on — is under "Out of tree" below.
 
 What `src/` holds: the `syncai_*` packages in the tables above, plus
 `src/third-party/`. One of those packages is not tracked here — `syncai_common`
-moved to `SyncAI-Robot-Interface` in the same split, so the backend can build
+moved to `chungweeeei/SyncAI-Robot-Interface` in the same split, so the backend can build
 against the message definitions without checking out this workspace, and is
 materialised back into `src/` by `vcs import < interface.repos`. Edit the
 messages there; a change made in that directory is untracked, and the next
@@ -398,8 +398,8 @@ Two repositories used to be directories here:
 
 | Repo | Was | What it does |
 |---|---|---|
-| `SyncAI-Robot-Backend` | `src/syncai_backend` (removed 2026-09) | FastAPI + rclpy in one process on port **3000**: Temporal task orchestration, task templates and schedules, the map catalogue and both pcd → gridmap recipes, TTS, bag recording, and the teleop / telemetry / point-cloud WebSockets. |
-| the operator console | `src/syncai_frontend` (removed 2026-09) | Next.js: dashboard with the 3D point cloud, `/mapping`, `/maps` + the gridmap editor, `/recordings`, `/tasks`, `/settings`. Talks to the backend and to nothing else on the robot. |
+| `chungweeeei/SyncAI-Robot-Backend` | `src/syncai_backend` (removed 2026-09) | FastAPI + rclpy in one process on port **3000**: Temporal task orchestration, task templates and schedules, the map catalogue and both pcd → gridmap recipes, TTS, bag recording, and the teleop / telemetry / point-cloud WebSockets. |
+| `chungweeeei/SyncAI-Robot-Frontend` | `src/syncai_frontend` (removed 2026-09) | Next.js: dashboard with the 3D point cloud, `/mapping`, `/maps` + the gridmap editor, `/recordings`, `/tasks`, `/settings`. Talks to the backend and to nothing else on the robot. |
 
 Neither is imported, built or launched from here. The backend runs in its own
 container on the robot, with host networking on DDS domain 1, so it discovers
@@ -572,11 +572,13 @@ something to verify or edit here.
   change with no rationale is out of place here. The last Chinese remnants
   (BT plugin comments, `ExecuteTask.action`, the camera script's log strings,
   the `doc/` proposals) were translated in 2026-09; anything new in another
-  language is a regression, log strings included. The one exception is a
-  `*.zh-TW.md` **translation** sitting beside an English original that stays the
-  canonical copy and carries the content — `doc/webrtc-worker-proposal.zh-TW.md`
-  is the only one today. Edit the English file first; a zh-TW file that has
-  drifted is worse than none, so either update both or delete the translation.
+  language is a regression, log strings included. There are **no translations
+  in the tree today** — `doc/webrtc-worker-proposal.zh-TW.md` was the only one
+  and went with its English original in `3dd5f7c`. The rule if one is ever
+  added back: a `*.zh-TW.md` sits beside an English file that stays the
+  canonical copy and carries the content, and you edit the English one first. A
+  zh-TW file that has drifted is worse than none, so either update both or
+  delete the translation.
 - `build/`, `install/`, `log/`, `data/`, `.env`, `record/` (hand-recorded
   rosbags), the whole of `/map/` (LIO output: `map.pcd`, `poses.txt`,
   `patches/`, generated `gridmap.*`) and `/models/` (TTS weights, which nothing
@@ -596,26 +598,19 @@ something to verify or edit here.
   the tree, and its `.env.example` says `ROS_DOMAIN_ID=0` while the stack pins
   domain 1). `skills-lock.json` at the root is Claude Code tooling metadata,
   not stack config.
-- `doc/` holds six design **proposals** (none implemented). Five are on agent /
-  MCP integration: deep-agent wiring, a gridmap-tuning agent, MCP server design,
-  RoboNeuron mechanisms, and a task-recovery loop. Three of those target
-  `src/syncai_device_agent/`, which was removed in commit `99141a6`, and four
-assume `src/syncai_ros_mcp/`, removed later — both are in git history. The
-sixth,
-  `webrtc-worker-proposal.md`, is unrelated to the other five: it covers the
-  camera path (a self-built Go + pion WHEP worker in `src/syncai_webrtc/` that
-  owns the capture/crop/encode pipeline as a supervised `gst-launch-1.0` child
-  and relays its RTP to browsers; it deliberately ignores the host-side
-  `publish_camera_crop.sh` path) and records why the "Go `.so` + zero-copy into
-  Python" framing it came from was not adopted. Note its Python side was the
-  backend, so if that proposal is ever picked up it is now a two-repository
-  design — the `lib/libsyncai_worker.so` this workspace used to carry for it
-  went with `syncai_backend`. The
-  FAST-LIO2 design notes that used to live here (`fastlio2-pgo-pipeline.md`;
-  `config/sessions/start_mapping.yaml` still cites its §3.5 / §5 by section
-  number, noting that the file is gone) are no longer in the tree — check git
-  history. `webrtc-worker-proposal.zh-TW.md` is a translation of the sixth, not
-  a seventh proposal; see the English-docs convention above.
+- `doc/` holds five design **proposals**, none implemented, and all five are on
+  agent / MCP integration: deep-agent wiring, a gridmap-tuning agent, MCP server
+  design, RoboNeuron mechanisms, and a task-recovery loop. Read them as history,
+  not as plans — three target `src/syncai_device_agent/`, removed in `99141a6`,
+  and four assume `src/syncai_ros_mcp/`, removed later; both are in git history.
+  Two things that used to be in this directory are not:
+  `webrtc-worker-proposal.md` and its zh-TW translation (a self-built Go + pion
+  WHEP worker owning the capture/crop/encode pipeline, deliberately ignoring the
+  host-side `publish_camera_crop.sh` path) were deleted in `3dd5f7c`, and that
+  work now lives in its own repository, `chungweeeei/SyncAI-WebRTC-Worker`; and
+  the FAST-LIO2 design notes (`fastlio2-pgo-pipeline.md`, which
+  `config/sessions/start_mapping.yaml` still cites by section number, noting the
+  file is gone). Check git history for either.
 
 ## Tests
 

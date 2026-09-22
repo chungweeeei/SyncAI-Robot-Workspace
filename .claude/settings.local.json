@@ -108,7 +108,10 @@
       "Bash(gst-launch-1.0 v4l2src *)",
       "Bash(sudo -n fuser -v /dev/video0)",
       "Bash(fuser -v /dev/video0)",
-      "Bash(v4l2-ctl *)"
+      "Bash(v4l2-ctl *)",
+      "Bash(git rev-list *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }

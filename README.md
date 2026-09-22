@@ -4,9 +4,10 @@ A ROS 2 Humble software stack for the SyncAI robot (G23 quadruped / AMR
 chassis): Livox lidar + camera drivers, FAST-LIO2 odometry and localization, a
 **non-lifecycle port of Navigation2**, and the byobu session manager that brings
 all of it up. The two operator-facing halves each live in their own repository
-now — `SyncAI-Robot-Backend` (the Temporal-backed task orchestration API on port
-3000, split out in 2026-09) and the Next.js console it serves (split out earlier
-the same month). This workspace is the robot's ROS 2 side of that line.
+now — `chungweeeei/SyncAI-Robot-Backend` (the Temporal-backed task
+orchestration API on port 3000, split out in 2026-09) and
+`chungweeeei/SyncAI-Robot-Frontend`, the Next.js console it serves (split out
+earlier the same month). This workspace is the robot's ROS 2 side of that line.
 
 The nav2 servers (map server, costmap, planner, controller, BT navigator) were
 re-implemented as plain `rclcpp::Node`s instead of lifecycle nodes, so the stack
@@ -71,7 +72,7 @@ Two packages that used to be in this table are not any more, and both moved in
 
 | Was | Now | What it is |
 |---|---|---|
-| `syncai_frontend` | its own repository | The Next.js operator console, formerly served from port 3001. Nothing in this workspace serves it. The robot mesh it renders is still baked here, by `scripts/urdf2glb.py`. |
+| `syncai_frontend` | `SyncAI-Robot-Frontend` | The Next.js operator console, formerly served from port 3001. Nothing in this workspace serves it. The robot mesh it renders is still baked here, by `scripts/urdf2glb.py`. |
 | `syncai_backend` | `SyncAI-Robot-Backend` | FastAPI + rclpy in one process on port **3000**: Temporal worker (tasks, templates, schedules), map catalogue + pcd → gridmap conversion, TTS, WebSocket streams. The API the console is built on, and still the only thing it talks to. |
 
 Neither is imported, built or launched from here. The backend runs in its own
@@ -279,7 +280,7 @@ building the target one and refuses to rebuild the mode that is already live
 This repo serves the Temporal UI at `:8081` and pgAdmin at `:5050`. The
 operator API — REST + WebSockets on `http://<robot>:3000`, interactive docs at
 `/docs` — is `SyncAI-Robot-Backend`, deployed as its own container on this host
-and pointed at by the console (its own repository too; nothing here serves
+and pointed at by the console (`SyncAI-Robot-Frontend`; nothing here serves
 either). Navigation goals, mode switches, teleop and map saving all go through
 that API. A raw `NavigateToPose` goal to `/<robot_id>/task_runner` works as
 well, and is the route that needs nothing outside this repo.
