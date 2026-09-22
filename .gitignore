@@ -91,3 +91,18 @@ src/syncai-ros-mcp/
 # `record/` matches a directory of that name at any depth, and would silently
 # swallow a future src/**/record/ package directory.
 /record/
+
+# Materialised by `vcs import < interface.repos`, not committed -- the same
+# arrangement src/third-party/ has. It was 28 tracked files in this repo until
+# the 2026-09 split moved it to SyncAI-Robot-Interface, so that syncai_backend
+# could build against the interfaces without checking out the whole workspace.
+# Edit the messages THERE; a change made in this directory is untracked and the
+# next --force import overwrites it.
+src/syncai_common/
+
+# Materialised by `vcs import < backend.repos`, not committed. Tracked here as
+# 120 files until the 2026-09 split; the copy had diverged from
+# SyncAI-Robot-Backend across 44 files, which is the divergence this ends.
+# Edit the code THERE; a change made in this directory is untracked and the
+# next --force import overwrites it.
+src/syncai_backend/

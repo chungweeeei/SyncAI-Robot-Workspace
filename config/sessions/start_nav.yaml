@@ -101,10 +101,7 @@ windows:
   # Last window: the backend is the console's whole surface on the robot (REST +
   # WebSockets on 3000). The frontend dev server that used to follow it here is
   # gone with `syncai_frontend` — see the header.
-  - name: backend
+  - name: robot_state
     panes:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py
         log: robot_state
-      - cmd: ros2 launch syncai_backend backend.launch.py
-        sleep: 2
-        log: backend

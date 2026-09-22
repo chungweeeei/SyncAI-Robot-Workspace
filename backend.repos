@@ -1,0 +1,5 @@
+repositories:
+  src/syncai_backend:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-Backend.git
+    version: refactor/architecture-review-fixes

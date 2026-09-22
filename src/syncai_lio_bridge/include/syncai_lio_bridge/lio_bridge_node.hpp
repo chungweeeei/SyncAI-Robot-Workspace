@@ -44,8 +44,8 @@ struct Pose2D
 //     /<robot_id>/odom    nav_msgs/Odometry republished for twist consumers
 //                         (controller_server, task_runner, robot_state); linear
 //                         velocity comes from LIO (body frame), angular.z from
-//                         the lidar IMU gyro since LIO leaves twist.angular
-//                         empty
+//                         the lidar IMU gyro — a deliberate choice, not a
+//                         fallback (see imu_cb)
 //     map -> odom         AMCL-style correction using the localizer's
 //                         map -> lio_odom TF:
 //                         map->odom = P2D(map->base) * inv(P2D(odom->base))

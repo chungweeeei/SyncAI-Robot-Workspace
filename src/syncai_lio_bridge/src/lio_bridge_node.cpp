@@ -98,6 +98,19 @@ void LioBridgeNode::lio_cb(const nav_msgs::msg::Odometry::SharedPtr msg)
 void LioBridgeNode::imu_cb(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
   // IMU is co-located with the lidar; planar robot -> gyro z is yaw rate.
+  //
+  // The raw gyro is used in preference to Point-LIO's own twist.angular, which
+  // pointlio_node does populate from its EKF output-model state x().omg. An
+  // earlier comment here claimed LIO left that field empty; it does not, and
+  // the estimate is not the bias-free one it looks like: pointlio.yaml sets
+  // gyr_cov_output: 1000.0, so the output model tracks the measurement almost
+  // instantly. Measured at standstill on robot01 (2026-09-21, 40 s):
+  //
+  //     Point-LIO twist.angular.z   mean +0.0620 deg/s   std 0.005672
+  //     livox/imu gyro z (this)     mean +0.0907 deg/s   std 0.000964
+  //
+  // Same residual bias either way — and nothing downstream integrates it — but
+  // Point-LIO's is 5.9x noisier. Switching would only add noise.
   yaw_rate_ = msg->angular_velocity.z;
 }
 

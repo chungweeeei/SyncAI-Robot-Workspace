@@ -123,12 +123,24 @@ cd - && git add src/third-party/behaviortree_cpp_v3 && git commit -m "chore: bum
 
 ## Getting started
 
-### 1. VCS import submodules
+### 1. VCS import the source repos
 
 ```bash
 sudo apt update && sudo apt install python3-vcstool -y
-vcs import < third-party.repos
+vcs import < third-party.repos     # src/third-party/ — upstream code, SHA-pinned
+vcs import < interface.repos       # src/syncai_common — our own wire format
+vcs import < backend.repos         # src/syncai_backend — the operator-facing process
 ```
+
+All three are required before the first `colcon build`. `src/syncai_common` and
+`src/syncai_backend` are no longer tracked by this repo — they moved to
+`SyncAI-Robot-Interface` and `SyncAI-Robot-Backend` in 2026-09 — and four
+packages fail to configure without the first.
+
+**On an existing robot**, the pull that brings this change **deletes** both
+directories from the working tree: git removes them as tracked files, and
+nothing puts them back automatically. Run both imports before the next build,
+or it fails on packages that were there yesterday.
 
 ### 2. Pick the robot identity
 

@@ -97,10 +97,24 @@ would smear obstacles.
 
 ### Angular velocity comes from the IMU
 
-Point-LIO leaves `twist.angular` empty, so `odom.twist.twist.angular.z` is taken
-from the lidar IMU's gyro `z` instead. The IMU is co-located with the lidar and
-the robot is treated as planar, so gyro z is the yaw rate. Linear x/y come from
-LIO's own body-frame twist.
+`odom.twist.twist.angular.z` is taken from the lidar IMU's gyro `z`. The IMU is
+co-located with the lidar and the robot is treated as planar, so gyro z is the
+yaw rate. Linear x/y come from LIO's own body-frame twist.
+
+This is a deliberate choice, not a fallback. An earlier version of this section
+claimed Point-LIO leaves `twist.angular` empty; it does not — `pointlio_node`
+fills it from its EKF output-model state `x().omg`. Nor is that estimate the
+bias-free one it looks like: `pointlio.yaml` sets `gyr_cov_output: 1000.0`, so
+the output model tracks the raw measurement almost instantly. Measured at
+standstill on robot01 (2026-09-21, 40 s):
+
+| source | mean | std |
+|---|---|---|
+| Point-LIO `twist.angular.z` | +0.0620 deg/s | 0.005672 |
+| `livox/imu` gyro z (used here) | +0.0907 deg/s | 0.000964 |
+
+Same residual bias either way — and nothing downstream integrates it — but
+Point-LIO's is 5.9x noisier, so switching would only add noise.
 
 The twist is what consumers actually use: `syncai_controller` (via
 `syncai_util::OdomSubscriber`), `syncai_task_runner`'s odom smoother, and
@@ -203,8 +217,13 @@ throttled message:
   extrinsic. With the 0.25 rad mount pitch this is roughly a 3% underestimate of
   forward speed — fine for the consumers listed above, but not exact.
 - **LIO drift shows up as a moving `map → odom`.** That is the correction doing
-  its job; a *jumping* correction instead points at the localizer accepting a bad
-  scan match, not at this node.
+  its job; a *jumping* correction instead points at the localizer, not at this
+  node. Measured on robot01 parked for 60 s (2026-09-21, dp2f map): Point-LIO
+  under the correction moved 7.8 / 6.9 mm / 0.27°, while `map → pointlio_odom`
+  swung 33.7 / 29.0 mm / 1.07° — the localizer was re-solving GICP's own noise
+  floor at 5 Hz. The motion gate added to `localizer.yaml`
+  (`min_update_trans` / `max_update_interval` / `static_blend_alpha`) is what
+  suppresses it; if standstill jitter comes back, look there before here.
 - **Single-threaded spin.** The timer, both subscriptions and the TF listener all
   share the default executor, so a slow TF lookup delays the next publish tick.
   At 20 Hz with cached lookups this has not been a problem.
