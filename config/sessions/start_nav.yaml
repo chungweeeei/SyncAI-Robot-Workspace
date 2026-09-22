@@ -13,12 +13,14 @@
 # during construction and die without one, so this spec cannot build the map it
 # needs. See start_mapping.yaml for the other half of that loop.
 #
-# There is no frontend window: `syncai_frontend` left this workspace in 2026-09
-# (the operator console is developed and served from its own repository), so
-# nothing in this session listens on 3001 any more — the backend on 3000 is the
-# console's only contact with the robot, and a console pointed at this host
-# needs nothing else from it. There is no rviz2 window either: on the robot
-# itself there is no display, and the console covers the same ground.
+# There is no frontend window and no backend window: `syncai_frontend` left this
+# workspace in 2026-09 and `syncai_backend` followed it, so nothing in this
+# session listens on 3001 or 3000 any more. The backend on 3000 is still the
+# console's only contact with the robot — it runs in its own container, sharing
+# the host network and DDS domain 1, so it discovers the nodes below from
+# outside this session exactly as a pane of it did, and switch_mode no longer
+# takes it down along with the session. There is no rviz2 window either: on the
+# robot itself there is no display, and the console covers the same ground.
 #
 # Startup order matters (there is no lifecycle manager): map_server / LIO ->
 # lio_bridge -> planner/controller -> task_runner, which is what the `sleep:`
@@ -97,10 +99,12 @@ windows:
         log: driver_manager
 
 
-  # ---------- Window 6: robot_state / backend ----------
-  # Last window: the backend is the console's whole surface on the robot (REST +
-  # WebSockets on 3000). The frontend dev server that used to follow it here is
-  # gone with `syncai_frontend` — see the header.
+  # ---------- Window 6: robot_state ----------
+  # Last window, and a single pane: both processes that used to follow
+  # robot_state here — the backend, and the frontend dev server before it — are
+  # served from their own containers now (see the header). robot_state stays
+  # because it is what publishes RobotState, the topic the backend re-serialises
+  # onto its telemetry WebSocket.
   - name: robot_state
     panes:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py

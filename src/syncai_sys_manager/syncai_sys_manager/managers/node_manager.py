@@ -31,9 +31,10 @@ SESSION_SPECS = {
 # robot's job; mapping is the occasional, deliberate detour.
 DEFAULT_MODE = RobotMode.AUTO
 
-# Reverse lookup for log messages only. Mirrors the backend's MODE_NAMES in
-# syncai_backend/interfaces/rest/routers/robot.py — kept local rather than
-# imported because the backend's copy is a REST serialisation detail.
+# Reverse lookup for log messages only. Mirrors the backend's MODE_NAMES (its
+# robot router, in SyncAI-Robot-Backend since the 2026-09 split) — kept local
+# rather than imported because that copy is a REST serialisation detail, and
+# now because it is another repository as well.
 MODE_NAMES = {
     RobotMode.MAINTENANCE: "MAINTENANCE",
     RobotMode.MANUAL: "MANUAL",

@@ -70,39 +70,52 @@ data/
 # shadow (src/syncai_ros_mcp) was removed, and lives in git history now.
 src/syncai-ros-mcp/
 
+# Materialised by `vcs import < third-party.repos`, not committed -- six upstream
+# repos, each with its own .git, which is why this rule matters more than it
+# looks: without it a `git add -A` stages all six as gitlinks with no .gitmodules
+# behind them, and a fresh clone gets six empty directories. `gitkeep` is
+# negated so the directory itself survives a clone and vcs has somewhere to
+# import into.
+src/third-party/*
+!src/third-party/gitkeep
+
+# Same arrangement for a standalone clone of the backend (chungweeeei/
+# SyncAI-Robot-Backend), if anyone keeps one here to develop it against the ROS
+# interfaces. It is a different repository's working tree and must never be
+# committed into this one; it was 120 tracked files here until the 2026-09
+# split, which git history still has. Note colcon WILL pick a clone up and
+# build it — that is the point of putting it here rather than beside the
+# workspace, but it also means `colcon build` failures from it are not this
+# repo's.
+src/syncai_backend/
+
 # LIO map output (pcd / gridmap / poses — regenerated, not tracked).
-# Anchored with a leading slash: a bare `map/` matches a directory of that name at
-# any depth, and it was silently swallowing
-# src/syncai_backend/syncai_backend/repositories/map/. Files already tracked there
-# stayed visible, so nothing looked wrong until a new module in it went missing
-# from a commit.
+# Anchored with a leading slash: a bare `map/` matches a directory of that name
+# at any depth, and it was silently swallowing a `repositories/map/` package
+# directory inside what is now SyncAI-Robot-Backend. Files already tracked
+# there stayed visible, so nothing looked wrong until a new module in it went
+# missing from a commit.
 /map/
 
-# TTS model weights (kokoro-onnx: kokoro-v1.0.onnx + voices-v1.0.bin, ~330 MB —
-# downloaded once from the kokoro-onnx GitHub releases, see
-# src/syncai_backend/gateways/tts/tts.py for the exact URLs). Anchored for the
-# same reason as /map/ above: a bare `models/` would swallow any future
+# TTS model weights (kokoro-onnx: kokoro-v1.0.onnx + voices-v1.0.bin, ~330 MB).
+# Nothing in this workspace downloads or reads them any more — TTS left with
+# the backend in 2026-09 — but robots that ran the in-tree backend still have
+# the directory, and the rule is what keeps it out of a commit. Anchored for
+# the same reason as /map/ above: a bare `models/` would swallow any future
 # src/**/models/ package directory.
 /models/
 
-# Hand- and API-recorded rosbags (record/<name>/*.db3 + metadata.yaml, written
-# by POST /api/v1/recordings or by `ros2 bag record` in a shell). Anchored with
-# a leading slash for the reason /map/ and /models/ above give: a bare
-# `record/` matches a directory of that name at any depth, and would silently
-# swallow a future src/**/record/ package directory.
+# Hand-recorded rosbags (record/<name>/*.db3 + metadata.yaml, written by
+# `ros2 bag record` in a shell; the REST route that also wrote here went with
+# the backend). Anchored with a leading slash for the reason /map/ and /models/
+# above give: a bare `record/` matches a directory of that name at any depth,
+# and would silently swallow a future src/**/record/ package directory.
 /record/
 
 # Materialised by `vcs import < interface.repos`, not committed -- the same
 # arrangement src/third-party/ has. It was 28 tracked files in this repo until
-# the 2026-09 split moved it to SyncAI-Robot-Interface, so that syncai_backend
+# the 2026-09 split moved it to SyncAI-Robot-Interface, so that the backend
 # could build against the interfaces without checking out the whole workspace.
 # Edit the messages THERE; a change made in this directory is untracked and the
 # next --force import overwrites it.
 src/syncai_common/
-
-# Materialised by `vcs import < backend.repos`, not committed. Tracked here as
-# 120 files until the 2026-09 split; the copy had diverged from
-# SyncAI-Robot-Backend across 44 files, which is the divergence this ends.
-# Edit the code THERE; a change made in this directory is untracked and the
-# next --force import overwrites it.
-src/syncai_backend/

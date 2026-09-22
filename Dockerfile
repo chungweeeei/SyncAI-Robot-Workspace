@@ -45,7 +45,7 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 # ROS 2 runtime floor. avahi-utils: syncai_sys_manager spawns avahi-publish
 # against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
 # in the container. tzdata: containers default to UTC — set local time so log
-# timestamps (ros2 launch, backend, byobu panes) match the host / operators.
+# timestamps (ros2 launch, byobu panes) match the host / operators.
 # ompl: Dubins/Reeds-Shepp state spaces for syncai_planner's smac plugins —
 # libsyncai_planner.so links libompl.so, so it is a runtime dep, not dev-only.
 RUN apt-get update && apt-get install -y \
@@ -159,6 +159,10 @@ FROM base AS dev
 # `<robot_id>/image_raw/compressed`, and bare `image_transport` declares the
 # raw transport alone. Without this plugin rviz2's Image display has no way to
 # subscribe at all and simply stays blank -- no error, no warning.
+#
+# python3-opencv and python3-dotenv were here for syncai_backend (cv2 encoded
+# the map images its /image route serves; dotenv read the workspace .env) and
+# left with it in 2026-09 — nothing in this workspace imports either now.
 RUN apt-get update && apt-get install -y \
     ros-humble-rviz2 \
     ros-humble-compressed-image-transport \
@@ -166,11 +170,9 @@ RUN apt-get update && apt-get install -y \
     ros-humble-pcl-ros \
     ros-humble-pointcloud-to-laserscan \
     ros-humble-teleop-twist-keyboard \
-    python3-opencv \
     python3-colcon-common-extensions \
     python3-rosdep \
     python3-vcstool \
-    python3-dotenv \
     byobu \
     daemontools \
     net-tools \
@@ -235,11 +237,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-alsa \
     && rm -rf /var/lib/apt/lists/*
 
-# aplay, for the TTS /speak route (syncai_backend's TtsGateway shells out to it
-# rather than pulling in a Python audio stack — sounddevice/simpleaudio would
-# each drag a PortAudio/ALSA -dev dependency in for what one binary does).
-# Playback additionally needs /dev/snd and the host audio group, which come
-# from docker-compose.robots.yml, not from this image.
+# aplay, to check the robot's speaker from a shell in here (`aplay -l`, then
+# play something at it). It used to be a dependency: the in-tree backend's TTS
+# gateway shelled out to aplay for its /speak route rather than pull in a
+# Python audio stack. That backend moved to SyncAI-Robot-Backend in 2026-09 and
+# its container owns the speaker now, so nothing in this image plays audio on
+# its own — the binary stays because the passthrough it needs (/dev/snd plus
+# the host audio group, from docker-compose.robots.yml) is still wired up and a
+# silent speaker is quicker to diagnose from the container that owns the robot
+# than from one that does not.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     alsa-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -285,23 +291,21 @@ RUN case "$(dpkg --print-architecture)" in \
 COPY --from=deps-builder /usr/local /usr/local
 RUN ldconfig
 
-# Python web stack for syncai_backend. requirements.txt is the single source
-# of truth for the backend's python deps.
-COPY src/syncai_backend/requirements.txt /tmp/syncai_backend_requirements.txt
-RUN pip3 install --no-cache-dir -r /tmp/syncai_backend_requirements.txt && \
-    rm /tmp/syncai_backend_requirements.txt
+# NOTE: there is no pip install of a web stack here any more. This image used to
+# carry syncai_backend's dependencies (fastapi / uvicorn / sqlalchemy /
+# temporalio / open3d / kokoro-onnx, from that package's requirements.txt),
+# COPYed out of src/ at build time. The backend moved to SyncAI-Robot-Backend in
+# 2026-09 and pins them in its own image, so this one is back to a pure ROS
+# image and the COPY — which would now fail on a fresh clone, there being no
+# src/syncai_backend to copy from — is gone with it. Anything Python that ships
+# in this workspace (syncai_sys_manager) needs only rclpy and the standard
+# library. Do not re-add a package here for a process that runs in another
+# container.
 
-# kokoro-onnx (the TTS gateway's engine) goes in --no-deps, AFTER the
-# requirements install put its actual dependencies in place: its metadata pins
-# onnxruntime>=1.20.1 / numpy>=2, both of which requirements.txt deliberately
-# refuses (the long comment there has the why — ORT >= 1.19 heap-corrupts on
-# an Orin with offlined cores). A plain `pip3 install kokoro-onnx` here would
-# "fix" those pins for us and break the image.
-RUN pip3 install --no-cache-dir --no-deps kokoro-onnx
-
-# Node.js 22 for syncai_frontend (Next.js 16). `npm install` / `npm run dev`
-# run at runtime against the mounted workspace; only the node/npm runtime
-# needs to live in the image.
+# Node.js 22, for `scripts/urdf2glb.py`'s `npx gltfpack` step (the operator
+# console's robot mesh is still baked from this repo's URDF). Nothing in this
+# workspace serves a web app any more — syncai_frontend left in 2026-09 — so
+# only the node/npm runtime needs to live in the image, not a project.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*

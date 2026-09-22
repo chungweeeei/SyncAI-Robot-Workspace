@@ -306,18 +306,22 @@ sudo udevadm control --reload && sudo udevadm trigger
 ## Dependencies
 
 From `package.xml`: `rclpy`, `syncai_common` (the service and `RobotMode`
-definitions), and four Python packages —
+definitions), and three Python packages —
 
 | Package | Used by |
 |---|---|
 | `python3-netifaces` | `WifiManager` / `MdnsManager`, interface addresses |
 | `python3-psutil` | `MonitorManager`, memory and disk figures |
 | `python3-yaml` | `NodeManager`, reading `config/sessions/*.yaml` |
-| `python3-structlog` | declared in the manifest, but no module in this package imports it — everything logs through rclpy |
 
-All have rosdep keys on jammy, so a container recreated from the image picks
-them up with the usual `rosdep install --from-paths src --ignore-src -r -y`
-(structlog is noted in the manifest as pip-installed where the key is missing).
+All three have rosdep keys on jammy, so a container recreated from the image
+picks them up with the usual `rosdep install --from-paths src --ignore-src -r
+-y`. `python3-structlog` was a fourth until 2026-09: no module here ever
+imported it — everything logs through rclpy — and what actually satisfied it
+was the pip install the robot image ran for `syncai_backend`'s requirements.
+That package left the workspace and the pip install went with it, so the
+manifest entry was dropped rather than left declaring a dependency nothing
+provides and nothing needs.
 Beware the manifest's own warning: **no double hyphens inside a `package.xml`
 comment** — they make the file unparseable, which silently demotes the package
 from `ament_python` to plain Python and drops it out of `AMENT_PREFIX_PATH`.
@@ -337,13 +341,14 @@ pytest test/
 `get_logger()`, `create_publisher`, `create_service` and `create_timer`, so no
 ROS graph is needed. Alongside it are the standard ament linters. The other
 managers have no unit tests; `NodeManager` in particular is only exercised by
-running it against a real byobu. (`syncai_backend` has the larger test suite in
-the workspace.)
+running it against a real byobu. This is the only pytest suite left in the
+workspace — the larger one went with `syncai_backend` in 2026-09.
 
 ## Packaging
 
-`setup.py` uses the same `InstallNoSource` command as `syncai_backend`: after a
-normal install it byte-compiles the package and deletes the `.py` sources from
+`setup.py` uses an `InstallNoSource` command (`syncai_backend` carried a copy of
+it until that package left the workspace): after a normal install it
+byte-compiles the package and deletes the `.py` sources from
 the install space, so deployments ship no source. It self-disables when the
 installed modules are symlinks, so `--symlink-install` developer builds keep
 their sources.

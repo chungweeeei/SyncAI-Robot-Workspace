@@ -111,11 +111,14 @@ services:
     runtime: nvidia
     environment:
       <<: *robot-env
-      # host networking: compose service names don't resolve — use the
-      # host-published ports.
-      TEMPORAL_ADDRESS: 127.0.0.1:7233
-      POSTGRES_HOST: 127.0.0.1
-      # lo-only unicast DDS; nav/backend/tools all share the host's lo.
+      # No TEMPORAL_ADDRESS / POSTGRES_HOST here any more: this container's only
+      # consumer of them was syncai_backend, which left the workspace in 2026-09
+      # (SyncAI-Robot-Backend) and carries its own compose service. The infra
+      # itself stays in docker-compose.yml — the backend's container reaches it
+      # the way this one did, on 127.0.0.1 through the host-published ports,
+      # since compose service names do not resolve under network_mode: host.
+      # lo-only unicast DDS; nav nodes, the backend and CLI tools all share the
+      # host's lo.
       CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
       # Camera encoding. These two are what make the nvidia container runtime
       # bind-mount the L4T userspace in, including the Tegra GStreamer plugins
@@ -166,13 +169,15 @@ services:
       # the camera node, not to remap names here (see above).
       - /dev/syncai/camera0
       - /dev/syncai/camera1
-      # The whole ALSA device tree, for the TTS speaker (syncai_backend's
-      # /api/v1/tts/speak plays through aplay). /dev/snd rather than a single
-      # pcm node: the target is the USB "Jieli CD002-AUDIO" dongle, whose card
-      # number depends on probe order, and aplay also needs the matching
-      # controlC<n> next to the pcm node. Passing the directory keeps both
-      # names identical to the host's, so `aplay -l` output means the same
-      # thing inside and out.
+      # The whole ALSA device tree. The TTS speaker that justified it moved out
+      # with syncai_backend in 2026-09, and its container needs the same
+      # passthrough; this one keeps it because `aplay` here is how the speaker
+      # gets diagnosed from the container that owns the robot's hardware.
+      # /dev/snd rather than a single pcm node: the target is the USB "Jieli
+      # CD002-AUDIO" dongle, whose card number depends on probe order, and
+      # aplay also needs the matching controlC<n> next to the pcm node. Passing
+      # the directory keeps both names identical to the host's, so `aplay -l`
+      # output means the same thing inside and out.
       - /dev/snd:/dev/snd
     device_cgroup_rules:
       # Passing a device pins its major:minor into the container's device cgroup.

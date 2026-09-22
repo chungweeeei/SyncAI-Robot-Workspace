@@ -125,24 +125,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # would drop it in ~/.local/bin, which is NOT on PATH -> `uv: command not found`.
 RUN pip3 install --no-cache-dir uv
 
-# Python web stack for syncai_backend (no reliable apt key on jammy; installed
-# via pip). Keep in sync with src/syncai_backend/requirements.txt.
-#
-# temporalio / opencv-python-headless / httpx exist so the backend test suite
-# runs in THIS container, not only in the robot one: the tests importorskip all
-# three, and pytest 6.2.5 (jammy's) aborts collection of every file listed
-# after a module-level skip — so one missing dep silently drops the whole run
-# to "1 skipped". Headless opencv on purpose: cv2 is only used to encode map
-# images, and the GUI build drags in X libraries a devcontainer has no use for.
-RUN pip3 install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    sqlalchemy \
-    structlog \
-    dotenv \
-    temporalio \
-    opencv-python-headless \
-    httpx
+# NOTE: this image used to pip-install syncai_backend's web stack (fastapi /
+# uvicorn / sqlalchemy / temporalio / opencv-python-headless / httpx), kept in
+# sync with that package's requirements.txt, so its pytest suite ran in THIS
+# container and not only in the robot one. The backend moved to
+# SyncAI-Robot-Backend in 2026-09 and takes its own dev environment with it, so
+# the stack is gone from here too. What is left in this workspace is C++ plus
+# syncai_sys_manager, which needs rclpy, netifaces, psutil and yaml — all
+# rosdep keys, resolved by `rosdep install` against src/, not pinned here.
 
 RUN if id -u ubuntu >/dev/null 2>&1 && [ "$USERNAME" != "ubuntu" ]; then \
     userdel -r ubuntu 2>/dev/null || true; \

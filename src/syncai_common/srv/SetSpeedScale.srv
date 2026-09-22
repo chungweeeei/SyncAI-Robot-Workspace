@@ -1,8 +1,0 @@
-float64 fwd_scale
-float64 back_scale
-float64 left_scale
-float64 right_scale
-float64 turn_l_scale
-float64 turn_r_scale
----
-bool success

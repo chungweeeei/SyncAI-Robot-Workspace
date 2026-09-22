@@ -37,9 +37,10 @@ map/<name>/gridmap.yaml + .pgm
 
 Loads the YAML named by `yaml_filename` in its constructor and publishes the
 grid **once**, on a `transient_local` + `reliable` + `KeepLast(1)` publisher.
-That latching is what makes late-joining subscribers work: the costmaps and the
-backend all start after the map server and still receive the retained sample —
-provided they match the QoS, which is the single most common failure here.
+That latching is what makes late-joining subscribers work: the costmaps start
+after the map server, and the backend's map router later still and from another
+container entirely, and both receive the retained sample — provided they match
+the QoS, which is the single most common failure here.
 
 | Interface | Name | Type |
 |---|---|---|

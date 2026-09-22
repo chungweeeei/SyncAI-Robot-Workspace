@@ -3,8 +3,10 @@
 One node, `syncai_robot_state`, that aggregates the robot's scattered status
 sources into a single `syncai_common/RobotState` at **1 Hz as shipped** (10 Hz
 code default) on the relative topic `robot_state` (so it lands on `<robot_id>/robot_state`). One publisher, one
-timer, and `syncai_backend` as its only consumer — which makes this node the thing
-that decides what the operator UI can show.
+timer, and the backend as its only consumer — which makes this node the thing
+that decides what the operator UI can show. That consumer is out of tree since
+2026-09 (`SyncAI-Robot-Backend`), so this topic is now a cross-repository
+contract: widening a field here is free, changing or removing one is not.
 
 ```
         TF: map → <robot_id>/base_link  ─────┐   (from syncai_lio_bridge)
@@ -15,7 +17,8 @@ that decides what the operator UI can show.
         mode          (Int32MultiArray) ─────┘               │
                                                              │ robot_state
                                                              ▼
-                                                      syncai_backend
+                                                  SyncAI-Robot-Backend
+                                                      (out of tree)
                                                              │
                                                              ▼
                                               GET /api/v1/robot/state
@@ -36,8 +39,8 @@ freshness field — precisely so that stays true.
 > An outward-facing variant on an absolute, fleet-wide `/robot_state` topic was
 > built here and then reverted. A single DDS domain hosts several robots, so a
 > shared root topic interleaves them, and every per-robot consumer in this
-> workspace — `syncai_backend` included, which scopes its DB and Temporal queue by
-> `robot_id` — is built for exactly one robot. Re-proposing it needs a consumer
+> workspace, and the backend beside it — which scopes its DB and Temporal queue
+> by `robot_id` — is built for exactly one robot. Re-proposing it needs a consumer
 > that genuinely wants the whole fleet on one topic.
 
 ## What goes into each field
@@ -301,12 +304,14 @@ ros2 launch syncai_robot_state robot_state.launch.py \
     system_config:=config/instances/robot02.ini
 ```
 
-Started in the byobu sessions' `state_backend` window, alongside the backend.
+Started in both byobu sessions' last window, which is named `robot_state` after
+it: the backend that used to share that window left the workspace in 2026-09 and
+runs in its own container, so this is a one-pane window in either mode.
 
 ```bash
 ros2 topic echo /<robot_id>/robot_state --once   # joint temps, state, localization_valid
 ros2 topic hz /<robot_id>/robot_state            # steady 1 Hz as shipped (10 Hz code default)
-curl http://localhost:3000/api/v1/robot/state    # the public subset, through the backend
+curl http://localhost:3000/api/v1/robot/state    # the public subset, through the backend container
 ```
 
 Before `relocalize`, expect `localization_valid: false` and `state: 0`

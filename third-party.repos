@@ -1,11 +1,14 @@
 # Third-party sources for src/third-party/, managed with vcstool (not submodules).
 #
-#   vcs import src < third-party.repos          # populate a fresh clone
-#   vcs import src < third-party.repos --force  # re-checkout after changing a pin below
-#   vcs status src                              # what is actually checked out
+#   vcs import < third-party.repos          # populate a fresh clone
+#   vcs import < third-party.repos --force  # re-checkout after changing a pin below
+#   vcs status src                          # what is actually checked out
 #
-# Paths are relative to the import target (`src`), which is why every key starts
-# with `third-party/`. Run it from the workspace root, like everything else here.
+# Paths are relative to the import target, which defaults to the current
+# directory -- and every key below is written from the workspace root
+# (`src/third-party/...`), so run these there, like everything else here. Adding
+# an explicit `src` target does NOT work: the keys already carry `src/`, so the
+# repos would land in `src/src/third-party/`.
 #
 # Never add --shallow: three of the pins below are commit SHAs, and a shallow
 # clone can only fetch named refs (branches/tags), so the checkout would fail.

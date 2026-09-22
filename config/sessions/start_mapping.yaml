@@ -14,10 +14,13 @@
 #     -> pgo_launch.py      # include()s pointlio_launch.py, the LIO front end
 #     -> drive by hand      # teleop -> driver_manager -> gait controller
 #     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt
-#     -> syncai_backend/helpers/pcd_to_gridmap.py  =>  gridmap.pgm + gridmap.yaml
+#     -> pcd -> gridmap conversion   =>  gridmap.pgm + gridmap.yaml
 #
-# The last step is offline and run later, by hand — which is why a map directory
-# spends time holding a map.pcd with no gridmap yet.
+# The last step is offline, run later, and no longer lives in this workspace:
+# both recipes left with syncai_backend in 2026-09 (SyncAI-Robot-Backend, POST
+# /api/v1/maps and .../grid/convert). That is why a map directory spends time
+# holding a map.pcd with no gridmap yet — and why a drive with no backend
+# reachable still produces a usable map.pcd that nothing has converted.
 #
 # pgo_node is the ONLY thing that can save a map: it accumulates keyframes in RAM
 # and save_maps serialises them. If pgo is not running for the whole drive there
@@ -46,24 +49,39 @@
 #   * hba         — offline refinement, and shelved (see §3.5 of the FAST-LIO2 PGO
 #                   pipeline note, no longer in doc/)
 #
-# robot_state / backend ARE here, although earlier revisions excluded them as
-# nav-oriented: the operator console is the mapping UI now (served from outside
-# this workspace since `syncai_frontend` left in 2026-09 — see start_nav.yaml;
-# it talks to the backend on 3000 and nothing here serves 3001). Switching
-# modes (POST /api/v1/robot/mode), teleop (WS /api/v1/robot/teleop -> cmd_vel),
-# the live cloud view (WS /api/v1/robot/pointcloud/stream) and the save-map call
-# (POST /api/v1/maps -> pgo/save_maps) all go through the backend — without it a
-# mapping run can only be driven and saved from a shell. What the old exclusion
-# note warned about still holds, and is accepted:
-#   * robot_state reports state=UNINITIALIZED for the whole run (its pose wants
-#     map -> base_link, and mapping's TF chain ends at pointlio_body). Its mode
-#     field is the reason it is here at all — sourced from get_mode, it is what
-#     the console's mode chip reads.
-#   * backend needs postgres, which lives in the infra compose stack
-#     (docker-compose.yml) and is up regardless of which session exists.
-#   * The backend's cloud stream works unchanged: pgo broadcasts
-#     map -> <robot_id>/pointlio_odom itself, so the TF-to-map path resolves
-#     without the localizer.
+# robot_state IS here, although earlier revisions excluded it as nav-oriented.
+# `syncai_backend` is NOT, any more: it left this workspace in 2026-09 for
+# SyncAI-Robot-Backend and runs in its own container, the same way the console
+# it serves left in the frontend split before it.
+#
+# That changes nothing about how a mapping run is driven. The console is still
+# the mapping UI and every control it offers during a run — mode switch (POST
+# /api/v1/robot/mode), teleop (WS /api/v1/robot/teleop -> cmd_vel), the live
+# cloud view (WS /api/v1/robot/pointcloud/stream) and save-map (POST
+# /api/v1/maps -> pgo/save_maps) — still reaches the nodes below, over DDS from
+# outside this session: the backend's container shares the host network and
+# domain 1, so it discovers them exactly as a pane of this session did. The
+# infra it needs (postgres, temporal) is still in docker-compose.yml here and
+# is up regardless of which session exists. What the split actually bought is
+# that switch_mode no longer tears the backend down — it is no longer a pane of
+# the session being killed.
+#
+# With no backend running anywhere, the run can still be driven and saved from
+# a shell, which is the fallback worth knowing:
+#
+#   ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+#     --ros-args -r cmd_vel:=/<robot_id>/cmd_vel
+#   ros2 service call /<robot_id>/pgo/save_maps ...
+#
+# robot_state stays for the reason it was added, and the old exclusion note's
+# warning still holds and is accepted: it reports state=UNINITIALIZED for the
+# whole run (its pose wants map -> base_link, and mapping's TF chain ends at
+# pointlio_body). Its mode field is what earns it the window — sourced from
+# get_mode, it is what the console's mode chip reads to know the switch to
+# MANUAL landed. The cloud stream is unaffected by the missing localizer either
+# way: pgo broadcasts map -> <robot_id>/pointlio_odom itself, so the TF-to-map
+# path the console's viewer needs resolves without one.
+#
 # The replaced keyboard-teleop window is gone for good: the console's teleop
 # channel covers it without a pane where a stray keypress is a motion command.
 #
@@ -123,22 +141,19 @@ windows:
       - cmd: ros2 launch syncai_driver_manager driver_manager.launch.py
         log: mapping/driver_manager
 
-  # ---------- Window 3: robot_state / backend ----------
-  # Same pairing as start_nav.yaml's backend window. robot_state's pose lookup
-  # never succeeds here (see the header) — it is present for battery / motors /
-  # wifi and above all for RobotState.mode, which the console polls to know the
-  # switch to MANUAL landed. The backend sleep mirrors start_nav.yaml; the
-  # services it fronts (teleop, cloud stream, save_maps) all tolerate their
-  # upstream nodes arriving later.
+  # ---------- Window 3: robot_state ----------
+  # Same single pane as start_nav.yaml's counterpart window. robot_state's pose
+  # lookup never succeeds here (see the header) — it is present for battery /
+  # motors / wifi and above all for RobotState.mode, which the console polls to
+  # know the switch to MANUAL landed.
   #
-  # This is the last window. The frontend dev server that used to follow it
-  # (so the console survived switch_mode tearing down the nav session) is gone
-  # with `syncai_frontend`: a console served from its own host is not a pane of
-  # either session, so a mode switch no longer interrupts it at all.
-  - name: backend
+  # This is the last window, and it is one pane rather than two because both
+  # processes that used to follow robot_state here are served from elsewhere
+  # now: the frontend dev server left in 2026-09 with `syncai_frontend`, the
+  # backend right after it with `syncai_backend`. Neither is a pane of either
+  # session any more, so a mode switch interrupts neither — which is what the
+  # nav session's window already looks like.
+  - name: robot_state
     panes:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py
         log: mapping/robot_state
-      - cmd: ros2 launch syncai_backend backend.launch.py
-        sleep: 2
-        log: mapping/backend

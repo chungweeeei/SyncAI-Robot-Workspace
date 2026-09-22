@@ -24,10 +24,13 @@ namespace syncai_robot_state
 // <robot_id>/robot_state and stays inside this robot's namespace, like every
 // other topic in the stack).
 //
-// One publisher, one timer, one consumer: syncai_backend, which re-serialises a
-// subset for GET /api/v1/robot/state. The message carries operator-facing detail
-// (per-joint temperatures, motor error codes) that must NOT reach that REST
-// payload — nothing but the router's explicit field list stops it.
+// One publisher, one timer, one consumer: the syncai_backend node, which
+// re-serialises a subset for GET /api/v1/robot/state. That consumer lives in
+// another repository since 2026-09 (SyncAI-Robot-Backend), so this message is a
+// cross-repo contract: adding a field is free, renaming or removing one is not.
+// It carries operator-facing detail (per-joint temperatures, motor error codes)
+// that must NOT reach that REST payload — nothing but the router's explicit
+// field list, over there, stops it.
 //
 // The node also derives the `state` field from what it sees. Three of the six
 // RobotStatus values are emitted today, in this precedence:

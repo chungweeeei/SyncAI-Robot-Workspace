@@ -1,8 +1,10 @@
 # =============================================================================
-# One-shot workspace build: `colcon build` of every ROS 2 package in a
-# throwaway container made from the SAME dev image the robot runs. The
-# frontend is not built here (not an ament package; `npm install` in
-# src/syncai_frontend is its whole build).
+# One-shot workspace build: `colcon build` of everything under src/ in a
+# throwaway container made from the SAME dev image the robot runs. There are no
+# carve-outs left — the two packages this header used to exclude, syncai_frontend
+# (npm) and syncai_backend (pip), both left the workspace in 2026-09 for their
+# own repositories, so colcon's package discovery and "the workspace" are now
+# the same thing.
 #
 #   docker compose -f docker-compose.build.yaml run --rm build
 #   docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_planner
@@ -52,8 +54,8 @@ services:
       dockerfile: Dockerfile
       target: dev
     image: syncai-robot-base
-    # Host uid/gid so ./build, ./install, ./log and node_modules stay owned by
-    # the host user (HOME in the image is world-writable for exactly this).
+    # Host uid/gid so ./build, ./install and ./log stay owned by the host user
+    # (HOME in the image is world-writable for exactly this).
     user: "${UID:-1000}:${GID:-1000}"
     working_dir: /home/syncrobotic/robot_ws
     # No network to create or tear down for a one-shot container; rosdep

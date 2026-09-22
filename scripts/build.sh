@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Build every ROS 2 package in the workspace with colcon.
-#
-# The frontend (src/syncai_frontend) is deliberately NOT part of this: it is
-# not an ament package, its dependencies are managed by npm in its own
-# directory, and the session spec starts it with `npm run dev` against the
-# mounted tree. `cd src/syncai_frontend && npm install` is its whole build.
+# Build the workspace with colcon. Everything under src/ is an ament or plain
+# CMake package, so "every ROS 2 package" and "everything colcon finds" are the
+# same set — the two exceptions this header used to carve out (syncai_frontend,
+# built by npm; syncai_backend, whose deps came from pip) both left the
+# workspace in 2026-09 for their own repositories.
 #
 # Runs INSIDE the robot image, either as the entrypoint of the one-shot
 # service in docker-compose.build.yaml
@@ -30,8 +29,7 @@
 # runtime on a missing .so. A missing dependency is a Dockerfile change, and
 # the check prints the keys to add. `install` exists to get a build through
 # while that change is being made. The keys rosdep reports as "cannot locate"
-# (GTSAM, livox_sdk2, libgraphicsmagick++1-dev, python3-assertpy-pip,
-# python3-structlog) are
+# (GTSAM, livox_sdk2, libgraphicsmagick++1-dev, python3-assertpy-pip) are
 # satisfied by the image's deps-builder stage / apt lines under names rosdep
 # does not know; that output is noise, not a failure.
 # =============================================================================
@@ -53,26 +51,40 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
     die "no ROS 2 Humble at /opt/ros/humble — run this inside the robot image" \
         "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
 
-# --- 1. submodules -----------------------------------------------------------
-# A fresh clone without `git submodule update --init --recursive` leaves the
-# six src/third-party dirs empty; colcon then silently builds the in-tree
-# packages and fails on the first `find_package` that needed one of them.
-# Cloning is left to the host on purpose: FASTLIO2_ROS2 is an SSH remote and
-# the container has no key.
-step "checking submodules"
-missing=0
-for sub in behaviortree_cpp_v3 FASTLIO2_ROS2 Livox-SDK2 livox_ros_driver2 small_gicp vizionsdk-ros2; do
-    if [ -z "$(ls -A "src/third-party/${sub}" 2>/dev/null)" ]; then
-        echo "  MISSING src/third-party/${sub}"
-        missing=1
+# --- 1. vcs checkouts --------------------------------------------------------
+# Three directories in src/ are materialised by vcstool rather than tracked
+# here, and all three are empty in a fresh clone. Importing is left to the host
+# on purpose: FASTLIO2_ROS2 is an SSH remote and the container has no key.
+#
+# Checking them up front rather than letting colcon do it: an empty
+# src/third-party dir makes colcon silently build the in-tree packages and fail
+# on the first `find_package` that needed one of them, and an absent
+# src/syncai_common fails every package at once with a message about a missing
+# ament package, neither of which says "you forgot to import". This does.
+step "checking vcs checkouts"
+missing=""
+for dir in third-party/behaviortree_cpp_v3 third-party/FASTLIO2_ROS2 \
+           third-party/Livox-SDK2 third-party/livox_ros_driver2 \
+           third-party/small_gicp third-party/vizionsdk-ros2; do
+    if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
+        echo "  MISSING src/${dir}"
+        missing="${missing} third-party.repos"
     fi
 done
-[ "$missing" -eq 0 ] || \
-    die "empty submodule(s) — on the HOST run: git submodule update --init --recursive"
+if [ -z "$(ls -A src/syncai_common 2>/dev/null)" ]; then
+    echo "  MISSING src/syncai_common"
+    missing="${missing} interface.repos"
+fi
+if [ -n "${missing}" ]; then
+    # Deduplicate: six empty third-party dirs are still one missing import.
+    lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
+    die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
+        "$(for l in ${lists}; do printf '\n  vcs import < %s' "$l"; done)"
+fi
 
 # livox_ros_driver2 ships package_ROS2.xml and gitignores package.xml (its
-# build.sh does the copy). Every submodule update therefore deletes the copy
-# and every ament package in the workspace fails to configure. Restore it
+# build.sh does the copy). Every re-import therefore deletes the copy and every
+# ament package in the workspace fails to configure. Restore it
 # when absent; never overwrite one that is there (it may be a ROS1 copy
 # someone made on purpose — unlikely, but the copy costs nothing to skip).
 livox=src/third-party/livox_ros_driver2

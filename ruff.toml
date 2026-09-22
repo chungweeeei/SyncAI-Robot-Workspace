@@ -1,5 +1,8 @@
-# Ruff config for every Python package in this workspace
-# (syncai_backend, syncai_sys_manager).
+# Ruff config for every Python package in this workspace — syncai_sys_manager
+# and the loose scripts/ tools, since syncai_backend left for its own repo in
+# 2026-09. It stays a root-level config rather than moving into the one package
+# left: scripts/ is not a package, and the point of pinning the rule set is
+# that it does not depend on which directory an editor happens to open.
 #
 # Why this file exists at all: nothing here was ever linted by config, so Ruff
 # fell back to its own built-in defaults — and those defaults grew. The
@@ -56,13 +59,15 @@ extend-exclude = [
 # make later, one family at a time, not something to inherit by default.
 select = ["E4", "E7", "E9", "F"]
 
-# isort (`I`) is deliberately NOT selected. The backend groups its imports by
-# architectural layer — main.py walks logger/database/temporal → rest →
-# repositories → gateways → subscribers, mirroring the
-# routers → gateways → repositories → database layering that CLAUDE.md
-# describes — with blank lines carrying that meaning. isort classifies all of
-# them as first-party, collapses the groups into one block and alphabetises it,
-# which destroys the only place that ordering is written down. If import
-# sorting is ever wanted, it needs `lint.isort.sections` teaching it those
-# layers first; until then the "Organize imports" quick fix is a regression,
-# not a cleanup.
+# isort (`I`) is deliberately NOT selected, and the reason outlived the package
+# it was written for. syncai_backend grouped its imports by architectural layer
+# — main.py walked logger/database/temporal → rest → repositories → gateways →
+# subscribers — with blank lines carrying that meaning, and isort classifies
+# all of them as first-party, collapses the groups into one block and
+# alphabetises it, destroying the only place that ordering is written down. The
+# rule stays off after the split for a plainer reason: nothing left here sorts
+# its imports alphabetically either (sys_manager's main.py lists its five
+# managers in neither alphabetical nor initialisation order), so turning `I` on
+# buys a one-off reshuffle of files nobody was confused by. If import sorting
+# is ever wanted, it is a deliberate decision with a `lint.isort.sections` to
+# write, not something to inherit from an editor's "Organize imports".

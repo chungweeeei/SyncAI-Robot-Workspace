@@ -1,1 +1,0 @@
-string wifi_info
