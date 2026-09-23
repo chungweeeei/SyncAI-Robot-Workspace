@@ -101,6 +101,17 @@ services:
     <<: *robot-common
     container_name: robot01
     network_mode: host
+    # Host IPC namespace, so /dev/shm in here IS the host's /dev/shm. pgo hands
+    # the mapping-mode "map so far" cloud to the backend as a binary PCD under
+    # /dev/shm/syncai_pgo/<robot_id> (announced on pgo/map_cloud_file) instead
+    # of a 16-45 MB PointCloud2 that CycloneDDS over UDP could not get through
+    # the kernel's default 208 KB socket buffer. The backend's own compose
+    # service sets the same, which is what makes the path mean the same file
+    # in both containers. Needed even when the backend runs as a byobu pane in
+    # here: a private /dev/shm is 64 MB, and two merges of a large site do not
+    # fit. Not a bind mount of a /dev/shm subdir: Docker creates a missing host
+    # source root:root 755, which uid 1000 cannot write. Host /dev/shm is 1777.
+    ipc: host
     # Explicit rather than relying on the host's default runtime: this file
     # used to assume /etc/docker/daemon.json set `"default-runtime": "nvidia"`,
     # and the assumption broke — the Jetson's daemon.json only *registers* the
