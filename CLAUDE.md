@@ -366,8 +366,8 @@ localizer / lio_bridge / planner / controller / task_runner / hba. `robot_state`
 is in the mapping session although its pose lookup never succeeds there, for its
 `mode` field alone — that is what the console's mode chip reads to know the
 switch to `MANUAL` landed. Everything else the console does during a mapping run
-(teleop, the live `pgo/map_cloud` stream, save-map) reaches these nodes over DDS
-from the backend's container. Their logs go to separate subtrees, which is what
+(teleop, the live map-cloud hand-off on `pgo/map_cloud_file`, save-map) reaches
+these nodes over DDS from the backend's container. Their logs go to separate subtrees, which is what
 stops the two specs from interleaving two multilogs into one directory. The 2D / AMCL session was retired along with
 `bringup_2d.launch.py`. Neither spec has an rviz2 window (the robot has no
 display; `config/rviz2/<robot_id>.rviz` is for running rviz2 from a
@@ -425,7 +425,7 @@ it actually uses:
 | `NavigateToPose` on `task_runner` | the MOVE step of a task |
 | `localizer/relocalize`, `relocalize_check`, `initialpose` | initial pose, and map switch |
 | `map_server/load_map` | map switch, and reload after a re-conversion |
-| `pgo/save_maps`, `pgo/reset_mapping`, `pgo/map_cloud` | save a map, start a new one, stream the live merge |
+| `pgo/save_maps`, `pgo/reset_mapping`, `pgo/map_cloud_file` | save a map, start a new one, hand over the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` itself is rviz-only now) |
 | `pointlio/body_cloud` | the live cloud WebSocket |
 | `config/instances/robotNN.ini` (`[map] name`, `[initial_pose]`) | the only file in this repo the backend **writes** |
 | `map/<name>/` on disk | the map catalogue: `map.pcd`, `poses.txt`, `patches/`, `gridmap.*` |
@@ -462,9 +462,20 @@ backend:
   pointlio re-runs a static, gravity-aligning IMU init and one done in motion
   tilts the new map for its whole life with no error anywhere. Nothing enforces
   that, in either repo.
-- **An empty `pgo/map_cloud` merge is a message, not a non-event** — pgo sends
-  one from `reset_mapping`, and a consumer that skips empty clouds keeps showing
-  the old map.
+- **An empty map-cloud merge is a message, not a non-event** — pgo sends one
+  from `reset_mapping` on both outputs (an empty PointCloud2 on `pgo/map_cloud`,
+  a `points: 0` notice on `pgo/map_cloud_file`), and a consumer that skips it
+  keeps showing the old map.
+- **The live merge is a file, not a topic payload.** `pgo/map_cloud` still
+  carries the PointCloud2 for rviz, but a large site's merge is 16-45 MB and
+  CycloneDDS over UDP on `lo` cannot deliver that through the kernel's default
+  208 KB receive buffer (`net.core.rmem_max`) — fragments drop and a BEST_EFFORT
+  reader loses every sample, so the preview stopped once the map grew. pgo
+  writes the merge to `/dev/shm/syncai_pgo/<robot_id>/map_cloud_<seq>.pcd`
+  (tmp + rename, newest two kept) and publishes a ~200 B JSON notice on
+  `pgo/map_cloud_file` (RELIABLE, TRANSIENT_LOCAL). Both compose services run
+  `ipc: host` so that path is the same file on both sides; without it the
+  notices arrive and every read is ENOENT.
 - **There are two pcd → gridmap recipes and no automatic pick between them**
   (z-band slicing with a pose-connectivity filter, the default; and
   traversability segmentation, which produces no unknown cells). Both live in
