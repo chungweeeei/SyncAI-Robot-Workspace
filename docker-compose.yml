@@ -5,6 +5,9 @@ services:
   postgres:
     image: postgres:16
     container_name: postgres
+    # Come back after a host reboot / dockerd restart. unless-stopped rather
+    # than always: a `docker compose stop` by hand survives the reboot.
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
@@ -23,6 +26,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadmin
+    restart: unless-stopped
     environment:
       - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
       - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD:-admin}
@@ -35,6 +39,7 @@ services:
   temporal:
     image: temporalio/auto-setup:1.29.7
     container_name: temporal
+    restart: unless-stopped
     environment:
       # Reuse the shared postgres instance; auto-setup creates the
       # temporal / temporal_visibility databases on first start.
@@ -53,6 +58,7 @@ services:
   temporal_ui:
     image: temporalio/ui:2.52.1
     container_name: temporal_ui
+    restart: unless-stopped
     environment:
       - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
       - TEMPORAL_CORS_ORIGINS=${TEMPORAL_CORS_ORIGINS:-http://localhost:3000}

@@ -38,6 +38,12 @@ x-robot-common: &robot-common
     dockerfile: Dockerfile
     target: dev
   image: syncai-robot-base
+  # Come back after a host reboot, so the robot boots into AUTO with no one at
+  # a shell: sys_manager is the main process and builds the session itself
+  # (see command below). unless-stopped rather than always, so a robot that
+  # was deliberately `docker compose stop`ped stays down across the reboot.
+  # Matches the backend / tts / frontend containers from the other repos.
+  restart: unless-stopped
   user: "${UID:-1000}:${GID:-1000}"
   security_opt:
     - apparmor=unconfined
