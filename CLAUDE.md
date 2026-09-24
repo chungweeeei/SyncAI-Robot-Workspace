@@ -533,8 +533,10 @@ something to verify or edit here.
   on the robot itself its only remaining effect was to make `up -d` silently
   skip the robot. To start infra alone, name the four services. Robot containers also
   bind-mount the host D-Bus socket (so `nmcli` reaches the host NetworkManager —
-  needs `apparmor=unconfined` + sudo) and the avahi socket (so `libnss-mdns`
-  resolves `*.local`), run with `runtime: nvidia`, and pass through the cameras
+  needs `apparmor=unconfined` + sudo) and the avahi socket's directory
+  `/run/avahi-daemon` (so `libnss-mdns` resolves `*.local`; the directory rather
+  than the socket file, because a file bind mount goes stale when
+  `avahi-daemon.socket` restarts), run with `runtime: nvidia`, and pass through the cameras
   as `/dev/syncai/camera0` / `camera1` (stable udev symlinks from
   `src/syncai_sys_manager/udev/99-syncai-devices.rules`, keyed on serial so the
   two cameras cannot swap on reboot) plus `/dev/snd` (for TTS, which now plays

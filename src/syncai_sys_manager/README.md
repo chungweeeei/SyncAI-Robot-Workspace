@@ -114,7 +114,7 @@ avahi daemon) rather than succeeded.
 an old IP after the node is gone.
 
 Reaching the host's avahi and NetworkManager from inside the container needs the
-D-Bus and avahi socket mounts plus `apparmor=unconfined` — see the compose file
+D-Bus socket and avahi socket-directory mounts plus `apparmor=unconfined` — see the compose file
 and `CLAUDE.md`.
 
 ## MonitorManager

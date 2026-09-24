@@ -240,4 +240,13 @@ services:
       # host's NetworkManager daemon (there is no NM daemon in the container).
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
       # Host avahi legacy socket so libnss-mdns resolves *.local names.
-      - /run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
+      # (avahi-publish does not need it — it goes over the D-Bus socket above.)
+      # The DIRECTORY, not the socket file: a file bind mount pins the inode, so
+      # when avahi-daemon.socket is restarted (an apt upgrade of avahi does it)
+      # the host gets a fresh socket and this container keeps talking to the
+      # dead one until it is recreated. Same reasoning as /dev/syncai above.
+      # Boot order is not a concern: the socket is created by the systemd
+      # socket unit, which is ordered before sockets.target and therefore before
+      # docker.service, so docker never finds the path missing and never
+      # creates it as an empty directory in avahi's place.
+      - /run/avahi-daemon:/run/avahi-daemon:ro
