@@ -102,7 +102,7 @@ void LioBridgeNode::imu_cb(const sensor_msgs::msg::Imu::SharedPtr msg)
   // The raw gyro is used in preference to Point-LIO's own twist.angular, which
   // pointlio_node does populate from its EKF output-model state x().omg. An
   // earlier comment here claimed LIO left that field empty; it does not, and
-  // the estimate is not the bias-free one it looks like: pointlio.yaml sets
+  // the estimate is not the bias-free one it looks like: pointlio_params.yaml sets
   // gyr_cov_output: 1000.0, so the output model tracks the measurement almost
   // instantly. Measured at standstill on robot01 (2026-09-21, 40 s):
   //

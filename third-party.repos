@@ -33,9 +33,15 @@ repositories:
     # Private fork (SSH -- the only entry here that needs credentials). Pinned to a
     # SHA on branch `dev` rather than to `dev` itself: the branch tip moves, and an
     # import that silently pulls new LIO code onto a robot is not reproducible.
+    # (It said so while pointing at `dev` for a long time; the SHA became real in
+    # 2026-09, when the session specs started depending on a specific state of
+    # this repo -- the one where pgo_launch.py / localizer_launch.py no longer
+    # include() pointlio, which now lives here as src/syncai_pointlio. An older
+    # checkout plus the current specs starts pointlio_node twice.)
+    # This is "refactor: move pointlio to SyncAI-Robot-Workspace" on dev.
     type: git
     url: git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
-    version: dev
+    version: 1db6c7cf5b9f050962233d37eaa6bc95866abf03
   src/third-party/Livox-SDK2:
     # One commit past upstream v1.3.1, so there is no tag to name.
     # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into

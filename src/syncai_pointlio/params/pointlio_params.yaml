@@ -1,0 +1,78 @@
+# Point-LIO (output model) parameters for a real Livox sensor (CustomMsg input).
+# The IMU is fused as a measurement: body angular velocity / specific force are
+# random-walk states, so points are processed at their own timestamps without
+# scan undistortion.
+#
+# This is a normal ROS parameters file (loaded by pointlio.launch.py via
+# `parameters=[...]`), not a hand-parsed YAML: every key below is a parameter
+# pointlio_node declares, so `ros2 param get/set/dump` and launch-level
+# overrides all work. The `/**/pointlio_node:` wildcard key makes the file
+# namespace-independent — the launch runs the node at /<robot_id>/pointlio.
+# (Ported unchanged from SyncAI-Fast-LIO2's pointlio/config/pointlio.yaml in
+# 2026-09; tuning notes below predate the move.)
+#
+# Two things are NOT here, on purpose:
+#   * input topics — handled by launch remappings onto
+#     /<robot_id>/livox/{lidar,imu}, since a relative name would resolve inside
+#     the node's own /<robot_id>/pointlio namespace.
+#   * the robot_id-prefixed frame names — TF frame ids are not namespaced by
+#     ROS, so pointlio.launch.py overrides body_frame/world_frame explicitly.
+#     The values below are only the fallbacks for running the node bare.
+/**/pointlio_node:
+  ros__parameters:
+    world_frame: "lidar"
+    body_frame: "body"
+    print_time_cost: false
+
+    # 0: livox CustomMsg (per-point time -> full point-by-point update),
+    # 1: sensor_msgs/PointCloud2 (no per-point time -> one batch update per scan)
+    lidar_type: 0
+    # Livox IMU accel is in g-units -> x10 to m/s^2 (satu_acc is compared AFTER scaling)
+    imu_acc_scale: 10.0
+
+    lidar_filter_num: 6
+    lidar_min_range: 0.5
+    lidar_max_range: 30.0
+    # Coarser than fastlio2 (0.15): every point group costs an EKF update, keep
+    # headroom on Jetson. Lower for more detail if time cost allows.
+    scan_resolution: 0.25
+    map_resolution: 0.3
+
+    # Written as floats, not 300 / 60: the node declares these as double, and a
+    # bare integer in a ROS params file is an int64 override -> the node dies
+    # with an InvalidParameterTypeException at startup.
+    cube_len: 300.0
+    det_range: 60.0
+    move_thresh: 1.5
+
+    # process noise driving the omg/acc random-walk states
+    gyr_cov_output: 1000.0
+    acc_cov_output: 500.0
+    b_gyr_cov: 0.0001
+    b_acc_cov: 0.0001
+
+    # IMU-as-measurement noise
+    imu_meas_omg_cov: 0.1
+    imu_meas_acc_cov: 0.1
+
+    # saturation thresholds: axes at/over these are dropped from the IMU update
+    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale, ~3g)
+    satu_gyro: 35.0
+    satu_acc: 30.0
+
+    # point-to-plane measurement
+    lidar_meas_cov: 0.01
+    plane_thr: 0.1
+    # split same-timestamp groups larger than this into sequential chunks
+    batch_max_points: 500
+
+    imu_init_num: 20
+    near_search_num: 5
+
+    gravity_align: true
+    esti_il: false
+
+    # IMU <- lidar extrinsic. r_il is the row-major 3x3 rotation flattened into a
+    # 9-element list (ROS parameters have no matrix type); t_il is xyz in metres.
+    r_il: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    t_il: [-0.011, -0.02329, 0.04412]

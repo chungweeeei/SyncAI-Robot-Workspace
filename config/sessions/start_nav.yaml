@@ -22,9 +22,11 @@
 # takes it down along with the session. There is no rviz2 window either: on the
 # robot itself there is no display, and the console covers the same ground.
 #
-# Startup order matters (there is no lifecycle manager): map_server / LIO ->
-# lio_bridge -> planner/controller -> task_runner, which is what the `sleep:`
-# fields encode.
+# Startup order matters (there is no lifecycle manager): map_server / pointlio
+# / localizer -> lio_bridge -> planner/controller -> task_runner, which is what
+# the `sleep:` fields encode. pointlio has its own pane since 2026-09, when it
+# moved out of FASTLIO2_ROS2 into src/syncai_pointlio; before that
+# localizer_launch.py include()d it, so both came up in the localizer pane.
 #
 # LOCALIZATION: the localizer applies [initial_pose] from the INI as its boot
 # guess on the first odom sample, so a robot standing at that pose localizes
@@ -55,13 +57,25 @@ windows:
       - cmd: ros2 launch syncai_bringup bringup.launch.py
         log: bringup
 
-  # ---------- Window 1: map_server / LIO localizer ----------
+  # ---------- Window 1: map_server / LIO front end / LIO localizer ----------
+  # Three panes, in start order. pointlio (syncai_pointlio) is the front end
+  # the localizer registers against; its launch is the single definition of
+  # how pointlio_node is configured, and localizer_launch.py's absolute
+  # /<robot_id>/pointlio/{body_cloud,lio_odom} overrides are the contract with
+  # it. There is no hard ordering between the two -- the localizer only
+  # subscribes, and pointlio publishes nothing until its IMU init completes --
+  # so the one-second stagger is there for the logs to read in cause-and-effect
+  # order, not for correctness. `sleep: 2` is when the old include used to
+  # start pointlio.
   - name: localization
     panes:
       - cmd: ros2 launch syncai_map_server map_server.launch.py
         log: map_server
-      - cmd: ros2 launch localizer localizer_launch.py
+      - cmd: ros2 launch syncai_pointlio pointlio.launch.py
         sleep: 2
+        log: pointlio
+      - cmd: ros2 launch localizer localizer_launch.py
+        sleep: 3
         log: localizer
 
   # ---------- Window 2: lio_bridge (map -> <robot_id>/odom) ----

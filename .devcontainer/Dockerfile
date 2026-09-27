@@ -50,7 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ompl \
     && rm -rf /var/lib/apt/lists/*
 
-# Build-from-source deps for FASTLIO2_ROS2 (hba / pgo / localizer). GTSAM and
+# Build-from-source deps for FASTLIO2_ROS2 (hba / pgo / localizer) and for
+# syncai_pointlio (Sophus). GTSAM and
 # Sophus have no usable apt package on jammy, so the submodule expects them built
 # from source (see FASTLIO2_ROS2/README.md and CLAUDE.md's "Build" note). Without
 # them `find_package(GTSAM|Sophus REQUIRED)` aborts configure and colcon fails
