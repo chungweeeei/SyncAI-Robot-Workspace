@@ -1,7 +1,7 @@
 # syncai_mapping
 
-The mapping back end: `pgo_node`, a pose graph over `syncai_pointlio`'s
-odometry and body clouds. It picks keyframes, detects and verifies loop
+The mapping back end, two nodes. `pgo_node` (the rest of this README until
+"hba_node") is a pose graph over `syncai_pointlio`'s odometry and body clouds. It picks keyframes, detects and verifies loop
 closures, smooths the graph with GTSAM iSAM2, broadcasts the resulting
 `map → <robot_id>/pointlio_odom` correction while a map is being built, hands
 the "map so far" to the operator console, and serves the two calls that
@@ -25,7 +25,8 @@ owns the same TF.
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pgo` package in 2026-09
-(`src/third-party/FASTLIO2_ROS2`, where the `localizer` and `hba` still live).
+(`src/third-party/FASTLIO2_ROS2`, where only the `localizer` still lives;
+`hba` came over in the same month as this package's second node, below).
 The ROS surface did not change with the move — same node name, namespace,
 services, topics, TF, hand-off directory and on-disk layout — so no consumer
 had to. Two things did change: the two service **types** are
@@ -114,7 +115,7 @@ operator was just told had been discarded.
 | `poses.txt` | (with `save_patches`) one line per keyframe, `<i>.pcd tx ty tz qw qx qy qz`, bare basenames |
 
 That layout is what the workspace's map catalogue expects under `map/<name>/`
-and what the fork's `hba` refines. Nothing written names the map or holds an
+and what `hba_node` (below) refines. Nothing written names the map or holds an
 absolute path, which is what makes renaming a map directory one `os.rename`;
 keep it that way. The handler holds `m_pgo_mutex` for its whole body, so a
 reset that arrives during a save waits for it.
@@ -270,7 +271,7 @@ ls /dev/shm/syncai_pgo/<robot_id>                      # map_cloud_<seq>.pcd, ne
 - **Nothing here changes the ROS surface, and nothing should without a
   cross-repo commit.** The backend calls `save_maps` / `reset_mapping`, reads
   `map_cloud_file` and the PCDs under `/dev/shm/syncai_pgo/<robot_id>`, and
-  expects `map/<name>/`'s layout; `hba` in the fork expects `patches/` +
+  expects `map/<name>/`'s layout; `hba_node` expects `patches/` +
   `poses.txt`. The five absolute names in `mapping.launch.py` are the contract
   with `syncai_pointlio/launch/pointlio.launch.py`.
 - **The service types are `syncai_common`'s, not `interface`'s.** They moved
@@ -299,5 +300,53 @@ ls /dev/shm/syncai_pgo/<robot_id>                      # map_cloud_<seq>.pcd, ne
   as they were upstream: `pgos/` has no per-file licence headers (the package
   `LICENSE` covers it). All four `pgos/` files and the node shell follow the
   workspace `.clang-format`.
-- `rviz/pgo.rviz` from the fork was not carried over (its fixed frame was the
-  upstream `lidar`); rviz configs live in `config/rviz2/`.
+- `rviz/pgo.rviz` and `rviz/hba.rviz` from the fork were not carried over
+  (the former's fixed frame was the upstream `lidar`); rviz configs live in
+  `config/rviz2/`.
+
+## hba_node: offline refinement
+
+The second node: hierarchical bundle adjustment ([HBA](https://github.com/hku-mars/HBA)
+/ [BALM](https://github.com/hku-mars/BALM)) over the `patches/` + `poses.txt`
+pair a `save_maps` with `save_patches: true` wrote. It is **not in any
+session** and nothing in the backend calls it; an operator runs it by hand
+after a mapping drive, on a workstation or in the container, and decides
+whether to adopt the refined poses. Ported from the fork's `hba` package in
+2026-09 — the maths in `hba/` (`blam.*`, `hba.*`, `commons.*`) is upstream
+code, formatted but otherwise untouched; `hba_node.*` is the ROS shell.
+Three things changed with the port: the node runs at `/<robot_id>/hba` (it
+had a bare `/hba`, the only node in the stack without the robot_id
+namespace), its config is ROS parameters instead of a yaml-cpp `config_path`,
+and the launch no longer starts an rviz2.
+
+| Surface | Kind | Notes |
+|---|---|---|
+| `refine_map` | `syncai_common/srv/RefineMap` (`maps_path`) | Loads every `patches/<i>.pcd` named in `poses.txt` (voxelised at `scan_resolution`) and schedules the optimisation. **Returns as soon as the patches are loaded**; the optimisation runs on the 100 ms timer afterwards, `hba_iter` full passes, and holds the executor while it does — fine for an offline node that serves nothing else. |
+| `save_poses` | `syncai_common/srv/SavePoses` (`file_path`) | Writes the refined poses in the `poses.txt` format to a separate file whose parent directory must exist. Replacing the map's own `poses.txt` is deliberately the operator's step, not the node's. |
+| `map_points` | `sensor_msgs/PointCloud2` in `map`, depth 10 | The refined map, republished after every pass. Subscriber-gated. |
+
+```bash
+ros2 launch syncai_mapping hba.launch.py
+ros2 service call /<robot_id>/hba/refine_map syncai_common/srv/RefineMap "{maps_path: '/home/syncrobotic/robot_ws/map/<name>'}"
+# watch /<robot_id>/hba/map_points; the log prints ======HBA ITER n START/END======
+ros2 service call /<robot_id>/hba/save_poses syncai_common/srv/SavePoses "{file_path: '/home/syncrobotic/robot_ws/map/<name>/poses_refined.txt'}"
+```
+
+Parameters (`params/hba_params.yaml`, keyed `/**/hba_node:`; none depend on
+robot_id, so the launch passes the file through unchanged; read once at
+startup):
+
+| Parameter | Default | Type | Notes |
+|---|---|---|---|
+| `scan_resolution` | `0.1` | double | voxel leaf on load and for the preview |
+| `window_size` / `stride` | `20` / `10` | int | sliding window of poses per local BA, and its step |
+| `voxel_size` / `min_point_num` / `plane_thresh` | `0.5` / `10` / `0.01` | double / int / double | plane-feature voxelisation for the local BA |
+| `max_layer` | `3` | int | hierarchy depth |
+| `ba_max_iter` / `hba_iter` | `10` / `5` | int (`size_t` in the code, floored at 0) | LM iterations per local BA; full passes |
+| `down_sample` | `0.1` | double | voxel leaf of the clouds handed to the local BA |
+
+The same int-vs-double trap as `pgo_node`'s file applies. Two more things
+worth knowing: `MP_PROC_NUM=4` (BALM's OpenMP thread count) is compiled in
+for this target only and sized for an offline job with the box to itself,
+and Sophus is this node's manual dependency, the same source build
+`syncai_pointlio` uses.

@@ -206,7 +206,7 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
   `SOPHUS_USE_BASIC_LOGGING=ON` (which this package's CMake also defines, so
   the headers do not pull `fmt` back in). There is no rosdep key for that
   build, so `package.xml` does not list it — the same treatment
-  `syncai_mapping` / `hba` give GTSAM. Recreating the container from the image keeps it; a hand-built
+  `syncai_mapping` gives GTSAM (and Sophus, for its `hba_node`). Recreating the container from the image keeps it; a hand-built
   one loses it.
 - **An unoptimised build is unusable, not just slow.** CMake defaults
   `CMAKE_BUILD_TYPE` to Release (upstream forced it); the ikd-tree and the

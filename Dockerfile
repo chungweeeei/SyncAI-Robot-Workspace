@@ -111,7 +111,7 @@ RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
     ldconfig && \
     rm -rf /tmp/Livox-SDK2
 
-# GTSAM 4.2.0: syncai_mapping (workspace) + hba (FASTLIO2_ROS2) link libgtsam (find_package(GTSAM)).
+# GTSAM 4.2.0: syncai_mapping (pgo_node + hba_node) links libgtsam (find_package(GTSAM)).
 # No apt/PPA GTSAM on arm64, so build from source into /usr/local. Flags follow
 # the LIO-SAM recipe: system Eigen + no march-native to avoid Eigen-alignment
 # crashes when mixed with PCL; TBB on; shared libs.
@@ -130,7 +130,7 @@ RUN git clone --branch 4.2.0 --depth 1 https://github.com/borglab/gtsam.git /tmp
     ldconfig && \
     rm -rf /tmp/gtsam
 
-# Sophus 1.22.10: syncai_pointlio (workspace) + hba (FASTLIO2_ROS2) need find_package(Sophus). Header-only;
+# Sophus 1.22.10: syncai_pointlio + syncai_mapping's hba_node need find_package(Sophus). Header-only;
 # SOPHUS_USE_BASIC_LOGGING=ON drops the fmt dependency (matches the
 # add_compile_definitions in their CMake).
 RUN git clone --branch 1.22.10 --depth 1 https://github.com/strasdat/Sophus.git /tmp/Sophus && \

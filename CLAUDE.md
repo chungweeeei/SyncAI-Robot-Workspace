@@ -59,7 +59,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 |---|---|
 | `syncai_nav_core` | Header-only abstract plugin interfaces (port of `nav2_core`) |
 | `syncai_util` | Header-only helpers (geometry, occupancy-grid values) |
-| `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SetMotionKey`, `ExecuteTask`, `ResetLIO`, `SaveMaps`, `ResetMapping`, …). The last three came over from the FASTLIO2_ROS2 fork's `interface` package with the pointlio and pgo ports; `SaveMaps` / `ResetMapping` are served by `syncai_mapping` and called by the backend, `ResetLIO` is served by `syncai_pointlio` and called by `syncai_mapping`. |
+| `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SetMotionKey`, `ExecuteTask`, `ResetLIO`, `SaveMaps`, `ResetMapping`, `RefineMap`, `SavePoses`, `Relocalize`, `IsValid`, …). The last seven came over from the FASTLIO2_ROS2 fork's `interface` package, which no longer exists, with the pointlio / pgo / hba ports: `SaveMaps` / `ResetMapping` / `RefineMap` / `SavePoses` are served by `syncai_mapping`, `ResetLIO` by `syncai_pointlio`, and `Relocalize` / `IsValid` by the fork's `localizer` — the one consumer of this package outside the workspace. Every interface the backend calls is here now. |
 | `syncai_costmap_2d` | Costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
 | `syncai_planner` | `ComputePathToPose` action server. Three pluginlib planners are built (NavFn, StraightLine, SmacPlanner2D); **SmacPlanner2D is the configured one**, with `cost_travel_multiplier: 1.0` (lowered from 2.0 — at 2.0 paths bowed along the inflation gradient in open space) and an explicit smoother block. |
 | `syncai_controller` | `FollowPath` action server; Regulated Pure Pursuit merged in (clamps linear accel itself — there is no velocity smoother in the stack). `desired_linear_vel: 0.60` / `rotate_to_heading_angular_vel: 0.65` are one calibration with `syncai_driver_manager`'s velocity scales — change them together. |
@@ -77,7 +77,7 @@ them before trusting RPP's collision rejections; the package READMEs flag it.
 | Package | Role |
 |---|---|
 | `syncai_pointlio` | **The LIO front end.** Point-LIO (output model) over the Livox `CustomMsg` + IMU, ported in-tree from `FASTLIO2_ROS2`'s `pointlio` in 2026-09 with the ROS surface unchanged: node `pointlio_node` at `/<robot_id>/pointlio`, `lio_odom` / `body_cloud` / `world_cloud` / `lio_path`, TF `<robot_id>/pointlio_odom → <robot_id>/pointlio_body`, and `reset` (`syncai_common/srv/ResetLIO` — the type moved with it). `syncai_mapping` here and the `localizer` in the fork consume it through absolute names their launches inject; `lio_bridge` and both costmaps consume it here. Single-threaded on purpose: `resetCB` takes no lock against the timer. Its launch is the one definition of how the node is configured, and the session specs run it in its own pane — `localizer_launch.py` no longer `include()`s it. |
-| `syncai_mapping` | **The mapping back end.** `pgo_node`, ported in-tree from `FASTLIO2_ROS2`'s `pgo` in 2026-09 with the ROS surface unchanged: node `pgo_node` at `/<robot_id>/pgo`, services `save_maps` / `reset_mapping` (typed by `syncai_common` now — the backend is their only caller and must import from there), topics `map_cloud` (rviz) / `map_cloud_file` (the JSON notice the backend reads) / `loop_markers`, TF `map → <robot_id>/pointlio_odom` while mapping, and the `/dev/shm/syncai_pgo/<robot_id>` PCD hand-off. Two things did change: configuration is declared ROS parameters (`params/mapping_params.yaml`, `/**/pgo_node:`, five robot_id-dependent overrides from the launch) instead of a yaml-cpp `config_path` with a `/tmp` rewrite, and there is no `interface` dependency left. Runs a 3-thread `MultiThreadedExecutor` on purpose — `reset_mapping` blocks on the `ResetLIO` client — so `m_pgo_mutex` is load-bearing; the README carries the discipline. Its `local_frame` must equal pointlio's `world_frame`: it does not adopt the frame from the odom header. |
+| `syncai_mapping` | **The mapping back end, two nodes.** `pgo_node`, ported in-tree from `FASTLIO2_ROS2`'s `pgo` in 2026-09 with the ROS surface unchanged: node `pgo_node` at `/<robot_id>/pgo`, services `save_maps` / `reset_mapping` (typed by `syncai_common` now — the backend is their only caller and must import from there), topics `map_cloud` (rviz) / `map_cloud_file` (the JSON notice the backend reads) / `loop_markers`, TF `map → <robot_id>/pointlio_odom` while mapping, and the `/dev/shm/syncai_pgo/<robot_id>` PCD hand-off. Two things did change: configuration is declared ROS parameters (`params/mapping_params.yaml`, `/**/pgo_node:`, five robot_id-dependent overrides from the launch) instead of a yaml-cpp `config_path` with a `/tmp` rewrite, and there is no `interface` dependency left. Runs a 3-thread `MultiThreadedExecutor` on purpose — `reset_mapping` blocks on the `ResetLIO` client — so `m_pgo_mutex` is load-bearing; the README carries the discipline. Its `local_frame` must equal pointlio's `world_frame`: it does not adopt the frame from the odom header. The second node, `hba_node` (`hba.launch.py`, `/<robot_id>/hba`, `refine_map` / `save_poses`), is the fork's `hba`: offline hierarchical bundle adjustment over `save_maps`'s `patches/` + `poses.txt`, in no session, run by hand. It gained the robot_id namespace and ROS parameters with the port; the maths under `hba/` is upstream code. Needs Sophus as well as GTSAM. |
 | `syncai_lio_bridge` | **The only odometry source.** Wheel odom is retired. Converts the FAST-LIO2 chain (`map → pointlio_odom → pointlio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro because LIO leaves `twist.angular` empty. |
 | `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` (carries the `lidar_top` mount extrinsic the LIO bridge needs) + the Livox driver. The fleet runs **both MID360 and MID360s**; the driver has no ROS parameter for the model, so `[sensor.lidar] type` (`mid360`/`mid360s`) picks the JSON schema. The driver's network JSON is **generated** per `robot_id` and model into `/tmp/syncai_bringup/` from `[sensor.lidar] ip` + `type` (INI) + `host_ip` (params YAML) — the vendor `MID360_config.json` / `MID360s_config.json` in the driver's share dir is not read. The old 2D/AMCL `bringup_2d.launch.py` (laser scan merger) was removed. Optionally also the TechNexion VCS-AR0234-C camera via `vizionsdk_ros2` (`use_camera:=true`, **default off** — see below). |
 
@@ -132,15 +132,16 @@ this version has no use for it: it was in no session spec and not in compose, so
 nothing ever started it, and nothing in the stack imported or called it. Recover
 it from git history rather than re-deriving it if the agent work resumes. Its
 `FastMCP` pip dependency went with it, which leaves Sophus / GTSAM (source builds:
-Sophus for `syncai_pointlio` and the fork's `hba`, GTSAM for `syncai_mapping` and
-the fork's `hba`) as the only manual dependency `rosdep` does not cover.
+Sophus for `syncai_pointlio` and `syncai_mapping`'s `hba_node`, GTSAM for both of
+`syncai_mapping`'s nodes; nothing in the fork needs either any more) as the only
+manual dependency `rosdep` does not cover.
 
 ### Third-party (`src/third-party/`)
 
 | Package | How it is managed |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`. Unmodified. |
-| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2` (SSH remote), pinned to a SHA on branch `dev` in `third-party.repos`. Contains `localizer` + HBA + the `interface` srv package (`Relocalize`, `IsValid`, `RefineMap`, `SavePoses`). Neither live half of the LIO pipeline is there any more: `pointlio` was ported in-tree as `syncai_pointlio` and `pgo` as `syncai_mapping`, both in 2026-09. The pin matters because the session specs launch both workspace packages themselves — an older checkout still builds a `pgo` package (a second `pgo_node`, serving the old `interface` types) and a `localizer_launch.py` that `include()`s pointlio, i.e. two `pointlio_node`s. |
+| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2` (SSH remote), pinned to a SHA on branch `dev` in `third-party.repos`. Contains one package now, `localizer`, which builds against `syncai_common` for its two service types. Everything else was ported in 2026-09: `pointlio` as `syncai_pointlio`, `pgo` and `hba` as `syncai_mapping`'s two nodes, and its `interface` srv package into `syncai_common`. The pin matters because the session specs launch the workspace packages themselves — an older checkout still builds `pgo` / `hba` / `interface` packages (second `pgo_node` and `hba_node` executables, srv types that clash by name with `syncai_common`'s) and a `localizer_launch.py` that `include()`s pointlio, i.e. two `pointlio_node`s. |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver |
 | `small_gicp` | Pinned to upstream tag `v1.0.1`. Unmodified. The `localizer`'s registration backend (`RegistrationPCL`, a `pcl::Registration` subclass). Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package and `localizer` finds it with `find_package(small_gicp)`; the ordering comes from `<depend>small_gicp</depend>` in the localizer's manifest. |
 | `vizionsdk-ros2` | `TechNexion-Vision/vizionsdk-ros2` (branch `main`). ROS 2 wrapper (`vizionsdk_ros2/vizionsdk_camera_node`) for the TechNexion camera, started only by `bringup.launch.py use_camera:=true`. Needs the closed-source VizionSDK `.deb`, which the `Dockerfile` downloads from the TechNexion GitHub release (`VIZIONSDK_VERSION`); there is no rosdep key for it. |
@@ -251,7 +252,7 @@ devices / nvidia runtime / X11 mounts along) — keep the two in sync.
 Recreating a robot container wipes hand-installed build dependencies (the ones
 not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
 plus any manual deps (Sophus / GTSAM are built from source; `syncai_pointlio`
-needs Sophus, `syncai_mapping` GTSAM, and the fork's `hba` both).
+needs Sophus, `syncai_mapping` both).
 
 The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
@@ -368,7 +369,7 @@ during construction and die without it — so it cannot build the map it needs;
 `start_mapping.yaml` is the other half of that loop: `bringup` → `lio`
 (`syncai_pointlio` + `syncai_mapping`, both workspace packages — the fork
 contributes nothing to this session) → `driver_manager` → `robot_state`, and deliberately **no** map_server /
-localizer / lio_bridge / planner / controller / task_runner / hba. `robot_state`
+localizer / lio_bridge / planner / controller / task_runner / hba_node. `robot_state`
 is in the mapping session although its pose lookup never succeeds there, for its
 `mode` field alone — that is what the console's mode chip reads to know the
 switch to `MANUAL` landed. Everything else the console does during a mapping run
@@ -423,13 +424,13 @@ it actually uses:
 
 | Here | Used by the backend for |
 |---|---|
-| `syncai_common` msg/srv/action (`SyncAI-Robot-Interface`) | every call below — it builds against that repo, not this checkout. `SaveMaps` and `ResetMapping` are there since the pgo port (2026-09): the backend's `from interface.srv import …` for those two had to become `from syncai_common.srv import …`. (`ResetLIO` is there too, but its client is `syncai_mapping`, not the backend.) |
+| `syncai_common` msg/srv/action (`SyncAI-Robot-Interface`) | every call below — it builds against that repo, not this checkout. `SaveMaps`, `ResetMapping`, `Relocalize` and `IsValid` are there since the pgo / hba ports (2026-09), when the fork's `interface` package was retired: every `from interface.srv import …` in the backend had to become `from syncai_common.srv import …`. (`ResetLIO`, `RefineMap` and `SavePoses` are there too, but the backend calls none of them.) |
 | `robot_state` topic (`syncai_robot_state`) | the telemetry WebSocket and `GET /api/v1/robot/state` |
 | `switch_mode` / `get_mode` (`syncai_sys_manager`) | `POST /api/v1/robot/mode`; its gateway waits 45 s / 70 s for them |
 | `scan_wifi` / `connect_wifi` / `wifi_status` (`syncai_sys_manager`) | the network router |
 | `cmd_vel`, `set_motion_key` (`syncai_driver_manager`) | teleop WebSocket, STANDUP / LIEDOWN steps |
 | `NavigateToPose` on `task_runner` | the MOVE step of a task |
-| `localizer/relocalize`, `relocalize_check`, `initialpose` | initial pose, and map switch |
+| `localizer/relocalize`, `relocalize_check`, `initialpose` (fork's `localizer`; types `syncai_common/srv/Relocalize` / `IsValid` since 2026-09 — the fork's `interface` package is gone) | initial pose, and map switch |
 | `map_server/load_map` | map switch, and reload after a re-conversion |
 | `pgo/save_maps`, `pgo/reset_mapping`, `pgo/map_cloud_file` (`syncai_mapping`; types `syncai_common/srv/SaveMaps` / `ResetMapping`) | save a map, start a new one, hand over the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` itself is rviz-only now) |
 | `pointlio/body_cloud` (`syncai_pointlio`) | the live cloud WebSocket |
