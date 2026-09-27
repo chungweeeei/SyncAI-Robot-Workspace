@@ -166,6 +166,15 @@ ros2 launch syncai_localizer localizer.launch.py                        # ~/robo
 ros2 launch syncai_localizer localizer.launch.py system_config:=/path/to/robot01.ini
 ```
 
+`system_config:=` has one trap the other launches do not: a **relative**
+`[map] pcd` (the instance INIs write `map/%(name)s/map.pcd`) is resolved
+against *two directories above the INI*, because on the robot the INI is
+`config/system.ini` and that is the workspace root. Pointing the argument at
+`config/instances/robot01.ini` therefore looks for `config/map/<name>/map.pcd`
+and starts nothing (`[map] pcd '…/config/map/dp2f/map.pcd' does not exist`).
+For a bare run, use an INI whose `pcd` is absolute, or one that sits at
+`<workspace>/config/`.
+
 The nav session (`config/sessions/start_nav.yaml`) runs it as the third pane
 of the `localization` window, after map_server and `syncai_pointlio`, logging
 to `log/stack/<robot_id>/localizer/`. It is deliberately **absent** from the
@@ -238,6 +247,14 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
   as they were upstream: `localizers/` has no per-file licence headers (the
   package `LICENSE` covers it). The node shell follows the workspace
   `.clang-format`.
+- **Verified so far in a container, not yet on the robot.** A full build from
+  a fresh `syncai-robot-base` image with the fork deleted (22 packages,
+  2026-09-28) plus a launch against a synthetic `map.pcd`: node at
+  `/robot01/localizer_node`, both pointlio topics overridden, map preloaded,
+  `[initial_pose]` read, `relocalize_check` answering `true` for `code: 1` and
+  `false` for `code: 0` before any registration, `relocalize` refusing a
+  missing PCD and accepting the map. Registration itself (a real map, pointlio
+  running, the console's map switch) still needs the robot.
 - **A stale fork checkout builds a second `localizer` package.** If
   `src/third-party/FASTLIO2_ROS2` is still on disk from before this port,
   colcon builds its `localizer` too (same executable name, different package).

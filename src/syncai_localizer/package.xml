@@ -31,7 +31,7 @@
        the only caller of both, builds against it. -->
   <depend>syncai_common</depend>
   <!-- The registration backend. Not a rosdep key: src/third-party/small_gicp
-       ships its own package.xml (build_type cmake), so `rosdep --ignore-src`
+       ships its own package.xml (build_type cmake), so a `rosdep` run with `ignore-src`
        skips it and this line is what makes colcon build it before us. -->
   <depend>small_gicp</depend>
 

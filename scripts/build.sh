@@ -29,9 +29,13 @@
 # runtime on a missing .so. A missing dependency is a Dockerfile change, and
 # the check prints the keys to add. `install` exists to get a build through
 # while that change is being made. The keys rosdep reports as "cannot locate"
-# (GTSAM, livox_sdk2, libgraphicsmagick++1-dev, python3-assertpy-pip) are
-# satisfied by the image's deps-builder stage / apt lines under names rosdep
-# does not know; that output is noise, not a failure.
+# (libgraphicsmagick++1-dev, python3-assertpy-pip) are satisfied by the image's
+# apt lines under names rosdep does not know, and the two it reports as "not
+# satisfied" (libomp-dev from small_gicp's manifest -- OpenMP comes from gcc's
+# libgomp; python3-pytest-mock, a test_depend) do not stop a build; that
+# output is noise, not a failure. GTSAM and livox_sdk2 used to be on the list
+# and left it with the fork's manifests in 2026-09 -- the workspace packages
+# that need them deliberately do not declare a key (see their package.xml).
 # =============================================================================
 set -euo pipefail
 

@@ -102,9 +102,12 @@ The FAST-LIO2 fork (`chungweeeei/SyncAI-Fast-LIO2`, formerly
 `src/third-party/FASTLIO2_ROS2`, the one SSH remote) is not in the list any
 more: every package it held was ported in-tree during 2026-09 — `pointlio` as
 `syncai_pointlio`, `pgo` and `hba` as `syncai_mapping`, its `interface` srvs
-into `syncai_common`, and finally `localizer` as `syncai_localizer`. A checkout
-left on disk from before still builds a duplicate `localizer` package; delete
-it (`rm -rf src/third-party/FASTLIO2_ROS2 build/localizer install/localizer`).
+into `syncai_common`, and finally `localizer` as `syncai_localizer`. The five
+imports above plus `src/syncai_common` are the whole build: a full container
+build from a fresh image with the fork's directory deleted finished all 22
+packages (2026-09-28). A checkout left on disk from before still builds a
+duplicate `localizer` package; delete it
+(`rm -rf src/third-party/FASTLIO2_ROS2 build/localizer install/localizer`).
 
 To bump one, edit its `version:` in `third-party.repos`, commit that one-line
 diff, and re-import:
@@ -239,8 +242,9 @@ colcon build --packages-select syncai_planner
 the throwaway build container is gone when that exits and never reaches the
 robot, so the compose route only *reports* unmet keys and a missing
 dependency is a `Dockerfile` change. (Keys it reports as "cannot locate" —
-GTSAM, livox_sdk2, libgraphicsmagick++1-dev — are satisfied by the image under
-names rosdep does not know.)
+`libgraphicsmagick++1-dev`, `python3-assertpy-pip` — are satisfied by the image
+under names rosdep does not know, and the "not satisfied" `libomp-dev` /
+`python3-pytest-mock` do not stop the build.)
 
 GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage
 (Sophus for `syncai_pointlio` and `syncai_mapping`'s `hba_node`, GTSAM for

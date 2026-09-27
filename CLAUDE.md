@@ -160,7 +160,9 @@ packages were ported in-tree one by one — `pointlio` as `syncai_pointlio`,
 `pgo` and `hba` as `syncai_mapping`'s two nodes, `interface` into
 `syncai_common`, and finally `localizer` as `syncai_localizer` — and the entry
 went with the last of them. `scripts/build.sh` no longer checks for the
-directory. A checkout left on disk from before is gitignored and still builds
+directory, and a full container build with it deleted (fresh image, 22
+packages, 2026-09-28) is the state the workspace is verified in. A checkout
+left on disk from before is gitignored and still builds
 a second `localizer` package with its own `localizer_node`; delete it
 (`rm -rf src/third-party/FASTLIO2_ROS2 build/localizer install/localizer`)
 rather than let two launches exist for one node. The fork itself is history
