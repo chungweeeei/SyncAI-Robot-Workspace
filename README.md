@@ -1,13 +1,9 @@
 # SyncAI Robot Workspace
 
-A ROS 2 Humble software stack for the SyncAI robot (G23 quadruped / AMR
-chassis): Livox lidar + camera drivers, FAST-LIO2 odometry and localization, a
+A ROS 2 Humble software stack for the SyncAI robot (quadruped robot): Livox lidar + camera drivers, 3D lidar odometry and localization, a
 **non-lifecycle port of Navigation2**, and the byobu session manager that brings
 all of it up. The two operator-facing halves each live in their own repository
-now — `chungweeeei/SyncAI-Robot-Backend` (the Temporal-backed task
-orchestration API on port 3000, split out in 2026-09) and
-`chungweeeei/SyncAI-Robot-Frontend`, the Next.js console it serves (split out
-earlier the same month). This workspace is the robot's ROS 2 side of that line.
+now.
 
 The nav2 servers (map server, costmap, planner, controller, BT navigator) were
 re-implemented as plain `rclcpp::Node`s instead of lifecycle nodes, so the stack

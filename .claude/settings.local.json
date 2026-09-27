@@ -111,7 +111,9 @@
       "Bash(v4l2-ctl *)",
       "Bash(git rev-list *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(sort -k2)",
+      "Read(//Users/chungwei/Desktop/interface/srv/**)"
     ]
   }
 }
