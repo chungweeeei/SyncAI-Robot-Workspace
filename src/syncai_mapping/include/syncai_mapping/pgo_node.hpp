@@ -1,0 +1,219 @@
+#ifndef SYNCAI_MAPPING__PGO_NODE_HPP_
+#define SYNCAI_MAPPING__PGO_NODE_HPP_
+
+// The ROS shell around the pose graph. The graph itself (keyframe selection,
+// radius-search loop detection with ICP verification, GTSAM iSAM2 smoothing)
+// is pgos/simple_pgo.*; this class owns the synchronised cloud+odom intake,
+// the 50 ms timer that feeds it and broadcasts map -> local_frame, the
+// "map so far" merge worker and its file hand-off to the operator console's
+// backend, and the two services that bracket a mapping run: save_maps and
+// reset_mapping (which drives syncai_pointlio's reset through a client).
+//
+// Ported into the workspace from SyncAI-Fast-LIO2's `pgo` package in 2026-09
+// with the ROS surface unchanged: node name `pgo_node`, namespace
+// /<robot_id>/pgo (set by the launch), services save_maps / reset_mapping,
+// topics map_cloud / map_cloud_file / loop_markers, TF map -> local_frame, the
+// /dev/shm/syncai_pgo/<robot_id> hand-off directory and the save_maps on-disk
+// layout. Two things did change with the port: the service *types* moved from
+// that repo's `interface` package to syncai_common (the backend, their only
+// caller, builds against that), and configuration became declared ROS
+// parameters instead of a yaml-cpp-parsed `config_path`.
+
+#include <message_filters/subscriber.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <tf2_ros/transform_broadcaster.h>
+
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "builtin_interfaces/msg/time.hpp"
+#include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "syncai_common/srv/reset_lio.hpp"
+#include "syncai_common/srv/reset_mapping.hpp"
+#include "syncai_common/srv/save_maps.hpp"
+#include "syncai_mapping/pgos/commons.h"
+#include "syncai_mapping/pgos/simple_pgo.h"
+#include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
+
+namespace syncai_mapping
+{
+
+struct NodeConfig
+{
+  // The two inputs and the LIO reset service live in syncai_pointlio's
+  // namespace, which a relative name from inside /<robot_id>/pgo cannot
+  // reach, so all three are absolute and the launch overrides them per
+  // robot_id. These are the bare-run fallbacks and must never carry one.
+  std::string cloud_topic = "/pointlio/body_cloud";
+  std::string odom_topic = "/pointlio/lio_odom";
+  std::string map_frame = "map";
+  std::string local_frame = "lidar";
+  // The published "map so far" merge (see publishMapCloud). Node-level publish
+  // behaviour, not PGO math, so they live here rather than in Config.
+  double map_cloud_resolution = 0.2;
+  double map_cloud_pub_period = 3.0;
+  // Where the merge is handed to the operator console's backend as a FILE
+  // (see mergeAndPublishMapCloud). A tmpfs the backend's container shares
+  // (`ipc: host` on both compose services -- a private /dev/shm is 64 MB, too
+  // small for two merges of a large site). mapping.launch.py appends
+  // /<robot_id> so two robots on one host never share a directory.
+  std::string map_cloud_dir = "/dev/shm/syncai_pgo";
+  // pointlio's reset service. Absolute, and overridden per robot_id by
+  // mapping.launch.py for exactly the reason cloud_topic and odom_topic are:
+  // it names something in pointlio's namespace, which a relative name from
+  // inside /<robot_id>/pgo cannot reach. Keeping it a parameter is what stops
+  // this file from ever spelling a robot_id.
+  std::string lio_reset_service = "/pointlio/reset";
+};
+
+struct NodeState
+{
+  std::mutex message_mutex;
+  std::queue<CloudWithPose> cloud_buffer;
+  // Was uninitialised, so the out-of-order guard in syncCB compared the very
+  // first message against whatever was on the stack. -1.0 is the "no message
+  // seen yet" value, and is also what resetMappingCB puts back.
+  double last_message_time = -1.0;
+
+  // The reset gate. Atomics rather than fields under message_mutex on purpose:
+  // syncCB would otherwise have to take m_pgo_mutex *and* message_mutex in a
+  // fixed order on its hot path, and this file has already proved it cannot be
+  // trusted with one lock (see the lock_guard note in syncCB). Two relaxed
+  // loads keep the gate lock-free and remove lock ordering from the design
+  // entirely.
+  //
+  // accepting is false for the duration of a reset -- nothing the front end
+  // publishes can reach the graph while pointlio's state is changing, which is
+  // what makes the reset ordering-proof rather than timing-dependent.
+  // accept_after_time then discards the old run's tail: pairs already held by
+  // the message_filters synchroniser, which surface after accepting goes true
+  // again. Both sides of that comparison are the lidar header stamp, so it is
+  // exact -- no clock conversion, no tolerance constant.
+  std::atomic<bool> accepting{true};
+  std::atomic<double> accept_after_time{-1.0};
+};
+
+class PGONode : public rclcpp::Node
+{
+public:
+  PGONode();
+  ~PGONode();
+
+  // ---- The file hand-off (see the map_cloud_file publisher) ----------------
+  void setupMapCloudDir();
+  static bool isMapCloudFile(const std::filesystem::directory_entry & entry);
+  void clearMapCloudDir();
+  void pruneMapCloudFiles();
+  static std::string jsonEscape(const std::string & s);
+  std::string mapCloudNoticeJson(
+    uint64_t seq, const std::string & path, size_t points,
+    const builtin_interfaces::msg::Time & time) const;
+  void publishMapCloudNotice(
+    uint64_t seq, const std::string & path, size_t points,
+    const builtin_interfaces::msg::Time & time);
+  void writeAndAnnounceMapCloud(
+    const CloudType & merged, uint64_t seq, const builtin_interfaces::msg::Time & time);
+
+  // Declares every parameter with the struct default as its default. See the
+  // definition for why these are ROS parameters and not a hand-parsed YAML.
+  void loadParameters();
+
+  // Intake: one synchronised cloud+odom pair, gated by the reset state.
+  void syncCB(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & cloud_msg,
+    const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg);
+
+  void sendBroadCastTF(builtin_interfaces::msg::Time & time);
+  void publishLoopMarkers(builtin_interfaces::msg::Time & time);
+
+  // 50 ms timer: keyframe selection, loop search, smoothing, TF, outputs.
+  void timerCB();
+
+  // The "map so far" merge: claimed on the timer thread, run on the worker.
+  void publishMapCloud(builtin_interfaces::msg::Time & time);
+  void mergeAndPublishMapCloud(
+    std::vector<KeyPoseWithCloud> snapshot, builtin_interfaces::msg::Time time, uint64_t seq);
+  void publishEmptyMapCloud(const builtin_interfaces::msg::Time & time);
+  void publishLoopMarkerDeleteAll();
+
+  // The two services. reset_mapping runs on its own callback group and
+  // blocks on the ResetLIO client; save_maps shares the timer's group.
+  void resetMappingCB(
+    const std::shared_ptr<syncai_common::srv::ResetMapping::Request> request,
+    std::shared_ptr<syncai_common::srv::ResetMapping::Response> response);
+  void saveMapsCB(
+    const std::shared_ptr<syncai_common::srv::SaveMaps::Request> request,
+    std::shared_ptr<syncai_common::srv::SaveMaps::Response> response);
+
+private:
+  NodeConfig m_node_config;
+  Config m_pgo_config;
+  NodeState m_state;
+  std::shared_ptr<SimplePGO> m_pgo;
+  rclcpp::TimerBase::SharedPtr m_timer;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr m_loop_marker_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_map_cloud_pub;
+  // The map-cloud worker. busy is claimed by publishMapCloud on the timer
+  // thread and released by mergeAndPublishMapCloud as its last act; the thread
+  // handle is only ever joined while busy is false (or in the destructor).
+  std::atomic<bool> m_map_cloud_busy{false};
+  double m_last_map_cloud_time = 0.0;
+  std::thread m_map_cloud_thread;
+  // The file hand-off (see the map_cloud_file publisher and
+  // writeAndAnnounceMapCloud). m_map_cloud_seq is only ever touched under
+  // m_pgo_mutex (publishMapCloud on the timer thread, publishEmptyMapCloud
+  // from the reset); the worker gets its value by copy. dir_ok false means
+  // the directory could not be created and the file output is off for this
+  // run -- the PointCloud2 output is unaffected.
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr m_map_cloud_file_pub;
+  uint64_t m_map_cloud_seq = 0;
+  std::string m_map_cloud_dir;
+  bool m_map_cloud_dir_ok = false;
+  rclcpp::Service<syncai_common::srv::SaveMaps>::SharedPtr m_save_map_srv;
+  // The reset surface. m_resetting rejects a second concurrent call outright
+  // rather than queueing it -- two resets in flight would have the second one
+  // reading a boundary timestamp the first had already invalidated.
+  rclcpp::CallbackGroup::SharedPtr m_srv_cb_group;
+  rclcpp::CallbackGroup::SharedPtr m_cli_cb_group;
+  rclcpp::Service<syncai_common::srv::ResetMapping>::SharedPtr m_reset_srv;
+  rclcpp::Client<syncai_common::srv::ResetLIO>::SharedPtr m_lio_reset_cli;
+  std::atomic<bool> m_resetting{false};
+  // Guards m_pgo -- which resetMappingCB REPLACES rather than mutates, so every
+  // reader needs to be excluded, not just every writer. Discipline:
+  //
+  //   timerCB          whole body (addKeyPose, searchForLoopPairs,
+  //                    smoothAndUpdate, the TF broadcast, and the
+  //                    m_map_cloud_busy / m_map_cloud_thread handshake)
+  //   saveMapsCB       whole body (it serialises what a reset would destroy)
+  //   resetMappingCB   phases 1, 3 and 4 -- NEVER while waiting on the LIO
+  //                    future, which would stall the TF broadcast for seconds
+  //
+  // Needed only because main() runs a MultiThreadedExecutor now; under the old
+  // rclcpp::spin() the executor itself provided this exclusion.
+  std::mutex m_pgo_mutex;
+  message_filters::Subscriber<sensor_msgs::msg::PointCloud2> m_cloud_sub;
+  message_filters::Subscriber<nav_msgs::msg::Odometry> m_odom_sub;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> m_tf_broadcaster;
+  std::shared_ptr<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<
+    sensor_msgs::msg::PointCloud2, nav_msgs::msg::Odometry>>>
+    m_sync;
+};
+
+}  // namespace syncai_mapping
+
+#endif  // SYNCAI_MAPPING__PGO_NODE_HPP_

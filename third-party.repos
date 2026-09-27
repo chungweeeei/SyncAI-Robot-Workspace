@@ -35,13 +35,18 @@ repositories:
     # import that silently pulls new LIO code onto a robot is not reproducible.
     # (It said so while pointing at `dev` for a long time; the SHA became real in
     # 2026-09, when the session specs started depending on a specific state of
-    # this repo -- the one where pgo_launch.py / localizer_launch.py no longer
-    # include() pointlio, which now lives here as src/syncai_pointlio. An older
-    # checkout plus the current specs starts pointlio_node twice.)
-    # This is "refactor: move pointlio to SyncAI-Robot-Workspace" on dev.
+    # this repo. First pointlio moved here as src/syncai_pointlio and
+    # localizer_launch.py stopped include()ing it -- an older checkout plus the
+    # current specs starts pointlio_node twice. Then pgo and hba moved here as
+    # src/syncai_mapping and the fork's `interface` srv package went to
+    # syncai_common -- an older checkout builds second pgo_node / hba_node
+    # executables and an `interface` package whose srv types clash by name
+    # with syncai_common's, and its pgo_launch.py still runs.)
+    # This is "refactor: move hba and the interface package to the workspace
+    # repos" on dev; only the localizer is left in the fork.
     type: git
     url: git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
-    version: 1db6c7cf5b9f050962233d37eaa6bc95866abf03
+    version: 2e880dec95f118969c2b6c028dcad4756f5e6ae1
   src/third-party/Livox-SDK2:
     # One commit past upstream v1.3.1, so there is no tag to name.
     # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into

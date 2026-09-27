@@ -38,6 +38,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                                 (global / local costmaps)          cmd_vel ──▶ syncai_driver_manager ──UDP──▶ gait controller
 
    livox_ros_driver2 ──▶ syncai_pointlio ──▶ localizer (FAST-LIO2 fork) ──▶ syncai_lio_bridge ──▶ odom → base_link TF, map → odom, /odom
+                                        └──▶ syncai_mapping (pgo_node, mapping mode) ──▶ map/<name>/, pgo/map_cloud_file
    syncai_map_server ──▶ static gridmap (map)
 ```
 
@@ -62,6 +63,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
 | `syncai_pointlio` | The Point-LIO front end (`pointlio_node`): LIO odometry, body-frame cloud and the `pointlio_odom → pointlio_body` TF; serves `reset`. Ported in-tree from the FAST-LIO2 fork in 2026-09 |
+| `syncai_mapping` | The mapping back end (`pgo_node`): keyframes, loop closure (GTSAM), `map → pointlio_odom` while mapping, the live map-cloud hand-off, `save_maps` / `reset_mapping`; plus `hba_node`, offline bundle adjustment run by hand. Both ported in-tree from the fork in 2026-09 |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source) |
 | `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock |
@@ -95,7 +97,7 @@ submodules until `fca520b`); nothing is vendored there any more.
 | Package | Notes |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`, unmodified |
-| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2`, pinned to a SHA on branch `dev` (**SSH remote** — a recursive clone needs a GitHub key). PGO + HBA + `localizer` + the `interface` srv package; the LIO front end is `src/syncai_pointlio` since 2026-09 |
+| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2`, pinned to a SHA on branch `dev` (**SSH remote** — a recursive clone needs a GitHub key). Only the `localizer` now; the LIO front end is `src/syncai_pointlio`, the mapping back end and HBA are `src/syncai_mapping`, and its former `interface` srvs are in `syncai_common`, all since 2026-09 |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver. `colcon.meta` passes the cmake flags the driver needs; see "Build" |
 | `small_gicp` | Pinned to `v1.0.1`, unmodified; the localizer's registration backend |
 | `vizionsdk-ros2` | TechNexion camera wrapper; needs the VizionSDK `.deb` the `Dockerfile` installs |
@@ -237,8 +239,8 @@ GTSAM, livox_sdk2, libgraphicsmagick++1-dev — are satisfied by the image under
 names rosdep does not know.)
 
 GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage
-(Sophus for `syncai_pointlio` and the fork's `hba`, GTSAM for the fork's `pgo`
-and `hba`). Two things trip a fresh checkout:
+(Sophus for `syncai_pointlio` and `syncai_mapping`'s `hba_node`, GTSAM for
+`syncai_mapping`; the fork needs neither). Two things trip a fresh checkout:
 
 - `colcon.meta` (found only because colcon's default is the relative
   `./colcon.meta`, so build from the workspace root) passes
@@ -287,9 +289,10 @@ either). Navigation goals, mode switches, teleop and map saving all go through
 that API. A raw `NavigateToPose` goal to `/<robot_id>/task_runner` works as
 well, and is the route that needs nothing outside this repo.
 
-**Mapping loop.** Switch to MANUAL (the mapping session runs bringup + PGO +
-driver_manager + robot_state, and none of the localization / planning nodes),
-drive the robot, then save the map. `pgo/save_maps` is what writes
+**Mapping loop.** Switch to MANUAL (the mapping session runs bringup +
+pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state, and none of
+the localization / planning nodes), drive the robot, then save the map.
+`pgo/save_maps` (`syncai_common/srv/SaveMaps`) is what writes
 `map/<name>/`: `map.pcd`, `poses.txt` and `patches/`. Calling it from a shell
 gives you exactly that and no gridmap — both pcd → gridmap recipes left with
 the backend, so the console's save button (`POST /api/v1/maps`) is what calls

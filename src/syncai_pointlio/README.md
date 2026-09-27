@@ -24,8 +24,8 @@ the `pointlio_odom → pointlio_body` TF that everything downstream consumes.
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pointlio` package in
-2026-09 (`src/third-party/FASTLIO2_ROS2`, where `pgo` and the `localizer`
-still live). The ROS surface did not change with the move — same executable
+2026-09 (`src/third-party/FASTLIO2_ROS2`, where the `localizer` still lives;
+`pgo` followed pointlio out as `syncai_mapping`). The ROS surface did not change with the move — same executable
 and node name, namespace, topics, service name and parameters — so no consumer
 had to. `map_builder/` is the ported math (`point_ekf`, `imu_initializer`,
 `lidar_processor`, `ikd_Tree`, refactored from HKU MaRS Point-LIO in the
@@ -112,10 +112,10 @@ Two things the code relies on and enforces in comments rather than locks:
   a mutex around `m_builder` / `m_kf` first.
 
 The request is empty on purpose: a reset is not a reconfigure, and the
-parameters / extrinsics stay as launched. The `.srv` comments (in
-`SyncAI-Robot-Interface`) and `interface/srv/ResetMapping.srv` in
-`SyncAI-Fast-LIO2` are the specification; the two files live in two repos
-because the server is here and the client is there.
+parameters / extrinsics stay as launched. The comments in
+`syncai_common/srv/ResetLIO.srv` and `ResetMapping.srv` (both in
+`SyncAI-Robot-Interface` since the pgo port) are the specification; the client
+is `syncai_mapping`'s `pgo_node`.
 
 ## Parameters
 
@@ -157,11 +157,11 @@ ros2 launch syncai_pointlio pointlio.launch.py system_config:=/path/to/robot01.i
 The session specs run it in a pane of its own, immediately before the node
 that consumes it: `localization` window in `start_nav.yaml` (map_server →
 **pointlio** → localizer) and `lio` window in `start_mapping.yaml`
-(**pointlio** → pgo). The logs are `log/stack/<robot_id>/pointlio/` and
-`log/stack/<robot_id>/mapping/pointlio/`. Both `pgo_launch.py` and
-`localizer_launch.py` used to `include()` this launch; since the port they do
-not, so **launching only `pgo` or only `localizer` by hand starts no LIO** —
-run this first.
+(**pointlio** → `syncai_mapping`). The logs are `log/stack/<robot_id>/pointlio/`
+and `log/stack/<robot_id>/mapping/pointlio/`. Both the old `pgo_launch.py` and
+`localizer_launch.py` used to `include()` this launch; since the port neither
+`mapping.launch.py` nor `localizer_launch.py` does, so **launching only
+`syncai_mapping` or only `localizer` by hand starts no LIO** — run this first.
 
 Checking it:
 
@@ -184,28 +184,29 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 ## Gotchas
 
 - **Nothing here changes the ROS surface, and nothing should without a
-  cross-repo commit.** `pgo_launch.py` and `localizer_launch.py` in
-  `SyncAI-Fast-LIO2` hardcode `/<robot_id>/pointlio/{body_cloud,lio_odom}`,
-  `/<robot_id>/pointlio/reset` and the `<robot_id>/pointlio_odom` frame; the
+  cross-repo commit.** `syncai_mapping/launch/mapping.launch.py` here and
+  `localizer_launch.py` in `SyncAI-Fast-LIO2` hardcode
+  `/<robot_id>/pointlio/{body_cloud,lio_odom}`, `/<robot_id>/pointlio/reset`
+  and the `<robot_id>/pointlio_odom` frame; the
   backend reads `pointlio/body_cloud`; the planner / controller costmaps
   source it; `syncai_lio_bridge` subscribes `pointlio/lio_odom`. Renaming any
   of those is a change in three repositories.
-- **`pgo`'s `local_frame` must equal `world_frame` here.** `pgo_node` does
+- **`syncai_mapping`'s `local_frame` must equal `world_frame` here.** `pgo_node` does
   not adopt the frame from the odom header (the localizer does); if the two
   disagree, `map → local_frame` lands on a frame nobody looks up.
 - **The service type is `syncai_common/srv/ResetLIO`, not
-  `interface/srv/ResetLIO`.** It moved with the port. A `pgo` built against
-  the old `interface` type cannot call this node: `reset_mapping` fails
-  cleanly ("Timed out waiting for the LIO reset; map kept"). Rebuild
-  `syncai_common interface syncai_pointlio pgo` together, and clear the stale
-  `install/pointlio` / `install/interface` from before the port so the old
-  headers and launch cannot be found by mistake.
+  `interface/srv/ResetLIO`.** It moved with the port. A `pgo_node` built
+  against the old `interface` type cannot call this node: `reset_mapping`
+  fails cleanly ("Timed out waiting for the LIO reset; map kept"). Rebuild
+  `syncai_common syncai_pointlio syncai_mapping` together, and clear the stale
+  `install/pointlio` / `install/pgo` / `install/interface` from before the
+  ports so the old headers and launches cannot be found by mistake.
 - **Sophus is a manual dependency.** Header-only, source-built into
   `/usr/local` by the `Dockerfile`'s `deps-builder` stage with
   `SOPHUS_USE_BASIC_LOGGING=ON` (which this package's CMake also defines, so
   the headers do not pull `fmt` back in). There is no rosdep key for that
-  build, so `package.xml` does not list it — the same treatment `pgo` / `hba`
-  give GTSAM. Recreating the container from the image keeps it; a hand-built
+  build, so `package.xml` does not list it — the same treatment
+  `syncai_mapping` gives GTSAM (and Sophus, for its `hba_node`). Recreating the container from the image keeps it; a hand-built
   one loses it.
 - **An unoptimised build is unusable, not just slow.** CMake defaults
   `CMAKE_BUILD_TYPE` to Release (upstream forced it); the ikd-tree and the
