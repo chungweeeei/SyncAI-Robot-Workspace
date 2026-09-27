@@ -1,0 +1,76 @@
+# Pose-graph-optimisation parameters for pgo_node (syncai_mapping).
+#
+# This is a normal ROS parameters file (loaded by mapping.launch.py via
+# `parameters=[this file, overrides]`), not a hand-parsed YAML: every key below
+# is a parameter pgo_node declares, so `ros2 param get/dump` and launch-level
+# overrides all work. The `/**/pgo_node:` wildcard key makes the file
+# namespace-independent — the launch runs the node at /<robot_id>/pgo. It was
+# SyncAI-Fast-LIO2's pgo/config/pgo.yaml until 2026-09, read by yaml-cpp
+# through a `config_path` parameter, which is why the launch used to rewrite
+# a copy of it under /tmp/syncai_pgo/ per robot_id; the values are unchanged.
+#
+# Five keys are robot_id-dependent and are OVERRIDDEN by the launch — the
+# values here are only the fallbacks for running the node bare, and must never
+# contain a robot_id:
+#   cloud_topic, odom_topic, lio_reset_service   -> /<robot_id>/pointlio/...
+#   local_frame                                  -> <robot_id>/pointlio_odom
+#   map_cloud_dir                                -> <map_cloud_dir>/<robot_id>
+# They are absolute names on purpose: all of them point into pointlio's
+# namespace, which a relative name from inside /<robot_id>/pgo cannot reach.
+#
+# Numeric types matter. The node declares every tuning value below as a double
+# EXCEPT loop_submap_half_range (an int): a bare `10` for a double key is an
+# int64 override that kills the node at startup with
+# InvalidParameterTypeException, and `5.0` for the int key is the mirror-image
+# failure. Doubles are written with a decimal point throughout.
+#
+# Read once at startup: the values are copied into the pose graph at
+# construction and on every reset_mapping, so `ros2 param set` afterwards
+# changes nothing.
+/**/pgo_node:
+  ros__parameters:
+    cloud_topic: /pointlio/body_cloud
+    odom_topic: /pointlio/lio_odom
+    # pointlio's reset service, driven by pgo/reset_mapping.
+    lio_reset_service: /pointlio/reset
+    map_frame: map
+    # LIO world frame that pgo's map->local_frame TF should correct. Must
+    # match syncai_pointlio's world_frame override — pgo does NOT adopt the
+    # frame from the incoming odom header (the localizer does), so a mismatch
+    # lands the correction on a frame nobody looks up. Upstream's value was
+    # "lidar"; this fallback is the pre-prefix name.
+    local_frame: lio_odom
+
+    # Keyframe selection: a new keyframe every 10 deg or 0.5 m of travel.
+    key_pose_delta_deg: 10.0
+    key_pose_delta_trans: 0.5
+    # Loop closure: radius search over past keyframes, at least loop_time_tresh
+    # seconds apart, ICP-verified against a submap of +-loop_submap_half_range
+    # keyframes voxelised at submap_resolution; a fitness score above
+    # loop_score_tresh is rejected. min_loop_detect_duration rate-limits the
+    # search.
+    loop_search_radius: 1.0
+    loop_time_tresh: 60.0
+    loop_score_tresh: 0.15
+    loop_submap_half_range: 5     # int, not 5.0 (see the header)
+    submap_resolution: 0.1
+    min_loop_detect_duration: 5.0
+
+    # "Map so far" cloud published on pgo/map_cloud for the operator console
+    # while mapping. Merged from every keyframe's *current*
+    # (loop-closure-corrected) global pose on a background thread, so it never
+    # stalls the 50 ms timer that owns the map->local_frame TF broadcast.
+    # Publishing is subscriber-gated and keyframe-triggered; the period below
+    # is a floor on top of that.
+    map_cloud_resolution: 0.2   # voxel leaf (m) of the published merge
+    map_cloud_pub_period: 3.0   # min seconds between publishes
+    # The merge is ALSO handed to the operator console's backend as a binary
+    # PCD in this directory, announced by a small JSON notice on
+    # pgo/map_cloud_file (the PointCloud2 on pgo/map_cloud stays for rviz). A
+    # large site's merge is 16-45 MB, which CycloneDDS over UDP on `lo` cannot
+    # deliver through the kernel's default 208 KB socket buffer -- the
+    # console's preview used to stop once the map grew. Must be a tmpfs the
+    # backend's container shares, i.e. the host's /dev/shm with `ipc: host` on
+    # both compose services (a private /dev/shm is 64 MB). mapping.launch.py
+    # appends /<robot_id>; this is the base.
+    map_cloud_dir: /dev/shm/syncai_pgo

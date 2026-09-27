@@ -50,8 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ompl \
     && rm -rf /var/lib/apt/lists/*
 
-# Build-from-source deps for FASTLIO2_ROS2 (hba / pgo / localizer) and for
-# syncai_pointlio (Sophus). GTSAM and
+# Build-from-source deps for FASTLIO2_ROS2 (hba / localizer), syncai_mapping
+# (GTSAM) and syncai_pointlio (Sophus). GTSAM and
 # Sophus have no usable apt package on jammy, so the submodule expects them built
 # from source (see FASTLIO2_ROS2/README.md and CLAUDE.md's "Build" note). Without
 # them `find_package(GTSAM|Sophus REQUIRED)` aborts configure and colcon fails
@@ -78,7 +78,7 @@ RUN git clone https://github.com/strasdat/Sophus.git /tmp/Sophus \
     && cmake --install build \
     && rm -rf /tmp/Sophus
 
-# GTSAM 4.1.1 (pgo pose-graph optimization + hba). Flags matter:
+# GTSAM 4.1.1 (syncai_mapping's pose-graph optimization + hba). Flags matter:
 #   USE_SYSTEM_EIGEN=ON         -> link the same Eigen 3.4 as the rest of the stack;
 #                                  GTSAM's bundled Eigen otherwise causes ABI/alignment mismatches
 #   BUILD_WITH_MARCH_NATIVE=OFF -> -march=native miscompiles Eigen alignment and is non-portable

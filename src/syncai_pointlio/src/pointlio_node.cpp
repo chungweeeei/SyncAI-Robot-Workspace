@@ -60,8 +60,9 @@ PointLIONode::PointLIONode() : Node("pointlio_node")
   // over. Relative name, so it lands on /<robot_id>/pointlio/reset -- the
   // workspace rule, and what lets pgo_node reach it through a config key
   // instead of spelling a namespace it does not own. The type lives in
-  // syncai_common because the client (pgo_node, SyncAI-Fast-LIO2) is in another
-  // repository than this server.
+  // syncai_common because the client (pgo_node, syncai_mapping) and this server
+  // are two packages, and the backend that drives the whole reset builds
+  // against that interface package.
   m_reset_srv = this->create_service<syncai_common::srv::ResetLIO>(
     "reset", std::bind(&PointLIONode::resetCB, this, std::placeholders::_1, std::placeholders::_2));
 }

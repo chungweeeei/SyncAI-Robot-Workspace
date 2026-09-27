@@ -111,7 +111,7 @@ RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
     ldconfig && \
     rm -rf /tmp/Livox-SDK2
 
-# GTSAM 4.2.0: pgo + hba (FASTLIO2_ROS2) link libgtsam (find_package(GTSAM)).
+# GTSAM 4.2.0: syncai_mapping (workspace) + hba (FASTLIO2_ROS2) link libgtsam (find_package(GTSAM)).
 # No apt/PPA GTSAM on arm64, so build from source into /usr/local. Flags follow
 # the LIO-SAM recipe: system Eigen + no march-native to avoid Eigen-alignment
 # crashes when mixed with PCL; TBB on; shared libs.

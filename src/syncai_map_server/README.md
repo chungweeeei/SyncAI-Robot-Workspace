@@ -169,7 +169,7 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py
 `map_server` is in window 1 of the nav session (`config/sessions/start_nav.yaml`)
 and must come up **before** the planner, whose global costmap static layer blocks
 on the latched map. The mapping session (`start_mapping.yaml`) does not run it at
-all — it runs `pgo` to *build* the map that this node needs to exist, and
+all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs to exist, and
 `map_server` throws in its constructor when the file is absent.
 `costmap_filter_info.launch.py` is launched by **neither** session spec (the 2D
 session that used to carry it went away with `bringup_2d`), and the planner

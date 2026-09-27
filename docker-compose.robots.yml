@@ -107,7 +107,8 @@ services:
     <<: *robot-common
     container_name: robot01
     network_mode: host
-    # Host IPC namespace, so /dev/shm in here IS the host's /dev/shm. pgo hands
+    # Host IPC namespace, so /dev/shm in here IS the host's /dev/shm. pgo
+    # (syncai_mapping's pgo_node) hands
     # the mapping-mode "map so far" cloud to the backend as a binary PCD under
     # /dev/shm/syncai_pgo/<robot_id> (announced on pgo/map_cloud_file) instead
     # of a 16-45 MB PointCloud2 that CycloneDDS over UDP could not get through
