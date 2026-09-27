@@ -36,7 +36,7 @@ tf2-Python-binding cost.
 | `pointlio/lio_odom` | `nav_msgs/Odometry`, SensorData QoS | Point-LIO | Pose (`lio_odom → lio_body`) and body-frame linear velocity |
 | `livox/imu` | `sensor_msgs/Imu`, SensorData QoS | Livox MID360 driver | Yaw rate |
 | `base_frame → lidar_frame` | TF (static) | `syncai_bringup`'s URDF | The lidar mount extrinsic |
-| `map_frame → <lio_odom frame>` | TF | `localizer`, **only after relocalize** | The map correction |
+| `map_frame → <lio_odom frame>` | TF | `syncai_localizer`, **only after relocalize** | The map correction |
 
 Both subscriptions use SensorData (best-effort) QoS, which is compatible with
 either a reliable or a best-effort publisher.
@@ -131,7 +131,8 @@ pose is given:
    broadcasts `odom → base_link` and publishes the `odom` topic. The robot can be
    driven; the costmaps' `odom`-frame local costmap works.
 2. `map → odom` additionally requires `map → <lio_odom frame>` from the
-   localizer, which **only exists after `/localizer/relocalize` has been called**.
+   localizer, which **only exists after `/<robot_id>/relocalize` has been called**
+   (or the INI's `[initial_pose]` / an `initialpose` message has done the same).
    Until then the timer logs a throttled "waiting for TF (relocalized yet?)" and
    returns early. The first successful correction logs
    `localization bridged: map -> <id>/odom = (x, y, yaw …)` exactly once — that
@@ -190,7 +191,7 @@ throttled message:
 |---|---|
 | `waiting for pointlio/lio_odom (LIO initializing?)` | Point-LIO is not publishing |
 | `waiting for <id>/base_link -> <id>/lidar_top` | `bringup` / `robot_state_publisher` is not running |
-| `waiting for TF (relocalized yet?)` | `/localizer/relocalize` has not been called |
+| `waiting for TF (relocalized yet?)` | `/<robot_id>/relocalize` has not been called (and no `[initial_pose]` / `initialpose` has stood in for it) |
 
 ## Gotchas
 
@@ -221,7 +222,7 @@ throttled message:
   node. Measured on robot01 parked for 60 s (2026-09-21, dp2f map): Point-LIO
   under the correction moved 7.8 / 6.9 mm / 0.27°, while `map → pointlio_odom`
   swung 33.7 / 29.0 mm / 1.07° — the localizer was re-solving GICP's own noise
-  floor at 5 Hz. The motion gate added to `localizer.yaml`
+  floor at 5 Hz. The motion gate added to `syncai_localizer`'s `localizer_params.yaml`
   (`min_update_trans` / `max_update_interval` / `static_blend_alpha`) is what
   suppresses it; if standstill jitter comes back, look there before here.
 - **Single-threaded spin.** The timer, both subscriptions and the TF listener all

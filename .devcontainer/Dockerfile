@@ -51,9 +51,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Build-from-source deps for syncai_mapping (GTSAM, and Sophus for hba_node)
-# and syncai_pointlio (Sophus); nothing in FASTLIO2_ROS2 needs them now. GTSAM and
-# Sophus have no usable apt package on jammy, so the submodule expects them built
-# from source (see FASTLIO2_ROS2/README.md and CLAUDE.md's "Build" note). Without
+# and syncai_pointlio (Sophus); syncai_localizer needs neither (small_gicp is a
+# workspace package). GTSAM and Sophus have no usable apt package on jammy, so
+# the two LIO ports expect them built from source (CLAUDE.md's "Build" note). Without
 # them `find_package(GTSAM|Sophus REQUIRED)` aborts configure and colcon fails
 # the whole workspace — this is exactly the build failure this block fixes. PCL /
 # Eigen / Boost already arrive via ros-humble-pcl-conversions -> libpcl-dev; the
@@ -67,9 +67,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Sophus 1.22.10, pinned by FASTLIO2_ROS2/README.md. SOPHUS_USE_BASIC_LOGGING=ON
-# drops the fmt dependency the newer Sophus otherwise pulls in (the README calls
-# this out explicitly).
+# Sophus 1.22.10, the version the FAST-LIO2 fork's README pinned before its
+# packages were ported in-tree (syncai_pointlio / syncai_mapping build against
+# it). SOPHUS_USE_BASIC_LOGGING=ON drops the fmt dependency the newer Sophus
+# otherwise pulls in; both consumers define the same macro.
 RUN git clone https://github.com/strasdat/Sophus.git /tmp/Sophus \
     && cd /tmp/Sophus \
     && git checkout 1.22.10 \

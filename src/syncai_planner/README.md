@@ -273,7 +273,8 @@ sources `scan` **and** `pointlio/body_cloud`.
 The pointcloud source deliberately leaves `sensor_frame` empty so the
 observation buffer uses the cloud's own header frame as the raytrace origin —
 meaning no per-robot launch override, but also that it only works after
-`/localizer/relocalize`.
+`syncai_localizer` has been given a pose (`/<robot_id>/relocalize`, the INI's
+`[initial_pose]` or an `initialpose` message).
 
 The keepout filter is ported and verified but **not configured** today. To
 enable it, add `filters: ["keepout_filter"]` (plus the filter's params) to the
