@@ -1,7 +1,8 @@
 #pragma once
-#include <Eigen/Eigen>
-#include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+#include <Eigen/Eigen>
 
 using PointType = pcl::PointXYZI;
 using CloudType = pcl::PointCloud<PointType>;
@@ -14,17 +15,19 @@ using V3F = Eigen::Vector3f;
 using M4F = Eigen::Matrix4f;
 using V4F = Eigen::Vector4f;
 
-struct PoseWithTime {
-    V3D t;
-    M3D r;
-    int32_t sec;
-    uint32_t nsec;
-    double second;
-    void setTime(int32_t sec, uint32_t nsec);
-    // double second() const;
+struct PoseWithTime
+{
+  V3D t;
+  M3D r;
+  int32_t sec;
+  uint32_t nsec;
+  double second;
+  void setTime(int32_t sec, uint32_t nsec);
+  // double second() const;
 };
 
-struct CloudWithPose {
-    CloudType::Ptr cloud;
-    PoseWithTime pose;
+struct CloudWithPose
+{
+  CloudType::Ptr cloud;
+  PoseWithTime pose;
 };

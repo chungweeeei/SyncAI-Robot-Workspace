@@ -64,9 +64,8 @@ bool SimplePGO::addKeyPose(const CloudWithPose & cloud_with_pose)
     // this absolute pose
     gtsam::noiseModel::Diagonal::shared_ptr noise =
       gtsam::noiseModel::Diagonal::Variances(gtsam::Vector6::Ones() * 1e-12);
-    m_graph.add(
-      gtsam::PriorFactor<gtsam::Pose3>(
-        idx, gtsam::Pose3(gtsam::Rot3(init_r), gtsam::Point3(init_t)), noise));
+    m_graph.add(gtsam::PriorFactor<gtsam::Pose3>(
+      idx, gtsam::Pose3(gtsam::Rot3(init_r), gtsam::Point3(init_t)), noise));
   } else {
     // Every later frame -> odometry constraint (BetweenFactor)
     // A BetweenFactor does not say where idx is, only that the relative pose from idx-1 to idx
@@ -75,13 +74,11 @@ bool SimplePGO::addKeyPose(const CloudWithPose & cloud_with_pose)
 
     M3D r_between = last_item.r_local.transpose() * cloud_with_pose.pose.r;  // Relative rotation
     // Relative translation
-    V3D t_between =
-      last_item.r_local.transpose() * (cloud_with_pose.pose.t - last_item.t_local);
+    V3D t_between = last_item.r_local.transpose() * (cloud_with_pose.pose.t - last_item.t_local);
     gtsam::noiseModel::Diagonal::shared_ptr noise = gtsam::noiseModel::Diagonal::Variances(
       (gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-6).finished());
-    m_graph.add(
-      gtsam::BetweenFactor<gtsam::Pose3>(
-        idx - 1, idx, gtsam::Pose3(gtsam::Rot3(r_between), gtsam::Point3(t_between)), noise));
+    m_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
+      idx - 1, idx, gtsam::Pose3(gtsam::Rot3(r_between), gtsam::Point3(t_between)), noise));
   }
 
   // Finally, store the keyframe
@@ -228,11 +225,10 @@ void SimplePGO::smoothAndUpdate()
   // Add the loop-closure factors
   if (has_loop) {
     for (LoopPair & pair : m_cache_pairs) {
-      m_graph.add(
-        gtsam::BetweenFactor<gtsam::Pose3>(
-          pair.target_id, pair.source_id,
-          gtsam::Pose3(gtsam::Rot3(pair.r_offset), gtsam::Point3(pair.t_offset)),
-          gtsam::noiseModel::Diagonal::Variances(gtsam::Vector6::Ones() * pair.score)));
+      m_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
+        pair.target_id, pair.source_id,
+        gtsam::Pose3(gtsam::Rot3(pair.r_offset), gtsam::Point3(pair.t_offset)),
+        gtsam::noiseModel::Diagonal::Variances(gtsam::Vector6::Ones() * pair.score)));
     }
     // Clear cache_pairs
     std::vector<LoopPair>().swap(m_cache_pairs);
