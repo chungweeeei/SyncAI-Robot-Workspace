@@ -1,7 +1,8 @@
 #pragma once
-#include <Eigen/Eigen>
-#include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+#include <Eigen/Eigen>
 
 using M3D = Eigen::Matrix3d;
 using V3D = Eigen::Vector3d;
@@ -21,18 +22,19 @@ using Vec = std::vector<T>;
 
 struct PointXYZIDT
 {
-    PCL_ADD_POINT4D;
-    float lx;
-    float ly;
-    float lz;
-    float intensity;
-    uint32_t id;
-    double time;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  PCL_ADD_POINT4D;
+  float lx;
+  float ly;
+  float lz;
+  float intensity;
+  uint32_t id;
+  double time;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 } EIGEN_ALIGN16;
 
-POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZIDT,
-                                  (float, x, x)(float, y, y)(float, z, z)(float, lx, lx)(float, ly, ly)(float, lz, lz)(float, intensity, intensity)(uint32_t, id, id)(double, time, time))
+POINT_CLOUD_REGISTER_POINT_STRUCT(
+  PointXYZIDT, (float, x, x)(float, y, y)(float, z, z)(float, lx, lx)(float, ly, ly)(float, lz, lz)(
+                 float, intensity, intensity)(uint32_t, id, id)(double, time, time))
 using PointType = PointXYZIDT;
 using CloudType = pcl::PointCloud<PointType>;
 using PointVec = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
