@@ -6,8 +6,7 @@ closures, smooths the graph with GTSAM iSAM2, broadcasts the resulting
 `map → <robot_id>/pointlio_odom` correction while a map is being built, hands
 the "map so far" to the operator console, and serves the two calls that
 bracket a mapping run: `save_maps` and `reset_mapping`. It runs only in the
-mapping session; in navigation the `localizer` (still in the FAST-LIO2 fork)
-owns the same TF.
+mapping session; in navigation `syncai_localizer` owns the same TF.
 
 ```
    syncai_pointlio            /<id>/pointlio/{body_cloud, lio_odom}
@@ -25,8 +24,8 @@ owns the same TF.
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pgo` package in 2026-09
-(`src/third-party/FASTLIO2_ROS2`, where only the `localizer` still lives;
-`hba` came over in the same month as this package's second node, below).
+(`hba` came over in the same month as this package's second node, below, and
+the `localizer` last, as `syncai_localizer`; the fork is no longer imported).
 The ROS surface did not change with the move — same node name, namespace,
 services, topics, TF, hand-off directory and on-disk layout — so no consumer
 had to. Two things did change: the two service **types** are

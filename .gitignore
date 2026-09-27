@@ -70,10 +70,10 @@ data/
 # shadow (src/syncai_ros_mcp) was removed, and lives in git history now.
 src/syncai-ros-mcp/
 
-# Materialised by `vcs import < third-party.repos`, not committed -- six upstream
+# Materialised by `vcs import < third-party.repos`, not committed -- five upstream
 # repos, each with its own .git, which is why this rule matters more than it
-# looks: without it a `git add -A` stages all six as gitlinks with no .gitmodules
-# behind them, and a fresh clone gets six empty directories. `gitkeep` is
+# looks: without it a `git add -A` stages all five as gitlinks with no .gitmodules
+# behind them, and a fresh clone gets five empty directories. `gitkeep` is
 # negated so the directory itself survives a clone and vcs has somewhere to
 # import into.
 src/third-party/*

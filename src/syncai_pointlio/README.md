@@ -24,8 +24,9 @@ the `pointlio_odom → pointlio_body` TF that everything downstream consumes.
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pointlio` package in
-2026-09 (`src/third-party/FASTLIO2_ROS2`, where the `localizer` still lives;
-`pgo` followed pointlio out as `syncai_mapping`). The ROS surface did not change with the move — same executable
+2026-09, the first of its nodes to move (`pgo` and `hba` followed as
+`syncai_mapping`, then the `localizer` as `syncai_localizer`, and the fork is
+no longer imported at all). The ROS surface did not change with the move — same executable
 and node name, namespace, topics, service name and parameters — so no consumer
 had to. `map_builder/` is the ported math (`point_ekf`, `imu_initializer`,
 `lidar_processor`, `ikd_Tree`, refactored from HKU MaRS Point-LIO in the
@@ -158,10 +159,11 @@ The session specs run it in a pane of its own, immediately before the node
 that consumes it: `localization` window in `start_nav.yaml` (map_server →
 **pointlio** → localizer) and `lio` window in `start_mapping.yaml`
 (**pointlio** → `syncai_mapping`). The logs are `log/stack/<robot_id>/pointlio/`
-and `log/stack/<robot_id>/mapping/pointlio/`. Both the old `pgo_launch.py` and
-`localizer_launch.py` used to `include()` this launch; since the port neither
-`mapping.launch.py` nor `localizer_launch.py` does, so **launching only
-`syncai_mapping` or only `localizer` by hand starts no LIO** — run this first.
+and `log/stack/<robot_id>/mapping/pointlio/`. Both the fork's old `pgo_launch.py`
+and `localizer_launch.py` used to `include()` this launch; neither
+`mapping.launch.py` nor `localizer.launch.py` does, so **launching only
+`syncai_mapping` or only `syncai_localizer` by hand starts no LIO** — run this
+first.
 
 Checking it:
 
@@ -184,13 +186,13 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 ## Gotchas
 
 - **Nothing here changes the ROS surface, and nothing should without a
-  cross-repo commit.** `syncai_mapping/launch/mapping.launch.py` here and
-  `localizer_launch.py` in `SyncAI-Fast-LIO2` hardcode
+  cross-repo commit.** `syncai_mapping/launch/mapping.launch.py` and
+  `syncai_localizer/launch/localizer.launch.py` hardcode
   `/<robot_id>/pointlio/{body_cloud,lio_odom}`, `/<robot_id>/pointlio/reset`
   and the `<robot_id>/pointlio_odom` frame; the
   backend reads `pointlio/body_cloud`; the planner / controller costmaps
   source it; `syncai_lio_bridge` subscribes `pointlio/lio_odom`. Renaming any
-  of those is a change in three repositories.
+  of those is a change in two repositories.
 - **`syncai_mapping`'s `local_frame` must equal `world_frame` here.** `pgo_node` does
   not adopt the frame from the odom header (the localizer does); if the two
   disagree, `map → local_frame` lands on a frame nobody looks up.

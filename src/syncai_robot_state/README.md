@@ -192,7 +192,8 @@ which the subscription callbacks write from other threads.
 
 `onTimer()` looks up `global_frame → base_frame` through
 `syncai_util::getCurrentPose`. That lookup **fails on the 3D stack until
-`/localizer/relocalize` has been called**, because `map → odom` does not exist
+`syncai_localizer` has been given a pose** (`/<robot_id>/relocalize`, the INI's
+`[initial_pose]` or `initialpose`), because `map → odom` does not exist
 before that.
 
 This node used to abort the whole tick on failure, which meant no `robot_state`

@@ -348,8 +348,9 @@ On the real 3D robot the `scan` source receives nothing (no scan merger runs
 there); it is kept for setups that do publish one. The pointcloud source
 deliberately leaves `sensor_frame` empty so the observation buffer uses the
 cloud's own header frame as the raytrace origin — meaning it needs no per-robot
-launch override, but also that it only works **after** `/localizer/relocalize`
-has established the TF chain.
+launch override, but also that it only works **after** `syncai_localizer` has
+established the TF chain (`/<robot_id>/relocalize`, the INI's `[initial_pose]`
+or an `initialpose` message).
 
 ## Running
 

@@ -29,9 +29,13 @@
 # runtime on a missing .so. A missing dependency is a Dockerfile change, and
 # the check prints the keys to add. `install` exists to get a build through
 # while that change is being made. The keys rosdep reports as "cannot locate"
-# (GTSAM, livox_sdk2, libgraphicsmagick++1-dev, python3-assertpy-pip) are
-# satisfied by the image's deps-builder stage / apt lines under names rosdep
-# does not know; that output is noise, not a failure.
+# (libgraphicsmagick++1-dev, python3-assertpy-pip) are satisfied by the image's
+# apt lines under names rosdep does not know, and the two it reports as "not
+# satisfied" (libomp-dev from small_gicp's manifest -- OpenMP comes from gcc's
+# libgomp; python3-pytest-mock, a test_depend) do not stop a build; that
+# output is noise, not a failure. GTSAM and livox_sdk2 used to be on the list
+# and left it with the fork's manifests in 2026-09 -- the workspace packages
+# that need them deliberately do not declare a key (see their package.xml).
 # =============================================================================
 set -euo pipefail
 
@@ -52,9 +56,12 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
         "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
 
 # --- 1. vcs checkouts --------------------------------------------------------
-# Three directories in src/ are materialised by vcstool rather than tracked
-# here, and all three are empty in a fresh clone. Importing is left to the host
-# on purpose: FASTLIO2_ROS2 is an SSH remote and the container has no key.
+# Two groups of directories in src/ are materialised by vcstool rather than
+# tracked here, and all of them are empty in a fresh clone. Importing is left to
+# the host on purpose: the checkouts are the host's working tree bind-mounted
+# in, and a build must not mutate what git sees on the host (the one SSH
+# remote, the FAST-LIO2 fork, left in 2026-09 with the localizer port, so
+# credentials are no longer the reason).
 #
 # Checking them up front rather than letting colcon do it: an empty
 # src/third-party dir makes colcon silently build the in-tree packages and fail
@@ -63,9 +70,9 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 # ament package, neither of which says "you forgot to import". This does.
 step "checking vcs checkouts"
 missing=""
-for dir in third-party/behaviortree_cpp_v3 third-party/FASTLIO2_ROS2 \
-           third-party/Livox-SDK2 third-party/livox_ros_driver2 \
-           third-party/small_gicp third-party/vizionsdk-ros2; do
+for dir in third-party/behaviortree_cpp_v3 third-party/Livox-SDK2 \
+           third-party/livox_ros_driver2 third-party/small_gicp \
+           third-party/vizionsdk-ros2; do
     if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
         echo "  MISSING src/${dir}"
         missing="${missing} third-party.repos"
@@ -76,7 +83,7 @@ if [ -z "$(ls -A src/syncai_common 2>/dev/null)" ]; then
     missing="${missing} interface.repos"
 fi
 if [ -n "${missing}" ]; then
-    # Deduplicate: six empty third-party dirs are still one missing import.
+    # Deduplicate: five empty third-party dirs are still one missing import.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
     die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
         "$(for l in ${lists}; do printf '\n  vcs import < %s' "$l"; done)"

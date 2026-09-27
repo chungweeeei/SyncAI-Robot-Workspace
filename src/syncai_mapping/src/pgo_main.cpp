@@ -15,7 +15,7 @@ int main(int argc, char ** argv)
   // with no point cloud and a DDS "Finis." a third of a second after startup.
   auto node = std::make_shared<syncai_mapping::PGONode>();
   // Three threads for three groups, the same arrangement (and the same reason)
-  // as the fork's localizer_node: the default group keeps the timer, both
+  // as syncai_localizer's localizer_node: the default group keeps the timer, both
   // subscriptions and save_maps serialised exactly as rclcpp::spin() did, so
   // nothing about the steady-state behaviour moves. The other two exist purely
   // so resetMappingCB can block on a client future without deadlocking itself

@@ -1,0 +1,171 @@
+# Parameters for syncai_localizer's "localizer_node".
+#
+# A standard ROS 2 params file. It used to be a flat YAML that the node read
+# itself with yaml-cpp: only config_path was a real parameter, and nothing else
+# showed up in `ros2 param` at all. In this format the values are visible to
+# `ros2 param get/dump`, and the node can be started on its own with
+#   ros2 run syncai_localizer localizer_node --ros-args --params-file <this file>
+# (Ported unchanged from SyncAI-Fast-LIO2's localizer/config/localizer.yaml in
+# 2026-09: same keys, same values, same tuning notes.)
+#
+# The /**/ wildcard key lets the same file work at any namespace: the launch
+# file reads robot_id from config/system.ini and uses it as the namespace, so
+# the actual FQN is /<robot_id>/localizer_node -- the bare robot_id, not
+# /<robot_id>/localizer/...; see the launch header for why.
+#
+# cloud_topic / odom_topic point at pointlio's outputs (under
+# /<robot_id>/pointlio/), which are outside the localizer's own namespace, so a
+# relative name would not resolve to them — the launch file overrides both
+# values with the robot_id prefix. The values here are only the fallback for a
+# direct `ros2 run` without the launch file.
+/**/localizer_node:
+  ros__parameters:
+    cloud_topic: /pointlio/body_cloud
+    odom_topic: /pointlio/lio_odom
+
+    # TF frame names are not prefixed by the ROS namespace; the value is the
+    # actual frame name. local_frame is only a fallback: once the first odom
+    # message arrives, the node switches to that message's header.frame_id
+    # (<robot_id>/pointlio_odom on the robot).
+    map_frame: map
+    local_frame: laser
+
+    # map_path: the PCD the node loadMap()s during construction. Left empty
+    # here — the launch file overrides it with the absolute path from
+    # system.ini's [map] pcd, and if that file is missing the launch starts
+    # nothing. When it is empty the node still comes up, but it cannot
+    # localize until the relocalize service brings a map in.
+    map_path: ""
+
+    # Known starting pose at boot (map frame). When true, it is applied once as
+    # the ICP initial guess as soon as the first odom message arrives, which is
+    # the same as running relocalize automatically — no manual service call
+    # needed. The launch file overrides this from system.ini's [initial_pose]
+    # (set to true only when that section exists); the names mirror the
+    # retired syncai_amcl's set_initial_pose / initial_pose.*.
+    # Only x / y / yaw: z / roll / pitch are taken from the current estimate,
+    # because with the lidar on a tilted mount and the map gravity-aligned,
+    # map_T_body always carries the mount pitch, and a 2D pose with pitch=0
+    # would keep ICP from matching (see applyPlanarGuess in localizer_node.cpp).
+    set_initial_pose: false
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+
+    # 1.0 -> 5.0 (2026-08-28, measured on robot01): at 1 Hz, walking fast at
+    # 0.7 m/s let the guess error accumulate for a whole second before being
+    # pulled back in one step, so the map -> odom correction moved in staircase
+    # jumps (up to 0.67 m / 5.5 deg within a single second, see
+    # record/loc_run_20260828_194142.csv). One rough+refine round measures only
+    # 30-50 ms, so at 5 Hz the load is still well under one period, and each
+    # correction shrinks to roughly 1/5. If CPU contention with pointlio shows
+    # up (dropped ticks in the control loop), drop back to 3.0 first rather than
+    # touching num_threads.
+    update_hz: 5.0
+
+    # Motion gate (2026-09-21, robot01 on the dp2f map). update_hz above is a
+    # ceiling, not a schedule: below these thresholds the odom pose has not
+    # moved enough to justify a new scan match, so timerCB rebroadcasts the
+    # previous offset and skips GICP entirely.
+    #
+    # Why: parked for 60 s, the localizer's own correction (map -> pointlio_odom)
+    # swung 33.7 mm in x / 29.0 mm in y / 1.07 deg, with 193 of 241 updates
+    # moving more than 5 mm — every round, not occasionally. Point-LIO
+    # underneath it (pointlio_odom -> pointlio_body) moved only 7.8 / 6.9 mm /
+    # 0.27 deg, 0.87 mm per frame. So the jitter is not odometry drift: it is
+    # GICP's noise floor being resampled 5 times a second. Livox's
+    # non-repetitive scan puts different points in each frame, so the minimum
+    # lands somewhere slightly different every time, while the true correction
+    # for a stationary robot is a constant. Downstream, syncai_robot_state
+    # samples map -> base_link at 1 Hz, i.e. a random phase of that +/-2 cm
+    # swing, which is why the console looks like it teleports.
+    #
+    # This is NOT the degenerate-geometry double-solution bouncing recorded
+    # under rough_registration_type below (~0.17 m): today's x/y noise is
+    # roughly isotropic and site-independent.
+    #
+    # Rejected alternatives:
+    #   - Plain EMA on every update (no gate): also smooths while driving, and
+    #     alpha=0.3 at 5 Hz lags ~0.28 m at 0.6 m/s.
+    #   - Plain deadband (drop sub-threshold solutions): a true drift below the
+    #     threshold would never be corrected, and a threshold sitting on the
+    #     noise amplitude turns steady jitter into intermittent large steps.
+    #
+    # Thresholds are deliberately small and the backstop short: the failure
+    # direction we want is "jitter only partly suppressed", never "frozen on a
+    # stale pose".
+    min_update_trans: 0.05
+    min_update_rot: 0.02
+    # Re-register this often even when parked, so a slow true drift is still
+    # corrected. Expect map -> pointlio_odom to update at 1/this Hz at standstill.
+    max_update_interval: 2.0
+    # EMA weight for a backstop refresh (one the gate would otherwise have
+    # skipped). Motion-triggered updates always use 1.0, so driving is unchanged
+    # and picks up no lag. Set to 1.0 to keep the gate but drop the blending.
+    static_blend_alpha: 0.1
+    # After a relocalize / initial-pose guess, register at full rate and full
+    # alpha for this long. relocalize returning success is a receipt, not a
+    # result — the pose converges over the rounds that follow, and gating right
+    # after the first successful align would leave a parked robot refining one
+    # alpha=0.1 step per max_update_interval (tens of seconds). 3 s at 5 Hz is
+    # ~15 full-rate rounds. This matters most for the live map switch
+    # (POST /api/v1/maps/{name}/activate), whose first step is relocalize.
+    post_reloc_settle: 3.0
+
+    # The registration backend is small_gicp's GICP (it used to be
+    # pcl::IterativeClosestPoint's point-to-point). num_threads is used for the
+    # covariance estimation, the KD-tree build and the reduction; the localizer
+    # shares one CPU with pointlio, so do not use every core.
+    # num_threads is read once, during construction — RegistrationPCL builds
+    # the KD-tree with the value current at setInputTarget time, and changing it
+    # later does not rebuild the tree.
+    num_threads: 4
+    # Number of neighbors used to estimate the local covariance; the same as
+    # pcl::GICP's correspondence randomness.
+    num_neighbors: 20
+
+    rough_scan_resolution: 0.25
+    rough_map_resolution: 0.25
+    # small_gicp only reports converged when the update falls below eps; hitting
+    # the iteration limit stops as not converged (PCL's ICP reports converged
+    # even when it hits the limit), and align() treats hasConverged() as a hard
+    # condition. So the old 5 / 10 cannot be carried over: too few iterations
+    # means a perfectly good score still returns false every round and the TF
+    # never updates. Aligned with small_gicp's default of 20.
+    rough_max_iteration: 20
+    # The threshold is compared against pcl::Registration::getFitnessScore():
+    # the mean squared nearest-neighbor distance (m²) from the registered
+    # source to the target. It does not depend on the registration algorithm,
+    # so after the switch to GICP the physical meaning of these two values is
+    # unchanged and the old tuning carries over. The actual value is printed in
+    # the log's fitness column.
+    rough_score_thresh: 0.2
+    # Upper bound on the correspondence pairing distance (m): rough gets a
+    # larger one to absorb the error of a hand-entered relocalize guess.
+    rough_max_corr_dist: 2.0
+    # "GICP" or "VGICP". VGICP builds a voxelmap of the target instead of a
+    # KD-tree and has a larger basin of attraction, so in theory it suits the
+    # rough stage better. But measured on robot01 on 2026-08-28 with VGICP +
+    # 5 Hz, in a corner at the west end of the site with a weak constraint
+    # along y, the pose of the stationary robot kept bouncing between two
+    # solutions ~0.17 m apart (with GICP for rough, the swing at the same spot
+    # was only ~0.13 m; see record/loc_run_20260828_194142.csv from 20:05:30
+    # on) — presumably the 1.0 m voxels push the rough solution into different
+    # basins of attraction in degenerate geometry, and refine passes the
+    # fitness check on both sides. Reverted to GICP to validate update_hz=5.0
+    # on its own; retry VGICP once that corner has been given some geometric
+    # features.
+    rough_registration_type: "GICP"
+    # Only used when rough_registration_type is VGICP (voxelmap edge length, m).
+    rough_voxel_resolution: 1.0
+
+    refine_scan_resolution: 0.1
+    refine_map_resolution: 0.1
+    refine_max_iteration: 20
+    refine_score_thresh: 0.1
+    # refine tightens this and uses only short-range pairs for the fine
+    # registration.
+    refine_max_corr_dist: 0.5
+    refine_registration_type: "GICP"
+    refine_voxel_resolution: 0.5

@@ -10,8 +10,18 @@
 # an explicit `src` target does NOT work: the keys already carry `src/`, so the
 # repos would land in `src/src/third-party/`.
 #
-# Never add --shallow: three of the pins below are commit SHAs, and a shallow
+# Never add --shallow: two of the pins below are commit SHAs, and a shallow
 # clone can only fetch named refs (branches/tags), so the checkout would fail.
+#
+# Every entry is a public HTTPS remote. The one SSH entry, the FAST-LIO2 fork
+# (chungweeeei/SyncAI-Fast-LIO2 at src/third-party/FASTLIO2_ROS2), left in
+# 2026-09 once its last package, `localizer`, had been ported in-tree as
+# src/syncai_localizer -- pointlio, pgo, hba and its `interface` srvs had gone
+# the same way earlier that month. These five plus interface.repos are the whole
+# build (verified with the fork's directory deleted: 22 packages, 2026-09-28).
+# An old checkout of it still on disk builds a second `localizer` package with
+# its own localizer_node; delete the directory (and build/localizer,
+# install/localizer) rather than keeping it.
 #
 # `src/third-party/` is gitignored -- these repos are materialised, not committed.
 # To bump one, edit its `version` here and commit that one-line diff; the old
@@ -29,24 +39,6 @@ repositories:
     type: git
     url: https://github.com/BehaviorTree/BehaviorTree.CPP.git
     version: "3.8.8"
-  src/third-party/FASTLIO2_ROS2:
-    # Private fork (SSH -- the only entry here that needs credentials). Pinned to a
-    # SHA on branch `dev` rather than to `dev` itself: the branch tip moves, and an
-    # import that silently pulls new LIO code onto a robot is not reproducible.
-    # (It said so while pointing at `dev` for a long time; the SHA became real in
-    # 2026-09, when the session specs started depending on a specific state of
-    # this repo. First pointlio moved here as src/syncai_pointlio and
-    # localizer_launch.py stopped include()ing it -- an older checkout plus the
-    # current specs starts pointlio_node twice. Then pgo and hba moved here as
-    # src/syncai_mapping and the fork's `interface` srv package went to
-    # syncai_common -- an older checkout builds second pgo_node / hba_node
-    # executables and an `interface` package whose srv types clash by name
-    # with syncai_common's, and its pgo_launch.py still runs.)
-    # This is "refactor: move hba and the interface package to the workspace
-    # repos" on dev; only the localizer is left in the fork.
-    type: git
-    url: git@github.com:chungweeeei/SyncAI-Fast-LIO2.git
-    version: 2e880dec95f118969c2b6c028dcad4756f5e6ae1
   src/third-party/Livox-SDK2:
     # One commit past upstream v1.3.1, so there is no tag to name.
     # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into
@@ -64,8 +56,9 @@ repositories:
     url: https://github.com/koide3/small_gicp.git
     version: v1.0.1
   src/third-party/vizionsdk-ros2:
-    # Branch `main`, no tags upstream -- pinned to the SHA for the same reason as
-    # FASTLIO2_ROS2 above. Links against the VizionSDK .deb the robot image installs.
+    # Branch `main`, no tags upstream -- pinned to a SHA because the branch tip
+    # moves, and an import that silently pulls new driver code onto a robot is
+    # not reproducible. Links against the VizionSDK .deb the robot image installs.
     type: git
     url: https://github.com/TechNexion-Vision/vizionsdk-ros2.git
     version: 8a0df2fddcabe51830a211846467f283eb0edac8

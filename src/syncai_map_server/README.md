@@ -22,7 +22,7 @@ map/<name>/gridmap.yaml + .pgm
        map_server ──/<robot_id>/map (latched)──►  syncai_costmap_2d StaticLayer
             ▲                                     syncai_backend  ──► GET /api/v1/map/image
             │ load_map (service)
-            │   (localization itself is FAST-LIO2's `localizer` + syncai_lio_bridge,
+            │   (localization itself is syncai_localizer + syncai_lio_bridge,
             │    which match against the [map] pcd, not this grid — the grid is
             │    for planning and display only)
             │
