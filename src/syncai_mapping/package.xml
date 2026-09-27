@@ -39,8 +39,8 @@
   <!-- Not listed on purpose: PCL, Eigen, GTSAM and Sophus. PCL / Eigen arrive
        through pcl_conversions' own rosdep chain (libpcl-dev, libeigen3-dev).
        GTSAM (both nodes) and Sophus (hba_node) have no rosdep key matching
-       what the robot image ships -- source-built into /usr/local by the
-       Dockerfile's deps-builder stage -- and scripts/build.sh runs
+       what the robot image ships (they are source-built into /usr/local by
+       the Dockerfile's deps-builder stage), and scripts/build.sh runs
        `rosdep check`, so a key here would only add the "cannot locate" line
        the fork's `<depend>GTSAM</depend>` used to produce. Same treatment
        syncai_pointlio gives Sophus. -->
