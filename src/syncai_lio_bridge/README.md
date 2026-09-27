@@ -104,7 +104,7 @@ yaw rate. Linear x/y come from LIO's own body-frame twist.
 This is a deliberate choice, not a fallback. An earlier version of this section
 claimed Point-LIO leaves `twist.angular` empty; it does not — `pointlio_node`
 fills it from its EKF output-model state `x().omg`. Nor is that estimate the
-bias-free one it looks like: `pointlio.yaml` sets `gyr_cov_output: 1000.0`, so
+bias-free one it looks like: `syncai_pointlio/params/pointlio_params.yaml` sets `gyr_cov_output: 1000.0`, so
 the output model tracks the raw measurement almost instantly. Measured at
 standstill on robot01 (2026-09-21, 40 s):
 

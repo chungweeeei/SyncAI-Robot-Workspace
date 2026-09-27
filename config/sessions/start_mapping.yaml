@@ -11,7 +11,8 @@
 # The pipeline (from §5 of the FAST-LIO2 PGO pipeline note, no longer in doc/):
 #
 #   bringup (MID360 + lidar_top static TF)
-#     -> pgo_launch.py      # include()s pointlio_launch.py, the LIO front end
+#     -> pointlio.launch.py # the LIO front end (src/syncai_pointlio)
+#     -> pgo_launch.py      # loop closure over pointlio's odom + body_cloud
 #     -> drive by hand      # teleop -> driver_manager -> gait controller
 #     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt
 #     -> pcd -> gridmap conversion   =>  gridmap.pgm + gridmap.yaml
@@ -116,18 +117,30 @@ windows:
         log: mapping/bringup
 
   # ---------- Window 1: LIO front end + loop closure -------------------------
-  # One pane brings up both: pgo_launch.py include()s pointlio_launch.py, which
-  # is the single definition of how pointlio_node is configured. pgo also
-  # broadcasts map -> <robot_id>/pointlio_odom itself, so no localizer is needed
-  # to have a complete TF chain while mapping.
+  # Two panes, in start order: pointlio (src/syncai_pointlio, the front end)
+  # then pgo. Until 2026-09 one pane brought up both, because pgo_launch.py
+  # include()d pointlio_launch.py from FASTLIO2_ROS2; the front end moved into
+  # the workspace and the include went with it, so the pane split. pointlio's
+  # launch is still the single definition of how pointlio_node is configured,
+  # and the /<robot_id>/pointlio/{body_cloud,lio_odom,reset} names plus the
+  # <robot_id>/pointlio_odom frame pgo_launch.py rewrites into pgo's config are
+  # the contract with it. pgo also broadcasts map -> <robot_id>/pointlio_odom
+  # itself, so no localizer is needed to have a complete TF chain while mapping.
+  #
+  # No hard ordering between the two panes: pgo only subscribes, and its
+  # ResetLIO client waits for the service at reset time, not at startup. The
+  # one-second stagger keeps the two logs readable in cause-and-effect order.
   #
   # Nothing is published until the builder reaches its MAPPING state (IMU init +
   # first map frame), and the LIO publishers are gated on having subscribers —
   # so silence here right after launch is normal, not a fault.
   - name: lio
     panes:
-      - cmd: ros2 launch pgo pgo_launch.py
+      - cmd: ros2 launch syncai_pointlio pointlio.launch.py
         sleep: 3
+        log: mapping/pointlio
+      - cmd: ros2 launch pgo pgo_launch.py
+        sleep: 4
         log: mapping/pgo
 
   # ---------- Window 2: driver_manager (own window: shutdown path is manual) --

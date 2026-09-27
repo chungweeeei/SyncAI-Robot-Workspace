@@ -59,7 +59,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 |---|---|
 | `syncai_nav_core` | Header-only abstract plugin interfaces (port of `nav2_core`) |
 | `syncai_util` | Header-only helpers (geometry, occupancy-grid values) |
-| `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SetMotionKey`, `ExecuteTask`, …) |
+| `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SetMotionKey`, `ExecuteTask`, `ResetLIO`, …). `ResetLIO` is served by `syncai_pointlio` and called by `pgo` in the FASTLIO2_ROS2 fork — the one interface here with a consumer in a third repository. |
 | `syncai_costmap_2d` | Costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
 | `syncai_planner` | `ComputePathToPose` action server. Three pluginlib planners are built (NavFn, StraightLine, SmacPlanner2D); **SmacPlanner2D is the configured one**, with `cost_travel_multiplier: 1.0` (lowered from 2.0 — at 2.0 paths bowed along the inflation gradient in open space) and an explicit smoother block. |
 | `syncai_controller` | `FollowPath` action server; Regulated Pure Pursuit merged in (clamps linear accel itself — there is no velocity smoother in the stack). `desired_linear_vel: 0.60` / `rotate_to_heading_angular_vel: 0.65` are one calibration with `syncai_driver_manager`'s velocity scales — change them together. |
@@ -76,7 +76,8 @@ them before trusting RPP's collision rejections; the package READMEs flag it.
 
 | Package | Role |
 |---|---|
-| `syncai_lio_bridge` | **The only odometry source.** Wheel odom is retired. Converts the FAST-LIO2 chain (`map → lio_odom → lio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro because LIO leaves `twist.angular` empty. |
+| `syncai_pointlio` | **The LIO front end.** Point-LIO (output model) over the Livox `CustomMsg` + IMU, ported in-tree from `FASTLIO2_ROS2`'s `pointlio` in 2026-09 with the ROS surface unchanged: node `pointlio_node` at `/<robot_id>/pointlio`, `lio_odom` / `body_cloud` / `world_cloud` / `lio_path`, TF `<robot_id>/pointlio_odom → <robot_id>/pointlio_body`, and `reset` (`syncai_common/srv/ResetLIO` — the type moved with it). `pgo` and the `localizer` in the fork consume it through absolute names their launches inject; `lio_bridge` and both costmaps consume it here. Single-threaded on purpose: `resetCB` takes no lock against the timer. Its launch is the one definition of how the node is configured, and the session specs run it in its own pane — `pgo_launch.py` / `localizer_launch.py` no longer `include()` it. |
+| `syncai_lio_bridge` | **The only odometry source.** Wheel odom is retired. Converts the FAST-LIO2 chain (`map → pointlio_odom → pointlio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro because LIO leaves `twist.angular` empty. |
 | `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` (carries the `lidar_top` mount extrinsic the LIO bridge needs) + the Livox driver. The fleet runs **both MID360 and MID360s**; the driver has no ROS parameter for the model, so `[sensor.lidar] type` (`mid360`/`mid360s`) picks the JSON schema. The driver's network JSON is **generated** per `robot_id` and model into `/tmp/syncai_bringup/` from `[sensor.lidar] ip` + `type` (INI) + `host_ip` (params YAML) — the vendor `MID360_config.json` / `MID360s_config.json` in the driver's share dir is not read. The old 2D/AMCL `bringup_2d.launch.py` (laser scan merger) was removed. Optionally also the TechNexion VCS-AR0234-C camera via `vizionsdk_ros2` (`use_camera:=true`, **default off** — see below). |
 
 **Camera.** The camera has two possible consumers and exactly one may hold the
@@ -129,15 +130,16 @@ backend's REST API as MCP tools over HTTP on port 8000 — **was removed**, beca
 this version has no use for it: it was in no session spec and not in compose, so
 nothing ever started it, and nothing in the stack imported or called it. Recover
 it from git history rather than re-deriving it if the agent work resumes. Its
-`FastMCP` pip dependency went with it, which leaves Sophus / GTSAM (source builds
-for `FASTLIO2_ROS2`) as the only manual dependency `rosdep` does not cover.
+`FastMCP` pip dependency went with it, which leaves Sophus / GTSAM (source builds:
+Sophus for `syncai_pointlio` and the fork's `hba`, GTSAM for the fork's `pgo` and
+`hba`) as the only manual dependency `rosdep` does not cover.
 
 ### Third-party (`src/third-party/`)
 
 | Package | How it is managed |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`. Unmodified. |
-| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2` (branch `dev`, SSH remote). Contains LIO + PGO + HBA + `localizer`. |
+| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2` (SSH remote), pinned to a SHA on branch `dev` in `third-party.repos`. Contains PGO + HBA + `localizer` + the `interface` srv package. The LIO front end is **not** there any more: `pointlio` was ported in-tree as `syncai_pointlio` in 2026-09, and the pin matters because the session specs launch `syncai_pointlio` themselves — an older checkout, whose `pgo_launch.py` / `localizer_launch.py` still `include()` pointlio, would start `pointlio_node` twice. |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver |
 | `small_gicp` | Pinned to upstream tag `v1.0.1`. Unmodified. The `localizer`'s registration backend (`RegistrationPCL`, a `pcl::Registration` subclass). Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package and `localizer` finds it with `find_package(small_gicp)`; the ordering comes from `<depend>small_gicp</depend>` in the localizer's manifest. |
 | `vizionsdk-ros2` | `TechNexion-Vision/vizionsdk-ros2` (branch `main`). ROS 2 wrapper (`vizionsdk_ros2/vizionsdk_camera_node`) for the TechNexion camera, started only by `bringup.launch.py use_camera:=true`. Needs the closed-source VizionSDK `.deb`, which the `Dockerfile` downloads from the TechNexion GitHub release (`VIZIONSDK_VERSION`); there is no rosdep key for it. |
@@ -247,8 +249,8 @@ devices / nvidia runtime / X11 mounts along) — keep the two in sync.
 
 Recreating a robot container wipes hand-installed build dependencies (the ones
 not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
-plus any manual deps (Sophus / GTSAM are built from source for
-`FASTLIO2_ROS2`).
+plus any manual deps (Sophus / GTSAM are built from source; `syncai_pointlio`
+needs Sophus, the fork's `pgo` / `hba` need GTSAM and `hba` Sophus).
 
 The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
@@ -347,8 +349,10 @@ bash). The schema is documented in the `NodeManager` docstring (`session`,
 `select`, `windows[{name, cwd?, panes[{cmd, sleep?, log?, enter?}]}]`). `sleep`
 is where the startup ordering lives, since there is no lifecycle manager. The
 nav session's windows, in order: `bringup` → `localization` (map_server +
-localizer) → `lio_bridge` → `plan_ctrl` (planner + controller) → `task_runner`
-→ `driver_manager` → `robot_state`. Neither spec has a `frontend` or a
+pointlio + localizer) → `lio_bridge` → `plan_ctrl` (planner + controller) →
+`task_runner` → `driver_manager` → `robot_state`. `pointlio` got its own pane
+in 2026-09, when `syncai_pointlio` moved in-tree; it used to come up inside the
+localizer pane through an `include()`. Neither spec has a `frontend` or a
 `backend` window any more — both are served from their own containers, so a
 mode switch interrupts neither. That is a real change and not only a tidy-up:
 each used to be a pane of the session being killed, which is why every spec
@@ -360,8 +364,8 @@ TTY.
 The two specs are counterparts, not variants. `start_nav.yaml` *localizes*
 against an existing map — map_server and the FAST-LIO2 localizer both load one
 during construction and die without it — so it cannot build the map it needs;
-`start_mapping.yaml` is the other half of that loop: `bringup` → `lio` (`pgo`)
-→ `driver_manager` → `robot_state`, and deliberately **no** map_server /
+`start_mapping.yaml` is the other half of that loop: `bringup` → `lio`
+(pointlio + `pgo`) → `driver_manager` → `robot_state`, and deliberately **no** map_server /
 localizer / lio_bridge / planner / controller / task_runner / hba. `robot_state`
 is in the mapping session although its pose lookup never succeeds there, for its
 `mode` field alone — that is what the console's mode chip reads to know the
@@ -417,7 +421,7 @@ it actually uses:
 
 | Here | Used by the backend for |
 |---|---|
-| `syncai_common` msg/srv/action (`SyncAI-Robot-Interface`) | every call below — it builds against that repo, not this checkout |
+| `syncai_common` msg/srv/action (`SyncAI-Robot-Interface`) | every call below — it builds against that repo, not this checkout. (`ResetLIO` is also there since 2026-09, but its client is `pgo`, not the backend.) |
 | `robot_state` topic (`syncai_robot_state`) | the telemetry WebSocket and `GET /api/v1/robot/state` |
 | `switch_mode` / `get_mode` (`syncai_sys_manager`) | `POST /api/v1/robot/mode`; its gateway waits 45 s / 70 s for them |
 | `scan_wifi` / `connect_wifi` / `wifi_status` (`syncai_sys_manager`) | the network router |
@@ -426,7 +430,7 @@ it actually uses:
 | `localizer/relocalize`, `relocalize_check`, `initialpose` | initial pose, and map switch |
 | `map_server/load_map` | map switch, and reload after a re-conversion |
 | `pgo/save_maps`, `pgo/reset_mapping`, `pgo/map_cloud_file` | save a map, start a new one, hand over the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` itself is rviz-only now) |
-| `pointlio/body_cloud` | the live cloud WebSocket |
+| `pointlio/body_cloud` (`syncai_pointlio`) | the live cloud WebSocket |
 | `config/instances/robotNN.ini` (`[map] name`, `[initial_pose]`) | the only file in this repo the backend **writes** |
 | `map/<name>/` on disk | the map catalogue: `map.pcd`, `poses.txt`, `patches/`, `gridmap.*` |
 
@@ -454,9 +458,10 @@ backend:
 - **`pgo/reset_mapping` is how a new map is started**, not a mode switch:
   `switch_mode` refuses to rebuild the live mode, and rebuilding `MANUAL` would
   drop an unsaved map, since `pgo_node` accumulates keyframes in RAM. The reset
-  pauses intake, resets the LIO front end over `pointlio/reset`, rebuilds the
-  pose graph and drops everything at or before the boundary the front end
-  reported — pausing first is the whole design, so the odometry discontinuity
+  pauses intake, resets the LIO front end over `pointlio/reset`
+  (`syncai_common/srv/ResetLIO`, served by `syncai_pointlio` here, called by
+  `pgo` in the fork), rebuilds the pose graph and drops everything at or before
+  the boundary the front end reported — pausing first is the whole design, so the odometry discontinuity
   has nowhere to land. The only fallible step runs before anything is
   destroyed: there is no half-reset. **The robot must be stationary**, because
   pointlio re-runs a static, gravity-aligning IMU init and one done in motion

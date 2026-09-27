@@ -37,7 +37,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                            └───────── syncai_costmap_2d ───────┘
                                                 (global / local costmaps)          cmd_vel ──▶ syncai_driver_manager ──UDP──▶ gait controller
 
-   livox_ros_driver2 ──▶ FAST-LIO2 (pointlio / localizer) ──▶ syncai_lio_bridge ──▶ odom → base_link TF, map → odom, /odom
+   livox_ros_driver2 ──▶ syncai_pointlio ──▶ localizer (FAST-LIO2 fork) ──▶ syncai_lio_bridge ──▶ odom → base_link TF, map → odom, /odom
    syncai_map_server ──▶ static gridmap (map)
 ```
 
@@ -61,7 +61,8 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
-| `syncai_lio_bridge` | FAST-LIO2 → planar `odom` / TF bridge (the only odometry source) |
+| `syncai_pointlio` | The Point-LIO front end (`pointlio_node`): LIO odometry, body-frame cloud and the `pointlio_odom → pointlio_body` TF; serves `reset`. Ported in-tree from the FAST-LIO2 fork in 2026-09 |
+| `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source) |
 | `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState` |
@@ -94,7 +95,7 @@ submodules until `fca520b`); nothing is vendored there any more.
 | Package | Notes |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`, unmodified |
-| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2`, branch `dev` (**SSH remote** — a recursive clone needs a GitHub key). LIO + PGO + HBA + `localizer` |
+| `FASTLIO2_ROS2` | `chungweeeei/SyncAI-Fast-LIO2`, pinned to a SHA on branch `dev` (**SSH remote** — a recursive clone needs a GitHub key). PGO + HBA + `localizer` + the `interface` srv package; the LIO front end is `src/syncai_pointlio` since 2026-09 |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver. `colcon.meta` passes the cmake flags the driver needs; see "Build" |
 | `small_gicp` | Pinned to `v1.0.1`, unmodified; the localizer's registration backend |
 | `vizionsdk-ros2` | TechNexion camera wrapper; needs the VizionSDK `.deb` the `Dockerfile` installs |
@@ -235,8 +236,9 @@ dependency is a `Dockerfile` change. (Keys it reports as "cannot locate" —
 GTSAM, livox_sdk2, libgraphicsmagick++1-dev — are satisfied by the image under
 names rosdep does not know.)
 
-GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage. Two
-things trip a fresh checkout:
+GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage
+(Sophus for `syncai_pointlio` and the fork's `hba`, GTSAM for the fork's `pgo`
+and `hba`). Two things trip a fresh checkout:
 
 - `colcon.meta` (found only because colcon's default is the relative
   `./colcon.meta`, so build from the workspace root) passes
@@ -256,9 +258,9 @@ things trip a fresh checkout:
 Nothing has to be launched by hand. The robot container's main process is
 `ros2 launch syncai_sys_manager sys_manager.launch.py`; on start it builds the
 **AUTO** byobu session (`syncai-dev`) from `config/sessions/start_nav.yaml`:
-bringup → map_server + localizer → lio_bridge → planner + controller →
-task_runner → driver_manager → robot_state, with `sleep` offsets standing in
-for the missing lifecycle manager.
+bringup → map_server + pointlio + localizer → lio_bridge → planner +
+controller → task_runner → driver_manager → robot_state, with `sleep` offsets
+standing in for the missing lifecycle manager.
 
 ```bash
 # from the HOST: attach to whichever session is live (syncai-dev in AUTO,
