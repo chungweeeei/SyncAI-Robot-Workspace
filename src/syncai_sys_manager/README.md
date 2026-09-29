@@ -19,7 +19,8 @@ syncai_robot_state ◄──wifi_status (1 Hz topic)─────────�
                                                           │  MonitorManager    │──psutil──► stdout, 1 Hz (mem + disk /)
                                                           ├────────────────────┤
 syncai_backend ──switch_mode (service)──────────────────►│  NodeManager       │──byobu──► syncai-dev / syncai-mapping
-syncai_robot_state ──get_mode (service)─────────────────►│                    │           (the whole robot stack)
+(operator) ──restart_mode (service)─────────────────────►│                    │           (the whole robot stack)
+syncai_robot_state ──get_mode (service)─────────────────►│                    │
                                                           └────────────────────┘
 ```
 
@@ -36,7 +37,7 @@ stack it brings up starts talking to it.
 | `ConfManager` | Just the `robot_id` parameter — the seam where more system-level config would go |
 | `MdnsManager` | The `avahi-publish` child process advertising `<robot_id>.local` |
 | `MonitorManager` | A 1 Hz log line of host memory and disk usage (reporting only) |
-| `NodeManager` | `switch_mode` / `get_mode` services, and the byobu sessions that *are* the robot stack |
+| `NodeManager` | `switch_mode` / `restart_mode` / `get_mode` services, and the byobu sessions that *are* the robot stack |
 
 ## WifiManager
 
@@ -169,14 +170,28 @@ kills a session by hand. If both sessions somehow exist, `get_mode` answers
   kill-and-rebuild, which is exactly the cleanup that state needs. Asking for
   `MAINTENANCE` (or any value without a spec) is refused with the list of
   switchable modes.
+- `restart_mode` (`syncai_common/RestartMode`, empty request) is the
+  rebuild `switch_mode` refuses: it kills and rebuilds the session of the mode
+  that is **already** live, through the same kill-all → build → verify path
+  (`_rebuild`). The mode is not a request field — it is what `get_mode` would
+  report. Refused with nothing touched when no session is up (`MAINTENANCE`:
+  nothing to restart, use `switch_mode`), when both are (ambiguous — which to
+  keep is `switch_mode`'s call), and **always in `MANUAL`**, with no override,
+  for the same unsaved-map reason as above: it cannot see whether the map was
+  saved, so there is no safe case to let through. A stuck mapping run is
+  `pgo/reset_mapping` or a `switch_mode` out of `MANUAL`. So in practice it
+  restarts `AUTO` only. The response carries the `mode` / `session` live
+  afterwards. Before it existed, restarting a wedged stack meant bouncing
+  through the other mode or killing the session by hand and restarting the
+  container.
 - `get_mode` (`syncai_common/GetMode`) returns `mode`, the `session` name, and a
   message.
 
-The whole `switch_mode` body runs under `_mode_lock`: it is a destructive
-sequence of ~40 byobu commands, and two interleaving would build one session
-out of two specs. The per-service `MutuallyExclusiveCallbackGroup`s only
-serialise a callback with itself, not with the other service, hence the extra
-lock. Every byobu invocation is bounded by `BYOBU_TIMEOUT` (10 s); a hang that
+The whole `switch_mode` and `restart_mode` bodies run under `_mode_lock`: each
+is a destructive sequence of ~40 byobu commands, and two interleaving would
+build one session out of two specs. The per-service
+`MutuallyExclusiveCallbackGroup`s only serialise a callback with itself, not
+with the other services, hence the extra lock. Every byobu invocation is bounded by `BYOBU_TIMEOUT` (10 s); a hang that
 long means the byobu server is wedged, and it is logged rather than left to
 block an executor thread forever.
 
@@ -187,8 +202,8 @@ That is what makes restarting `sys_manager` in the middle of a mapping run
 harmless, and what would stop the startup path from destroying itself if
 `sys_manager` were ever put back into a spec as a window. A session left over
 from a crashed run therefore also blocks the rebuild — deliberately, since
-killing a session someone may be attached to is worse; use `switch_mode` to
-force one.
+killing a session someone may be attached to is worse; use `restart_mode` to
+rebuild it in place (or `switch_mode` to replace it with the other mode).
 
 **The session layout is data.** `NodeManager` holds only the byobu plumbing;
 the windows, panes, commands, startup offsets and log names live in
@@ -223,6 +238,7 @@ All relative, so they inherit the `<robot_id>` namespace.
 | Service | `scan_wifi` | `syncai_common/ScanWifiNetworks` | `WifiManager` |
 | Service | `connect_wifi` | `syncai_common/ConnectWifiNetwork` | `WifiManager` |
 | Service | `switch_mode` | `syncai_common/SwitchMode` | `NodeManager` |
+| Service | `restart_mode` | `syncai_common/RestartMode` | `NodeManager` |
 | Service | `get_mode` | `syncai_common/GetMode` | `NodeManager` |
 | Publisher | `wifi_status` | `syncai_common/WifiStatus` | `WifiManager` |
 
@@ -230,7 +246,9 @@ From the operator UI, through the backend: the WiFi services are
 `GET /api/v1/network/wifi/scan` and `POST /api/v1/network/wifi/connect`, and
 `switch_mode` is `POST /api/v1/robot/mode`. There is no REST twin for
 `get_mode`: `syncai_robot_state` polls it and relays the mode in
-`RobotState.mode`, which `GET /api/v1/robot/state` already carries.
+`RobotState.mode`, which `GET /api/v1/robot/state` already carries. Nor is
+there one for `restart_mode` yet — the backend does not call it; it is a
+`ros2 service call` for whoever is on the robot until a route is added there.
 
 ## Parameters
 

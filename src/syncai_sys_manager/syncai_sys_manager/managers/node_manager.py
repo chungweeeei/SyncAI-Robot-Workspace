@@ -8,7 +8,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from syncai_common.msg import RobotMode
-from syncai_common.srv import GetMode, SwitchMode
+from syncai_common.srv import GetMode, RestartMode, SwitchMode
 
 from syncai_sys_manager.managers.conf_manager import ConfManager
 
@@ -97,11 +97,12 @@ class NodeManager:
         self._logger = node.get_logger()
         self._conf_manager = conf_manager
 
-        # switch_mode is a long, destructive sequence of ~40 byobu commands. Two
-        # of them interleaving would build one session out of two specs, so they
-        # are serialised even though each callback already has its own
+        # switch_mode and restart_mode are each a long, destructive sequence of
+        # ~40 byobu commands. Two of them interleaving would build one session
+        # out of two specs (or kill a session mid-build), so they are serialised
+        # even though each callback already has its own
         # MutuallyExclusiveCallbackGroup (those only serialise a callback with
-        # itself, not with the other service).
+        # itself, not with the other services).
         self._mode_lock = threading.Lock()
 
         self.init_services()
@@ -112,6 +113,13 @@ class NodeManager:
             srv_type=SwitchMode,
             srv_name="switch_mode",
             callback=self._switch_mode,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        self._node.create_service(
+            srv_type=RestartMode,
+            srv_name="restart_mode",
+            callback=self._restart_mode,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
@@ -162,27 +170,102 @@ class NodeManager:
                 f"{MODE_NAMES[mode]}"
             )
 
-            # Kill every known session, not just the current one: if both were
-            # somehow up, leaving one behind would make get_mode ambiguous
-            # immediately after a successful switch.
-            for known_mode in SESSION_SPECS:
-                self.kill_session(known_mode)
+            response.success, response.message, _ = self._rebuild(mode, "switch to")
+            if response.success:
+                response.message = f"Switched to {response.message}"
+            return response
 
-            self.launch_session(mode)
+    def _restart_mode(
+        self,
+        _: RestartMode.Request,
+        response: RestartMode.Response,
+    ) -> RestartMode.Response:
+        with self._mode_lock:
+            live = self._live_sessions()
+            mode, session = live[0] if live else (RobotMode.MAINTENANCE, "")
+            response.mode = mode
+            response.session = session
 
-            # Report what actually happened rather than what was asked for.
-            landed, session = self._detect_mode()
-            if landed != mode:
+            if not live:
                 response.success = False
                 response.message = (
-                    f"Tried to switch to {MODE_NAMES[mode]} but ended up in "
-                    f"{MODE_NAMES.get(landed, landed)} — check the sys_manager log"
+                    "Nothing running (MAINTENANCE), so nothing to restart; use "
+                    "switch_mode to bring a mode up"
                 )
                 return response
 
-            response.success = True
-            response.message = f"Switched to {MODE_NAMES[mode]} (session {session})"
+            # With both sessions up there is no "current" mode to restart, and
+            # picking the first would keep whichever one sorts lower rather than
+            # the one the caller meant. switch_mode is already the cleanup for
+            # this state (it kills both and builds the one asked for), so point
+            # there instead of guessing.
+            if len(live) > 1:
+                names = " and ".join(MODE_NAMES[m] for m, _ in live)
+                response.success = False
+                response.message = (
+                    f"Ambiguous: sessions for {names} are both running; use "
+                    f"switch_mode to pick one"
+                )
+                return response
+
+            # Never in MANUAL, with no override. It is the hazard switch_mode's
+            # same-mode no-op guards against: pgo_node keeps its keyframes in RAM
+            # and save_maps is the only thing that serialises them, so rebuilding
+            # MANUAL drops an unsaved map. Nothing here can see whether the map
+            # was saved, so there is no safe case to let through. A `force` flag
+            # was considered and rejected: a stuck mapping run is recovered with
+            # pgo/reset_mapping in place, or by leaving MANUAL via switch_mode —
+            # both deliberate steps, not a one-flag restart.
+            if mode == RobotMode.MANUAL:
+                response.success = False
+                response.message = (
+                    "restart_mode is not available in MANUAL: pgo_node may hold "
+                    "an unsaved map in RAM that a restart would drop. Use "
+                    "pgo/reset_mapping to start over, or switch_mode to leave MANUAL"
+                )
+                return response
+
+            self._logger.info(
+                f"[NodeManager][restart_mode] Restarting {MODE_NAMES[mode]} "
+                f"(session {session})"
+            )
+
+            response.success, response.message, (landed, landed_session) = (
+                self._rebuild(mode, "restart")
+            )
+            response.mode = landed
+            response.session = landed_session
+            if response.success:
+                response.message = f"Restarted {response.message}"
             return response
+
+    def _rebuild(self, mode: int, verb: str) -> tuple[bool, str, tuple[int, str]]:
+        """Kill every known session, build `mode`'s, and report where it landed.
+
+        The shared tail of switch_mode and restart_mode; callers hold
+        _mode_lock. Returns (success, message, (landed mode, landed session)).
+        On success the message is "<MODE> (session <name>)" for the caller to
+        prefix with its own verb; on failure it is complete.
+        """
+        # Kill every known session, not just the current one: if both were
+        # somehow up, leaving one behind would make get_mode ambiguous
+        # immediately after a successful switch.
+        for known_mode in SESSION_SPECS:
+            self.kill_session(known_mode)
+
+        self.launch_session(mode)
+
+        # Report what actually happened rather than what was asked for.
+        landed = self._detect_mode()
+        if landed[0] != mode:
+            return (
+                False,
+                f"Tried to {verb} {MODE_NAMES[mode]} but ended up in "
+                f"{MODE_NAMES.get(landed[0], landed[0])} — check the sys_manager log",
+                landed,
+            )
+
+        return True, f"{MODE_NAMES[mode]} (session {landed[1]})", landed
 
     def _get_mode(
         self,
@@ -247,7 +330,8 @@ class NodeManager:
 
         A session left over from a crashed run therefore also blocks the
         rebuild. That is deliberate: silently killing a session someone may be
-        attached to is worse. Use switch_mode (or launch_session) to force one.
+        attached to is worse. Use restart_mode to rebuild it in place
+        (AUTO only), or switch_mode (or launch_session) to force one.
         """
         mode, session = self._detect_mode()
         if mode != RobotMode.MAINTENANCE:
