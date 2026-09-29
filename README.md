@@ -183,6 +183,43 @@ every package needs. `src/syncai_backend` stays gone on purpose;
 file to import, so a forgotten import is one clear error rather than a wall of
 CMake output.
 
+#### Re-importing `src/syncai_common` (stale checkout)
+
+The pull does not always delete it. A `src/syncai_common/` that survived the
+split as a **plain directory** — the old tracked copy, no `.git` inside — passes
+`scripts/build.sh`'s check (it only tests for an empty directory) and builds the
+old messages. The symptom is a build that fails on a srv the workspace serves
+and the old copy predates (`ResetLIO`, `SaveMaps`, `ResetMapping`, `Relocalize`,
+`IsValid`, …), even though `interface.repos` says `dev`. `vcs import` does not
+repair it either: it will not clone over an existing non-repo directory.
+
+Neither `docker compose -f docker-compose.build.yaml run --rm build` nor
+`scripts/build.sh` ever runs `vcs import` — importing is left to the host on
+purpose — so this is always fixed on the **host**, from the workspace root:
+
+```bash
+# is it a real clone, and on which commit?
+git -C src/syncai_common rev-parse --show-toplevel   # must print .../src/syncai_common
+git -C src/syncai_common log --oneline -1
+
+# if not: move the stale copy out of src/ (anywhere colcon cannot see it —
+# inside src/ it would be a second syncai_common package) and re-import
+mv src/syncai_common ~/syncai_common.stale
+vcs import < interface.repos
+ls src/syncai_common/srv                             # ResetLIO.srv, SaveMaps.srv, … present
+```
+
+Without vcstool on the host, `git clone -b dev
+https://github.com/chungweeeei/SyncAI-Robot-Interface.git src/syncai_common` is
+the same checkout. Afterwards, keep it current with either:
+
+```bash
+vcs pull src/syncai_common              # fast-forward dev (third-party is pinned to tags)
+vcs import < interface.repos --force    # re-checkout at the pin; drops uncommitted edits
+```
+
+then rebuild (see "Build"). Once the new messages build, delete the backup.
+
 ### 2. Pick the robot identity
 
 Every launch file reads `[system] robot_id` from `config/system.ini`, which is
