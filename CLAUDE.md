@@ -338,11 +338,12 @@ restart and does not drift when someone builds or kills a session by hand.
 `setup_session()` adopts a running session rather than rebuilding it, which is
 what makes restarting `sys_manager` mid-mapping-run harmless.
 
-Two services, namespaced under `robot_id`:
+Three services, namespaced under `robot_id`:
 
 ```bash
-ros2 service call /<robot_id>/get_mode    syncai_common/srv/GetMode
-ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode "{mode: 2}"
+ros2 service call /<robot_id>/get_mode     syncai_common/srv/GetMode
+ros2 service call /<robot_id>/switch_mode  syncai_common/srv/SwitchMode "{mode: 2}"
+ros2 service call /<robot_id>/restart_mode syncai_common/srv/RestartMode "{}"
 ```
 
 `switch_mode` kills *every* known session before building the target one (if both
@@ -352,7 +353,11 @@ unsaved map on the floor, because `pgo_node` (`syncai_mapping`) accumulates its
 keyframes in RAM and `save_maps` is the only thing that serialises them. That refusal is why
 **starting a new map is not a mode switch**: `pgo/reset_mapping` (the backend's
 `POST /api/v1/mapping/reset` is one caller) does it in place instead, with
-nothing restarted — see "Out of tree". `sys_manager` itself runs
+nothing restarted — see "Out of tree". Rebuilding the live mode's session on
+purpose (a wedged stack) is `restart_mode`: same kill-all → build path, refused
+in `MAINTENANCE`, with both sessions up, and always in `MANUAL` (no override —
+it cannot tell whether the map was saved), so in practice it restarts `AUTO`. The
+backend does not call it today. `sys_manager` itself runs
 **outside** both specs — it is the robot container's main process
 (`command:` in `docker-compose.robots.yml` runs `ros2 launch syncai_sys_manager
 sys_manager.launch.py`), so `docker compose up -d robot01` brings the stack up
