@@ -175,8 +175,9 @@ and starts nothing (`[map] pcd '…/config/map/dp2f/map.pcd' does not exist`).
 For a bare run, use an INI whose `pcd` is absolute, or one that sits at
 `<workspace>/config/`.
 
-The nav session (`config/sessions/start_nav.yaml`) runs it as the third pane
-of the `localization` window, after map_server and `syncai_pointlio`, logging
+The nav session (`config/sessions/start_nav.yaml`) runs it as the second pane
+of the `localization` window, after `syncai_pointlio` (map_server has its own
+window ahead of them since 2026-09-30), logging
 to `log/stack/<robot_id>/localizer/`. It is deliberately **absent** from the
 mapping session, and could not be present anyway: **the launch starts nothing
 when `[map] pcd` is missing or absent on disk** (`nothing to launch` in the

@@ -221,8 +221,16 @@ looks up the transform per cell region. `base` and `multiplier` in the filter in
 must stay at their defaults (0.0 / 1.0) for keepout semantics — anything else is
 logged as an error.
 
-Enable it in the planner params by adding a `filters:` line; see
-`syncai_planner`'s params.
+It is enabled on the planner's global costmap (`filters: ["keepout_filter"]` in
+`syncai_planner`'s `planner_server_params.yaml`, 2026-09) and not on the
+controller's local costmap. The mask is `map/<name>/keepout.yaml`, served by
+`syncai_map_server`'s `costmap_filter_info.launch.py` from the nav session,
+which writes a blank all-unknown mask of the gridmap's geometry when a map has
+none yet. Unknown is the right blank: `process()` skips unknown mask cells but
+lets a free mask cell overwrite an unknown costmap cell, so an all-*free* mask
+would silently turn unexplored space plannable. Because it runs after
+inflation, its lethal cells are never inflated — a mask has to include the
+footprint margin around each zone itself.
 
 The filter/layer distinction exists only at the config level. In
 `costmap_plugins.xml` `KeepoutFilter` is registered with

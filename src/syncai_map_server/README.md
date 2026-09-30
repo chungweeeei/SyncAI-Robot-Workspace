@@ -116,18 +116,73 @@ which topic carries the mask and how to interpret its values
 |---|---|---|
 | `filter_info_topic` | `costmap_filter_info` | Latched publisher |
 | `type` | `0` | `0` = keepout/lanes; see `syncai_costmap_2d/filter_values.hpp` |
-| `mask_topic` | `filter_mask` | Must match the mask server's `topic_name` |
+| `mask_topic` | `keepout_filter_mask` | Must match the mask server's `topic_name` |
 | `base` / `multiplier` | `0.0` / `1.0` | **Keepout requires these defaults** — the filter logs an error otherwise |
 
 `costmap_filter_info.launch.py` brings up this node **and a second `map_server`
 instance** named `filter_mask_server` that publishes the mask grid, both from one
-params file. The mask is an ordinary map YAML with the same geometry as the
-navigation map, black cells marking keepout zones.
+params file. The mask is an ordinary map YAML + image pair (`.pgm` by
+convention, but anything GraphicsMagick decodes), ideally with the same geometry
+as the navigation map, black cells marking keepout zones. Because costmap
+filters run *after* inflation, keepout cells become lethal cost but are never
+inflated — draw each zone with the robot's footprint margin already included, or
+the planner will hug its edge.
+
+### Where the mask path comes from
+
+The mask lives with its map: **`map/<name>/keepout.yaml`** (+ `keepout.pgm`),
+next to `gridmap.yaml`. The launch derives that path from the INI's `[map] map`
+(its directory + `keepout.yaml`) and layers `yaml_filename` over the params file
+for `filter_mask_server` only — so switching maps switches the keepout, and the
+instance INI needs no new key (it is a file the backend writes; a new key there
+would be a cross-repo change). `mask_yaml:=` overrides the derivation for tests.
+The params-file `yaml_filename` is deliberately `""`: it only applies when the
+node is run without the launch, and `""` makes it come up idle instead of
+throwing on a path nobody maintains.
+
+**A missing mask is generated blank, not skipped.** `map_server` throws in its
+constructor on a missing file, so when `keepout.yaml` is absent the launch
+reads the map's `gridmap.yaml` (and its image header) and writes a mask of the
+**same geometry** — width, height, resolution, origin — next to it before
+starting both nodes. That way `filter_mask_server` is up on every map and its
+`load_map` is always there to call, and the keepout editor gets a same-sized
+canvas to draw on instead of having to invent one. The first version of this
+launch (2026-09) started nothing instead, the same pattern as
+`syncai_localizer` for a missing `[map] pcd`; that left an exiting pane and a
+planner warning every 2 s as two failure-looking ways of saying "no keepout".
+
+The blank mask is **all grey (unknown, pixel 205), not white**. `KeepoutFilter`
+skips unknown mask cells but lets a *free* mask cell overwrite an *unknown*
+costmap cell (`data > old_data || old_data == NO_INFORMATION`, same as upstream
+nav2), so an all-white mask would turn every unexplored cell inside the map's
+bounding box into free space. When drawing: black = keepout (lethal), grey = no
+opinion, white = force free — the last one is almost never what you want. An
+existing `keepout.yaml` is never touched, whatever its geometry; both files are
+written tmp + rename, image first, and neither holds a path (`image:
+keepout.pgm`), so a map rename stays one `os.rename`. The only case that still
+starts nothing is a map whose `gridmap.yaml` is missing or unreadable — nothing
+to size a mask from, and the `map_server` pane is dying on the same file.
 
 The `mask_topic` stays relative on purpose: `KeepoutFilter` resolves it against
 the costmap node's *parent* namespace (the costmap lives in a sub-namespace like
 `/robot01/global_costmap`), so `keepout_filter_mask` reaches
 `/robot01/keepout_filter_mask`.
+
+Reloading after a mask is written or edited needs no restart:
+
+```bash
+ros2 service call /<robot_id>/filter_mask_server/load_map nav2_msgs/srv/LoadMap \
+    "{map_url: 'map/<name>/keepout.yaml'}"
+```
+
+The filter rebuilds its mask costmap from the new grid on arrival. Note that a
+map *switch* over `map_server/load_map` does **not** move the mask along — the
+nav session derives the keepout path once at boot — so a switch that should
+carry a keepout has to call this service too (and a switch onto a map without
+one has to load that map's `keepout.yaml` all the same, or the old zones stay
+in force — the launch only generates the blank mask at boot, so a map that has
+never been booted into has none yet and the caller has to write one, same
+format, all grey).
 
 ## map_io — the conversion layer
 
@@ -166,16 +221,19 @@ ros2 launch syncai_map_server map_saver.launch.py
 ros2 launch syncai_map_server costmap_filter_info.launch.py
 ```
 
-`map_server` is in window 1 of the nav session (`config/sessions/start_nav.yaml`)
+`map_server` is the first pane of the `map_server` window of the nav session
+(`config/sessions/start_nav.yaml`, its own window since 2026-09-30 — before
+that it shared `localization` with pointlio and the localizer)
 and must come up **before** the planner, whose global costmap static layer blocks
 on the latched map. The mapping session (`start_mapping.yaml`) does not run it at
 all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs to exist, and
 `map_server` throws in its constructor when the file is absent.
-`costmap_filter_info.launch.py` is launched by **neither** session spec (the 2D
-session that used to carry it went away with `bringup_2d`), and the planner
-params have no keepout filter configured. Enabling keepouts therefore means both
-adding the `filters:` line to `planner_server_params.yaml` and starting this
-launch file by hand, or adding it as a pane to `start_nav.yaml`.
+`costmap_filter_info.launch.py` is the second pane of the same window (log
+directory `keepout`) since 2026-09, and the planner's global costmap has the
+matching `filters: ["keepout_filter"]` in `planner_server_params.yaml`. On a
+map with no `keepout.yaml` yet the pane's first log line is the blank mask it
+generated — see "Where the mask path comes from" above. The mapping session
+does not run it: there is no map to keep out of yet.
 
 ```bash
 ros2 topic echo /<robot_id>/map --once --qos-durability transient_local

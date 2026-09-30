@@ -276,13 +276,23 @@ meaning no per-robot launch override, but also that it only works after
 `syncai_localizer` has been given a pose (`/<robot_id>/relocalize`, the INI's
 `[initial_pose]` or an `initialpose` message).
 
-The keepout filter is ported and verified but **not configured** today. To
-enable it, add `filters: ["keepout_filter"]` (plus the filter's params) to the
-global costmap section — and run `costmap_filter_info_server` and a mask
-server alongside, otherwise it warns "Filter mask was not received" every 2 s:
+The global costmap runs the **keepout filter** (`filters: ["keepout_filter"]`,
+since 2026-09). Its mask comes from `map/<name>/keepout.yaml`, served by
+`syncai_map_server`'s `costmap_filter_info.launch.py` in the nav session's
+`map_server` window (pane `keepout`); when a map has no mask yet that launch
+writes a blank one of the gridmap's geometry first (all unknown, so the filter
+changes nothing), which is why the mask server is up on every map and "Filter
+mask was not received" in this log now means the pane is actually down. Two
+things to know before drawing a mask: filters run *after*
+inflation, so keepout cells are lethal but not inflated (the mask must carry
+its own footprint margin), and only the global costmap has the filter — the
+controller's local costmap does not, so the planner alone keeps the robot out
+and RPP cannot reject a path for grazing a zone edge. Running the mask source
+by hand, outside the session:
 
 ```bash
-ros2 launch syncai_map_server costmap_filter_info.launch.py
+ros2 launch syncai_map_server costmap_filter_info.launch.py            # map/<name>/keepout.yaml from the INI
+ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other/keepout.yaml
 ```
 
 ## Interfaces
