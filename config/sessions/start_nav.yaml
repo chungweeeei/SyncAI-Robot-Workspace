@@ -79,10 +79,11 @@ windows:
   # filter_mask_server, serving map/<name>/keepout.yaml -- the launch derives
   # that path from the same [map] map the first pane reads. It sits in this
   # window because it IS a map server, and because a keepout is part of the
-  # map. Expect this pane to exit at once on a map without a keepout: the
-  # launch starts nothing when the file is absent (a keepout is optional per
-  # map), and the planner log then carries the matching "Filter mask was not
-  # received" warning every 2 s. `sleep: 1` is log ordering only -- the
+  # map. On a map without a keepout the launch first writes a blank mask of
+  # the gridmap's geometry (all unknown, so the planner sees no change) and
+  # serves that, so this pane stays up like every other one; "Filter mask was
+  # not received" in the planner log means it is actually down. Until
+  # 2026-09-30 it exited on purpose instead. `sleep: 1` is log ordering only -- the
   # KeepoutFilter's two subscriptions are transient-local, so the planner may
   # come up before or after this pane and still receive both latched messages.
   - name: localization

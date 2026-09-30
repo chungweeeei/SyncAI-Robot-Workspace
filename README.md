@@ -309,8 +309,8 @@ Nothing has to be launched by hand. The robot container's main process is
 bringup → map_server + pointlio + localizer + keepout → lio_bridge → planner +
 controller → task_runner → driver_manager → robot_state, with `sleep` offsets
 standing in for the missing lifecycle manager. The `keepout` pane serves
-`map/<name>/keepout.yaml` to the planner's costmap filter and exits at once
-when the map has none — that is expected, not a failure.
+`map/<name>/keepout.yaml` to the planner's costmap filter, writing a blank
+(all-unknown) one of the gridmap's size first when the map has none yet.
 
 ```bash
 # from the HOST: attach to whichever session is live (syncai-dev in AUTO,

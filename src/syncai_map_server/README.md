@@ -140,12 +140,28 @@ The params-file `yaml_filename` is deliberately `""`: it only applies when the
 node is run without the launch, and `""` makes it come up idle instead of
 throwing on a path nobody maintains.
 
-**A missing mask starts nothing.** A keepout is optional per map, and
-`map_server` throws in its constructor on a missing file, so the launch checks
-first and returns an empty description when `keepout.yaml` is absent — neither
-node starts, the pane exits, and the planner's `KeepoutFilter` warns "Filter
-mask was not received" every 2 s while otherwise doing nothing. Same pattern as
-`syncai_localizer`'s launch for a missing `[map] pcd`.
+**A missing mask is generated blank, not skipped.** `map_server` throws in its
+constructor on a missing file, so when `keepout.yaml` is absent the launch
+reads the map's `gridmap.yaml` (and its image header) and writes a mask of the
+**same geometry** — width, height, resolution, origin — next to it before
+starting both nodes. That way `filter_mask_server` is up on every map and its
+`load_map` is always there to call, and the keepout editor gets a same-sized
+canvas to draw on instead of having to invent one. The first version of this
+launch (2026-09) started nothing instead, the same pattern as
+`syncai_localizer` for a missing `[map] pcd`; that left an exiting pane and a
+planner warning every 2 s as two failure-looking ways of saying "no keepout".
+
+The blank mask is **all grey (unknown, pixel 205), not white**. `KeepoutFilter`
+skips unknown mask cells but lets a *free* mask cell overwrite an *unknown*
+costmap cell (`data > old_data || old_data == NO_INFORMATION`, same as upstream
+nav2), so an all-white mask would turn every unexplored cell inside the map's
+bounding box into free space. When drawing: black = keepout (lethal), grey = no
+opinion, white = force free — the last one is almost never what you want. An
+existing `keepout.yaml` is never touched, whatever its geometry; both files are
+written tmp + rename, image first, and neither holds a path (`image:
+keepout.pgm`), so a map rename stays one `os.rename`. The only case that still
+starts nothing is a map whose `gridmap.yaml` is missing or unreadable — nothing
+to size a mask from, and the `map_server` pane is dying on the same file.
 
 The `mask_topic` stays relative on purpose: `KeepoutFilter` resolves it against
 the costmap node's *parent* namespace (the costmap lives in a sub-namespace like
@@ -163,7 +179,10 @@ The filter rebuilds its mask costmap from the new grid on arrival. Note that a
 map *switch* over `map_server/load_map` does **not** move the mask along — the
 nav session derives the keepout path once at boot — so a switch that should
 carry a keepout has to call this service too (and a switch onto a map without
-one has to load an all-free mask, or the old zones stay in force).
+one has to load that map's `keepout.yaml` all the same, or the old zones stay
+in force — the launch only generates the blank mask at boot, so a map that has
+never been booted into has none yet and the caller has to write one, same
+format, all grey).
 
 ## map_io — the conversion layer
 
@@ -209,10 +228,10 @@ all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs
 `map_server` throws in its constructor when the file is absent.
 `costmap_filter_info.launch.py` is the fourth pane of the same window (log
 directory `keepout`) since 2026-09, and the planner's global costmap has the
-matching `filters: ["keepout_filter"]` in `planner_server_params.yaml`. The
-pane exiting immediately is the normal outcome on a map with no
-`keepout.yaml` — see "Where the mask path comes from" above. The mapping
-session does not run it: there is no map to keep out of yet.
+matching `filters: ["keepout_filter"]` in `planner_server_params.yaml`. On a
+map with no `keepout.yaml` yet the pane's first log line is the blank mask it
+generated — see "Where the mask path comes from" above. The mapping session
+does not run it: there is no map to keep out of yet.
 
 ```bash
 ros2 topic echo /<robot_id>/map --once --qos-durability transient_local
