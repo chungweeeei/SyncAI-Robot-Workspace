@@ -113,7 +113,12 @@
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(sort -k2)",
-      "Read(//Users/chungwei/Desktop/interface/srv/**)"
+      "Read(//Users/chungwei/Desktop/interface/srv/**)",
+      "mcp__notion__notion-search",
+      "mcp__notion__notion-fetch",
+      "Bash(gh pr *)",
+      "mcp__notion__notion-query-data-sources",
+      "Bash(git push *)"
     ]
   }
 }
