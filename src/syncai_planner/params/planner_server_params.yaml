@@ -152,12 +152,14 @@
       # Only used when the mask frame differs from `map`; ours is stamped
       # `map` by filter_mask_server, so this is the fallback path's tolerance.
       transform_tolerance: 0.1
-      # With no map/<name>/keepout.yaml on disk, costmap_filter_info.launch.py
-      # starts nothing and this filter logs "Filter mask was not received"
-      # every 2 s while doing nothing else -- expected on a map without a
-      # keepout, and the price of keeping the filter on unconditionally so a
-      # mask written later only needs filter_mask_server/load_map, not a
-      # planner restart.
+      # The filter is on unconditionally, so a mask edited later only needs
+      # filter_mask_server/load_map, not a planner restart. That costs nothing
+      # on a map without a keepout: costmap_filter_info.launch.py writes a
+      # blank (all-unknown) mask of the gridmap's geometry and serves it, and
+      # unknown mask cells are skipped. "Filter mask was not received" every
+      # 2 s therefore means the `keepout` pane is actually down (or the
+      # gridmap.yaml it sizes the mask from is unreadable) -- until 2026-09-30
+      # it was the expected noise on every map without a mask.
 
     static_layer:
       plugin: "syncai_costmap_2d::StaticLayer"
