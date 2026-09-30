@@ -121,6 +121,44 @@
     # Layer stack — order matters: static -> obstacle(mark/clear) -> inflation
     plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
+    # Costmap filters run AFTER the layer stack, on the combined grid (see
+    # syncai_costmap_2d's README, "pipeline"): the layers write into a primary
+    # grid, that window is copied to the master, and the filters are applied
+    # last, so a keepout zone never feeds back into the layers as an obstacle.
+    # Two consequences worth knowing before drawing a mask:
+    #   - keepout cells land as LETHAL cost but are never inflated, because
+    #     inflation already ran. The mask itself has to carry the footprint
+    #     margin around each zone, or the planner will hug the zone edge.
+    #   - clear* services never touch filter output: a keepout is a rule, not
+    #     an observation.
+    # Only the global costmap runs the filter (2026-09). The controller's local
+    # costmap does not, so RPP cannot reject a path for grazing a zone edge;
+    # the planner alone keeps the robot out. Adding the filter to the local
+    # costmap too (nav2's recommendation) is a follow-up once the zones have
+    # been driven against for a while.
+    filters: ["keepout_filter"]
+
+    keepout_filter:
+      plugin: "syncai_costmap_2d::KeepoutFilter"
+      enabled: true
+      # Relative on purpose: CostmapFilter joins it with the costmap node's
+      # PARENT namespace (/<robot_id>/global_costmap -> /<robot_id>), so it
+      # meets costmap_filter_info_server's publisher in the robot namespace,
+      # the same way StaticLayer's `map` reaches /<robot_id>/map. The mask
+      # topic itself is not configured here -- it arrives inside the
+      # CostmapFilterInfo message (keepout_filter_mask) and is resolved the
+      # same way.
+      filter_info_topic: "costmap_filter_info"
+      # Only used when the mask frame differs from `map`; ours is stamped
+      # `map` by filter_mask_server, so this is the fallback path's tolerance.
+      transform_tolerance: 0.1
+      # With no map/<name>/keepout.yaml on disk, costmap_filter_info.launch.py
+      # starts nothing and this filter logs "Filter mask was not received"
+      # every 2 s while doing nothing else -- expected on a map without a
+      # keepout, and the price of keeping the filter on unconditionally so a
+      # mask written later only needs filter_mask_server/load_map, not a
+      # planner restart.
+
     static_layer:
       plugin: "syncai_costmap_2d::StaticLayer"
       enabled: true

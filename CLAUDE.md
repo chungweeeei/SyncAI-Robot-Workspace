@@ -61,11 +61,11 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 | `syncai_util` | Header-only helpers (geometry, occupancy-grid values) |
 | `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SetMotionKey`, `ExecuteTask`, `ResetLIO`, `SaveMaps`, `ResetMapping`, `RefineMap`, `SavePoses`, `Relocalize`, `IsValid`, …). The last seven came over from the FASTLIO2_ROS2 fork's `interface` package, which no longer exists, with the pointlio / pgo / hba ports: `SaveMaps` / `ResetMapping` / `RefineMap` / `SavePoses` are served by `syncai_mapping`, `ResetLIO` by `syncai_pointlio`, and `Relocalize` / `IsValid` by `syncai_localizer`. Every interface the backend calls is here now, and every server of one is in this workspace. |
 | `syncai_costmap_2d` | Costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
-| `syncai_planner` | `ComputePathToPose` action server. Three pluginlib planners are built (NavFn, StraightLine, SmacPlanner2D); **SmacPlanner2D is the configured one**, with `cost_travel_multiplier: 1.0` (lowered from 2.0 — at 2.0 paths bowed along the inflation gradient in open space) and an explicit smoother block. |
+| `syncai_planner` | `ComputePathToPose` action server. Three pluginlib planners are built (NavFn, StraightLine, SmacPlanner2D); **SmacPlanner2D is the configured one**, with `cost_travel_multiplier: 1.0` (lowered from 2.0 — at 2.0 paths bowed along the inflation gradient in open space) and an explicit smoother block. Its global costmap runs the **keepout filter** (`filters: ["keepout_filter"]`, 2026-09) — the global costmap only; the controller's local costmap does not, so the planner alone keeps the robot out of a forbidden zone. |
 | `syncai_controller` | `FollowPath` action server; Regulated Pure Pursuit merged in (clamps linear accel itself — there is no velocity smoother in the stack). `desired_linear_vel: 0.60` / `rotate_to_heading_angular_vel: 0.65` are one calibration with `syncai_driver_manager`'s velocity scales — change them together. |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | The BT navigator. Serves `nav2_msgs/NavigateToPose`, hosts the `Navigator<ActionT>` abstraction and `behavior_trees/*.xml` (`move.xml` replans at 1 Hz). `bt_loop_duration: 50` ms ticks the tree at 20 Hz and doubles as every BT node's per-tick spin budget (halved), so it is a latency knob, not just a rate. There is no `syncai_bt_navigator` package. |
-| `syncai_map_server` | Map server, map saver, costmap-filter-info server. `costmap_filter_info` is launched by neither session spec — start it by hand when enabling the keepout filter. |
+| `syncai_map_server` | Map server, map saver, costmap-filter-info server. `costmap_filter_info.launch.py` (the info server + a second `map_server` named `filter_mask_server`) is the nav session's `keepout` pane since 2026-09; it serves `map/<name>/keepout.yaml`, derived from the INI's `[map] map`, and **starts nothing when that file is absent** — a keepout is optional per map, and the planner's filter then just warns every 2 s. Reload after editing a mask with `filter_mask_server/load_map`, no restart. |
 
 **Known drift:** the global costmap footprint (`planner_server_params.yaml`,
 0.35 × 0.22 half-extents) and the local costmap footprint
@@ -372,8 +372,13 @@ bash). The schema is documented in the `NodeManager` docstring (`session`,
 `select`, `windows[{name, cwd?, panes[{cmd, sleep?, log?, enter?}]}]`). `sleep`
 is where the startup ordering lives, since there is no lifecycle manager. The
 nav session's windows, in order: `bringup` → `localization` (map_server +
-pointlio + localizer) → `lio_bridge` → `plan_ctrl` (planner + controller) →
-`task_runner` → `driver_manager` → `robot_state`. `pointlio` got its own pane
+pointlio + localizer + keepout) → `lio_bridge` → `plan_ctrl` (planner + controller) →
+`task_runner` → `driver_manager` → `robot_state`. The `keepout` pane
+(`costmap_filter_info.launch.py`) is the one pane that is *expected* to exit on
+a normal boot: it starts nothing when `map/<name>/keepout.yaml` does not exist,
+so an empty pane there means "this map has no keepout", not a failure — the
+planner log's "Filter mask was not received" every 2 s is the same fact seen
+from the other side. `pointlio` got its own pane
 in 2026-09, when `syncai_pointlio` moved in-tree; it used to come up inside the
 localizer pane through an `include()`. The localizer pane runs
 `syncai_localizer` since the end of that month (log directory still
@@ -458,7 +463,7 @@ it actually uses:
 | `pgo/save_maps`, `pgo/reset_mapping`, `pgo/map_cloud_file` (`syncai_mapping`; types `syncai_common/srv/SaveMaps` / `ResetMapping`) | save a map, start a new one, hand over the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` itself is rviz-only now) |
 | `pointlio/body_cloud` (`syncai_pointlio`) | the live cloud WebSocket |
 | `config/instances/robotNN.ini` (`[map] name`, `[initial_pose]`) | the only file in this repo the backend **writes** |
-| `map/<name>/` on disk | the map catalogue: `map.pcd`, `poses.txt`, `patches/`, `gridmap.*` |
+| `map/<name>/` on disk | the map catalogue: `map.pcd`, `poses.txt`, `patches/`, `gridmap.*`, and optionally `keepout.yaml` + `keepout.pgm` (the forbidden-zone mask, read by `filter_mask_server` since 2026-09; same yaml + image format as `gridmap.*`, black = keepout, and it must carry its own footprint margin because costmap filters run after inflation). The backend does not write the mask today; when it does, `filter_mask_server/load_map` with `map_url: map/<name>/keepout.yaml` is the reload path — no session restart — and a map switch needs the same call, since the nav session derives the path once at boot |
 
 **Facts about this stack the backend depends on.** These belong here because
 they are properties of the nodes in `src/` and `src/third-party/`, not of the

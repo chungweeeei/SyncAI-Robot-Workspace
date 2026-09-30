@@ -23,8 +23,8 @@
 # robot itself there is no display, and the console covers the same ground.
 #
 # Startup order matters (there is no lifecycle manager): map_server / pointlio
-# / localizer -> lio_bridge -> planner/controller -> task_runner, which is what
-# the `sleep:` fields encode. pointlio has its own pane since 2026-09, when it
+# / localizer / keepout -> lio_bridge -> planner/controller -> task_runner,
+# which is what the `sleep:` fields encode. pointlio has its own pane since 2026-09, when it
 # moved out of FASTLIO2_ROS2 into src/syncai_pointlio; before that the fork's
 # localizer_launch.py include()d it, so both came up in the localizer pane. The
 # localizer itself followed at the end of that month, as src/syncai_localizer
@@ -73,6 +73,18 @@ windows:
   # read in cause-and-effect order, not for correctness. `sleep: 2` is when the
   # old include used to start pointlio. The log directory stays `localizer`:
   # the node is still called localizer_node and every doc names it that way.
+  #
+  # The fourth pane is the keepout (forbidden-zone) source for the planner's
+  # global costmap: costmap_filter_info_server plus a second map_server named
+  # filter_mask_server, serving map/<name>/keepout.yaml -- the launch derives
+  # that path from the same [map] map the first pane reads. It sits in this
+  # window because it IS a map server, and because a keepout is part of the
+  # map. Expect this pane to exit at once on a map without a keepout: the
+  # launch starts nothing when the file is absent (a keepout is optional per
+  # map), and the planner log then carries the matching "Filter mask was not
+  # received" warning every 2 s. `sleep: 1` is log ordering only -- the
+  # KeepoutFilter's two subscriptions are transient-local, so the planner may
+  # come up before or after this pane and still receive both latched messages.
   - name: localization
     panes:
       - cmd: ros2 launch syncai_map_server map_server.launch.py
@@ -83,6 +95,9 @@ windows:
       - cmd: ros2 launch syncai_localizer localizer.launch.py
         sleep: 3
         log: localizer
+      - cmd: ros2 launch syncai_map_server costmap_filter_info.launch.py
+        sleep: 1
+        log: keepout
 
   # ---------- Window 2: lio_bridge (map -> <robot_id>/odom) ----
   - name: lio_bridge
