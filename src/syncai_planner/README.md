@@ -279,7 +279,7 @@ meaning no per-robot launch override, but also that it only works after
 The global costmap runs the **keepout filter** (`filters: ["keepout_filter"]`,
 since 2026-09). Its mask comes from `map/<name>/keepout.yaml`, served by
 `syncai_map_server`'s `costmap_filter_info.launch.py` in the nav session's
-`localization` window (pane `keepout`); when a map has no mask yet that launch
+`map_server` window (pane `keepout`); when a map has no mask yet that launch
 writes a blank one of the gridmap's geometry first (all unknown, so the filter
 changes nothing), which is why the mask server is up on every map and "Filter
 mask was not received" in this log now means the pane is actually down. Two

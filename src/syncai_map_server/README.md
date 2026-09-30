@@ -221,12 +221,14 @@ ros2 launch syncai_map_server map_saver.launch.py
 ros2 launch syncai_map_server costmap_filter_info.launch.py
 ```
 
-`map_server` is in window 1 of the nav session (`config/sessions/start_nav.yaml`)
+`map_server` is the first pane of the `map_server` window of the nav session
+(`config/sessions/start_nav.yaml`, its own window since 2026-09-30 — before
+that it shared `localization` with pointlio and the localizer)
 and must come up **before** the planner, whose global costmap static layer blocks
 on the latched map. The mapping session (`start_mapping.yaml`) does not run it at
 all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs to exist, and
 `map_server` throws in its constructor when the file is absent.
-`costmap_filter_info.launch.py` is the fourth pane of the same window (log
+`costmap_filter_info.launch.py` is the second pane of the same window (log
 directory `keepout`) since 2026-09, and the planner's global costmap has the
 matching `filters: ["keepout_filter"]` in `planner_server_params.yaml`. On a
 map with no `keepout.yaml` yet the pane's first log line is the blank mask it

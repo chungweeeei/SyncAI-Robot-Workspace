@@ -22,8 +22,8 @@
 # takes it down along with the session. There is no rviz2 window either: on the
 # robot itself there is no display, and the console covers the same ground.
 #
-# Startup order matters (there is no lifecycle manager): map_server / pointlio
-# / localizer / keepout -> lio_bridge -> planner/controller -> task_runner,
+# Startup order matters (there is no lifecycle manager): map_server / keepout
+# -> pointlio / localizer -> lio_bridge -> planner/controller -> task_runner,
 # which is what the `sleep:` fields encode. pointlio has its own pane since 2026-09, when it
 # moved out of FASTLIO2_ROS2 into src/syncai_pointlio; before that the fork's
 # localizer_launch.py include()d it, so both came up in the localizer pane. The
@@ -62,8 +62,35 @@ windows:
       - cmd: ros2 launch syncai_bringup bringup.launch.py
         log: bringup
 
-  # ---------- Window 1: map_server / LIO front end / LIO localizer ----------
-  # Three panes, in start order. pointlio (syncai_pointlio) is the front end
+  # ---------- Window 1: map_server + keepout (the map on disk, served) -------
+  # The two map servers, in start order. Both read the same [map] map from the
+  # INI and both die in their constructor without the file, so this window is
+  # the one to read when "the map is not there". Split out of `localization`
+  # on 2026-09-30: the localizer window is about the lidar and the pose, this
+  # one is about files, and a map problem and a lidar problem should not
+  # scroll past each other in one window.
+  #
+  # The second pane is the keepout (forbidden-zone) source for the planner's
+  # global costmap: costmap_filter_info_server plus a second map_server named
+  # filter_mask_server, serving map/<name>/keepout.yaml -- the launch derives
+  # that path from the same [map] map the first pane reads. On a map without a
+  # keepout the launch first writes a blank mask of the gridmap's geometry (all
+  # unknown, so the planner sees no change) and serves that, so this pane stays
+  # up like every other one; "Filter mask was not received" in the planner log
+  # means it is actually down. Until 2026-09-30 it exited on purpose instead.
+  # `sleep: 1` is log ordering only -- the KeepoutFilter's two subscriptions
+  # are transient-local, so the planner may come up before or after this pane
+  # and still receive both latched messages.
+  - name: map_server
+    panes:
+      - cmd: ros2 launch syncai_map_server map_server.launch.py
+        log: map_server
+      - cmd: ros2 launch syncai_map_server costmap_filter_info.launch.py
+        sleep: 1
+        log: keepout
+
+  # ---------- Window 2: LIO front end / LIO localizer ----------
+  # Two panes, in start order. pointlio (syncai_pointlio) is the front end
   # the localizer (syncai_localizer, in-tree since 2026-09) registers against;
   # its launch is the single definition of how pointlio_node is configured, and
   # localizer.launch.py's absolute /<robot_id>/pointlio/{body_cloud,lio_odom}
@@ -71,43 +98,28 @@ windows:
   # two -- the localizer only subscribes, and pointlio publishes nothing until
   # its IMU init completes -- so the one-second stagger is there for the logs to
   # read in cause-and-effect order, not for correctness. `sleep: 2` is when the
-  # old include used to start pointlio. The log directory stays `localizer`:
-  # the node is still called localizer_node and every doc names it that way.
-  #
-  # The fourth pane is the keepout (forbidden-zone) source for the planner's
-  # global costmap: costmap_filter_info_server plus a second map_server named
-  # filter_mask_server, serving map/<name>/keepout.yaml -- the launch derives
-  # that path from the same [map] map the first pane reads. It sits in this
-  # window because it IS a map server, and because a keepout is part of the
-  # map. On a map without a keepout the launch first writes a blank mask of
-  # the gridmap's geometry (all unknown, so the planner sees no change) and
-  # serves that, so this pane stays up like every other one; "Filter mask was
-  # not received" in the planner log means it is actually down. Until
-  # 2026-09-30 it exited on purpose instead. `sleep: 1` is log ordering only -- the
-  # KeepoutFilter's two subscriptions are transient-local, so the planner may
-  # come up before or after this pane and still receive both latched messages.
+  # old include used to start pointlio. The offsets did not change with the
+  # split: NodeManager prefixes each pane's command with its own `sleep N`, so
+  # every offset in this file counts from session build time on one timeline,
+  # whichever window it sits in. The log directory stays `localizer`: the node
+  # is still called localizer_node and every doc names it that way.
   - name: localization
     panes:
-      - cmd: ros2 launch syncai_map_server map_server.launch.py
-        log: map_server
       - cmd: ros2 launch syncai_pointlio pointlio.launch.py
         sleep: 2
         log: pointlio
       - cmd: ros2 launch syncai_localizer localizer.launch.py
         sleep: 3
         log: localizer
-      - cmd: ros2 launch syncai_map_server costmap_filter_info.launch.py
-        sleep: 1
-        log: keepout
 
-  # ---------- Window 2: lio_bridge (map -> <robot_id>/odom) ----
+  # ---------- Window 3: lio_bridge (map -> <robot_id>/odom) ----
   - name: lio_bridge
     panes:
       - cmd: ros2 launch syncai_lio_bridge lio_bridge.launch.py
         sleep: 4
         log: lio_bridge
 
-  # ---------- Window 3: planner / controller ----------
+  # ---------- Window 4: planner / controller ----------
   - name: plan_ctrl
     panes:
       - cmd: ros2 launch syncai_planner planner_server.launch.py
@@ -117,14 +129,14 @@ windows:
         sleep: 4
         log: controller
 
-  # ---------- Window 4: task_runner (needs planner/controller action servers) --
+  # ---------- Window 5: task_runner (needs planner/controller action servers) --
   - name: task_runner
     panes:
       - cmd: ros2 launch syncai_task_runner task_runner.launch.py
         sleep: 10
         log: task_runner
 
-  # ---------- Window 5: driver_manager (own window: shutdown path is manual) --
+  # ---------- Window 6: driver_manager (own window: shutdown path is manual) --
   # Kept on a window of its own rather than split with sys_manager, because
   # this is the pane you Ctrl-C by hand when you want the safe-shutdown path
   # (safety lock + MODE X / lie down) to run — easy to hit the wrong pane in a
@@ -135,7 +147,7 @@ windows:
         log: driver_manager
 
 
-  # ---------- Window 6: robot_state ----------
+  # ---------- Window 7: robot_state ----------
   # Last window, and a single pane: both processes that used to follow
   # robot_state here — the backend, and the frontend dev server before it — are
   # served from their own containers now (see the header). robot_state stays

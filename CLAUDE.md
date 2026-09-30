@@ -371,8 +371,9 @@ plumbing (the two shell scripts it descends from shared ~85 lines of identical
 bash). The schema is documented in the `NodeManager` docstring (`session`,
 `select`, `windows[{name, cwd?, panes[{cmd, sleep?, log?, enter?}]}]`). `sleep`
 is where the startup ordering lives, since there is no lifecycle manager. The
-nav session's windows, in order: `bringup` → `localization` (map_server +
-pointlio + localizer + keepout) → `lio_bridge` → `plan_ctrl` (planner + controller) →
+nav session's windows, in order: `bringup` → `map_server` (map_server +
+keepout) → `localization` (pointlio + localizer) → `lio_bridge` → `plan_ctrl`
+(planner + controller) →
 `task_runner` → `driver_manager` → `robot_state`. The `keepout` pane
 (`costmap_filter_info.launch.py`) writes a blank `map/<name>/keepout.yaml` +
 `.pgm` of the gridmap's geometry when the map has none, then serves it — so

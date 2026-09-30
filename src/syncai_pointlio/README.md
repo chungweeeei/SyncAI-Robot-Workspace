@@ -156,8 +156,8 @@ ros2 launch syncai_pointlio pointlio.launch.py system_config:=/path/to/robot01.i
 ```
 
 The session specs run it in a pane of its own, immediately before the node
-that consumes it: `localization` window in `start_nav.yaml` (map_server →
-**pointlio** → localizer) and `lio` window in `start_mapping.yaml`
+that consumes it: `localization` window in `start_nav.yaml` (**pointlio** →
+localizer, after the `map_server` window) and `lio` window in `start_mapping.yaml`
 (**pointlio** → `syncai_mapping`). The logs are `log/stack/<robot_id>/pointlio/`
 and `log/stack/<robot_id>/mapping/pointlio/`. Both the fork's old `pgo_launch.py`
 and `localizer_launch.py` used to `include()` this launch; neither

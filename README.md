@@ -306,7 +306,7 @@ checkout:
 Nothing has to be launched by hand. The robot container's main process is
 `ros2 launch syncai_sys_manager sys_manager.launch.py`; on start it builds the
 **AUTO** byobu session (`syncai-dev`) from `config/sessions/start_nav.yaml`:
-bringup → map_server + pointlio + localizer + keepout → lio_bridge → planner +
+bringup → map_server + keepout → pointlio + localizer → lio_bridge → planner +
 controller → task_runner → driver_manager → robot_state, with `sleep` offsets
 standing in for the missing lifecycle manager. The `keepout` pane serves
 `map/<name>/keepout.yaml` to the planner's costmap filter, writing a blank
