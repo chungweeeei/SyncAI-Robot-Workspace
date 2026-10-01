@@ -20,7 +20,25 @@
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Seconds the server tolerates controller exceptions (RPP's "collision
+    # ahead!", a TF miss) before failing the goal with "Controller patience
+    # exceeded"; every failed cycle publishes zero velocity, so the robot
+    # brakes and waits rather than coasting. Raised 0.3 -> 3.0 so a blocked
+    # path re-routes instead of aborting: re-routing is the BT's 1 Hz replan
+    # (move.xml RateController) on the global costmap, which itself updates
+    # at 1 Hz, so a blocker that appears inside RPP's ~1 s / ~0.6 m collision
+    # projection takes up to ~2 s to turn into a new path, and at 0.3 s the
+    # FollowPath action aborted first. Its RecoveryNode then cleared the
+    # local costmap and re-sent the *same* old path (the blackboard path had
+    # not changed yet), RPP refused again, and PipelineSequence failed the
+    # whole NavigateToPose in ~0.6-1 s -- before the detour ever arrived. The
+    # timer resets on the first valid command, so a path that routes around
+    # the blocker costs nothing extra; the progress checker's
+    # movement_time_allowance (30 s) stays the outer bound on standing still.
+    # A map with no second corridor still aborts, just ~3 s later -- waiting
+    # for a live blocker to leave is a BT recovery (Wait/RoundRobin, not
+    # ported) and not this knob.
+    failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
     # Gate the goal check on path progress: only consult the goal checker once
