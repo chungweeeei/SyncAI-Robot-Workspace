@@ -18,7 +18,7 @@ ObservationBuffer::ObservationBuffer(
   double expected_update_rate, double min_obstacle_height, double max_obstacle_height,
   double obstacle_max_range, double obstacle_min_range, double raytrace_max_range,
   double raytrace_min_range, tf2_ros::Buffer & tf2_buffer, std::string global_frame,
-  std::string sensor_frame, tf2::Duration tf_tolerance)
+  std::string sensor_frame, tf2::Duration tf_tolerance, double sensor_height)
 : tf2_buffer_(tf2_buffer),
   observation_keep_time_(rclcpp::Duration::from_seconds(observation_keep_time)),
   expected_update_rate_(rclcpp::Duration::from_seconds(expected_update_rate)),
@@ -27,6 +27,7 @@ ObservationBuffer::ObservationBuffer(
   topic_name_(topic_name),
   min_obstacle_height_(min_obstacle_height),
   max_obstacle_height_(max_obstacle_height),
+  sensor_height_(sensor_height),
   obstacle_max_range_(obstacle_max_range),
   obstacle_min_range_(obstacle_min_range),
   raytrace_max_range_(raytrace_max_range),
@@ -76,6 +77,18 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     tf2_buffer_.transform(cloud, global_frame_cloud, global_frame_, tf_tolerance_);
     global_frame_cloud.header.stamp = cloud.header.stamp;
 
+    // Where height 0 is. Upstream: global-frame z = 0, which assumes the map's
+    // floor is flat at z = 0. A LIO-built map is not: dp1f_0924's floor runs
+    // from about -0.35 m to +0.17 m across the site (z drift while mapping),
+    // so with min_obstacle_height 0.1 the floor itself was marked wherever it
+    // sat above 0.1 m, 1.4-1.9 m ahead of the robot, and is_path_valid
+    // replanned the robot off a free route (2026-10). With sensor_height set,
+    // the floor is instead taken locally, sensor_height below the sensor
+    // origin: the robot is standing on it, so it follows the map's drift. That
+    // still assumes the floor is flat over obstacle_max_range, which holds to
+    // a few cm (the drift is ~2 cm/m) and is well inside a 0.1 m margin.
+    const double floor_z = sensor_height_ > 0.0 ? global_origin.point.z - sensor_height_ : 0.0;
+
     // now we need to remove observations from the cloud that are below
     // or above our height thresholds
     sensor_msgs::msg::PointCloud2 & observation_cloud = *(observation_list_.front().cloud_);
@@ -97,11 +110,23 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     std::vector<unsigned char>::const_iterator iter_global = global_frame_cloud.data.begin(),
                                                iter_global_end = global_frame_cloud.data.end();
     std::vector<unsigned char>::iterator iter_obs = observation_cloud.data.begin();
+    // Walks the output in step with iter_obs (one advance per kept point).
+    sensor_msgs::PointCloud2Iterator<float> obs_z(observation_cloud, "z");
     for (; iter_global != iter_global_end;
       ++iter_z, iter_global += global_frame_cloud.point_step)
     {
-      if ((*iter_z) <= max_obstacle_height_ && (*iter_z) >= min_obstacle_height_) {
+      const double height = (*iter_z) - floor_z;
+      if (height <= max_obstacle_height_ && height >= min_obstacle_height_) {
         std::copy(iter_global, iter_global + global_frame_cloud.point_step, iter_obs);
+        // Store the height above the local floor as z. ObstacleLayer applies
+        // its own layer-level min/max_obstacle_height to pz again when marking;
+        // left as global z, that second check would put back exactly the
+        // absolute-z cut this buffer just replaced. Nothing else reads z: the
+        // costmap is 2D and raytracing uses x/y only.
+        if (sensor_height_ > 0.0) {
+          *obs_z = static_cast<float>(height);
+        }
+        ++obs_z;
         iter_obs += global_frame_cloud.point_step;
         ++point_count;
       }

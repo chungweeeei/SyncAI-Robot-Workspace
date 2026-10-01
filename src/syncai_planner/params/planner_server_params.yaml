@@ -225,9 +225,38 @@
         data_type: "PointCloud2"
         marking: true
         clearing: true
-        # Heights are evaluated in the costmap global frame (map) = metres above
-        # the floor (the TF chain keeps z; a floor point lands at map z ~ 0).
-        # Slice a robot-height band: skip the ground plane, keep the chassis.
+        # Heights are metres above the floor the robot stands on, not map z.
+        # sensor_height is the height above that floor of the cloud's ORIGIN,
+        # robot01/pointlio_body: the MID360's internal IMU, not the lidar
+        # optics and not lidar_top. Measured 2026-10-01 on robot01, standing:
+        # body_cloud transformed to map, floor peak in the 1.2-2.0 m ring
+        # (the tilted lidar cannot see the floor inside ~1 m when standing),
+        # 0.407-0.412 m over 7 s. Lying down it read 0.16-0.17 m, so while
+        # the dog lies down the floor reads ~0.24 m high and gets marked: a
+        # costmap is only trusted standing.
+        # The arithmetic it replaced said 0.485 (base_link 0.33 + URDF
+        # lidar_top_joint z 0.155) and missed that the IMU sits ~0.046 m
+        # below the lidar origin (pointlio t_il z 0.044, at the 0.25 rad
+        # pitch): 0.44 with that. The remaining 3 cm say base_link stands
+        # nearer 0.30 m than 0.33. Re-measure rather than re-derive if the
+        # gait height or the mount changes. The error has to stay well under
+        # min_obstacle_height (0.1): a value too high puts the assumed floor
+        # below the real one, so floor points read as obstacles once it is
+        # 0.1 m off; a value too low lifts it, and obstacles shorter than
+        # 0.1 m + the error are dropped as floor.
+        # Set 0.03 below the measurement, to 0.38, by choice (2026-10-01): the
+        # assumed floor then sits ~3 cm above the real one, so gait bob and
+        # floor undulation do not push floor points into the band, at the
+        # price of obstacles shorter than ~0.13 m being dropped as floor.
+        # The buffer puts the floor at (origin z - sensor_height) and slices
+        # the band from there. Map z
+        # is NOT floor height on a LIO map: dp1f_0924's floor drifts from
+        # ~-0.35 m to ~+0.17 m across the site, and when this band was cut
+        # in map z the floor ahead was marked wherever it sat above 0.1 m,
+        # which made is_path_valid replan the robot off free routes. Keep
+        # this equal to the local costmap's value in controller_server_params.
+        # Skip the ground plane, keep chassis-height obstacles.
+        sensor_height: 0.38
         min_obstacle_height: 0.1
         max_obstacle_height: 1.5
         obstacle_max_range: 2.5

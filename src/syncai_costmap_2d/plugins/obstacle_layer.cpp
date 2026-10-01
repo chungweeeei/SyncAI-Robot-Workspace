@@ -96,6 +96,7 @@ void ObstacleLayer::onInitialize()
     declareParameter(source + "." + "data_type", rclcpp::ParameterValue(std::string("LaserScan")));
     declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(0.0));
+    declareParameter(source + "." + "sensor_height", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
     declareParameter(source + "." + "marking", rclcpp::ParameterValue(true));
     declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
@@ -117,6 +118,8 @@ void ObstacleLayer::onInitialize()
     node_->get_parameter(name_ + "." + source + "." + "data_type", data_type);
     node_->get_parameter(name_ + "." + source + "." + "min_obstacle_height", min_obstacle_height);
     node_->get_parameter(name_ + "." + source + "." + "max_obstacle_height", max_obstacle_height);
+    double sensor_height;
+    node_->get_parameter(name_ + "." + source + "." + "sensor_height", sensor_height);
     node_->get_parameter(name_ + "." + source + "." + "inf_is_valid", inf_is_valid);
     node_->get_parameter(name_ + "." + source + "." + "marking", marking);
     node_->get_parameter(name_ + "." + source + "." + "clearing", clearing);
@@ -149,7 +152,7 @@ void ObstacleLayer::onInitialize()
           node_, topic, observation_keep_time, expected_update_rate, min_obstacle_height,
           max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
           raytrace_min_range, *tf_, global_frame_, sensor_frame,
-          tf2::durationFromSec(transform_tolerance))));
+          tf2::durationFromSec(transform_tolerance), sensor_height)));
 
     // check if we'll add this buffer to our marking observation buffers
     if (marking) {

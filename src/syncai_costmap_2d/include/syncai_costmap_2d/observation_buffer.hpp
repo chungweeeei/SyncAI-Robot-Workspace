@@ -47,13 +47,17 @@ public:
    * the messages
    * @param  tf_tolerance The amount of time to wait for a transform to be available when setting a
    * new global frame
+   * @param  sensor_height Height of the sensor origin above the floor (m). 0 (the default, and
+   * upstream's behaviour) measures min/max_obstacle_height as global-frame z. > 0 measures them
+   * from a local floor at (sensor origin z - sensor_height) instead, and the buffered points' z is
+   * rewritten to that height above the floor
    */
   ObservationBuffer(
     const rclcpp::Node::SharedPtr & parent, std::string topic_name, double observation_keep_time,
     double expected_update_rate, double min_obstacle_height, double max_obstacle_height,
     double obstacle_max_range, double obstacle_min_range, double raytrace_max_range,
     double raytrace_min_range, tf2_ros::Buffer & tf2_buffer, std::string global_frame,
-    std::string sensor_frame, tf2::Duration tf_tolerance);
+    std::string sensor_frame, tf2::Duration tf_tolerance, double sensor_height = 0.0);
 
   /**
    * @brief  Destructor... cleans up
@@ -112,6 +116,7 @@ private:
   std::list<Observation> observation_list_;
   std::string topic_name_;
   double min_obstacle_height_, max_obstacle_height_;
+  double sensor_height_;
   std::recursive_mutex lock_;  ///< @brief A lock for accessing data in callbacks safely
   double obstacle_max_range_, obstacle_min_range_, raytrace_max_range_, raytrace_min_range_;
   tf2::Duration tf_tolerance_;

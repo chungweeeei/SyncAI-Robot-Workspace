@@ -170,7 +170,8 @@ Per-source parameters: `topic`, `sensor_frame`, `data_type` (`LaserScan` or
 `PointCloud2`), `marking`, `clearing`, `min_obstacle_height` /
 `max_obstacle_height`, `obstacle_min_range` / `obstacle_max_range` (marking
 range), `raytrace_min_range` / `raytrace_max_range` (clearing range),
-`observation_persistence`, `expected_update_rate`, `inf_is_valid`.
+`observation_persistence`, `expected_update_rate`, `inf_is_valid`, and
+`sensor_height` (this port's addition, see below).
 
 Two things worth internalising:
 
@@ -182,6 +183,18 @@ Two things worth internalising:
   buffer then takes the raytrace origin from the message header's `frame_id`.
   That is how the 3D config consumes `pointlio/body_cloud` without needing a
   per-robot launch-file frame override.
+- **Heights are measured from the floor under the robot when `sensor_height`
+  is set** (both costmaps' `pointcloud` source: `0.38`, the measured height of the cloud's origin `pointlio_body` — the MID360's IMU, ~0.046 m below the lidar optics — above the floor with the G23 standing (0.41, robot01 2026-10-01) less a deliberate 0.03 margin that keeps the floor out of the band at the price of obstacles under ~0.13 m; lying down it is ~0.165, so the floor reads ~0.24 m high and gets marked). Upstream, and this port with `sensor_height: 0`,
+  measures `min/max_obstacle_height` as global-frame z, which assumes the map's
+  floor lies at z = 0. A LIO-built map's does not: `dp1f_0924`'s drifts from
+  about -0.35 m to +0.17 m across the site, and with a 0.1 m minimum the floor
+  ahead got marked wherever it sat above 0.1 m (2026-10: `is_path_valid` then
+  replanned the robot off free routes). With `sensor_height`, `ObservationBuffer`
+  puts the floor at the sensor origin's z minus `sensor_height`, keeps the
+  points inside the band above it, and **rewrites each kept point's z to that
+  height above the floor**, so the layer-level `min/max_obstacle_height` check
+  in `ObstacleLayer` agrees with it. Nothing else reads z. It still assumes the
+  floor is flat within `obstacle_max_range` of the robot, which holds to a few cm.
 
 `expected_update_rate` is what drives `isCurrent()`: a source that stops
 publishing eventually marks the layer not-current, and both the planner and the
