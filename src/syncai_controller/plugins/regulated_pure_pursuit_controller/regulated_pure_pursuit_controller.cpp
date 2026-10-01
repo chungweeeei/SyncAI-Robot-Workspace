@@ -370,6 +370,15 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   // path collides with an obstacle -- a safety check.
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
+    // The throw makes controller_server publish a zero Twist (failure_tolerance
+    // branch) or abort, so zero is what the robot was actually told. The accel
+    // clamps must see that too. Leaving last_cmd_vel_ at the pre-collision
+    // forward speed made the clamp hold linear_vel near desired_linear_vel_ on
+    // every later cycle, so a re-routed path that starts with rotate-to-heading
+    // (linear 0) still got a forward arc projected into the same blocker, threw
+    // again, and the baseline never decayed: the robot sat facing the old route
+    // until "Controller patience exceeded", whatever path it was handed.
+    last_cmd_vel_ = geometry_msgs::msg::Twist();
     throw syncai_nav_core::PlannerException(
       "RegulatedPurePursuitController detected collision ahead!");
   }
