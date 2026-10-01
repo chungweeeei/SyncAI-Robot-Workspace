@@ -4,7 +4,7 @@
 #   base            shared runtime floor (ros-base + cyclonedds + uid-1000 user)
 #     ├─ deps-builder  GTSAM / Sophus / Livox-SDK2 → /usr/local  (slow, cached)
 #     └─ dev           the interactive dev image: rviz2, colcon, byobu, Node.js,
-#                      -dev headers. Workspace bind-mounted at ~/robot_ws and
+#                      the Rust toolchain for rclrs, -dev headers. Workspace bind-mounted at ~/robot_ws and
 #                      built by hand (colcon). Compose target: dev.
 #
 # The dev target keeps today's workflow (workspace mounted at ~/robot_ws, build
@@ -309,6 +309,49 @@ RUN ldconfig
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain for rclrs (ros2-rust), the ROS 2 Rust client library.
+#
+# rclrs is not an apt package and there is no ros-humble-rclrs: the crate comes
+# from crates.io through a package's own Cargo.toml, so what the image has to
+# provide is the toolchain that builds it inside a colcon workspace:
+#   - libclang-dev     : rclrs's build script runs bindgen over the rcl headers.
+#                        `clang` alone is not enough — bindgen loads libclang.so
+#                        and fails with "Unable to find libclang" without -dev.
+#   - rustup / cargo   : pinned via RUST_TOOLCHAIN, like every other third-party
+#                        dep in this image.
+#   - cargo-ament-build: `cargo ament-build --install-base`, the drop-in for
+#                        `cargo build` that lays binaries out per REP 122 so
+#                        `ros2 run` / `ros2 launch` find them.
+#   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
+#                        package.xml + Cargo.toml package. Packages without a
+#                        Cargo.toml (every one in src/ today) are unaffected.
+#
+# Installed under /opt/rust rather than ~/.cargo because compose may override
+# the uid at runtime (see the syncrobotic user in base); the tree is made
+# world-writable for the same reason as /home/syncrobotic — cargo writes its
+# registry cache and git checkouts into CARGO_HOME on every build that fetches
+# a crate.
+#
+# NOT covered here: message crates. A Rust node that uses std_msgs or
+# syncai_common needs those packages regenerated from source with
+# rosidl_generator_rs (ros2-rust/rosidl_rust, plus the humble branches of
+# common_interfaces / rcl_interfaces / rosidl_defaults / rosidl_core in the
+# workspace) — the apt-installed interfaces ship no Rust bindings. That is a
+# workspace (.repos) change, not an image change.
+ARG RUST_TOOLCHAIN=1.89.0
+ENV RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo \
+    PATH=/opt/rust/cargo/bin:${PATH}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libclang-dev \
+    && rm -rf /var/lib/apt/lists/* && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" && \
+    cargo install --locked cargo-ament-build && \
+    pip3 install --no-cache-dir colcon-cargo colcon-ros-cargo && \
+    rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
+    chmod -R a+w /opt/rust
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble

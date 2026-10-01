@@ -118,7 +118,11 @@
       "mcp__notion__notion-fetch",
       "Bash(gh pr *)",
       "mcp__notion__notion-query-data-sources",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git checkout *)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "Bash(docker info *)"
     ]
   }
 }
