@@ -191,6 +191,15 @@ void NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr g
 
   // Update the goal pose on the blackboard
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
+
+  // Drop the previous goal's path. move.xml keeps {path} for as long as
+  // IsPathValid accepts it, and nothing else clears it between goals
+  // (haltAllActions() only halts nodes still RUNNING, so ComputePathToPose's
+  // halt() rarely runs). A stale path that is still free would otherwise be
+  // followed from wherever it starts when the same goal is sent again. On a
+  // preempt this is harmless: FollowPath ignores an empty path and keeps the
+  // one it has until the replan lands.
+  blackboard->set<nav_msgs::msg::Path>(path_blackboard_id_, nav_msgs::msg::Path());
 }
 
 void NavigateToPoseNavigator::onGoalPoseReceived(

@@ -132,6 +132,7 @@ void SmacPlanner2D::initialize(
   SmootherParams params;
   params.get(node, name);
   params.holonomic_ = true;  // So smoother will treat this as a grid search
+  params.allow_unknown_ = _allow_unknown;
   _smoother = std::make_unique<Smoother>(params);
   _smoother->initialize(1e-50 /*No valid minimum turning radius for 2D*/);
 
@@ -324,6 +325,7 @@ SmacPlanner2D::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
       } else if (name == _name + ".allow_unknown") {
         reinit_a_star = true;
         _allow_unknown = parameter.as_bool();
+        _smoother->setAllowUnknown(_allow_unknown);
       } else if (name == _name + ".use_final_approach_orientation") {
         _use_final_approach_orientation = parameter.as_bool();
       }

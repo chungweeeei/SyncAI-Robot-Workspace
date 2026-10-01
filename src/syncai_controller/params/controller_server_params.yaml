@@ -24,8 +24,8 @@
     # ahead!", a TF miss) before failing the goal with "Controller patience
     # exceeded"; every failed cycle publishes zero velocity, so the robot
     # brakes and waits rather than coasting. Raised 0.3 -> 3.0 so a blocked
-    # path re-routes instead of aborting: re-routing is the BT's 1 Hz replan
-    # (move.xml RateController) on the global costmap, which itself updates
+    # path re-routes instead of aborting: re-routing is the BT's 1 Hz is_path_valid
+    # check + replan (move.xml RateController) on the global costmap, which itself updates
     # at 1 Hz, so a blocker that appears inside RPP's ~1 s / ~0.6 m collision
     # projection takes up to ~2 s to turn into a new path, and at 0.3 s the
     # FollowPath action aborted first. Its RecoveryNode then cleared the

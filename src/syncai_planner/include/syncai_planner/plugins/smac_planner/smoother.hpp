@@ -106,6 +106,12 @@ public:
     const double & min_turning_radius);
 
   /**
+   * @brief Follow the planner's allow_unknown after a runtime parameter change
+   * @param allow_unknown Whether a waypoint may be smoothed onto an unknown cell
+   */
+  void setAllowUnknown(const bool allow_unknown) { allow_unknown_ = allow_unknown; }
+
+  /**
    * @brief Smoother API method
    * @param path Reference to path
    * @param costmap Pointer to minimal costmap
@@ -234,6 +240,7 @@ protected:
   double min_turning_rad_, tolerance_, data_w_, smooth_w_;
   int max_its_, refinement_ctr_;
   bool is_holonomic_, do_refinement_;
+  bool allow_unknown_{true};
   MotionModel motion_model_;
   ompl::base::StateSpacePtr state_space_;
 };

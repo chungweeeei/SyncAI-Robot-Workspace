@@ -77,6 +77,14 @@ add_library(syncai_initial_pose_received_condition_bt_node SHARED
   plugins/condition/initial_pose_received_condition.cpp)
 list(APPEND plugin_libs syncai_initial_pose_received_condition_bt_node)
 
+add_library(syncai_is_path_valid_condition_bt_node SHARED
+  plugins/condition/is_path_valid_condition.cpp)
+list(APPEND plugin_libs syncai_is_path_valid_condition_bt_node)
+
+add_library(syncai_globally_updated_goal_condition_bt_node SHARED
+  plugins/condition/globally_updated_goal_condition.cpp)
+list(APPEND plugin_libs syncai_globally_updated_goal_condition_bt_node)
+
 # Behavior Tree decorator node plugins
 add_library(syncai_rate_controller_bt_node SHARED
   plugins/decorator/rate_controller.cpp)

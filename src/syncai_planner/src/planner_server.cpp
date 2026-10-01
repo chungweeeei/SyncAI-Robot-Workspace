@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "builtin_interfaces/msg/duration.hpp"
+#include "syncai_costmap_2d/cost_values.hpp"
+#include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 
 using namespace std::chrono_literals;
@@ -29,6 +31,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   // Declare this node's parameters
   this->declare_parameter("planner_plugins", default_ids_);
   this->declare_parameter("expected_planner_frequency", 1.0);
+  this->declare_parameter("plan_republish_rate", 1.0);
 
   this->get_parameter("planner_plugins", planner_ids_);
   if (planner_ids_ == default_ids_) {
@@ -118,6 +121,28 @@ void PlannerServer::configure()
 
   // Initialize pubs & subs
   plan_publisher_ = this->create_publisher<nav_msgs::msg::Path>("plan", 1);
+
+  // Since move.xml plans only when the current path is blocked (2026-10), a
+  // plan is published once per route instead of once a second, so a viewer
+  // that subscribes mid-drive (rviz opened late, a reconnect) saw nothing until
+  // the next replan, which may never come. Re-sending the last plan keeps
+  // `plan` showing the route being driven. It goes on showing the last route
+  // after the goal ends too, as rviz would have kept displaying it anyway:
+  // nothing here knows when the navigation that asked for it finished.
+  // 0 disables, leaving the plan-time publish only.
+  double plan_republish_rate;
+  get_parameter("plan_republish_rate", plan_republish_rate);
+  if (plan_republish_rate > 0.0) {
+    plan_republish_timer_ = this->create_wall_timer(
+      std::chrono::duration<double>(1.0 / plan_republish_rate),
+      std::bind(&PlannerServer::republishPlan, this));
+  }
+
+  // On the node's main executor (main.cpp), not the action server's thread, so
+  // a check never waits behind a plan in progress.
+  is_path_valid_service_ = this->create_service<nav2_msgs::srv::IsPathValid>(
+    "is_path_valid",
+    std::bind(&PlannerServer::isPathValid, this, std::placeholders::_1, std::placeholders::_2));
 
   // Create the action server for path planning to a pose. spin_thread=true
   // gives the server its own callback group and executor thread, so the
@@ -231,6 +256,100 @@ bool PlannerServer::validatePath(
     path.poses.size(), goal.pose.position.x, goal.pose.position.y);
 
   return true;
+}
+
+void PlannerServer::isPathValid(
+  const std::shared_ptr<nav2_msgs::srv::IsPathValid::Request> request,
+  std::shared_ptr<nav2_msgs::srv::IsPathValid::Response> response)
+{
+  // Every "can't tell" below answers invalid. The caller's reaction to invalid
+  // is one fresh plan (what the BT did unconditionally every second before
+  // this service existed), whereas a wrong "valid" keeps the robot on a path
+  // nobody checked.
+  response->is_valid = false;
+
+  const auto & poses = request->path.poses;
+  if (poses.empty()) {
+    return;
+  }
+  if (request->path.header.frame_id != costmap_ros_->getGlobalFrameID()) {
+    RCLCPP_WARN(
+      get_logger(), "[PlannerServer][%s] Path is in frame '%s', the costmap in '%s'", __func__,
+      request->path.header.frame_id.c_str(), costmap_ros_->getGlobalFrameID().c_str());
+    return;
+  }
+
+  geometry_msgs::msg::PoseStamped robot_pose;
+  if (!costmap_ros_->getRobotPose(robot_pose)) {
+    return;
+  }
+
+  // Only what is still ahead of the robot matters: the part already driven
+  // may well be blocked now (by the robot's own trail of marks, or by the
+  // obstacle it just went around) without that saying anything about the
+  // route forward.
+  size_t closest_idx = 0;
+  double closest_dist = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < poses.size(); ++i) {
+    const double dist = syncai_util::geometry_utils::euclidean_distance(robot_pose, poses[i]);
+    if (dist < closest_dist) {
+      closest_dist = dist;
+      closest_idx = i;
+    }
+  }
+
+  // The same per-cell test SmacPlanner2D's collision checker applies when it
+  // expands a node (cost >= INSCRIBED), so "valid" means "the planner would
+  // still have been allowed to produce this path now". >= INSCRIBED also
+  // covers NO_INFORMATION, which matches the configured allow_unknown: false;
+  // if that is ever flipped, unknown cells have to be let through here too or
+  // every path into unexplored space reads blocked. Keepout cells arrive as
+  // LETHAL from the filter, so a zone drawn across the path invalidates it.
+  //
+  // The pose under the robot is included. A robot standing within its
+  // inscribed radius of a wall therefore gets "invalid" on every call and
+  // replans once per BT tick, which is the old behaviour, not a new failure.
+  response->is_valid = true;
+  int first_cost = -1;  // -1: off the map
+  {
+    std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
+    for (size_t i = closest_idx; i < poses.size(); ++i) {
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      const bool on_map =
+        costmap_->worldToMap(poses[i].pose.position.x, poses[i].pose.position.y, mx, my);
+      const unsigned char cost = on_map ? costmap_->getCost(mx, my) : 0;
+      if (!on_map || cost >= syncai_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+        if (response->is_valid) {
+          first_cost = on_map ? cost : -1;
+        }
+        response->is_valid = false;
+        response->invalid_pose_indices.push_back(static_cast<int32_t>(i));
+      }
+    }
+  }
+
+  // Every "invalid" here becomes a replan, and a replan nobody can explain is
+  // the one thing this service exists to prevent, so say why. The three costs
+  // point at different causes: 254 a marked obstacle (real, or lidar noise /
+  // self-hits in the 0.1-1.5 m band), 253 the path grazing an inflated
+  // obstacle's inscribed core, 255 unknown -- which A* never enters with
+  // allow_unknown: false, but the smoother only rejects cost > 252 *except*
+  // unknown, so a smoothed waypoint can land there. "ahead 0.00 m" means the
+  // robot's own spot (see above).
+  if (!response->is_valid) {
+    const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
+    double ahead = 0.0;
+    for (size_t i = closest_idx; i < first_idx; ++i) {
+      ahead += syncai_util::geometry_utils::euclidean_distance(poses[i], poses[i + 1]);
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
+      "ahead of the robot, (%.2f, %.2f), cost %d",
+      __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx,
+      ahead, poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_cost);
+  }
 }
 
 void PlannerServer::computePlan()
@@ -451,10 +570,36 @@ nav_msgs::msg::Path PlannerServer::getPlan(
 
 void PlannerServer::publishPlan(const nav_msgs::msg::Path & path)
 {
+  {
+    // Stored even with no subscriber, so one that arrives later gets it from
+    // the timer.
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    last_plan_ = path;
+  }
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
   if (plan_publisher_->get_subscription_count() > 0) {
     plan_publisher_->publish(std::move(msg));
   }
+}
+
+void PlannerServer::republishPlan()
+{
+  if (plan_publisher_->get_subscription_count() == 0) {
+    return;
+  }
+  auto msg = std::make_unique<nav_msgs::msg::Path>();
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    if (last_plan_.poses.empty()) {
+      return;
+    }
+    *msg = last_plan_;
+  }
+  // Restamped: the poses are in the fixed `map` frame, so the content is
+  // still true now, and a viewer whose fixed frame is not `map` would
+  // otherwise fail to transform a stamp that has aged out of its TF buffer.
+  msg->header.stamp = now();
+  plan_publisher_->publish(std::move(msg));
 }
 
 rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallback(
