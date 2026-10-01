@@ -67,10 +67,11 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 | `syncai_task_runner` | The BT navigator. Serves `nav2_msgs/NavigateToPose`, hosts the `Navigator<ActionT>` abstraction and `behavior_trees/*.xml` (`move.xml` replans at 1 Hz). `bt_loop_duration: 50` ms ticks the tree at 20 Hz and doubles as every BT node's per-tick spin budget (halved), so it is a latency knob, not just a rate. There is no `syncai_bt_navigator` package. |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server. `costmap_filter_info.launch.py` (the info server + a second `map_server` named `filter_mask_server`) is the nav session's `keepout` pane since 2026-09; it serves `map/<name>/keepout.yaml`, derived from the INI's `[map] map`, and **generates a blank one of the gridmap's geometry when that file is absent** (all unknown — a free mask cell would overwrite unknown costmap cells, so white is not a no-op), so the mask server is up on every map. It started nothing instead until 2026-09-30. The only thing that still stops it is an unreadable `gridmap.yaml`. Reload after editing a mask with `filter_mask_server/load_map`, no restart. |
 
-**Known drift:** the global costmap footprint (`planner_server_params.yaml`,
-0.35 × 0.22 half-extents) and the local costmap footprint
-(`controller_server_params.yaml`, 0.28 × 0.20) currently disagree. Reconcile
-them before trusting RPP's collision rejections; the package READMEs flag it.
+**One footprint, two files:** the global costmap (`planner_server_params.yaml`)
+and the local costmap (`controller_server_params.yaml`) both carry the 0.35 ×
+0.22 half-extent rectangle. Edit them in the same change — they drifted apart
+once (the local one stayed at the sim-era 0.28 × 0.20 until 2026-10), and a
+larger local footprint makes RPP reject the planner's paths.
 
 ### Localization & sensing
 

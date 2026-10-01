@@ -396,15 +396,13 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
   the robot physically fails to track the command, the clamp will not notice and
   will keep ramping. That is intentional (gait noise), but it means the clamp is
   not a safety feature.
-- **Footprints must match the global costmap — and currently do not.** The
-  local costmap here is `[[0.28, 0.20], …]`; `syncai_planner`'s `global_costmap`
-  was enlarged to `[[0.35, 0.22], …]` and this file was not followed, even though
-  both YAML comments say "rescale both together". Today the planner is the
-  conservative side, so RPP does not reject its paths — the "collision ahead!"
-  spam happens when the *local* rectangle is the larger — but the controller is
-  checking 7 cm less clearance than the planner assumed, and anyone growing this
-  footprint to match will re-tune against a different robot than the planner
-  sees until both agree. Reconcile them to one rectangle.
+- **Footprints must match the global costmap.** Both are `[[0.35, 0.22], …]`
+  (0.70 × 0.44 m). The local one sat at the sim-era `[[0.28, 0.20], …]` until
+  2026-10, after `syncai_planner`'s was enlarged alone. Edit both together: a
+  larger *local* rectangle makes RPP reject the planner's paths ("collision
+  ahead!"); a smaller one makes the controller check less clearance than the
+  planner assumed. RPP tests the full polygon against `LETHAL` only, so
+  `inflation_radius` (0.4) need not cover the footprint's circumscribed radius.
 - **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
   spin has no timeout: if an observation source stops publishing, the control
   loop stalls there with the goal still active rather than failing.

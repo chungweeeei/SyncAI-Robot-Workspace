@@ -147,13 +147,16 @@
     height: 3
     resolution: 0.05
 
-    # Robot footprint: rectangular chassis half-extents 0.28 x 0.20. Meant to
-    # match the global_costmap footprint in planner_server_params.yaml, which
-    # has since grown to 0.35 x 0.22 without this one following — the two are
-    # currently different rectangles for one robot. Rescale both together:
-    # if this (local) one ends up the larger, RPP spam-rejects valid paths
-    # ("collision ahead!").
-    footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
+    # Robot footprint: rectangle with half-extents 0.35 x 0.22 (0.70 x 0.44 m
+    # overall), the same rectangle as the global_costmap in
+    # planner_server_params.yaml. Rescale both together: if this (local) one
+    # ends up the larger, RPP spam-rejects valid paths ("collision ahead!");
+    # if it ends up the smaller, the controller checks less clearance than the
+    # planner assumed. It was 0.28 x 0.20 until 2026-10 — the MiR250-at-0.7
+    # Isaac Sim chassis — left behind when 3a414d8 grew the global one alone.
+    # RPP checks this full polygon against LETHAL only, so inflation_radius
+    # below does not need to cover its circumscribed radius (~0.43 m padded).
+    footprint: "[[0.35, 0.22], [0.35, -0.22], [-0.35, -0.22], [-0.35, 0.22]]"
     footprint_padding: 0.01
 
     # Layer stack — order matters: obstacle(mark/clear) -> inflation

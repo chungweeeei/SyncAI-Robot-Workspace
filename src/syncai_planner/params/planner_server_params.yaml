@@ -101,16 +101,16 @@
     resolution: 0.05
 
     # Robot footprint: rectangle with half-extents 0.35 x 0.22 (0.70 x 0.44 m
-    # overall) around base_link for the G23 chassis. NOTE: the controller's
-    # local_costmap in controller_server_params.yaml still carries the older
-    # 0.28 x 0.20 rectangle — the two are supposed to be one footprint and
-    # currently are not. As long as the global one is the larger, the planner
-    # is the conservative side and RPP will not reject its paths; enlarge the
-    # local one without also enlarging this one and RPP starts refusing valid
-    # paths ("collision ahead!"). Reconcile them to one rectangle rather than
-    # editing either in isolation. (A circular robot_radius=0.22 was tried
-    # before the rectangle and was oversized enough to make RPP reject valid
-    # paths through ~0.6 m gaps.)
+    # overall) around base_link for the G23 chassis — the same rectangle as the
+    # controller's local_costmap in controller_server_params.yaml (which lagged
+    # at the sim-era 0.28 x 0.20 until 2026-10). Edit both together, never
+    # either in isolation: enlarge the local one alone and RPP starts refusing
+    # valid paths ("collision ahead!"); enlarge this one alone and the
+    # controller checks less clearance than the planner assumed. Smac 2D only
+    # sees this footprint's inscribed radius (see the README), so a length
+    # change alone does not move the plan. (A circular robot_radius=0.22 was
+    # tried before the rectangle and was oversized enough to make RPP reject
+    # valid paths through ~0.6 m gaps.)
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 

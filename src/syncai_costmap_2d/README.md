@@ -364,18 +364,14 @@ correctly); renaming it means touching its two includes.
   or the topic connects and never delivers.
 - **`update_frequency: 0.0` disables the update thread** — the costmap is created,
   publishes nothing, and never becomes current, which reads like a TF problem.
-- **Footprints must agree across costmaps — and today they do not.** The
-  planner's global costmap (`syncai_planner/params/planner_server_params.yaml`)
-  carries `[[0.35,0.22],…]` while the controller's local costmap
-  (`syncai_controller/params/controller_server_params.yaml`) still has
-  `[[0.28,0.20],…]`. The global one was enlarged and the local one was not
-  followed, so the two YAML comments telling you to "rescale both together" are
-  each pointing at a file that disagrees with them. The failure mode when the
-  *local* footprint is the larger one is RPP rejecting paths the planner considers
-  valid ("collision ahead!"); with the current mismatch it is the other way round —
-  the planner keeps 7 cm more clearance than the controller checks, so the
-  controller is the permissive side. Reconcile them to one rectangle before
-  tuning anything else that depends on clearance.
+- **Footprints must agree across costmaps.** The planner's global costmap
+  (`syncai_planner/params/planner_server_params.yaml`) and the controller's
+  local costmap (`syncai_controller/params/controller_server_params.yaml`) both
+  carry `[[0.35,0.22],…]`. They drifted once — the global one was enlarged and
+  the local one stayed at `[[0.28,0.20],…]` until 2026-10 — so edit them in the
+  same change. A larger *local* footprint makes RPP reject paths the planner
+  considers valid ("collision ahead!"); a smaller one makes the controller the
+  permissive side, checking less clearance than the planner kept.
 - **`inflation_radius` smaller than the inscribed radius** leaves lethal cells the
   planner will happily route the robot's corners through.
 - `package.xml` still carries `TODO: Package description` and

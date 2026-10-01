@@ -251,14 +251,12 @@ restart either way.
 `rolling_window: false`, `track_unknown_space: true`, `global_frame: map`, and
 a low `update_frequency: 1.0` (the static map rarely changes).
 
-The footprint is a rectangle with half-extents 0.35 × 0.22 and **should stay
-in sync with the local costmap** in `syncai_controller` — which it currently
-does not: `controller_server_params.yaml` still carries 0.28 × 0.20. The global
-costmap was enlarged and the local one was not followed, so the planner keeps
-more clearance than the controller checks; the failure that motivated the
-"keep them equal" rule (RPP rejecting paths the planner considered valid) needs
-the mismatch the other way round, but two rectangles for one robot is still a
-bug waiting for whoever tunes clearance next. A circular `robot_radius: 0.22`
+The footprint is a rectangle with half-extents 0.35 × 0.22 and **must stay
+in sync with the local costmap** in `syncai_controller`, which carries the same
+rectangle. (It did not until 2026-10: the global costmap was enlarged in
+`3a414d8` and the local one stayed at the sim-era 0.28 × 0.20.) A larger local
+rectangle makes RPP reject paths the planner considered valid; a smaller one
+makes the controller check less clearance than the planner kept. A circular `robot_radius: 0.22`
 was tried before the rectangle and was oversized enough that RPP rejected valid
 paths through ~0.6 m gaps.
 
