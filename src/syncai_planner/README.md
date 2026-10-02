@@ -251,14 +251,20 @@ restart either way.
 `rolling_window: false`, `track_unknown_space: true`, `global_frame: map`, and
 a low `update_frequency: 1.0` (the static map rarely changes).
 
-The footprint is a rectangle with half-extents 0.35 × 0.22 and **should stay
-in sync with the local costmap** in `syncai_controller` — which it currently
-does not: `controller_server_params.yaml` still carries 0.28 × 0.20. The global
-costmap was enlarged and the local one was not followed, so the planner keeps
-more clearance than the controller checks; the failure that motivated the
-"keep them equal" rule (RPP rejecting paths the planner considered valid) needs
-the mismatch the other way round, but two rectangles for one robot is still a
-bug waiting for whoever tunes clearance next. A circular `robot_radius: 0.22`
+The footprint is a rectangle with half-extents 0.35 × 0.22, **the same
+rectangle as the local costmap** in `syncai_controller` (reconciled 2026-10;
+the local one had been left at 0.28 × 0.20). Only the padding differs, on
+purpose: `footprint_padding: 0.03` here against 0.01 there. The global
+footprint has to be the larger one, or RPP rejects paths the planner considered
+valid ("collision ahead!"); with equal rectangles the 0.02 m padding gap is what
+keeps the planner on the conservative side, and it also absorbs RPP's heading
+error while tracking. Change the rectangle in both files or neither, and never
+let the local padding reach the global one.
+
+`inflation_radius: 0.5` must stay at or above the padded footprint's
+circumscribed radius, √(0.38² + 0.25²) ≈ 0.455 m: only then does a non-inflated
+cost at the robot centre guarantee the whole footprint is clear, which anything
+that checks a path by centre-cell cost alone relies on. A circular `robot_radius: 0.22`
 was tried before the rectangle and was oversized enough that RPP rejected valid
 paths through ~0.6 m gaps.
 

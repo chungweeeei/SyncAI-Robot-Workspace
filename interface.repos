@@ -1,5 +1,7 @@
 # Our own wire format: src/syncai_common, from SyncAI-Robot-Interface, managed
-# with vcstool the same way third-party.repos manages src/third-party/.
+# with vcstool the same way third-party.repos manages src/third-party/,
+# driver-manager.repos manages src/syncai_driver_manager and robot-state.repos
+# manages src/syncai_robot_state.
 #
 #   vcs import < interface.repos          # populate a fresh clone
 #   vcs import < interface.repos --force  # re-checkout after changing the pin

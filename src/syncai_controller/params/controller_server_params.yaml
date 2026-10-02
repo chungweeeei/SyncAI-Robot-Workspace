@@ -129,13 +129,19 @@
     height: 3
     resolution: 0.05
 
-    # Robot footprint: rectangular chassis half-extents 0.28 x 0.20. Meant to
-    # match the global_costmap footprint in planner_server_params.yaml, which
-    # has since grown to 0.35 x 0.22 without this one following — the two are
-    # currently different rectangles for one robot. Rescale both together:
-    # if this (local) one ends up the larger, RPP spam-rejects valid paths
-    # ("collision ahead!").
-    footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
+    # Robot footprint: rectangular chassis half-extents 0.35 x 0.22 — the SAME
+    # rectangle as the global_costmap in planner_server_params.yaml; change
+    # both or neither. (Until 2026-10 this one was still the older 0.28 x 0.20
+    # after the global one grew.)
+    #
+    # The padding differs on purpose: 0.01 here vs 0.03 on the global costmap.
+    # If the local footprint ends up the larger (padding included), RPP
+    # spam-rejects paths the planner considered valid ("collision ahead!"), so
+    # the planner must stay the conservative side. With equal rectangles the
+    # 0.02 m padding gap is what guarantees that, and it leaves room for the
+    # heading error RPP accumulates while tracking. Never raise this padding
+    # to or above the global one.
+    footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 
     # Layer stack — order matters: obstacle(mark/clear) -> inflation

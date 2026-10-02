@@ -17,8 +17,11 @@
 # (chungweeeei/SyncAI-Fast-LIO2 at src/third-party/FASTLIO2_ROS2), left in
 # 2026-09 once its last package, `localizer`, had been ported in-tree as
 # src/syncai_localizer -- pointlio, pgo, hba and its `interface` srvs had gone
-# the same way earlier that month. These five plus interface.repos are the whole
-# build (verified with the fork's directory deleted: 22 packages, 2026-09-28).
+# the same way earlier that month. These five plus interface.repos were the whole
+# build at that point (verified with the fork's directory deleted: 22 packages,
+# 2026-09-28); driver-manager.repos and robot-state.repos added a 23rd and 24th
+# in 2026-10, when syncai_driver_manager and syncai_robot_state moved out to
+# their own repos and were rewritten in Rust.
 # An old checkout of it still on disk builds a second `localizer` package with
 # its own localizer_node; delete the directory (and build/localizer,
 # install/localizer) rather than keeping it.
