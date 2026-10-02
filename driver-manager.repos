@@ -31,15 +31,16 @@
 # needs no keys. `git@github.com:chungweeeei/SyncAI-Robot-Driver-Manager.git` is
 # the same checkout for anyone who prefers to push over SSH.
 #
-# BUILDING IT NEEDS MORE THAN THIS IMPORT. It is an `ament_cargo` package: the
+# BUILDING IT NEEDS THE IMAGE'S UNDERLAY TOO. It is an `ament_cargo` package: the
 # robot image carries the Rust toolchain (rustup, cargo-ament-build, colcon-cargo
-# / colcon-ros-cargo, libclang-dev -- see the Dockerfile's Rust stanza), but NOT
-# the Rust message crates. rclrs's bindings for std_msgs / sensor_msgs /
+# / colcon-ros-cargo, libclang-dev -- see the Dockerfile's Rust stanza), which is
+# NOT
+# the Rust message crates on their own. rclrs's bindings for std_msgs / sensor_msgs /
 # geometry_msgs / std_srvs / syncai_common are generated at build time by
-# rosidl_generator_rs, which is not in this workspace yet, so a colcon build that
-# reaches this package fails on the missing crates -- and the same is true of
-# syncai_robot_state. That is the next change, and it is another .repos file
-# (ros2-rust/ros2_rust's own ros2_rust_humble.repos), not an image change.
+# rosidl_generator_rs, which the image provides as a ros2-rust underlay at
+# /opt/ros2_rust_underlay (the Dockerfile's underlay stanza) -- the same is true
+# of syncai_robot_state. An image built before that stanza has no underlay, and
+# a colcon build that reaches this package fails on the missing crates.
 repositories:
   src/syncai_driver_manager:
     type: git

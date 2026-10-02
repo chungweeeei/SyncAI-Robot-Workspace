@@ -45,8 +45,8 @@
 #
 # Like syncai_driver_manager, this is an `ament_cargo` package and the Rust
 # message crates it needs (syncai_common / nav_msgs / sensor_msgs / std_msgs)
-# are not generated in this workspace yet -- see driver-manager.repos for the
-# whole story. One extra wrinkle here: its `tf2_msgs` dependency is NOT one of
+# come from the image's ros2-rust underlay (/opt/ros2_rust_underlay) -- see
+# driver-manager.repos and the Dockerfile's underlay stanza for the whole story. One extra wrinkle here: its `tf2_msgs` dependency is NOT one of
 # them. rclrs has no tf2_ros binding, so the node does its own map -> base_link
 # lookup off /tf and /tf_static, and the ros-humble-tf2-msgs deb already ships
 # generated Rust bindings; only if a future base image stops shipping them does

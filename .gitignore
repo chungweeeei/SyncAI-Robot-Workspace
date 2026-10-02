@@ -135,3 +135,8 @@ src/syncai_driver_manager/
 # Edit the node THERE; a change made in this directory is untracked and the next
 # --force import overwrites it.
 src/syncai_robot_state/
+
+# Written by colcon-ros-cargo on every build that reaches an ament_cargo package
+# (a [patch.crates-io] table pointing rclrs and the message crates at install/
+# and the image's ros2-rust underlay) -- build output, not config.
+.cargo/

@@ -120,9 +120,21 @@ fi
 # ROS's setup scripts read variables they never set (AMENT_TRACE_SETUP_FILES,
 # COLCON_TRACE, ...) and die under `set -u`, so nounset is lifted just around
 # the source.
+#
+# "Underlay" is two layers since 2026-10: /opt/ros/humble, then the image's
+# ros2-rust underlay (rclrs + rosidl_generator_rs + the rebuilt standard
+# interfaces, see the Dockerfile). Without the second, syncai_common gets no
+# Rust bindings and both rclrs packages fail deep in cargo on a crate that
+# "cannot be found" -- so its absence is an image that predates it, and is
+# reported as that rather than left to cargo.
+[ -f "${ROS2_RUST_UNDERLAY:-/opt/ros2_rust_underlay}/install/setup.bash" ] || \
+    die "no ros2-rust underlay at ${ROS2_RUST_UNDERLAY:-/opt/ros2_rust_underlay} —" \
+        "the image predates it; rebuild it (docker compose build robot01)."
 set +u
 # shellcheck disable=SC1091
 source /opt/ros/humble/setup.bash
+# shellcheck disable=SC1091
+source "${ROS2_RUST_UNDERLAY:-/opt/ros2_rust_underlay}/install/setup.bash"
 set -u
 
 # --- 3. rosdep ---------------------------------------------------------------

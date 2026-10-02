@@ -92,8 +92,8 @@ imported back into `src/` by vcstool (see "Getting started"):
 
 The two Rust ones keep their package name, executable and launch file, so the
 session specs did not move — but they are the workspace's only `ament_cargo`
-packages, and the Rust message crates they need are not generated here yet (see
-"Getting started").
+packages, and the Rust message crates they need come from a ros2-rust underlay
+baked into the robot image (see "Getting started").
 
 ### Third-party (`src/third-party/`)
 
@@ -208,24 +208,27 @@ purpose; `scripts/build.sh` refuses to start on an empty checkout and names the
 `.repos` file to import, so a forgotten import is one clear error rather than a
 wall of CMake output.
 
-#### The two Rust packages need an underlay that is not here yet
+#### The two Rust packages and the image's ros2-rust underlay
 
 `syncai_driver_manager` and `syncai_robot_state` are `ament_cargo` (rclrs). The
-robot image already carries the toolchain — rustup, `cargo-ament-build`,
-`colcon-cargo` / `colcon-ros-cargo` and `libclang-dev` — but **not** the Rust
-message crates: `rclrs`'s bindings for `std_msgs` / `sensor_msgs` /
-`geometry_msgs` / `std_srvs` / `nav_msgs` / `syncai_common` are generated at
-build time by `rosidl_generator_rs` (`ros2-rust/rosidl_rust`), and nothing in
-this workspace provides it, so a `colcon build` that reaches either package
-fails on the missing crates. Closing that gap is one more `.repos` import —
-ros2-rust's own `ros2_rust_humble.repos`, the way both of those repos' dev
-containers build their underlay — and not a `Dockerfile` change. Until then:
+robot image carries everything they need beyond `vcs import`: the toolchain
+(rustup, `cargo-ament-build`, `colcon-cargo` / `colcon-ros-cargo`,
+`libclang-dev`) **and** a ros2-rust underlay at `/opt/ros2_rust_underlay` —
+rclrs from source, `rosidl_generator_rs`, and the Humble standard interfaces
+rebuilt so they carry Rust bindings (the apt copies ship none). It is sourced
+between `/opt/ros/humble` and the workspace by `~/.bashrc`, `scripts/build.sh`
+and robot01's `command:`, and `syncai_common` picks the generator up from it
+when it is built in the workspace. The pins and the reasoning are in the
+`Dockerfile`'s underlay stanza; an image built before that stanza has no
+underlay, and `scripts/build.sh` says so instead of letting cargo fail. A full
+build against it was verified on 2026-10-02 (all 22 packages). If the Rust side
+breaks on a future bump, the C++ stack still builds on its own:
 
 ```bash
 colcon build --symlink-install --packages-skip syncai_driver_manager syncai_robot_state
 ```
 
-`syncai_robot_state`'s `tf2_msgs` is the one dependency that will not need the
+`syncai_robot_state`'s `tf2_msgs` is the one dependency that does not need the
 underlay: `ros-humble-tf2-msgs` already ships generated Rust bindings, which is
 what that node's hand-rolled `/tf` lookup links against (rclrs has no `tf2_ros`
 binding). If a future base image stops shipping them, geometry2's `tf2_msgs` has
