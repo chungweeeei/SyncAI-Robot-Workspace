@@ -127,3 +127,11 @@ src/syncai_common/
 # Edit the node THERE; a change made in this directory is untracked and the next
 # --force import overwrites it.
 src/syncai_driver_manager/
+
+# Materialised by `vcs import < robot-state.repos`, not committed -- same
+# arrangement as src/syncai_driver_manager above, and for the same reason: it
+# moved to SyncAI-Robot-State in 2026-10 and was rewritten against rclrs. It was
+# 9 tracked files (the rclcpp node) here until then; git history still has them.
+# Edit the node THERE; a change made in this directory is untracked and the next
+# --force import overwrites it.
+src/syncai_robot_state/

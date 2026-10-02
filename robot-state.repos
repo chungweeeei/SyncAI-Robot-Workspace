@@ -1,0 +1,58 @@
+# src/syncai_robot_state, from SyncAI-Robot-State: the status aggregator that
+# publishes syncai_common/RobotState. Managed with vcstool, the same way
+# driver-manager.repos manages src/syncai_driver_manager, interface.repos manages
+# src/syncai_common and third-party.repos manages src/third-party/.
+#
+#   vcs import < robot-state.repos          # populate a fresh clone
+#   vcs import < robot-state.repos --force  # re-checkout after changing the pin
+#
+# The key already carries `src/`, so run this from the workspace root without an
+# extra `src` argument, or the package lands in `src/src/`.
+#
+# It left this repository in 2026-10, the second package to go out to its own
+# repo and be rewritten against rclrs (Rust) that month -- see
+# driver-manager.repos for the first. The ROS surface is unchanged: same package
+# name, same `robot_state_node` executable, same `robot_state.launch.py` (which
+# still reads [system] robot_id and [map] map from the INI and overrides
+# `robot_id` / `base_frame` / `map` with them), so both session specs in
+# config/sessions/ did not move. What changed is inside the package:
+#
+#   - `params/robot_state_params.yaml` is keyed on a bare `/**` instead of
+#     `/**/syncai_robot_state`, because rclrs matches a params-file key only when
+#     it is exactly `/**` or exactly the node's fully-qualified name -- it does
+#     not expand `/**/<node>`. The old key would have matched nothing, and
+#     `publish_rate` would have silently gone back to its 10 Hz code default
+#     instead of the 1 Hz this stack runs at.
+#   - `transform_tolerance` is carried for parity and has no effect. It had none
+#     in the rclcpp version either (the lookup is gated by a non-blocking
+#     canTransform() at the latest available time), but the port makes that
+#     explicit: it looks up in its own in-memory /tf buffer, and it does NOT
+#     expire a stale transform.
+#   - The WifiStatus -> JSON flattening is serde_json now, not nlohmann/json.
+#     That was this workspace's only consumer of `nlohmann-json3-dev`, which both
+#     Dockerfiles still install.
+#
+# `src/syncai_robot_state/` is gitignored -- edit the node in that checkout (its
+# own git repo) and commit there, never here; the next --force import overwrites
+# anything uncommitted.
+#
+# Tracks `dev`, that repo's default and working branch, like interface.repos and
+# driver-manager.repos.
+#
+# HTTPS rather than the SSH remote: the repo is public, so the build container
+# needs no keys. `git@github.com:chungweeeei/SyncAI-Robot-State.git` is the same
+# checkout for anyone who prefers to push over SSH.
+#
+# Like syncai_driver_manager, this is an `ament_cargo` package and the Rust
+# message crates it needs (syncai_common / nav_msgs / sensor_msgs / std_msgs)
+# are not generated in this workspace yet -- see driver-manager.repos for the
+# whole story. One extra wrinkle here: its `tf2_msgs` dependency is NOT one of
+# them. rclrs has no tf2_ros binding, so the node does its own map -> base_link
+# lookup off /tf and /tf_static, and the ros-humble-tf2-msgs deb already ships
+# generated Rust bindings; only if a future base image stops shipping them does
+# geometry2's tf2_msgs have to join the underlay.
+repositories:
+  src/syncai_robot_state:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-State.git
+    version: dev

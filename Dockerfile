@@ -186,7 +186,13 @@ RUN apt-get update && apt-get install -y \
 # System deps for workspace packages that have no ament/CMake config:
 #   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
-#   - nlohmann-json3-dev: header-only JSON library
+#   - nlohmann-json3-dev: header-only JSON library. Its only consumer was
+#     syncai_robot_state, which left the workspace in 2026-10 and flattens
+#     WifiStatus with serde_json now — nothing here includes it today. Kept
+#     because dropping an apt line from this stage invalidates the layer for
+#     everything below it, and because a C++ package wanting JSON is likely
+#     enough; drop it with the next deliberate image rebuild if it is still
+#     unused.
 #   - libapr1-dev / libaprutil1-dev: livox_ros_driver2
 #   - libboost-all-dev / libtbb-dev / libeigen3-dev: GTSAM/Sophus headers
 #     (the libs themselves come prebuilt from deps-builder below)
@@ -324,11 +330,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        `cargo build` that lays binaries out per REP 122 so
 #                        `ros2 run` / `ros2 launch` find them.
 #   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
-#                        package.xml + Cargo.toml package. That is exactly one
-#                        package since 2026-10 -- syncai_driver_manager, which
-#                        vcs imports from SyncAI-Robot-Driver-Manager (see
-#                        driver-manager.repos); the rest of src/ has no
-#                        Cargo.toml and is unaffected.
+#                        package.xml + Cargo.toml package. That is two packages
+#                        since 2026-10 -- syncai_driver_manager and
+#                        syncai_robot_state, which vcs imports from their own
+#                        repos (see driver-manager.repos / robot-state.repos);
+#                        the rest of src/ has no Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override
 # the uid at runtime (see the syncrobotic user in base); the tree is made
@@ -342,10 +348,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 # common_interfaces / rcl_interfaces / rosidl_defaults / rosidl_core in the
 # workspace) — the apt-installed interfaces ship no Rust bindings. That is a
 # workspace (.repos) change, not an image change, and it is an OPEN one: since
-# syncai_driver_manager became an rclrs package in 2026-10 the workspace has a
-# Rust node whose message crates nothing generates yet, so a build that reaches
-# it fails on them. Adding ros2-rust's own ros2_rust_humble.repos is the fix;
-# nothing below needs to move for it.
+# syncai_driver_manager and syncai_robot_state became rclrs packages in 2026-10
+# the workspace has two Rust nodes whose message crates nothing generates yet,
+# so a build that reaches either fails on them. Adding ros2-rust's own
+# ros2_rust_humble.repos is the fix; nothing below needs to move for it.
+# tf2_msgs is the exception that needs nothing: ros-humble-tf2-msgs already
+# ships generated Rust bindings, which is what syncai_robot_state's hand-rolled
+# /tf lookup links against (rclrs has no tf2_ros binding).
 ARG RUST_TOOLCHAIN=1.89.0
 ENV RUSTUP_HOME=/opt/rust/rustup \
     CARGO_HOME=/opt/rust/cargo \

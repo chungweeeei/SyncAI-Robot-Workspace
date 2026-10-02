@@ -1,6 +1,7 @@
 # src/syncai_driver_manager, from SyncAI-Robot-Driver-Manager: the UDP bridge to
 # the gait controller. Managed with vcstool, the same way interface.repos manages
-# src/syncai_common and third-party.repos manages src/third-party/.
+# src/syncai_common, robot-state.repos manages src/syncai_robot_state and
+# third-party.repos manages src/third-party/.
 #
 #   vcs import < driver-manager.repos          # populate a fresh clone
 #   vcs import < driver-manager.repos --force  # re-checkout after changing the pin
@@ -9,7 +10,8 @@
 # extra `src` argument, or the package lands in `src/src/`.
 #
 # It left this repository in 2026-10, when the rclcpp node was replaced by an
-# rclrs (Rust) one that keeps the ROS surface unchanged: same package name, same
+# rclrs (Rust) one that keeps the ROS surface unchanged (syncai_robot_state
+# followed it out the same month): same package name, same
 # `driver_manager_node` executable, same `driver_manager.launch.py`, so the two
 # session specs in config/sessions/ did not move. What did change is inside the
 # package: `params/driver_manager_params.yaml` is keyed on a bare `/**` instead of
@@ -35,9 +37,9 @@
 # the Rust message crates. rclrs's bindings for std_msgs / sensor_msgs /
 # geometry_msgs / std_srvs / syncai_common are generated at build time by
 # rosidl_generator_rs, which is not in this workspace yet, so a colcon build that
-# reaches this package fails on the missing crates. That is the next change, and
-# it is another .repos file (ros2-rust/ros2_rust's own ros2_rust_humble.repos),
-# not an image change.
+# reaches this package fails on the missing crates -- and the same is true of
+# syncai_robot_state. That is the next change, and it is another .repos file
+# (ros2-rust/ros2_rust's own ros2_rust_humble.repos), not an image change.
 repositories:
   src/syncai_driver_manager:
     type: git

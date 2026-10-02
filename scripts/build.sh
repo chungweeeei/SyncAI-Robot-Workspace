@@ -2,9 +2,10 @@
 # =============================================================================
 # Build the workspace with colcon. Everything under src/ is a package colcon
 # knows how to build on its own — ament_cmake, plain CMake, ament_python, and
-# since 2026-10 one ament_cargo package (syncai_driver_manager, through the
-# colcon-cargo / colcon-ros-cargo the image installs) — so "every ROS 2 package"
-# and "everything colcon finds" are the same set. The two exceptions this header
+# since 2026-10 two ament_cargo packages (syncai_driver_manager and
+# syncai_robot_state, through the colcon-cargo / colcon-ros-cargo the image
+# installs) — so "every ROS 2 package" and "everything colcon finds" are the
+# same set. The two exceptions this header
 # used to carve out (syncai_frontend, built by npm; syncai_backend, whose deps
 # came from pip) both left the workspace in 2026-09 for their own repositories.
 #
@@ -58,39 +59,42 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
         "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
 
 # --- 1. vcs checkouts --------------------------------------------------------
-# Three groups of directories in src/ are materialised by vcstool rather than
+# Four groups of directories in src/ are materialised by vcstool rather than
 # tracked here, and all of them are empty in a fresh clone. Importing is left to
 # the host on purpose: the checkouts are the host's working tree bind-mounted
 # in, and a build must not mutate what git sees on the host (the one SSH
 # remote, the FAST-LIO2 fork, left in 2026-09 with the localizer port, so
 # credentials are no longer the reason).
 #
-# Checking them up front rather than letting colcon do it: an empty
-# src/third-party dir makes colcon silently build the in-tree packages and fail
-# on the first `find_package` that needed one of them, an absent
-# src/syncai_common fails every package at once with a message about a missing
-# ament package, and an absent src/syncai_driver_manager fails nothing at all --
-# colcon just builds a workspace with no gait-controller bridge in it, and the
-# robot stands still at the first cmd_vel. None of the three says "you forgot to
-# import". This does.
+# Checking them up front rather than letting colcon do it, because none of the
+# three failure modes says "you forgot to import":
+#   - an empty src/third-party dir makes colcon silently build the in-tree
+#     packages and fail on the first `find_package` that needed one of them;
+#   - an absent src/syncai_common fails every package at once with a message
+#     about a missing ament package;
+#   - an absent first-party package (syncai_driver_manager, syncai_robot_state)
+#     fails NOTHING. colcon happily builds a workspace with no bridge to the
+#     gait controller and nothing publishing RobotState, so the robot stands
+#     still at the first cmd_vel and the console's telemetry never arrives.
+# This does. The dir:repos table is the one place to add the next package that
+# moves out to its own repository.
 step "checking vcs checkouts"
 missing=""
-for dir in third-party/behaviortree_cpp_v3 third-party/Livox-SDK2 \
-           third-party/livox_ros_driver2 third-party/small_gicp \
-           third-party/vizionsdk-ros2; do
+for entry in third-party/behaviortree_cpp_v3:third-party.repos \
+             third-party/Livox-SDK2:third-party.repos \
+             third-party/livox_ros_driver2:third-party.repos \
+             third-party/small_gicp:third-party.repos \
+             third-party/vizionsdk-ros2:third-party.repos \
+             syncai_common:interface.repos \
+             syncai_driver_manager:driver-manager.repos \
+             syncai_robot_state:robot-state.repos; do
+    dir="${entry%%:*}"
+    repos="${entry##*:}"
     if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
         echo "  MISSING src/${dir}"
-        missing="${missing} third-party.repos"
+        missing="${missing} ${repos}"
     fi
 done
-if [ -z "$(ls -A src/syncai_common 2>/dev/null)" ]; then
-    echo "  MISSING src/syncai_common"
-    missing="${missing} interface.repos"
-fi
-if [ -z "$(ls -A src/syncai_driver_manager 2>/dev/null)" ]; then
-    echo "  MISSING src/syncai_driver_manager"
-    missing="${missing} driver-manager.repos"
-fi
 if [ -n "${missing}" ]; then
     # Deduplicate: five empty third-party dirs are still one missing import.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
