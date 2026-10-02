@@ -86,7 +86,10 @@ Three conversions happen on the way in:
 - **Battery percentage.** The BMS reports state-of-charge as 0–100;
   `BatteryState.percentage` is defined on 0–1, so it is divided by 100. (The REST
   layer multiplies it back by 100 much later — the scaling round-trips.)
-  Temperature is the mean of two reported sensors.
+  Temperature is the mean of thermistors 0 and 1, skipping any that read 0.0
+  (bms.rs's "not read yet"); NaN if neither is present. `power_supply_status`
+  follows the current sign (±0.1 A deadband), and the 8 cell voltages fill
+  `cell_voltage` when the packet carries all 18 values.
 - **IMU orientation.** The telemetry carries no quaternion, so one is derived
   from RPY (ZYX convention) into `quaternion` as **`[w, x, y, z]`**. Without an
   `IMU_RPY` section it falls back to identity.

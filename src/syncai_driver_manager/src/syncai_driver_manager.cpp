@@ -33,6 +33,20 @@ constexpr std::array<const char *, kNumDof> kJointNames = {
   "FR_HipY_joint", "FR_Knee_joint", "HL_HipX_joint", "HL_HipY_joint",
   "HL_Knee_joint", "HR_HipX_joint", "HR_HipY_joint", "HR_Knee_joint"};
 
+// BMS_V2 value layout, as sent by the controller's bms.rs (1-based, tok[0] is
+// the keyword):
+//   1 voltage[V]  2 current[A]  3 soc[%]  4 soh  5 mode  6 event1
+//   7 thm0[C]  8 thm1[C]  9 thm2[C]  10 internal[C]  11..18 cell[0..7][V]
+// Everything up to thm1 is needed for the fields this node fills; the cells
+// are optional so a shorter packet still yields a BatteryState.
+constexpr std::size_t kBmsFullValues = 18;
+constexpr std::size_t kBmsMinValues = 8;
+constexpr std::size_t kBmsCellFirst = 11;
+constexpr std::size_t kBmsNumCells = 8;
+// Below this magnitude the pack is treated as neither charging nor
+// discharging; same deadband bms.rs uses for its own mode code.
+constexpr float kBmsIdleCurrent = 0.1f;
+
 // Splits a line on runs of whitespace, dropping empty tokens.
 std::vector<std::string> splitWhitespace(const std::string & s)
 {
@@ -288,22 +302,36 @@ void DriverManagerNode::parseLine(const std::string & line)
     return;
   }
 
-  // --- Battery (BMS_V2): voltage current soc ... temps ... cell[8] ---
+  // --- Battery (BMS_V2): layout documented at kBmsFullValues ---
   if (tok[0] == "BMS_V2") {
-    if (static_cast<int>(tok.size()) < 9) {
+    const std::size_t n_values = tok.size() - 1;
+    if (n_values < kBmsMinValues) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
-        "[DriverManagerNode][%s] Skipping BMS_V2: expected at least 8 values, got %zu", __func__,
-        tok.size() - 1);
+        "[DriverManagerNode][%s] Skipping BMS_V2: expected %zu values (minimum %zu), got %zu",
+        __func__, kBmsFullValues, kBmsMinValues, n_values);
       return;
     }
-    auto getf = [&](int i) {
-      return (i < static_cast<int>(tok.size())) ? std::strtod(tok[i].c_str(), nullptr) : 0.0;
+    auto getf = [&](std::size_t i) {
+      return (i < tok.size()) ? std::strtod(tok[i].c_str(), nullptr) : 0.0;
     };
     float soc = static_cast<float>(getf(3));
     float voltage = static_cast<float>(getf(1));
     float current = static_cast<float>(getf(2));
-    float temperature = (static_cast<float>(getf(7)) + static_cast<float>(getf(8))) / 2.0f;
+
+    // bms.rs sends 0.0 for a thermistor it has not read yet, so a plain mean
+    // would be dragged toward zero by a missing sensor. Average only the
+    // readings that are present; NaN (BatteryState's "unmeasured") if none are.
+    float temp_sum = 0.0f;
+    int temp_count = 0;
+    for (std::size_t i : {std::size_t{7}, std::size_t{8}}) {
+      const float t = static_cast<float>(getf(i));
+      if (std::isfinite(t) && t != 0.0f) {
+        temp_sum += t;
+        ++temp_count;
+      }
+    }
+    float temperature = (temp_count > 0) ? temp_sum / static_cast<float>(temp_count) : NAN;
 
     sensor_msgs::msg::BatteryState battery_state;
     battery_state.header.stamp = this->now();
@@ -315,7 +343,31 @@ void DriverManagerNode::parseLine(const std::string & line)
     battery_state.charge = NAN;
     battery_state.capacity = NAN;
     battery_state.design_capacity = NAN;
-    battery_state.power_supply_status = sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_UNKNOWN;
+
+    // Status comes from the current sign (BatteryState: negative while
+    // discharging) rather than bms.rs's mode field, which checks the CHG FET
+    // bit first — that bit is also set during normal discharge, so the mode
+    // field can read "charging" while the robot is walking.
+    if (current > kBmsIdleCurrent) {
+      battery_state.power_supply_status =
+        sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_CHARGING;
+    } else if (current < -kBmsIdleCurrent) {
+      battery_state.power_supply_status =
+        sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_DISCHARGING;
+    } else {
+      battery_state.power_supply_status =
+        sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_NOT_CHARGING;
+    }
+
+    // Cell voltages only when the packet carries all of them; a 0.0 cell is a
+    // cell bms.rs has not read yet, reported as NaN per the message spec.
+    if (n_values >= kBmsFullValues) {
+      battery_state.cell_voltage.reserve(kBmsNumCells);
+      for (std::size_t i = 0; i < kBmsNumCells; ++i) {
+        const float v = static_cast<float>(getf(kBmsCellFirst + i));
+        battery_state.cell_voltage.push_back((std::isfinite(v) && v != 0.0f) ? v : NAN);
+      }
+    }
     battery_state.power_supply_health = sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN;
     battery_state.power_supply_technology =
       sensor_msgs::msg::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
