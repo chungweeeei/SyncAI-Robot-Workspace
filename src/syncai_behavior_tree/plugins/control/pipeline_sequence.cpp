@@ -19,15 +19,16 @@ PipelineSequence::PipelineSequence(const std::string & name, const BT::NodeConfi
 BT::NodeStatus PipelineSequence::tick()
 {
   /**
-    * 以 planner / follower 套進去跑
-    * children: index 0 = RateController(ComputePath)、 index 1 = FollowPath
-    * 第一拍
-    * - i = 0 RateController -> SUCCESS -> break，繼續
-    * - i = 1 FollowPath -> RUNNING -> 判斷 1 >= 0 成立 -> last_child_ticked_ = 1、 return RUNNING
+    * Worked through with the planner / follower plugged in
+    * children: index 0 = RateController(ComputePath), index 1 = FollowPath
+    * First beat
+    * - i = 0 RateController -> SUCCESS -> break, continue
+    * - i = 1 FollowPath -> RUNNING -> check 1 >= 0 holds -> last_child_ticked_ = 1, return RUNNING
     * 
-    * PipelineSequence的後續拍（未滿1s）
-    * - i = 0 RateController -> RUNNING(節流，不算 path) -> 判斷 0 >= 1？不成立 -> break -> 不 return，繼續迴圈
-    * - i = 1 FollowPath → RUNNING → :33 判斷 1 >= 1 成立 → return RUNNING
+    * Later beats of PipelineSequence (before 1 s has elapsed)
+    * - i = 0 RateController -> RUNNING (throttled, no path computed) -> check 0 >= 1? does not
+    *   hold -> break -> no return, the loop continues
+    * - i = 1 FollowPath -> RUNNING -> :33 check 1 >= 1 holds -> return RUNNING
     */
 
   for (std::size_t i = 0; i < children_nodes_.size(); ++i) {
@@ -47,7 +48,7 @@ BT::NodeStatus PipelineSequence::tick()
           return status;
         }
         // else do nothing and continue on to the next child
-        // 前面的 child 在 RUNNING -> 不停，繼續迴圈。
+        // An earlier child is RUNNING -> do not stop, keep looping.
         break;
       default:
         std::stringstream error_msg;

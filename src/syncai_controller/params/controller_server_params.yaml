@@ -1,20 +1,21 @@
 # Parameters for the syncai_controller "controller_server" node and its
-# internal local costmap node. The /**/ wildcard keys match the node names
-# in any namespace, so the same file works for any robot_id: the launch file
-# reads robot_id from config/system.ini and uses it as the node namespace.
-# Topic values below are RELATIVE names — they get the namespace prefix
-# automatically (e.g. scan -> /<robot_id>/scan). TF frame names are NOT
-# namespaced by ROS, so the launch file overrides global_frame /
-# robot_base_frame / sensor_frame with the <robot_id>/ prefix at launch
-# time — the values below are only fallbacks when the node is run without
-# the launch file.
+# internal local costmap node — 3D (Point-LIO) real-robot variant of
+# controller_server_params.yaml:
+#   * use_sim_time false (no /clock on the real robot)
+#   * local costmap gets a second observation source from Point-LIO's body
+#     cloud, since the 3D stack runs no scan merger (there is no
+#     /<robot_id>/scan on the real robot — the scan source below stays for
+#     setups that do publish one, it just receives nothing otherwise).
+# The /**/ wildcard keys match the node names in any namespace, so the same
+# file works for any robot_id: the launch file reads robot_id from
+# config/system.ini and uses it as the node namespace. Topic values below are
+# RELATIVE names — they get the namespace prefix automatically. TF frame names
+# are NOT namespaced by ROS, so the launch file overrides global_frame /
+# robot_base_frame / sensor_frame with the <robot_id>/ prefix at launch time.
 /**/controller_server:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
 
-    # Lowered from 20.0: Isaac Sim publishes /clock at only ~35 Hz (~0.58x
-    # real-time) with coarse steps, so a 20 Hz sim-time loop constantly
-    # overran and logged "missed its desired rate". 10 Hz is sustainable.
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
@@ -35,38 +36,71 @@
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
-      # Loosened (was 0.5 m / 10 s) so slow sim motion isn't flagged as
-      # "Failed to make progress": require only 0.1 m of movement within 30 s.
       required_movement_radius: 0.1
       movement_time_allowance: 30.0
 
     goal_checker:
       plugin: "syncai_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.08
+      # Widened from 0.05: the robot's minimum forward speed is ~0.3 m/s, so it
+      # cannot creep in slowly to satisfy a tight tolerance and would overshoot
+      # / stall short of a 5 cm window. 0.2 m gives it room to declare the goal
+      # reached at its floor speed.
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 0.1
       stateful: true
 
     FollowPath:
-      plugin: "syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 1.0
+      plugin: "syncai_controller::RegulatedPurePursuitController"
+      # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
+      # so pure pursuit was computing its arcs (w = v * curvature) for a speed
+      # a quarter higher than reality. driver_manager's scale_fwd now corrects
+      # the gain, but the gait controller's response falls off as the command
+      # grows and nobody has swept it properly yet, so keep the command in the
+      # range that has been measured. Raise this only together with a fresh
+      # scale_fwd measurement at the new speed — the two are one calibration.
+      desired_linear_vel: 0.60
       lookahead_dist: 0.6
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.9
+      # Raised from 0.3: pure pursuit steering gain scales with 1/lookahead^2,
+      # so the short low-speed lookahead made startup oscillate (weaving until
+      # the velocity-scaled lookahead grew with speed).
+      min_lookahead_dist: 0.5
+      max_lookahead_dist: 1.2
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: true
       transform_tolerance: 0.2
-      min_approach_linear_velocity: 0.05
+      min_approach_linear_velocity: 0.3
       approach_velocity_scaling_dist: 0.6
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.25
+      # Raised to 0.3 to keep the robot from crawling while tracking a path.
+      # Caveat (this floor was previously lowered to 0.1 for this reason): a
+      # value this high overrides curvature regulation right after
+      # rotate-to-heading exits, where the arc is sharpest, so watch for
+      # corner-cutting / weaving on tight turns. Now that desired_linear_vel is
+      # 0.60 this floor is half the top speed, so curvature regulation has only
+      # a 0.30-0.60 band to work in — lower it before raising it if corner
+      # cutting persists.
+      regulated_linear_scaling_min_speed: 0.3
       use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.785
-      rotate_to_heading_angular_vel: 1.3
+      # Lowered from 0.785 (45 deg): exiting rotation that far off-heading made
+      # the robot drive away from the path and trigger another rotation.
+      # 0.25 rad (~14 deg) hands over to path tracking nearly aligned.
+      rotate_to_heading_min_angle: 0.25
+      # Lowered from 1.3, where the robot only delivered 0.695 rad/s (ratio
+      # 0.53). The controller therefore believed every in-place turn was
+      # finishing about twice as fast as it was, exited rotate-to-heading still
+      # off-heading, and had to re-enter — the weave. At 0.65 with
+      # scale_turn_* the measured rate lands within ~20% of the command, which
+      # is the whole point: rotate-to-heading's exit test only means something
+      # if the commanded rate is the real one.
+      rotate_to_heading_angular_vel: 0.65
       max_angular_accel: 3.2
+      # No velocity smoother in this stack: the controller clamps linear
+      # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
+      max_linear_accel: 1.0
       allow_reversing: false
       use_interpolation: true
       cost_scaling_dist: 0.6
@@ -78,7 +112,7 @@
 # (constructed as a plain node named "local_costmap").
 /**/local_costmap:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
 
     # Frames (overridden by the launch file with <robot_id>/ prefix)
     global_frame: odom
@@ -95,10 +129,12 @@
     height: 3
     resolution: 0.05
 
-    # Robot footprint: rectangular MiR250 chassis at scale 0.7 (half-extents
-    # 0.28 x 0.20). Matches the global_costmap footprint in
-    # planner_server_params.yaml; rescale both together if the sim scale
-    # changes, else RPP spam-rejects valid paths ("collision ahead!").
+    # Robot footprint: rectangular chassis half-extents 0.28 x 0.20. Meant to
+    # match the global_costmap footprint in planner_server_params.yaml, which
+    # has since grown to 0.35 x 0.22 without this one following — the two are
+    # currently different rectangles for one robot. Rescale both together:
+    # if this (local) one ends up the larger, RPP spam-rejects valid paths
+    # ("collision ahead!").
     footprint: "[[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]]"
     footprint_padding: 0.01
 
@@ -111,9 +147,10 @@
       footprint_clearing_enabled: true
       max_obstacle_height: 2.0
       combination_method: 1            # 0=Overwrite, 1=Maximum
-      observation_sources: scan
+      observation_sources: scan pointcloud
       scan:
-        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan)
+        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan);
+        # absent on the real 3D stack, so this source simply stays silent.
         topic: scan
         # TF frame (overridden by the launch file with <robot_id>/ prefix)
         sensor_frame: scan
@@ -128,8 +165,34 @@
         raytrace_min_range: 0.0
         inf_is_valid: false
 
+      # 3D LiDAR obstacle source: Point-LIO's per-scan body cloud — the only
+      # live source on the real robot. Mirrors the global costmap's pointcloud
+      # source in planner_server_params.yaml.
+      pointcloud:
+        # Relative name: resolves to /<robot_id>/pointlio/body_cloud in the
+        # robot_id-namespaced launch.
+        topic: pointlio/body_cloud
+        # Leave sensor_frame empty on purpose: the observation buffer then uses
+        # the cloud's own header frame_id (<robot_id>/pointlio_body, Point-LIO's
+        # body_frame) as the raytrace origin, so this source needs no per-robot
+        # launch-file frame override. The TF chain resolves through map ->
+        # <robot_id>/pointlio_odom (localizer) and map -> odom (lio_bridge),
+        # i.e. only after relocalize.
+        sensor_frame: ""
+        data_type: "PointCloud2"
+        marking: true
+        clearing: true
+        # map -> odom is planar (z preserved), so heights here are still metres
+        # above the floor: skip the ground plane, keep chassis-height obstacles.
+        min_obstacle_height: 0.1
+        max_obstacle_height: 1.5
+        obstacle_max_range: 2.5
+        obstacle_min_range: 0.0
+        raytrace_max_range: 3.0
+        raytrace_min_range: 0.0
+
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true
-      inflation_radius: 0.15     # ref local_costmap (tight; global uses 0.5)
+      inflation_radius: 0.4
       cost_scaling_factor: 3.0

@@ -7,8 +7,12 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(syncai_common REQUIRED)
 
 add_executable(driver_manager_node src/main.cpp src/syncai_driver_manager.cpp)
 target_include_directories(driver_manager_node PUBLIC
@@ -17,8 +21,12 @@ target_include_directories(driver_manager_node PUBLIC
 target_compile_features(driver_manager_node PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 ament_target_dependencies(
   driver_manager_node
+  "geometry_msgs"
   "rclcpp"
   "sensor_msgs"
+  "std_msgs"
+  "std_srvs"
+  "syncai_common"
 )
 
 install(TARGETS driver_manager_node

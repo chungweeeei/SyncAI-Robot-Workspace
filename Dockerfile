@@ -1,13 +1,39 @@
-FROM ubuntu:22.04
+# =============================================================================
+# SyncAI robot workspace — multi-stage build (development).
+#
+#   base            shared runtime floor (ros-base + cyclonedds + uid-1000 user)
+#     ├─ deps-builder  GTSAM / Sophus / Livox-SDK2 → /usr/local  (slow, cached)
+#     └─ dev           the interactive dev image: rviz2, colcon, byobu, Node.js,
+#                      the Rust toolchain for rclrs, -dev headers. Workspace bind-mounted at ~/robot_ws and
+#                      built by hand (colcon). Compose target: dev.
+#
+# The dev target keeps today's workflow (workspace mounted at ~/robot_ws, build
+# by hand). deps-builder is the expensive stage (GTSAM ~30-60 min on Tegra) —
+# keep it free of anything that changes often so its cache survives.
+#
+#   docker build --target dev -t syncai-robot .
+#   # or, via compose:  docker compose build robot01
+#
+# NOTE: the production stages (ws-builder / nav-runtime / backend-runtime) that
+# baked the colcon install space into slim runtime images were removed while
+# the project is in the dev phase. docker-compose.prod.yml and scripts/release/
+# still reference them and will not work until the stages are re-added. See git
+# history for the removed stages when it's time to ship to the IPC.
+# =============================================================================
 
-# Install pre-requisites
+# ---------------------------------------------------------------------------
+# base: shared by dev and both production runtimes
+# ---------------------------------------------------------------------------
+FROM ubuntu:22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     curl \
-    git \
     gnupg \
     lsb-release \
-    build-essential \
-    cmake \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -16,80 +42,328 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
     > /etc/apt/sources.list.d/ros2.list
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install ROS 2 Humble + Navigation2 + dependencies
+# ROS 2 runtime floor. avahi-utils: syncai_sys_manager spawns avahi-publish
+# against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
+# in the container. tzdata: containers default to UTC — set local time so log
+# timestamps (ros2 launch, byobu panes) match the host / operators.
+# ompl: Dubins/Reeds-Shepp state spaces for syncai_planner's smac plugins —
+# libsyncai_planner.so links libompl.so, so it is a runtime dep, not dev-only.
 RUN apt-get update && apt-get install -y \
     ros-humble-ros-base \
     ros-humble-tf2-tools \
     ros-humble-rmw-cyclonedds-cpp \
-    ros-humble-rviz2 \
     ros-humble-nav2-msgs \
-    ros-humble-pcl-conversions \
-    ros-humble-pointcloud-to-laserscan \
     ros-humble-angles \
+    ros-humble-ompl \
+    ros-humble-nav-2d-msgs \
+    ros-humble-dwb-msgs \
+    python3-pip \
+    iputils-ping \
+    avahi-utils \
+    tzdata \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# Local timezone (overridable per-container via the TZ env var in compose).
+# /etc/localtime is linked too so programs that ignore TZ still agree.
+ENV TZ=Asia/Taipei
+RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime && \
+    echo "${TZ}" > /etc/timezone
+
+# Allow any uid (overridden via compose `user:` in dev) to sudo without
+# password — syncai_sys_manager needs sudo for nmcli against the host
+# NetworkManager.
+RUN echo "ALL ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# ubuntu:22.04 has no default uid-1000 user, so create the `syncrobotic` user
+# (named after the host user; uid 1000 matches so bind-mounted files keep the
+# right ownership). HOME is world-writable so a runtime-overridden uid can
+# still write ~/.ros, ~/.cache, ~/.bash_history.
+RUN groupadd -g 1000 syncrobotic && \
+    useradd -m -u 1000 -g 1000 -s /bin/bash syncrobotic && \
+    chmod -R 777 /home/syncrobotic && \
+    echo 'source /opt/ros/humble/setup.bash' >> /home/syncrobotic/.bashrc
+
+# ---------------------------------------------------------------------------
+# deps-builder: source-built third-party libs → /usr/local
+# /usr/local is empty in base, so downstream stages pick up everything with a
+# single COPY --from=deps-builder /usr/local /usr/local.
+# ---------------------------------------------------------------------------
+FROM base AS deps-builder
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    libboost-all-dev \
+    libtbb-dev \
+    libeigen3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Livox-SDK2: livox_ros_driver2 links liblivox_lidar_sdk_shared.so from
+# /usr/local (via find_library). Pinned to the commit vendored under
+# src/third-party.
+RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
+    cd /tmp/Livox-SDK2 && \
+    git checkout f5d9375f84efe2b15bc0a052d3e18482ed13adf4 && \
+    mkdir build && cd build && \
+    cmake .. && make -j"$(nproc)" && make install && \
+    ldconfig && \
+    rm -rf /tmp/Livox-SDK2
+
+# GTSAM 4.2.0: syncai_mapping (pgo_node + hba_node) links libgtsam (find_package(GTSAM)).
+# No apt/PPA GTSAM on arm64, so build from source into /usr/local. Flags follow
+# the LIO-SAM recipe: system Eigen + no march-native to avoid Eigen-alignment
+# crashes when mixed with PCL; TBB on; shared libs.
+RUN git clone --branch 4.2.0 --depth 1 https://github.com/borglab/gtsam.git /tmp/gtsam && \
+    cd /tmp/gtsam && \
+    mkdir build && cd build && \
+    cmake .. \
+    -DGTSAM_USE_SYSTEM_EIGEN=ON \
+    -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
+    -DGTSAM_BUILD_TESTS=OFF \
+    -DGTSAM_BUILD_UNSTABLE=OFF \
+    -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
+    -DGTSAM_WITH_TBB=ON \
+    -DBUILD_SHARED_LIBS=ON && \
+    make -j"$(nproc)" && make install && \
+    ldconfig && \
+    rm -rf /tmp/gtsam
+
+# Sophus 1.22.10: syncai_pointlio + syncai_mapping's hba_node need find_package(Sophus). Header-only;
+# SOPHUS_USE_BASIC_LOGGING=ON drops the fmt dependency (matches the
+# add_compile_definitions in their CMake).
+RUN git clone --branch 1.22.10 --depth 1 https://github.com/strasdat/Sophus.git /tmp/Sophus && \
+    cd /tmp/Sophus && \
+    mkdir build && cd build && \
+    cmake .. \
+    -DSOPHUS_USE_BASIC_LOGGING=ON \
+    -DBUILD_SOPHUS_TESTS=OFF \
+    -DBUILD_SOPHUS_EXAMPLES=OFF && \
+    make -j"$(nproc)" && make install && \
+    ldconfig && \
+    rm -rf /tmp/Sophus
+
+# ---------------------------------------------------------------------------
+# dev: the interactive development image (compose service robot01,
+# image syncai-test-robot, target: dev). Functionally identical to the old
+# single-stage image: full GUI/tooling, workspace bind-mounted at runtime,
+# colcon build run by hand.
+# ---------------------------------------------------------------------------
+FROM base AS dev
+
+# GUI, build toolchain, PCL/ROS build deps, and operator conveniences.
+#
+# ros-humble-compressed-image-transport is not optional for the camera: the
+# camera node publishes *only* sensor_msgs/CompressedImage on
+# `<robot_id>/image_raw/compressed`, and bare `image_transport` declares the
+# raw transport alone. Without this plugin rviz2's Image display has no way to
+# subscribe at all and simply stays blank -- no error, no warning.
+#
+# python3-opencv and python3-dotenv were here for syncai_backend (cv2 encoded
+# the map images its /image route serves; dotenv read the workspace .env) and
+# left with it in 2026-09 — nothing in this workspace imports either now.
+RUN apt-get update && apt-get install -y \
+    ros-humble-rviz2 \
+    ros-humble-compressed-image-transport \
+    ros-humble-pcl-conversions \
+    ros-humble-pcl-ros \
+    ros-humble-pointcloud-to-laserscan \
     ros-humble-teleop-twist-keyboard \
     python3-colcon-common-extensions \
     python3-rosdep \
-    python3-dotenv \
-    python3-pip \
+    python3-vcstool \
     byobu \
+    daemontools \
     net-tools \
-    iputils-ping \
     network-manager \
     bluez \
+    git \
+    build-essential \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # System deps for workspace packages that have no ament/CMake config:
 #   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
-#   - nlohmann-json3-dev: header-only JSON library (found via find_package(nlohmann_json))
-#   - avahi-utils: syncai_system_manager spawns avahi-publish; talks to the
-#     HOST avahi-daemon via the mounted /run/dbus/system_bus_socket, so no
-#     avahi-daemon runs inside the container
+#   - nlohmann-json3-dev: header-only JSON library
+#   - libapr1-dev / libaprutil1-dev: livox_ros_driver2
+#   - libboost-all-dev / libtbb-dev / libeigen3-dev: GTSAM/Sophus headers
+#     (the libs themselves come prebuilt from deps-builder below)
 RUN apt-get update && apt-get install -y \
     libgraphicsmagick++1-dev \
     libzmq3-dev \
     libncurses-dev \
     nlohmann-json3-dev \
-    avahi-utils \
+    libapr1-dev \
+    libaprutil1-dev \
+    libboost-all-dev \
+    libtbb-dev \
+    libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Python web stack for syncai_backend (no reliable apt key on jammy; installed
-# via pip). Keep in sync with src/syncai_backend/requirements.txt.
-RUN pip3 install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    structlog \
-    dotenv \
-    sqlalchemy \
-    sqlalchemy-utils \
-    psycopg2 \
-    temporalio \
-    requests
+# GStreamer for the camera stream. The base image carries only
+# gstreamer1.0-plugins-base, which is why a pipeline built here fails with
+# `no element "v4l2src"`:
+#   - plugins-good  : v4l2src (V4L2 capture)
+#   - plugins-bad   : h264parse (videoparsersbad)
+#   - gstreamer1.0-rtsp : rtspclientsink, to publish into mediamtx
+#   - gstreamer1.0-tools: gst-inspect-1.0 / gst-launch-1.0, without which there
+#                         is no way to tell a missing element from a missing
+#                         command when debugging a pipeline in here
+#   - gstreamer1.0-alsa : alsasink, for the WebRTC worker's WHIP branch (the
+#                         operator's microphone out of the USB speaker). NOT in
+#                         plugins-base despite living in that source package,
+#                         and its absence fails the pipeline string at parse
+#                         time rather than at playback. pulsesink exists in
+#                         this image and is a trap: there is no PulseAudio
+#                         daemon here, and the speaker is reached as
+#                         plughw:CARD=CD002AUDIO, the same by-name device the
+#                         TTS gateway resolves to.
+#
+# NOT included, and not installable from apt: the Tegra elements (nvjpegdec,
+# nvvidconv, nvv4l2h264enc) live in nvidia-l4t-gstreamer and there is no L4T apt
+# repo in this image. They are instead injected by the nvidia container runtime,
+# which already lists them in /etc/nvidia-container-runtime/host-files-for-
+# container.d/drivers.csv on the host — but only when the container requests it
+# via NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES. Hardware encoding in
+# here additionally needs /dev/video0 passed through and membership of the host's
+# video group; see docker-compose.robots.yml.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-rtsp \
+    gstreamer1.0-tools \
+    gstreamer1.0-alsa \
+    && rm -rf /var/lib/apt/lists/*
+
+# aplay, to check the robot's speaker from a shell in here (`aplay -l`, then
+# play something at it). It used to be a dependency: the in-tree backend's TTS
+# gateway shelled out to aplay for its /speak route rather than pull in a
+# Python audio stack. That backend moved to SyncAI-Robot-Backend in 2026-09 and
+# its container owns the speaker now, so nothing in this image plays audio on
+# its own — the binary stays because the passthrough it needs (/dev/snd plus
+# the host audio group, from docker-compose.robots.yml) is still wired up and a
+# silent speaker is quicker to diagnose from the container that owns the robot
+# than from one that does not.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# VizionSDK: the closed-source TechNexion camera SDK that
+# src/third-party/vizionsdk-ros2 links against. It has no rosdep key and is in
+# no distro repo, so `rosdep install` does not cover it and the wrapper's
+# CMakeLists dies at configure time with `No package 'vizionsdk' found`.
+#
+# The .deb ships a CMake config package in /usr/lib/cmake/vizionsdk exporting
+# vizionsdk::VizionSDK, so the wrapper's first branch
+# (`find_package(vizionsdk CONFIG)`) resolves it and none of the
+# CMAKE_PREFIX_PATH / PKG_CONFIG_PATH / LD_LIBRARY_PATH exports its README
+# suggests are needed — those are for the custom-prefix (/opt) install.
+#
+# Installed with `apt-get install ./x.deb` rather than `dpkg -i` so the
+# Depends (libusb-1.0-0, libudev1, v4l-utils, gstreamer) resolve in the same
+# step; the release ships one .deb per arch and the filename is not derivable
+# from uname, hence the case on dpkg's arch, as in the ROS apt line in base.
+#
+# Two postinst side effects worth knowing about:
+#   - it writes /etc/udev/rules.d/88-cyusb.rules for Cypress FX3 USB cameras.
+#     Inert here (no udevd in the container) and unrelated to the CSI camera on
+#     /dev/video0, so it is left in place rather than fought.
+#   - it adds download.technexion.com as an apt source. That is deleted right
+#     after: every other third-party dep in this image is version-pinned, and a
+#     live vendor repo would make the nodesource `apt-get update` below fail
+#     whenever that host is unreachable.
+ARG VIZIONSDK_VERSION=26.8.1
+RUN case "$(dpkg --print-architecture)" in \
+    arm64) VIZIONSDK_DEB="vizionsdk-linuxarm64-${VIZIONSDK_VERSION}.deb" ;; \
+    amd64) VIZIONSDK_DEB="vizionsdk-linux64-${VIZIONSDK_VERSION}.deb" ;; \
+    *) echo "VizionSDK: no release for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o "/tmp/${VIZIONSDK_DEB}" \
+    "https://github.com/TechNexion-Vision/vizionsdk/releases/download/v${VIZIONSDK_VERSION}/${VIZIONSDK_DEB}" && \
+    apt-get update && apt-get install -y --no-install-recommends "/tmp/${VIZIONSDK_DEB}" && \
+    rm -f "/tmp/${VIZIONSDK_DEB}" /etc/apt/sources.list.d/vizionsdk.list && \
+    ldconfig && \
+    rm -rf /var/lib/apt/lists/*
+
+# Prebuilt Livox-SDK2 / GTSAM / Sophus from the cached builder stage.
+COPY --from=deps-builder /usr/local /usr/local
+RUN ldconfig
+
+# NOTE: there is no pip install of a web stack here any more. This image used to
+# carry syncai_backend's dependencies (fastapi / uvicorn / sqlalchemy /
+# temporalio / open3d / kokoro-onnx, from that package's requirements.txt),
+# COPYed out of src/ at build time. The backend moved to SyncAI-Robot-Backend in
+# 2026-09 and pins them in its own image, so this one is back to a pure ROS
+# image and the COPY — which would now fail on a fresh clone, there being no
+# src/syncai_backend to copy from — is gone with it. Anything Python that ships
+# in this workspace (syncai_sys_manager) needs only rclpy and the standard
+# library. Do not re-add a package here for a process that runs in another
+# container.
+
+# Node.js 22, for `scripts/urdf2glb.py`'s `npx gltfpack` step (the operator
+# console's robot mesh is still baked from this repo's URDF). Nothing in this
+# workspace serves a web app any more — syncai_frontend left in 2026-09 — so
+# only the node/npm runtime needs to live in the image, not a project.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain for rclrs (ros2-rust), the ROS 2 Rust client library.
+#
+# rclrs is not an apt package and there is no ros-humble-rclrs: the crate comes
+# from crates.io through a package's own Cargo.toml, so what the image has to
+# provide is the toolchain that builds it inside a colcon workspace:
+#   - libclang-dev     : rclrs's build script runs bindgen over the rcl headers.
+#                        `clang` alone is not enough — bindgen loads libclang.so
+#                        and fails with "Unable to find libclang" without -dev.
+#   - rustup / cargo   : pinned via RUST_TOOLCHAIN, like every other third-party
+#                        dep in this image.
+#   - cargo-ament-build: `cargo ament-build --install-base`, the drop-in for
+#                        `cargo build` that lays binaries out per REP 122 so
+#                        `ros2 run` / `ros2 launch` find them.
+#   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
+#                        package.xml + Cargo.toml package. Packages without a
+#                        Cargo.toml (every one in src/ today) are unaffected.
+#
+# Installed under /opt/rust rather than ~/.cargo because compose may override
+# the uid at runtime (see the syncrobotic user in base); the tree is made
+# world-writable for the same reason as /home/syncrobotic — cargo writes its
+# registry cache and git checkouts into CARGO_HOME on every build that fetches
+# a crate.
+#
+# NOT covered here: message crates. A Rust node that uses std_msgs or
+# syncai_common needs those packages regenerated from source with
+# rosidl_generator_rs (ros2-rust/rosidl_rust, plus the humble branches of
+# common_interfaces / rcl_interfaces / rosidl_defaults / rosidl_core in the
+# workspace) — the apt-installed interfaces ship no Rust bindings. That is a
+# workspace (.repos) change, not an image change.
+ARG RUST_TOOLCHAIN=1.89.0
+ENV RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo \
+    PATH=/opt/rust/cargo/bin:${PATH}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libclang-dev \
+    && rm -rf /var/lib/apt/lists/* && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" && \
+    cargo install --locked cargo-ament-build && \
+    pip3 install --no-cache-dir colcon-cargo colcon-ros-cargo && \
+    rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
+    chmod -R a+w /opt/rust
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble
 
-# Allow any uid (overridden via compose `user:`) to sudo without password.
-RUN echo "ALL ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+USER syncrobotic
+WORKDIR /home/syncrobotic
 
-# ubuntu:22.04 has no default uid-1000 user, so create the `ubuntu` user and
-# its home dir. Then make HOME world-writable so a runtime-overridden uid
-# (via compose `user:`) can still write ~/.ros, ~/.cache, ~/.bash_history.
-RUN groupadd -g 1000 ubuntu && \
-    useradd -m -u 1000 -g 1000 -s /bin/bash ubuntu && \
-    chmod -R 777 /home/ubuntu
-
-USER ubuntu
-WORKDIR /home/ubuntu
-
-# Populate rosdep cache for the ubuntu user (the root-level update above does not
-# carry over to ~ubuntu/.ros), so `rosdep install` works at runtime.
+# Populate rosdep cache for the syncrobotic user (the root-level update above
+# does not carry over to ~/.ros), so `rosdep install` works at runtime.
 RUN rosdep update --rosdistro humble
 
-# Auto-source ROS 2 and workspace in every shell
-RUN echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && \
-    echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
+# Auto-source the mounted workspace overlay in every shell.
+RUN echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
 
 CMD ["bash"]

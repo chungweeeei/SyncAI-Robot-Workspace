@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "syncai_costmap_2d/clear_costmap_service.hpp"
 #include "syncai_costmap_2d/footprint.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "syncai_util/robot_utils.hpp"
@@ -100,6 +101,7 @@ Costmap2DROS::~Costmap2DROS()
   executor_thread_.reset();
 
   // on_cleanup equivalent: release in reverse order of init().
+  clear_costmap_service_.reset();
   costmap_publisher_.reset();
   layered_costmap_.reset();
   tf_listener_.reset();
@@ -219,9 +221,9 @@ void Costmap2DROS::init()
     setRobotFootprint(new_footprint);
   }
 
-  // TODO(syncai): ClearCostmapService not ported yet (its public ctor/dtor are
-  // not declared in the header). Re-enable once that port is finished.
-  // clear_costmap_service_ = std::make_unique<ClearCostmapService>(shared_from_this(), *this);
+  // Expose the clear-costmap services (clear_entirely_/clear_around_/clear_except_
+  // + costmap name). Created after the layers/publishers so getCostmap() is valid.
+  clear_costmap_service_ = std::make_unique<ClearCostmapService>(shared_from_this(), *this);
 
   // Dedicated executor + thread that spins the mutually-exclusive callback group.
   // This drives the tf timer interface, the /tf(_static) listener subscriptions

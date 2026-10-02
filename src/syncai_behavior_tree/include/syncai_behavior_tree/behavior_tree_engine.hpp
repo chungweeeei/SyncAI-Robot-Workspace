@@ -28,7 +28,8 @@ public:
   /**
    * @brief A constructor for syncai_behavior_tree::BehaviorTreeEngine
    * @param plugin_libraries vector of BT plugin library names to load
-   * @details Constructor - 把 plugin libraries 註冊進 BT::BehaviorTreeFactory裡，建立 string -> class 的 unordered_map
+   * @details Constructor - registers the plugin libraries with BT::BehaviorTreeFactory, building
+   *          its string -> class unordered_map
    */
   explicit BehaviorTreeEngine(const std::vector<std::string> & plugin_libraries);
 
@@ -44,7 +45,8 @@ public:
    * @param cancelRequested Function to check if cancel was requested during BT execution
    * @param loopTimeout Time period for each iteration of BT execution
    * @return syncai_behavior_tree::BtStatus Status of BT execution
-   * @details Run() - 固定頻率 tick 整顆樹的迴圈，直到整顆樹回傳 SUCCESS/FAILURE 或者 cancelRequested() 回傳 true。
+   * @details run() - loop that ticks the whole tree at a fixed rate until the tree returns
+   *          SUCCESS/FAILURE or cancelRequested() returns true.
    */
   BtStatus run(
     BT::Tree * tree, std::function<void()> onLoop, std::function<bool()> cancelRequested,
@@ -69,21 +71,22 @@ public:
   /**
    * @brief Function to explicitly reset all BT nodes to initial state
    * @param root_node Pointer to BT root node
-   * @details 把整顆樹 reset 回初始狀態，方便重跑
+   * @details Resets the whole tree to its initial state so it can be run again
    */
   void haltAllActions(BT::TreeNode * root_node);
 
 protected:
   /**
-    * BT Tree的結構是寫在一份 XML 文件裡，例如：
+    * The BT structure is written in an XML document, e.g.:
     * <Sequence>
     *   <ComputePathToPose/>
     *   <FollowPath/>
     * </Sequence>
     * 
-    * 從上面的 XML 文件裡只有字串名稱，程式裡必須知道 "ComputePathToPose" 或者 "FollowPath" 對應到哪個 C++ class.
-    * 這樣才可以 new 一個class instance 出來放在BT Tree裡。
-    * 而BT::BehaviorTreeFactory主要就是維護「string -> class constructor」對照表的物件。
+    * The XML above carries only string names, so the program must know which C++ class
+    * "ComputePathToPose" or "FollowPath" maps to before it can new an instance and place it
+    * in the tree. BT::BehaviorTreeFactory is essentially the object that maintains that
+    * "string -> class constructor" lookup table.
     */
   BT::BehaviorTreeFactory factory_;
 };

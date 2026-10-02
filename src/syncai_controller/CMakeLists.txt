@@ -19,6 +19,7 @@ find_package(syncai_costmap_2d REQUIRED)
 find_package(syncai_nav_core REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
 set(dependencies
@@ -34,19 +35,21 @@ set(dependencies
   syncai_nav_core
   syncai_util
   tf2
+  tf2_geometry_msgs
   tf2_ros
 )
 
 set(library_name ${PROJECT_NAME})
 set(executable_name controller_server)
 
-# Progress / goal checker plugins
+# Controller / progress checker / goal checker plugins
 add_library(${library_name}_plugins SHARED
   plugins/simple_progress_checker.cpp
   plugins/pose_progress_checker.cpp
   plugins/simple_goal_checker.cpp
   plugins/stopped_goal_checker.cpp
   plugins/position_goal_checker.cpp
+  plugins/regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.cpp
 )
 
 target_include_directories(${library_name}_plugins PUBLIC

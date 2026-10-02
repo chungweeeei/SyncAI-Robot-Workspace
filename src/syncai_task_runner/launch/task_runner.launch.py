@@ -4,7 +4,7 @@
 # servers, so those must be running for a goal to succeed.
 #
 # robot_id is read from the system config INI at launch time (same convention
-# as system_manager.launch.py) and is used both as the node namespace and to
+# as sys_manager.launch.py) and is used both as the node namespace and to
 # rewrite the base_frame parameter, since TF frame names are not namespaced
 # by ROS. The global_frame stays "map".
 
@@ -19,10 +19,12 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-# Same convention as the backend gateways: processes run with the workspace
-# root as their working directory, so a relative path works both inside the
-# robot container and when launching from the workspace root.
-DEFAULT_SYSTEM_INI = "config/system.ini"
+# Absolute path so the INI resolves no matter what cwd the launch is started
+# from — the old relative path only worked because every entrypoint happened
+# to run from the workspace root. ~/robot_ws is the workspace inside the robot
+# container, where docker-compose bind-mounts the per-robot instance INI over
+# config/system.ini.
+DEFAULT_SYSTEM_INI = os.path.expanduser("~/robot_ws/config/system.ini")
 FALLBACK_ROBOT_ID = "default_robot"
 
 logger = launch_logging.get_logger("task_runner.launch")

@@ -25,6 +25,8 @@
 
 namespace syncai_costmap_2d
 {
+class ClearCostmapService;
+
 class Costmap2DROS : public rclcpp::Node
 {
 public:
@@ -305,8 +307,8 @@ protected:
   std::vector<geometry_msgs::msg::Point> unpadded_footprint_;
   std::vector<geometry_msgs::msg::Point> padded_footprint_;
 
-  // TODO(syncai): ClearCostmapService not ported yet (Step 3)
-  // std::unique_ptr<ClearCostmapService> clear_costmap_service_;
+  // Services to clear the costmap (entirely / around robot / except a region).
+  std::unique_ptr<ClearCostmapService> clear_costmap_service_;
 
   // Mutex guarding map updates against concurrent dynamic-parameter callbacks.
   std::mutex _dynamic_parameter_mutex;

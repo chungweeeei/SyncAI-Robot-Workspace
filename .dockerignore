@@ -1,0 +1,48 @@
+# Keep the docker build context small and free of secrets. The ws-builder
+# stage COPYs src/ (submodules are already checked out on disk, so no SSH is
+# needed at build time); everything else here is runtime/host data that must
+# never end up in an image layer.
+
+# colcon artifacts (host-side, bind-mounted in dev; prod builds its own)
+build/
+install/
+log/
+
+# git metadata (incl. submodule .git gitlink files — useless in-image)
+.git
+.gitmodules
+**/.git
+
+# secrets — .env holds live credentials; images must stay secret-free
+.env
+**/.env
+**/.env.*
+!**/.env.example
+
+# host-side service data / recordings / maps (mounted at runtime instead)
+data/
+record/
+map/
+dist/
+
+# docs / editor / CI
+doc/
+.devcontainer/
+.vscode/
+.idea/
+.claude/
+.github/
+
+# frontend build outputs (frontend has its own build context + .dockerignore)
+src/syncai_frontend/node_modules/
+src/syncai_frontend/.next/
+
+# python / misc caches
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.log
+*.bag
+*.mcap

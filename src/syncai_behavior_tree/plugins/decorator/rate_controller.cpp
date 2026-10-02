@@ -16,32 +16,32 @@ RateController::RateController(const std::string & name, const BT::NodeConfigura
 
 BT::NodeStatus RateController::tick()
 {
-  // 當 BT 重新進入這個 node 時，reset 計時起點
+  // When the BT re-enters this node, reset the timing origin
   if (status() == BT::NodeStatus::IDLE) {
     start_ = std::chrono::high_resolution_clock::now();
     first_time_ = true;
   }
 
-  // 把自己的 node status 設成 running
+  // Set this node's status to RUNNING
   setStatus(BT::NodeStatus::RUNNING);
 
-  // 計算距離 start 已經過了多久
+  // Compute how much time has elapsed since start
   auto now = std::chrono::high_resolution_clock::now();
   auto elapsed = now - start_;
 
   typedef std::chrono::duration<float> float_seconds;
   auto seconds = std::chrono::duration_cast<float_seconds>(elapsed);
 
-  // 判斷要不要 tick child node，只要符合以下任一條件就 tick
-  // - first_time_： 這一輪是第一次
-  // - child node 目前 status 是 RUNNING
-  // - 距離上次 tick 已經過了 period_ 這麼久
+  // Decide whether to tick the child; any one of the following conditions is enough:
+  // - first_time_: this is the first round
+  // - the child's current status is RUNNING
+  // - at least period_ has elapsed since the last tick
 
   if (
     first_time_ || (child_node_->status() == BT::NodeStatus::RUNNING) ||
     seconds.count() >= period_) {
     first_time_ = false;
-    // 這裡去 tick child node，並把結果回傳給 parent node
+    // Tick the child here and hand its result back to the parent
     const BT::NodeStatus child_state = child_node_->executeTick();
 
     switch (child_state) {

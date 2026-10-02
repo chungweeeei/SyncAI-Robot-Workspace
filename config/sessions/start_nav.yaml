@@ -1,0 +1,159 @@
+# =============================================================================
+# SyncAI Robot stack — navigation session (AUTO mode)
+# Schema: see the docstring of NodeManager in
+#         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
+#
+# The spec for RobotMode.AUTO, and the default the stack boots into: FAST-LIO2
+# localization, no AMCL, no lifecycle manager. Built by NodeManager, either on
+# sys_manager startup (setup_session) or on a switch_mode call — there is no
+# launcher script, so nothing here is run by hand.
+#
+# This is a *localization* stack, the counterpart to start_mapping.yaml rather
+# than a variant of it: map_server and the localizer both load an existing map
+# during construction and die without one, so this spec cannot build the map it
+# needs. See start_mapping.yaml for the other half of that loop.
+#
+# There is no frontend window and no backend window: `syncai_frontend` left this
+# workspace in 2026-09 and `syncai_backend` followed it, so nothing in this
+# session listens on 3001 or 3000 any more. The backend on 3000 is still the
+# console's only contact with the robot — it runs in its own container, sharing
+# the host network and DDS domain 1, so it discovers the nodes below from
+# outside this session exactly as a pane of it did, and switch_mode no longer
+# takes it down along with the session. There is no rviz2 window either: on the
+# robot itself there is no display, and the console covers the same ground.
+#
+# Startup order matters (there is no lifecycle manager): map_server / keepout
+# -> pointlio / localizer -> lio_bridge -> planner/controller -> task_runner,
+# which is what the `sleep:` fields encode. pointlio has its own pane since 2026-09, when it
+# moved out of FASTLIO2_ROS2 into src/syncai_pointlio; before that the fork's
+# localizer_launch.py include()d it, so both came up in the localizer pane. The
+# localizer itself followed at the end of that month, as src/syncai_localizer
+# -- every node in this spec is a workspace package now, and the fork is no
+# longer imported at all.
+#
+# LOCALIZATION: the localizer applies [initial_pose] from the INI as its boot
+# guess on the first odom sample, so a robot standing at that pose localizes
+# itself with no further action. When it is standing somewhere else, call
+# relocalize by hand with its coarse pose — the operator console's initial-pose
+# control is the usual route, and
+# `ros2 service call /<robot_id>/relocalize ...` the manual one (the bare
+# robot_id namespace, not /<robot_id>/localizer/ -- see syncai_localizer's
+# README; the backend calls the same bare name).
+#
+# ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
+# starts in the workspace root so the relative config/system.ini resolves. No
+# window sets `cwd:` any more — the frontend pane was the one exception (it had
+# to start where its package.json lived) and went with the package; the schema
+# still supports the key.
+#
+# Logs go to log/stack/<robot_id>/<name>/. start_mapping.yaml writes the
+# mapping/ subtree instead, so the two specs cannot interleave two multilogs
+# into one directory — but switch_mode kills either before building the other
+# anyway, so they are never up at once.
+# =============================================================================
+
+session: syncai-dev
+select: bringup
+
+windows:
+  # ---------- Window 0: bringup (static TFs for the LIO bridge + MID360) ------
+  - name: bringup
+    panes:
+      - cmd: ros2 launch syncai_bringup bringup.launch.py
+        log: bringup
+
+  # ---------- Window 1: map_server + keepout (the map on disk, served) -------
+  # The two map servers, in start order. Both read the same [map] map from the
+  # INI and both die in their constructor without the file, so this window is
+  # the one to read when "the map is not there". Split out of `localization`
+  # on 2026-09-30: the localizer window is about the lidar and the pose, this
+  # one is about files, and a map problem and a lidar problem should not
+  # scroll past each other in one window.
+  #
+  # The second pane is the keepout (forbidden-zone) source for the planner's
+  # global costmap: costmap_filter_info_server plus a second map_server named
+  # filter_mask_server, serving map/<name>/keepout.yaml -- the launch derives
+  # that path from the same [map] map the first pane reads. On a map without a
+  # keepout the launch first writes a blank mask of the gridmap's geometry (all
+  # unknown, so the planner sees no change) and serves that, so this pane stays
+  # up like every other one; "Filter mask was not received" in the planner log
+  # means it is actually down. Until 2026-09-30 it exited on purpose instead.
+  # `sleep: 1` is log ordering only -- the KeepoutFilter's two subscriptions
+  # are transient-local, so the planner may come up before or after this pane
+  # and still receive both latched messages.
+  - name: map_server
+    panes:
+      - cmd: ros2 launch syncai_map_server map_server.launch.py
+        log: map_server
+      - cmd: ros2 launch syncai_map_server costmap_filter_info.launch.py
+        sleep: 1
+        log: keepout
+
+  # ---------- Window 2: LIO front end / LIO localizer ----------
+  # Two panes, in start order. pointlio (syncai_pointlio) is the front end
+  # the localizer (syncai_localizer, in-tree since 2026-09) registers against;
+  # its launch is the single definition of how pointlio_node is configured, and
+  # localizer.launch.py's absolute /<robot_id>/pointlio/{body_cloud,lio_odom}
+  # overrides are the contract with it. There is no hard ordering between the
+  # two -- the localizer only subscribes, and pointlio publishes nothing until
+  # its IMU init completes -- so the one-second stagger is there for the logs to
+  # read in cause-and-effect order, not for correctness. `sleep: 2` is when the
+  # old include used to start pointlio. The offsets did not change with the
+  # split: NodeManager prefixes each pane's command with its own `sleep N`, so
+  # every offset in this file counts from session build time on one timeline,
+  # whichever window it sits in. The log directory stays `localizer`: the node
+  # is still called localizer_node and every doc names it that way.
+  - name: localization
+    panes:
+      - cmd: ros2 launch syncai_pointlio pointlio.launch.py
+        sleep: 2
+        log: pointlio
+      - cmd: ros2 launch syncai_localizer localizer.launch.py
+        sleep: 3
+        log: localizer
+
+  # ---------- Window 3: lio_bridge (map -> <robot_id>/odom) ----
+  - name: lio_bridge
+    panes:
+      - cmd: ros2 launch syncai_lio_bridge lio_bridge.launch.py
+        sleep: 4
+        log: lio_bridge
+
+  # ---------- Window 4: planner / controller ----------
+  - name: plan_ctrl
+    panes:
+      - cmd: ros2 launch syncai_planner planner_server.launch.py
+        sleep: 4
+        log: planner
+      - cmd: ros2 launch syncai_controller controller_server.launch.py
+        sleep: 4
+        log: controller
+
+  # ---------- Window 5: task_runner (needs planner/controller action servers) --
+  - name: task_runner
+    panes:
+      - cmd: ros2 launch syncai_task_runner task_runner.launch.py
+        sleep: 10
+        log: task_runner
+
+  # ---------- Window 6: driver_manager (own window: shutdown path is manual) --
+  # Kept on a window of its own rather than split with sys_manager, because
+  # this is the pane you Ctrl-C by hand when you want the safe-shutdown path
+  # (safety lock + MODE X / lie down) to run — easy to hit the wrong pane in a
+  # split.
+  - name: driver_manager
+    panes:
+      - cmd: ros2 launch syncai_driver_manager driver_manager.launch.py
+        log: driver_manager
+
+
+  # ---------- Window 7: robot_state ----------
+  # Last window, and a single pane: both processes that used to follow
+  # robot_state here — the backend, and the frontend dev server before it — are
+  # served from their own containers now (see the header). robot_state stays
+  # because it is what publishes RobotState, the topic the backend re-serialises
+  # onto its telemetry WebSocket.
+  - name: robot_state
+    panes:
+      - cmd: ros2 launch syncai_robot_state robot_state.launch.py
+        log: robot_state

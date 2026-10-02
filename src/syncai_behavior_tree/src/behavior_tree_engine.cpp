@@ -34,13 +34,15 @@ BtStatus BehaviorTreeEngine::run(
       }
 
       // tick signal from rootNode down to the entire tree
-      // 如果是 <Sequence> rootNode的話會trigger SequenceNode::tick()
-      // SequenceNode::tick() 裡面會依序 tick 每個 child node => 只有當前的 child 回 NodeStatus::SUCCESS時才會進到下一個child node。
-      // 在收到 NodeStatus::SUCCESS後直接tick下一個child node不需要等到下一個loopTimeout
-      // 三種回傳值對應三種走向：
-      // 1. NodeStatus::SUCCESS => 馬上tick下一個child node
-      // 2. NodeStatus::RUNNING => 下次engine tick 還是會tick相同的child node
-      // 3. NodeStatus::FAILURE => halt 所有 child node。
+      // With a <Sequence> as rootNode this triggers SequenceNode::tick().
+      // SequenceNode::tick() ticks each child in order => it only advances to the next child
+      // once the current one returns NodeStatus::SUCCESS.
+      // After a NodeStatus::SUCCESS the next child is ticked immediately, without waiting for
+      // the next loopTimeout.
+      // The three return values map to three paths:
+      // 1. NodeStatus::SUCCESS => tick the next child right away
+      // 2. NodeStatus::RUNNING => the next engine tick ticks the same child again
+      // 3. NodeStatus::FAILURE => halt all children.
       result = tree->tickRoot();
 
       onLoop();

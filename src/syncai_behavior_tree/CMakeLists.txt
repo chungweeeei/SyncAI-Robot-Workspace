@@ -59,18 +59,18 @@ add_library(syncai_follow_path_action_bt_node SHARED
   plugins/action/follow_path_action.cpp)
 list(APPEND plugin_libs syncai_follow_path_action_bt_node)
 
-add_library(syncai_compute_path_through_poses_action_bt_node SHARED
-  plugins/action/compute_path_through_poses_action.cpp)
-list(APPEND plugin_libs syncai_compute_path_through_poses_action_bt_node)
-
-add_library(syncai_remove_passed_goals_action_bt_node SHARED
-  plugins/action/remove_passed_goals_action.cpp)
-list(APPEND plugin_libs syncai_remove_passed_goals_action_bt_node)
+add_library(syncai_clear_costmap_service_bt_node SHARED
+  plugins/action/clear_costmap_service.cpp)
+list(APPEND plugin_libs syncai_clear_costmap_service_bt_node)
 
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)
 list(APPEND plugin_libs syncai_pipeline_sequence_bt_node)
+
+add_library(syncai_recovery_node_bt_node SHARED
+  plugins/control/recovery_node.cpp)
+list(APPEND plugin_libs syncai_recovery_node_bt_node)
 
 # Behavior Tree condition node plugins
 add_library(syncai_initial_pose_received_condition_bt_node SHARED

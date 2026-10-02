@@ -6,14 +6,18 @@ namespace syncai_costmap_2d
 
 enum class CombinationMethod : int {
   /**
-    * CombinationMethod enumerate class 是用來定義 在costmap中「每一層 layer 要如何把自己的值合併到master costmap」的策略
-    * Overwrite - 直接覆蓋 master 的值（但 NO_INFORMATION 不寫入）
-    *           - Static Layer: 靜態地圖是ground truth，要直接蓋掉
-    * Max - 取 master 和 layer 中比較大的那個。 NO_INFORMATION 也會被「比較大的有效值」蓋掉
-    *     - ObstacleLayer — 偵測到障礙就要保留（致命值最大）
-    * MaxWithoutUnknownOverwrite - 同 Max，但保留 master 原本的 NO_INFORMATION（不讓 unknown 被蓋成 known）
-    *                            - 想保留「未知就是未知」語意的場合，例如某些 inflation 用法
-    * Max是costmap預設的合併方式。
+    * The CombinationMethod enum class defines the policy for how each layer in the costmap
+    * merges its own values into the master costmap.
+    * Overwrite - Overwrite the master's value directly (but NO_INFORMATION is not written)
+    *           - Static layer: the static map is ground truth, so it overwrites outright
+    * Max - Take the larger of master and layer. NO_INFORMATION also gets overwritten by the
+    *       larger valid value
+    *     - ObstacleLayer: a detected obstacle must be kept (lethal is the largest value)
+    * MaxWithoutUnknownOverwrite - Same as Max, but keeps the master's original NO_INFORMATION
+    *                              (does not let unknown be overwritten as known)
+    *                            - For cases that want to keep the "unknown stays unknown"
+    *                              semantics, e.g. certain inflation usages
+    * Max is the costmap's default combination method.
     */
 
   Overwrite = 0,

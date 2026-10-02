@@ -29,7 +29,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   default_goal_checker_types_{"syncai_controller::SimpleGoalChecker"},
   lp_loader_("syncai_nav_core", "syncai_nav_core::Controller"),
   default_ids_{"FollowPath"},
-  default_types_{"syncai_regulated_pure_pursuit_controller::RegulatedPurePursuitController"}
+  default_types_{"syncai_controller::RegulatedPurePursuitController"}
 {
   RCLCPP_INFO(get_logger(), "Creating controller server");
 
@@ -286,6 +286,12 @@ void ControllerServer::computeControl()
       action_server_->terminate_current();
       return;
     }
+
+    // Per-goal controller state, cleared exactly once here. Deliberately not in
+    // setPlannerPath(): updateGlobalPath() routes the BT's ~0.333 Hz replans
+    // through that too, so resetting there re-zeroed RPP's acceleration-clamp
+    // baseline mid-drive and chopped cmd_vel into a sawtooth (see setPlan()).
+    controllers_[current_controller_]->reset();
 
     setPlannerPath(action_server_->get_current_goal()->path);
     progress_checker_->reset();

@@ -6,7 +6,9 @@
 # get the namespace prefix (costmap_filter_info -> /<robot_id>/costmap_filter_info).
 /**/costmap_filter_info_server:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
 
     # Topic on which the CostmapFilterInfo is published (latched).
     filter_info_topic: "costmap_filter_info"
@@ -26,11 +28,23 @@
 
 /**/filter_mask_server:
   ros__parameters:
-    use_sim_time: true
+    # false: the real robot has no /clock publisher. Flip to true only when
+    # driving the stack from a simulator that publishes one.
+    use_sim_time: false
 
-    # Absolute path (inside the robot container) to the keepout mask YAML.
-    # Same geometry as the navigation map; black cells = keepout zones.
-    yaml_filename: "/home/ubuntu/robot_ws/map/warehouse_keepout_mask.yaml"
+    # Keepout mask YAML (an ordinary map-server YAML/image pair; black cells =
+    # keepout zones, ideally the same geometry as the navigation map).
+    #
+    # Deliberately EMPTY here. The real path is per map --
+    # map/<name>/keepout.yaml -- and costmap_filter_info.launch.py derives it
+    # from the INI's [map] map and layers it on top of this file, writing a
+    # blank (all-unknown) mask of the gridmap's geometry first when the file
+    # does not exist yet. This value only applies when map_server is run as
+    # filter_mask_server without that launch; "" makes it come up idle,
+    # waiting for filter_mask_server/load_map, instead of throwing on a path
+    # nobody maintains (the previous value named a file that never existed in
+    # any checkout).
+    yaml_filename: ""
 
     # Topic on which the mask OccupancyGrid is published (latched). Must match
     # mask_topic above.

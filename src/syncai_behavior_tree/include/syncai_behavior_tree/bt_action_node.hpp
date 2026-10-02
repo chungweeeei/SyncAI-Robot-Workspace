@@ -21,7 +21,7 @@ using namespace std::chrono_literals;
 
 /**
  * @brief Abstract class representing an action based BT node
- *        BtActionNode 繼承的chain是: BtActionNode -> ActionNodeBase -> LeafNode -> TreeNode
+ *        Inheritance chain: BtActionNode -> ActionNodeBase -> LeafNode -> TreeNode
  * @tparam ActionT Type of action
  */
 template <class ActionT>
@@ -30,17 +30,20 @@ class BtActionNode : public BT::ActionNodeBase
 public:
   /**
    * @brief A syncai_behavior_tree::BtActionNode constructor
-   * @param xml_tag_name Name for the XML tag for this node -> 初始化 TreeNode 的 name_，是這個節點 instance 的名稱，之後透過ActionNodeBase的 name() 就可以獲取這個 tag name
+   * @param xml_tag_name Name for the XML tag for this node -> initialises TreeNode::name_, the
+   *        name of this node instance; ActionNodeBase::name() returns this tag name afterwards
    * @param action_name Action name this node creates a client for
    * @param conf BT node configuration
    * struct NodeConfiguration{
-   *     Blackboard::Ptr blackboard;     // 共享 blackboard
-   *     PortsRemapping input_ports;     // XML 上 input port 的名稱對應
-   *     PortsRemapping output_ports;    // XML 上 output port 的名稱對應
+   *     Blackboard::Ptr blackboard;     // shared blackboard
+   *     PortsRemapping input_ports;     // input-port name remapping from the XML
+   *     PortsRemapping output_ports;    // output-port name remapping from the XML
    * }
-   * - blackboard 是 BtActionServer 在 initialize() 時塞進 node、server_timeout 等值的那塊blackboard上。
-   * - input_ports / output_ports 是 PortsRemapping(unordered_map<string,string>)，記錄 XML 裡 goal="{goal}"
-   *   這種「port 名 -> blackboard key」的對應。 getInput("goal", ...) / setOutput("path", ...)
+   * - blackboard is the one BtActionServer populated in initialize() with "node",
+   *   "server_timeout" and friends.
+   * - input_ports / output_ports are PortsRemapping (unordered_map<string,string>) recording the
+   *   "port name -> blackboard key" mapping written in the XML as goal="{goal}", which is what
+   *   getInput("goal", ...) / setOutput("path", ...) resolve through.
    */
   BtActionNode(
     const std::string & xml_tag_name, const std::string & action_name,
@@ -52,17 +55,21 @@ public:
       node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
     callback_group_executor_.add_callback_group(callback_group_, node_->get_node_base_interface());
 
-    // bt_loop_duration 這個參數是從 blackboard 拿的並不是從 XML 獲取的。
-    // 而這個 key 是 BtActionServer::initialize()(impl:116)放進去的，而那個值又源自於 ROS2 參數。
-    // 所以對 bt_action_node 來說，它的直接根源就是 ROS2 node parameters
-    // 唯一用途：算出 max_timeout => 用途就是限制「單次 blocking wait」最長能阻塞多久，避免一個tick把整棵樹卡住。
+    // bt_loop_duration comes from the blackboard, not from the XML.
+    // The key is put there by BtActionServer::initialize() (impl:116), and that value in turn
+    // comes from a ROS 2 parameter, so as far as bt_action_node is concerned its direct source
+    // is the ROS 2 node parameters.
+    // Its only use is to derive max_timeout, which caps how long a single blocking wait may
+    // block, so that one tick cannot stall the whole tree.
     auto bt_loop_duration =
       config().blackboard->template get<std::chrono::milliseconds>("bt_loop_duration");
     // timeout should be less than bt_loop_duration to be able to finish the current tick
     max_timeout_ = std::chrono::duration_cast<std::chrono::milliseconds>(bt_loop_duration * 0.5);
 
-    // wait_for_service_timeout 這個參數是 action node 啟動時等待 action server 的最大時間，超過就報錯。
-    // server_timeout 這個參數是每個 action goal 後等 server 「 ack / cancel / result 」的最大時間，超過就報警告並放棄等待。
+    // wait_for_service_timeout is the maximum time the action node waits for the action server
+    // at startup; exceeding it is an error.
+    // server_timeout is the maximum time to wait for the server's ack / cancel / result after
+    // each goal; exceeding it logs a warning and gives up waiting.
     server_timeout_ =
       config().blackboard->template get<std::chrono::milliseconds>("server_timeout");
     getInput<std::chrono::milliseconds>("server_timeout", server_timeout_);
@@ -85,9 +92,12 @@ public:
       xml_tag_name.c_str());
   }
 
-  // 禁止無參數 construct 這個 object。也就是若寫 BtActionNode<X> node(不給參數)的話，compile會直接報錯。
-  // 在 C++ 中有個規則： 如果你沒有宣告任何 constructor 的話，compiler 會自動幫你生成一個 default constructor (無參數版)。
-  // 因爲物件中如果少了這三個參數就沒辦法建立instance，所以直接刪除掉 default constructor，讓 compiler 不會幫你生成一個無參數的 constructor。
+  // Forbid constructing this object without arguments: writing BtActionNode<X> node; (no
+  // arguments) is a compile error.
+  // C++ rule: if you declare no constructor at all, the compiler generates a default
+  // (no-argument) constructor for you.
+  // An instance cannot be built without those three arguments, so the default constructor is
+  // deleted outright to keep the compiler from generating a no-argument one.
   BtActionNode() = delete;
 
   // deconstructor
@@ -96,7 +106,7 @@ public:
   /**
    * @brief Create instance of an "action client"
    * @param action_name Action name to create client for
-   *                    建立 action client + 等 server 上線
+   *                    Creates the action client and waits for the server to come up
    */
   void createActionClient(const std::string & action_name)
   {
@@ -122,7 +132,7 @@ public:
    * providedPorts method and call providedBasicPorts in it.
    * @param addition Additional ports to add to BT port list
    * @return BT::PortsList Containing basic ports along with node-specific ports
-   *         提供基本的 port (server_name / server_timeout) 再併入自定義的subclass裡
+   *         Basic ports (server_name / server_timeout) merged with the subclass's own additions
    */
   static BT::PortsList providedBasicPorts(BT::PortsList addition)
   {
@@ -137,7 +147,7 @@ public:
   /**
    * @brief Creates list of BT ports
    * @return BT::PortsList Containing basic ports along with node-specific ports
-   *         BT factory要的static interface，預設只回basic ports
+   *         The static interface the BT factory requires; by default returns only the basic ports
    */
   static BT::PortsList providedPorts() { return providedBasicPorts({}); }
 
@@ -181,7 +191,7 @@ public:
   /**
    * @brief The main override required by a BT action
    * @return BT::NodeStatus Status of tick execution
-   *         tick() 為核心狀態機，每round被呼叫，大多回 RUNNING
+   *         tick() is the core state machine, called every round; it mostly returns RUNNING
    */
   BT::NodeStatus tick() override
   {
@@ -194,23 +204,25 @@ public:
       should_send_goal_ = true;
 
       // "user defined" callback, may modify "should_send_goal_".
-      // on_tick() 就是讓 subclass 填寫 goal 內容的地方
+      // on_tick() is where the subclass fills in the goal contents
       on_tick();
 
       if (!should_send_goal_) {
         return BT::NodeStatus::FAILURE;
       }
 
-      // non-blocking 的將 goal_ 送出去，並預先掛好兩個 callback function ( result / feedback)，讓之後 tick() 裡的
-      // spin_some() 一處發就能夠收到回應。
+      // Send goal_ without blocking and hook up the two callbacks (result / feedback) in advance,
+      // so that the spin_some() in later tick()s picks up the replies as they arrive.
       send_new_goal();
     }
 
     try {
       // if new goal was sent and action server has not yet responded
       // check the future goal handle
-      // - future_goal_handle_ 是 true(有值) => 「送了 goal，正在等 server ack， goal還沒被accept」
-      // - future_goal_handle_ 是 false(沒值) => 「沒有在等 server ack」，通常代表 ack 已經完成(goal 已經被 accept)， 或根本還沒送
+      // - future_goal_handle_ is truthy (has a value) => a goal was sent and we are waiting for
+      //   the server ack; the goal has not been accepted yet
+      // - future_goal_handle_ is falsy (empty) => not waiting for a server ack; usually the ack
+      //   is already done (goal accepted), or nothing has been sent at all
       if (future_goal_handle_) {
         auto elapsed =
           (node_->now() - time_goal_sent_).template to_chrono<std::chrono::milliseconds>();
@@ -232,15 +244,16 @@ public:
       // The following code corresponds to the "RUNNING" loop
       if (rclcpp::ok() && !goal_result_available_) {
         // "user defined" callback. May modify the value of "goal_updated_"
-        // 每一輪的 tick()， action server 回覆的 feedback 都會在 on_wait_for_result function 裡進行處理。
+        // On every tick(), the feedback the action server sent is handled in on_wait_for_result.
         on_wait_for_result(feedback_);
 
         // reset feedback to avoid stale information
-        // 把已經處理過的 feedback 清掉，避免下一輪 tick() 又處理到同一筆 feedback
+        // Clear the feedback just handled so the next tick() does not process the same one twice
         feedback_.reset();
 
-        // 確認當前的 goal 在 action server 端目前是處於什麼狀態。
-        // 如果 goal 有換新了，且目前 action server 的狀態是「正在執行」或「已經接受」，就再送一次 goal。
+        // Check what state the current goal is in on the action server side.
+        // If the goal was updated and the server reports it as EXECUTING or ACCEPTED, send the
+        // goal again.
         auto goal_status = goal_handle_->get_status();
         if (
           goal_updated_ && (goal_status == action_msgs::msg::GoalStatus::STATUS_EXECUTING ||
@@ -250,7 +263,8 @@ public:
           auto elapsed =
             (node_->now() - time_goal_sent_).template to_chrono<std::chrono::milliseconds>();
 
-          // 如果剛送出新 goal，且 server 還沒回應，就先等 server 回應再繼續往下走。等的過程中如果有新的 feedback 就丟到 on_wait_for_result 處理。
+          // If a new goal was just sent and the server has not replied yet, wait for the reply
+          // before moving on. Any feedback arriving meanwhile goes through on_wait_for_result.
           if (!is_future_goal_handle_complete(elapsed)) {
             if (elapsed < server_timeout_) {
               return BT::NodeStatus::RUNNING;
@@ -264,10 +278,12 @@ public:
           }
         }
 
-        // spin_some() 是 non_blocking，只處理「此刻已就緒」的 callback function，處理完後就立刻return。
-        // 這裡如果用 spin() 的話，那這個 behavior tree tick() 就會完全卡住。
-        // 用 spin_some()： 只「撈一下」目前有沒有 feedback / result callback ready，若有就處理，沒有就直接 return。
-        // 一個重要前提:這裡用的是「獨立的 callback group + executor」
+        // spin_some() is non-blocking: it only runs the callbacks that are ready right now and
+        // returns as soon as they are done.
+        // Using spin() here would stall this behavior tree tick() completely.
+        // spin_some() just peeks: if a feedback / result callback is ready it is handled,
+        // otherwise it returns immediately.
+        // One important precondition: this uses a dedicated callback group + executor.
         callback_group_executor_.spin_some();
 
         // check if, after invoking spin_some(), we finally received the result
@@ -288,7 +304,7 @@ public:
       }
     }
 
-    // 已經拿到 action server 回傳的 result，根據 result code 來決定這個 BT Node的最終回傳狀態。
+    // The action server's result has arrived; the result code decides this BT node's final status.
     BT::NodeStatus status;
     switch (result_.code) {
       case rclcpp_action::ResultCode::SUCCEEDED:
@@ -317,19 +333,20 @@ public:
    */
   void halt() override
   {
-    // 這裡的 halt() 是 TreeNod 還在 RUNNING，卻被「從外面打斷」時呼叫的。
-    // - 收到新的導航目標，整顆Tree要terminate重來。
-    // - 某個 ReactiveFallback / Parallel 裡的「更高優先分支」被觸發，要求正在跑的這個分支讓位。
-    // - 上層 haltTree() 被呼叫 (BtActionServer 在 cancel 時會做)。
+    // halt() is called when this TreeNode is still RUNNING but gets interrupted from outside:
+    // - A new navigation goal arrived and the whole tree must terminate and start over.
+    // - A higher-priority branch of a ReactiveFallback / Parallel fired and the branch that is
+    //   running has to yield.
+    // - haltTree() was called from above (BtActionServer does this on cancel).
 
-    // 確認當前是否有「還在 RUNNING 的 goal」要取消
+    // Check whether there is a goal still RUNNING that needs cancelling
     if (should_cancel_goal()) {
       auto future_result =
-        action_client_->async_get_result(goal_handle_);  // action_client 先要結果
+        action_client_->async_get_result(goal_handle_);  // ask for the result first
       auto future_cancel =
-        action_client_->async_cancel_goal(goal_handle_);  // action client 送出 cancel request
+        action_client_->async_cancel_goal(goal_handle_);  // then send the cancel request
 
-      // 等 cancel 完成
+      // Wait for the cancel to complete
       if (
         callback_group_executor_.spin_until_future_complete(future_cancel, server_timeout_) !=
         rclcpp::FutureReturnCode::SUCCESS) {
@@ -337,7 +354,7 @@ public:
           node_->get_logger(), "Failed to cancel action server for %s", action_name_.c_str());
       }
 
-      // 等 result 回來
+      // Wait for the result to come back
       if (
         callback_group_executor_.spin_until_future_complete(future_result, server_timeout_) !=
         rclcpp::FutureReturnCode::SUCCESS) {
@@ -345,10 +362,10 @@ public:
           node_->get_logger(), "Failed to get result for %s in node halt!", action_name_.c_str());
       }
 
-      on_cancelled();  // on_cancelled() 是給 subclass 用的 callback function
+      on_cancelled();  // on_cancelled() is the hook for the subclass
     }
 
-    // 狀態重置回 IDLE
+    // Reset the status back to IDLE
     setStatus(BT::NodeStatus::IDLE);
   }
 

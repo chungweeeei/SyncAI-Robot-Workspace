@@ -1,0 +1,178 @@
+# =============================================================================
+# SyncAI Robot stack — mapping session (build a NEW map)
+# Schema: see the docstring of NodeManager in
+#         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
+#
+# This is the counterpart to start_nav.yaml, not a variant of it. start_nav.yaml
+# is a *localization* stack: map_server and the FAST-LIO2 localizer both load an
+# existing map during construction and die without one, so it cannot be used to
+# create the map it needs. This spec is the other half of that loop.
+#
+# The pipeline (from §5 of the FAST-LIO2 PGO pipeline note, no longer in doc/):
+#
+#   bringup (MID360 + lidar_top static TF)
+#     -> pointlio.launch.py # the LIO front end (src/syncai_pointlio)
+#     -> mapping.launch.py  # loop closure over pointlio's odom + body_cloud
+#                           # (pgo_node, src/syncai_mapping)
+#     -> drive by hand      # teleop -> driver_manager -> gait controller
+#     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt
+#     -> pcd -> gridmap conversion   =>  gridmap.pgm + gridmap.yaml
+#
+# The last step is offline, run later, and no longer lives in this workspace:
+# both recipes left with syncai_backend in 2026-09 (SyncAI-Robot-Backend, POST
+# /api/v1/maps and .../grid/convert). That is why a map directory spends time
+# holding a map.pcd with no gridmap yet — and why a drive with no backend
+# reachable still produces a usable map.pcd that nothing has converted.
+#
+# pgo_node (syncai_mapping) is the ONLY thing that can save a map: it accumulates keyframes in RAM
+# and save_maps serialises them. If pgo is not running for the whole drive there
+# is nothing to save, and no way to recover it afterwards except by replaying a
+# bag. That single fact is why the "lio" window is not optional, and why
+# recording a bag of the drive is worth considering for a long run.
+#
+# Starting a NEW map does not mean restarting this window (and cannot be done by
+# switching modes either — switch_mode refuses to rebuild the mode already
+# live). pgo/reset_mapping does it in place: it pauses intake, resets pointlio
+# over pointlio/reset, rebuilds the pose graph and discards the old run's tail
+# by timestamp. The console's "New map" control is the operator's route to it.
+# Whatever has not been saved is still gone — the reset is deliberate data
+# loss — and the robot must be STANDING STILL, because pointlio re-runs a
+# static, gravity-aligning IMU init and one done in motion tilts the new map
+# permanently.
+#
+# Deliberately NOT here, all for the same reason — they need a finished map:
+#   * map_server  — loads [map] map in its constructor and throws if absent
+#   * localizer   — its launch returns [] and starts nothing without [map] pcd
+#   * lio_bridge  — its map->odom stage waits on a TF only the localizer emits
+#                   after relocalize; nothing in a mapping run consumes odom
+#   * planner / controller / task_runner — the robot is teleoperated here. Their
+#                   absence also removes the "teleop races the controller"
+#                   hazard that the old byobu_session_dev.sh warned about.
+#   * hba_node    — offline refinement (syncai_mapping's second node), run by
+#                   hand on a saved map, never on a live drive
+#
+# robot_state IS here, although earlier revisions excluded it as nav-oriented.
+# `syncai_backend` is NOT, any more: it left this workspace in 2026-09 for
+# SyncAI-Robot-Backend and runs in its own container, the same way the console
+# it serves left in the frontend split before it.
+#
+# That changes nothing about how a mapping run is driven. The console is still
+# the mapping UI and every control it offers during a run — mode switch (POST
+# /api/v1/robot/mode), teleop (WS /api/v1/robot/teleop -> cmd_vel), the live
+# cloud view (WS /api/v1/robot/pointcloud/stream) and save-map (POST
+# /api/v1/maps -> pgo/save_maps) — still reaches the nodes below, over DDS from
+# outside this session: the backend's container shares the host network and
+# domain 1, so it discovers them exactly as a pane of this session did. The
+# infra it needs (postgres, temporal) is still in docker-compose.yml here and
+# is up regardless of which session exists. What the split actually bought is
+# that switch_mode no longer tears the backend down — it is no longer a pane of
+# the session being killed.
+#
+# With no backend running anywhere, the run can still be driven and saved from
+# a shell, which is the fallback worth knowing:
+#
+#   ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+#     --ros-args -r cmd_vel:=/<robot_id>/cmd_vel
+#   ros2 service call /<robot_id>/pgo/save_maps ...
+#
+# robot_state stays for the reason it was added, and the old exclusion note's
+# warning still holds and is accepted: it reports state=UNINITIALIZED for the
+# whole run (its pose wants map -> base_link, and mapping's TF chain ends at
+# pointlio_body). Its mode field is what earns it the window — sourced from
+# get_mode, it is what the console's mode chip reads to know the switch to
+# MANUAL landed. The cloud stream is unaffected by the missing localizer either
+# way: pgo broadcasts map -> <robot_id>/pointlio_odom itself, so the TF-to-map
+# path the console's viewer needs resolves without one.
+#
+# The replaced keyboard-teleop window is gone for good: the console's teleop
+# channel covers it without a pane where a stray keypress is a motion command.
+#
+# ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
+# starts in the workspace root so the relative config/system.ini resolves. In
+# the container that path is the bind-mount of config/instances/robotNN.ini, so
+# no system_config:= argument is needed (start_nav.yaml passes none either).
+#
+# Logs go to log/stack/<robot_id>/mapping/ — a subtree of its own, so this spec
+# and start_nav.yaml cannot interleave two multilogs into one directory the way
+# two flat specs would.
+# =============================================================================
+
+# Distinct from start_nav.yaml's `syncai-dev` on purpose: launch_session() opens
+# with `byobu kill-session`, so sharing a name would make starting one tear the
+# other down.
+session: syncai-mapping
+
+# bringup is the window whose log answers "is the lidar alive?", which is the
+# first question of every mapping run. (The old reason — not coming up focused
+# on the keyboard-teleop pane — went away with that pane.)
+select: bringup
+
+windows:
+  # ---------- Window 0: bringup (MID360 driver + lidar_top static TF) ---------
+  # Mandatory and first: the only source of /<robot_id>/livox/{lidar,imu} that
+  # the FAST-LIO2 chain consumes, and the publisher of the lidar_top mount
+  # extrinsic (including the physical tilt) that the LIO solution depends on.
+  - name: bringup
+    panes:
+      - cmd: ros2 launch syncai_bringup bringup.launch.py
+        log: mapping/bringup
+
+  # ---------- Window 1: LIO front end + loop closure -------------------------
+  # Two panes, in start order: pointlio (src/syncai_pointlio, the front end)
+  # then pgo_node (src/syncai_mapping). Both are workspace packages since
+  # 2026-09 -- the FASTLIO2_ROS2 fork contributes nothing to this session any
+  # more. Until then one pane brought up both, because the fork's pgo_launch.py
+  # include()d pointlio_launch.py; the front end moved first and the include
+  # went with it, then pgo followed. pointlio's launch is still the single
+  # definition of how pointlio_node is configured, and the
+  # /<robot_id>/pointlio/{body_cloud,lio_odom,reset} names plus the
+  # <robot_id>/pointlio_odom frame that mapping.launch.py passes as parameter
+  # overrides are the contract with it. pgo also broadcasts
+  # map -> <robot_id>/pointlio_odom itself, so no localizer is needed to have a
+  # complete TF chain while mapping.
+  #
+  # No hard ordering between the two panes: pgo only subscribes, and its
+  # ResetLIO client waits for the service at reset time, not at startup. The
+  # one-second stagger keeps the two logs readable in cause-and-effect order.
+  # The log directory stays `mapping/pgo`: the node and its namespace are
+  # still called pgo, and every doc and ros2 command names it that way.
+  #
+  # Nothing is published until the builder reaches its MAPPING state (IMU init +
+  # first map frame), and the LIO publishers are gated on having subscribers —
+  # so silence here right after launch is normal, not a fault.
+  - name: lio
+    panes:
+      - cmd: ros2 launch syncai_pointlio pointlio.launch.py
+        sleep: 3
+        log: mapping/pointlio
+      - cmd: ros2 launch syncai_mapping mapping.launch.py
+        sleep: 4
+        log: mapping/pgo
+
+  # ---------- Window 2: driver_manager (own window: shutdown path is manual) --
+  # Same reasoning as start_nav.yaml: this is the pane you Ctrl-C by hand, so it
+  # must not be one half of a split where it is easy to hit the wrong one.
+  # Note the safe-shutdown path is not wired up yet — triggerSafeShutdown() is
+  # never called, so Ctrl-C just closes the sockets and stops sending AXES. Lie
+  # the robot down explicitly (key '2', see below) before killing this.
+  - name: driver_manager
+    panes:
+      - cmd: ros2 launch syncai_driver_manager driver_manager.launch.py
+        log: mapping/driver_manager
+
+  # ---------- Window 3: robot_state ----------
+  # Same single pane as start_nav.yaml's counterpart window. robot_state's pose
+  # lookup never succeeds here (see the header) — it is present for battery /
+  # motors / wifi and above all for RobotState.mode, which the console polls to
+  # know the switch to MANUAL landed.
+  #
+  # This is the last window, and it is one pane rather than two because both
+  # processes that used to follow robot_state here are served from elsewhere
+  # now: the frontend dev server left in 2026-09 with `syncai_frontend`, the
+  # backend right after it with `syncai_backend`. Neither is a pane of either
+  # session any more, so a mode switch interrupts neither — which is what the
+  # nav session's window already looks like.
+  - name: robot_state
+    panes:
+      - cmd: ros2 launch syncai_robot_state robot_state.launch.py
+        log: mapping/robot_state

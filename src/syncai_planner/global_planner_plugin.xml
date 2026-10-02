@@ -9,4 +9,9 @@
          base_class_type="syncai_nav_core::GlobalPlanner">
     <description>Straight-line global planner (minimal reference plugin).</description>
   </class>
+  <class name="syncai_planner/SmacPlanner2D"
+         type="syncai_planner::SmacPlanner2D"
+         base_class_type="syncai_nav_core::GlobalPlanner">
+    <description>Cost-aware 2D A* planner ported from nav2_smac_planner.</description>
+  </class>
 </library>

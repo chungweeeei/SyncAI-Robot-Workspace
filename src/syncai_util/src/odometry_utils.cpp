@@ -38,7 +38,7 @@ void OdomSmoother::odomCallback(nav_msgs::msg::Odometry::SharedPtr msg)
     // update cumulated odom when duration has exceeded and pop earliest msg
     while (current_time - front_time > odom_history_duration_) {
       const auto & odom = odom_history_.front();
-      // 舊的odometry msg離開window時 -> 把它「減」掉
+      // When an old odometry msg leaves the window -> subtract it out
       odom_cumulate_.twist.twist.linear.x -= odom.twist.twist.linear.x;
       odom_cumulate_.twist.twist.linear.y -= odom.twist.twist.linear.y;
       odom_cumulate_.twist.twist.linear.z -= odom.twist.twist.linear.z;
@@ -64,8 +64,8 @@ void OdomSmoother::updateState()
 {
   const auto & odom = odom_history_.back();
 
-  // odom_cumulate_ 是「目前窗口內所有odom速度的總和」。
-  // 新的odometry msg進入window時 -> 把它「加」進總和
+  // odom_cumulate_ is the sum of all odom velocities currently inside the window.
+  // When a new odometry msg enters the window -> add it into the sum
   odom_cumulate_.twist.twist.linear.x += odom.twist.twist.linear.x;
   odom_cumulate_.twist.twist.linear.y += odom.twist.twist.linear.y;
   odom_cumulate_.twist.twist.linear.z += odom.twist.twist.linear.z;

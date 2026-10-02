@@ -11,9 +11,10 @@
   "remoteUser": "ros",
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
-  "postCreateCommand": "sudo rosdep init 2>/dev/null || true && rosdep update && rosdep install --from-paths src --ignore-src -r -y",
+  "postCreateCommand": "sudo rosdep init 2>/dev/null || true && rosdep update && rosdep install --from-paths src --ignore-src -r -y && sudo chown ros:ros /workspace/src/syncai_frontend/node_modules && (cd /workspace/src/syncai_frontend && npm ci)",
   "mounts": [
-    "source=syncai-claude,target=/home/ros/.claude,type=volume"
+    "source=syncai-claude,target=/home/ros/.claude,type=volume",
+    "source=syncai-frontend-node-modules,target=/workspace/src/syncai_frontend/node_modules,type=volume"
   ],
   "containerEnv": {
     "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",

@@ -63,7 +63,8 @@ public:
   Costmap2D & operator=(const Costmap2D & map);
 
   /**
-   * @brief  把另一張costmap中某個矩形「窗口」區域複製出來，讓當前Costmap2D物件變成那個窗口的副本。
+   * @brief  Copy a rectangular "window" region out of another costmap so that this Costmap2D
+   *         object becomes a copy of that window.
    * @param  map The costmap to copy
    * @param win_origin_x The x origin (lower left corner) for the window to copy, in meters
    * @param win_origin_y The y origin (lower left corner) for the window to copy, in meters
@@ -75,14 +76,14 @@ public:
     double win_size_y);
 
   /**
-   * @brief 複製來源 costmap 中的 (x0,y0)..(xn,yn) 窗口到當前 costmap
-     @param source 來源 costmap
-     @param sx0 來源窗口的下界 x，單位：cells
-     @param sy0 來源窗口的下界 y，單位：cells
-     @param sxn 來源窗口的上界 x，單位：cells
-     @param syn 來源窗口的上界 y，單位：cells
-     @param dx0 目標窗口的下界 x，單位：cells
-     @param dy0 目標窗口的下界 y，單位：cells
+   * @brief Copy the (x0,y0)..(xn,yn) window of the source costmap into this costmap
+     @param source Source costmap
+     @param sx0 Lower bound x of the source window, in cells
+     @param sy0 Lower bound y of the source window, in cells
+     @param sxn Upper bound x of the source window, in cells
+     @param syn Upper bound y of the source window, in cells
+     @param dx0 Lower bound x of the destination window, in cells
+     @param dy0 Lower bound y of the destination window, in cells
      @returns true if copy was succeeded or false in negative case
    */
   bool copyWindow(
@@ -123,29 +124,34 @@ public:
   void setCost(unsigned int mx, unsigned int my, unsigned char cost);
 
   /**
-   * @brief Costmap 是一張 2D陣列圖，cell用(mx, my) 這種整數index存取；但 planner / TF / sensor 資料用的是 世界座標 (wx, wy)（單位：公尺）。
-   *        mapToWorld 就是把兩個座標系統之間的轉換橋樑
+   * @brief The costmap is a 2D array whose cells are addressed by integer indices (mx, my),
+   *        but planner / TF / sensor data use world coordinates (wx, wy), in meters.
+   *        mapToWorld is the bridge that converts between the two coordinate systems.
    */
   void mapToWorld(unsigned int mx, unsigned int my, double & wx, double & wy) const;
 
   /**
-   * @brief World座標轉成Map座標，輸入的世界座標(wx, wy)會被轉換成整數的地圖座標(mx, my)，並且存在mx, my裡面
+   * @brief World to map coordinates: the input world coordinates (wx, wy) are converted to
+   *        integer map coordinates (mx, my) and stored in mx, my.
    */
   bool worldToMap(double wx, double wy, unsigned int & mx, unsigned int & my) const;
 
   /**
-   * @brief World座標轉成Map座標，輸入的世界座標(wx, wy)會被轉換成浮點數的地圖座標(mx, my)，並且存在mx, my裡面
-   *        保留Cell的小數部分。
+   * @brief World to map coordinates: the input world coordinates (wx, wy) are converted to
+   *        floating-point map coordinates (mx, my) and stored in mx, my, keeping the
+   *        fractional part of the cell.
    */
   bool worldToMapContinuous(double wx, double wy, float & mx, float & my) const;
 
   /**
-   * @brief 不做邊界檢查，回傳int(可以是負值) 給內部已經確認邊界、追求極限速度的迴圈用。
+   * @brief No bounds checking; returns int (may be negative). For internal loops that have
+   *        already verified the bounds and want maximum speed.
    */
   void worldToMapNoBounds(double wx, double wy, int & mx, int & my) const;
 
   /**
-    * @brief 邊界外的值會被 clip 到邊界內，不會失敗。給「找最近的合法 cell」這種需求
+    * @brief Values outside the map are clipped to the boundary, so it never fails. For needs
+    *        like "find the nearest valid cell".
     */
   void worldToMapEnforceBounds(double wx, double wy, int & mx, int & my) const;
 
@@ -177,7 +183,8 @@ public:
   unsigned char getDefaultValue() { return default_value_; }
 
   /**
-   * @brief 把「一個凸多邊形（在世界座標）區域內的所有cell，全部assign成指定的cost值」
+   * @brief Assign the given cost value to every cell inside a convex polygon (given in world
+   *        coordinates).
    */
   bool setConvexPolygonCost(
     const std::vector<geometry_msgs::msg::Point> & polygon, unsigned char cost_value);
@@ -191,7 +198,7 @@ public:
   virtual void updateOrigin(double new_origin_x, double new_origin_y);
 
   /**
-   * @brief 把當前costmap輸出成一份pgm檔案
+   * @brief Write the current costmap out as a pgm file
    */
   bool saveMap(std::string file_name);
 
@@ -242,17 +249,17 @@ protected:
     }
   }
   /**
-    * @brief 刪除costmap, static map和所有markers裡面的資料.
+    * @brief Delete the data of the costmap, the static map and all markers.
     */
   virtual void deleteMaps();
 
   /**
-   * @brief 重置costmap和static map裡面所有的cell值成unknown space.
+   * @brief Reset every cell of the costmap and the static map to unknown space.
    */
   virtual void resetMaps();
 
   /**
-   * @brief 初始化整個costmap和static map跟所以markers裡面的資料.
+   * @brief Initialize the data of the whole costmap, the static map and all markers.
    */
   virtual void initMaps(unsigned int size_x, unsigned int size_y);
 
@@ -351,7 +358,8 @@ protected:
   unsigned char * costmap_;
   unsigned char default_value_;
 
-  // MarkCell是一個functor(函式物件)，扮演「ray-tracing 走過每個 cell 時要做什麼動作」
+  // MarkCell is a functor (function object) that plays the role of "what to do at each cell
+  // the ray-tracing walks over"
   class MarkCell
   {
   public:
@@ -364,7 +372,8 @@ protected:
     unsigned char value_;
   };
 
-  // PolygonOutlineCells 是一個「收集器」functor，作用在「在ray-trace走線時，把經過的每個 cell 座標收集到 vector 裡」
+  // PolygonOutlineCells is a "collector" functor: while ray-tracing a line, it collects the
+  // coordinates of every cell it passes through into a vector
   class PolygonOutlineCells
   {
   public:

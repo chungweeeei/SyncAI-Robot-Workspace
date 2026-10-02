@@ -15,5 +15,8 @@
     <class type="syncai_controller::PositionGoalChecker" base_class_type="syncai_nav_core::GoalChecker">
       <description>Checks position difference to the goal, ignoring orientation</description>
     </class>
+    <class type="syncai_controller::RegulatedPurePursuitController" base_class_type="syncai_nav_core::Controller">
+      <description>Regulated pure pursuit controller</description>
+    </class>
   </library>
 </class_libraries>

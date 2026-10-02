@@ -97,7 +97,7 @@ protected:
    * @param p2 Point 2
    * @return double squared distance between two points
    */
-  inline double squared_distance(
+  inline double squaredDistance(
     const geometry_msgs::msg::Pose & p1, const geometry_msgs::msg::Pose & p2)
   {
     double dx = p1.position.x - p2.position.x;

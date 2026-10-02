@@ -1,0 +1,24 @@
+{
+  "comment": [
+    "Per-package cmake args, auto-discovered by colcon when it runs with the",
+    "workspace root as cwd (colcon's --metas defaults to ./colcon.meta).",
+    "",
+    "livox_ros_driver2: upstream never intends its CMakeLists to be configured by a",
+    "bare `colcon build` -- its own build.sh always passes these two flags. Without",
+    "DISTRO_ROS the CMakeLists takes a pre-Humble branch that sets",
+    "LIVOX_INTERFACES_INCLUDE_DIRECTORIES via get_target_property on a target name",
+    "that no longer exists under Humble, and configure dies with NOTFOUND. Rather",
+    "than patch the submodule (it is pinned upstream, unmodified), we reproduce the",
+    "flags build.sh would have passed. ROS_EDITION would default correctly today,",
+    "but it is spelled out because the CMakeLists tests it with STREQUAL and an",
+    "empty value silently means ROS2 by accident, not by intent."
+  ],
+  "names": {
+    "livox_ros_driver2": {
+      "cmake-args": [
+        "-DROS_EDITION=ROS2",
+        "-DDISTRO_ROS=humble"
+      ]
+    }
+  }
+}

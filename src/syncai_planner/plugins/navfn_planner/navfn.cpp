@@ -16,7 +16,7 @@ namespace syncai_planner
 // Example usage:
 /*
 int
-create_nav_plan_astar(
+createNavPlanAstar(
   COSTTYPE * costmap, int nx, int ny,
   int * goal, int * start,
   float * plan, int nplan)

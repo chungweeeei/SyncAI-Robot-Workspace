@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Build the workspace with colcon. Everything under src/ is an ament or plain
+# CMake package, so "every ROS 2 package" and "everything colcon finds" are the
+# same set — the two exceptions this header used to carve out (syncai_frontend,
+# built by npm; syncai_backend, whose deps came from pip) both left the
+# workspace in 2026-09 for their own repositories.
+#
+# Runs INSIDE the robot image, either as the entrypoint of the one-shot
+# service in docker-compose.build.yaml
+#
+#   docker compose -f docker-compose.build.yaml run --rm build [colcon args...]
+#
+# or by hand in the live robot container
+#
+#   docker compose exec robot01 scripts/build.sh [colcon args...]
+#
+# Every argument is appended to `colcon build --symlink-install`, so
+# `--packages-select syncai_planner` or `--parallel-workers 2` work as they
+# would on a bare colcon invocation.
+#
+# Steps, each switchable through the environment (defaults in parentheses):
+#   BUILD_ROSDEP    check|install|off  (check)   see below
+#   BUILD_COLCON    1|0                (1)       off = run only the checks above it
+#
+# `rosdep check` rather than `rosdep install` by default: when this runs in the
+# throwaway build container, anything apt installs there is gone at exit and
+# never reaches robot01 — the build would pass here and the node would die at
+# runtime on a missing .so. A missing dependency is a Dockerfile change, and
+# the check prints the keys to add. `install` exists to get a build through
+# while that change is being made. The keys rosdep reports as "cannot locate"
+# (libgraphicsmagick++1-dev, python3-assertpy-pip) are satisfied by the image's
+# apt lines under names rosdep does not know, and the two it reports as "not
+# satisfied" (libomp-dev from small_gicp's manifest -- OpenMP comes from gcc's
+# libgomp; python3-pytest-mock, a test_depend) do not stop a build; that
+# output is noise, not a failure. GTSAM and livox_sdk2 used to be on the list
+# and left it with the fork's manifests in 2026-09 -- the workspace packages
+# that need them deliberately do not declare a key (see their package.xml).
+# =============================================================================
+set -euo pipefail
+
+# Everything below is relative to the workspace root: colcon.meta is only
+# found there (colcon's --metas defaults to ./colcon.meta), and the livox
+# flags in it are what make livox_ros_driver2 configure at all.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+WS="$(pwd)"
+
+BUILD_ROSDEP="${BUILD_ROSDEP:-check}"
+BUILD_COLCON="${BUILD_COLCON:-1}"
+
+step() { printf '\n==> %s\n' "$*"; }
+die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
+
+[ -f /opt/ros/humble/setup.bash ] || \
+    die "no ROS 2 Humble at /opt/ros/humble — run this inside the robot image" \
+        "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
+
+# --- 1. vcs checkouts --------------------------------------------------------
+# Two groups of directories in src/ are materialised by vcstool rather than
+# tracked here, and all of them are empty in a fresh clone. Importing is left to
+# the host on purpose: the checkouts are the host's working tree bind-mounted
+# in, and a build must not mutate what git sees on the host (the one SSH
+# remote, the FAST-LIO2 fork, left in 2026-09 with the localizer port, so
+# credentials are no longer the reason).
+#
+# Checking them up front rather than letting colcon do it: an empty
+# src/third-party dir makes colcon silently build the in-tree packages and fail
+# on the first `find_package` that needed one of them, and an absent
+# src/syncai_common fails every package at once with a message about a missing
+# ament package, neither of which says "you forgot to import". This does.
+step "checking vcs checkouts"
+missing=""
+for dir in third-party/behaviortree_cpp_v3 third-party/Livox-SDK2 \
+           third-party/livox_ros_driver2 third-party/small_gicp \
+           third-party/vizionsdk-ros2; do
+    if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
+        echo "  MISSING src/${dir}"
+        missing="${missing} third-party.repos"
+    fi
+done
+if [ -z "$(ls -A src/syncai_common 2>/dev/null)" ]; then
+    echo "  MISSING src/syncai_common"
+    missing="${missing} interface.repos"
+fi
+if [ -n "${missing}" ]; then
+    # Deduplicate: five empty third-party dirs are still one missing import.
+    lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
+    die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
+        "$(for l in ${lists}; do printf '\n  vcs import < %s' "$l"; done)"
+fi
+
+# livox_ros_driver2 ships package_ROS2.xml and gitignores package.xml (its
+# build.sh does the copy). Every re-import therefore deletes the copy and every
+# ament package in the workspace fails to configure. Restore it
+# when absent; never overwrite one that is there (it may be a ROS1 copy
+# someone made on purpose — unlikely, but the copy costs nothing to skip).
+livox=src/third-party/livox_ros_driver2
+if [ ! -f "${livox}/package.xml" ]; then
+    echo "  restoring ${livox}/package.xml from package_ROS2.xml"
+    cp -f "${livox}/package_ROS2.xml" "${livox}/package.xml"
+fi
+
+# --- 2. ROS environment ------------------------------------------------------
+# Underlay only. Sourcing install/setup.bash before building would overlay
+# the workspace on itself, which colcon warns about and which can pin stale
+# paths into the new build.
+# ROS's setup scripts read variables they never set (AMENT_TRACE_SETUP_FILES,
+# COLCON_TRACE, ...) and die under `set -u`, so nounset is lifted just around
+# the source.
+set +u
+# shellcheck disable=SC1091
+source /opt/ros/humble/setup.bash
+set -u
+
+# --- 3. rosdep ---------------------------------------------------------------
+case "$BUILD_ROSDEP" in
+    check)
+        step "rosdep check (report only — unmet apt keys belong in the Dockerfile)"
+        # Exit status deliberately ignored: the unknown-key errors listed in
+        # the header make it non-zero on a perfectly buildable image.
+        rosdep check --from-paths src --ignore-src || true
+        ;;
+    install)
+        step "rosdep install (into THIS container only)"
+        rosdep install --from-paths src --ignore-src -r -y
+        ;;
+    off) ;;
+    *) die "BUILD_ROSDEP must be check, install or off (got '${BUILD_ROSDEP}')" ;;
+esac
+
+# --- 4. colcon ---------------------------------------------------------------
+if [ "$BUILD_COLCON" = "1" ]; then
+    step "colcon build --symlink-install $*"
+    colcon build --symlink-install "$@"
+fi
+
+step "done: ${WS}"
+if [ "$BUILD_COLCON" = "1" ]; then
+    echo "  robot01 picks the new install/ up on the next session (re)build:"
+    echo "  ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode \"{mode: 2}\""
+fi

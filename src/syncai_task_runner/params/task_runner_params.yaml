@@ -1,6 +1,6 @@
 /**/task_runner:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
 
     # Frames / topics (base_frame is overridden by the launch file with the
     # <robot_id>/ prefix from config/system.ini; global_frame stays "map")
@@ -9,7 +9,8 @@
     odom_topic: odom
     transform_tolerance: 0.1
 
-    # BT engine loop: 10 ms => the whole tree is ticked at 100 Hz.
+    # BT engine loop period in ms: 50 ms => the whole tree is ticked at 20 Hz.
+    # This value also becomes every BT node's per-tick spin budget (halved).
     bt_loop_duration: 50
     # How long (ms) a BT action/service client waits on its server per goal.
     default_server_timeout: 20
@@ -23,8 +24,8 @@
     # nodes are added. XML tag names must match what each plugin registers.
     plugin_lib_names:
       - syncai_compute_path_to_pose_action_bt_node
-      - syncai_compute_path_through_poses_action_bt_node
       - syncai_follow_path_action_bt_node
-      - syncai_remove_passed_goals_action_bt_node
+      - syncai_clear_costmap_service_bt_node
       - syncai_pipeline_sequence_bt_node
+      - syncai_recovery_node_bt_node
       - syncai_rate_controller_bt_node

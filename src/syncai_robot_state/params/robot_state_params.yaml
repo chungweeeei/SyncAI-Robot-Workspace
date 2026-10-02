@@ -7,12 +7,38 @@
     # fallbacks when the node is run without the launch file.
     robot_id: "default_robot"
     # Map name stamped into RobotState.map. Usually overridden from the launch file.
-    map: "warehouse"
+    map: "dp2f_full"
     # TF frames used for the position lookup (global_frame -> base_frame).
     # global_frame stays "map"; base_frame gets the <robot_id>/ prefix at launch.
     global_frame: "map"
     base_frame: "base_link"
     # TF lookup tolerance in seconds.
     transform_tolerance: 0.1
-    # Odometry topic the forward velocity is read from.
-    odom_topic: "odom"
+    # Publish rate for robot_state, in Hz. The code default is 10.0; this was
+    # lowered to 1 Hz because the readers are operators watching joint
+    # temperatures or chasing a localization dropout, and a once-a-second status
+    # aggregate is plenty for that — anything needing sub-second data (the
+    # backend's telemetry WebSocket) subscribes motor_states / odom directly.
+    # Raising it does not make the message more orderable either:
+    # RobotState.timestamp has whole-second resolution, so above 1 Hz
+    # consecutive messages simply repeat it.
+    publish_rate: 1.0
+    # How often to poll sys_manager's get_mode for RobotState.mode, in Hz. Kept
+    # slow on purpose: every call spawns `byobu has-session` subprocesses in
+    # sys_manager, and the mode only changes over a tens-of-seconds switch.
+    mode_poll_rate: 1.0
+    # Low-battery hysteresis, in percent (0-100), driving state = WARNING.
+    #
+    # 20% is the number already used elsewhere for the same condition: the
+    # unwired "soc < 20%" safety TODO in syncai_driver_manager, the reference
+    # GaitMPC bridge that acts on it, and the frontend status strip's battery
+    # colour. This node is where the judgement now lives — but it only reports,
+    # it does not lie the robot down.
+    #
+    # The two values must differ: entering at 20% and only clearing above 25%
+    # stops a pack sitting on the threshold from flipping the state on every
+    # publish — once a second at the 1 Hz shipped above, ten times a second at
+    # the 10 Hz code default. A clear value <= the warn value is rejected at
+    # startup and both fall back to 20/25.
+    low_battery_warn_percentage: 20.0
+    low_battery_clear_percentage: 25.0

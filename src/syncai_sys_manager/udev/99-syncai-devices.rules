@@ -1,0 +1,78 @@
+# udev rules for the SyncAI robot's hot-pluggable peripherals.
+#
+# udev runs on the HOST, not in the robot container — install these there:
+#
+#   sudo cp src/syncai_sys_manager/udev/99-syncai-devices.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger
+#
+# The robot container gets the raw /dev/videoN nodes via docker-compose device
+# passthrough; the /dev/syncai/* symlinks created here live on the host and are
+# what the compose file (and any host-side tooling) should reference, so the
+# passthrough no longer depends on kernel enumeration order.
+
+# ── Cameras ──────────────────────────────────────────────────────────────────
+# Two TechNexion UVC cameras. As of 2026-08 both units on the robot are the
+# SAME model — VCS-AR0234-C, 3407:57d1 — so neither the product ID nor any
+# other USB descriptor field except the serial can tell them apart. The match
+# below is therefore on ATTRS{serial}:
+#
+#   0000000014C4006204441280C7106134 → camera0   (today's /dev/video0, port 2-3.1)
+#   000000001056074A0551C45186388248 → camera1   (today's /dev/video2, port 2-3.4)
+#
+# The camera0/camera1 assignment is arbitrary between two identical sensors;
+# it was chosen to keep camera0 pointing at the unit it already resolved to
+# (the one on 2-3.1), so `publish_camera*.sh` and bringup's device_index 0
+# keep addressing the same physical camera as before.
+#
+# This file has now been wrong twice about how to tell these two apart, so both
+# dead ends are recorded here rather than rediscovered a third time:
+#
+#   1. KERNELS=="2-3.1" / "2-3.4" (USB port path). Matched nothing after the
+#      cameras were re-cabled off the hub, and a port path is not the property
+#      we care about — it changes when someone moves a plug.
+#   2. ATTRS{idProduct}=="57d1" / "0144" (per-model, on the assumption the
+#      second unit was a VCI-AR0144-C). The 0144 rule matched nothing because
+#      no such device is on the bus, and — the quieter half of the bug — the
+#      57d1 rule then matched BOTH cameras, so /dev/video0 and /dev/video2 each
+#      claimed `syncai/camera0`. udev hands a contested symlink to exactly one
+#      device, so camera0 still appeared and looked healthy while silently
+#      pointing at whichever unit won that race. Two rules that can match the
+#      same node are the failure mode to watch for here, not just a rule that
+#      matches none.
+#
+# Serials survive both a re-cable and a re-enumeration; they do NOT survive
+# swapping in a replacement camera, which is the one maintenance event that
+# requires editing this file. Read the new serial off
+# `udevadm info -q property -n /dev/videoN | grep ID_SERIAL_SHORT`.
+#
+# If the fleet ever does carry two different models again, matching on
+# idProduct is fine for that pair — but keep one rule per physical camera, so
+# no two rules can claim the same SYMLINK name.
+#
+# Each UVC camera exposes TWO video4linux nodes: index 0 is the actual video
+# capture node, index 1 is a UVC metadata node that produces no frames. That
+# is why /dev/video1 and /dev/video3 exist but are useless as cameras — the
+# ATTR{index}=="0" match below skips the metadata nodes so the symlinks can
+# never land on one.
+#
+# The old `camera_ar0234` / `camera_ar0144` model aliases are gone. They existed
+# so a consumer could ask for a sensor by model when the two differed in max
+# resolution and frame rate; with two identical units the name no longer
+# selects anything, and `camera_ar0234` was in fact the second contested
+# symlink of dead end 2 above. Restore per-model aliases along with a mixed
+# pair, not before.
+SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", ATTRS{serial}=="0000000014C4006204441280C7106134", SYMLINK+="syncai/camera0"
+SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="3407", ATTRS{idProduct}=="57d1", ATTRS{serial}=="000000001056074A0551C45186388248", SYMLINK+="syncai/camera1"
+
+# ── Speaker ──────────────────────────────────────────────────────────────────
+# USB audio dongle (Jieli CD002-AUDIO, e2b8:0811). Its ALSA card number is
+# whatever enumerates after the Tegra HDA/APE cards (card 2 today) and is not
+# guaranteed stable, but the card *name* "CD002AUDIO" is derived from the USB
+# descriptor and is — so audio consumers (e.g. the backend TTS gateway) should
+# open it as ALSA device "hw:CARD=CD002AUDIO" / "plughw:CARD=CD002AUDIO"
+# rather than by number. The symlinks below exist for presence detection and
+# for recovering the current card number without parsing aplay output: the
+# link target's name embeds it (controlC<N> / pcmC<N>D0p).
+SUBSYSTEM=="sound", KERNEL=="controlC[0-9]*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="e2b8", ATTRS{idProduct}=="0811", SYMLINK+="syncai/speaker"
+SUBSYSTEM=="sound", KERNEL=="pcmC[0-9]*D0p", SUBSYSTEMS=="usb", ATTRS{idVendor}=="e2b8", ATTRS{idProduct}=="0811", SYMLINK+="syncai/speaker_pcm"

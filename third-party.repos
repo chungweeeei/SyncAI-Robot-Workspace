@@ -1,0 +1,64 @@
+# Third-party sources for src/third-party/, managed with vcstool (not submodules).
+#
+#   vcs import < third-party.repos          # populate a fresh clone
+#   vcs import < third-party.repos --force  # re-checkout after changing a pin below
+#   vcs status src                          # what is actually checked out
+#
+# Paths are relative to the import target, which defaults to the current
+# directory -- and every key below is written from the workspace root
+# (`src/third-party/...`), so run these there, like everything else here. Adding
+# an explicit `src` target does NOT work: the keys already carry `src/`, so the
+# repos would land in `src/src/third-party/`.
+#
+# Never add --shallow: two of the pins below are commit SHAs, and a shallow
+# clone can only fetch named refs (branches/tags), so the checkout would fail.
+#
+# Every entry is a public HTTPS remote. The one SSH entry, the FAST-LIO2 fork
+# (chungweeeei/SyncAI-Fast-LIO2 at src/third-party/FASTLIO2_ROS2), left in
+# 2026-09 once its last package, `localizer`, had been ported in-tree as
+# src/syncai_localizer -- pointlio, pgo, hba and its `interface` srvs had gone
+# the same way earlier that month. These five plus interface.repos are the whole
+# build (verified with the fork's directory deleted: 22 packages, 2026-09-28).
+# An old checkout of it still on disk builds a second `localizer` package with
+# its own localizer_node; delete the directory (and build/localizer,
+# install/localizer) rather than keeping it.
+#
+# `src/third-party/` is gitignored -- these repos are materialised, not committed.
+# To bump one, edit its `version` here and commit that one-line diff; the old
+# two-commit submodule dance (checkout inside, commit the pointer outside) is gone.
+#
+# After EVERY import, regenerate the livox driver's package.xml -- the repo ships
+# only package_ROS1.xml / package_ROS2.xml and its own build.sh is what copies one
+# into place, so without this step every ament package in the workspace fails to
+# configure (see CLAUDE.md, "Build"):
+#
+#   cp -f src/third-party/livox_ros_driver2/package_ROS2.xml \
+#         src/third-party/livox_ros_driver2/package.xml
+repositories:
+  src/third-party/behaviortree_cpp_v3:
+    type: git
+    url: https://github.com/BehaviorTree/BehaviorTree.CPP.git
+    version: "3.8.8"
+  src/third-party/Livox-SDK2:
+    # One commit past upstream v1.3.1, so there is no tag to name.
+    # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into
+    # /usr/local, where livox_ros_driver2's find_library picks it up); the robot
+    # Dockerfile pins a different one. Keep them in mind when bumping this.
+    type: git
+    url: https://github.com/Livox-SDK/Livox-SDK2.git
+    version: 68ae1e1dc77f61f03c95d7c2809831e198d0aedd
+  src/third-party/livox_ros_driver2:
+    type: git
+    url: https://github.com/Livox-SDK/livox_ros_driver2.git
+    version: "1.2.6"
+  src/third-party/small_gicp:
+    type: git
+    url: https://github.com/koide3/small_gicp.git
+    version: v1.0.1
+  src/third-party/vizionsdk-ros2:
+    # Branch `main`, no tags upstream -- pinned to a SHA because the branch tip
+    # moves, and an import that silently pulls new driver code onto a robot is
+    # not reproducible. Links against the VizionSDK .deb the robot image installs.
+    type: git
+    url: https://github.com/TechNexion-Vision/vizionsdk-ros2.git
+    version: 8a0df2fddcabe51830a211846467f283eb0edac8

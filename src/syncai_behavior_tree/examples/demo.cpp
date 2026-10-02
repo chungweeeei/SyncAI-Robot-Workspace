@@ -37,15 +37,16 @@ struct Position2D
   double y;
 };
 
-// 當 blackboard 上存的是「字串」(例如 SetBlackboard value="-1;3")，
-// 而某個 InputPort<Position2D> 要去讀它時，BT 會呼叫這個特化把字串 parse 成 struct。
-// 注意：一定要放在 namespace BT 裡。
+// When the blackboard holds a string (e.g. SetBlackboard value="-1;3") and some
+// InputPort<Position2D> wants to read it, BT calls this specialisation to parse the string into
+// the struct.
+// Note: it must be placed inside namespace BT.
 namespace BT
 {
 template <>
 Position2D convertFromString(StringView str)
 {
-  // 預期格式 "x;y"
+  // Expected format "x;y"
   const auto parts = splitString(str, ';');
   if (parts.size() != 2) {
     throw RuntimeError("invalid input for Position2D, expected \"x;y\"");
@@ -58,7 +59,7 @@ Position2D convertFromString(StringView str)
 }
 }  // namespace BT
 
-// 寫入端：把一個自訂 struct (Position2D) 寫進 blackboard。
+// Writer side: write a custom struct (Position2D) into the blackboard.
 class SetGoal : public BT::SyncActionNode
 {
 public:
@@ -81,8 +82,8 @@ public:
   }
 };
 
-// 讀取端：用 InputPort<Position2D> 把同一個 struct 從 blackboard 讀回來。
-// 因為值是以 Position2D 型別整個存在 blackboard 上，這裡不需要 convertFromString。
+// Reader side: read the same struct back from the blackboard through InputPort<Position2D>.
+// The value is stored on the blackboard as a whole Position2D, so no convertFromString is needed.
 class ShowGoal : public BT::SyncActionNode
 {
 public:
@@ -108,9 +109,9 @@ public:
   }
 };
 
-// 直接繼承 ActionNodeBase：tick() 與 halt() 都必須自己實作。
-// 這裡模擬一個「需要好幾個 tick 才完成」的動作，所以會回傳 RUNNING，
-// 並用內部 counter_ 自己管理進度，halt() 負責被中斷時的清理。
+// Derives directly from ActionNodeBase: both tick() and halt() must be implemented by hand.
+// This simulates an action that needs several ticks to finish, so it returns RUNNING, tracks
+// its own progress in counter_, and halt() does the cleanup when it is interrupted.
 class DoSomething : public BT::ActionNodeBase
 {
 public:
@@ -123,16 +124,16 @@ public:
   {
     return {
       BT::InputPort<std::string>("answer", "Answer to the question"),
-      // OutputPort：宣告這個節點會「寫出」一個值到 blackboard
-      // 注意：這裡的 "text" 是「port 名稱」，跟 blackboard key 無關。
-      // XML 寫 text="{message}" → port「text」綁到 blackboard 的「message」key。
+      // OutputPort: declares that this node writes a value out to the blackboard.
+      // Note: "text" here is the port name, unrelated to the blackboard key.
+      // Writing text="{message}" in the XML binds port "text" to the blackboard key "message".
       BT::OutputPort<std::string>("text", "Message written to the blackboard")};
   }
 
-  // 因為會回傳 RUNNING，必須自己實作 tick()
+  // Because it returns RUNNING, tick() has to be implemented by hand
   BT::NodeStatus tick() override
   {
-    // 第一次被 tick：初始化進度
+    // First tick: initialise the progress
     if (status() == BT::NodeStatus::IDLE) {
       counter_ = 0;
       std::cout << "DoSomething: start working..." << std::endl;
@@ -141,7 +142,7 @@ public:
     ++counter_;
     std::cout << "DoSomething: working... (" << counter_ << "/3)" << std::endl;
 
-    // 還沒做完 → 回傳 RUNNING，框架下一輪會再 tick 進來
+    // Not done yet -> return RUNNING; the framework ticks us again next round
     if (counter_ < 3) {
       return BT::NodeStatus::RUNNING;
     }
@@ -153,15 +154,15 @@ public:
 
     std::cout << "DoSomething: done, answer is \"" << answer.value() << "\"" << std::endl;
 
-    // setOutput 的第一個參數是「port 名稱」，要跟 providedPorts() 宣告的一致 → "text"。
-    // 值會經由 XML 的 text="{message}" 綁定，存進 blackboard 的 "message" key，
-    // 之後 <SaySomething message="{message}"/> 就能讀到。
+    // The first argument of setOutput is the port name and must match providedPorts() -> "text".
+    // Through the XML binding text="{message}" the value lands in the blackboard key "message",
+    // where <SaySomething message="{message}"/> can then read it.
     setOutput("text", "The answer is " + answer.value());
 
     return BT::NodeStatus::SUCCESS;
   }
 
-  // 因為是 RUNNING 節點，必須自己實作 halt()：被上層中斷時重置進度
+  // A node that returns RUNNING must implement halt(): reset progress when interrupted from above
   void halt() override
   {
     std::cout << "DoSomething: halted, resetting progress." << std::endl;
@@ -182,15 +183,16 @@ int main(int argc, char ** argv)
   factory.registerNodeType<SetGoal>("SetGoal");
   factory.registerNodeType<ShowGoal>("ShowGoal");
 
-  // tutorial 07：把子樹 GoalChecker 拆成獨立的 XML 檔，
-  // 再用 <include> 從主樹拉進來。先把子樹寫到一個絕對路徑的檔案。
-  // 注意：createTreeFromText 不會設定 include 的相對路徑基準，所以 include 要用絕對路徑。
+  // tutorial 07: split the GoalChecker subtree into its own XML file and pull it into the main
+  // tree with <include>. First write the subtree to a file at an absolute path.
+  // Note: createTreeFromText sets no base directory for relative includes, so the include must
+  // use an absolute path.
   const std::string subtree_path = "/tmp/goal_checker_subtree.xml";
   {
     std::ofstream ofs(subtree_path);
     ofs << R"(
     <root>
-      <!-- 子樹：內部只認得自己 blackboard 上的 "target"。 -->
+      <!-- Subtree: internally it only knows "target" on its own blackboard. -->
       <BehaviorTree ID="GoalChecker">
         <Sequence>
           <SaySomething message="--- inside subtree GoalChecker (from included file) ---"/>
@@ -201,8 +203,8 @@ int main(int argc, char ** argv)
     )";
   }
 
-  // 主樹：用 <include path="..."/> 把上面那個檔案的樹定義拉進來，
-  // 之後 <SubTree ID="GoalChecker"> 就能解析到。
+  // Main tree: pull in the tree definition from the file above with <include path="..."/>, so
+  // that <SubTree ID="GoalChecker"> can be resolved afterwards.
   static const char * xml_text = R"(
   <root main_tree_to_execute="MainTree">
 
@@ -211,7 +213,7 @@ int main(int argc, char ** argv)
     <BehaviorTree ID="MainTree">
       <Sequence name="root">
         <SetGoal goal="{the_goal}"/>
-        <!-- classic <SubTree> 的 remap:值「不要」加大括號,直接寫父樹的 key 名稱。 -->
+        <!-- classic <SubTree> remap: NO braces around the value, just the parent tree's key. -->
         <SubTree ID="GoalChecker" target="the_goal"/>
       </Sequence>
     </BehaviorTree>
@@ -221,7 +223,7 @@ int main(int argc, char ** argv)
 
   auto tree = factory.createTreeFromText(xml_text);
 
-  // DoSomething 會回傳 RUNNING，要用 tickRootWhileRunning 迴圈跑到完成
+  // DoSomething returns RUNNING, so loop with tickRootWhileRunning until the tree completes
   tree.tickRootWhileRunning();
 
   rclcpp::shutdown();

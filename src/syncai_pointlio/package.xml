@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>syncai_pointlio</name>
+  <version>0.0.0</version>
+  <description>
+    Point-LIO front end (point-by-point lidar-inertial odometry, output model)
+    for the Livox MID360: the only source of pointlio/lio_odom, pointlio/body_cloud
+    and the pointlio_odom -&gt; pointlio_body TF the rest of the stack consumes.
+    Ported from SyncAI-Fast-LIO2's `pointlio` package (itself refactored from
+    HKU MaRS Point-LIO in the liangheming/FASTLIO2_ROS2 style) in 2026-09.
+  </description>
+  <maintainer email="chungweeeei@gmail.com">andy_tseng</maintainer>
+  <!-- MIT, not Apache-2.0 like the other syncai_* packages: map_builder/ is
+       derived from Point-LIO and ikd-Tree, and the LICENSE file is theirs. -->
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>livox_ros_driver2</depend>
+  <!-- The `reset` service type (syncai_common/srv/ResetLIO). It lives in the
+       workspace-wide interface package, materialised by
+       `vcs import < interface.repos`, because the client (pgo_node) is in
+       SyncAI-Fast-LIO2 and the server is here. -->
+  <depend>syncai_common</depend>
+
+  <!-- Not listed on purpose: PCL, Eigen and Sophus. PCL / Eigen arrive through
+       pcl_conversions' own rosdep chain (libpcl-dev, libeigen3-dev). Sophus has
+       no rosdep key matching what the robot image ships (it is source-built
+       into /usr/local by the Dockerfile's deps-builder stage with
+       SOPHUS_USE_BASIC_LOGGING=ON), and scripts/build.sh runs `rosdep check`,
+       so a key here would only add a "cannot locate" line that reads like an
+       error. Same treatment GTSAM gets in syncai_mapping. -->
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
