@@ -324,8 +324,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        `cargo build` that lays binaries out per REP 122 so
 #                        `ros2 run` / `ros2 launch` find them.
 #   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
-#                        package.xml + Cargo.toml package. Packages without a
-#                        Cargo.toml (every one in src/ today) are unaffected.
+#                        package.xml + Cargo.toml package. That is exactly one
+#                        package since 2026-10 -- syncai_driver_manager, which
+#                        vcs imports from SyncAI-Robot-Driver-Manager (see
+#                        driver-manager.repos); the rest of src/ has no
+#                        Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override
 # the uid at runtime (see the syncrobotic user in base); the tree is made
@@ -338,7 +341,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 # rosidl_generator_rs (ros2-rust/rosidl_rust, plus the humble branches of
 # common_interfaces / rcl_interfaces / rosidl_defaults / rosidl_core in the
 # workspace) — the apt-installed interfaces ship no Rust bindings. That is a
-# workspace (.repos) change, not an image change.
+# workspace (.repos) change, not an image change, and it is an OPEN one: since
+# syncai_driver_manager became an rclrs package in 2026-10 the workspace has a
+# Rust node whose message crates nothing generates yet, so a build that reaches
+# it fails on them. Adding ros2-rust's own ros2_rust_humble.repos is the fix;
+# nothing below needs to move for it.
 ARG RUST_TOOLCHAIN=1.89.0
 ENV RUSTUP_HOME=/opt/rust/rustup \
     CARGO_HOME=/opt/rust/cargo \

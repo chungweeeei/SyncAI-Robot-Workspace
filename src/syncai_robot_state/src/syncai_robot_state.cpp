@@ -282,8 +282,10 @@ void RobotStateNode::updateHealthLatches()
   // above 25% costs one bool.
   //
   // This node REPORTS ONLY. Crossing the threshold does not lie the robot down
-  // or block cmd_vel — syncai_driver_manager's triggerSafeShutdown() still has
-  // zero call sites, and who owns that actuation is deliberately still open.
+  // or block cmd_vel — syncai_driver_manager's safe-shutdown path still has zero
+  // production call sites (SafetyLock::trigger since the 2026-10 rclrs rewrite,
+  // triggerSafeShutdown() before it), and who owns that actuation is
+  // deliberately still open.
   double percentage = 0.0;
   bool have_sample = false;
   {

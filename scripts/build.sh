@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Build the workspace with colcon. Everything under src/ is an ament or plain
-# CMake package, so "every ROS 2 package" and "everything colcon finds" are the
-# same set — the two exceptions this header used to carve out (syncai_frontend,
-# built by npm; syncai_backend, whose deps came from pip) both left the
-# workspace in 2026-09 for their own repositories.
+# Build the workspace with colcon. Everything under src/ is a package colcon
+# knows how to build on its own — ament_cmake, plain CMake, ament_python, and
+# since 2026-10 one ament_cargo package (syncai_driver_manager, through the
+# colcon-cargo / colcon-ros-cargo the image installs) — so "every ROS 2 package"
+# and "everything colcon finds" are the same set. The two exceptions this header
+# used to carve out (syncai_frontend, built by npm; syncai_backend, whose deps
+# came from pip) both left the workspace in 2026-09 for their own repositories.
 #
 # Runs INSIDE the robot image, either as the entrypoint of the one-shot
 # service in docker-compose.build.yaml
@@ -56,7 +58,7 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
         "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
 
 # --- 1. vcs checkouts --------------------------------------------------------
-# Two groups of directories in src/ are materialised by vcstool rather than
+# Three groups of directories in src/ are materialised by vcstool rather than
 # tracked here, and all of them are empty in a fresh clone. Importing is left to
 # the host on purpose: the checkouts are the host's working tree bind-mounted
 # in, and a build must not mutate what git sees on the host (the one SSH
@@ -65,9 +67,12 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 #
 # Checking them up front rather than letting colcon do it: an empty
 # src/third-party dir makes colcon silently build the in-tree packages and fail
-# on the first `find_package` that needed one of them, and an absent
+# on the first `find_package` that needed one of them, an absent
 # src/syncai_common fails every package at once with a message about a missing
-# ament package, neither of which says "you forgot to import". This does.
+# ament package, and an absent src/syncai_driver_manager fails nothing at all --
+# colcon just builds a workspace with no gait-controller bridge in it, and the
+# robot stands still at the first cmd_vel. None of the three says "you forgot to
+# import". This does.
 step "checking vcs checkouts"
 missing=""
 for dir in third-party/behaviortree_cpp_v3 third-party/Livox-SDK2 \
@@ -81,6 +86,10 @@ done
 if [ -z "$(ls -A src/syncai_common 2>/dev/null)" ]; then
     echo "  MISSING src/syncai_common"
     missing="${missing} interface.repos"
+fi
+if [ -z "$(ls -A src/syncai_driver_manager 2>/dev/null)" ]; then
+    echo "  MISSING src/syncai_driver_manager"
+    missing="${missing} driver-manager.repos"
 fi
 if [ -n "${missing}" ]; then
     # Deduplicate: five empty third-party dirs are still one missing import.

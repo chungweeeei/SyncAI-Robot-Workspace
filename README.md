@@ -63,7 +63,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction while navigating, `relocalize` / `relocalize_check` and `initialpose`. Ported in-tree from the fork in 2026-09, its last package |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source) |
 | `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |
-| `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock |
+| `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock. **Not tracked here** — it moved to `SyncAI-Robot-Driver-Manager` in 2026-10 and is vcs-imported back into `src/` (see "Getting started") |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState` |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
 
@@ -81,10 +81,13 @@ exactly as it did when it was a pane of the byobu session — and `switch_mode` 
 longer takes it down. The infra it needs (postgres, temporal) is still in this
 repo's `docker-compose.yml`, because the robot is where it is deployed.
 
-`syncai_common` is not in this repo either: it moved to `SyncAI-Robot-Interface`
-in the same split, so the backend can build against the message definitions
-without checking out the whole workspace. It is imported back into `src/` (see
-"Getting started"), because every package here depends on it.
+Two packages in the table above are not in this repo either, and both are
+imported back into `src/` by vcstool (see "Getting started"):
+
+| Package | Repo | Why it left |
+|---|---|---|
+| `syncai_common` | `SyncAI-Robot-Interface` | 2026-09, so the backend can build against the message definitions without checking out the whole workspace. Every package here depends on it. |
+| `syncai_driver_manager` | `SyncAI-Robot-Driver-Manager` | 2026-10, when the rclcpp node was rewritten against **rclrs** (Rust). Same package name, executable and launch file, so the session specs did not move — but it is the workspace's one `ament_cargo` package, and the Rust message crates it needs are not generated here yet (see "Getting started"). |
 
 ### Third-party (`src/third-party/`)
 
@@ -103,9 +106,10 @@ The FAST-LIO2 fork (`chungweeeei/SyncAI-Fast-LIO2`, formerly
 more: every package it held was ported in-tree during 2026-09 — `pointlio` as
 `syncai_pointlio`, `pgo` and `hba` as `syncai_mapping`, its `interface` srvs
 into `syncai_common`, and finally `localizer` as `syncai_localizer`. The five
-imports above plus `src/syncai_common` are the whole build: a full container
-build from a fresh image with the fork's directory deleted finished all 22
-packages (2026-09-28). A checkout left on disk from before still builds a
+imports above plus `src/syncai_common` and `src/syncai_driver_manager` are the
+whole build: a full container build from a fresh image with the fork's directory
+deleted finished all 22 packages (2026-09-28), before `syncai_driver_manager`
+became the 23rd by leaving the tree in 2026-10. A checkout left on disk from before still builds a
 duplicate `localizer` package; delete it
 (`rm -rf src/third-party/FASTLIO2_ROS2 build/localizer install/localizer`).
 
@@ -149,6 +153,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── ruff.toml                     # Python lint config (syncai_sys_manager, scripts/)
 ├── third-party.repos             # vcstool: src/third-party/ — upstream, pinned
 ├── interface.repos               # vcstool: src/syncai_common — SyncAI-Robot-Interface
+├── driver-manager.repos          # vcstool: src/syncai_driver_manager — SyncAI-Robot-Driver-Manager
 ├── .devcontainer/                # VS Code "Reopen in Container"
 └── .env                          # compose env + secrets (gitignored — never commit)
 ```
@@ -161,27 +166,50 @@ and regenerate the livox `package.xml` after every import — see "Build").
 sudo apt update && sudo apt install python3-vcstool -y
 vcs import < third-party.repos     # src/third-party/ — upstream code, pinned
 vcs import < interface.repos       # src/syncai_common — our own wire format
+vcs import < driver-manager.repos  # src/syncai_driver_manager — the gait-controller bridge
 ```
 
-Both are required before the first `colcon build`: `src/syncai_common` is no
-longer tracked here (it moved to `SyncAI-Robot-Interface` in 2026-09, so the
+All three are required before the first `colcon build`. Neither
+`src/syncai_common` (moved to `SyncAI-Robot-Interface` in 2026-09, so the
 backend can build against the message definitions without the whole workspace)
-and every package in this repo depends on it.
+nor `src/syncai_driver_manager` (moved to `SyncAI-Robot-Driver-Manager` in
+2026-10, when it was rewritten against rclrs) is tracked here any more. Both
+directories are gitignored: edit them in their own checkouts and commit there,
+because the next `--force` import overwrites whatever is in them.
 
-There is no third import. `src/syncai_backend` was the operator-facing process
-and moved to `SyncAI-Robot-Backend` in the same split; it is not built, run or
-imported from here, so nothing in this workspace needs it present. Clone it
+The two fail very differently when forgotten. A missing `src/syncai_common`
+fails every package in the workspace at once; a missing
+`src/syncai_driver_manager` fails *nothing* — colcon builds a stack with no
+bridge to the gait controller in it, and the robot stands still at the first
+`cmd_vel`. `scripts/build.sh` checks for both up front rather than letting that
+happen.
+
+There is no fourth import. `src/syncai_backend` was the operator-facing process
+and moved to `SyncAI-Robot-Backend` in the 2026-09 split; it is not built, run
+or imported from here, so nothing in this workspace needs it present. Clone it
 next to this repo — or, if you want colcon to build it against your local
 interfaces, into `src/syncai_backend`, which is gitignored for exactly that.
 
-**On an existing robot**, the pull that brings this change **deletes both
-directories from the working tree** — git removes them as tracked files and
-nothing puts them back. Run `vcs import < interface.repos` before the next
-build, or it fails on `syncai_common`, which was there yesterday and which
-every package needs. `src/syncai_backend` stays gone on purpose;
-`scripts/build.sh` refuses to start on an empty checkout and names the `.repos`
-file to import, so a forgotten import is one clear error rather than a wall of
-CMake output.
+**On an existing robot**, the pull that brings one of these splits **deletes the
+directory from the working tree** — git removes it as tracked files and nothing
+puts it back. Run the matching `vcs import` before the next build, or it fails
+on a package that was there yesterday. `src/syncai_backend` stays gone on
+purpose; `scripts/build.sh` refuses to start on an empty checkout and names the
+`.repos` file to import, so a forgotten import is one clear error rather than a
+wall of CMake output.
+
+#### `syncai_driver_manager` needs a Rust underlay that is not here yet
+
+The imported package is `ament_cargo` (rclrs). The robot image already carries
+the toolchain — rustup, `cargo-ament-build`, `colcon-cargo` / `colcon-ros-cargo`
+and `libclang-dev` — but **not** the Rust message crates: `rclrs`'s bindings for
+`std_msgs` / `sensor_msgs` / `geometry_msgs` / `std_srvs` / `syncai_common` are
+generated at build time by `rosidl_generator_rs` (`ros2-rust/rosidl_rust`), and
+nothing in this workspace provides it, so a `colcon build` that reaches the
+package fails on the missing crates. Closing that gap is one more `.repos`
+import — ros2-rust's own `ros2_rust_humble.repos`, the way that repo's dev
+container builds its underlay — and not a `Dockerfile` change. Until then,
+`--packages-skip syncai_driver_manager` builds the rest of the workspace.
 
 #### Re-importing `src/syncai_common` (stale checkout)
 
@@ -256,8 +284,9 @@ BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build     
 ```
 
 It runs `scripts/build.sh`: vcs-checkout sanity check (the five
-`src/third-party/` dirs and `src/syncai_common`, with the `.repos` file to
-import if one is empty), restore the `livox_ros_driver2` `package.xml` if
+`src/third-party/` dirs, `src/syncai_common` and `src/syncai_driver_manager`,
+with the `.repos` file to import if one is empty), restore the
+`livox_ros_driver2` `package.xml` if
 missing, `rosdep check` (report only — see below), then
 `colcon build --symlink-install`. Toggles: `BUILD_COLCON`
 (`1`/`0`), `BUILD_ROSDEP` (`check`/`install`/`off`). The container exits when

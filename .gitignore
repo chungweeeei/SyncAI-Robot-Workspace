@@ -119,3 +119,11 @@ src/syncai_backend/
 # Edit the messages THERE; a change made in this directory is untracked and the
 # next --force import overwrites it.
 src/syncai_common/
+
+# Materialised by `vcs import < driver-manager.repos`, not committed -- same
+# arrangement as src/syncai_common above. It was 9 tracked files (the rclcpp
+# node) in this repo until 2026-10, when it moved to SyncAI-Robot-Driver-Manager
+# and was rewritten against rclrs; git history still has the C++ version.
+# Edit the node THERE; a change made in this directory is untracked and the next
+# --force import overwrites it.
+src/syncai_driver_manager/

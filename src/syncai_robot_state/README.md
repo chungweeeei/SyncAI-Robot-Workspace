@@ -104,11 +104,17 @@ placeholder. `localization_valid` is the precise answer for consumers that only
 care about pose trust; `state` is the coarse rollup, and both come from one TF
 lookup so they cannot disagree.
 
-`RUNNING` and `ERROR` are not derived yet. **`CHARGING` cannot be**: the driver
-hardcodes `BatteryState.power_supply_status` to `UNKNOWN`
-(`syncai_driver_manager.cpp:318`), and the only other candidate is the sign of
-`current`, whose convention is undocumented in both this port and the reference
-implementation. Deriving it is a hardware-observation task, not a coding one.
+`RUNNING` and `ERROR` are not derived yet. **`CHARGING` has become derivable
+and is not derived**: the rclcpp driver hardcoded
+`BatteryState.power_supply_status` to `UNKNOWN`, which is why this node never
+looked at it, but the rclrs rewrite that left the workspace in 2026-10
+(`SyncAI-Robot-Driver-Manager`, `telemetry.rs` `publish_battery`) maps the BMS
+`charge_state` onto `CHARGING` / `DISCHARGING` / `NOT_CHARGING` instead. Wiring
+that into `state` is now a coding task, not the hardware-observation one this
+section used to describe — the fallback it rejected (the sign of `current`,
+whose convention is undocumented in both the port and the reference
+implementation) is no longer the only candidate. Nothing here reads the field
+yet.
 
 ### Low battery uses hysteresis
 
@@ -124,8 +130,10 @@ the one the frontend status strip already hardcodes for its battery colour. This
 node is where the *judgement* now lives.
 
 **This node only reports.** Crossing the threshold does not lie the robot down or
-block `cmd_vel`; `syncai_driver_manager::triggerSafeShutdown()` still has zero
-call sites and who owns that actuation is deliberately still open.
+block `cmd_vel`; the driver's safe-shutdown path (`SafetyLock::trigger` in the
+rclrs rewrite, `triggerSafeShutdown()` in the rclcpp version it replaced) still
+has zero production call sites in either, and who owns that actuation is
+deliberately still open.
 
 ### Two guards against a low battery that isn't one
 

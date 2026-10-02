@@ -100,7 +100,7 @@ prefixed with the robot name so several robots can publish to one MediaMTX.
 
 | Package | Role |
 |---|---|
-| `syncai_driver_manager` | **UDP bridge to the gait controller.** Sends `cmd_vel` with a per-direction velocity-scale correction (the gait controller tracks commands asymmetrically). The six scales (`scale_fwd` … `scale_turn_r`) are **ROS parameters** loaded from `params/driver_manager_params.yaml` (1.40 fwd / 1.40 turn today) and survive restarts; a runtime `set_speed_scale` override is what does *not* persist. The YAML records the two plateau runs behind them and flags them as a working correction, not a calibration. Receives ASCII telemetry, and owns the safe-shutdown path (`triggerSafeShutdown()`: safety lock + MODE X / lie down) — which still has **zero call sites**. |
+| `syncai_driver_manager` | **UDP bridge to the gait controller — not in this repo.** It moved to `chungweeeei/SyncAI-Robot-Driver-Manager` in 2026-10 and is materialised back into `src/` by `vcs import < driver-manager.repos` (branch `dev`), the same arrangement `syncai_common` has; it was rewritten there against **rclrs** (Rust, `ament_cargo`), so the C++ node this table used to describe is history now — `git log -- src/syncai_driver_manager` has it. The ROS surface did not move with it: same package name, same `driver_manager_node` executable, same `driver_manager.launch.py`, so both session specs are unchanged. Sends `cmd_vel` with a per-direction velocity-scale correction (the gait controller tracks commands asymmetrically). The six scales (`scale_fwd` … `scale_turn_r`) are **ROS parameters** loaded from `params/driver_manager_params.yaml` (1.40 fwd / 1.40 turn today) and survive restarts; a runtime `set_speed_scale` override is what does *not* persist. That file is keyed on a bare `/**` there, not the `/**/driver_manager` the rest of this workspace uses — rclrs matches a params key only when it is exactly `/**` or exactly the node's fully-qualified name, with no wildcard expansion, so the old key matched nothing and every scale fell back to its code default. Receives ASCII telemetry, and owns the safe-shutdown path (safety lock + MODE X / lie down) — which still has **zero call sites**. Edit it in that checkout and commit there. |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motor_states / TF into `syncai_common/RobotState`. The code default is 10 Hz but the shipped params file sets `publish_rate: 1.0`, so it runs at **1 Hz**. Also derives the `state` field: `UNINITIALIZED` (no pose) / `WARNING` (battery <20%, cleared above 25% — latched with hysteresis) / `IDLE`. Reports only — no threshold here commands the robot. |
 | `syncai_sys_manager` | Python. Five managers behind ROS services: wifi (`scan_wifi` / `connect_wifi`, `wifi_status` at 1 Hz from a cache refreshed every 5 s), mDNS (`avahi-publish <robot_id>.local`), conf (declares `robot_id`), monitor (host memory / disk to stdout at 1 Hz), and **node** (`NodeManager` — byobu session lifecycle, `switch_mode` / `get_mode`; see "Running the stack"). Also ships the host udev rules (`udev/99-syncai-devices.rules`). |
 
@@ -120,12 +120,27 @@ that stayed — which robot-side services the backend calls, and which of this
 stack's behaviours it depends on — is under "Out of tree" below.
 
 What `src/` holds: the `syncai_*` packages in the tables above, plus
-`src/third-party/`. One of those packages is not tracked here — `syncai_common`
-moved to `chungweeeei/SyncAI-Robot-Interface` in the same split, so the backend can build
-against the message definitions without checking out this workspace, and is
-materialised back into `src/` by `vcs import < interface.repos`. Edit the
-messages there; a change made in that directory is untracked, and the next
-`--force` import overwrites it.
+`src/third-party/`. Two of those packages are not tracked here, and both are
+materialised back into `src/` by their own `.repos` file. `syncai_common` moved
+to `chungweeeei/SyncAI-Robot-Interface` in the same split, so the backend can
+build against the message definitions without checking out this workspace
+(`vcs import < interface.repos`); `syncai_driver_manager` moved to
+`chungweeeei/SyncAI-Robot-Driver-Manager` in 2026-10, when it was rewritten
+against rclrs, and is the workspace's one `ament_cargo` package
+(`vcs import < driver-manager.repos`). Edit either one in its own checkout; a
+change made in those directories is untracked, and the next `--force` import
+overwrites it.
+
+**The Rust package does not build yet.** The image has the toolchain (rustup,
+`cargo-ament-build`, `colcon-cargo` / `colcon-ros-cargo`, `libclang-dev`) but
+not the Rust *message crates*: `rclrs`'s bindings for `std_msgs` /
+`sensor_msgs` / `geometry_msgs` / `std_srvs` / `syncai_common` are generated at
+build time by `rosidl_generator_rs`, which is in no `.repos` file here, so a
+`colcon build` that reaches `syncai_driver_manager` fails on the missing
+crates. Closing that is another `.repos` import (ros2-rust's own
+`ros2_rust_humble.repos`, the way `SyncAI-Robot-Driver-Manager`'s dev container
+builds its underlay), not a `Dockerfile` change — the `Dockerfile`'s Rust
+stanza says the same.
 
 `syncai_ros_mcp` — a vendored MCP server that exposed the ROS 2 graph and the
 backend's REST API as MCP tools over HTTP on port 8000 — **was removed**, because
@@ -257,9 +272,13 @@ must be what robot01 has. It therefore only `rosdep check`s by default
 reaches robot01, so a missing dep is a `Dockerfile` change. The script also
 restores the `livox_ros_driver2` `package.xml` when a `vcs import` has deleted
 it, and refuses to start on an empty vcs checkout — the five `src/third-party/`
-dirs or `src/syncai_common`, naming the `.repos` file to import per missing
-directory, because "you forgot to import" is not what colcon's own failure
-looks like. There are no carve-outs in what it builds any more: since the
+dirs, `src/syncai_common` or `src/syncai_driver_manager`, naming the `.repos`
+file to import per missing directory, because "you forgot to import" is not what
+colcon's own failure looks like. The driver_manager check earns its place more
+than the other two: an absent `src/syncai_common` fails every package at once,
+while an absent `src/syncai_driver_manager` fails *nothing* — colcon happily
+builds a workspace with no gait-controller bridge in it, and the robot stands
+still at the first `cmd_vel`. There are no carve-outs in what it builds any more: since the
 frontend and then the backend left, the workspace and what colcon discovers are
 the same set. It is equally runnable inside robot01 (`scripts/build.sh`). Its
 `build:` block duplicates `x-robot-common` (compose `extends` would drag the
@@ -638,10 +657,11 @@ something to verify or edit here.
 - `build/`, `install/`, `log/`, `data/`, `.env`, `record/` (hand-recorded
   rosbags), the whole of `/map/` (LIO output: `map.pcd`, `poses.txt`,
   `patches/`, generated `gridmap.*`) and `/models/` (TTS weights, which nothing
-  here downloads any more) are gitignored, as are `src/syncai_common/` and
-  `src/syncai_backend/` — the first because it is materialised by `vcs import`,
-  the second so a clone of the backend kept there for development can never be
-  committed back in. `.env` holds secrets — never commit it.
+  here downloads any more) are gitignored, as are `src/syncai_common/`,
+  `src/syncai_driver_manager/` and `src/syncai_backend/` — the first two because
+  they are materialised by `vcs import`, the third so a clone of the backend
+  kept there for development can never be committed back in. `.env` holds
+  secrets — never commit it.
 - `scripts/`: `attach.sh` (host-side: attaches to whichever byobu session is
   live in the container — the session name follows the mode, so a hardcoded
   alias is wrong half the time), `build.sh` (in-image: the build

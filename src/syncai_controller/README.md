@@ -320,8 +320,12 @@ The per-direction correction itself does **not** live here. It is
 `syncai_driver_manager`'s `scale_fwd` / `scale_back` / `scale_left` /
 `scale_right` / `scale_turn_l` / `scale_turn_r` (`driver_manager_params.yaml`,
 currently 1.40 / 1.0 / 1.0 / 1.0 / 1.40 / 1.40), multiplied into `cmd_vel`
-before it goes over UDP; see the "Per-direction speed scaling" section of
-[`syncai_driver_manager/README.md`](../syncai_driver_manager/README.md). The
+before it goes over UDP. The YAML's own header carries the two plateau runs the
+values come from; the parameter table in
+[`syncai_driver_manager/README.md`](../syncai_driver_manager/README.md) lists
+them — that package left this repo in 2026-10 for
+`chungweeeei/SyncAI-Robot-Driver-Manager` and is vcs-imported back into `src/`,
+so the link resolves in a materialised workspace, not in a bare clone. The
 two packages' values are **one calibration**: the RPP speeds were chosen to sit
 inside the range where the plateaus were measured, and the scale factors fold
 the residual error at *those* commands back in. The response is not a fixed
