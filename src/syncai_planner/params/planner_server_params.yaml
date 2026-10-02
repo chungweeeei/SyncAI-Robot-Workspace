@@ -139,9 +139,13 @@
     # grid, that window is copied to the master, and the filters are applied
     # last, so a keepout zone never feeds back into the layers as an obstacle.
     # Two consequences worth knowing before drawing a mask:
-    #   - keepout cells land as LETHAL cost but are never inflated, because
-    #     inflation already ran. The mask itself has to carry the footprint
-    #     margin around each zone, or the planner will hug the zone edge.
+    #   - inflation has already run by then, so the KeepoutFilter inflates the
+    #     mask itself (2026-10) with THIS costmap's inscribed radius and the
+    #     inflation_layer values below — a zone gets the same INSCRIBED band
+    #     and gradient as a wall. Draw the forbidden area only, no margin: a
+    #     margin in the mask is now applied twice. Until then keepout cells
+    #     were bare LETHAL, and Smac's centre-cell check let a path through
+    #     any gap between two zones that was one free cell wide.
     #   - clear* services never touch filter output: a keepout is a rule, not
     #     an observation.
     # Only the global costmap runs the filter (2026-09). The controller's local

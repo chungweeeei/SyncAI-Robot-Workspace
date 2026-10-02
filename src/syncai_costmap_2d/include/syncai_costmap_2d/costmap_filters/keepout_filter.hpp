@@ -14,7 +14,21 @@ namespace syncai_costmap_2d
 /**
  * @class KeepoutFilter
  * @brief Reads in a keepout mask and marks keepout regions in the map
- * to prevent planning or control in restricted areas
+ * to prevent planning or control in restricted areas.
+ *
+ * Unlike upstream nav2, the mask is inflated here, by the filter, with the
+ * same cost curve the costmap's InflationLayer applies to walls. Filters run
+ * after the layer stack (inflation included), so an upstream keepout lands as
+ * a bare LETHAL cell with no INSCRIBED band and no gradient around it. The
+ * planner collision-checks the robot's centre cell against INSCRIBED, so two
+ * zones one free cell apart were a plannable corridor (map dp2f had a 0.25 m
+ * gap between two zones the planner routed a 0.44 m wide robot through). The
+ * documented workaround — draw the footprint margin into the mask — bakes the
+ * robot's size into per-map data and gives a hard band with no gradient to
+ * steer the cost-aware search away from the edge. Inflating in the filter
+ * makes a zone behave exactly like a wall: a gap narrower than twice the
+ * inscribed radius closes, and the mask means "the forbidden area", nothing
+ * more.
  */
 class KeepoutFilter : public CostmapFilter
 {
@@ -60,6 +74,13 @@ public:
    */
   bool isActive();
 
+  /**
+   * @brief Re-inflate the mask for the new footprint. Called by
+   * LayeredCostmap::setFootprint() on every filter; the inscribed radius the
+   * inflation band is built from comes from that footprint.
+   */
+  void onFootprintChanged() override;
+
 private:
   /**
    * @brief Callback for the filter information
@@ -70,18 +91,30 @@ private:
    */
   void maskCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
 
+  /**
+   * @brief Rebuild inflated_mask_ from mask_costmap_ using the costmap's
+   * current inscribed radius and InflationLayer parameters. Runs once per
+   * mask or footprint change, never per update cycle. Caller holds the mutex.
+   */
+  void inflateMask();
+
   rclcpp::Subscription<nav2_msgs::msg::CostmapFilterInfo>::SharedPtr filter_info_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr mask_sub_;
 
+  // The mask as received: LETHAL where a zone is drawn, FREE / NO_INFORMATION
+  // elsewhere. Kept next to the inflated copy because process() needs to tell
+  // a drawn cell from an inflated one — only drawn cells may overwrite an
+  // unknown master cell.
   std::unique_ptr<Costmap2D> mask_costmap_;
+  // mask_costmap_ with the inflation band and gradient applied; what
+  // process() actually writes into the master grid.
+  std::unique_ptr<Costmap2D> inflated_mask_;
 
   std::string mask_frame_;    // Frame where mask located in
   std::string global_frame_;  // Frame of current layer (master_grid)
 
-  unsigned int x_{0};
-  unsigned int y_{0};
-  unsigned int width_{0};
-  unsigned int height_{0};
+  // Set when inflated_mask_ was rebuilt; the next updateBounds() grows the
+  // update window to the whole mask so every cell is rewritten once.
   bool has_updated_data_{false};
 };
 

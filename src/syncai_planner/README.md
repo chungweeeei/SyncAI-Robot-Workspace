@@ -289,11 +289,13 @@ since 2026-09). Its mask comes from `map/<name>/keepout.yaml`, served by
 writes a blank one of the gridmap's geometry first (all unknown, so the filter
 changes nothing), which is why the mask server is up on every map and "Filter
 mask was not received" in this log now means the pane is actually down. Two
-things to know before drawing a mask: filters run *after*
-inflation, so keepout cells are lethal but not inflated (the mask must carry
-its own footprint margin), and only the global costmap has the filter — the
-controller's local costmap does not, so the planner alone keeps the robot out
-and RPP cannot reject a path for grazing a zone edge. Running the mask source
+things to know before drawing a mask: filters run *after* inflation, so the
+`KeepoutFilter` inflates the mask itself with this costmap's inscribed radius
+and `inflation_layer` values (2026-10 — draw the forbidden area only, no
+margin; a zone then closes any gap narrower than the robot exactly as a wall
+does), and only the global costmap has the filter — the controller's local
+costmap does not, so the planner alone keeps the robot out and RPP cannot
+reject a path for grazing a zone edge. Running the mask source
 by hand, outside the session:
 
 ```bash
