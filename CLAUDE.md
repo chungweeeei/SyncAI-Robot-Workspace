@@ -273,7 +273,10 @@ needs Sophus, `syncai_mapping` both).
 The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
 — keep it free of anything that changes often so its cache survives) → `dev`
-(rviz2, colcon, byobu, Node.js, the VizionSDK `.deb`; the workspace is
+(rviz2, colcon, byobu, Node.js, the VizionSDK `.deb`, and the Rust toolchain
+for `rclrs` — rustup under `/opt/rust`, `libclang-dev`, `cargo-ament-build`,
+`colcon-cargo` / `colcon-ros-cargo`; message crates are not in the image, they
+need `rosidl_rust` in the workspace; the workspace is
 bind-mounted at `~/robot_ws` and built by hand). Compose builds `target: dev`.
 `dev` carries **no Python web stack** any more: fastapi / uvicorn / sqlalchemy /
 temporalio / open3d / kokoro-onnx were installed here from
