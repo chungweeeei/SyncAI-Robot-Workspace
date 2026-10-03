@@ -64,12 +64,6 @@ Thumbs.db
 data/
 
 
-# Standalone clone of the MCP server (chungweeeei/SyncAI-ROS-MCP), if anyone keeps
-# one here as a local scratch copy. It is a different repository's working tree and
-# must never be committed into this one; the vendored in-tree copy it used to
-# shadow (src/syncai_ros_mcp) was removed, and lives in git history now.
-src/syncai-ros-mcp/
-
 # Materialised by `vcs import < third-party.repos`, not committed -- five upstream
 # repos, each with its own .git, which is why this rule matters more than it
 # looks: without it a `git add -A` stages all five as gitlinks with no .gitmodules
