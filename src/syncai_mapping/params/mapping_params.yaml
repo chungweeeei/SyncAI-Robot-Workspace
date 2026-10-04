@@ -52,6 +52,25 @@
     loop_search_radius: 1.0
     loop_time_tresh: 60.0
     loop_score_tresh: 0.15
+    # Loop verification (2026-10, after the dp1f_1002 replay -- README has the
+    # measurements). "gicp" = small_gicp GICP; "icp" = the fork's PCL
+    # point-to-point ICP, which returned 1.5-3.7 deg of rotation and 2-7x
+    # too much z on every corridor loop of that run.
+    loop_registration: gicp
+    # Max correspondence distance (m). The fork hard-coded 10, which let a
+    # 30 m corridor scan be steered by its far, non-overlapping points.
+    loop_icp_max_corr_dist: 1.0
+    loop_gicp_num_threads: 4       # int
+    loop_gicp_num_neighbors: 20    # int
+    # Loop edge = a 3-dim factor on the WORLD-frame x / y / yaw between the two
+    # keyframes (PlanarLoopFactor); z / roll / pitch are left to the odometry
+    # (Point-LIO is gravity-aligned; its z closed to 3 cm on that run, and the
+    # fork's 6-DOF edge turned that into a 15 cm double floor). false = the
+    # fork's 6-DOF BetweenFactor.
+    loop_planar_correction: true
+    # Only used with loop_planar_correction false: BetweenFactor variance on
+    # roll / pitch / z. x / y / yaw always use the registration fitness.
+    loop_noise_var_roll_pitch_z: 0.01
     loop_submap_half_range: 5     # int, not 5.0 (see the header)
     submap_resolution: 0.1
     min_loop_detect_duration: 5.0

@@ -215,12 +215,63 @@ the values are copied into the graph at construction and on every reset, so
 | `key_pose_delta_deg` / `key_pose_delta_trans` | `10.0` / `0.5` | | keyframe every 10° or 0.5 m. **Write `10.0`**: a bare `10` is an int64 override and the node dies at startup with `InvalidParameterTypeException`. |
 | `loop_search_radius` | `1.0` | | m, over past keyframes |
 | `loop_time_tresh` | `60.0` | | s; candidates must be at least this old |
-| `loop_score_tresh` | `0.15` | | ICP fitness above this is rejected |
+| `loop_score_tresh` | `0.15` | | ICP fitness (mean squared point distance, m²) above this is rejected |
+| `loop_registration` | `gicp` | | `gicp` (small_gicp) or `icp` (the fork's PCL point-to-point). See "Loop verification" below |
+| `loop_icp_max_corr_dist` | `1.0` | | m, max correspondence distance for either backend. The fork hard-coded 10 |
+| `loop_gicp_num_threads` | `4` | | **int** |
+| `loop_gicp_num_neighbors` | `20` | | **int**, GICP covariance neighbours |
+| `loop_planar_correction` | `true` | | loop edge is a `PlanarLoopFactor` on the world-frame x / y / yaw only (`pgos/planar_loop_factor.h`); z / roll / pitch stay with the odometry. `false` = the fork's 6-DOF `BetweenFactor` |
+| `loop_noise_var_roll_pitch_z` | `0.01` | | only with `loop_planar_correction: false`: BetweenFactor variance on roll / pitch / z. x / y / yaw always use the fitness score, as the fork did |
 | `loop_submap_half_range` | `5` | | keyframes each side of the candidate. **An int** — `5.0` is the mirror-image type error. |
 | `submap_resolution` | `0.1` | | m, voxel leaf of the ICP submap |
 | `min_loop_detect_duration` | `5.0` | | s between loop searches |
 | `map_cloud_resolution` | `0.2` | | m, voxel leaf of the published merge |
 | `map_cloud_pub_period` | `3.0` | | s, floor between merges |
+
+### Loop verification
+
+A loop candidate (a past keyframe within `loop_search_radius`, at least
+`loop_time_tresh` old) is verified by registering the current keyframe's body
+cloud onto an 11-keyframe submap, both voxelised at `submap_resolution`, and
+the result becomes the loop edge. Three things about that edge changed in
+2026-10, after an offline replay of `record/dp1f_1002` (a 645 s, 100 m
+corridor-and-hall run; the report and every number below are under
+`map/dp1f_bagrun/report/`):
+
+- **Backend.** The fork's PCL point-to-point ICP with
+  `setMaxCorrespondenceDistance(10)` returned 1.5–3.7° of rotation and a z
+  component 2–7× too large for all seven corridor loops of that run, although
+  the raw Point-LIO poses of the two passes already agreed to 1–5 cm in z;
+  the two end-of-run loops it got right scored 0.006–0.013 against 0.06–0.13
+  for the bad ones, so `loop_score_tresh 0.15` rejected nothing (a corridor
+  scan with no ICP at all scores 0.09–0.19, because most of its far points
+  have no counterpart). Re-running those pairs offline, GICP / point-to-plane
+  with a 1 m correspondence distance returned the right amount. Hence
+  `loop_registration: gicp` (small_gicp's `RegistrationPCL`, the localizer's
+  backend) and `loop_icp_max_corr_dist: 1.0`; `icp` keeps the old path.
+- **Edge type.** The 6-DOF `BetweenFactor` let a slightly tilted loop bend the
+  whole chain: with per-edge rotation variance 1e-6 and 30–60 m of lever arm
+  the chain is softer in z than a loop factor whose six variances all equal
+  the fitness, so the map came out with a 15 cm double floor along the
+  corridor while every per-edge z constraint was honoured to 0.2 mm. Tight
+  roll / pitch / z variances on the BetweenFactor were tried first and still
+  leaked x into z (-2..-9 cm) because that factor's error is expressed in
+  the lidar body frame, which on this robot is pitched 15°.
+  `loop_planar_correction: true` therefore adds a `PlanarLoopFactor`
+  (`pgos/planar_loop_factor.h`): a 3-dim error on the WORLD-frame Δx, Δy,
+  Δyaw between the two keyframes, with the registration result projected to
+  x / y / yaw about the world z axis first. z / roll / pitch stay with the
+  odometry, which for a gravity-aligned LIO is the right owner. Rerun on the
+  same bag: revisit height error identical to the raw LIO (3.5 cm mean),
+  keyframe z within 2 cm of raw for 832 of 840 keyframes, single floor.
+- **Log.** Every accepted loop prints two `[PGONode][loop]` lines (below), so
+  the next bad closure can be read off the log instead of reconstructed from
+  rviz markers.
+
+Still open: the fitness gate counts all source points and so cannot tell a
+good corridor loop from a bad one (inlier RMSE + inlier ratio would), and the
+run above had little XY drift, so the x / y / yaw benefit of the loops is
+unmeasured — validate on a bag that drifts.
 
 ## Running
 
@@ -260,6 +311,9 @@ ls /dev/shm/syncai_pgo/<robot_id>                      # map_cloud_<seq>.pcd, ne
 |---|---|
 | `[PGONode] inputs: /robot01/pointlio/body_cloud + … \| TF map -> robot01/pointlio_odom \| …` | The overrides landed. Unprefixed names mean a bare run, or overrides passed before the params file. |
 | `[PGONode] map_cloud merges are handed off as PCD files under …` | The hand-off directory is writable |
+| `[PGONode] loop verification: gicp, max corr dist 1.00 m, fitness gate 0.150, planar correction on, …` | The loop settings that are actually in force (see "Loop verification") |
+| `[PGONode][loop] target 44 -> source 252 \| fitness 0.0995 \| ICP moves source by (0.065, -0.024, 0.000) m, rot 0.21 deg \| z before: …` | A loop was accepted: what the registration asked for (world-frame displacement of the source keyframe and rotation) and both keyframes' z before the graph update. A z component that is not 0.000 with planar correction on, or a rotation of degrees rather than tenths, is the failure this line exists to catch |
+| `[PGONode][loop] target 44 -> source 252 \| z after: … (source-target -0.047, source moved -0.000)` | The same pair after the update. `source moved` is the z the optimiser actually applied |
 | `[PGONode] cannot create map_cloud_dir … the map_cloud_file hand-off is disabled for this run` | Not fatal; only the file output is off |
 | `Received out of order message` | A pair older than the last accepted one was dropped (bag loop, driver restart) |
 | `[resetMappingCB] Map discarded. … (dropped N key poses)` | A reset completed; N = 0 means the run had banked nothing |

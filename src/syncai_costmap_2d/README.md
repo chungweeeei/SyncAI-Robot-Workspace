@@ -228,9 +228,42 @@ controller's local costmap. The mask is `map/<name>/keepout.yaml`, served by
 which writes a blank all-unknown mask of the gridmap's geometry when a map has
 none yet. Unknown is the right blank: `process()` skips unknown mask cells but
 lets a free mask cell overwrite an unknown costmap cell, so an all-*free* mask
-would silently turn unexplored space plannable. Because it runs after
-inflation, its lethal cells are never inflated — a mask has to include the
-footprint margin around each zone itself.
+would silently turn unexplored space plannable.
+
+**The filter inflates the mask itself** (2026-10). Filters run after the layer
+stack, inflation included, so upstream's keepout lands as a bare LETHAL cell:
+no INSCRIBED band, no gradient. SmacPlanner2D collision-checks the robot's
+centre cell against INSCRIBED, so two zones one free cell apart were a
+plannable corridor — `dp2f` had a 0.25 m gap between two zones that the planner
+routed a 0.44 m wide robot through. The documented rule used to be "draw the
+footprint margin into the mask"; it bakes the robot's size into per-map data,
+the editor does not do it, and a hand-drawn band has no gradient to steer the
+cost-aware search off the edge. So `inflateMask()` runs on every mask arrival
+and on every `onFootprintChanged()` (`LayeredCostmap::setFootprint` calls it
+on filters too), never per update cycle:
+
+- Radii come from the costmap the filter is attached to, not from parameters
+  of its own: the inscribed radius from `LayeredCostmap::getInscribedRadius()`
+  (the padded footprint), `inflation_radius` / `cost_scaling_factor` read off
+  the costmap's `InflationLayer` the way `syncai_planner`'s
+  `findCircumscribedCost()` finds it. A zone therefore carries exactly the band
+  and gradient a wall does. No `InflationLayer` → the INSCRIBED disc only, with
+  a warning.
+- Same curve as `InflationLayer::computeCost()` but in metres, because the
+  mask has its own map_server and need not share the costmap's resolution. A
+  disc kernel is stamped (max) around each zone's boundary cells only.
+- Drawn cells keep upstream semantics (free overwrites unknown). **Cells
+  produced by inflation never overwrite an unknown master cell**: a gradient
+  is a derived cost, not a rule about the cell, and writing it would turn
+  unexplored space into known, plannable cost. `process()` tells the two apart
+  by comparing the inflated mask against the raw one.
+- `updateBounds()` now grows the window to the mask's own extents once per
+  rebuild. Upstream pushed the mask's cell count through the *costmap's*
+  `mapToWorld`, which is only right when mask and costmap share origin and
+  resolution.
+
+A mask is therefore "the forbidden area", nothing more. A mask that still
+carries a hand-drawn margin now gets that margin twice.
 
 The filter/layer distinction exists only at the config level. In
 `costmap_plugins.xml` `KeepoutFilter` is registered with
@@ -364,18 +397,15 @@ correctly); renaming it means touching its two includes.
   or the topic connects and never delivers.
 - **`update_frequency: 0.0` disables the update thread** — the costmap is created,
   publishes nothing, and never becomes current, which reads like a TF problem.
-- **Footprints must agree across costmaps — and today they do not.** The
+- **Footprints must agree across costmaps; paddings deliberately do not.** The
   planner's global costmap (`syncai_planner/params/planner_server_params.yaml`)
-  carries `[[0.35,0.22],…]` while the controller's local costmap
-  (`syncai_controller/params/controller_server_params.yaml`) still has
-  `[[0.28,0.20],…]`. The global one was enlarged and the local one was not
-  followed, so the two YAML comments telling you to "rescale both together" are
-  each pointing at a file that disagrees with them. The failure mode when the
-  *local* footprint is the larger one is RPP rejecting paths the planner considers
-  valid ("collision ahead!"); with the current mismatch it is the other way round —
-  the planner keeps 7 cm more clearance than the controller checks, so the
-  controller is the permissive side. Reconcile them to one rectangle before
-  tuning anything else that depends on clearance.
+  and the controller's local costmap
+  (`syncai_controller/params/controller_server_params.yaml`) both carry
+  `[[0.35,0.22],…]` (reconciled 2026-10; the local one had been left at
+  `[[0.28,0.20],…]`). `footprint_padding` is 0.03 global vs 0.01 local: when the
+  *local* footprint is the larger, RPP rejects paths the planner considers valid
+  ("collision ahead!"), so the padding gap is what keeps the planner the
+  conservative side. Change the rectangle in both files or neither.
 - **`inflation_radius` smaller than the inscribed radius** leaves lethal cells the
   planner will happily route the robot's corners through.
 - `package.xml` still carries `TODO: Package description` and

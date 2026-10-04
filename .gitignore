@@ -64,12 +64,6 @@ Thumbs.db
 data/
 
 
-# Standalone clone of the MCP server (chungweeeei/SyncAI-ROS-MCP), if anyone keeps
-# one here as a local scratch copy. It is a different repository's working tree and
-# must never be committed into this one; the vendored in-tree copy it used to
-# shadow (src/syncai_ros_mcp) was removed, and lives in git history now.
-src/syncai-ros-mcp/
-
 # Materialised by `vcs import < third-party.repos`, not committed -- five upstream
 # repos, each with its own .git, which is why this rule matters more than it
 # looks: without it a `git add -A` stages all five as gitlinks with no .gitmodules
@@ -119,3 +113,32 @@ src/syncai_backend/
 # Edit the messages THERE; a change made in this directory is untracked and the
 # next --force import overwrites it.
 src/syncai_common/
+
+# Materialised by `vcs import < driver-manager.repos`, not committed -- same
+# arrangement as src/syncai_common above. It was 9 tracked files (the rclcpp
+# node) in this repo until 2026-10, when it moved to SyncAI-Robot-Driver-Manager
+# and was rewritten against rclrs; git history still has the C++ version.
+# Edit the node THERE; a change made in this directory is untracked and the next
+# --force import overwrites it.
+src/syncai_driver_manager/
+
+# Materialised by `vcs import < robot-state.repos`, not committed -- same
+# arrangement as src/syncai_driver_manager above, and for the same reason: it
+# moved to SyncAI-Robot-State in 2026-10 and was rewritten against rclrs. It was
+# 9 tracked files (the rclcpp node) here until then; git history still has them.
+# Edit the node THERE; a change made in this directory is untracked and the next
+# --force import overwrites it.
+src/syncai_robot_state/
+
+# Materialised by `vcs import < lio-bridge.repos`, not committed -- same
+# arrangement as src/syncai_robot_state above, and for the same reason: it moved
+# to SyncAI-LIO-Bridge in 2026-10 and was rewritten against rclrs. It was 7
+# tracked files (the rclcpp node) here until then; git history still has them.
+# Edit the node THERE; a change made in this directory is untracked and the next
+# --force import overwrites it.
+src/syncai_lio_bridge/
+
+# Written by colcon-ros-cargo on every build that reaches an ament_cargo package
+# (a [patch.crates-io] table pointing rclrs and the message crates at install/
+# and the image's ros2-rust underlay) -- build output, not config.
+.cargo/

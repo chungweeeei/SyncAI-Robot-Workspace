@@ -54,7 +54,7 @@ x-robot-common: &robot-common
     - bash
     - -c
     - >-
-      source /opt/ros/humble/setup.bash && source install/setup.bash && exec ros2 launch syncai_sys_manager sys_manager.launch.py
+      source /opt/ros/humble/setup.bash && source /opt/ros2_rust_underlay/install/setup.bash && source install/setup.bash && exec ros2 launch syncai_sys_manager sys_manager.launch.py
 
 # Environment shared by every robot service (maps merge with <<, lists don't —
 # keep environment as a map here).

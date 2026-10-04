@@ -35,6 +35,10 @@
        the services moved there from SyncAI-Fast-LIO2's `interface` with
        these nodes, because the backend builds against syncai_common. -->
   <depend>syncai_common</depend>
+  <!-- pgo_node's loop verification backend (2026-10). Not a rosdep key:
+       src/third-party/small_gicp is a build_type cmake package colcon builds
+       first because of this line, exactly as syncai_localizer declares it. -->
+  <depend>small_gicp</depend>
 
   <!-- Not listed on purpose: PCL, Eigen, GTSAM and Sophus. PCL / Eigen arrive
        through pcl_conversions' own rosdep chain (libpcl-dev, libeigen3-dev).

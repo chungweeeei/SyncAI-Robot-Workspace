@@ -101,18 +101,31 @@
     resolution: 0.05
 
     # Robot footprint: rectangle with half-extents 0.35 x 0.22 (0.70 x 0.44 m
-    # overall) around base_link for the G23 chassis. NOTE: the controller's
-    # local_costmap in controller_server_params.yaml still carries the older
-    # 0.28 x 0.20 rectangle — the two are supposed to be one footprint and
-    # currently are not. As long as the global one is the larger, the planner
-    # is the conservative side and RPP will not reject its paths; enlarge the
-    # local one without also enlarging this one and RPP starts refusing valid
-    # paths ("collision ahead!"). Reconcile them to one rectangle rather than
-    # editing either in isolation. (A circular robot_radius=0.22 was tried
-    # before the rectangle and was oversized enough to make RPP reject valid
-    # paths through ~0.6 m gaps.)
+    # overall) around base_link for the G23 chassis. It is the SAME rectangle
+    # as the controller's local_costmap in controller_server_params.yaml —
+    # one robot, one footprint; change both or neither. The two used to drift
+    # (local stayed at 0.28 x 0.20 after this one grew), reconciled 2026-10.
+    #
+    # The padding differs on purpose: 0.03 here vs 0.01 in the local costmap.
+    # The rule this encodes is that the global footprint must be the larger
+    # one, so the planner is the conservative side and RPP never rejects a
+    # path the planner considered valid ("collision ahead!"). With equal
+    # rectangles, the 0.02 m padding difference is what keeps that ordering;
+    # it also absorbs the heading error RPP accumulates while tracking, which
+    # sweeps the corners a little outside the planned pose. Do not equalize
+    # the paddings, and never let the local padding exceed this one.
+    # (A circular robot_radius=0.22 was tried before the rectangle and was
+    # oversized enough to make RPP reject valid paths through ~0.6 m gaps.)
+    #
+    # Padded half-extents are 0.38 x 0.25, so the circumscribed radius is
+    # sqrt(0.38^2 + 0.25^2) ~= 0.455 m. inflation_layer.inflation_radius below
+    # (0.5) must stay >= that: only then does a FREE (non-inflated) cell at the
+    # robot centre guarantee that no part of the footprint touches an
+    # obstacle, which anything checking a path by centre-cell cost alone (no
+    # full footprint sweep) depends on. Grow the footprint or padding, or
+    # shrink the inflation radius, and re-check this inequality.
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
-    footprint_padding: 0.01
+    footprint_padding: 0.03
 
     # Relative topic: resolves to /<robot_id>/map (matches map_server's
     # output in the same namespace)
@@ -126,9 +139,13 @@
     # grid, that window is copied to the master, and the filters are applied
     # last, so a keepout zone never feeds back into the layers as an obstacle.
     # Two consequences worth knowing before drawing a mask:
-    #   - keepout cells land as LETHAL cost but are never inflated, because
-    #     inflation already ran. The mask itself has to carry the footprint
-    #     margin around each zone, or the planner will hug the zone edge.
+    #   - inflation has already run by then, so the KeepoutFilter inflates the
+    #     mask itself (2026-10) with THIS costmap's inscribed radius and the
+    #     inflation_layer values below — a zone gets the same INSCRIBED band
+    #     and gradient as a wall. Draw the forbidden area only, no margin: a
+    #     margin in the mask is now applied twice. Until then keepout cells
+    #     were bare LETHAL, and Smac's centre-cell check let a path through
+    #     any gap between two zones that was one free cell wide.
     #   - clear* services never touch filter output: a keepout is a rule, not
     #     an observation.
     # Only the global costmap runs the filter (2026-09). The controller's local
@@ -224,5 +241,7 @@
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true
+      # Must stay >= the padded footprint's circumscribed radius (~0.455 m,
+      # see the footprint comment above).
       inflation_radius: 0.5      # ref global_costmap
       cost_scaling_factor: 2.0   # ref global_costmap
