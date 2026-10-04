@@ -34,6 +34,14 @@ struct ICPConfig
   // score still returns false every round and the TF never updates. Hence aligned with
   // small_gicp's own default of 20.
   int refine_max_iteration = 20;
+  // Convergence tolerances of the Gauss-Newton update, per stage: converged when the step is
+  // below BOTH (rotation in rad, translation in m). These are small_gicp's RegistrationPCL
+  // defaults (2e-3 rad = 0.11 deg, 5e-4 m), kept here so the refine stage behaves as before.
+  // They matter because of the hasConverged() gate above: a stage that is still jittering by a
+  // millimetre at max_iteration counts as failed even when the fit is good. The rough stage has
+  // its own, looser pair (see rough_*_eps) for exactly that reason.
+  double refine_rotation_eps = 2e-3;
+  double refine_translation_eps = 5e-4;
   double refine_max_corr_dist = 0.5;
   // "GICP" or "VGICP". VGICP builds a voxelmap of the target instead of a KD-tree and has a
   // larger basin of attraction, which suits the rough stage's job of absorbing the error of a
@@ -47,6 +55,15 @@ struct ICPConfig
   double rough_map_resolution = 0.25;
   double rough_score_thresh = 0.2;
   int rough_max_iteration = 20;
+  // Rough runs on 0.25 m voxels and only has to land inside refine's basin (refine_max_corr_dist,
+  // 0.5 m). Asking it for a 0.5 mm / 0.11 deg step on a sparse, non-repetitive MID360 scan is
+  // what produced "rough : converged=no iters=19 ... fitness=0.011" rounds in the dp1f replay
+  // (2026-10-04): a good fit that kept dithering at the millimetre level, so the whole round was
+  // rejected and the TF coasted on odometry — clustered during turns, up to 8 rounds (1.6 s) in a
+  // row. The code default repeats small_gicp's; params/localizer_params.yaml sets the looser
+  // production value, with the measurements.
+  double rough_rotation_eps = 2e-3;
+  double rough_translation_eps = 5e-4;
   double rough_max_corr_dist = 2.0;
   std::string rough_registration_type = "GICP";
   double rough_voxel_resolution = 1.0;

@@ -154,7 +154,9 @@ throwing. The launch layers the instance values on top.
 | `num_threads` | `4` | | GICP covariance / KD-tree / reduction threads. Read **once**: `RegistrationPCL` builds the tree at `setInputTarget`. Shares the CPU with pointlio |
 | `num_neighbors` | `20` | | Local-covariance neighbours (pcl::GICP's correspondence randomness) |
 | `rough_*` | `0.25` / `0.25` m, `20` iters, score `0.2`, corr `2.0` m, `GICP`, voxel `1.0` | | Absorbs a hand-entered guess. VGICP was tried and reverted (double solutions in degenerate geometry, 2026-08-28) |
+| `rough_rotation_eps` / `rough_translation_eps` | `0.0087` rad / `0.005` m | | Convergence tolerance of the rough Gauss-Newton step. Code default is small_gicp's `0.002` / `0.0005`; the YAML loosens it to 0.5° / 5 mm (2026-10-04, see "Gotchas") |
 | `refine_*` | `0.1` / `0.1` m, `20` iters, score `0.1`, corr `0.5` m, `GICP`, voxel `0.5` | | The fine stage |
+| `refine_rotation_eps` / `refine_translation_eps` | `0.002` rad / `0.0005` m | | Same for refine; kept at small_gicp's defaults, since this solution becomes the TF |
 
 **Write floats** for double parameters (`2.0`, not `2`): a bare integer is an
 int64 override and the node dies with `InvalidParameterTypeException`.
@@ -230,7 +232,23 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
   `hasConverged()` as a hard condition. Iteration counts below small_gicp's
   default of 20 silently stop the TF from ever updating; the log prints
   `converged=` and `fitness=` before the threshold check so the two failures
-  can be told apart.
+  can be told apart. The step tolerance behind that flag is a parameter per
+  stage since 2026-10-04 (`*_rotation_eps` / `*_translation_eps`). With the
+  library's 0.11° / 0.5 mm on the rough stage, the dp1f replay lost 5.9% of
+  its rounds to `rough : converged=no iters=19 … fitness=0.011` — a correct fit
+  dithering below the voxel size — in streaks of up to 10 rounds (2 s of
+  odometry coasting) while moving; the YAML's 0.5° / 5 mm left 1 of 3013 in
+  the same replay (accepted rounds 92.5% → 97.9%), with the pose error against
+  the map's keyframes unchanged (median 1.5 cm, p95 4.2 cm). Refine keeps the
+  library defaults.
+- **The correction's translation is not a drift gauge.** `map →
+  pointlio_odom` is `t = t_body − R · t_odom`: a 1° change in its rotation
+  moves its translation by 1 m for a robot 60 m from where pointlio started,
+  while the body pose itself moves millimetres. In the dp1f replay that
+  translation swung ±3 m during the run with the localized body within 2 cm
+  (median) of the map's keyframes throughout. Judge drift on `map → base_link`
+  (the keyframe comparison in the analysis), never on `tf2_echo map
+  pointlio_odom`.
 - **`setInput` allocates a fresh cloud every round on purpose.**
   `RegistrationPCL::setInputSource` early-returns on an identical pointer and
   would then register the new scan with the previous scan's covariances.
