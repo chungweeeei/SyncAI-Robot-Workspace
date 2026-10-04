@@ -140,10 +140,31 @@
     # so after the switch to GICP the physical meaning of these two values is
     # unchanged and the old tuning carries over. The actual value is printed in
     # the log's fitness column.
+    # For scale (dp1f replay, 2026-10-04): a correct lock scores rough
+    # 0.009-0.03 (p50 0.012) and refine 0.001-0.018 (p50 0.0044, max 0.052),
+    # so both thresholds sit 10-20x above a good match and reject nothing —
+    # they are a sanity bound, not a lock-quality gate. Tightening them to make
+    # them one needs data from a site this was NOT mapped from first; a value
+    # that is too tight fails as "TF frozen on the last offset", silently.
     rough_score_thresh: 0.2
     # Upper bound on the correspondence pairing distance (m): rough gets a
     # larger one to absorb the error of a hand-entered relocalize guess.
     rough_max_corr_dist: 2.0
+    # Convergence tolerances of the Gauss-Newton step (rad, m): small_gicp
+    # reports converged only when one step is below BOTH, and align() gates on
+    # that flag. The library defaults are 2e-3 rad (0.11 deg) and 5e-4 m, which
+    # is what both stages used until 2026-10-04. For rough that is far tighter
+    # than its job needs: it works on 0.25 m voxels and only has to land inside
+    # refine's 0.5 m correspondence radius. Measured on the dp1f bag replayed
+    # through pointlio + this node (645 s, 3038 rounds): 180 rounds (5.9%)
+    # ended as "rough : converged=no iters=19 ... fitness=0.010-0.028" — a good
+    # fit still dithering at the millimetre level when the iteration budget ran
+    # out — and every one of them threw the whole round away, so the TF coasted
+    # on odometry for up to 10 rounds (2 s) in a row while moving. Rounds that
+    # did converge needed a median of 7 iterations (p90 13), so this is not a case for
+    # more iterations. 0.5 deg / 5 mm is still 20x finer than refine's basin.
+    rough_rotation_eps: 0.0087
+    rough_translation_eps: 0.005
     # "GICP" or "VGICP". VGICP builds a voxelmap of the target instead of a
     # KD-tree and has a larger basin of attraction, so in theory it suits the
     # rough stage better. But measured on robot01 on 2026-08-28 with VGICP +
@@ -167,5 +188,12 @@
     # refine tightens this and uses only short-range pairs for the fine
     # registration.
     refine_max_corr_dist: 0.5
+    # Refine keeps small_gicp's defaults: it is the stage whose solution becomes
+    # the TF, so a sub-millimetre step is the right bar. In the same dp1f replay
+    # 48 of 2858 refine rounds (1.7%) hit the iteration limit, all with a good
+    # fitness (0.0015-0.015), i.e. the same dithering as above but rare enough to
+    # leave alone — one skipped round at 5 Hz costs 200 ms of odometry coasting.
+    refine_rotation_eps: 0.002
+    refine_translation_eps: 0.0005
     refine_registration_type: "GICP"
     refine_voxel_resolution: 0.5

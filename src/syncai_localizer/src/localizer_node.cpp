@@ -176,6 +176,10 @@ void LocalizerNode::loadParameters()
     declare_parameter<int>("rough_max_iteration", m_localizer_config.rough_max_iteration);
   m_localizer_config.rough_score_thresh =
     declare_parameter<double>("rough_score_thresh", m_localizer_config.rough_score_thresh);
+  m_localizer_config.rough_rotation_eps =
+    declare_parameter<double>("rough_rotation_eps", m_localizer_config.rough_rotation_eps);
+  m_localizer_config.rough_translation_eps =
+    declare_parameter<double>("rough_translation_eps", m_localizer_config.rough_translation_eps);
   m_localizer_config.rough_max_corr_dist =
     declare_parameter<double>("rough_max_corr_dist", m_localizer_config.rough_max_corr_dist);
   m_localizer_config.rough_registration_type = declare_parameter<std::string>(
@@ -191,6 +195,10 @@ void LocalizerNode::loadParameters()
     declare_parameter<int>("refine_max_iteration", m_localizer_config.refine_max_iteration);
   m_localizer_config.refine_score_thresh =
     declare_parameter<double>("refine_score_thresh", m_localizer_config.refine_score_thresh);
+  m_localizer_config.refine_rotation_eps =
+    declare_parameter<double>("refine_rotation_eps", m_localizer_config.refine_rotation_eps);
+  m_localizer_config.refine_translation_eps =
+    declare_parameter<double>("refine_translation_eps", m_localizer_config.refine_translation_eps);
   m_localizer_config.refine_max_corr_dist =
     declare_parameter<double>("refine_max_corr_dist", m_localizer_config.refine_max_corr_dist);
   m_localizer_config.refine_registration_type = declare_parameter<std::string>(

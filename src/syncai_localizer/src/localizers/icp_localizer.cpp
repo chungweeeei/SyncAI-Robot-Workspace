@@ -61,6 +61,15 @@ ICPLocalizer::ICPLocalizer(const ICPConfig & config) : m_config(config)
   // for the fine registration.
   m_rough_icp.setMaxCorrespondenceDistance(m_config.rough_max_corr_dist);
   m_refine_icp.setMaxCorrespondenceDistance(m_config.refine_max_corr_dist);
+
+  // Convergence tolerances. setRotationEpsilon is small_gicp's own; setTransformationEpsilon is
+  // pcl::Registration's, which RegistrationPCL reads as the translation step in metres (not the
+  // squared value PCL's own ICP documents). Both feed TerminationCriteria, whose converged() is
+  // what hasConverged() reports — and align() below gates on it.
+  m_rough_icp.setRotationEpsilon(m_config.rough_rotation_eps);
+  m_rough_icp.setTransformationEpsilon(m_config.rough_translation_eps);
+  m_refine_icp.setRotationEpsilon(m_config.refine_rotation_eps);
+  m_refine_icp.setTransformationEpsilon(m_config.refine_translation_eps);
 }
 
 bool ICPLocalizer::loadMap(const std::string & path)
