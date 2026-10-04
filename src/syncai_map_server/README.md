@@ -123,10 +123,10 @@ which topic carries the mask and how to interpret its values
 instance** named `filter_mask_server` that publishes the mask grid, both from one
 params file. The mask is an ordinary map YAML + image pair (`.pgm` by
 convention, but anything GraphicsMagick decodes), ideally with the same geometry
-as the navigation map, black cells marking keepout zones. Because costmap
-filters run *after* inflation, keepout cells become lethal cost but are never
-inflated — draw each zone with the robot's footprint margin already included, or
-the planner will hug its edge.
+as the navigation map, black cells marking keepout zones. Draw the forbidden
+area only: costmap filters run *after* inflation, so `syncai_costmap_2d`'s
+`KeepoutFilter` inflates the mask itself with the costmap's footprint and
+inflation parameters (2026-10). A margin drawn into the mask is applied twice.
 
 ### Where the mask path comes from
 

@@ -228,9 +228,42 @@ controller's local costmap. The mask is `map/<name>/keepout.yaml`, served by
 which writes a blank all-unknown mask of the gridmap's geometry when a map has
 none yet. Unknown is the right blank: `process()` skips unknown mask cells but
 lets a free mask cell overwrite an unknown costmap cell, so an all-*free* mask
-would silently turn unexplored space plannable. Because it runs after
-inflation, its lethal cells are never inflated — a mask has to include the
-footprint margin around each zone itself.
+would silently turn unexplored space plannable.
+
+**The filter inflates the mask itself** (2026-10). Filters run after the layer
+stack, inflation included, so upstream's keepout lands as a bare LETHAL cell:
+no INSCRIBED band, no gradient. SmacPlanner2D collision-checks the robot's
+centre cell against INSCRIBED, so two zones one free cell apart were a
+plannable corridor — `dp2f` had a 0.25 m gap between two zones that the planner
+routed a 0.44 m wide robot through. The documented rule used to be "draw the
+footprint margin into the mask"; it bakes the robot's size into per-map data,
+the editor does not do it, and a hand-drawn band has no gradient to steer the
+cost-aware search off the edge. So `inflateMask()` runs on every mask arrival
+and on every `onFootprintChanged()` (`LayeredCostmap::setFootprint` calls it
+on filters too), never per update cycle:
+
+- Radii come from the costmap the filter is attached to, not from parameters
+  of its own: the inscribed radius from `LayeredCostmap::getInscribedRadius()`
+  (the padded footprint), `inflation_radius` / `cost_scaling_factor` read off
+  the costmap's `InflationLayer` the way `syncai_planner`'s
+  `findCircumscribedCost()` finds it. A zone therefore carries exactly the band
+  and gradient a wall does. No `InflationLayer` → the INSCRIBED disc only, with
+  a warning.
+- Same curve as `InflationLayer::computeCost()` but in metres, because the
+  mask has its own map_server and need not share the costmap's resolution. A
+  disc kernel is stamped (max) around each zone's boundary cells only.
+- Drawn cells keep upstream semantics (free overwrites unknown). **Cells
+  produced by inflation never overwrite an unknown master cell**: a gradient
+  is a derived cost, not a rule about the cell, and writing it would turn
+  unexplored space into known, plannable cost. `process()` tells the two apart
+  by comparing the inflated mask against the raw one.
+- `updateBounds()` now grows the window to the mask's own extents once per
+  rebuild. Upstream pushed the mask's cell count through the *costmap's*
+  `mapToWorld`, which is only right when mask and costmap share origin and
+  resolution.
+
+A mask is therefore "the forbidden area", nothing more. A mask that still
+carries a hand-drawn margin now gets that margin twice.
 
 The filter/layer distinction exists only at the config level. In
 `costmap_plugins.xml` `KeepoutFilter` is registered with

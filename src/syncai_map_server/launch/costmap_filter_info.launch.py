@@ -58,9 +58,10 @@
 # missing or unreadable -- there is nothing to size the mask from, and the
 # map_server pane next door is dying on the same file anyway.
 #
-# Filters run AFTER the layer stack, inflation included, so keepout cells land
-# as lethal cost but are never inflated: the mask must carry its own footprint
-# margin around each zone (see syncai_costmap_2d's README).
+# Filters run AFTER the layer stack, inflation included, so the KeepoutFilter
+# inflates the mask itself with the costmap's footprint and inflation
+# parameters (2026-10). A mask is the forbidden area only -- no margin (see
+# syncai_costmap_2d's README).
 
 import configparser
 import os
@@ -222,8 +223,8 @@ def write_blank_mask(keepout_yaml: str, geometry: dict) -> None:
             "# with the geometry of gridmap.yaml at the time. Pixel semantics when\n"
             "# editing: black = keepout (lethal), grey = no opinion, white = force\n"
             "# free (overrides unknown cells of the map -- almost never wanted).\n"
-            "# Draw each zone with the robot footprint margin included: costmap\n"
-            "# filters run after inflation. Reload without a restart via\n"
+            "# Draw the forbidden area only, no margin: the costmap's KeepoutFilter\n"
+            "# inflates it with the robot footprint. Reload without a restart via\n"
             "# /<robot_id>/filter_mask_server/load_map.\n"
             f"image: {KEEPOUT_IMAGE_BASENAME}\n"
             "mode: trinary\n"
