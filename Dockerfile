@@ -327,6 +327,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        and fails with "Unable to find libclang" without -dev.
 #   - rustup / cargo   : pinned via RUST_TOOLCHAIN, like every other third-party
 #                        dep in this image.
+#   - rustfmt          : `--profile minimal` leaves it out, and colcon-ros-cargo's
+#                        `colcon test` runs `cargo fmt --check` next to `cargo
+#                        test` -- without the component that test fails with
+#                        "'rustfmt' is not installed for the toolchain", which
+#                        reads like a formatting failure and is not one. It is
+#                        a component of the pinned toolchain, so its version
+#                        moves with RUST_TOOLCHAIN.
 #   - cargo-ament-build: `cargo ament-build --install-base`, the drop-in for
 #                        `cargo build` that lays binaries out per REP 122 so
 #                        `ros2 run` / `ros2 launch` find them.
@@ -353,7 +360,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev \
     && rm -rf /var/lib/apt/lists/* && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" && \
+    sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" \
+        --component rustfmt && \
     cargo install --locked cargo-ament-build && \
     pip3 install --no-cache-dir colcon-cargo colcon-ros-cargo && \
     rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
