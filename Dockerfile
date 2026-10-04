@@ -331,10 +331,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        `cargo build` that lays binaries out per REP 122 so
 #                        `ros2 run` / `ros2 launch` find them.
 #   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
-#                        package.xml + Cargo.toml package. That is two packages
-#                        since 2026-10 -- syncai_driver_manager and
-#                        syncai_robot_state, which vcs imports from their own
-#                        repos (see driver-manager.repos / robot-state.repos);
+#                        package.xml + Cargo.toml package. That is three
+#                        packages since 2026-10 -- syncai_driver_manager,
+#                        syncai_robot_state and syncai_lio_bridge, which vcs
+#                        imports from their own repos (see driver-manager.repos
+#                        / robot-state.repos / lio-bridge.repos);
 #                        the rest of src/ has no Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override
@@ -375,8 +376,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # edits these repos -- they are toolchain, like GTSAM / Sophus above, and a
 # workspace checkout would put ~30 upstream packages into every clean
 # `colcon build` on the Jetson. The recipe is upstream's: ros2-rust/ros2_rust's
-# own ros2_rust_humble.repos, which is also what both Rust repos' dev
-# containers build into the same /opt/ros2_rust_underlay. Three differences:
+# own ros2_rust_humble.repos, which is also what the three Rust repos'
+# dev containers build into the same /opt/ros2_rust_underlay. Three differences:
 #
 #   - `ros2-rust/examples` is dropped (demo nodes; the dev containers drop it too).
 #   - rclrs itself (ros2-rust/ros2_rust) is added and built from source.
@@ -401,8 +402,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ahead of the image.
 #
 # tf2_msgs is deliberately not rebuilt: ros-humble-tf2-msgs already ships
-# generated Rust bindings, which is what syncai_robot_state's hand-rolled /tf
-# lookup links against (rclrs has no tf2_ros binding). Add geometry2 only if a
+# generated Rust bindings, which is what syncai_robot_state's and
+# syncai_lio_bridge's hand-rolled /tf handling links against (rclrs has no tf2_ros binding). Add geometry2 only if a
 # future base image stops shipping them.
 #
 # build/ and log/ are dropped; install/ is all a consumer reads. The cargo
