@@ -74,7 +74,7 @@ NavigateToPose (nav2_msgs) → syncai_task_runner   (BT navigator; ticks behavio
 | `syncai_pointlio` | **The LIO front end.** Point-LIO (output model) over the Livox `CustomMsg` + IMU, ported in-tree from `FASTLIO2_ROS2`'s `pointlio` in 2026-09 with the ROS surface unchanged: node `pointlio_node` at `/<robot_id>/pointlio`, `lio_odom` / `body_cloud` / `world_cloud` / `lio_path`, TF `<robot_id>/pointlio_odom → <robot_id>/pointlio_body`, and `reset` (`syncai_common/srv/ResetLIO` — the type moved with it). `syncai_mapping` and `syncai_localizer` consume it through absolute names their launches inject; `lio_bridge` and both costmaps consume it too. Single-threaded on purpose: `resetCB` takes no lock against the timer. Its launch is the one definition of how the node is configured, and the session specs run it in its own pane — no other launch `include()`s it. |
 | `syncai_mapping` | **The mapping back end, two nodes.** `pgo_node`, ported in-tree from `FASTLIO2_ROS2`'s `pgo` in 2026-09 with the ROS surface unchanged: node `pgo_node` at `/<robot_id>/pgo`, services `save_maps` / `reset_mapping` (typed by `syncai_common` now — the backend is their only caller and must import from there), topics `map_cloud` (rviz) / `map_cloud_file` (the JSON notice the backend reads) / `loop_markers`, TF `map → <robot_id>/pointlio_odom` while mapping, and the `/dev/shm/syncai_pgo/<robot_id>` PCD hand-off. Two things did change: configuration is declared ROS parameters (`params/mapping_params.yaml`, `/**/pgo_node:`, five robot_id-dependent overrides from the launch) instead of a yaml-cpp `config_path` with a `/tmp` rewrite, and there is no `interface` dependency left. Runs a 3-thread `MultiThreadedExecutor` on purpose — `reset_mapping` blocks on the `ResetLIO` client — so `m_pgo_mutex` is load-bearing; the README carries the discipline. Its `local_frame` must equal pointlio's `world_frame`: it does not adopt the frame from the odom header. The second node, `hba_node` (`hba.launch.py`, `/<robot_id>/hba`, `refine_map` / `save_poses`), is the fork's `hba`: offline hierarchical bundle adjustment over `save_maps`'s `patches/` + `poses.txt`, in no session, run by hand. It gained the robot_id namespace and ROS parameters with the port; the maths under `hba/` is upstream code. Needs Sophus as well as GTSAM. |
 | `syncai_localizer` | **The relocalizer, nav session only.** Two-stage GICP (`small_gicp`, rough 0.25 m then refine 0.1 m) of `pointlio/body_cloud` against the `[map] pcd`, broadcasting `map → <robot_id>/pointlio_odom` (the frame is adopted from the first odom header) and serving `relocalize` / `relocalize_check` (`syncai_common/srv/Relocalize` / `IsValid`) plus the `initialpose` subscriber and a latched `map_cloud`. Ported in-tree from `FASTLIO2_ROS2`'s `localizer` in 2026-09, the fork's last package, with the ROS surface unchanged — **and that surface is the bare `/<robot_id>` namespace**: the node is `/<robot_id>/localizer_node` and the names resolve to `/<robot_id>/relocalize`, `/<robot_id>/relocalize_check`, `/<robot_id>/initialpose`, `/<robot_id>/map_cloud`. Docs used to say `/<robot_id>/localizer/…` from before fork commit `3f5f01b` (2026-07) dropped the segment; the backend calls the bare names, so the port kept them and the docs were corrected. Registration is motion-gated (`min_update_trans` / `max_update_interval` / `static_blend_alpha`, measured on robot01 2026-09-21) and capped at `update_hz` 5; the tuning history is in `params/localizer_params.yaml`. The launch **starts nothing** when `[map] pcd` is missing on disk, on purpose. 2-thread `MultiThreadedExecutor`: services + `initialpose` on their own group so a multi-second `loadMap` never gaps the TF; `ICPLocalizer::m_target_mutex` exists for that split. |
-| `syncai_lio_bridge` | **The only odometry source.** Wheel odom is retired. Converts the FAST-LIO2 chain (`map → pointlio_odom → pointlio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro because LIO leaves `twist.angular` empty. |
+| `syncai_lio_bridge` | **The only odometry source — not in this repo.** It moved to `chungweeeei/SyncAI-LIO-Bridge` in 2026-10, the third package that month to go out to its own repo and be rewritten against **rclrs** (Rust, `ament_cargo`), and is materialised back into `src/` by `vcs import < lio-bridge.repos` (branch `dev`); `git log -- src/syncai_lio_bridge` has the C++ node. The ROS surface did not move: same package name, same `lio_bridge_node`, and `lio_bridge.launch.py` is byte-for-byte the rclcpp one (every parameter inline, no params file — so the bare-`/**` key the other two Rust packages need does not arise), so `start_nav.yaml` is unchanged. Wheel odom is retired. Converts the FAST-LIO2 chain (`map → pointlio_odom → pointlio_body`) into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity comes from the lidar IMU gyro — by choice, not as a fallback: an older note here said LIO leaves `twist.angular` empty, and it does not; the package README has why the gyro is preferred. The port does its own TF (rclrs has no `tf2_ros`): a `/tf` + `/tf_static` subscription keeping only the newest transform per child frame, and a plain `/tf` publisher. Edit it in that checkout and commit there. |
 | `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` (carries the `lidar_top` mount extrinsic the LIO bridge needs) + the Livox driver. The fleet runs **both MID360 and MID360s**; the driver has no ROS parameter for the model, so `[sensor.lidar] type` (`mid360`/`mid360s`) picks the JSON schema. The driver's network JSON is **generated** per `robot_id` and model into `/tmp/syncai_bringup/` from `[sensor.lidar] ip` + `type` (INI) + `host_ip` (params YAML) — the vendor `MID360_config.json` / `MID360s_config.json` in the driver's share dir is not read. The old 2D/AMCL `bringup_2d.launch.py` (laser scan merger) was removed. Optionally also the TechNexion VCS-AR0234-C camera via `vizionsdk_ros2` (`use_camera:=true`, **default off** — see below). |
 
 **Camera.** The camera has two possible consumers and exactly one may hold the
@@ -115,7 +115,7 @@ that stayed — which robot-side services the backend calls, and which of this
 stack's behaviours it depends on — is under "Out of tree" below.
 
 What `src/` holds: the `syncai_*` packages in the tables above, plus
-`src/third-party/`. Three of those packages are not tracked here, and each is
+`src/third-party/`. Four of those packages are not tracked here, and each is
 materialised back into `src/` by its own `.repos` file:
 
 | Package | Repo | `.repos` |
@@ -123,11 +123,12 @@ materialised back into `src/` by its own `.repos` file:
 | `syncai_common` | `chungweeeei/SyncAI-Robot-Interface` | `interface.repos` |
 | `syncai_driver_manager` | `chungweeeei/SyncAI-Robot-Driver-Manager` | `driver-manager.repos` |
 | `syncai_robot_state` | `chungweeeei/SyncAI-Robot-State` | `robot-state.repos` |
+| `syncai_lio_bridge` | `chungweeeei/SyncAI-LIO-Bridge` | `lio-bridge.repos` |
 
 `syncai_common` left in the 2026-09 split, so the backend can build against the
-message definitions without checking out this workspace. The other two left in
+message definitions without checking out this workspace. The other three left in
 2026-10, each rewritten against rclrs on the way out, and they are the
-workspace's two `ament_cargo` packages. Edit any of the three in its own
+workspace's three `ament_cargo` packages. Edit any of the four in its own
 checkout; a change made in those directories is untracked, and the next
 `--force` import overwrites it.
 
@@ -148,12 +149,13 @@ sourced between `/opt/ros/humble` and the workspace (`~/.bashrc`,
 C++ included — same Humble branch. `syncai_common` is still built in the
 workspace and gets its Rust crate from the underlay's generator. Verified
 2026-10-02: underlay 29 packages in the image, then all 22 workspace packages
-including both Rust ones. A workspace that was ever built with these interface
+including both Rust ones (before `syncai_lio_bridge` became the third). A workspace that was ever built with these interface
 packages in `src/` keeps stale `build/` + `install/` copies of them (and a
 `syncai_common` CMake cache pointing at those) that shadow the underlay — delete
-them, or configure fails on a missing `register_rs.cmake`. `syncai_robot_state`'s `tf2_msgs` is the one dependency that does
-**not** need it: `ros-humble-tf2-msgs` already ships generated Rust bindings,
-which is what that node's hand-rolled `/tf` lookup links against (rclrs has no
+them, or configure fails on a missing `register_rs.cmake`. `tf2_msgs` (needed by `syncai_robot_state` and
+`syncai_lio_bridge`) is the one dependency that does **not** need it:
+`ros-humble-tf2-msgs` already ships generated Rust bindings, which is what both
+nodes' hand-rolled `/tf` handling links against (rclrs has no
 `tf2_ros` binding).
 
 `syncai_ros_mcp` — a vendored MCP server that exposed the ROS 2 graph and the
@@ -287,14 +289,17 @@ reaches robot01, so a missing dep is a `Dockerfile` change. The script also
 restores the `livox_ros_driver2` `package.xml` when a `vcs import` has deleted
 it, and refuses to start on an empty vcs checkout — a `dir:repos` table covering
 the five `src/third-party/` dirs plus `src/syncai_common`,
-`src/syncai_driver_manager` and `src/syncai_robot_state`, naming the `.repos`
+`src/syncai_driver_manager`, `src/syncai_robot_state` and
+`src/syncai_lio_bridge`, naming the `.repos`
 file to import per missing directory, because "you forgot to import" is not what
-colcon's own failure looks like. The two first-party checks earn their place
+colcon's own failure looks like. The first-party checks earn their place
 more than the rest: an absent `src/syncai_common` fails every package at once,
-while an absent `src/syncai_driver_manager` or `src/syncai_robot_state` fails
-*nothing* — colcon happily builds a workspace with no gait-controller bridge and
-nothing publishing `RobotState`, so the robot stands still at the first
-`cmd_vel` and the console's telemetry never arrives. That table is where the
+while an absent `src/syncai_driver_manager`, `src/syncai_robot_state` or
+`src/syncai_lio_bridge` fails *nothing* — colcon happily builds a workspace with
+no gait-controller bridge, nothing publishing `RobotState` and no odometry
+source, so the robot stands still at the first `cmd_vel`, the console's
+telemetry never arrives, and the costmaps wait forever on an `odom → base_link`
+nobody broadcasts. That table is where the
 next package to move out gets added. There are no carve-outs in what it builds any more: since the
 frontend and then the backend left, the workspace and what colcon discovers are
 the same set. It is equally runnable inside robot01 (`scripts/build.sh`). Its
@@ -676,8 +681,8 @@ something to verify or edit here.
   rosbags), the whole of `/map/` (LIO output: `map.pcd`, `poses.txt`,
   `patches/`, generated `gridmap.*`) and `/models/` (TTS weights, which nothing
   here downloads any more) are gitignored, as are `src/syncai_common/`,
-  `src/syncai_driver_manager/`, `src/syncai_robot_state/` and
-  `src/syncai_backend/` — the first three because they are materialised by
+  `src/syncai_driver_manager/`, `src/syncai_robot_state/`,
+  `src/syncai_lio_bridge/` and `src/syncai_backend/` — the first four because they are materialised by
   `vcs import`, the last so a clone of the backend kept there for development
   can never be committed back in. `.env` holds secrets — never commit it.
 - `scripts/`: `attach.sh` (host-side: attaches to whichever byobu session is

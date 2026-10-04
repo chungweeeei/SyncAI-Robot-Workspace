@@ -2,9 +2,9 @@
 # =============================================================================
 # Build the workspace with colcon. Everything under src/ is a package colcon
 # knows how to build on its own — ament_cmake, plain CMake, ament_python, and
-# since 2026-10 two ament_cargo packages (syncai_driver_manager and
-# syncai_robot_state, through the colcon-cargo / colcon-ros-cargo the image
-# installs) — so "every ROS 2 package" and "everything colcon finds" are the
+# since 2026-10 three ament_cargo packages (syncai_driver_manager,
+# syncai_robot_state and syncai_lio_bridge, through the colcon-cargo /
+# colcon-ros-cargo the image installs) — so "every ROS 2 package" and "everything colcon finds" are the
 # same set. The two exceptions this header
 # used to carve out (syncai_frontend, built by npm; syncai_backend, whose deps
 # came from pip) both left the workspace in 2026-09 for their own repositories.
@@ -72,10 +72,12 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 #     packages and fail on the first `find_package` that needed one of them;
 #   - an absent src/syncai_common fails every package at once with a message
 #     about a missing ament package;
-#   - an absent first-party package (syncai_driver_manager, syncai_robot_state)
-#     fails NOTHING. colcon happily builds a workspace with no bridge to the
-#     gait controller and nothing publishing RobotState, so the robot stands
-#     still at the first cmd_vel and the console's telemetry never arrives.
+#   - an absent first-party package (syncai_driver_manager, syncai_robot_state,
+#     syncai_lio_bridge) fails NOTHING. colcon happily builds a workspace with
+#     no bridge to the gait controller, nothing publishing RobotState and no
+#     odometry source, so the robot stands still at the first cmd_vel, the
+#     console's telemetry never arrives, and the nav session's costmaps wait
+#     forever on an odom -> base_link nobody broadcasts.
 # This does. The dir:repos table is the one place to add the next package that
 # moves out to its own repository.
 step "checking vcs checkouts"
@@ -87,7 +89,8 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
              third-party/vizionsdk-ros2:third-party.repos \
              syncai_common:interface.repos \
              syncai_driver_manager:driver-manager.repos \
-             syncai_robot_state:robot-state.repos; do
+             syncai_robot_state:robot-state.repos \
+             syncai_lio_bridge:lio-bridge.repos; do
     dir="${entry%%:*}"
     repos="${entry##*:}"
     if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then

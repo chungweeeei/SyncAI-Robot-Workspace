@@ -327,14 +327,22 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        and fails with "Unable to find libclang" without -dev.
 #   - rustup / cargo   : pinned via RUST_TOOLCHAIN, like every other third-party
 #                        dep in this image.
+#   - rustfmt          : `--profile minimal` leaves it out, and colcon-ros-cargo's
+#                        `colcon test` runs `cargo fmt --check` next to `cargo
+#                        test` -- without the component that test fails with
+#                        "'rustfmt' is not installed for the toolchain", which
+#                        reads like a formatting failure and is not one. It is
+#                        a component of the pinned toolchain, so its version
+#                        moves with RUST_TOOLCHAIN.
 #   - cargo-ament-build: `cargo ament-build --install-base`, the drop-in for
 #                        `cargo build` that lays binaries out per REP 122 so
 #                        `ros2 run` / `ros2 launch` find them.
 #   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
-#                        package.xml + Cargo.toml package. That is two packages
-#                        since 2026-10 -- syncai_driver_manager and
-#                        syncai_robot_state, which vcs imports from their own
-#                        repos (see driver-manager.repos / robot-state.repos);
+#                        package.xml + Cargo.toml package. That is three
+#                        packages since 2026-10 -- syncai_driver_manager,
+#                        syncai_robot_state and syncai_lio_bridge, which vcs
+#                        imports from their own repos (see driver-manager.repos
+#                        / robot-state.repos / lio-bridge.repos);
 #                        the rest of src/ has no Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override
@@ -352,7 +360,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev \
     && rm -rf /var/lib/apt/lists/* && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" && \
+    sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" \
+        --component rustfmt && \
     cargo install --locked cargo-ament-build && \
     pip3 install --no-cache-dir colcon-cargo colcon-ros-cargo && \
     rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
@@ -375,8 +384,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # edits these repos -- they are toolchain, like GTSAM / Sophus above, and a
 # workspace checkout would put ~30 upstream packages into every clean
 # `colcon build` on the Jetson. The recipe is upstream's: ros2-rust/ros2_rust's
-# own ros2_rust_humble.repos, which is also what both Rust repos' dev
-# containers build into the same /opt/ros2_rust_underlay. Three differences:
+# own ros2_rust_humble.repos, which is also what the three Rust repos'
+# dev containers build into the same /opt/ros2_rust_underlay. Three differences:
 #
 #   - `ros2-rust/examples` is dropped (demo nodes; the dev containers drop it too).
 #   - rclrs itself (ros2-rust/ros2_rust) is added and built from source.
@@ -401,8 +410,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ahead of the image.
 #
 # tf2_msgs is deliberately not rebuilt: ros-humble-tf2-msgs already ships
-# generated Rust bindings, which is what syncai_robot_state's hand-rolled /tf
-# lookup links against (rclrs has no tf2_ros binding). Add geometry2 only if a
+# generated Rust bindings, which is what syncai_robot_state's and
+# syncai_lio_bridge's hand-rolled /tf handling links against (rclrs has no tf2_ros binding). Add geometry2 only if a
 # future base image stops shipping them.
 #
 # build/ and log/ are dropped; install/ is all a consumer reads. The cargo
