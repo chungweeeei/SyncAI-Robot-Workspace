@@ -52,6 +52,10 @@ find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(OpenMP QUIET)
+# pgo_node's loop verification (small_gicp's RegistrationPCL, since 2026-10).
+# Same arrangement as syncai_localizer: src/third-party/small_gicp is a
+# build_type cmake package, ordered before this one by <depend>small_gicp</depend>.
+find_package(small_gicp REQUIRED)
 
 set(SYNCAI_MAPPING_DEPS
   rclcpp
@@ -79,9 +83,13 @@ target_include_directories(pgo_node PUBLIC
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS})
 ament_target_dependencies(pgo_node ${SYNCAI_MAPPING_DEPS})
+# small_gicp::small_gicp carries OpenMP::OpenMP_CXX as a PUBLIC usage
+# requirement; without -fopenmp its omp pragmas are silently ignored and the
+# kd-tree / covariance estimation run single-threaded.
 target_link_libraries(pgo_node
   ${PCL_LIBRARIES}
   gtsam
+  small_gicp::small_gicp
 )
 
 # ---- hba_node: offline hierarchical bundle adjustment (by hand) -------------

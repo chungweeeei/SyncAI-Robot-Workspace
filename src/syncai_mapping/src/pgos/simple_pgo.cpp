@@ -12,10 +12,42 @@ SimplePGO::SimplePGO(const Config & config) : m_config(config)
   m_t_offset.setZero();
 
   m_icp.setMaximumIterations(50);
-  m_icp.setMaxCorrespondenceDistance(10);
+  m_icp.setMaxCorrespondenceDistance(m_config.loop_icp_max_corr_dist);
   m_icp.setTransformationEpsilon(1e-6);
   m_icp.setEuclideanFitnessEpsilon(1e-6);
   m_icp.setRANSACIterations(0);
+
+  // Same settings as syncai_localizer's refine stage, which is the other
+  // small_gicp user in the workspace. setNumThreads() has to come before the
+  // first setInputTarget() (the kd-tree builder reads it).
+  m_gicp.setNumThreads(m_config.loop_gicp_num_threads);
+  m_gicp.setCorrespondenceRandomness(m_config.loop_gicp_num_neighbors);
+  m_gicp.setRegistrationType("GICP");
+  m_gicp.setMaximumIterations(50);
+  m_gicp.setMaxCorrespondenceDistance(m_config.loop_icp_max_corr_dist);
+  m_gicp.setTransformationEpsilon(1e-6);
+}
+
+bool SimplePGO::alignLoop(
+  const CloudType::Ptr & source, const CloudType::Ptr & target, M4F & transform, double & fitness)
+{
+  CloudType::Ptr aligned(new CloudType);
+  if (m_config.loop_registration == "icp") {
+    m_icp.setInputSource(source);
+    m_icp.setInputTarget(target);
+    m_icp.align(*aligned);
+    if (!m_icp.hasConverged()) return false;
+    transform = m_icp.getFinalTransformation();
+    fitness = m_icp.getFitnessScore();
+    return true;
+  }
+  m_gicp.setInputSource(source);
+  m_gicp.setInputTarget(target);
+  m_gicp.align(*aligned);
+  if (!m_gicp.hasConverged()) return false;
+  transform = m_gicp.getFinalTransformation();
+  fitness = m_gicp.getFitnessScore();
+  return true;
 }
 
 bool SimplePGO::isKeyPose(const PoseWithTime & pose)
@@ -183,22 +215,39 @@ void SimplePGO::searchForLoopPairs()
   CloudType::Ptr target_cloud =
     getSubMap(loop_idx, m_config.loop_submap_half_range, m_config.submap_resolution);
   CloudType::Ptr source_cloud = getSubMap(m_key_poses.size() - 1, 0, m_config.submap_resolution);
-  CloudType::Ptr align_cloud(new CloudType);
+  M4F loop_transform;
+  double fitness = 0.0;
+  if (!alignLoop(source_cloud, target_cloud, loop_transform, fitness)) return;
+  if (fitness > m_config.loop_score_tresh) return;
 
-  m_icp.setInputSource(source_cloud);
-  m_icp.setInputTarget(target_cloud);
-  m_icp.align(*align_cloud);
-
-  if (!m_icp.hasConverged() || m_icp.getFitnessScore() > m_config.loop_score_tresh) return;
-
-  // Convert the ICP result into a GTSAM BetweenFactor
-  // The correction transform computed by ICP (expressed in the global frame)
-  M4F loop_transform = m_icp.getFinalTransformation();
+  // The correction transform computed by the registration, expressed in the
+  // global frame: it maps the source keyframe's world cloud onto the submap.
+  if (m_config.loop_planar_correction) {
+    // Keep only what the loop is trusted for: where the source keyframe should
+    // sit in x / y and how it should be yawed. Its world z, roll and pitch
+    // stay exactly as the graph has them now. Built so that the source POSE
+    // is displaced by the registration's own xy displacement (not by the raw
+    // translation column, which is meaningless 20 m from the origin when the
+    // transform carries a rotation) and yawed about the world z axis.
+    const M3D r_full = loop_transform.block<3, 3>(0, 0).cast<double>();
+    const V3D t_full = loop_transform.block<3, 1>(0, 3).cast<double>();
+    const V3D src_t = m_key_poses[cur_idx].t_global;
+    const V3D displaced = r_full * src_t + t_full;
+    const double yaw = std::atan2(r_full(1, 0), r_full(0, 0));
+    const M3D r_yaw = Eigen::AngleAxisd(yaw, V3D::UnitZ()).toRotationMatrix();
+    const V3D target_pos(displaced.x(), displaced.y(), src_t.z());
+    const V3D t_planar = target_pos - r_yaw * src_t;
+    loop_transform.setIdentity();
+    loop_transform.block<3, 3>(0, 0) = r_yaw.cast<float>();
+    loop_transform.block<3, 1>(0, 3) = t_planar.cast<float>();
+  }
 
   LoopPair one_pair;
   one_pair.source_id = cur_idx;
   one_pair.target_id = loop_idx;
-  one_pair.score = m_icp.getFitnessScore();
+  one_pair.score = fitness;
+  one_pair.icp_r = loop_transform.block<3, 3>(0, 0).cast<double>();
+  one_pair.icp_t = loop_transform.block<3, 1>(0, 3).cast<double>();
 
   // First apply the correction to the current frame's global pose, giving the corrected current
   // pose
@@ -210,6 +259,16 @@ void SimplePGO::searchForLoopPairs()
   one_pair.r_offset = m_key_poses[loop_idx].r_global.transpose() * r_refined;
   one_pair.t_offset =
     m_key_poses[loop_idx].r_global.transpose() * (t_refined - m_key_poses[loop_idx].t_global);
+
+  // And in the world frame, for the planar factor: where the corrected source
+  // sits relative to the target in x / y, and by how much it is yawed.
+  {
+    const V3D d = t_refined - m_key_poses[loop_idx].t_global;
+    const double yaw_s = std::atan2(r_refined(1, 0), r_refined(0, 0));
+    const M3D & r_t = m_key_poses[loop_idx].r_global;
+    const double yaw_t = std::atan2(r_t(1, 0), r_t(0, 0));
+    one_pair.planar_meas = V3D(d.x(), d.y(), PlanarLoopFactor::wrapAngle(yaw_s - yaw_t));
+  }
 
   // Cache it; smoothAndUpdate adds it to the graph
   m_cache_pairs.push_back(one_pair);
@@ -225,10 +284,25 @@ void SimplePGO::smoothAndUpdate()
   // Add the loop-closure factors
   if (has_loop) {
     for (LoopPair & pair : m_cache_pairs) {
+      // Pose3 tangent order is (roll, pitch, yaw, x, y, z). The fork used the
+      // fitness score as the variance on all six; roll / pitch / z now have
+      // their own, tight, value -- a loop is trusted in the plane, and the
+      // chain is far too compliant in z (see loop_planar_correction) to be
+      // handed a z or tilt request with sigma ~0.3 m / 18 deg.
+      if (m_config.loop_planar_correction) {
+        // World-frame x / y / yaw only; z / roll / pitch are not in the error.
+        m_graph.add(PlanarLoopFactor(
+          pair.target_id, pair.source_id, pair.planar_meas,
+          gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3::Ones() * pair.score)));
+        continue;
+      }
+      const double rpz = m_config.loop_noise_var_roll_pitch_z;
+      gtsam::Vector6 var;
+      var << rpz, rpz, pair.score, pair.score, pair.score, rpz;
       m_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
         pair.target_id, pair.source_id,
         gtsam::Pose3(gtsam::Rot3(pair.r_offset), gtsam::Point3(pair.t_offset)),
-        gtsam::noiseModel::Diagonal::Variances(gtsam::Vector6::Ones() * pair.score)));
+        gtsam::noiseModel::Diagonal::Variances(var)));
     }
     // Clear cache_pairs
     std::vector<LoopPair>().swap(m_cache_pairs);
