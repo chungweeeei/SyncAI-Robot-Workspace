@@ -16,8 +16,8 @@
 #
 # robot_id is read from the system config INI at launch time (the workspace-
 # wide convention) and is used as the namespace:
-#   /<robot_id>/pgo/...   (save_maps, reset_mapping, map_cloud, map_cloud_file,
-#                          loop_markers)
+#   /<robot_id>/pgo/...   (start_mapping, save_maps, reset_mapping, map_cloud,
+#                          map_cloud_file, mapping_status, loop_markers)
 #
 # pgo_node's settings are plain ROS parameters (params/mapping_params.yaml,
 # keyed by the `/**/pgo_node:` wildcard so the file works at any namespace),
@@ -88,6 +88,10 @@ def launch_setup(context, *args, **kwargs):
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
     map_cloud_base = LaunchConfiguration("map_cloud_dir").perform(context)
+    # A launch argument is a string; the node declares a bool.
+    start_on_launch = (
+        LaunchConfiguration("start_on_launch").perform(context).strip().lower() == "true"
+    )
 
     pkg_mapping = FindPackageShare("syncai_mapping").find("syncai_mapping")
     params_file = os.path.join(pkg_mapping, "params", "mapping_params.yaml")
@@ -112,6 +116,9 @@ def launch_setup(context, *args, **kwargs):
         # handed to the backend through. Two robots on one host must not
         # prune each other's files.
         "map_cloud_dir": f"{map_cloud_base}/{robot_id}",
+        # Not robot_id-dependent; passed through so a bag replay can skip the
+        # Start from the command line. The YAML's false is the session's value.
+        "start_on_launch": start_on_launch,
     }
 
     # `name=` is fine here, unlike the planner / controller launches: this
@@ -142,6 +149,12 @@ def generate_launch_description():
                 default_value=DEFAULT_MAP_CLOUD_DIR,
                 description="Base tmpfs directory for the map-cloud hand-off; "
                 "/<robot_id> is appended",
+            ),
+            DeclareLaunchArgument(
+                "start_on_launch",
+                default_value="false",
+                description="true: map from the first pair instead of waiting for "
+                "pgo/start_mapping (bag replays)",
             ),
             OpaqueFunction(function=launch_setup),
         ]

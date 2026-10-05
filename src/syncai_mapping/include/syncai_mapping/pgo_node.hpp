@@ -6,8 +6,10 @@
 // is pgos/simple_pgo.*; this class owns the synchronised cloud+odom intake,
 // the 50 ms timer that feeds it and broadcasts map -> local_frame, the
 // "map so far" merge worker and its file hand-off to the operator console's
-// backend, and the two services that bracket a mapping run: save_maps and
-// reset_mapping (which drives syncai_pointlio's reset through a client).
+// backend, and the three services that bracket a mapping run: start_mapping
+// and reset_mapping (both drive syncai_pointlio's reset through a client) and
+// save_maps, which ends the run. The run state (idle / mapping / resetting)
+// is latched on mapping_status for the backend.
 //
 // Ported into the workspace from SyncAI-Fast-LIO2's `pgo` package in 2026-09
 // with the ROS surface unchanged: node name `pgo_node`, namespace
@@ -42,9 +44,11 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "syncai_common/msg/mapping_status.hpp"
 #include "syncai_common/srv/reset_lio.hpp"
 #include "syncai_common/srv/reset_mapping.hpp"
 #include "syncai_common/srv/save_maps.hpp"
+#include "syncai_common/srv/start_mapping.hpp"
 #include "syncai_mapping/pgos/commons.h"
 #include "syncai_mapping/pgos/simple_pgo.h"
 #include "visualization_msgs/msg/marker.hpp"
@@ -79,6 +83,11 @@ struct NodeConfig
   // inside /<robot_id>/pgo cannot reach. Keeping it a parameter is what stops
   // this file from ever spelling a robot_id.
   std::string lio_reset_service = "/pointlio/reset";
+  // Come up MAPPING instead of IDLE (2026-10, when the idle state arrived).
+  // The escape hatch for bag replays and for a backend without a Start
+  // control: with it false -- the default, and what the mapping session
+  // wants -- nothing reaches the graph until start_mapping is called.
+  bool start_on_launch = false;
 };
 
 struct NodeState
@@ -90,22 +99,33 @@ struct NodeState
   // seen yet" value, and is also what resetMappingCB puts back.
   double last_message_time = -1.0;
 
-  // The reset gate. Atomics rather than fields under message_mutex on purpose:
+  // The intake gate. Atomics rather than fields under message_mutex on purpose:
   // syncCB would otherwise have to take m_pgo_mutex *and* message_mutex in a
   // fixed order on its hot path, and this file has already proved it cannot be
-  // trusted with one lock (see the lock_guard note in syncCB). Two relaxed
-  // loads keep the gate lock-free and remove lock ordering from the design
-  // entirely.
+  // trusted with one lock (see the lock_guard note in syncCB). Relaxed loads
+  // keep the gate lock-free and remove lock ordering from the design entirely.
   //
-  // accepting is false for the duration of a reset -- nothing the front end
-  // publishes can reach the graph while pointlio's state is changing, which is
-  // what makes the reset ordering-proof rather than timing-dependent.
+  // phase is the run state, one of syncai_common::msg::MappingStatus's
+  // constants, and it REPLACED a bool `accepting` when the idle state arrived
+  // (2026-10): "accepting" was exactly "phase == MAPPING", and two flags that
+  // can disagree are the bug a single one cannot have. Only MAPPING lets a
+  // pair into the buffer. IDLE is where a mapping session starts and where a
+  // successful save_maps returns to; RESETTING is the window inside a
+  // start_mapping / reset_mapping while pointlio's state is changing, which
+  // is what makes those transitions ordering-proof rather than
+  // timing-dependent: nothing the front end publishes can reach the graph.
+  // Every store happens under m_pgo_mutex; the loads here do not need it.
+  //
   // accept_after_time then discards the old run's tail: pairs already held by
-  // the message_filters synchroniser, which surface after accepting goes true
-  // again. Both sides of that comparison are the lidar header stamp, so it is
-  // exact -- no clock conversion, no tolerance constant.
-  std::atomic<bool> accepting{true};
+  // the message_filters synchroniser, which surface after the phase goes back
+  // to MAPPING. Both sides of that comparison are the lidar header stamp, so
+  // it is exact -- no clock conversion, no tolerance constant. last_seen_time
+  // is the stamp of the last pair syncCB saw, accepted or not; a
+  // start_mapping with reset_lio false has no LIO boundary to gate on and
+  // uses it instead, so only pairs produced after the call are taken.
+  std::atomic<uint8_t> phase{syncai_common::msg::MappingStatus::IDLE};
   std::atomic<double> accept_after_time{-1.0};
+  std::atomic<double> last_seen_time{-1.0};
 };
 
 class PGONode : public rclcpp::Node
@@ -133,13 +153,25 @@ public:
   // definition for why these are ROS parameters and not a hand-parsed YAML.
   void loadParameters();
 
-  // Intake: one synchronised cloud+odom pair, gated by the reset state.
+  // Intake: one synchronised cloud+odom pair, gated by the run state.
   void syncCB(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr & cloud_msg,
     const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg);
 
   void sendBroadCastTF(builtin_interfaces::msg::Time & time);
+  // The IDLE stand-in for sendBroadCastTF: identity map -> local_frame, read
+  // from nothing (so it needs no m_pgo_mutex). The backend's live-scan
+  // subscriber looks that transform up and drops every frame it cannot find,
+  // so an idle pgo that simply fell silent would blank the console exactly
+  // while the operator is positioning the robot before Start.
+  void sendIdentityTF(const builtin_interfaces::msg::Time & time);
   void publishLoopMarkers(builtin_interfaces::msg::Time & time);
+
+  // The latched run state (see the mapping_status publisher). Lock-free --
+  // it reads phase and the two counter mirrors -- so it can be called from
+  // anywhere, including the RAII guard inside beginRun and the 1 s timer.
+  void publishStatus();
+  void statusTimerCB();
 
   // 50 ms timer: keyframe selection, loop search, smoothing, TF, outputs.
   void timerCB();
@@ -151,8 +183,12 @@ public:
   void publishEmptyMapCloud(const builtin_interfaces::msg::Time & time);
   void publishLoopMarkerDeleteAll();
 
-  // The two services. reset_mapping runs on its own callback group and
-  // blocks on the ResetLIO client; save_maps shares the timer's group.
+  // The three services. start_mapping and reset_mapping share one callback
+  // group (MutuallyExclusive, so they serialise) and block on the ResetLIO
+  // client; save_maps shares the timer's group.
+  void startMappingCB(
+    const std::shared_ptr<syncai_common::srv::StartMapping::Request> request,
+    std::shared_ptr<syncai_common::srv::StartMapping::Response> response);
   void resetMappingCB(
     const std::shared_ptr<syncai_common::srv::ResetMapping::Request> request,
     std::shared_ptr<syncai_common::srv::ResetMapping::Response> response);
@@ -161,6 +197,22 @@ public:
     std::shared_ptr<syncai_common::srv::SaveMaps::Response> response);
 
 private:
+  // The four-phase sequence start_mapping and reset_mapping share (pause,
+  // reset the LIO, rebuild the graph, resume). They differ only in the phase
+  // they require on entry -- IDLE for a start, MAPPING for a reset -- and in
+  // the words of their messages. Returns false with `message` filled when
+  // refused or when the LIO round trip failed; the state is then exactly
+  // what it was. On success the node is MAPPING.
+  bool beginRun(
+    bool reset_lio, uint8_t required_phase, std::string & message, double & last_odom_time,
+    uint32_t & dropped);
+  // Everything that turns "a run" into "no run", for the caller that already
+  // holds m_pgo_mutex: join the merge worker, replace SimplePGO, empty the
+  // buffer and the counters, publish the empty map (which clears /dev/shm)
+  // and delete the loop markers. Does NOT touch phase -- the caller stores
+  // IDLE (save) or MAPPING (start / reset) itself.
+  void stopRunLocked(const builtin_interfaces::msg::Time & now);
+
   NodeConfig m_node_config;
   Config m_pgo_config;
   NodeState m_state;
@@ -185,23 +237,42 @@ private:
   std::string m_map_cloud_dir;
   bool m_map_cloud_dir_ok = false;
   rclcpp::Service<syncai_common::srv::SaveMaps>::SharedPtr m_save_map_srv;
-  // The reset surface. m_resetting rejects a second concurrent call outright
-  // rather than queueing it -- two resets in flight would have the second one
-  // reading a boundary timestamp the first had already invalidated.
+  // The run state for consumers (see the publisher's comment in the
+  // constructor) and the two counters it reports. The counters are mirrors
+  // of m_pgo->keyPoses().size() / historyPairs().size(), written where those
+  // change (under m_pgo_mutex) so that publishStatus never needs the lock.
+  rclcpp::Publisher<syncai_common::msg::MappingStatus>::SharedPtr m_status_pub;
+  rclcpp::TimerBase::SharedPtr m_status_timer;
+  std::atomic<uint32_t> m_key_pose_count{0};
+  std::atomic<uint32_t> m_loop_count{0};
+  // The transition surface. m_transitioning rejects a second concurrent
+  // start/reset outright rather than queueing it -- two in flight would have
+  // the second one reading a boundary timestamp the first had already
+  // invalidated. (The two handlers share a MutuallyExclusive group, so this
+  // is belt and braces, as it was when only the reset existed.)
   rclcpp::CallbackGroup::SharedPtr m_srv_cb_group;
   rclcpp::CallbackGroup::SharedPtr m_cli_cb_group;
+  rclcpp::Service<syncai_common::srv::StartMapping>::SharedPtr m_start_srv;
   rclcpp::Service<syncai_common::srv::ResetMapping>::SharedPtr m_reset_srv;
   rclcpp::Client<syncai_common::srv::ResetLIO>::SharedPtr m_lio_reset_cli;
-  std::atomic<bool> m_resetting{false};
-  // Guards m_pgo -- which resetMappingCB REPLACES rather than mutates, so every
-  // reader needs to be excluded, not just every writer. Discipline:
+  std::atomic<bool> m_transitioning{false};
+  // Guards m_pgo -- which beginRun and stopRunLocked REPLACE rather than
+  // mutate, so every reader needs to be excluded, not just every writer.
+  // Discipline:
   //
   //   timerCB          whole body (addKeyPose, searchForLoopPairs,
   //                    smoothAndUpdate, the TF broadcast, and the
   //                    m_map_cloud_busy / m_map_cloud_thread handshake)
-  //   saveMapsCB       whole body (it serialises what a reset would destroy)
-  //   resetMappingCB   phases 1, 3 and 4 -- NEVER while waiting on the LIO
-  //                    future, which would stall the TF broadcast for seconds
+  //   saveMapsCB       whole body (it serialises what a reset would destroy,
+  //                    and the save -> IDLE transition at its end)
+  //   beginRun         phase 1 (a few lines: the precondition check and the
+  //                    RESETTING store, so a save finishing concurrently
+  //                    cannot be overtaken) and phase 3 -- NEVER while
+  //                    waiting on the LIO future, which would stall the TF
+  //                    broadcast for seconds
+  //
+  // Every store to m_state.phase happens under it, which is what makes the
+  // precondition checks exact.
   //
   // Needed only because main() runs a MultiThreadedExecutor now; under the old
   // rclcpp::spin() the executor itself provided this exclusion.

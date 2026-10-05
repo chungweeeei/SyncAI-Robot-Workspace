@@ -58,6 +58,14 @@ PGONode::PGONode() : Node("pgo_node")
   // joiner never learns about a file that has been deleted.
   m_map_cloud_file_pub = this->create_publisher<std_msgs::msg::String>(
     "map_cloud_file", rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+  // The run state (IDLE / MAPPING / RESETTING, see NodeState::phase). Latched
+  // for the same reason as the file notice: the backend's own process may
+  // (re)start at any point in a session and has to know whether a Start is
+  // needed without waiting for the next transition. Republished at 1 Hz by
+  // m_status_timer so the keyframe count moves and so a consumer can age a
+  // sample out once this node is gone.
+  m_status_pub = this->create_publisher<syncai_common::msg::MappingStatus>(
+    "mapping_status", rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
   setupMapCloudDir();
   m_tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
   m_sync =
@@ -70,6 +78,7 @@ PGONode::PGONode() : Node("pgo_node")
   m_sync->registerCallback(
     std::bind(&PGONode::syncCB, this, std::placeholders::_1, std::placeholders::_2));
   m_timer = this->create_wall_timer(50ms, std::bind(&PGONode::timerCB, this));
+  m_status_timer = this->create_wall_timer(1s, std::bind(&PGONode::statusTimerCB, this));
   // Relative for the same reason as loop_markers — the service is now
   // /<robot_id>/pgo/save_maps. The type is syncai_common's since 2026-09: the
   // backend (its only caller, from its own container) builds against that
@@ -94,9 +103,32 @@ PGONode::PGONode() : Node("pgo_node")
     "reset_mapping",
     std::bind(&PGONode::resetMappingCB, this, std::placeholders::_1, std::placeholders::_2),
     rmw_qos_profile_services_default, m_srv_cb_group);
+  // Same group as the reset, deliberately: the two run the same blocking
+  // sequence (beginRun) and a MutuallyExclusive group serialises them.
+  m_start_srv = this->create_service<syncai_common::srv::StartMapping>(
+    "start_mapping",
+    std::bind(&PGONode::startMappingCB, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default, m_srv_cb_group);
 
   m_lio_reset_cli = this->create_client<syncai_common::srv::ResetLIO>(
     m_node_config.lio_reset_service, rmw_qos_profile_services_default, m_cli_cb_group);
+
+  // The session comes up IDLE (the NodeState default) and nothing reaches
+  // the graph until start_mapping -- said out loud, because the symptom of a
+  // forgotten Start is silence. start_on_launch is the replay escape hatch.
+  if (m_node_config.start_on_launch) {
+    m_state.phase.store(syncai_common::msg::MappingStatus::MAPPING);
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[PGONode] start_on_launch is set: mapping from the first pair, no start_mapping needed");
+  } else {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[PGONode] idle until start_mapping is called; pairs are dropped and only an identity "
+      "map -> %s is broadcast meanwhile",
+      m_node_config.local_frame.c_str());
+  }
+  publishStatus();
 }
 
 PGONode::~PGONode()
@@ -352,6 +384,10 @@ void PGONode::loadParameters()
     this->declare_parameter("map_cloud_resolution", m_node_config.map_cloud_resolution);
   m_node_config.map_cloud_pub_period =
     this->declare_parameter("map_cloud_pub_period", m_node_config.map_cloud_pub_period);
+  // Replay escape hatch; see NodeConfig. Read after the hand-off settings so
+  // the startup log below can report it in one place.
+  m_node_config.start_on_launch =
+    this->declare_parameter("start_on_launch", m_node_config.start_on_launch);
 
   // PGO math (pgos/simple_pgo.h Config). All doubles except
   // loop_submap_half_range, which is an int -- and the params file has to
@@ -405,10 +441,12 @@ void PGONode::loadParameters()
   // overrides were passed before the params file (later entries win).
   RCLCPP_INFO(
     this->get_logger(),
-    "[PGONode] inputs: %s + %s | TF %s -> %s | LIO reset: %s | map_cloud_dir: %s",
+    "[PGONode] inputs: %s + %s | TF %s -> %s | LIO reset: %s | map_cloud_dir: %s | "
+    "start_on_launch: %s",
     m_node_config.cloud_topic.c_str(), m_node_config.odom_topic.c_str(),
     m_node_config.map_frame.c_str(), m_node_config.local_frame.c_str(),
-    m_node_config.lio_reset_service.c_str(), m_node_config.map_cloud_dir.c_str());
+    m_node_config.lio_reset_service.c_str(), m_node_config.map_cloud_dir.c_str(),
+    m_node_config.start_on_launch ? "true" : "false");
 }
 
 void PGONode::syncCB(
@@ -420,16 +458,26 @@ void PGONode::syncCB(
    * odom_msg: LIO odom -> robot pose
    */
 
+  CloudWithPose cp;
+  cp.pose.setTime(cloud_msg->header.stamp.sec, cloud_msg->header.stamp.nanosec);
+  // Recorded for every pair, taken or not: a start_mapping with reset_lio
+  // false gates the new run on "after this call" and this is its boundary.
+  m_state.last_seen_time.store(cp.pose.second);
+
   // Gate before the expensive part: a pair dropped here costs nothing, while
   // pcl::fromROSMsg below is a full copy of a lidar frame.
   //
-  // accepting false means a reset is in flight -- see NodeState. Dropping
-  // rather than buffering is the point: anything produced while the front end
-  // is being reset belongs to neither run.
-  if (!m_state.accepting.load()) return;
-
-  CloudWithPose cp;
-  cp.pose.setTime(cloud_msg->header.stamp.sec, cloud_msg->header.stamp.nanosec);
+  // Anything but MAPPING drops the pair -- see NodeState::phase. Dropping
+  // rather than buffering is the point: a pair produced before a Start or
+  // while the front end is being reset belongs to no run. IDLE additionally
+  // keeps the map -> local_frame TF alive as identity, so the console's live
+  // scan (which looks that transform up) stays visible while the operator
+  // positions the robot; RESETTING stays silent, as the reset always has.
+  const uint8_t phase = m_state.phase.load();
+  if (phase != syncai_common::msg::MappingStatus::MAPPING) {
+    if (phase == syncai_common::msg::MappingStatus::IDLE) sendIdentityTF(cloud_msg->header.stamp);
+    return;
+  }
 
   // The old run's tail. pointlio reported this boundary as the stamp of the
   // last odometry it published before resetting, so <= is the whole of the
@@ -480,6 +528,31 @@ void PGONode::sendBroadCastTF(builtin_interfaces::msg::Time & time)
   transformStamped.transform.rotation.w = q.w();
   m_tf_broadcaster->sendTransform(transformStamped);
 }
+
+// Identity is also what a fresh SimplePGO's offset is, so the first keyframe
+// after a Start causes no jump. No m_pgo access, hence no m_pgo_mutex: this
+// runs on the intake thread while a Start may be replacing m_pgo.
+void PGONode::sendIdentityTF(const builtin_interfaces::msg::Time & time)
+{
+  geometry_msgs::msg::TransformStamped transformStamped;
+  transformStamped.header.frame_id = m_node_config.map_frame;
+  transformStamped.child_frame_id = m_node_config.local_frame;
+  transformStamped.header.stamp = time;
+  transformStamped.transform.rotation.w = 1.0;
+  m_tf_broadcaster->sendTransform(transformStamped);
+}
+
+void PGONode::publishStatus()
+{
+  syncai_common::msg::MappingStatus msg;
+  msg.state = m_state.phase.load();
+  msg.key_poses = m_key_pose_count.load();
+  msg.loop_closures = m_loop_count.load();
+  msg.stamp = this->get_clock()->now();
+  m_status_pub->publish(msg);
+}
+
+void PGONode::statusTimerCB() { publishStatus(); }
 
 void PGONode::publishLoopMarkers(builtin_interfaces::msg::Time & time)
 {
@@ -611,6 +684,9 @@ void PGONode::timerCB()
 
   // Graph optimisation
   m_pgo->smoothAndUpdate();
+  // The mirrors mapping_status reports (lock-free readers; see the members).
+  m_key_pose_count.store(static_cast<uint32_t>(m_pgo->keyPoses().size()));
+  m_loop_count.store(static_cast<uint32_t>(m_pgo->historyPairs().size()));
 
   // ...and what the optimiser actually did with each loop: the same two
   // keyframes after the update. A source z that moved AWAY from the target's
@@ -734,10 +810,11 @@ void PGONode::mergeAndPublishMapCloud(
 // must not miss. Without these, the last thing rviz and the operator console
 // hold is the map the operator was just told had been discarded.
 //
-// Caller holds m_pgo_mutex and has joined the worker (resetMappingCB), so
-// the seq increment races nothing and no .tmp is mid-write when the files
-// go. The empty notice is published BEFORE the files are removed and, being
-// TRANSIENT_LOCAL depth 1, replaces the latched notice that named them.
+// Caller holds m_pgo_mutex and has joined the worker (stopRunLocked, on
+// behalf of a start, a reset or a save), so the seq increment races nothing
+// and no .tmp is mid-write when the files go. The empty notice is published
+// BEFORE the files are removed and, being TRANSIENT_LOCAL depth 1, replaces
+// the latched notice that named them.
 void PGONode::publishEmptyMapCloud(const builtin_interfaces::msg::Time & time)
 {
   CloudType empty;
@@ -760,125 +837,209 @@ void PGONode::publishLoopMarkerDeleteAll()
   m_loop_marker_pub->publish(marker_array);
 }
 
-// Throw the pose graph away and start a new map, with nothing restarted.
-//
-// Four phases, ordered so that the only step which can fail happens before
-// anything is destroyed. The single reachable partial state is "paused, graph
-// intact, LIO untouched", and every failure path exits through the resume --
-// so there is no half-reset for a caller to clean up, and no ordering exposed
-// to a caller to get wrong.
-void PGONode::resetMappingCB(
-  const std::shared_ptr<syncai_common::srv::ResetMapping::Request> request,
-  std::shared_ptr<syncai_common::srv::ResetMapping::Response> response)
+// Everything that turns "a run" into "no run". Caller holds m_pgo_mutex.
+void PGONode::stopRunLocked(const builtin_interfaces::msg::Time & now)
 {
+  // NOT for safety -- mergeAndPublishMapCloud works on a by-value snapshot
+  // and never touches m_pgo, so destroying SimplePGO under it was already
+  // fine (the keyframe clouds are refcounted). The join is here so an
+  // in-flight merge cannot publish the OLD map after we publish the empty
+  // one, which would undo the only thing telling consumers the map is gone.
+  if (m_map_cloud_thread.joinable()) m_map_cloud_thread.join();
+  m_map_cloud_busy.store(false);
+  m_last_map_cloud_time = 0.0;
+
+  // The constructor IS the reset: fresh ISAM2, empty values and graph,
+  // identity offsets, and the three keyframe vectors empty by virtue of
+  // being a new object. Deliberately not a SimplePGO::reset() method --
+  // gtsam::ISAM2 has no clear, so such a method would be a second
+  // definition of "empty" that has to stay in sync with this one. After a
+  // save this is also what frees the keyframe clouds: hundreds of MB on a
+  // long drive, all of it on disk by then.
+  m_pgo = std::make_shared<SimplePGO>(m_pgo_config);
+
+  {
+    std::lock_guard<std::mutex> lock(m_state.message_mutex);
+    // swap, not a pop() loop: pop() leaves the deque's capacity behind, and
+    // every entry here drags a full body cloud with it.
+    std::queue<CloudWithPose>().swap(m_state.cloud_buffer);
+    m_state.last_message_time = -1.0;
+  }
+  m_key_pose_count.store(0);
+  m_loop_count.store(0);
+
+  publishEmptyMapCloud(now);
+  publishLoopMarkerDeleteAll();
+}
+
+// The sequence a start and a reset share. Four phases, ordered so that the
+// only step which can fail happens before anything is destroyed. The single
+// reachable partial state is "paused, graph intact, LIO untouched", and every
+// failure path exits through the guard that puts the previous phase back --
+// so there is no half-reset for a caller to clean up, and no ordering
+// exposed to a caller to get wrong.
+bool PGONode::beginRun(
+  bool reset_lio, uint8_t required_phase, std::string & message, double & last_odom_time,
+  uint32_t & dropped)
+{
+  using syncai_common::msg::MappingStatus;
+  const bool is_start = required_phase == MappingStatus::IDLE;
+  const char * tag = is_start ? "startMappingCB" : "resetMappingCB";
+  // What a failure leaves behind, in the caller's words: a reset keeps the
+  // map it was about to discard; a start has started nothing.
+  const char * kept = is_start ? "nothing started" : "map kept";
+  last_odom_time = 0.0;
+  dropped = 0;
+
   // ---- Phase 1: pause. Reversible, and the whole ordering fix. ----
   //
-  // With accepting false, nothing the front end publishes can reach the graph
-  // while pointlio's state changes underneath us. That is why this design
-  // needs no sleep and no slack window: the odometry discontinuity has
-  // nowhere to land, rather than landing somewhere we hope is harmless.
-  if (m_resetting.exchange(true)) {
-    response->success = false;
-    response->message = "A reset is already running";
-    return;
+  // With the phase RESETTING, nothing the front end publishes can reach the
+  // graph while pointlio's state changes underneath us. That is why this
+  // design needs no sleep and no slack window: the odometry discontinuity
+  // has nowhere to land, rather than landing somewhere we hope is harmless.
+  if (m_transitioning.exchange(true)) {
+    message = "A start or reset is already running";
+    return false;
   }
   // RAII so every early return below -- including an exception out of the
-  // client -- clears the flag and re-opens the gate.
+  // client -- puts the previous phase back and clears the flag. `armed` is
+  // what distinguishes "refused before anything changed" from "paused".
   struct ResumeGuard
   {
     PGONode * self;
+    uint8_t prev = MappingStatus::IDLE;
+    bool armed = false;
     bool committed = false;
     ~ResumeGuard()
     {
-      if (!committed) self->m_state.accepting.store(true);
-      self->m_resetting.store(false);
+      if (armed && !committed) {
+        self->m_state.phase.store(prev);
+        self->publishStatus();
+      }
+      self->m_transitioning.store(false);
     }
   } resume_guard{this};
 
-  m_state.accepting.store(false);
+  {
+    // Brief, and the one place the precondition is exact: saveMapsCB stores
+    // IDLE under this same mutex at the end of a save, so a reset that was
+    // racing it either sees MAPPING and waits behind the save, or sees IDLE
+    // and is refused -- never "paused the run the save just ended".
+    std::lock_guard<std::mutex> pgo_lock(m_pgo_mutex);
+    resume_guard.prev = m_state.phase.load();
+    if (resume_guard.prev != required_phase) {
+      message = is_start
+                  ? "Already mapping: use reset_mapping to start over, or save_maps to finish."
+                  : "Not mapping (idle): nothing to discard. Call start_mapping to begin a run.";
+      return false;
+    }
+    m_state.phase.store(MappingStatus::RESETTING);
+    resume_guard.armed = true;
+  }
+  publishStatus();
 
   // ---- Phase 2: reset the front end. The only fallible step, no mutex. ----
   //
   // Deliberately outside m_pgo_mutex: this blocks for up to five seconds, and
   // holding the lock would stall the 50 ms timer -- and with it the
   // map -> local_frame TF broadcast -- for that whole time.
-  double last_odom_time = 0.0;
-  if (request->reset_lio) {
+  if (reset_lio) {
     if (!m_lio_reset_cli->wait_for_service(std::chrono::seconds(2))) {
-      response->success = false;
-      response->message =
-        "LIO reset service " + m_node_config.lio_reset_service + " is not available; map kept";
-      RCLCPP_ERROR(this->get_logger(), "[PGONode][resetMappingCB] %s", response->message.c_str());
-      return;
+      message = "LIO reset service " + m_node_config.lio_reset_service + " is not available; " +
+                kept;
+      RCLCPP_ERROR(this->get_logger(), "[PGONode][%s] %s", tag, message.c_str());
+      return false;
     }
 
     auto future = m_lio_reset_cli->async_send_request(
       std::make_shared<syncai_common::srv::ResetLIO::Request>());
     if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-      response->success = false;
-      response->message = "Timed out waiting for the LIO reset; map kept";
-      RCLCPP_ERROR(this->get_logger(), "[PGONode][resetMappingCB] %s", response->message.c_str());
-      return;
+      message = std::string("Timed out waiting for the LIO reset; ") + kept;
+      RCLCPP_ERROR(this->get_logger(), "[PGONode][%s] %s", tag, message.c_str());
+      return false;
     }
 
     auto lio_response = future.get();
     if (!lio_response->success) {
-      response->success = false;
-      response->message = "LIO refused the reset (" + lio_response->message + "); map kept";
-      RCLCPP_ERROR(this->get_logger(), "[PGONode][resetMappingCB] %s", response->message.c_str());
-      return;
+      message = "LIO refused the reset (" + lio_response->message + "); " + kept;
+      RCLCPP_ERROR(this->get_logger(), "[PGONode][%s] %s", tag, message.c_str());
+      return false;
     }
     last_odom_time = lio_response->last_odom_time;
   }
 
-  // ---- Phase 3: reset the graph. Nothing below can fail. ----
+  // ---- Phase 3: rebuild the graph. Nothing below can fail. ----
   builtin_interfaces::msg::Time now = this->get_clock()->now();
-  uint32_t dropped = 0;
   {
     std::lock_guard<std::mutex> pgo_lock(m_pgo_mutex);
-
-    // NOT for safety -- mergeAndPublishMapCloud works on a by-value snapshot
-    // and never touches m_pgo, so destroying SimplePGO under it was already
-    // fine (the keyframe clouds are refcounted). The join is here so an
-    // in-flight merge cannot publish the OLD map after we publish the empty
-    // one, which would undo the only thing telling consumers the map is gone.
-    if (m_map_cloud_thread.joinable()) m_map_cloud_thread.join();
-    m_map_cloud_busy.store(false);
-    m_last_map_cloud_time = 0.0;
-
     dropped = static_cast<uint32_t>(m_pgo->keyPoses().size());
-
-    // The constructor IS the reset: fresh ISAM2, empty values and graph,
-    // identity offsets, and the three keyframe vectors empty by virtue of
-    // being a new object. Deliberately not a SimplePGO::reset() method --
-    // gtsam::ISAM2 has no clear, so such a method would be a second
-    // definition of "empty" that has to stay in sync with this one.
-    m_pgo = std::make_shared<SimplePGO>(m_pgo_config);
-
-    {
-      std::lock_guard<std::mutex> lock(m_state.message_mutex);
-      // swap, not a pop() loop: pop() leaves the deque's capacity behind, and
-      // every entry here drags a full body cloud with it.
-      std::queue<CloudWithPose>().swap(m_state.cloud_buffer);
-      m_state.last_message_time = -1.0;
-    }
-    m_state.accept_after_time.store(last_odom_time);
-
-    publishEmptyMapCloud(now);
-    publishLoopMarkerDeleteAll();
+    stopRunLocked(now);
+    // The boundary the new run starts after. With a LIO reset it is the stamp
+    // pointlio reported (exact: the old stream is <= it, the new one > it).
+    // Without one, a start gates on the last pair seen -- the run begins at
+    // the call -- while a reset keeps its historical 0.0, which lets the
+    // synchroniser's held pairs through as it always has for replays.
+    m_state.accept_after_time.store(
+      reset_lio ? last_odom_time : (is_start ? m_state.last_seen_time.load() : 0.0));
+    m_state.phase.store(MappingStatus::MAPPING);
+    resume_guard.committed = true;
   }
 
-  // ---- Phase 4: resume. ----
-  m_state.accepting.store(true);
-  resume_guard.committed = true;
+  // ---- Phase 4: resume (the guard clears m_transitioning). ----
+  publishStatus();
+  return true;
+}
 
-  response->success = true;
+// Begin a run: IDLE -> MAPPING. The same sequence as the reset from the
+// other precondition; see StartMapping.srv for the contract.
+void PGONode::startMappingCB(
+  const std::shared_ptr<syncai_common::srv::StartMapping::Request> request,
+  std::shared_ptr<syncai_common::srv::StartMapping::Response> response)
+{
+  std::string message;
+  double last_odom_time = 0.0;
+  uint32_t dropped = 0;
+  const bool ok = beginRun(
+    request->reset_lio, syncai_common::msg::MappingStatus::IDLE, message, last_odom_time, dropped);
+  response->success = ok;
   response->lio_last_odom_time = last_odom_time;
-  response->dropped_key_poses = dropped;
+  if (!ok) {
+    response->message = message;
+    return;
+  }
   // Rendered verbatim by the operator console, so it is written as UI copy
   // rather than as a log line -- and it is the LAST place the stillness
-  // warning can land: the dialog warns before the click, but the static IMU
-  // initialisation itself happens in the seconds after this returns.
+  // warning can land: the static IMU initialisation happens in the seconds
+  // after this returns.
+  response->message =
+    request->reset_lio
+      ? "Mapping started. The map begins building once the lidar has re-levelled — keep "
+        "the robot still until then."
+      : "Mapping started over the running odometry; the map origin is where the LIO started.";
+  RCLCPP_WARN(this->get_logger(), "[PGONode][startMappingCB] %s", response->message.c_str());
+}
+
+// Throw the pose graph away and start a new map, with nothing restarted:
+// MAPPING -> MAPPING. Refused while IDLE (there is nothing to discard, and a
+// LIO reset as the side effect of a no-op would be a surprise).
+void PGONode::resetMappingCB(
+  const std::shared_ptr<syncai_common::srv::ResetMapping::Request> request,
+  std::shared_ptr<syncai_common::srv::ResetMapping::Response> response)
+{
+  std::string message;
+  double last_odom_time = 0.0;
+  uint32_t dropped = 0;
+  const bool ok = beginRun(
+    request->reset_lio, syncai_common::msg::MappingStatus::MAPPING, message, last_odom_time,
+    dropped);
+  response->success = ok;
+  response->lio_last_odom_time = last_odom_time;
+  response->dropped_key_poses = dropped;
+  if (!ok) {
+    response->message = message;
+    return;
+  }
+  // UI copy, as in startMappingCB.
   response->message = request->reset_lio
                         ? "Map discarded. The new one starts building once the "
                           "lidar has re-levelled — keep the robot still until then."
@@ -888,15 +1049,33 @@ void PGONode::resetMappingCB(
     response->message.c_str(), dropped);
 }
 
+// Serialise the run to disk and END it: MAPPING -> IDLE. The map lives in
+// map.pcd from here on (the backend converts it from there), so the
+// keyframes are freed, the empty map is published -- which is what clears
+// /dev/shm and the console's "map so far" -- and the next run waits for
+// start_mapping. A failed save changes nothing.
 void PGONode::saveMapsCB(
   const std::shared_ptr<syncai_common::srv::SaveMaps::Request> request,
   std::shared_ptr<syncai_common::srv::SaveMaps::Response> response)
 {
+  using syncai_common::msg::MappingStatus;
   // Whole body, like timerCB: this iterates m_pgo->keyPoses() and writes a
   // multi-MB PCD out of it. A reset waiting behind a save is the correct
   // outcome -- the save is serialising exactly what the reset is about to
-  // destroy, and letting them interleave would write a half-reset map.
+  // destroy, and letting them interleave would write a half-reset map. (It
+  // then finds IDLE and is refused, which is also correct.)
   std::lock_guard<std::mutex> pgo_lock(m_pgo_mutex);
+
+  // Before any filesystem work. RESETTING is observable here: beginRun's
+  // phase 2 waits on the LIO without the mutex.
+  const uint8_t phase = m_state.phase.load();
+  if (phase != MappingStatus::MAPPING) {
+    response->success = false;
+    response->message = phase == MappingStatus::IDLE
+                          ? "Not mapping (idle): nothing to save. Call start_mapping to begin a run."
+                          : "A start or reset is in progress; try again in a moment.";
+    return;
+  }
 
   if (!std::filesystem::exists(request->file_path)) {
     response->success = false;
@@ -915,48 +1094,74 @@ void PGONode::saveMapsCB(
   std::filesystem::path poses_txt_path = p_dir / "poses.txt";  // per-frame pose list
   std::filesystem::path map_path = p_dir / "map.pcd";          // the merged full map
 
-  if (request->save_patches) {
-    if (std::filesystem::exists(patches_dir)) {
-      std::filesystem::remove_all(patches_dir);
-    }
-
-    std::filesystem::create_directories(patches_dir);
-
-    if (std::filesystem::exists(poses_txt_path)) {
-      std::filesystem::remove(poses_txt_path);
-    }
-    RCLCPP_INFO(this->get_logger(), "Patches Path: %s", patches_dir.string().c_str());
-  }
-  RCLCPP_INFO(this->get_logger(), "SAVE MAP TO %s", map_path.string().c_str());
-
-  std::ofstream txt_file(poses_txt_path);
-
-  CloudType::Ptr ret(new CloudType);
-  for (size_t i = 0; i < m_pgo->keyPoses().size(); i++) {
-    CloudType::Ptr body_cloud = m_pgo->keyPoses()[i].body_cloud;
+  // Everything that touches the disk. pcl throws on a write failure (a full
+  // disk, a vanished bind mount) and a throw out of a service callback would
+  // take the node down -- and, now that the run state hangs off a successful
+  // save, leave it undefined. Caught, reported, and the run kept.
+  try {
     if (request->save_patches) {
-      std::string patch_name = std::to_string(i) + ".pcd";
-      std::filesystem::path patch_path = patches_dir / patch_name;
-      pcl::io::savePCDFileBinary(patch_path.string(), *body_cloud);
-      Eigen::Quaterniond q(m_pgo->keyPoses()[i].r_global);
-      V3D t = m_pgo->keyPoses()[i].t_global;
-      txt_file << patch_name << " " << t.x() << " " << t.y() << " " << t.z() << " " << q.w() << " "
-               << q.x() << " " << q.y() << " " << q.z() << std::endl;
+      if (std::filesystem::exists(patches_dir)) {
+        std::filesystem::remove_all(patches_dir);
+      }
+
+      std::filesystem::create_directories(patches_dir);
+
+      if (std::filesystem::exists(poses_txt_path)) {
+        std::filesystem::remove(poses_txt_path);
+      }
+      RCLCPP_INFO(this->get_logger(), "Patches Path: %s", patches_dir.string().c_str());
     }
-    CloudType::Ptr world_cloud(new CloudType);
-    pcl::transformPointCloud(
-      *body_cloud, *world_cloud, m_pgo->keyPoses()[i].t_global,
-      Eigen::Quaterniond(m_pgo->keyPoses()[i].r_global));
+    RCLCPP_INFO(this->get_logger(), "SAVE MAP TO %s", map_path.string().c_str());
 
-    // Stack into the merged map
-    *ret += *world_cloud;
+    // Opened only when patches are wanted: an unconditional open used to
+    // truncate an existing poses.txt on a patch-less save.
+    std::ofstream txt_file;
+    if (request->save_patches) txt_file.open(poses_txt_path);
+
+    CloudType::Ptr ret(new CloudType);
+    for (size_t i = 0; i < m_pgo->keyPoses().size(); i++) {
+      CloudType::Ptr body_cloud = m_pgo->keyPoses()[i].body_cloud;
+      if (request->save_patches) {
+        std::string patch_name = std::to_string(i) + ".pcd";
+        std::filesystem::path patch_path = patches_dir / patch_name;
+        pcl::io::savePCDFileBinary(patch_path.string(), *body_cloud);
+        Eigen::Quaterniond q(m_pgo->keyPoses()[i].r_global);
+        V3D t = m_pgo->keyPoses()[i].t_global;
+        txt_file << patch_name << " " << t.x() << " " << t.y() << " " << t.z() << " " << q.w()
+                 << " " << q.x() << " " << q.y() << " " << q.z() << std::endl;
+      }
+      CloudType::Ptr world_cloud(new CloudType);
+      pcl::transformPointCloud(
+        *body_cloud, *world_cloud, m_pgo->keyPoses()[i].t_global,
+        Eigen::Quaterniond(m_pgo->keyPoses()[i].r_global));
+
+      // Stack into the merged map
+      *ret += *world_cloud;
+    }
+    txt_file.close();
+
+    // Save the full map
+    pcl::io::savePCDFileBinary(map_path.string(), *ret);
+  } catch (const std::exception & e) {
+    response->success = false;
+    response->message = std::string("Save failed: ") + e.what() + "; the run is kept.";
+    RCLCPP_ERROR(this->get_logger(), "[PGONode][saveMapsCB] %s", response->message.c_str());
+    return;
   }
-  txt_file.close();
 
-  // Save the full map
-  pcl::io::savePCDFileBinary(map_path.string(), *ret);
+  // ---- The run is on disk: end it. ----
+  const size_t saved = m_pgo->keyPoses().size();
+  stopRunLocked(this->get_clock()->now());
+  m_state.phase.store(MappingStatus::IDLE);
+  publishStatus();
+
   response->success = true;
-  response->message = "SAVE SUCCESS!";
+  // UI copy, rendered verbatim by the console.
+  response->message = "Map saved (" + std::to_string(saved) +
+                      " keyframes). Mapping stopped — start it again for another map.";
+  RCLCPP_WARN(
+    this->get_logger(), "[PGONode][saveMapsCB] %s (%s)", response->message.c_str(),
+    map_path.string().c_str());
 }
 
 }  // namespace syncai_mapping

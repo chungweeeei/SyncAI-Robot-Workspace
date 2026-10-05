@@ -93,3 +93,9 @@
     # both compose services (a private /dev/shm is 64 MB). mapping.launch.py
     # appends /<robot_id>; this is the base.
     map_cloud_dir: /dev/shm/syncai_pgo
+    # The node comes up IDLE (2026-10): no keyframe is banked and nothing is
+    # written to map_cloud_dir until pgo/start_mapping is called, and a
+    # successful pgo/save_maps returns it to IDLE. true skips the Start --
+    # the bag-replay knob (`start_on_launch:=true` on the launch), never what
+    # the mapping session wants.
+    start_on_launch: false

@@ -507,7 +507,7 @@ it actually uses:
 | `NavigateToPose` on `task_runner` | the MOVE step of a task |
 | `relocalize`, `relocalize_check`, `initialpose` (`syncai_localizer`; types `syncai_common/srv/Relocalize` / `IsValid`). **Bare names in the `/<robot_id>` namespace** — `/<robot_id>/relocalize`, not `/<robot_id>/localizer/relocalize`; the backend's map gateway calls them bare and records that the prefixed spelling cost it a `stack_not_ready` against a healthy stack | initial pose, and map switch |
 | `map_server/load_map` | map switch, and reload after a re-conversion |
-| `pgo/save_maps`, `pgo/reset_mapping`, `pgo/map_cloud_file` (`syncai_mapping`; types `syncai_common/srv/SaveMaps` / `ResetMapping`) | save a map, start a new one, hand over the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` itself is rviz-only now) |
+| `pgo/start_mapping`, `pgo/save_maps`, `pgo/reset_mapping`, `pgo/mapping_status`, `pgo/map_cloud_file` (`syncai_mapping`; types `syncai_common/srv/StartMapping` / `SaveMaps` / `ResetMapping`, `syncai_common/msg/MappingStatus`) | begin a run, save a map (which ends the run), start a new one mid-run, report the run state (latched), hand over the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` itself is rviz-only now) |
 | `pointlio/body_cloud` (`syncai_pointlio`) | the live cloud WebSocket |
 | `config/instances/robotNN.ini` (`[map] name`, `[initial_pose]`) | the only file in this repo the backend **writes** |
 | `map/<name>/` on disk | the map catalogue: `map.pcd`, `poses.txt`, `patches/`, `gridmap.*`, and optionally `keepout.yaml` + `keepout.pgm` (the forbidden-zone mask, read by `filter_mask_server` since 2026-09; same yaml + image format as `gridmap.*`, black = keepout, drawn as the forbidden area only — the `KeepoutFilter` inflates it itself with the costmap's footprint and inflation parameters since 2026-10, because costmap filters run after inflation; a margin drawn into the mask is applied twice). The nav session **writes a blank one** (all unknown, same geometry as `gridmap.*`, both files tmp + rename) when a map has none at boot, so a map that has been booted into always has the pair — the canvas the editor draws on. The backend does not write the mask today; when it does, `filter_mask_server/load_map` with `map_url: map/<name>/keepout.yaml` is the reload path — no session restart — and a map switch needs the same call, since the nav session derives the path once at boot (a never-booted map has no mask yet; the caller then writes the blank one itself, grey not white) |
@@ -533,10 +533,17 @@ backend:
   `gridmap.yaml` says `image: gridmap.pgm`, `poses.txt` lists bare patch
   basenames. That property is what makes a rename one `os.rename`; a future
   sidecar written by anything here that embeds the path breaks it silently.
-- **`pgo/reset_mapping` is how a new map is started**, not a mode switch:
-  `switch_mode` refuses to rebuild the live mode, and rebuilding `MANUAL` would
-  drop an unsaved map, since `pgo_node` accumulates keyframes in RAM. The reset
-  pauses intake, resets the LIO front end over `pointlio/reset`
+- **A mapping run is bracketed by `pgo/start_mapping` and `pgo/save_maps`;
+  `pgo/reset_mapping` restarts one in place** (2026-10). `pgo_node` comes up
+  IDLE in a mapping session and banks nothing until Start; a successful save
+  ends the run (keyframes freed, empty map published, `/dev/shm` cleared,
+  IDLE again); the state is latched on `pgo/mapping_status`
+  (`syncai_common/msg/MappingStatus`: IDLE / MAPPING / RESETTING). A mode
+  switch is not how any of that is done: `switch_mode` refuses to rebuild the
+  live mode, and rebuilding `MANUAL` would drop an unsaved map, since
+  `pgo_node` accumulates keyframes in RAM. Start and reset run the same
+  sequence from opposite preconditions (Start is refused while MAPPING, reset
+  and save while IDLE): pause intake, reset the LIO front end over `pointlio/reset`
   (`syncai_common/srv/ResetLIO`, served by `syncai_pointlio`, called by
   `syncai_mapping` — both in this tree since 2026-09, and both `.srv` files of
   the contract in `syncai_common`), rebuilds the pose graph and drops everything at or before
@@ -547,9 +554,11 @@ backend:
   tilts the new map for its whole life with no error anywhere. Nothing enforces
   that, in either repo.
 - **An empty map-cloud merge is a message, not a non-event** — pgo (`syncai_mapping`) sends one
-  from `reset_mapping` on both outputs (an empty PointCloud2 on `pgo/map_cloud`,
-  a `points: 0` notice on `pgo/map_cloud_file`), and a consumer that skips it
-  keeps showing the old map.
+  from `reset_mapping`, `start_mapping` **and a successful `save_maps`** on both
+  outputs (an empty PointCloud2 on `pgo/map_cloud`, a `points: 0` notice on
+  `pgo/map_cloud_file`), and a consumer that skips it keeps showing the old
+  map. The save's is also what empties `/dev/shm/syncai_pgo/<robot_id>`; the
+  backend never deletes those files.
 - **The live merge is a file, not a topic payload.** `pgo/map_cloud` still
   carries the PointCloud2 for rviz, but a large site's merge is 16-45 MB and
   CycloneDDS over UDP on `lo` cannot deliver that through the kernel's default

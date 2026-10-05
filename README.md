@@ -346,7 +346,10 @@ well, and is the route that needs nothing outside this repo.
 
 **Mapping loop.** Switch to MANUAL (the mapping session runs bringup +
 pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state, and none of
-the localization / planning nodes), drive the robot, then save the map.
+the localization / planning nodes), press **Start mapping** with the robot
+standing still (`pgo/start_mapping`; pgo comes up idle and banks nothing
+until then), drive the robot, then save the map — which ends the run and
+leaves pgo idle for the next Start.
 `pgo/save_maps` (`syncai_common/srv/SaveMaps`) is what writes
 `map/<name>/`: `map.pcd`, `poses.txt` and `patches/`. Calling it from a shell
 gives you exactly that and no gridmap — both pcd → gridmap recipes left with
