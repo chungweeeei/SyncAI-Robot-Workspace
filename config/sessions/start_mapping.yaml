@@ -13,9 +13,11 @@
 #   bringup (MID360 + lidar_top static TF)
 #     -> pointlio.launch.py # the LIO front end (src/syncai_pointlio)
 #     -> mapping.launch.py  # loop closure over pointlio's odom + body_cloud
-#                           # (pgo_node, src/syncai_mapping)
+#                           # (pgo_node, src/syncai_mapping) -- comes up IDLE
+#     -> /<robot_id>/pgo/start_mapping  # robot still; the console's "Start mapping"
 #     -> drive by hand      # teleop -> driver_manager -> gait controller
-#     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt
+#     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt, and the
+#                                        run ENDS: pgo is idle again, /dev/shm cleared
 #     -> pcd -> gridmap conversion   =>  gridmap.pgm + gridmap.yaml
 #
 # The last step is offline, run later, and no longer lives in this workspace:
@@ -30,15 +32,20 @@
 # bag. That single fact is why the "lio" window is not optional, and why
 # recording a bag of the drive is worth considering for a long run.
 #
-# Starting a NEW map does not mean restarting this window (and cannot be done by
-# switching modes either — switch_mode refuses to rebuild the mode already
-# live). pgo/reset_mapping does it in place: it pauses intake, resets pointlio
-# over pointlio/reset, rebuilds the pose graph and discards the old run's tail
-# by timestamp. The console's "New map" control is the operator's route to it.
+# A run is bracketed by two service calls (2026-10). pgo comes up IDLE and
+# banks nothing: pgo/start_mapping (the console's "Start mapping") pauses
+# intake, resets pointlio over pointlio/reset, builds a fresh pose graph and
+# starts accepting pairs stamped after the boundary pointlio reported. A
+# successful pgo/save_maps ENDS the run: pgo frees its keyframes, clears
+# /dev/shm/syncai_pgo/<robot_id> and is idle again until the next Start.
+# Neither needs this window restarted (and a mode switch cannot do it either:
+# switch_mode refuses to rebuild the mode already live). pgo/reset_mapping is
+# the mid-run "throw it away and start over" — the same sequence as Start from
+# the other precondition; the console's "New map" control is the route to it.
 # Whatever has not been saved is still gone — the reset is deliberate data
-# loss — and the robot must be STANDING STILL, because pointlio re-runs a
-# static, gravity-aligning IMU init and one done in motion tilts the new map
-# permanently.
+# loss — and the robot must be STANDING STILL for a Start or a reset, because
+# pointlio re-runs a static, gravity-aligning IMU init and one done in motion
+# tilts the new map permanently.
 #
 # Deliberately NOT here, all for the same reason — they need a finished map:
 #   * map_server  — loads [map] map in its constructor and throws if absent
@@ -71,6 +78,7 @@
 # With no backend running anywhere, the run can still be driven and saved from
 # a shell, which is the fallback worth knowing:
 #
+#   ros2 service call /<robot_id>/pgo/start_mapping syncai_common/srv/StartMapping "{reset_lio: true}"
 #   ros2 run teleop_twist_keyboard teleop_twist_keyboard \
 #     --ros-args -r cmd_vel:=/<robot_id>/cmd_vel
 #   ros2 service call /<robot_id>/pgo/save_maps ...
