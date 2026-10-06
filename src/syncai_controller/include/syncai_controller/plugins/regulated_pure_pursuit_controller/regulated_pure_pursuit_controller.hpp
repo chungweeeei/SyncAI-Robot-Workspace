@@ -86,6 +86,23 @@ public:
 
 protected:
   /**
+   * @brief The body of computeVelocityCommands(), which is nothing but the
+   * acceleration-baseline exception wrapper around this.
+   *
+   * Called with mutex_ already held by the wrapper, so that the stop baseline
+   * written on the throw path is serialised against dynamic reconfiguration
+   * exactly like the command written on the success path.
+   *
+   * @param pose      Current robot pose
+   * @param velocity  Current robot velocity
+   * @param goal_checker Ptr to the goal checker for this task
+   * @return          Best command
+   */
+  geometry_msgs::msg::TwistStamped computeVelocityCommandsImpl(
+    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
+    syncai_nav_core::GoalChecker * goal_checker);
+
+  /**
    * @brief Transforms global plan into same frame as pose and clips poses ineligible for lookaheadPoint
    * Points ineligible to be selected as a lookahead point if they are any of the following:
    * - Outside the local_costmap (collision avoidance cannot be assured)
@@ -142,8 +159,7 @@ protected:
    * @param angular_vel angular velocity
    * @param angle_to_path Angle of robot output relatie to carrot marker
    */
-  void rotateToHeading(
-    double & linear_vel, double & angular_vel, const double & angle_to_path);
+  void rotateToHeading(double & linear_vel, double & angular_vel, const double & angle_to_path);
 
   /**
    * @brief Whether collision is imminent

@@ -242,6 +242,40 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
 {
   std::lock_guard<std::mutex> lock_reinit(mutex_);
 
+  try {
+    return computeVelocityCommandsImpl(pose, speed, goal_checker);
+  } catch (...) {
+    // Every exception out of the body means this cycle commands a stop, so the
+    // acceleration-clamp baseline has to follow the stop and not the velocity we
+    // abandoned halfway through computing it. ControllerServer answers a PlannerException
+    // with a zero cmd_vel while failure_tolerance (0.3 s = six cycles) lasts, and past
+    // that patience it fails the goal and calls publishZeroVelocity() on the way out;
+    // either way the robot is told to stop. The baseline is our own last *command*
+    // precisely because it is not the measurement (see the clamp in the body), so nothing
+    // else notices that the command never happened.
+    //
+    // Concretely, with the collision throw: hold 0.60 m/s, flag a collision, publish 0 for
+    // a few cycles while an obstacle (or a sway-induced false positive) clears, then
+    // re-open the clamp window around the stale 0.60 and emit >= 0.55 m/s on the first
+    // good cycle. That is 0 -> 0.55 in one 50 ms cycle, ~11x max_linear_accel (1.0 m/s^2),
+    // landing exactly where something was just detected ahead of the robot. Same shape on
+    // the angular side out of rotate-to-heading: baseline 0.65 rad/s, first command after
+    // the all-clear >= 0.49 rad/s.
+    //
+    // Deliberately catch-all rather than per-throw-site: the empty-plan and TF-failure
+    // throws in transformGlobalPlan(), and costAtPose()'s "costmap too small", all reach
+    // the server the same way, and a throw added later would otherwise reintroduce this
+    // silently. reset() does not cover any of them — it runs once per goal, while the
+    // whole episode fits inside one goal's grace window.
+    last_cmd_vel_ = geometry_msgs::msg::Twist();
+    throw;
+  }
+}
+
+geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocityCommandsImpl(
+  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed,
+  syncai_nav_core::GoalChecker * goal_checker)
+{
   syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
 
@@ -370,6 +404,10 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   // path collides with an obstacle -- a safety check.
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
   if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
+    // The (v, w) computed above is never commanded: the wrapper in
+    // computeVelocityCommands() zeroes the accel-clamp baseline on the way out, which is
+    // what keeps the cycle after the all-clear from lurching off the stale pre-collision
+    // speed. The numbers that bought that are in the wrapper's comment.
     throw syncai_nav_core::PlannerException(
       "RegulatedPurePursuitController detected collision ahead!");
   }
@@ -958,5 +996,4 @@ rcl_interfaces::msg::SetParametersResult RegulatedPurePursuitController::dynamic
 
 // Register this controller as a syncai_nav_core plugin
 PLUGINLIB_EXPORT_CLASS(
-  syncai_controller::RegulatedPurePursuitController,
-  syncai_nav_core::Controller)
+  syncai_controller::RegulatedPurePursuitController, syncai_nav_core::Controller)

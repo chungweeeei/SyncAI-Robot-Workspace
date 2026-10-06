@@ -140,6 +140,10 @@ variant scales `v` down for three reasons before that. Each control cycle:
    (`isCollisionImminent`) up to `max_allowed_time_to_collision_up_to_carrot`; a
    predicted footprint collision throws `PlannerException("…collision ahead!")`.
 
+Any throw out of that cycle — this one, or a transform failure further up —
+leaves the accel-clamp baseline at zero, because nothing was commanded; see
+"Acceleration clamping".
+
 `applyConstraints` is the "regulated" part — three independent speed limits, the
 strictest wins:
 
@@ -181,6 +185,29 @@ without coupling to gait noise.
 `rotateToHeading()` applies the same pattern with `max_angular_accel`, plus a
 `sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target instead of
 overshooting.
+
+It is also zeroed on **any throw out of the compute cycle**, which is the only
+thing `computeVelocityCommands()` does: it takes `mutex_`, calls
+`computeVelocityCommandsImpl()` (the real body), and on the way out of a
+`catch (...)` writes the stop baseline and rethrows. A cycle that throws commands
+a stop — the server answers with a zero `cmd_vel` while `failure_tolerance`
+lasts, and past that patience fails the goal and calls `publishZeroVelocity()` —
+so the baseline has to follow the stop rather than the `(v, ω)` that was
+abandoned halfway through being computed. Nothing else would notice: the baseline
+is the last *command* precisely because it is not the measurement.
+
+Without it the clamp window stayed open around the pre-collision speed, and the
+first cycle after the obstacle cleared stepped `0 → ≥0.55 m/s` in 50 ms — about
+11× `max_linear_accel`, right where something had just been detected ahead —
+with the same shape on the angular side coming out of rotate-to-heading
+(`0 → ≥0.49 rad/s`).
+
+The wrapper is catch-all rather than one zeroing per `throw`: `"collision
+ahead!"` is the frequent case, but `transformGlobalPlan()`'s empty-plan and
+TF-failure throws and `costAtPose()`'s "costmap too small" all reach the server
+by the same path, and a `throw` added later would otherwise reintroduce the stale
+baseline silently. `reset()` covers none of them — it runs once per goal, while a
+whole brake-and-recover episode fits inside one goal's grace window.
 
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
 cost us once: `setPlan()` is also the mid-navigation replan path. The BT's
