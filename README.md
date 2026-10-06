@@ -58,9 +58,9 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
-| `syncai_pointlio` | The Point-LIO front end (`pointlio_node`): LIO odometry, body-frame cloud and the `pointlio_odom → pointlio_body` TF; serves `reset`. Ported in-tree from the FAST-LIO2 fork in 2026-09 |
-| `syncai_mapping` | The mapping back end (`pgo_node`): keyframes, loop closure (GTSAM), `map → pointlio_odom` while mapping, the live map-cloud hand-off, `save_maps` / `reset_mapping`; plus `hba_node`, offline bundle adjustment run by hand. Both ported in-tree from the fork in 2026-09 |
-| `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction while navigating, `relocalize` / `relocalize_check` and `initialpose`. Ported in-tree from the fork in 2026-09, its last package |
+| `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud, the `pointlio_odom → pointlio_body` TF, and `reset` |
+| `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`. Plus `hba_node`, offline refinement run by hand |
+| `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction, `relocalize` / `relocalize_check` and `initialpose` |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source). **Not tracked here**, see below |
 | `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock. **Not tracked here**, see below |
@@ -98,7 +98,7 @@ submodules until `fca520b`); nothing is vendored there any more.
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`, unmodified |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver. `colcon.meta` passes the cmake flags the driver needs; see "Build" |
-| `small_gicp` | Pinned to `v1.0.1`, unmodified; `syncai_localizer`'s registration backend |
+| `small_gicp` | Pinned to `v1.0.1`, unmodified; the registration backend of `syncai_localizer` and of `syncai_mapping`'s loop closure |
 | `vizionsdk-ros2` | TechNexion camera wrapper; needs the VizionSDK `.deb` the `Dockerfile` installs |
 
 The FAST-LIO2 fork that used to be imported at `src/third-party/FASTLIO2_ROS2`
@@ -168,61 +168,54 @@ vcs import < lio-bridge.repos      # src/syncai_lio_bridge — the only odometry
 ```
 
 All five are required before the first `colcon build`. The four `src/syncai_*`
-directories are gitignored: edit them in their own checkouts and commit there,
-because the next `--force` import overwrites whatever is in them.
+directories are gitignored: edit them in their own checkouts, because the next
+`--force` import overwrites whatever is in them.
 
-They fail very differently when forgotten. A missing `src/syncai_common` fails
-every package at once; a missing `src/syncai_driver_manager`,
-`src/syncai_robot_state` or `src/syncai_lio_bridge` fails *nothing* — colcon
-builds a stack with no bridge to the gait controller, nothing publishing
-`RobotState` and no odometry source. `scripts/build.sh` therefore refuses to
-start on an empty checkout and names the `.repos` file to import.
+Only a missing `src/syncai_common` fails loudly (every package at once). A
+missing `src/syncai_driver_manager`, `src/syncai_robot_state` or
+`src/syncai_lio_bridge` builds fine and leaves the robot with no bridge to the
+gait controller, nothing publishing `RobotState` and no odometry source — so
+`scripts/build.sh` refuses to start on an empty checkout and names the `.repos`
+file to import.
 
-**On an existing robot**, the pull that moves a package out **deletes its
-directory from the working tree** and nothing puts it back. Run the matching
-`vcs import` before the next build. (`src/syncai_backend` is also gitignored,
-so a clone of the backend kept there for development is never committed; nothing
-here needs it present.)
+**On an existing robot**, the pull that moves a package out deletes its
+directory and nothing puts it back: run the matching `vcs import` before the
+next build.
 
-#### The three Rust packages and the image's ros2-rust underlay
+#### The three Rust packages
 
 `syncai_driver_manager`, `syncai_robot_state` and `syncai_lio_bridge` are
-`ament_cargo` (rclrs). The robot image carries everything they need beyond
-`vcs import`: the Rust toolchain **and** a ros2-rust underlay at
-`/opt/ros2_rust_underlay` — rclrs, `rosidl_generator_rs`, and the Humble
-standard interfaces rebuilt so they carry Rust bindings (the apt copies ship
-none). It is sourced between `/opt/ros/humble` and the workspace by `~/.bashrc`,
-`scripts/build.sh` and robot01's `command:`. An image built before it has no
-underlay, and `scripts/build.sh` says so instead of letting cargo fail. If the
-Rust side breaks on a future bump, the C++ stack still builds on its own:
+`ament_cargo` (rclrs), and need nothing beyond `vcs import`: the robot image
+carries the Rust toolchain and a ros2-rust underlay at `/opt/ros2_rust_underlay`
+(rclrs plus the Humble interfaces rebuilt with Rust bindings, which the apt
+copies lack), sourced between `/opt/ros/humble` and the workspace. An image
+built before it has no underlay, and `scripts/build.sh` says so instead of
+letting cargo fail. The C++ stack still builds without the Rust packages:
 
 ```bash
 colcon build --symlink-install --packages-skip syncai_driver_manager syncai_robot_state syncai_lio_bridge
 ```
 
-A workspace that was ever built with the interface packages in `src/` keeps
-stale `build/` + `install/` copies of them that shadow the underlay; delete them
-if configure fails on a missing `register_rs.cmake`. The pins and the rest of
-the reasoning are in the `Dockerfile`'s underlay stanza and `CLAUDE.md`.
+If configure fails on a missing `register_rs.cmake`, delete the stale `build/` +
+`install/` copies of the interface packages that shadow the underlay. The pins
+and the reasoning are in the `Dockerfile`'s underlay stanza and `CLAUDE.md`.
 
 #### Re-importing `src/syncai_common` (stale checkout)
 
-A `src/syncai_common/` that survived the split as a **plain directory** (the
-old tracked copy, no `.git` inside) passes `scripts/build.sh`'s check and builds
-the old messages; the symptom is a build failing on a srv the old copy predates
-(`ResetLIO`, `SaveMaps`, `Relocalize`, …). `vcs import` will not clone over it.
-Nothing in the build path runs `vcs import`, so fix it on the **host**:
+A `src/syncai_common/` left over as a **plain directory** (no `.git` inside)
+passes `scripts/build.sh`'s check and builds the old messages; the symptom is a
+build failing on a srv it predates (`ResetLIO`, `SaveMaps`, `StartMapping`, …).
+`vcs import` will not clone over it, so fix it on the **host**:
 
 ```bash
 git -C src/syncai_common rev-parse --show-toplevel   # must print .../src/syncai_common
-# if not: move the stale copy out of src/ and re-import
-mv src/syncai_common ~/syncai_common.stale
+mv src/syncai_common ~/syncai_common.stale           # if it does not
 vcs import < interface.repos
 ```
 
-Keep it current afterwards with `vcs pull src/syncai_common` (fast-forward
-`dev`) or `vcs import < interface.repos --force` (re-checkout at the pin; drops
-uncommitted edits), then rebuild.
+Keep it current with `vcs pull src/syncai_common`, or
+`vcs import < interface.repos --force` to re-checkout at the pin (drops local
+edits), then rebuild.
 
 ### 2. Pick the robot identity
 
@@ -259,14 +252,12 @@ docker compose -f docker-compose.build.yaml run --rm build --packages-select syn
 BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build                 # skip the rosdep report
 ```
 
-It runs `scripts/build.sh`: vcs-checkout sanity check (the five
-`src/third-party/` dirs plus `src/syncai_common`, `src/syncai_driver_manager`,
-`src/syncai_robot_state` and `src/syncai_lio_bridge`, naming the `.repos` file
+It runs `scripts/build.sh`: check every vcs checkout (naming the `.repos` file
 to import if one is empty), restore the `livox_ros_driver2` `package.xml` if
 missing, `rosdep check` (report only — see below), then
-`colcon build --symlink-install`. Toggles: `BUILD_COLCON`
-(`1`/`0`), `BUILD_ROSDEP` (`check`/`install`/`off`). The container exits when
-the build does; robot01 picks the new `install/` up on the next session (re)build
+`colcon build --symlink-install`. Toggles: `BUILD_COLCON` (`1`/`0`),
+`BUILD_ROSDEP` (`check`/`install`/`off`). The container exits when the build
+does; robot01 picks the new `install/` up on the next session (re)build
 (`switch_mode`).
 
 **By hand**, from the workspace root inside the container:
@@ -280,18 +271,14 @@ source install/setup.bash
 colcon build --packages-select syncai_planner
 ```
 
-`rosdep install` only makes sense inside robot01: anything it installs into
-the throwaway build container is gone when that exits and never reaches the
-robot, so the compose route only *reports* unmet keys and a missing
-dependency is a `Dockerfile` change. (Keys it reports as "cannot locate" —
-`libgraphicsmagick++1-dev`, `python3-assertpy-pip` — are satisfied by the image
-under names rosdep does not know, and the "not satisfied" `libomp-dev` /
-`python3-pytest-mock` do not stop the build.)
+`rosdep install` only makes sense inside robot01: anything installed into the
+throwaway build container is gone when it exits, so the compose route only
+*reports* unmet keys and a missing dependency is a `Dockerfile` change. The keys
+it still reports today are either satisfied by the image under another name or
+harmless.
 
-GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage
-(Sophus for `syncai_pointlio` and `syncai_mapping`'s `hba_node`, GTSAM for
-`syncai_mapping`; `syncai_localizer` needs neither). Two things trip a fresh
-checkout:
+GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage. Two
+things trip a fresh checkout:
 
 - `colcon.meta` (found only because colcon's default is the relative
   `./colcon.meta`, so build from the workspace root) passes
@@ -344,23 +331,23 @@ either). Navigation goals, mode switches, teleop and map saving all go through
 that API. A raw `NavigateToPose` goal to `/<robot_id>/task_runner` works as
 well, and is the route that needs nothing outside this repo.
 
-**Mapping loop.** Switch to MANUAL (the mapping session runs bringup +
+**Mapping loop.** Switch to MANUAL — the mapping session runs bringup +
 pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state, and none of
-the localization / planning nodes), press **Start mapping** with the robot
-standing still (`pgo/start_mapping`; pgo comes up idle and banks nothing
-until then), drive the robot, then save the map — which ends the run and
-leaves pgo idle for the next Start.
-`pgo/save_maps` (`syncai_common/srv/SaveMaps`) is what writes
-`map/<name>/`: `map.pcd`, `poses.txt` and `patches/`. Calling it from a shell
-gives you exactly that and no gridmap — both pcd → gridmap recipes left with
-the backend, so the console's save button (`POST /api/v1/maps`) is what calls
-the service and converts in one step. Then point the robot at the new map:
-`[map] name` in the instance INI, or the console's map switch, which does the
-same thing live. Rebuilding a gridmap with another recipe, hand-editing it,
-and renaming a map (the directory moves and the vertices and task templates
-bound to it follow, except for the map the stack is running on — 409
-`map_active`, because map_server and the localizer loaded its files at launch)
-are all backend routes, and all still write into this repo's `map/`.
+the localization / planning nodes. A run is bracketed by two service calls:
+with the robot **standing still** press *Start mapping* (`pgo/start_mapping`;
+pgo comes up idle and banks nothing until then), drive the robot, then save.
+`pgo/save_maps` writes `map/<name>/` — `map.pcd`, `poses.txt`, `patches/` — and
+ends the run, leaving pgo idle for the next Start; `pgo/reset_mapping` throws a
+run away mid-drive and starts over.
+
+From a shell you get those three files and no gridmap: both pcd → gridmap
+recipes left with the backend, so the console's save button
+(`POST /api/v1/maps`) is what calls the service and converts in one step. Then
+point the robot at the new map — `[map] name` in the instance INI, or the
+console's map switch, which does the same live. Rebuilding a gridmap,
+hand-editing it and renaming a map are backend routes too, and all write into
+this repo's `map/` (renaming the map the stack is running on is refused with 409
+`map_active`, since map_server and the localizer loaded its files at launch).
 
 **Camera.** The camera is published from the **host**, not the container:
 
