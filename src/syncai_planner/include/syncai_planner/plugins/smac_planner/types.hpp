@@ -90,6 +90,9 @@ struct SmootherParams
   double w_smooth_;
   bool holonomic_;
   bool do_refinement_;
+  // Not a ROS parameter: the owning planner copies its own allow_unknown in,
+  // so the smoother cannot move a waypoint onto a cell the search refused.
+  bool allow_unknown_{true};
 };
 
 }  // namespace syncai_planner

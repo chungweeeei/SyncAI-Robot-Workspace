@@ -31,6 +31,7 @@ Smoother::Smoother(const SmootherParams & params)
   smooth_w_ = params.w_smooth_;
   is_holonomic_ = params.holonomic_;
   do_refinement_ = params.do_refinement_;
+  allow_unknown_ = params.allow_unknown_;
 }
 
 void Smoother::initialize(const double & min_turning_radius)
@@ -162,7 +163,13 @@ bool Smoother::smoothImpl(
         cost = static_cast<float>(costmap->getCost(mx, my));
       }
 
-      if (cost > MAX_NON_OBSTACLE && cost != UNKNOWN) {
+      // Upstream lets UNKNOWN through unconditionally, which is right only
+      // when the search may traverse unknown too. With allow_unknown: false
+      // it let a smoothed waypoint cut a corner into unknown space the A*
+      // path had stayed out of; planner_server's is_path_valid (>= INSCRIBED,
+      // unknown included) then rejected the fresh path on its first check,
+      // and the BT replanned into the same smoothed path, once a second.
+      if (cost > MAX_NON_OBSTACLE && (cost != UNKNOWN || !allow_unknown_)) {
         RCLCPP_DEBUG(
           rclcpp::get_logger("SmacPlannerSmoother"),
           "Smoothing process resulted in an infeasible collision. "

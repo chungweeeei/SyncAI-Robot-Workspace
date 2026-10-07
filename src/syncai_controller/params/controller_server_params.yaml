@@ -25,12 +25,12 @@
     # "Controller patience exceeded"; every failed cycle publishes zero
     # velocity, so the robot brakes and waits rather than coasting. Raised
     # 0.3 -> 3.0 so a blocked path re-routes instead of aborting. The detour
-    # comes from the BT's 1 Hz replan (move.xml RateController) on the global
-    # costmap, which itself updates at 1 Hz and is not in phase with it, so a
-    # blocker that appears inside RPP's ~0.6 m collision projection takes up
-    # to ~2.2-2.5 s (<= 1 s to be marked, <= 1 s to the next replan tick,
-    # Smac's search, one BT tick and one control cycle) to turn into a new
-    # path. At 0.3 the FollowPath action aborted first; its RecoveryNode then
+    # comes from the BT's 1 Hz IsPathValid check and the replan it triggers
+    # (move.xml RateController) on the global costmap, which itself updates
+    # at 1 Hz and is not in phase with it, so a blocker that appears inside
+    # RPP's ~0.6 m collision projection takes up to ~2.2-2.5 s (<= 1 s to be
+    # marked, <= 1 s to the next check, Smac's search, one BT tick and one
+    # control cycle) to turn into a new path. At 0.3 the FollowPath action aborted first; its RecoveryNode then
     # cleared the local costmap and re-sent the *same* old path (the
     # blackboard path had not changed yet), RPP refused again, and
     # PipelineSequence failed the whole NavigateToPose in ~0.6-1 s -- before

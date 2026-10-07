@@ -9,7 +9,7 @@ consumed in completely different ways:
 | | What | How it reaches a consumer |
 |---|---|---|
 | **Engine + base classes** | `BehaviorTreeEngine`, `BtActionServer`, `BtActionNode`, `BtServiceNode`, `bt_conversions` | `libsyncai_behavior_tree.so` + headers, linked at **build** time |
-| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `InitialPoseReceived` | one shared library each, `dlopen`ed by **name at runtime** |
+| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, `InitialPoseReceived` | one shared library each, `dlopen`ed by **name at runtime** |
 | **A standalone demo** | `examples/demo.cpp` | `ros2 run syncai_behavior_tree demo` |
 
 Nothing here is a ROS node. The only consumer today is **`syncai_task_runner`**,
@@ -222,13 +222,15 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `PipelineSequence` | control | `syncai_pipeline_sequence_bt_node` | — |
 | `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1) |
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
+| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout` |
+| `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
 | `InitialPoseReceived` | condition | `syncai_initial_pose_received_condition_bt_node` | reads blackboard `initial_pose_received` |
 
-Semantics of the three non-obvious ones:
+Semantics of the non-obvious ones:
 
 - **`PipelineSequence`** re-ticks *all* earlier children every round instead of
-  parking on the first `RUNNING` child. That is what lets `ComputePathToPose`
-  keep replanning while `FollowPath` is still driving. It returns `RUNNING` as
+  parking on the first `RUNNING` child. That is what lets the planner branch
+  keep checking (and replacing) the path while `FollowPath` is still driving. It returns `RUNNING` as
   soon as a child at index ≥ `last_child_ticked_` returns `RUNNING`; a `RUNNING`
   from an *earlier* child is skipped over. Any `FAILURE` halts all children.
 - **`RecoveryNode`** requires **exactly two children** (throws otherwise): child 0
@@ -239,6 +241,12 @@ Semantics of the three non-obvious ones:
 - **`RateController`** ticks its child only when the period has elapsed — *or*
   when the child is already `RUNNING`, so a long-running child is never starved.
   The timer resets when the child returns `SUCCESS`.
+- **`IsPathValid`** is synchronous, as upstream: it blocks its tick for up to
+  `server_timeout` and never returns `RUNNING`. An empty path answers `FAILURE`
+  without a call, and so does a timeout, so in doubt the tree replans.
+- **`GlobalUpdatedGoal`** returns `SUCCESS` on the first tick after blackboard
+  `goal` changed. The very first tick only records a baseline (`FAILURE`).
+  Upstream also watches `goals`; nothing here writes it, so this port does not.
 
 The three `ClearCostmap*` nodes all call `increment_recovery_count()`, which bumps
 the `number_recoveries` blackboard key that the navigator reports as feedback.
@@ -260,14 +268,23 @@ specialisation shows up as an XML parse error at tree-load time.
 
 ## The tree in use
 
-`syncai_task_runner/behavior_trees/move.xml` — replanning at 1 Hz with
-contextual recovery:
+`syncai_task_runner/behavior_trees/move.xml` — replanning only when the path
+becomes invalid or the goal changes, with contextual recovery (the why is in the
+XML header and `syncai_task_runner`'s README):
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">
   <RateController hz="1.0">
     <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      <Fallback name="FallbackComputePathToPose">
+        <ReactiveSequence name="CheckIfNewPathNeeded">
+          <Inverter>
+            <GlobalUpdatedGoal/>
+          </Inverter>
+          <IsPathValid path="{path}" server_timeout="100"/>
+        </ReactiveSequence>
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      </Fallback>
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
@@ -282,7 +299,7 @@ The service names are **relative**, so they resolve under the robot namespace
 like everything else in the stack. Plugin libraries and timeouts live in
 `syncai_task_runner/params/task_runner_params.yaml`.
 
-Ported from nav2's `navigate_to_pose_w_replanning_and_recovery.xml`, minus the
+Ported from nav2's `navigate_w_replanning_only_if_path_becomes_invalid.xml`, minus the
 outer system-level recovery branch (Spin / Wait / BackUp via RoundRobin) — those
 BT nodes and the behavior server are not ported yet.
 

@@ -10,6 +10,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
+#include "nav2_msgs/srv/is_path_valid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
@@ -143,10 +144,25 @@ protected:
   void computePlanThroughPoses();
 
   /**
+   * @brief The is_path_valid service callback: is the part of a path still
+   * ahead of the robot free in the current global costmap?
+   * @param request The path to check (in the costmap's global frame)
+   * @param response is_valid, plus the indices of every blocked pose
+   */
+  void isPathValid(
+    const std::shared_ptr<nav2_msgs::srv::IsPathValid::Request> request,
+    std::shared_ptr<nav2_msgs::srv::IsPathValid::Response> response);
+
+  /**
    * @brief Publish a path for visualization purposes
    * @param path Reference to Global Path
    */
   void publishPlan(const nav_msgs::msg::Path & path);
+
+  /**
+   * @brief Timer callback: re-send the last plan, restamped, on `plan`
+   */
+  void republishPlan();
 
   /**
    * @brief Callback executed when a parameter change is detected
@@ -181,6 +197,16 @@ protected:
 
   // Publisher for the path
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
+
+  // The last plan handed out, re-sent on `plan` at plan_republish_rate. Written
+  // from the action servers' threads, read from the main executor's timer.
+  nav_msgs::msg::Path last_plan_;
+  std::mutex last_plan_mutex_;
+  rclcpp::TimerBase::SharedPtr plan_republish_timer_;
+
+  // Lets the BT keep its current path until the costmap blocks it, instead of
+  // replacing it with whatever a fresh plan returns every RateController tick
+  rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;

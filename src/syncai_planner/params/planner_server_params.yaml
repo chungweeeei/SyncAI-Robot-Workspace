@@ -15,11 +15,17 @@
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
     # This is a warning threshold only — nothing throttles or aborts on it.
     # 20 Hz (50 ms) is a generous ceiling: the BT's RateController only asks
-    # for a replan at 1 Hz, so the warning is a canary for a pathological
+    # for a plan at most once a second (only when is_path_valid says the
+    # current one is blocked), so the warning is a canary for a pathological
     # Smac search (a huge unknown region, a goal buried in lethal cost), not a
     # cadence anyone is trying to hit. A Smac plan on a 0.05 m hall map
     # normally lands well under it.
     expected_planner_frequency: 20.0
+
+    # Re-send the last plan on `plan` this often (Hz), restamped; 0 = publish
+    # only when a plan is made. move.xml plans only when the path is blocked,
+    # so without this a viewer that subscribes mid-drive never sees the route.
+    plan_republish_rate: 1.0
 
     # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
     # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
@@ -43,8 +49,9 @@
       # Weight on costmap cost relative to travel distance, applied as
       # 1.0 + cost_travel_multiplier * (cell_cost / 252). This is the knob that
       # makes the planner cost-aware at all; 0.0 degenerates to plain A* on
-      # distance. Tuned against the inflation layer below (cost_scaling_factor
-      # 2.0, inflation_radius 0.5) — raise it to hug the centreline harder at
+      # distance. Tuned against the inflation layer below when it was
+      # cost_scaling_factor 2.0 / inflation_radius 0.5 (0.8 / 1.5 since
+      # 2026-10, not re-tuned here) — raise it to hug the centreline harder at
       # the price of longer paths, lower it if the robot refuses tight gaps.
       # Lowered 2.0 -> 1.0: at 2.0 the paths bowed noticeably along the
       # inflation gradient in open space; 1.0 keeps enough cost-awareness to
@@ -57,12 +64,20 @@
       # w_data 0.2 / w_smooth 0.3). w_smooth pulls each waypoint toward the
       # midpoint of its neighbours (straightens), w_data anchors it to the raw
       # A* path (keeps the search's obstacle clearance). Nudged toward smooth
-      # to iron out the grid-A* staircase; the smoother rejects any update
-      # that lands in lethal/inscribed cost, so this cannot smooth through an
-      # obstacle — but keep w_smooth well below ~0.5 or the anchor term stops
-      # mattering and corners get cut tight against the inflation edge.
+      # to iron out the grid-A* staircase, then w_data 0.2 -> 0.1 (2026-10)
+      # for rounder corners still. The smoother has NO cost term: the only
+      # thing it respects is "never land a waypoint above cost 252", so every
+      # step toward smooth is a step toward cutting corners at the wall. That
+      # is why the wall clearance comes from the inflation band below, which
+      # moves the raw A* path off the wall before smoothing starts, and not
+      # from these weights. Keep w_smooth well below ~0.5 regardless.
+      #
+      # One more reason clearance helps smoothness: the first waypoint update
+      # that lands above 252 aborts smoothing for the WHOLE path (it returns
+      # the previous iteration), so a raw path grazing the inscribed edge in
+      # one spot comes out staircased everywhere.
       smoother:
-        w_data: 0.2
+        w_data: 0.1
         w_smooth: 0.4
         max_iterations: 1000
         do_refinement: true
@@ -241,7 +256,29 @@
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true
-      # Must stay >= the padded footprint's circumscribed radius (~0.455 m,
-      # see the footprint comment above).
-      inflation_radius: 0.5      # ref global_costmap
-      cost_scaling_factor: 2.0   # ref global_costmap
+      # Global costmap only; the controller's local costmap has its own block
+      # and is deliberately untouched (RPP's collision check and cost-scaled
+      # speed run on that one).
+      #
+      # This band is what keeps Smac's paths off the walls. Cost decays as
+      # 252 * exp(-cost_scaling_factor * (d - inscribed)) out to
+      # inflation_radius and is 0 beyond it, and Smac pays
+      # (1 + cost_travel_multiplier * cost / 252) per metre. Two regimes:
+      #   - a passage narrower than 2 * inflation_radius has cost all the way
+      #     across, and the cheapest line is its centre;
+      #   - in wider space the band edge is a cliff and the path rides it,
+      #     inflation_radius from the wall (robot centre to wall).
+      # So inflation_radius is, directly, the wall clearance in open space.
+      # 0.5 -> 0.8 (2026-10): at 0.5 the body edge passed ~0.27 m from walls
+      # (half-width 0.22 + padding 0.01); at 0.8 it is ~0.57 m.
+      # cost_scaling_factor 2.0 -> 1.5 with it, so the cost is still ~42% of
+      # lethal at the band edge (exp(-1.5 * 0.57)) instead of fading out
+      # (2.0 gives 32%). That keeps the centring pull in narrow passages.
+      # The price: a route through a passage narrower than 1.6 m now costs
+      # at least ~40% more per metre along it (more the narrower it is), so
+      # the planner accepts a somewhat longer way round to avoid one. Nothing here blocks a passage: only >= INSCRIBED
+      # (0.23 m) is lethal to the planner, and IsPathValid tests the same.
+      # Also must stay >= the padded footprint's circumscribed radius
+      # (~0.455 m, see the footprint comment above).
+      inflation_radius: 0.8
+      cost_scaling_factor: 1.5

@@ -173,7 +173,7 @@ costmap's inflation layer.
 | `max_on_approach_iterations` | `1000` | `1000` | Refinement budget once inside tolerance |
 | `max_planning_time` | `2.0` | `2.0` | Hard cutoff in `createPath()`, and the smoother gets whatever is left |
 | `use_final_approach_orientation` | `false` | `false` | Same reasoning as NavFn's |
-| `smoother.w_data` | `0.2` | `0.2` | **Sub-namespace** — read as `GridBased.smoother.*`. Anchors each waypoint to the raw A* path (keeps the search's obstacle clearance) |
+| `smoother.w_data` | `0.2` | `0.1` | **Sub-namespace** — read as `GridBased.smoother.*`. Anchors each waypoint to the raw A* path (keeps the search's obstacle clearance). Lowered from 0.2 in 2026-10 for rounder corners. One waypoint update above cost 252 aborts smoothing for the **whole** path, so a raw path that grazes the inscribed edge once comes out staircased everywhere: wall clearance from the inflation band is also what lets the smoother finish |
 | `smoother.w_smooth` | `0.3` | `0.4` | Pulls each waypoint toward the midpoint of its neighbours (straightens). Nudged up from the upstream 0.3 to iron out the grid-A* staircase; the smoother rejects any update landing in lethal/inscribed cost, so it cannot smooth *through* an obstacle — but keep it well below ~0.5, past which the anchor term stops mattering and corners get cut tight against the inflation edge |
 | `smoother.max_iterations` | `1000` | `1000` | |
 | `smoother.do_refinement` | `true` | `true` | Up to four extra smoothing passes on the result |
@@ -186,6 +186,15 @@ Behaviours worth knowing:
   costs nothing today.
 - **There is no `smooth_path` toggle.** 2D always smooths, with the smoother
   constructed as holonomic and with no turning-radius constraint.
+- **The smoother follows `allow_unknown`** (2026-10). Upstream always lets a
+  waypoint be smoothed onto an unknown cell. With `allow_unknown: false` that
+  produced paths the search itself would have refused, which `is_path_valid`
+  then reported blocked on its first check: the BT replanned into the same
+  smoothed path once a second.
+- **`is_path_valid` logs every "blocked" answer** at INFO, with the first
+  blocked pose, how far ahead of the robot it is, and its cost (254 marked
+  obstacle, 253 inscribed, 255 unknown, -1 off the map). Each one is a replan,
+  so this line is where to start when a route changes unexpectedly.
 - **Debug topic `unsmoothed_plan`** carries the pre-smoother path, published
   only while something is subscribed.
 
@@ -237,7 +246,8 @@ Two gotchas:
 | Parameter | Default | Notes |
 |---|---|---|
 | `planner_plugins` | `["GridBased"]` | IDs; each needs `<id>.plugin` naming the type |
-| `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT only asks for a replan at 1 Hz, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
+| `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan at most once a second, and only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
+| `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped; `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. It keeps showing the last route after the goal ends, since the planner cannot tell when the navigation finished. Read once at startup |
 
 `expected_planner_frequency` is the only parameter the *server's* dynamic
 callback handles, and it takes the same mutex the plan cycle holds.
@@ -251,6 +261,16 @@ restart either way.
 `rolling_window: false`, `track_unknown_space: true`, `global_frame: map`, and
 a low `update_frequency: 1.0` (the static map rarely changes).
 
+**The inflation band is the planner's wall clearance.** In open space Smac's
+path rides the edge of the band, `inflation_radius` from the wall; in a passage
+narrower than twice that it takes the centre line. `inflation_radius: 0.8` /
+`cost_scaling_factor: 1.5` since 2026-10 (from 0.5 / 2.0, which put the body
+~0.27 m off walls; now ~0.57 m). The YAML has the arithmetic and the price
+(narrow passages cost more, so longer ways round win more often). The smoother
+cannot add clearance: it has no cost term and only refuses to land a waypoint
+above cost 252, so pushing its weights toward smooth pulls corners *toward*
+walls. The local costmap's band (0.4 / 3.0) is separate and unchanged.
+
 The footprint is a rectangle with half-extents 0.35 × 0.22, **the same
 rectangle as the local costmap** in `syncai_controller` (reconciled 2026-10;
 the local one had been left at 0.28 × 0.20). Only the padding differs, on
@@ -261,7 +281,7 @@ keeps the planner on the conservative side, and it also absorbs RPP's heading
 error while tracking. Change the rectangle in both files or neither, and never
 let the local padding reach the global one.
 
-`inflation_radius: 0.5` must stay at or above the padded footprint's
+`inflation_radius` (0.8) must stay at or above the padded footprint's
 circumscribed radius, √(0.38² + 0.25²) ≈ 0.455 m: only then does a non-inflated
 cost at the robot centre guarantee the whole footprint is clear, which anything
 that checks a path by centre-cell cost alone relies on. A circular `robot_radius: 0.22`
@@ -311,7 +331,8 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
-| Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed) |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free (every cell `< INSCRIBED`, the same test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`)? Called once a second by `move.xml`'s `IsPathValid`, which replans only on `false`. Answers `false` for an empty path, a frame other than the costmap's, or no robot pose. Served on the main executor, so it never queues behind a plan |
+| Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate` |
 
 Plus everything the internal costmap exposes under
 `/<robot_id>/global_costmap/…` — `costmap`, `costmap_updates`,
