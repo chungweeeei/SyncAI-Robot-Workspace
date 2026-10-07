@@ -699,7 +699,11 @@ something to verify or edit here.
   alias is wrong half the time), `build.sh` (in-image: the build
   steps behind `docker-compose.build.yaml`, see Build), `publish_camera_crop.sh` + `.env` (host-side
   camera publisher, see Infrastructure), `urdf2glb.py` (robot mesh for the
-  console's 3D view, see "Out of tree"), and `release/` (`build_images.sh` / `save_images.sh` /
+  console's 3D view, see "Out of tree"), `octomap/` (offline: a pgo save's
+  patches + poses ray-cast into an OctoMap `.bt`, its road-level free space
+  exported to PLY and a self-contained three.js viewer; plain CMake built by
+  hand in a throwaway container, because OctoMap is not in the image — its
+  README has the procedure), and `release/` (`build_images.sh` / `save_images.sh` /
   `load_and_up.sh` / `.env.example` — an offline release bundle for the
   customer IPC that is currently **non-functional**: it needs the removed
   production Dockerfile stages and a `docker-compose.prod.yml` that is not in
