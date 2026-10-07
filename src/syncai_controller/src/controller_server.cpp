@@ -378,6 +378,31 @@ void ControllerServer::computeAndPublishVelocity()
   geometry_msgs::msg::PoseStamped pose;
 
   if (!getRobotPose(pose)) {
+    // Under failure_tolerance like an exception out of the controller. Upstream
+    // throws here unconditionally, so a single stale odom -> base_link (the LIO
+    // bridge's TF, past the costmap's transform_tolerance) failed FollowPath
+    // at once, while the same TF miss inside RPP's transformGlobalPlan() got
+    // the full grace window -- and the RecoveryNode retry it burned was the
+    // one a real blocker later needed. Stopping is safe without a pose; driving
+    // is not, so the cycle commands zero and skips the progress checker and
+    // the feedback, both of which need the pose.
+    //
+    // The controller is never called this cycle, so its catch-all cannot zero
+    // RPP's acceleration-clamp baseline; reset() does it instead. Without it
+    // the first cycle after the TF came back would clamp around the speed held
+    // before the outage and step 0 -> ~0.55 m/s in 50 ms, the lurch the
+    // catch-all exists to prevent.
+    if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
+      RCLCPP_WARN(get_logger(), "Failed to obtain robot pose");
+      controllers_[current_controller_]->reset();
+      if (
+        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
+        failure_tolerance_ != -1.0) {
+        throw syncai_nav_core::PlannerException("Controller patience exceeded");
+      }
+      publishZeroVelocity();
+      return;
+    }
     throw syncai_nav_core::PlannerException("Failed to obtain robot pose");
   }
 

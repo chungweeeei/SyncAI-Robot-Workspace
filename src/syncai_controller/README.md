@@ -92,6 +92,18 @@ failed cycle publishes zero velocity and keeps trying until that many seconds
 have passed since the last *valid* command, then gives up. `-1.0` retries
 forever, `0.0` fails on the first exception.
 
+It covers two things: an exception out of `computeVelocityCommands()`, and —
+since 2026-10, not upstream — a failed **robot-pose lookup**. Upstream throws
+"Failed to obtain robot pose" unconditionally, so one stale `odom → base_link`
+failed `FollowPath` at once while the same TF miss inside RPP's
+`transformGlobalPlan()` got the whole grace window, and it used up the BT's
+retry. A pose failure now publishes zero, skips the progress checker and the
+feedback (both need the pose) and calls the controller's `reset()`: RPP's
+catch-all cannot zero its accel baseline on a cycle in which it is never
+called, and without the reset the first cycle after the TF returned would
+lurch from 0 to near the pre-outage speed. It does **not** cover the progress
+checker's "Failed to make progress", which is meant to end the goal.
+
 **`publishVelocity` skips publishing when nothing is subscribed** to `cmd_vel` —
 worth knowing when debugging with `ros2 topic echo`, since attaching the echo
 changes whether messages are sent at all.
@@ -181,7 +193,9 @@ against the last command keeps the *command trajectory* kinematically feasible
 without coupling to gait noise.
 
 `last_cmd_vel_` is zeroed in `reset()` — called once per goal by
-`ControllerServer::computeControl()` — so every new goal ramps from a standstill.
+`ControllerServer::computeControl()`, so every new goal ramps from a standstill,
+and on every cycle a robot-pose failure makes the server stop the robot without
+calling RPP (see `failure_tolerance` above).
 `rotateToHeading()` applies the same pattern with `max_angular_accel`, plus a
 `sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target instead of
 overshooting.
@@ -206,13 +220,14 @@ The wrapper is catch-all rather than one zeroing per `throw`: `"collision
 ahead!"` is the frequent case, but `transformGlobalPlan()`'s empty-plan and
 TF-failure throws and `costAtPose()`'s "costmap too small" all reach the server
 by the same path, and a `throw` added later would otherwise reintroduce the stale
-baseline silently. `reset()` covers none of them — it runs once per goal, while a
-whole brake-and-recover episode fits inside one goal's grace window.
+baseline silently. `reset()` covers none of them — it runs at goal start and on
+cycles that never reach RPP, while these throws happen inside RPP mid-goal.
 
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
-cost us once: `setPlan()` is also the mid-navigation replan path. The BT's
-`RateController hz="1.0"` in `move.xml` hands `FollowPath` a fresh path every
-~1 s, which reaches the server as an action preempt and lands in
+cost us once: `setPlan()` is also the mid-navigation replan path. Every replan
+in `move.xml` (once a second until 2026-10, only when `IsPathValid` reports the
+path blocked since) hands `FollowPath` a fresh path, which reaches the server
+as an action preempt and lands in
 `updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
 clamped the very next command to a single accel step, so the command re-ramped
 from ~0 on every replan. Measured on the real robot over a two-goal run (at the
@@ -304,7 +319,7 @@ Server-level (`/**/controller_server`):
 | `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
-| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of RPP ("collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives; the progress checker's 30 s remains the outer bound on standing still. A dead end still aborts, ~3 s later. Only exceptions out of `computeVelocityCommands()` are covered; the robot-pose lookup and the progress checker throw past it |
+| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of RPP ("collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives; the progress checker's 30 s remains the outer bound on standing still. A dead end still aborts, ~3 s later. Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
 | `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` |
