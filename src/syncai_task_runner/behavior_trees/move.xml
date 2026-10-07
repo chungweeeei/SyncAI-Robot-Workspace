@@ -27,6 +27,17 @@
   costmap update can hold for longer than 20 ms, and a timeout reads as invalid
   (one needless replan, not a failure).
 
+  FollowPath's retry refills (retry_refill_time, 2026-10). Its RecoveryNode
+  only resets when it returns, and FollowPath is RUNNING for the whole goal, so
+  the one retry used to be one per goal: a blocker met early used it up and the
+  next one, however much later, failed the goal outright. An attempt that ran
+  at least 60 s before failing now earns it back. 60 s is twice the progress
+  checker's movement_time_allowance (30 s): an attempt that never gets going
+  fails sooner than that (failure_tolerance 3 s, or ~30 s without progress), so
+  a dead end still runs out of retries; it must not drop to 30 or below. The
+  planner branch's RecoveryNode does not need it: ComputePathToPose returns
+  each tick, which resets that node.
+
   Costmap clear services live on the costmap nodes owned by the planner
   (global_costmap) and controller (local_costmap). Relative service names
   resolve under the robot namespace because every node in the stack shares it.
@@ -48,7 +59,7 @@
           <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
         </RecoveryNode>
       </RateController>
-      <RecoveryNode number_of_retries="1" name="FollowPath">
+      <RecoveryNode number_of_retries="1" retry_refill_time="60.0" name="FollowPath">
         <FollowPath path="{path}" controller_id="FollowPath"/>
         <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
       </RecoveryNode>

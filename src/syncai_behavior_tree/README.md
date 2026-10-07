@@ -220,7 +220,7 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `ClearCostmapExceptRegion` | service | ditto | + in `reset_distance` (default 1) |
 | `ClearCostmapAroundRobot` | service | ditto | + in `reset_distance` (default 1) |
 | `PipelineSequence` | control | `syncai_pipeline_sequence_bt_node` | — |
-| `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1) |
+| `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1), `retry_refill_time` (s, default 0 = never) |
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
 | `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout` |
 | `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
@@ -237,7 +237,15 @@ Semantics of the non-obvious ones:
   is the work, child 1 is the recovery. Child 0 fails → tick child 1 → on its
   success, retry child 0, up to `number_of_retries`. Child 1 failing fails the
   whole node. `number_of_retries` is read **once in the constructor**, so it
-  cannot be changed via the blackboard at runtime.
+  cannot be changed via the blackboard at runtime. The count resets only when
+  the node itself returns, so around a child 0 that stays `RUNNING` for a whole
+  goal (`FollowPath`) it is a budget per goal. `retry_refill_time` (not
+  upstream; also read once) makes it per incident: when child 0 fails after
+  running at least that many seconds since it was last started, the count goes
+  back to 0 first, and an `INFO` from logger `RecoveryNode` says so. It is time
+  and not "child 0 returned `RUNNING`" because a failing attempt is `RUNNING`
+  too until it fails — refilling on that would retry a dead end forever. Pick
+  it longer than any attempt that fails without getting going.
 - **`RateController`** ticks its child only when the period has elapsed — *or*
   when the child is already `RUNNING`, so a long-running child is never starved.
   The timer resets when the child returns `SUCCESS`.
@@ -288,7 +296,7 @@ XML header and `syncai_task_runner`'s README):
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
-  <RecoveryNode number_of_retries="1" name="FollowPath">
+  <RecoveryNode number_of_retries="1" retry_refill_time="60.0" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
     <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>

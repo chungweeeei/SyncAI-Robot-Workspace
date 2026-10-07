@@ -133,7 +133,7 @@ invalid (or the goal changes), with contextual recovery:
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
-  <RecoveryNode number_of_retries="1" name="FollowPath">
+  <RecoveryNode number_of_retries="1" retry_refill_time="60.0" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
     <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>
@@ -148,6 +148,17 @@ blocked path, a changed goal (`GlobalUpdatedGoal`, i.e. a preempt) or no path
 at all runs `ComputePathToPose`. A failure in either branch clears **that
 branch's own costmap** and retries once — stale obstacles being the most common
 cause.
+
+"Once" is per incident, not per goal, on the `FollowPath` side. A
+`RecoveryNode` resets its retry count only when it returns, and `FollowPath`
+is `RUNNING` for the whole goal, so until 2026-10 the first blocker used the
+retry up and a second one, minutes later, failed the goal with no retry at all.
+`retry_refill_time="60.0"` gives the budget back to an attempt that ran at least
+60 s before failing. It must stay above the progress checker's
+`movement_time_allowance` (30 s): an attempt that never gets going fails within
+that (3 s of `failure_tolerance`, or 30 s without progress), so a dead end still
+exhausts its retry. The planner branch needs no refill — `ComputePathToPose`
+returns every tick, which resets its `RecoveryNode`.
 
 Until 2026-10 the branch replanned unconditionally at 1 Hz, and a fresh plan
 always replaced the path. The global costmap raytraces the 3D cloud in 2D, so
