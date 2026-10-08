@@ -76,6 +76,16 @@ void FollowPathAction::on_wait_for_result(
   }
 }
 
+BT::NodeStatus FollowPathAction::on_aborted()
+{
+  // Humble's FollowPath result carries no reason either, so "patience
+  // exceeded", "failed to make progress" and a lost robot pose all arrive
+  // here as one ABORTED; the controller log has which. The navigator turns
+  // this into FOLLOW_PATH_FAILED if the tree ends on it.
+  report_failure("controller " + action_name_ + " aborted the goal");
+  return BT::NodeStatus::FAILURE;
+}
+
 }  // namespace syncai_behavior_tree
 
 #include "behaviortree_cpp_v3/bt_factory.h"

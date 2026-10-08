@@ -1,7 +1,9 @@
 # Launch the non-lifecycle task_runner node — the BT action server that
-# exposes the navigate_to_pose action and ticks the behavior tree. It talks to
-# the planner (compute_path_to_pose) and controller (follow_path) action
-# servers, so those must be running for a goal to succeed.
+# exposes the navigate_to_pose (nav2_msgs) and navigate_to_goal
+# (syncai_common, with a failure reason in the result) actions and ticks the
+# behavior tree for whichever one a goal arrives on. It talks to the planner
+# (compute_path_to_pose) and controller (follow_path) action servers, so
+# those must be running for a goal to succeed.
 #
 # robot_id is read from the system config INI at launch time (same convention
 # as sys_manager.launch.py) and is used both as the node namespace and to

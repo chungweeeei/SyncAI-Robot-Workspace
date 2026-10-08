@@ -1,3 +1,8 @@
+# One node, two action servers (navigate_to_pose from nav2_msgs and
+# navigate_to_goal from syncai_common) built from one navigator template, so
+# every parameter below -- default_bt_xml, goal_blackboard_id,
+# path_blackboard_id, the BtActionServer timings -- is shared by both: same
+# tree, same blackboard keys, one navigation at a time.
 /**/task_runner:
   ros__parameters:
     use_sim_time: false
