@@ -9,7 +9,10 @@ bracket a mapping run: `start_mapping`, `save_maps` and `reset_mapping`. It
 comes up **idle** — nothing is banked until `start_mapping`, and a successful
 `save_maps` ends the run — and reports that state on `mapping_status`. It
 runs only in the mapping session; in navigation `syncai_localizer` owns the
-same TF.
+same TF. After a successful save it spawns `build_octomap`, this package's
+third executable, which ray-casts the saved patches into an OctoMap and
+exports the two layers the console's "3D map" draws — detached, so it
+outlives the session (see "The OctoMap build").
 
 ```
    syncai_pointlio            /<id>/pointlio/{body_cloud, lio_odom}
@@ -25,6 +28,11 @@ same TF.
         │          (rviz)      JSON notice ──► /dev/shm/…   map/<name>/    reset_mapping   IDLE / MAPPING /
         │                      (backend: live preview)     map.pcd, patches/, poses.txt   RESETTING (latched)
         │                                                  (ends the run)  (backend: "Start" / "New map")
+        │                                                        │
+        │                                          spawns, detached ▼
+        │                                                  build_octomap ──► map/<name>/octomap.bt,
+        │                                                                    octomap_{road,occupied}.pcd,
+        │                                                                    octomap.recipe.json (status)
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pgo` package in 2026-09
@@ -74,7 +82,7 @@ All relative to `/<robot_id>/pgo/` except the TF.
 | `loop_markers` | `MarkerArray`, depth 10000 | Loop-closure nodes and edges for rviz. Subscriber-gated. |
 | `mapping_status` | `syncai_common/msg/MappingStatus`, RELIABLE + TRANSIENT_LOCAL, depth 1 | The run state (`IDLE` / `MAPPING` / `RESETTING`) with the keyframe and loop-closure counts; on every transition and at 1 Hz. What the backend's `GET /api/v1/mapping` answers from. |
 | `start_mapping` | `syncai_common/srv/StartMapping` | Begin a run (IDLE → MAPPING) — see "The run lifecycle". |
-| `save_maps` | `syncai_common/srv/SaveMaps` | Serialise the keyframes and end the run (MAPPING → IDLE) — see below. |
+| `save_maps` | `syncai_common/srv/SaveMaps` | Serialise the keyframes and end the run (MAPPING → IDLE), then start the OctoMap build — see below. |
 | `reset_mapping` | `syncai_common/srv/ResetMapping` | Start a new map in place (MAPPING → MAPPING) — see below. |
 
 Both cloud outputs are keyframe-triggered, subscriber-gated and rate-floored at
@@ -125,11 +133,16 @@ next run, and the backend never does.
 | `map.pcd` | Every keyframe's body cloud placed with its loop-closure-corrected global pose and concatenated. Binary, **not** voxel-filtered. |
 | `patches/<i>.pcd` | (with `save_patches`) one body-frame cloud per keyframe; the directory is removed and recreated |
 | `poses.txt` | (with `save_patches`) one line per keyframe, `<i>.pcd tx ty tz qw qx qy qz`, bare basenames |
+| `octomap.recipe.json` | (with `save_patches` and `octomap_enabled`) the OctoMap build's status, written `converting` before the response goes out — see "The OctoMap build" |
+| `octomap.bt`, `octomap_road.pcd`, `octomap_occupied.pcd` | written minutes later by `build_octomap`, not by this handler |
+
+A save with `save_patches` also deletes the previous `octomap.*` files and
+any `octomap*.tmp` first: their input is being replaced.
 
 That layout is what the workspace's map catalogue expects under `map/<name>/`
 and what `hba_node` (below) refines. Nothing written names the map or holds an
-absolute path, which is what makes renaming a map directory one `os.rename`;
-keep it that way. The handler holds `m_pgo_mutex` for its whole body, so a
+absolute path — the sidecar included — which is what makes renaming a map
+directory one `os.rename`; keep it that way. The handler holds `m_pgo_mutex` for its whole body, so a
 reset that arrives during a save waits for it (and then finds the node idle
 and is refused).
 
@@ -142,12 +155,168 @@ the same run twice is therefore not possible; the backend converts from
 keyframes, a write error) changes nothing; the write errors are caught and
 reported as `success: false` with the run kept — they used to throw out of
 the callback. `poses.txt` is now only opened when `save_patches` is true.
+The response `message` (UI copy, rendered verbatim) ends with one sentence
+about the 3D map: being built, not built (no patches), or could not start.
+None of those turns the save into a failure — the map is on disk.
 
 `pgo_node` holds its keyframes in RAM and this is the **only** thing that
 writes them out. Whatever has not been saved when the process ends — or when
 `reset_mapping` runs — is gone short of replaying a bag. That is why the
 mapping session's `lio` window is not optional, and why a mode switch refuses
 to rebuild the live mode.
+
+### The OctoMap build
+
+Once a save has ended the run, the handler starts one OctoMap build of the
+directory it just wrote: every patch ray-cast from its keyframe pose into an
+`octomap::OcTree`, written as `octomap.bt`, and two point layers derived from
+it for the operator console's "3D map" — nothing during a run changes, the
+live preview is still the map cloud above. It ran by hand from
+`scripts/octomap/` until 2026-10 (that prototype is gone; this is its code,
+same insertion order and arithmetic, verified byte-identical on the `.bt`).
+
+**Input: patches + poses, not `map.pcd`.** `map.pcd` has no sensor origins,
+so OctoMap could only mark its points occupied and every free voxel would stay
+unknown. Free space — the part that says where the floor is clear — exists
+only if each scan is ray-cast from where it was taken, which is what
+`poses.txt` gives every patch. Hence no OctoMap for a save without
+`save_patches`. The ray origin is the keyframe pose, i.e. the IMU origin; the
+lidar is 5.1 cm away (`syncai_pointlio`'s `t_il`), and since both rays end at
+the same point that offset is under one voxel and inside `min_range` anyway.
+
+Each patch goes through `insertPointCloud` with `discretize` on (a voxel hit
+by several rays of one scan is updated once), rays truncated at `max_range`
+(free space is carved only that far, and a point beyond it is not marked
+occupied) and returns under `min_range` dropped (the robot's own body). The
+tree is pruned and written as a binary `.bt` — max-likelihood occupancy
+only, what octovis and `octomap_server` load.
+
+**The two layers.** The free voxels themselves are useless to look at: every
+one is air a ray passed through (42.6 M of them on `dp1f_1006` at 0.05 m) and
+they bury the floor. So:
+
+| File | Holds |
+|---|---|
+| `octomap_road.pcd` | per column, the **lowest free voxel within ±`floor_band` of the local floor** — observed-free space at ground level |
+| `octomap_occupied.pcd` | occupied voxels from local floor − `floor_band` up to + `max_height` — walls, with the ceiling cut |
+
+Both are binary `pcl::PointXYZ` (12 B a point: `FIELDS x y z`), voxel centres
+in the `map` frame — what the backend's PCD reader and its point-cloud wire
+format already take.
+
+The *local* floor is the nearest keyframe's z minus `lidar_height`, looked up
+per 1 m cell within `floor_radius`. One global floor level does not work:
+`dp1f_1006`'s floor changes height by about 1 m across the site. A 4 m radius
+left square holes in a hall wider than 8 m; 10 m does not.
+
+The obvious road definition, "a free voxel with an occupied voxel under it",
+is wrong, and was tried first: it found 391 m² on `dp1f_1006`, the lowest-free
+one 4338 m². Rays to distant floor points cross the near floor at a grazing
+angle and integrate misses into it, so the floor itself ends up free, and the
+voxel under the lowest free one is usually *unknown* (never seen from below),
+not occupied. Expect free floor beyond the walls too: rays through windows
+and doorways observe it, and from above it shows as radial fans. That is also
+why the road layer is **not a traversability map** — it is observed-free
+space at floor height (under tables and outside included), with no slope or
+step check. The drivable area is still the gridmap's.
+
+An empty layer fails the build ("road layer is empty: lidar_height /
+floor_band do not match this save"): it means the band missed the floor — a
+`lidar_height` for another robot — and pcl cannot write an empty PCD anyway.
+
+**Status: `octomap.recipe.json`**, the only surface — modelled on the
+backend's `gridmap.recipe.json`, written `.tmp` + rename (a per-process temp
+name, since this node and the build both write it):
+
+```json
+{"status":"converting","started_at":"2026-10-08T03:12:45Z","params":{"resolution":0.1,"max_range":20,"min_range":0.5,"lidar_height":0.481,"floor_band":0.25,"max_height":2,"floor_radius":10}}
+{"status":"ok","started_at":"…","finished_at":"…","params":{…},"measurements":{"keyframes":1195,"skipped_patches":0,"points":3050000,"leaves":…,"occupied_leaves":…,"free_leaves":…,"road_voxels":…,"road_area_m2":4338,"occupied_voxels":…,"elapsed_s":420.3}}
+{"status":"failed","started_at":"…","finished_at":"…","params":{…},"error":"road layer is empty: …"}
+```
+
+`converting` is written by this node **before** it spawns and before the save
+responds, so a reader acting on the response always finds it. A build killed
+hard (OOM, SIGKILL, `docker stop`) leaves it at `converting` for good —
+`started_at` is there so a reader can age that into "interrupted"; this node
+does not retry. Error text names files relative to the directory only. The
+outputs are renamed into place together at the end, so a failed rebuild
+leaves the previous ones (the sidecar's `failed` outranks them).
+
+**A process, not a thread.** `posix_spawn` of
+`<prefix>/lib/syncai_mapping/build_octomap` (found through the package index)
+with `POSIX_SPAWN_SETSID` and the stop signals reset to default. Each reason
+below decides it alone:
+
+- *Memory.* A build is tens of millions of small octree nodes; in this
+  process that heap would mostly never go back to the OS. The child also
+  writes `oom_score_adj 500`, so under memory pressure the kernel kills the
+  build rather than the node owning the TF and maybe an unsaved run.
+- *Lifetime.* `switch_mode` kills the byobu session — a pty hang-up, SIGHUP,
+  no destructor. Saving and switching straight to AUTO is the normal operator
+  flow, so the build has to outlive this process: in its own session it has
+  no controlling terminal to lose, and it ignores SIGPIPE so printing into a
+  dead pane is harmless.
+- *One entry point.* The same executable is the by-hand rebuild.
+
+It runs at `nice 10`, one core (the apt `liboctomap` has no OpenMP), and its
+progress goes to this node's pane log while the pane exists. This node reaps
+it from the 1 s status timer (`waitpid` WNOHANG, one log line per outcome);
+its destructor neither kills nor waits. Once this node is gone the build is
+reparented to the container's PID 1 — `init: true` in the robot compose
+service makes that tini, which reaps it.
+
+Builds are serialised per host by a `flock` on
+`/dev/shm/syncai_pgo/build_octomap.lock` (`/dev/shm` is shared by every
+container on the robot through `ipc: host`): two saves in a row start two
+builds, and the second waits — its sidecar says `converting` meanwhile.
+
+| Event | `pgo_node` | `build_octomap` | sidecar |
+|---|---|---|---|
+| Ctrl-C in the pane | destructor logs "continues detached" | unaffected | finishes |
+| `switch_mode` / `restart_mode` | gone (SIGHUP) | unaffected | finishes |
+| `pkill -TERM build_octomap` | logs the exit | stops between keyframes, `.tmp`s removed | `failed: interrupted (SIGTERM)` |
+| OOM | survives | killed first | stuck at `converting` |
+| `docker stop` / reboot | gone | gone | stuck at `converting`; rebuild by hand |
+
+Known edge, not handled: a second save into a directory whose build is still
+running. The backend never saves into an existing map directory.
+
+**By hand** — a rebuild of any saved map, with other parameters, or on a
+workstation with only PCL and OctoMap (it is not a ROS node):
+
+```bash
+ros2 run syncai_mapping build_octomap map/<name>                      # the defaults below
+ros2 run syncai_mapping build_octomap map/<name> --resolution 0.05 --lock none
+#   --max-range 20 --min-range 0.5 --lidar-height 0.481 --floor-band 0.25
+#   --max-height 2.0 --floor-radius 10 --nice 0 --started-at <ISO-8601>
+# exit 0 ok · 1 usage · 2 no poses.txt / readable patch · 3 build or write failed · 4 interrupted
+cat map/<name>/octomap.recipe.json
+ps -o pid,ppid,sid,ni,rss,etime,cmd -C build_octomap
+```
+
+**Numbers.** `dp1f_1006` (853 s bag, 477 m path) with the prototype at
+0.05 m, single-threaded in Docker on a Mac:
+
+| | |
+|---|---|
+| Keyframes / points inserted | 1195 / 3.05 M |
+| Leaves | 44.3 M (1.73 M occupied, 42.6 M free) |
+| `.bt` | 25 MB |
+| Road layer | 1.74 M voxels, 4338 m² |
+| Wall time / peak RSS | about 7 min / about 4.5 GB |
+
+Hence the 0.1 m default: roughly 1/8 the free leaves, a quarter of the road
+points (what the console downloads), and a fraction of the memory — a display
+layer does not need the gridmap's 0.05 m. Measure the Jetson at 0.1 m and
+record it here.
+
+**Viewing the `.bt` itself.** Homebrew's `octomap` ships no octovis; a native
+build was made from OctoMap v1.10.0 against Homebrew `qt@5` (build the bundled
+libQGLViewer with `qmake`, pass its `QGLViewer.framework` to CMake as
+`QGLViewer_LIBRARY_DIR_OTHER`). Leave free voxels hidden or they bury the
+floor. Open3D's WebRTC viewer was tried and dropped: it exists only in the
+linux/x86_64 wheel, which on Apple Silicon means Rosetta, Xvfb and software GL,
+and it never rendered.
 
 ### The run lifecycle
 
@@ -246,7 +415,10 @@ mutexes on its hot path; every *store* to the phase happens under
 by-value snapshot of the keyframes, claimed by an atomic (`m_map_cloud_busy`)
 and joined only while that is false; every exception is caught inside the
 worker, because one escaping a `std::thread` is `std::terminate` — pgo gone,
-TF gone, mid-run. `main()` holds a *named* `shared_ptr` because
+TF gone, mid-run. The post-save OctoMap build is deliberately not a fourth
+thread but a process (see "The OctoMap build"); the only state it leaves in
+here is the list of spawned pids, touched by `saveMapsCB` and the status
+timer — both in the default group, so it needs no lock. `main()` holds a *named* `shared_ptr` because
 `Executor::add_node` keeps a weak_ptr; a temporary would leave the executor
 spinning over nothing while looking alive in `ps`.
 
@@ -283,6 +455,13 @@ the values are copied into the graph at construction and on every reset, so
 | `map_cloud_resolution` | `0.2` | | m, voxel leaf of the published merge |
 | `map_cloud_pub_period` | `3.0` | | s, floor between merges |
 | `start_on_launch` | `false` | `start_on_launch:=` argument | `true` comes up MAPPING instead of IDLE: the bag-replay knob, never the session's value |
+| `octomap_enabled` | `true` | | spawn the OctoMap build after a save with `save_patches`; `false` spawns nothing and writes no sidecar |
+| `octomap_resolution` | `0.1` | | m, voxel edge. The prototype's 0.05 cost 4.5 GB on `dp1f_1006` |
+| `octomap_max_range` / `octomap_min_range` | `20.0` / `0.5` | | m; rays truncated / returns off the robot's body dropped |
+| `octomap_lidar_height` | `0.481` | | m, lidar above the floor; keyframe z minus this is the local floor. Wrong → empty road layer → `failed` |
+| `octomap_floor_band` / `octomap_max_height` | `0.25` / `2.0` | | m; road band around the local floor / top of the occupied layer |
+| `octomap_floor_radius` | `10.0` | | m; how far to look for the keyframe that gives a cell its floor |
+| `octomap_nice` | `10` | | **int**, the build's nice value |
 
 ### Loop verification
 
@@ -364,6 +543,7 @@ ros2 topic echo /<robot_id>/pgo/mapping_status --qos-durability transient_local 
 ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom # identity while idle
 ros2 topic echo /<robot_id>/pgo/map_cloud_file --qos-durability transient_local --qos-reliability reliable
 ls /dev/shm/syncai_pgo/<robot_id>                      # map_cloud_<seq>.pcd, newest two; empty while idle
+cat map/<name>/octomap.recipe.json                     # after a save: converting → ok / failed
 ```
 
 | Log line | Meaning |
@@ -379,6 +559,12 @@ ls /dev/shm/syncai_pgo/<robot_id>                      # map_cloud_<seq>.pcd, ne
 | `[startMappingCB] Mapping started. …` | A run began; pointlio is re-initialising — the robot must be still |
 | `[resetMappingCB] Map discarded. … (dropped N key poses)` | A reset completed; N = 0 means the run had banked nothing |
 | `[saveMapsCB] Map saved (N keyframes). Mapping stopped … (<dir>/map.pcd)` | The run ended; `/dev/shm` is empty and the node is idle |
+| `[PGONode] octomap after save: on \| 0.100 m, range 0.5-20.0 m, …` | The OctoMap settings in force |
+| `[PGONode][octomap] build_octomap pid N started for <dir> (0.100 m, nice 10); outcome in octomap.recipe.json` | A save started a build |
+| `[build_octomap] 100/1195 keyframes, 255000 points` … `[build_octomap] DONE keyframes=… road_voxels=… (… m2) …` | The build's own progress, printed into this pane while it exists |
+| `[PGONode][octomap] build_octomap pid N finished <dir> in N s` | Reaped, exit 0 |
+| `[PGONode][octomap] build_octomap pid N exited 3 …` / `… killed by signal 9 … (OOM?)` | Failed — the sidecar has the reason; after a signal it is left at `converting` |
+| `[PGONode][octomap] build_octomap executable not found` | Not installed (a partial build); the sidecar says `failed` |
 | `LIO reset service … is not available` / `Timed out waiting for the LIO reset` | Start or reset refused (`nothing started` / `map kept`) — pointlio is down, or built against the old `interface` type |
 
 ## Gotchas
@@ -414,6 +600,15 @@ ls /dev/shm/syncai_pgo/<robot_id>                      # map_cloud_<seq>.pcd, ne
   rosdep key for that build, so `package.xml` does not list it — the same
   treatment `syncai_pointlio` gives Sophus. Recreating the container from the
   image keeps it; a hand-built one loses it.
+- **OctoMap is not a manual dependency.** Unlike GTSAM, `octomap` is a real
+  rosdep key (`ros-humble-octomap`), installed by the `Dockerfile`'s dev
+  stage. A container from an older image lacks it and `syncai_mapping` fails
+  to configure; `sudo apt-get install ros-humble-octomap` until it is
+  recreated.
+- **The build outlives the session, by design.** A save followed by a mode
+  switch is the normal case; `ps -C build_octomap` in the robot container
+  shows it running on with PPID 1. A sidecar still `converting` with no such
+  process means it was killed — rerun it by hand.
 - **An unoptimised build cannot keep up.** CMake defaults `CMAKE_BUILD_TYPE`
   to Release (upstream forced it); iSAM2 plus an ICP verification per keyframe
   and a full-map merge on the worker are not `-O0` workloads on the Jetson.

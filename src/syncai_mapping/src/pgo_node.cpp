@@ -3,17 +3,32 @@
 #include <pcl/common/io.h>
 #include <pcl/exceptions.h>
 #include <pcl/io/pcd_io.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iomanip>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
+
+#include "ament_index_cpp/get_package_prefix.hpp"
+#include "syncai_mapping/octomap_recipe.hpp"
+
+extern char ** environ;
 
 namespace syncai_mapping
 {
@@ -136,6 +151,18 @@ PGONode::~PGONode()
   // A merge may still be running on the worker; joining here keeps shutdown
   // from tearing the publisher down under it.
   if (m_map_cloud_thread.joinable()) m_map_cloud_thread.join();
+  // Neither killed nor waited for, on purpose: the build is detached so that
+  // it survives the mapping session going away (a mode switch right after
+  // the save is the normal operator flow), and this is the one shutdown path
+  // -- Ctrl-C in the pane -- where killing it would even be possible. Its
+  // outcome lands in the sidecar either way.
+  for (const auto & child : m_octomap_children) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[PGONode][octomap] build_octomap pid %d for %s continues detached; its outcome lands in "
+      "%s",
+      child.pid, child.dir.c_str(), octomap_recipe::kSidecarFile);
+  }
   // Best effort: the files are ours and nobody else will ever remove them
   // (the dir is the host's tmpfs, so it outlives this container). A stale
   // notice pointing here after we are gone is the reader's ENOENT to skip.
@@ -234,40 +261,6 @@ void PGONode::pruneMapCloudFiles()
     std::error_code rm_ec;
     std::filesystem::remove(pcds[i].second, rm_ec);
   }
-}
-
-std::string PGONode::jsonEscape(const std::string & s)
-{
-  std::string out;
-  out.reserve(s.size() + 2);
-  for (const unsigned char c : s) {
-    switch (c) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        if (c < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-          out += buf;
-        } else {
-          out += static_cast<char>(c);
-        }
-    }
-  }
-  return out;
 }
 
 // The notice the backend parses. Five fixed fields, hand-formatted so this
@@ -436,6 +429,27 @@ void PGONode::loadParameters()
   m_pgo_config.min_loop_detect_duration =
     this->declare_parameter("min_loop_detect_duration", m_pgo_config.min_loop_detect_duration);
 
+  // The post-save OctoMap build. Handed to build_octomap on its command line
+  // and recorded in the sidecar, so what a map was built with is on disk
+  // beside it. All doubles except octomap_nice.
+  m_node_config.octomap_enabled =
+    this->declare_parameter("octomap_enabled", m_node_config.octomap_enabled);
+  m_node_config.octomap_nice = this->declare_parameter("octomap_nice", m_node_config.octomap_nice);
+  auto & oc = m_node_config.octomap;
+  oc.resolution = this->declare_parameter("octomap_resolution", oc.resolution);
+  oc.max_range = this->declare_parameter("octomap_max_range", oc.max_range);
+  oc.min_range = this->declare_parameter("octomap_min_range", oc.min_range);
+  oc.lidar_height = this->declare_parameter("octomap_lidar_height", oc.lidar_height);
+  oc.floor_band = this->declare_parameter("octomap_floor_band", oc.floor_band);
+  oc.max_height = this->declare_parameter("octomap_max_height", oc.max_height);
+  oc.floor_radius = this->declare_parameter("octomap_floor_radius", oc.floor_radius);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[PGONode] octomap after save: %s | %.3f m, range %.1f-%.1f m, lidar height %.3f m, floor "
+    "band %.2f m, max height %.1f m, floor radius %.1f m, nice %d",
+    m_node_config.octomap_enabled ? "on" : "off", oc.resolution, oc.min_range, oc.max_range,
+    oc.lidar_height, oc.floor_band, oc.max_height, oc.floor_radius, m_node_config.octomap_nice);
+
   // The five values the launch is expected to have overridden. A value here
   // without a robot_id prefix means the node was started bare, or the
   // overrides were passed before the params file (later entries win).
@@ -552,7 +566,14 @@ void PGONode::publishStatus()
   m_status_pub->publish(msg);
 }
 
-void PGONode::statusTimerCB() { publishStatus(); }
+void PGONode::statusTimerCB()
+{
+  publishStatus();
+  // Here because this timer shares the default group with saveMapsCB, the
+  // only other writer of m_octomap_children; 1 Hz is plenty for a job that
+  // takes minutes.
+  reapOctomapBuilds();
+}
 
 void PGONode::publishLoopMarkers(builtin_interfaces::msg::Time & time)
 {
@@ -1109,6 +1130,7 @@ void PGONode::saveMapsCB(
       if (std::filesystem::exists(poses_txt_path)) {
         std::filesystem::remove(poses_txt_path);
       }
+      removeOctomapOutputs(p_dir);
       RCLCPP_INFO(this->get_logger(), "Patches Path: %s", patches_dir.string().c_str());
     }
     RCLCPP_INFO(this->get_logger(), "SAVE MAP TO %s", map_path.string().c_str());
@@ -1155,13 +1177,213 @@ void PGONode::saveMapsCB(
   m_state.phase.store(MappingStatus::IDLE);
   publishStatus();
 
+  // After the run has ended, not before: the keyframes are already freed, so
+  // their RAM is back before a multi-GB build starts, and nothing the spawn
+  // does can disturb the transition -- a build that cannot start is reported
+  // in the message and the sidecar, never as a failed save.
+  const std::string octomap_note = startOctomapBuild(p_dir, request->save_patches);
+
   response->success = true;
   // UI copy, rendered verbatim by the console.
   response->message = "Map saved (" + std::to_string(saved) +
-                      " keyframes). Mapping stopped — start it again for another map.";
+                      " keyframes). Mapping stopped — start it again for another map." +
+                      octomap_note;
   RCLCPP_WARN(
     this->get_logger(), "[PGONode][saveMapsCB] %s (%s)", response->message.c_str(),
     map_path.string().c_str());
+}
+
+// ---- The post-save OctoMap build -------------------------------------------
+//
+// A child PROCESS, not a fourth thread, for three reasons that each decide it
+// alone:
+//   - Memory. A build is tens of millions of small octree nodes (4.5 GB peak
+//     at 0.05 m on dp1f_1006). In this process that heap would mostly never
+//     go back to the OS, and the next run's keyframes would compete with it;
+//     a process returns all of it at exit. It also writes oom_score_adj 500,
+//     so if anything is killed for memory it is the build, not the node that
+//     owns the TF and possibly an unsaved run.
+//   - Lifetime. switch_mode / restart_mode kill the byobu session, which
+//     hangs up the pane's pty: SIGHUP, no destructor, every thread in here
+//     gone. Saving and switching straight back to AUTO is the normal operator
+//     flow, so the build has to outlive this process -- POSIX_SPAWN_SETSID
+//     puts it in its own session with no controlling terminal.
+//   - One entry point. The same executable is the by-hand rebuild of any
+//     saved map, so the save path is exactly what a developer reruns.
+// posix_spawn rather than fork(): this process has four threads, and a
+// fork()ed copy of a multithreaded process may only call async-signal-safe
+// functions before exec.
+std::string PGONode::startOctomapBuild(const std::filesystem::path & map_dir, bool have_patches)
+{
+  if (!m_node_config.octomap_enabled) return "";
+  // UI copy, appended to the save's message (rendered verbatim by the
+  // console, which never names its internals -- hence "3D map").
+  if (!have_patches) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[PGONode][octomap] save_patches was false: nothing to ray-cast, no OctoMap for %s",
+      map_dir.c_str());
+    return " No 3D map: it is built from per-scan data this save did not keep.";
+  }
+  const auto & oc = m_node_config.octomap;
+  const std::string started_at = octomap_recipe::isoUtcNow();
+  // Before the spawn, synchronously: the backend acts on this response, and
+  // the sidecar must already say "converting" when it looks.
+  try {
+    octomap_recipe::writeAtomic(map_dir, octomap_recipe::converting(oc, started_at));
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PGONode][octomap] %s in %s; no OctoMap build", e.what(),
+      map_dir.c_str());
+    return " The 3D map could not be started; the saved map is unaffected.";
+  }
+
+  std::string exe;
+  try {
+    exe =
+      ament_index_cpp::get_package_prefix("syncai_mapping") + "/lib/syncai_mapping/build_octomap";
+  } catch (const ament_index_cpp::PackageNotFoundError &) {
+    return failOctomapBuild(map_dir, started_at, "build_octomap executable not found");
+  }
+  if (access(exe.c_str(), X_OK) != 0) {
+    return failOctomapBuild(map_dir, started_at, "build_octomap executable not found");
+  }
+
+  auto num = [](double v) {
+    std::ostringstream os;
+    os.imbue(std::locale::classic());
+    os << std::setprecision(12) << v;
+    return os.str();
+  };
+  std::vector<std::string> args = {
+    exe,
+    map_dir.string(),
+    "--resolution",
+    num(oc.resolution),
+    "--max-range",
+    num(oc.max_range),
+    "--min-range",
+    num(oc.min_range),
+    "--lidar-height",
+    num(oc.lidar_height),
+    "--floor-band",
+    num(oc.floor_band),
+    "--max-height",
+    num(oc.max_height),
+    "--floor-radius",
+    num(oc.floor_radius),
+    "--nice",
+    std::to_string(m_node_config.octomap_nice),
+    "--started-at",
+    started_at};
+  std::vector<char *> argv;
+  for (auto & a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+
+  // exec already resets handled signals; SETSIGDEF also undoes any that are
+  // IGNORED here (an ignored SIGCHLD would make the reaper's waitpid fail),
+  // and SETSIGMASK clears whatever this thread happens to block.
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  sigset_t defaults, none;
+  sigemptyset(&defaults);
+  for (const int sig : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGPIPE, SIGCHLD}) {
+    sigaddset(&defaults, sig);
+  }
+  sigemptyset(&none);
+  posix_spawnattr_setsigdefault(&attr, &defaults);
+  posix_spawnattr_setsigmask(&attr, &none);
+  posix_spawnattr_setflags(
+    &attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+  pid_t pid = 0;
+  // stdout / stderr are inherited: the build's progress lands in this pane's
+  // log (log/stack/<robot_id>/mapping/pgo/) for as long as the pane lives.
+  const int rc = posix_spawn(&pid, exe.c_str(), nullptr, &attr, argv.data(), environ);
+  posix_spawnattr_destroy(&attr);
+  if (rc != 0) {
+    return failOctomapBuild(
+      map_dir, started_at, std::string("cannot start build_octomap: ") + std::strerror(rc));
+  }
+  m_octomap_children.push_back({pid, map_dir, std::chrono::steady_clock::now()});
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[PGONode][octomap] build_octomap pid %d started for %s (%.3f m, nice %d); outcome in %s", pid,
+    map_dir.c_str(), oc.resolution, m_node_config.octomap_nice, octomap_recipe::kSidecarFile);
+  return " The 3D map is being built in the background; it can take a few minutes.";
+}
+
+std::string PGONode::failOctomapBuild(
+  const std::filesystem::path & map_dir, const std::string & started_at, const std::string & error)
+{
+  RCLCPP_ERROR(
+    this->get_logger(), "[PGONode][octomap] %s (for %s)", error.c_str(), map_dir.c_str());
+  try {
+    octomap_recipe::writeAtomic(
+      map_dir, octomap_recipe::failed(
+                 m_node_config.octomap, started_at, octomap_recipe::isoUtcNow(), error));
+  } catch (const std::exception & e) {
+    // The "converting" written a moment ago stays; a reader ages it out.
+    RCLCPP_ERROR(this->get_logger(), "[PGONode][octomap] %s", e.what());
+  }
+  return " The 3D map could not be started; the saved map is unaffected.";
+}
+
+void PGONode::reapOctomapBuilds()
+{
+  for (auto it = m_octomap_children.begin(); it != m_octomap_children.end();) {
+    int st = 0;
+    const pid_t r = waitpid(it->pid, &st, WNOHANG);
+    if (r == 0) {
+      ++it;
+      continue;
+    }
+    const double secs =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - it->started).count();
+    if (r < 0) {
+      // ECHILD: only if something set SIGCHLD to SIG_IGN in this process,
+      // which reaps children behind our back. The sidecar still has it all.
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[PGONode][octomap] cannot wait for build_octomap pid %d (%s); see %s in %s", it->pid,
+        std::strerror(errno), octomap_recipe::kSidecarFile, it->dir.c_str());
+    } else if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
+      RCLCPP_INFO(
+        this->get_logger(), "[PGONode][octomap] build_octomap pid %d finished %s in %.0f s",
+        it->pid, it->dir.c_str(), secs);
+    } else if (WIFEXITED(st)) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "[PGONode][octomap] build_octomap pid %d exited %d after %.0f s; %s in %s has the reason",
+        it->pid, WEXITSTATUS(st), secs, octomap_recipe::kSidecarFile, it->dir.c_str());
+    } else {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "[PGONode][octomap] build_octomap pid %d killed by signal %d after %.0f s (OOM?); %s in "
+        "%s is left at converting",
+        it->pid, WIFSIGNALED(st) ? WTERMSIG(st) : 0, secs, octomap_recipe::kSidecarFile,
+        it->dir.c_str());
+    }
+    it = m_octomap_children.erase(it);
+  }
+}
+
+void PGONode::removeOctomapOutputs(const std::filesystem::path & map_dir)
+{
+  std::error_code ec;
+  for (const char * name :
+       {octomap_builder::kOctomapFile, octomap_builder::kRoadFile, octomap_builder::kOccupiedFile,
+        octomap_recipe::kSidecarFile}) {
+    std::filesystem::remove(map_dir / name, ec);
+  }
+  // And any temp file a killed build left: `<output>.tmp`, and the sidecar's
+  // per-process `octomap.recipe.json.<pid>.tmp`.
+  for (const auto & entry : std::filesystem::directory_iterator(map_dir, ec)) {
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("octomap", 0) == 0 && entry.path().extension() == ".tmp") {
+      std::error_code rm_ec;
+      std::filesystem::remove(entry.path(), rm_ec);
+    }
+  }
 }
 
 }  // namespace syncai_mapping

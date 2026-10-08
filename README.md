@@ -59,7 +59,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
 | `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud, the `pointlio_odom → pointlio_body` TF, and `reset` |
-| `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`. Plus `hba_node`, offline refinement run by hand |
+| `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`. After a save, `build_octomap`: the saved patches ray-cast into an OctoMap plus the console's "3D map" layers, as a detached process. Plus `hba_node`, offline refinement run by hand |
 | `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction, `relocalize` / `relocalize_check` and `initialpose` |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source). **Not tracked here**, see below |
 | `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |

@@ -25,9 +25,11 @@
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <sys/types.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -49,6 +51,7 @@
 #include "syncai_common/srv/reset_mapping.hpp"
 #include "syncai_common/srv/save_maps.hpp"
 #include "syncai_common/srv/start_mapping.hpp"
+#include "syncai_mapping/octomap_builder.hpp"
 #include "syncai_mapping/pgos/commons.h"
 #include "syncai_mapping/pgos/simple_pgo.h"
 #include "visualization_msgs/msg/marker.hpp"
@@ -88,6 +91,13 @@ struct NodeConfig
   // control: with it false -- the default, and what the mapping session
   // wants -- nothing reaches the graph until start_mapping is called.
   bool start_on_launch = false;
+  // The post-save OctoMap build (see startOctomapBuild): whether a successful
+  // save_maps spawns it, the nice value it runs at, and the build parameters
+  // it is handed on its command line. octomap_builder::Params carries the
+  // defaults and the why of each.
+  bool octomap_enabled = true;
+  int octomap_nice = 10;
+  octomap_builder::Params octomap;
 };
 
 struct NodeState
@@ -139,7 +149,6 @@ public:
   static bool isMapCloudFile(const std::filesystem::directory_entry & entry);
   void clearMapCloudDir();
   void pruneMapCloudFiles();
-  static std::string jsonEscape(const std::string & s);
   std::string mapCloudNoticeJson(
     uint64_t seq, const std::string & path, size_t points,
     const builtin_interfaces::msg::Time & time) const;
@@ -196,6 +205,21 @@ public:
     const std::shared_ptr<syncai_common::srv::SaveMaps::Request> request,
     std::shared_ptr<syncai_common::srv::SaveMaps::Response> response);
 
+  // ---- The post-save OctoMap build ------------------------------------------
+  // Spawn `build_octomap <map_dir>` detached, after the save has ended the run.
+  // Returns the sentence appended to the save's response message ("" when
+  // octomap_enabled is false). Never fails the save: the map is on disk.
+  std::string startOctomapBuild(const std::filesystem::path & map_dir, bool have_patches);
+  // Record a build that could not start in the sidecar; returns the sentence.
+  std::string failOctomapBuild(
+    const std::filesystem::path & map_dir, const std::string & started_at,
+    const std::string & error);
+  // waitpid(WNOHANG) every spawned build; one log line per outcome. 1 Hz.
+  void reapOctomapBuilds();
+  // The OctoMap outputs of an earlier save into the same directory, and their
+  // .tmp files: their inputs (patches/, poses.txt) are about to be replaced.
+  static void removeOctomapOutputs(const std::filesystem::path & map_dir);
+
 private:
   // The four-phase sequence start_mapping and reset_mapping share (pause,
   // reset the LIO, rebuild the graph, resume). They differ only in the phase
@@ -237,6 +261,18 @@ private:
   std::string m_map_cloud_dir;
   bool m_map_cloud_dir_ok = false;
   rclcpp::Service<syncai_common::srv::SaveMaps>::SharedPtr m_save_map_srv;
+  // Builds spawned by saveMapsCB and not yet reaped. Touched only by
+  // saveMapsCB, statusTimerCB (the reaper) and the destructor; the first two
+  // share the default MutuallyExclusive group, so -- like
+  // m_last_map_cloud_time -- it needs no lock. A child outliving this process
+  // is the design (see startOctomapBuild), so the destructor only logs them.
+  struct OctomapChild
+  {
+    pid_t pid;
+    std::filesystem::path dir;
+    std::chrono::steady_clock::time_point started;
+  };
+  std::vector<OctomapChild> m_octomap_children;
   // The run state for consumers (see the publisher's comment in the
   // constructor) and the two counters it reports. The counters are mirrors
   // of m_pgo->keyPoses().size() / historyPairs().size(), written where those

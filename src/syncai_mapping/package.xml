@@ -10,8 +10,11 @@
     hand-off to the operator console, and the save_maps / reset_mapping
     services that bracket a mapping run. hba_node: offline hierarchical
     bundle adjustment (HBA / BALM) over the patches save_maps wrote, run by
-    hand. Both ported from SyncAI-Fast-LIO2 (`pgo`, `hba`; liangheming/
-    FASTLIO2_ROS2 lineage) in 2026-09.
+    hand. build_octomap: the OctoMap pgo_node spawns after a save (patches
+    ray-cast from their keyframe poses) and the two display layers the
+    console draws from it; also the by-hand rebuild. The first two ported
+    from SyncAI-Fast-LIO2 (`pgo`, `hba`; liangheming/FASTLIO2_ROS2 lineage)
+    in 2026-09.
   </description>
   <maintainer email="chungweeeei@gmail.com">andy_tseng</maintainer>
   <!-- MIT, not Apache-2.0 like the other syncai_* packages: pgos/ and hba/
@@ -39,6 +42,12 @@
        src/third-party/small_gicp is a build_type cmake package colcon builds
        first because of this line, exactly as syncai_localizer declares it. -->
   <depend>small_gicp</depend>
+  <!-- pgo_node locates the build_octomap executable it spawns. -->
+  <depend>ament_index_cpp</depend>
+  <!-- build_octomap (2026-10). Unlike GTSAM / Sophus below, a real rosdep
+       key: it resolves to ros-humble-octomap, which the Dockerfile's dev
+       stage installs, so `rosdep check` stays quiet. -->
+  <depend>octomap</depend>
 
   <!-- Not listed on purpose: PCL, Eigen, GTSAM and Sophus. PCL / Eigen arrive
        through pcl_conversions' own rosdep chain (libpcl-dev, libeigen3-dev).

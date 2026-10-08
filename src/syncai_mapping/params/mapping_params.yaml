@@ -19,7 +19,8 @@
 # namespace, which a relative name from inside /<robot_id>/pgo cannot reach.
 #
 # Numeric types matter. The node declares every tuning value below as a double
-# EXCEPT loop_submap_half_range (an int): a bare `10` for a double key is an
+# EXCEPT the keys marked `# int` (loop_submap_half_range, the two
+# loop_gicp_* counts, octomap_nice): a bare `10` for a double key is an
 # int64 override that kills the node at startup with
 # InvalidParameterTypeException, and `5.0` for the int key is the mirror-image
 # failure. Doubles are written with a decimal point throughout.
@@ -99,3 +100,43 @@
     # the bag-replay knob (`start_on_launch:=true` on the launch), never what
     # the mapping session wants.
     start_on_launch: false
+
+    # ---- OctoMap, built once after a save (2026-10) ----
+    # A successful save_maps with save_patches spawns this package's
+    # `build_octomap <dir>` as a detached, nice'd process: every patch is
+    # ray-cast from its keyframe pose into octomap.bt, and the two layers the
+    # console draws are exported beside it (octomap_road.pcd,
+    # octomap_occupied.pcd); progress and outcome are octomap.recipe.json.
+    # A process, not a thread: a multi-GB job must not share this node's
+    # heap or OOM fate, and must survive the mode switch that kills this pane
+    # (README, "The OctoMap build"). Nothing during a run changes. false
+    # spawns nothing and writes no sidecar.
+    octomap_enabled: true
+    # Voxel edge (m). 0.1, not the gridmap's 0.05: a display layer, and 0.05
+    # cost 7 min / 4.5 GB on dp1f_1006 for 8x the voxels, which a browser
+    # cannot tell apart at site scale and has to download.
+    octomap_resolution: 0.1
+    # Rays are truncated here (m): free space is carved up to it and a point
+    # beyond it is not inserted as occupied. The MID360 sees further, but
+    # long grazing rays mostly add noise and time.
+    octomap_max_range: 20.0
+    # Returns closer than this to the keyframe origin are dropped (m): the
+    # robot's own body.
+    octomap_min_range: 0.5
+    # Lidar origin above the floor (m), robot01 as measured for the backend's
+    # floor reference. A keyframe's z minus this is the local floor; both
+    # layers are cut relative to it, so a wrong value empties the road layer
+    # and the build fails saying so.
+    octomap_lidar_height: 0.481
+    # Road layer = the lowest free voxel of each column within +-band of the
+    # local floor (m); the occupied layer starts at floor - band too.
+    octomap_floor_band: 0.25
+    # The occupied layer stops at floor + this (m): the ceiling is cut so a
+    # top-down view stays readable.
+    octomap_max_height: 2.0
+    # The local floor comes from the nearest keyframe within this radius (m)
+    # of a 1 m cell: 4 left square holes in a hall wider than 8 m, 10 did not.
+    octomap_floor_radius: 10.0
+    # nice value of the build (int): one core for minutes, behind pointlio
+    # and whatever session the operator starts next.
+    octomap_nice: 10   # int, not 10.0
