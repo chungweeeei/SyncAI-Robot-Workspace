@@ -133,7 +133,7 @@ invalid (or the goal changes), with contextual recovery:
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
-  <RecoveryNode number_of_retries="1" retry_refill_time="60.0" name="FollowPath">
+  <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
     <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>
@@ -155,16 +155,27 @@ or a missing robot pose keeps the path. A failure in either branch clears
 **that branch's own costmap** and retries — stale obstacles being the most
 common cause.
 
-"Once" is per incident, not per goal, on the `FollowPath` side. A
-`RecoveryNode` resets its retry count only when it returns, and `FollowPath`
-is `RUNNING` for the whole goal, so until 2026-10 the first blocker used the
-retry up and a second one, minutes later, failed the goal with no retry at all.
-`retry_refill_time="60.0"` gives the budget back to an attempt that ran at least
-60 s before failing. It must stay above the progress checker's
-`movement_time_allowance` (30 s): an attempt that never gets going fails within
-that (3 s of `failure_tolerance`, or 30 s without progress), so a dead end still
-exhausts its retry. The planner branch needs no refill — `ComputePathToPose`
-returns every tick, which resets its `RecoveryNode`.
+`FollowPath` gets **three** retries (2026-10; one before), and the count is a
+wait, not a robustness knob: this stack has no local avoidance (RPP is a
+tracker) and no `Wait` recovery, so once RPP refuses to drive, how long the
+robot stands waiting for a blocker to leave is `failure_tolerance` (3 s) ×
+(retries + 1), with a local-costmap clear between attempts (re-marked within
+0.2 s; RPP zeroes its acceleration baseline on every refusal, so there is no
+lurch). One retry (~6 s) covered a person walking across and not one standing
+and talking; three (~12 s) covers that, at the price of a task failure taking
+~12 s rather than ~6 s to declare. The progress checker's 30 s remains the
+outer bound. The planner branch keeps one retry.
+
+The retries are per incident, not per goal. A `RecoveryNode` resets its retry
+count only when it returns, and `FollowPath` is `RUNNING` for the whole goal,
+so until 2026-10 the first blocker used the budget up and a second one, minutes
+later, failed the goal with no retry at all. `retry_refill_time="60.0"` gives
+the budget back to an attempt that ran at least 60 s before failing. It must
+stay above the progress checker's `movement_time_allowance` (30 s): an attempt
+that never gets going fails within that (3 s of `failure_tolerance`, or 30 s
+without progress), so a dead end still exhausts its retries. The planner
+branch needs no refill — `ComputePathToPose` returns every tick, which resets
+its `RecoveryNode`.
 
 Until 2026-10 the branch replanned unconditionally at 1 Hz, and a fresh plan
 always replaced the path. The global costmap raytraces the 3D cloud in 2D, so

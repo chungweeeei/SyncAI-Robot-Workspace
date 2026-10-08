@@ -303,7 +303,7 @@ XML header and `syncai_task_runner`'s README):
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
-  <RecoveryNode number_of_retries="1" retry_refill_time="60.0" name="FollowPath">
+  <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
     <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>
