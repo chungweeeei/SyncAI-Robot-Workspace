@@ -41,17 +41,22 @@ public:
     std::shared_ptr<const nav2_msgs::action::FollowPath::Feedback> feedback) override;
 
   /**
+   * @brief Record the failure on the blackboard for the navigator's result
+   * (see report_failure()); the tree outcome is the default FAILURE
+   */
+  BT::NodeStatus on_aborted() override;
+
+  /**
    * @brief Creates list of BT ports
    * @return BT::PortsList Containing basic ports along with node-specific ports
    */
   static BT::PortsList providedPorts()
   {
-    return providedBasicPorts(
-      {
-        BT::InputPort<nav_msgs::msg::Path>("path", "Path to follow"),
-        BT::InputPort<std::string>("controller_id", ""),
-        BT::InputPort<std::string>("goal_checker_id", ""),
-      });
+    return providedBasicPorts({
+      BT::InputPort<nav_msgs::msg::Path>("path", "Path to follow"),
+      BT::InputPort<std::string>("controller_id", ""),
+      BT::InputPort<std::string>("goal_checker_id", ""),
+    });
   }
 };
 

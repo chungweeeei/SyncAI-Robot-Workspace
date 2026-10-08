@@ -15,6 +15,7 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(syncai_behavior_tree REQUIRED)
+find_package(syncai_common REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2_ros REQUIRED)
 
@@ -27,19 +28,22 @@ set(dependencies
   rclcpp
   rclcpp_action
   syncai_behavior_tree
+  syncai_common
   syncai_util
   tf2_ros
 )
 
-# NavigateToPose navigator
-add_library(syncai_navigate_to_pose_navigator SHARED
-  src/navigators/navigate_to_pose.cpp
+# The pose navigator: one template, instantiated for nav2_msgs/NavigateToPose
+# and syncai_common/NavigateToGoal (the explicit instantiations are at the
+# bottom of the .cpp, which is why one library serves both)
+add_library(syncai_pose_navigator SHARED
+  src/navigators/pose_navigator.cpp
 )
-target_include_directories(syncai_navigate_to_pose_navigator PUBLIC
+target_include_directories(syncai_pose_navigator PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(syncai_navigate_to_pose_navigator ${dependencies})
+ament_target_dependencies(syncai_pose_navigator ${dependencies})
 
 # TaskRunner host node library
 add_library(${PROJECT_NAME} SHARED
@@ -50,7 +54,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(${PROJECT_NAME}
-  syncai_navigate_to_pose_navigator
+  syncai_pose_navigator
 )
 ament_target_dependencies(${PROJECT_NAME} ${dependencies})
 
@@ -61,7 +65,7 @@ ament_target_dependencies(task_runner ${dependencies})
 
 install(
   TARGETS
-    syncai_navigate_to_pose_navigator
+    syncai_pose_navigator
     ${PROJECT_NAME}
   EXPORT export_syncai_task_runner
   ARCHIVE DESTINATION lib
@@ -93,7 +97,7 @@ endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(
-  syncai_navigate_to_pose_navigator
+  syncai_pose_navigator
   ${PROJECT_NAME}
 )
 ament_export_targets(export_syncai_task_runner)

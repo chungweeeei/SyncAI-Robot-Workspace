@@ -8,6 +8,7 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "syncai_behavior_tree/blackboard_keys.hpp"
 #include "syncai_behavior_tree/bt_conversions.hpp"
 
 /**
@@ -237,6 +238,12 @@ public:
             "Timed out while waiting for action server to acknowledge goal request for %s",
             action_name_.c_str());
           future_goal_handle_.reset();
+          // Unattributed: a server that never answered says nothing about
+          // planning or driving, only that the stack is not all there.
+          report_failure(
+            "action server " + action_name_ + " did not acknowledge the goal within " +
+              std::to_string(server_timeout_.count()) + " ms",
+            false);
           return BT::NodeStatus::FAILURE;
         }
       }
@@ -274,6 +281,10 @@ public:
               "Timed out while waiting for action server to acknowledge goal request for %s",
               action_name_.c_str());
             future_goal_handle_.reset();
+            report_failure(
+              "action server " + action_name_ + " did not acknowledge the updated goal within " +
+                std::to_string(server_timeout_.count()) + " ms",
+              false);
             return BT::NodeStatus::FAILURE;
           }
         }
@@ -297,6 +308,7 @@ public:
         e.what() == std::string("send_goal failed") ||
         e.what() == std::string("Goal was rejected by the action server")) {
         // Action related failure that should not fail the tree, but the node
+        report_failure(action_name_ + ": " + e.what(), false);
         return BT::NodeStatus::FAILURE;
       } else {
         // Internal exception to propagate to the tree
@@ -480,6 +492,30 @@ protected:
     config().blackboard->template get<int>("number_recoveries", recovery_count);  // NOLINT
     recovery_count += 1;
     config().blackboard->template set<int>("number_recoveries", recovery_count);  // NOLINT
+  }
+
+  /**
+   * @brief Record on the blackboard that this node failed, for the navigator
+   * to turn into an action result (syncai_task_runner reads the keys in
+   * goalCompleted()). Same channel as increment_recovery_count(): no output
+   * port, so no XML wiring, and the tree stays action-agnostic -- the numeric
+   * error code belongs to the action being served, so the mapping from node
+   * name to code lives next to that action's server, not here. Last writer
+   * wins; see blackboard_keys.hpp for why that is the right answer.
+   * @param msg technical detail; the navigator prefixes the operator sentence
+   * @param attributed false when the failure says nothing about the stage
+   *        (the server never acknowledged the goal, or rejected it) -- the
+   *        navigator then reports UNKNOWN with this message rather than
+   *        blaming planning or driving
+   */
+  void report_failure(const std::string & msg, bool attributed = true)
+  {
+    // registrationName() is the factory ID ("ComputePathToPose"), not name(),
+    // which is the XML name="..." attribute when one is given -- move.xml's
+    // RecoveryNodes already carry name="FollowPath" and name="ComputePathToPose".
+    config().blackboard->template set<std::string>(
+      blackboard_keys::kFailedNode, attributed ? registrationName() : std::string());
+    config().blackboard->template set<std::string>(blackboard_keys::kFailureMsg, msg);
   }
 
   std::string action_name_;

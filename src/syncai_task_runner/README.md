@@ -1,8 +1,16 @@
 # syncai_task_runner
 
-The **BT navigator**: the node that serves `nav2_msgs/NavigateToPose` and, for
-each goal, ticks a behavior tree that drives the planner and controller. Port of
-`nav2_bt_navigator`.
+The **BT navigator**: the node that serves `nav2_msgs/NavigateToPose` and
+`syncai_common/action/NavigateToGoal` and, for each goal, ticks a behavior tree
+that drives the planner and controller. Port of `nav2_bt_navigator`.
+
+The two actions are one navigation. `NavigateToGoal` (2026-10) is nav2's action
+with a **reason** in the result (`error_code` / `error_msg`: did planning fail
+or path following?) and `number_of_replans` in the feedback, because the
+backend's MOVE step got `ABORTED` with an empty `std_msgs/Empty` result and
+could not tell the operator why. The backend still sends the nav2 one; it
+migrates at its own pace, and the nav2 action (and the rviz `goal_pose`
+subscriber with it) goes only after that.
 
 This is the top of the navigation stack — everything below it (planner,
 controller, costmaps, BT nodes) exists to serve the tree ticked here.
@@ -12,11 +20,12 @@ controller, costmaps, BT nodes) exists to serve the tree ticked here.
 
 ```
 syncai_backend (RobotWorkflow MOVE step) ──NavigateToPose──►  task_runner
+                      (NavigateToGoal once it migrates) ──►       │
 RViz "2D Goal Pose" ──/goal_pose topic────────────────────►       │
-                                                                  │  NavigateToPoseNavigator
-                                                                  ▼
-                                                    BtActionServer<NavigateToPose>
-                                                                  │  ticks behavior_trees/move.xml
+                                                                  │  PoseNavigator<NavigateToPose> / <NavigateToGoal>
+                                                                  ▼  (one NavigatorMutex: one navigation at a time)
+                                                    BtActionServer<ActionT>, one per action
+                                                                  │  each ticks its own copy of behavior_trees/move.xml
                                               ┌───────────────────┴───────────────────┐
                                               ▼                                       ▼
                                   ComputePathToPose ──► syncai_planner    FollowPath ──► syncai_controller
@@ -25,20 +34,22 @@ RViz "2D Goal Pose" ──/goal_pose topic────────────�
 
 ## Structure
 
-The package is deliberately split into a **host node** and **navigators**, even
-though only one navigator exists today:
+The package is split into a **host node** and **navigators**:
 
 | Piece | Role |
 |---|---|
 | `TaskRunner` (`syncai_task_runner.cpp`) | The `rclcpp::Node`. Owns the shared TF buffer, the odom smoother, the navigator mutex, and the parameters. Hosts navigators; contains no navigation logic. |
 | `Navigator<ActionT>` (`navigator.hpp`) | Header-only template base. Wraps a `syncai_behavior_tree::BtActionServer<ActionT>` and implements the goal-muxing that keeps two navigators from driving the robot at once. |
-| `NavigateToPoseNavigator` | The one concrete navigator: binds `NavigateToPose`, loads `move.xml`, computes feedback. |
+| `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml`, computes feedback, fills the result. One template, two explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`) and `NavigateToGoalNavigator` (`syncai_common`). The three places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The two actions share field names on purpose; that is what lets one body compile for both. |
 | `behavior_trees/move.xml` | The default tree |
 
-`Navigator` is templated on the action type because a second navigator
-(`NavigateThroughPoses`, a docking action, …) would bind a different one. The
-`NavigatorMutex` and the `FeedbackUtils` plumbing only make sense in that light —
-with one navigator the mutex can never contend.
+`Navigator` is templated on the action type because each navigator binds a
+different one. With two of them the `NavigatorMutex` is load-bearing: the two
+action servers each run their goal on their own `std::async` worker, so the
+claim is a single check-and-set (`tryStartNavigating`), not a check followed by
+a claim. The loser is `ABORTED` with an empty result — `SimpleActionServer`
+accepts every goal and terminates it in the execute callback — and never
+reaches `goalCompleted()`.
 
 **Three-phase startup**, same pattern as the planner and controller:
 
@@ -61,25 +72,54 @@ rejected.
 `Navigator::onGoalReceived` is the mux point:
 
 ```
-another navigator running?      → reject the goal
+claim the navigator mutex       → another navigator holds it? reject (ABORTED, empty result)
 subclass goalReceived(goal):
     loadBehaviorTree(goal.behavior_tree)   ← empty string = the default tree
-    failed to load?             → reject
+    failed to load?             → release the mutex, reject (ABORTED, empty result)
     initializeGoalPose(goal):
-        reset number_recoveries to 0, stamp start_time_
-        write goal.pose to the blackboard under goal_blackboard_id ("goal")
-claim the navigator mutex
+        reset number_recoveries, failed_node, failure_msg, number_plans; stamp start_time_
+        write goal.pose to the blackboard under goal_blackboard_id ("goal"); clear "path"
   ⋯ BtActionServer runs the engine loop, calling onLoop() each tick ⋯
-onCompletion: release the mutex
+onCompletion: release the mutex, then goalCompleted(result, status) fills the result
 ```
 
 The tree reads the goal from the blackboard, not from the action goal — that
 indirection is what lets `move.xml` reference `goal="{goal}"` without knowing
 anything about the action type.
 
+### Result (`NavigateToGoal` only)
+
+`goalCompleted()` runs before the action server terminates the goal, so what it
+writes is what the client receives. It fills the result only for a tree that
+ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
+
+| `error_code` | When | `error_msg` |
+|---|---|---|
+| `NONE` = 0 | success, cancel — **and** a goal that was preempted by a newer one or rejected before the tree ran (another navigator busy, BT file missing). Those two never reach `goalCompleted()`: the action server aborts them with an empty result | empty |
+| `PLAN_FAILED` = 200 | the planner branch failed the tree: `ComputePathToPose` aborted twice (the second time after `ClearGlobalCostmap`) — no route, start or goal in an obstacle / keepout zone, TF | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
+| `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
+| `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
+
+How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
+blackboard when their goal is aborted (`BtActionNode::report_failure()`, the
+same channel as `number_recoveries`), the navigator resets both per goal and
+reads them at the end, and a table in `pose_navigator.cpp` maps the node's
+registration name to the code — the number belongs to the action, so the
+mapping lives next to its server, not in the BT package. Last writer wins, and
+`move.xml`'s header shows why that names the branch that actually failed the
+tree. The ranges are nav2 Iron's (1xx controller, 2xx planner) so finer codes
+slot in as `base + n` once Humble's `nav2_msgs` results are replaced by ones
+that carry a reason; the two bases are never renumbered. The same reason is
+logged at ERROR for **both** actions, so `navigate_to_pose` callers get it in
+the task_runner log before they migrate.
+
+ABORTED + `NONE` is therefore "superseded or not started", not a navigation
+failure, and the backend must not read it as one.
+
 ### Feedback
 
-`onLoop()` fires once per BT tick and publishes `NavigateToPose` feedback:
+`onLoop()` fires once per BT tick and publishes feedback (nav2's five fields on
+both actions, the sixth on `NavigateToGoal` only):
 
 | Field | Computed from |
 |---|---|
@@ -88,6 +128,7 @@ anything about the action type.
 | `estimated_time_remaining` | `distance_remaining / speed`, from the odom smoother; zero below 0.01 m/s or under 0.1 m remaining |
 | `number_of_recoveries` | Blackboard `number_recoveries`, incremented by the `ClearEntireCostmap` BT nodes |
 | `navigation_time` | Now minus `start_time_` |
+| `number_of_replans` (`NavigateToGoal`) | Blackboard `number_plans` (incremented by `ComputePathToPose` on success) minus one, floored at 0 — the detours, since the tree plans only when the path is blocked or the goal changed |
 
 The path lookup is wrapped in `try { … } catch (...) {}` — before the first
 `ComputePathToPose` completes there is no `path` on the blackboard, so
@@ -104,13 +145,22 @@ A goal requesting a *different* tree is rejected with a warning, because
 switching trees would require cancelling the current goal rather than preempting
 it. Cancel and re-send in that case.
 
+The superseded goal is `ABORTED` with an **empty** result
+(`SimpleActionServer::accept_pending_goal`), so on `NavigateToGoal` it carries
+`error_code` `NONE` — see Result above. Preemption works within one action;
+a goal on the *other* action while one runs is a mutex rejection, not a preempt.
+
 ### RViz goal poses
 
-The navigator subscribes to `goal_pose` (`geometry_msgs/PoseStamped`) and
-forwards anything it receives to **its own action server** via an internal
-action client. That is how RViz's "2D Goal Pose" tool drives the stack without
-knowing about the action — and it means a stray publish on that topic starts a
-real navigation.
+The `navigate_to_pose` navigator subscribes to `goal_pose`
+(`geometry_msgs/PoseStamped`) and forwards anything it receives to **its own
+action server** via an internal action client. That is how RViz's "2D Goal
+Pose" tool drives the stack without knowing about the action — and it means a
+stray publish on that topic starts a real navigation. It stays on the nav2
+action on purpose: an rviz click during a running `navigate_to_pose` goal
+preempts it in place today, and on the other navigator it would be a mutex
+rejection instead. When the nav2 action is retired the subscriber moves with
+it, by flipping two flags in `PoseNavigatorTraits`.
 
 ## The behavior tree
 
@@ -215,15 +265,19 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 
 | Kind | Name | Type |
 |---|---|---|
-| Action server | `navigate_to_pose` | `nav2_msgs/NavigateToPose` |
-| Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) |
+| Action server | `navigate_to_pose` | `nav2_msgs/NavigateToPose` — what the backend sends today; result empty |
+| Action server | `navigate_to_goal` | `syncai_common/NavigateToGoal` — the same navigation, result `error_code` / `error_msg`, feedback `+ number_of_replans` (2026-10) |
+| Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) → `navigate_to_pose` |
 | Action client | `compute_path_to_pose` | via the BT node |
 | Action client | `follow_path` | via the BT node |
 | Service client | `global_costmap/clear_entirely_global_costmap` | via the BT node |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
 
-The action name is `Navigator::getName()`, i.e. `navigate_to_pose`; it is also
-the name given to the internal client node created by `BtActionServer`.
+Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);
+it is also the suffix of the internal client node `BtActionServer` creates
+(`task_runner_navigate_to_pose_rclcpp_node`, `task_runner_navigate_to_goal_rclcpp_node`).
+Both servers are built from the same `plugin_lib_names`, so a tag missing from
+that list fails both trees the same way.
 
 ## Running
 
@@ -239,6 +293,12 @@ references must already be up** (see gotchas).
 
 ```bash
 ros2 action send_goal /<robot_id>/navigate_to_pose nav2_msgs/action/NavigateToPose \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0},
+    orientation: {w: 1.0}}}}" --feedback
+
+# Same goal, with a reason in the result when it fails (and number_of_replans
+# in the feedback):
+ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/NavigateToGoal \
   "{pose: {header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0},
     orientation: {w: 1.0}}}}" --feedback
 
@@ -264,6 +324,15 @@ ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
   a visualization topic.
 - **Preemption with a different BT is rejected, not queued.** The current goal
   keeps running and the pending one is terminated.
+- **One navigation at a time across both actions.** A `navigate_to_goal` goal
+  sent while a `navigate_to_pose` one runs (or the reverse) is `ABORTED` with
+  an empty result and a "rejecting request" log line; it is not queued and it
+  does not preempt. Preempt on the action the running goal came in on.
+- **A retried abort can leave a stale attribution.** `failed_node` is written
+  on abort and never cleared on success, so if the tree later fails through a
+  path that writes nothing (an exception), the result names the earlier,
+  recovered failure. Accepted: clearing on every success would need every node
+  to know the keys, for a code that is coarse anyway.
 - **`src/.gitkeep` and `include/syncai_task_runner/.gitkeep` are leftovers** from
   when those directories were empty.
 

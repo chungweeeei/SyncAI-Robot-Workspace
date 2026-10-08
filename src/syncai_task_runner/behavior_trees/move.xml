@@ -55,6 +55,26 @@
   planner branch's RecoveryNode keeps one retry and needs no refill:
   ComputePathToPose returns each tick, which resets that node.
 
+  Failure attribution (2026-10). The navigator fills NavigateToGoal's
+  error_code from the blackboard keys failed_node / failure_msg, which
+  ComputePathToPose and FollowPath write when their goal is aborted (last
+  writer wins; blackboard_keys.hpp). The tree's shape is what makes that
+  correct, so it is load-bearing: PipelineSequence ticks the planner branch
+  (child 0) before FollowPath (child 1) and returns at the first FAILURE. If
+  the planner branch fails the tree, child 1 is not ticked in that tick, so
+  ComputePathToPose's second abort is the last write. If FollowPath fails the
+  tree in a tick where ComputePathToPose also aborted (its retry pending
+  inside a RecoveryNode that returns RUNNING), child 1 is ticked after child
+  0, so FollowPath wrote last. Either way the key names the branch that
+  actually failed the tree, and a node that aborted and was retried
+  successfully is overwritten by whichever node fails later. The
+  ClearEntireCostmap nodes stay silent on purpose: one only runs because an
+  action node just failed, so the last action-node write already names the
+  right branch, and a service timeout there would otherwise overwrite it with
+  something that maps to UNKNOWN. Accepted limitation: a successfully retried
+  abort leaves its entry behind, so a tree that later fails through a path
+  that writes nothing (an exception) reports the stale one.
+
   Costmap clear services live on the costmap nodes owned by the planner
   (global_costmap) and controller (local_costmap). Relative service names
   resolve under the robot namespace because every node in the stack shares it.

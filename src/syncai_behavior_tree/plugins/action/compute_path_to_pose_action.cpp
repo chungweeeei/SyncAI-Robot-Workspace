@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include "syncai_behavior_tree/blackboard_keys.hpp"
+
 namespace syncai_behavior_tree
 {
 
@@ -25,6 +27,13 @@ void ComputePathToPoseAction::on_tick()
 BT::NodeStatus ComputePathToPoseAction::on_success()
 {
   setOutput("path", result_.result->path);
+
+  // Count plans for the navigator's number_of_replans feedback. Same channel
+  // as increment_recovery_count(): a blackboard int, reset per goal by the
+  // navigator, so the first plan of a goal reads as 0 replans there.
+  int plans = 0;
+  config().blackboard->get<int>(blackboard_keys::kNumberPlans, plans);      // NOLINT
+  config().blackboard->set<int>(blackboard_keys::kNumberPlans, plans + 1);  // NOLINT
   return BT::NodeStatus::SUCCESS;
 }
 
@@ -32,6 +41,12 @@ BT::NodeStatus ComputePathToPoseAction::on_aborted()
 {
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
+  // Humble's ComputePathToPose result carries no reason (nav2 Iron's
+  // error_code is not in this nav2_msgs), so the detail is the stage, not
+  // the cause; the planner log has "failed to generate a valid path" against
+  // the TF warning. The navigator turns this into PLAN_FAILED if the tree
+  // ends on it.
+  report_failure("planner " + action_name_ + " aborted the goal");
   return BT::NodeStatus::FAILURE;
 }
 

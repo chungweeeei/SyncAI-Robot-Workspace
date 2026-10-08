@@ -21,7 +21,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 ## Architecture
 
 ```
-                         NavigateToPose (nav2_msgs)
+              NavigateToPose (nav2_msgs) / NavigateToGoal (syncai_common)
    RobotWorkflow ─────────────────────────────────▶  syncai_task_runner   (BT navigator; ticks behavior_trees/move.xml)
    (SyncAI-Robot-Backend, out of tree)                       │
                                           compute_path_to_pose│follow_path
@@ -56,7 +56,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_planner` | `compute_path_to_pose` action server; NavFn, StraightLine and SmacPlanner2D plugins (Smac is configured) |
 | `syncai_controller` | `follow_path` action server; Regulated Pure Pursuit plugin, with its own linear-accel clamp (no velocity smoother) |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
-| `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
+| `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
 | `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud, the `pointlio_odom → pointlio_body` TF, and `reset` |
 | `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`. Plus `hba_node`, offline refinement run by hand |
@@ -328,8 +328,10 @@ operator API — REST + WebSockets on `http://<robot>:3000`, interactive docs at
 `/docs` — is `SyncAI-Robot-Backend`, deployed as its own container on this host
 and pointed at by the console (`SyncAI-Robot-Frontend`; nothing here serves
 either). Navigation goals, mode switches, teleop and map saving all go through
-that API. A raw `NavigateToPose` goal to `/<robot_id>/task_runner` works as
-well, and is the route that needs nothing outside this repo.
+that API. A raw `nav2_msgs/NavigateToPose` goal to `/<robot_id>/navigate_to_pose`
+(or a `syncai_common/NavigateToGoal` one to `/<robot_id>/navigate_to_goal`,
+which also says why a failed goal failed) works as well, and is the route that
+needs nothing outside this repo.
 
 **Mapping loop.** Switch to MANUAL — the mapping session runs bringup +
 pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state, and none of

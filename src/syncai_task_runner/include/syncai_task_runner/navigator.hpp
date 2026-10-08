@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "syncai_behavior_tree/blackboard_keys.hpp"
 #include "syncai_behavior_tree/bt_action_server.hpp"
 #include "syncai_util/odometry_utils.hpp"
 #include "tf2_ros/buffer.h"
@@ -43,17 +44,25 @@ public:
     return !current_navigator_.empty();
   }
 
-  void startNavigating(const std::string & navigator_name)
+  /**
+   * @brief Claim the robot for `navigator_name` if nobody holds it.
+   * @return false if another navigator is navigating (nothing changes)
+   *
+   * Check and claim under the one lock, replacing upstream's isNavigating()
+   * then startNavigating() pair. With a single navigator the gap between the
+   * two could never be hit; with two action servers each running its
+   * executeCallback on its own std::async worker (SimpleActionServer), two
+   * goals arriving in the same instant could both pass the check and both
+   * tick a tree against one robot.
+   */
+  bool tryStartNavigating(const std::string & navigator_name)
   {
     std::scoped_lock l(mutex_);
     if (!current_navigator_.empty()) {
-      RCLCPP_ERROR(
-        rclcpp::get_logger("NavigatorMutex"),
-        "[NavigatorMutex][%s] Major error! Navigation requested while another navigation"
-        " task is in progress!",
-        __func__);
+      return false;
     }
     current_navigator_ = navigator_name;
+    return true;
   }
 
   void stopNavigating()
@@ -128,6 +137,12 @@ public:
     blackboard->set<bool>("initial_pose_received", false);
     blackboard->set<int>("number_recoveries", 0);
     blackboard->set<std::shared_ptr<syncai_util::OdomSmoother>>("odom_smoother", odom_smoother);
+    // The failure-attribution and plan-count keys the BT action nodes write
+    // (blackboard_keys.hpp): created here so a get<> before the first write
+    // finds them, reset per goal by the subclass.
+    blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kFailedNode, "");
+    blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kFailureMsg, "");
+    blackboard->set<int>(syncai_behavior_tree::blackboard_keys::kNumberPlans, 0);
 
     // initialize the navigator-specific objects
     return configure(node, odom_smoother);
@@ -151,12 +166,15 @@ public:
 
 protected:
   /**
-   * @brief Intermediate goal reception that muxes navigators: reject the goal
-   * if another navigator is already running, otherwise claim the mutex.
+   * @brief Intermediate goal reception that muxes navigators: claim the mutex,
+   * then let the subclass vet the goal, releasing the claim if it declines.
+   * A rejection here reaches the client as ABORTED with an empty result, not
+   * a REJECT (SimpleActionServer accepts every goal and terminates it in the
+   * execute callback), and never passes through goalCompleted().
    */
   bool onGoalReceived(typename ActionT::Goal::ConstSharedPtr goal)
   {
-    if (plugin_mutex_->isNavigating()) {
+    if (!plugin_mutex_->tryStartNavigating(getName())) {
       RCLCPP_ERROR(
         logger_,
         "[Navigator][%s] Requested navigation from %s while another navigator is processing,"
@@ -166,14 +184,12 @@ protected:
     }
 
     // let the subclass decide whether the goal is valid and can be processed
-    bool goal_accepted = goalReceived(goal);
-
-    // claim the mutex so no other navigator accepts a goal while this one runs
-    if (goal_accepted) {
-      plugin_mutex_->startNavigating(getName());
+    if (!goalReceived(goal)) {
+      plugin_mutex_->stopNavigating();
+      return false;
     }
 
-    return goal_accepted;
+    return true;
   }
 
   /**

@@ -143,6 +143,8 @@ constructor — a missing one is a runtime throw, not a compile error.
 | `odom_smoother` | `shared_ptr<syncai_util::OdomSmoother>` | ditto | nodes needing current speed |
 | `initial_pose_received` | `bool` | ditto | `InitialPoseReceived` condition |
 | `number_recoveries` | `int` | ditto (init) | incremented by `increment_recovery_count()` in recovery nodes; surfaced as action feedback |
+| `failed_node` / `failure_msg` | `std::string` | ditto (init, and reset per goal) | written by `BtActionNode::report_failure()` — `ComputePathToPose` and `FollowPath` on abort, the base class on an unacknowledged / rejected goal (with an empty `failed_node`); read by the navigator in `goalCompleted()` to fill `NavigateToGoal`'s `error_code` / `error_msg`. Last writer wins; `move.xml`'s header has why that names the branch that failed the tree. Constants in `blackboard_keys.hpp` |
+| `number_plans` | `int` | ditto (init, reset per goal) | incremented by `ComputePathToPose` on success; the navigator reports `plans − 1` as `number_of_replans` |
 | `goal`, `path`, … | msg types | the tree itself, via ports | the tree itself |
 
 `loadBehaviorTree()` re-writes the four server-owned keys onto **every**
@@ -185,6 +187,19 @@ Two failures are converted to a plain node `FAILURE` rather than propagating:
 `send_goal failed` and `Goal was rejected by the action server`. Anything else
 propagates up and the engine turns it into `BtStatus::FAILED`.
 
+`report_failure(msg, attributed = true)` (2026-10) is the base class's channel
+to the navigator for *why* a node failed: it writes `failed_node` (the node's
+`registrationName()`, or `""` when `attributed` is false) and `failure_msg` to
+the blackboard — the same channel as `increment_recovery_count()`, so no
+output port and no XML wiring, and the tree stays action-agnostic (the
+numeric error code belongs to the action being served, so the mapping from
+node name to code lives in `syncai_task_runner`, next to that action). The base
+`tick()` calls it unattributed on its own failures — the two
+"did not acknowledge the goal" timeouts and the two converted exceptions —
+because a server that never answered says nothing about planning or driving.
+Subclasses call it from `on_aborted()`; nothing resets it on success, which is
+deliberate (last writer wins, see `move.xml`).
+
 Ports provided to every subclass by `providedBasicPorts()`: `server_name`
 (remaps the action name) and `server_timeout`.
 
@@ -214,8 +229,8 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 
 | XML tag | Kind | Library | Ports |
 |---|---|---|---|
-| `ComputePathToPose` | action → `nav2_msgs/ComputePathToPose` on `compute_path_to_pose` | `syncai_compute_path_to_pose_action_bt_node` | in `goal`, `start`, `planner_id`; out `path` |
-| `FollowPath` | action → `nav2_msgs/FollowPath` on `follow_path` | `syncai_follow_path_action_bt_node` | in `path`, `controller_id`, `goal_checker_id`. Refuses to send an empty path (`FAILURE` with a WARN, 2026-10) and ignores an empty `path` while running — the controller would throw "Invalid path, Path is empty." and the retry would be spent on a path that cannot change until the planner branch runs again |
+| `ComputePathToPose` | action → `nav2_msgs/ComputePathToPose` on `compute_path_to_pose` | `syncai_compute_path_to_pose_action_bt_node` | in `goal`, `start`, `planner_id`; out `path`. Bumps blackboard `number_plans` on success, `report_failure()`s on abort |
+| `FollowPath` | action → `nav2_msgs/FollowPath` on `follow_path` | `syncai_follow_path_action_bt_node` | in `path`, `controller_id`, `goal_checker_id`. Refuses to send an empty path (`FAILURE` with a WARN, 2026-10) and ignores an empty `path` while running — the controller would throw "Invalid path, Path is empty." and the retry would be spent on a path that cannot change until the planner branch runs again. `report_failure()`s on abort |
 | `ClearEntireCostmap` | service → `nav2_msgs/ClearEntireCostmap` | `syncai_clear_costmap_service_bt_node` | in `service_name` |
 | `ClearCostmapExceptRegion` | service | ditto | + in `reset_distance` (default 1) |
 | `ClearCostmapAroundRobot` | service | ditto | + in `reset_distance` (default 1) |
@@ -265,6 +280,10 @@ Semantics of the non-obvious ones:
 
 The three `ClearCostmap*` nodes all call `increment_recovery_count()`, which bumps
 the `number_recoveries` blackboard key that the navigator reports as feedback.
+They deliberately do **not** `report_failure()`: a clear only runs because an
+action node just failed, so the last action-node write already names the
+right branch, and a service timeout here would overwrite it with a name that
+maps to `UNKNOWN`.
 
 ### `bt_conversions.hpp`
 
@@ -330,6 +349,11 @@ BT nodes and the behavior server are not ported yet.
    - A `BtActionNode` needs its action name, which the two-argument constructor
      signature can't supply, so register a `BT::NodeBuilder` lambda instead —
      see `compute_path_to_pose_action.cpp`.
+   - If the node's failure should be attributable in a `NavigateToGoal` result,
+     call `report_failure(...)` from `on_aborted()` and add the registration
+     name to the navigator's node → code table (`pose_navigator.cpp` in
+     `syncai_task_runner`); an unlisted node maps to `UNKNOWN` with its
+     message, which is safe but uninformative.
 3. In `CMakeLists.txt`: `add_library(<lib> SHARED plugins/…)` followed by
    `list(APPEND plugin_libs <lib>)`. The `foreach` below wires includes,
    dependencies and `BT_PLUGIN_EXPORT` automatically.

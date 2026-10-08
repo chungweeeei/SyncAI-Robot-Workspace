@@ -8,8 +8,9 @@
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "syncai_common/action/navigate_to_goal.hpp"
 #include "syncai_task_runner/navigator.hpp"
-#include "syncai_task_runner/navigators/navigate_to_pose.hpp"
+#include "syncai_task_runner/navigators/pose_navigator.hpp"
 #include "syncai_util/odometry_utils.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/create_timer_ros.h"
@@ -36,8 +37,15 @@ public:
   bool cleanup();
 
 protected:
-  // The navigators hosted on this node and the mutex that keeps only one active.
+  // The navigators hosted on this node and the mutex that keeps only one
+  // active: one robot, so one navigation at a time across both actions (the
+  // loser gets ABORTED with an empty result). pose_navigator_ is the nav2
+  // action the backend sends today; goal_navigator_ is syncai_common's
+  // NavigateToGoal, the same navigation with a failure reason in the result
+  // (2026-10). The nav2 one goes when the backend has migrated.
   std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateToPose>> pose_navigator_;
+  std::unique_ptr<syncai_task_runner::Navigator<syncai_common::action::NavigateToGoal>>
+    goal_navigator_;
   syncai_task_runner::NavigatorMutex plugin_mutex_;
 
   // Odometry smoother object

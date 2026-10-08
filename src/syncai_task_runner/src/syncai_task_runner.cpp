@@ -69,6 +69,7 @@ bool TaskRunner::initialize()
   auto plugin_lib_names = this->get_parameter("plugin_lib_names").as_string_array();
 
   pose_navigator_ = std::make_unique<syncai_task_runner::NavigateToPoseNavigator>();
+  goal_navigator_ = std::make_unique<syncai_task_runner::NavigateToGoalNavigator>();
 
   syncai_task_runner::FeedbackUtils feedback_utils;
   feedback_utils.tf = tf_;
@@ -80,11 +81,23 @@ bool TaskRunner::initialize()
   odom_smoother_ =
     std::make_shared<syncai_util::OdomSmoother>(this->shared_from_this(), 0.3, odom_topic_);
 
+  // Both navigators get the same plugin list, feedback plumbing, mutex and
+  // odometry: each builds its own BtActionServer, blackboard and tree from
+  // the same move.xml. The second tree's clients find every server already
+  // up (the first tree waited for them), so the extra startup cost is small.
   if (!pose_navigator_->on_initialize(
         this->shared_from_this(), plugin_lib_names, feedback_utils, &plugin_mutex_,
         odom_smoother_)) {
     RCLCPP_ERROR(
       this->get_logger(), "[TaskRunner][%s] Failed to initialize navigate_to_pose navigator",
+      __func__);
+    return false;
+  }
+  if (!goal_navigator_->on_initialize(
+        this->shared_from_this(), plugin_lib_names, feedback_utils, &plugin_mutex_,
+        odom_smoother_)) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[TaskRunner][%s] Failed to initialize navigate_to_goal navigator",
       __func__);
     return false;
   }
@@ -105,8 +118,12 @@ bool TaskRunner::cleanup()
   if (pose_navigator_ && !pose_navigator_->on_cleanup()) {
     ok = false;
   }
+  if (goal_navigator_ && !goal_navigator_->on_cleanup()) {
+    ok = false;
+  }
 
   pose_navigator_.reset();
+  goal_navigator_.reset();
   odom_smoother_.reset();
 
   RCLCPP_INFO(this->get_logger(), "[TaskRunner][%s] Completed cleaning up", __func__);
