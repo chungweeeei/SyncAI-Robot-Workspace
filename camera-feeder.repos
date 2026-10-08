@@ -1,0 +1,46 @@
+# src/syncai_camera_feeder, from SyncAI-Robot-Camera-Feeder: the node meant to be
+# the single owner of /dev/syncai/camera0, fanning its MJPEG stream out as
+# localhost RTP/JPEG (for the WebRTC worker) and as sensor_msgs/CompressedImage
+# (for ROS). Managed with vcstool, the same way lio-bridge.repos manages
+# src/syncai_lio_bridge, robot-state.repos manages src/syncai_robot_state,
+# driver-manager.repos manages src/syncai_driver_manager, interface.repos
+# manages src/syncai_common and third-party.repos manages src/third-party/.
+#
+#   vcs import < camera-feeder.repos          # populate a fresh clone
+#   vcs import < camera-feeder.repos --force  # re-checkout after changing the pin
+#
+# The key already carries `src/`, so run this from the workspace root without an
+# extra `src` argument, or the package lands in `src/src/`.
+#
+# Unlike the other three Rust packages it never lived in this repository: it is
+# new, written against rclrs (Rust, `ament_cargo`) from the start. It is in no
+# session spec yet, so importing it changes nothing at runtime -- the camera is
+# still owned by the host-side scripts/publish_camera_crop.sh, and exactly one
+# process may hold the V4L2 device (see "Camera" in CLAUDE.md). Wiring it into a
+# session means retiring that script, not running beside it.
+#
+# `src/syncai_camera_feeder/` is gitignored -- edit the node in that checkout
+# (its own git repo) and commit there, never here; the next --force import
+# overwrites anything uncommitted.
+#
+# Tracks `feat/camera-feeder`, NOT `dev` like the other first-party .repos
+# files: the node exists only on that branch so far (`dev` and `main` predate
+# it). Move this to `dev` once the branch has merged there.
+#
+# HTTPS rather than the SSH remote: the repo is public, so the build container
+# needs no keys. `git@github.com:chungweeeei/SyncAI-Robot-Camera-Feeder.git` is
+# the same checkout for anyone who prefers to push over SSH.
+#
+# Like the other three, its Rust message crates (builtin_interfaces /
+# sensor_msgs / std_msgs) come from the image's ros2-rust underlay
+# (/opt/ros2_rust_underlay) -- see driver-manager.repos and the Dockerfile's
+# underlay stanza. What it needs beyond them is GStreamer: the `gstreamer` /
+# `gstreamer-app` crates find it through pkg-config, so libgstreamer1.0-dev and
+# libgstreamer-plugins-base1.0-dev must be in the image (the Dockerfile stanza
+# right after the underlay). Its crates are pinned to the `v1_20` feature on
+# purpose -- the image is Ubuntu 22.04 with GStreamer 1.20.
+repositories:
+  src/syncai_camera_feeder:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-Camera-Feeder.git
+    version: feat/camera-feeder

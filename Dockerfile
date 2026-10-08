@@ -58,6 +58,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-ompl \
     ros-humble-nav-2d-msgs \
     ros-humble-dwb-msgs \
+    ros-humble-octomap \
     python3-pip \
     iputils-ping \
     avahi-utils \
@@ -338,11 +339,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        `cargo build` that lays binaries out per REP 122 so
 #                        `ros2 run` / `ros2 launch` find them.
 #   - colcon-cargo + colcon-ros-cargo: teach colcon to discover and build a
-#                        package.xml + Cargo.toml package. That is three
+#                        package.xml + Cargo.toml package. That is four
 #                        packages since 2026-10 -- syncai_driver_manager,
-#                        syncai_robot_state and syncai_lio_bridge, which vcs
-#                        imports from their own repos (see driver-manager.repos
-#                        / robot-state.repos / lio-bridge.repos);
+#                        syncai_robot_state, syncai_lio_bridge and
+#                        syncai_camera_feeder, which vcs imports from their own
+#                        repos (see driver-manager.repos / robot-state.repos /
+#                        lio-bridge.repos / camera-feeder.repos);
 #                        the rest of src/ has no Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override
@@ -432,6 +434,28 @@ RUN mkdir -p "${ROS2_RUST_UNDERLAY}/src" && cd "${ROS2_RUST_UNDERLAY}" && \
     rm -rf build log "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
     chmod -R a+w /opt/rust && \
     echo "source ${ROS2_RUST_UNDERLAY}/install/setup.bash" >> /home/syncrobotic/.bashrc
+
+# GStreamer development headers, for syncai_camera_feeder (camera-feeder.repos).
+# Its `gstreamer` / `gstreamer-app` crates link against the system GStreamer and
+# their build scripts locate it with pkg-config, so without these the cargo
+# build dies in a `-sys` crate's build script with "The system library
+# `gstreamer-1.0` required by crate `gstreamer-sys` was not found" -- not a
+# message that says "apt package missing".
+#   - libgstreamer1.0-dev              : gstreamer-1.0.pc + core headers
+#   - libgstreamer-plugins-base1.0-dev : gstreamer-app-1.0.pc (appsink, which
+#                                        is how frames reach the ROS publisher)
+# The runtime half (plugins-base / plugins-good, for v4l2src and the JPEG RTP
+# payloader) is already installed by the GStreamer stanza further up.
+#
+# Its own layer down here rather than a line in that stanza, on purpose: every
+# layer below an edited one is rebuilt, and the stanza above this one compiles
+# the whole ros2-rust underlay from source -- the slowest step after
+# deps-builder. Fold it into the GStreamer stanza at the next deliberate full
+# rebuild if the split bothers anyone.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble
