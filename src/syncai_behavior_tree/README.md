@@ -215,7 +215,7 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | XML tag | Kind | Library | Ports |
 |---|---|---|---|
 | `ComputePathToPose` | action → `nav2_msgs/ComputePathToPose` on `compute_path_to_pose` | `syncai_compute_path_to_pose_action_bt_node` | in `goal`, `start`, `planner_id`; out `path` |
-| `FollowPath` | action → `nav2_msgs/FollowPath` on `follow_path` | `syncai_follow_path_action_bt_node` | in `path`, `controller_id`, `goal_checker_id` |
+| `FollowPath` | action → `nav2_msgs/FollowPath` on `follow_path` | `syncai_follow_path_action_bt_node` | in `path`, `controller_id`, `goal_checker_id`. Refuses to send an empty path (`FAILURE` with a WARN, 2026-10) and ignores an empty `path` while running — the controller would throw "Invalid path, Path is empty." and the retry would be spent on a path that cannot change until the planner branch runs again |
 | `ClearEntireCostmap` | service → `nav2_msgs/ClearEntireCostmap` | `syncai_clear_costmap_service_bt_node` | in `service_name` |
 | `ClearCostmapExceptRegion` | service | ditto | + in `reset_distance` (default 1) |
 | `ClearCostmapAroundRobot` | service | ditto | + in `reset_distance` (default 1) |
@@ -251,7 +251,14 @@ Semantics of the non-obvious ones:
   The timer resets when the child returns `SUCCESS`.
 - **`IsPathValid`** is synchronous, as upstream: it blocks its tick for up to
   `server_timeout` and never returns `RUNNING`. An empty path answers `FAILURE`
-  without a call, and so does a timeout, so in doubt the tree replans.
+  without a call; a timeout answers `SUCCESS` with a WARN (2026-10) — in doubt
+  the tree **keeps** the path, because a replan replaces a route nobody has
+  shown to be blocked (and the 2D-raytraced global costmap can have forgotten
+  the blocker the detour was for), while a kept one is re-checked in a second
+  and RPP stops the robot meanwhile. The timeout is the global costmap's 1 Hz
+  update holding the costmap mutex past `server_timeout`; a WARN every tick
+  means the two loops phase-locked and `server_timeout` in `move.xml` must go
+  up, not that the answer should flip back.
 - **`GlobalUpdatedGoal`** returns `SUCCESS` on the first tick after blackboard
   `goal` changed. The very first tick only records a baseline (`FAILURE`).
   Upstream also watches `goals`; nothing here writes it, so this port does not.

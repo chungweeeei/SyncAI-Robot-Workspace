@@ -21,7 +21,9 @@ namespace syncai_behavior_tree
  * Synchronous on purpose, as upstream: a ConditionNode that never returns RUNNING
  * keeps the ReactiveSequence / Fallback around it trivial to reason about, and the
  * call is one costmap scan on the planner's otherwise idle main executor. A timeout
- * answers FAILURE, which only costs one replan.
+ * answers SUCCESS (keep the path, re-check next tick) and only an empty path or a
+ * `false` from the service answers FAILURE: a replan replaces the route, so it has
+ * to be earned by an answer, not by the lack of one (see tick()).
  */
 class IsPathValidCondition : public BT::ConditionNode
 {

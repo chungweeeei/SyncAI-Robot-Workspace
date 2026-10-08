@@ -143,11 +143,17 @@ invalid (or the goal changes), with contextual recovery:
 `PipelineSequence` is what makes this work: it re-ticks the planner branch every
 round even while `FollowPath` is still `RUNNING`, so the path can be replaced
 underneath the controller. Once a second that branch asks the planner's
-`is_path_valid` whether the part of `{path}` still ahead is free; only a
-blocked path, a changed goal (`GlobalUpdatedGoal`, i.e. a preempt) or no path
-at all runs `ComputePathToPose`. A failure in either branch clears **that
-branch's own costmap** and retries once — stale obstacles being the most common
-cause.
+`is_path_valid` whether the part of `{path}` still ahead is free — free
+meaning no centre cell at or above INSCRIBED **and** no LETHAL cell under the
+padded footprint's perimeter at the path heading ± 0.35 rad, which is the
+test RPP applies before it drives, run on the global costmap while the
+blocker is still 2.5 m out (2026-10; the centre test alone let a blocker
+0.25–0.45 m beside the route through, RPP refused it, and the goal aborted
+with no detour). Only a blocked path, a changed goal (`GlobalUpdatedGoal`,
+i.e. a preempt) or no path at all runs `ComputePathToPose`; a service timeout
+or a missing robot pose keeps the path. A failure in either branch clears
+**that branch's own costmap** and retries — stale obstacles being the most
+common cause.
 
 "Once" is per incident, not per goal, on the `FollowPath` side. A
 `RecoveryNode` resets its retry count only when it returns, and `FollowPath`

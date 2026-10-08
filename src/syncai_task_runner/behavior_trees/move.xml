@@ -14,18 +14,26 @@
   in 2D, so a ray to a wall point above a low blocker clears the blocker's cell
   as soon as the robot can see past it. Half-way round a detour the original
   route then read free and shortest again, and the robot turned back into the
-  blocker. Now a path is kept until IsPathValid sees a cell on the part still
-  ahead at >= INSCRIBED cost (the planner's own rejection test), or the goal
-  changes. The price: a blocker that leaves does not shorten the route back;
-  the detour is finished. That is the recoverable side, and no "switch when
-  the new path is X% shorter" threshold had to be invented to get it.
+  blocker. Now a path is kept until IsPathValid sees, on the part still ahead,
+  a centre cell at >= INSCRIBED cost (the planner's own rejection test) or a
+  LETHAL cell under the padded footprint's perimeter at the path heading
+  +-0.35 rad (the test RPP applies before it drives, run on the global costmap
+  while the blocker is still 2.5 m out -- without it a blocker 0.25-0.45 m
+  beside the route passed the centre test, RPP refused the path, and the goal
+  aborted with no detour), or the goal changes. The price: a blocker that
+  leaves does not shorten the route back; the detour is finished. That is the
+  recoverable side, and no "switch when the new path is X% shorter" threshold
+  had to be invented to get it.
 
   The 1 Hz RateController now paces validity checks; a plan only runs when the
   check fails, so a blocked path is still noticed within ~1 s of the global
   costmap (also 1 Hz) marking it. IsPathValid gets 100 ms instead of the 20 ms
   default_server_timeout: it answers after taking the costmap lock, which a
-  costmap update can hold for longer than 20 ms, and a timeout reads as invalid
-  (one needless replan, not a failure).
+  costmap update can hold for longer than 20 ms. A timeout keeps the path (a
+  replan nobody can justify is the thing this tree exists to avoid; the next
+  check is a second away and RPP holds the robot meanwhile). A timeout WARN in
+  the task_runner log on every tick means the costmap update and the check
+  have phase-locked: raise server_timeout here.
 
   FollowPath's retry refills (retry_refill_time, 2026-10). Its RecoveryNode
   only resets when it returns, and FollowPath is RUNNING for the whole goal, so

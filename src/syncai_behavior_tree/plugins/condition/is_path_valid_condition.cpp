@@ -56,10 +56,28 @@ BT::NodeStatus IsPathValidCondition::tick()
     // Drop the abandoned request, or its late reply has nowhere to go and the
     // client's pending map grows by one per timeout.
     client_->remove_pending_request(future);
+    // A timeout keeps the current path (SUCCESS); it does not replan. The two
+    // mistakes are not symmetric. A false "invalid" replaces a route nobody
+    // has shown to be blocked -- a fresh plan always wins, and the 2D-raytraced
+    // global costmap forgets a blocker as soon as the robot can see past it,
+    // so the replacement can be the route that ran into it; stopping that is
+    // the reason this branch of the tree exists. A false "valid" delays a
+    // replan by one RateController tick (1 s), and in that second RPP's own
+    // collision check holds the robot (zero cmd_vel under failure_tolerance)
+    // if the blocker is already within its projection. The timeout itself is
+    // the global costmap's 1 Hz update holding the costmap mutex (layers plus
+    // the keepout filter) past server_timeout (100 ms in move.xml) while the
+    // service waits for it. If this WARN shows up every tick, the two 1 Hz
+    // loops have phase-locked and the path is going unchecked: raise
+    // server_timeout in move.xml, do not flip this back to FAILURE -- that
+    // was a 1 Hz replan loop in disguise (until 2026-10). An empty path stays
+    // FAILURE above: there is nothing to keep.
     RCLCPP_WARN(
-      node_->get_logger(), "[IsPathValidCondition][%s] is_path_valid timed out after %ld ms",
+      node_->get_logger(),
+      "[IsPathValidCondition][%s] is_path_valid timed out after %ld ms; keeping the current path "
+      "unchecked",
       __func__, static_cast<long>(server_timeout_.count()));
-    return BT::NodeStatus::FAILURE;
+    return BT::NodeStatus::SUCCESS;
   }
 
   return future.get()->is_valid ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
