@@ -402,10 +402,13 @@ correctly); renaming it means touching its two includes.
   and the controller's local costmap
   (`syncai_controller/params/controller_server_params.yaml`) both carry
   `[[0.35,0.22],…]` (reconciled 2026-10; the local one had been left at
-  `[[0.28,0.20],…]`). `footprint_padding` is 0.03 global vs 0.01 local: when the
-  *local* footprint is the larger, RPP rejects paths the planner considers valid
-  ("collision ahead!"), so the padding gap is what keeps the planner the
-  conservative side. Change the rectangle in both files or neither.
+  `[[0.28,0.20],…]`). `footprint_padding` is 0.03 global vs 0.01 local: the
+  planner's `is_path_valid` walks the padded perimeter against LETHAL exactly
+  as RPP does (2026-10), and the padding gap is what keeps the planner's copy
+  of that test the stricter of the two, so a path it passes is one RPP will
+  drive. (The centre-cell test the planner used alone before then never
+  ordered against RPP's perimeter test at all, whatever the padding.) Change
+  the rectangle in both files or neither.
 - **`inflation_radius` smaller than the inscribed radius** leaves lethal cells the
   planner will happily route the robot's corners through.
 - `package.xml` still carries `TODO: Package description` and

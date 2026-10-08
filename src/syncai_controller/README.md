@@ -319,7 +319,7 @@ Server-level (`/**/controller_server`):
 | `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
-| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of RPP ("collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives; the progress checker's 30 s remains the outer bound on standing still. A dead end still aborts, ~3 s later. Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
+| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of RPP ("collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and since `is_path_valid` runs RPP's own footprint test a refused path is replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after RPP starts refusing; how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, three since 2026-10 (~12 s). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
 | `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` |
@@ -445,11 +445,17 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
 - **The footprint is shared with the global costmap; the padding is not.** Both
   costmaps use `[[0.35,0.22],…]` (reconciled 2026-10 — this file had been left
   at `[[0.28,0.20],…]`). `footprint_padding` is 0.01 here and 0.03 in
-  `syncai_planner`'s `global_costmap`, deliberately: the "collision ahead!" spam
-  happens when the *local* footprint is the larger, so the planner must stay the
-  conservative side, and with equal rectangles the 0.02 m padding gap is what
-  guarantees it (it also covers RPP's heading error while tracking). Change the
-  rectangle in both files together, and never raise this padding to the global one.
+  `syncai_planner`'s `global_costmap`, deliberately: the planner's
+  `is_path_valid` runs the same perimeter-on-LETHAL test RPP runs here
+  (2026-10), and the 0.02 m gap makes the planner's the stricter of the two, so
+  a path it passes is one RPP will drive and one RPP would refuse is replanned
+  2.5 m out. That ordering holds between the two *perimeter* tests only — the
+  centre-cell test the planner used alone before then never bounded the
+  corners, so RPP refused paths the planner had passed and nothing replanned
+  (the goal aborted with no detour). The gap absorbs ~3° of heading error, not
+  the 14° RPP tracks with; `is_path_valid.heading_margin` covers that. Change
+  the rectangle in both files together, and never raise this padding to the
+  global one.
 - **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
   spin has no timeout: if an observation source stops publishing, the control
   loop stalls there with the goal still active rather than failing.

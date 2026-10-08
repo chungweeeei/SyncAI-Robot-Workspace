@@ -35,12 +35,20 @@
     # blackboard path had not changed yet), RPP refused again, and
     # PipelineSequence failed the whole NavigateToPose in ~0.6-1 s -- before
     # the detour ever arrived. The timer resets on the first valid command, so
-    # a path that routes around the blocker costs nothing extra; the progress
-    # checker's movement_time_allowance (30 s) stays the outer bound on
-    # standing still. A map with no second corridor still aborts, just ~3 s
-    # later -- waiting for a live blocker to leave is a BT recovery
-    # (Wait/RoundRobin, not ported) and not this knob. Do not go below ~2.5:
-    # the worst case above would no longer fit.
+    # a path that routes around the blocker costs nothing extra -- and
+    # deliberately NOT when a replanned path is accepted on preempt
+    # (updateGlobalPath): a drivable path resets it on its first cycle anyway,
+    # and since is_path_valid runs RPP's own footprint test (2026-10) a path
+    # RPP refuses is replanned once a second, so a reset per preempt would
+    # leave the progress checker's movement_time_allowance (30 s) as the only
+    # abort. That 30 s stays the outer bound on standing still. With the
+    # footprint test the detour normally arrives before RPP refuses (the
+    # blocker is seen 2.5 m out); this window is for one that appears inside
+    # the 0.6 m projection. A map with no second corridor still aborts, ~3 s
+    # per attempt -- how many attempts, and so how long the robot waits for a
+    # live blocker to leave, is move.xml's FollowPath retry count (3, ~12 s
+    # in all); a Wait/RoundRobin recovery is not ported, and this knob is not
+    # it. Do not go below ~2.5: the worst case above would no longer fit.
     failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
@@ -156,12 +164,18 @@
     # after the global one grew.)
     #
     # The padding differs on purpose: 0.01 here vs 0.03 on the global costmap.
-    # If the local footprint ends up the larger (padding included), RPP
-    # spam-rejects paths the planner considered valid ("collision ahead!"), so
-    # the planner must stay the conservative side. With equal rectangles the
-    # 0.02 m padding gap is what guarantees that, and it leaves room for the
-    # heading error RPP accumulates while tracking. Never raise this padding
-    # to or above the global one.
+    # The planner's is_path_valid runs the same perimeter-on-LETHAL test RPP
+    # runs here (2026-10), with the global padding; the 0.02 m gap is what
+    # makes that test the stricter of the two, so a path it passes is one RPP
+    # will drive, and a path RPP would refuse is replanned before RPP meets
+    # it. The ordering holds only between those two perimeter tests. Until
+    # 2026-10 the global side tested the centre cell alone and this comment
+    # said the gap kept "the planner the conservative side" -- it did not:
+    # the centre test bounds the centre's distance to lethal (0.25 m), not
+    # the corners' (0.455 m), so RPP refused paths the planner had passed and
+    # nothing replanned. The gap absorbs ~3 degrees of heading error, not the
+    # 14 degrees RPP tracks with; is_path_valid.heading_margin covers that.
+    # Never raise this padding to or above the global one.
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 

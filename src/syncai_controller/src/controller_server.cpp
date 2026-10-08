@@ -491,6 +491,19 @@ void ControllerServer::updateGlobalPath()
       action_server_->terminate_current();
       return;
     }
+    // Deliberately not reset here: last_valid_cmd_time_ and the progress
+    // checker. failure_tolerance is "seconds since the last command the
+    // controller could compute", and a replanned path RPP can drive resets
+    // that timer itself on its first cycle (computeAndPublishVelocity()), so
+    // a reset on preempt would only ever extend the life of a path RPP also
+    // refuses. Since the planner's is_path_valid runs RPP's own footprint
+    // test (2026-10), a refused path is replanned once a second in a passage
+    // too narrow for the footprint, and every replan is a preempt: a reset
+    // per preempt would make such a goal immune to failure_tolerance and
+    // leave the progress checker's 30 s as the only abort, the robot standing
+    // in front of the blocker ten times longer for the same outcome. Waiting
+    // for a live blocker to leave is the BT's retry budget (move.xml), not
+    // this timer.
     setPlannerPath(goal->path);
   }
 }
