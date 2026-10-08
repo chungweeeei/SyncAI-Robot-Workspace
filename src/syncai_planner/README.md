@@ -247,7 +247,7 @@ Two gotchas:
 |---|---|---|
 | `planner_plugins` | `["GridBased"]` | IDs; each needs `<id>.plugin` naming the type |
 | `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan at most once a second, and only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
-| `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped; `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. It keeps showing the last route after the goal ends, since the planner cannot tell when the navigation finished. Read once at startup |
+| `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the pose nearest the robot (the same nearest-pose search `is_path_valid` uses, so what is shown is what is checked; the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. It keeps showing the last route after the goal ends, since the planner cannot tell when the navigation finished. Read once at startup |
 
 `expected_planner_frequency` is the only parameter the *server's* dynamic
 callback handles, and it takes the same mutex the plan cycle holds.
@@ -332,7 +332,7 @@ With the node at `/<robot_id>`:
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
 | Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free (every cell `< INSCRIBED`, the same test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`)? Called once a second by `move.xml`'s `IsPathValid`, which replans only on `false`. Answers `false` for an empty path, a frame other than the costmap's, or no robot pose. Served on the main executor, so it never queues behind a plan |
-| Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate` |
+| Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward |
 
 Plus everything the internal costmap exposes under
 `/<robot_id>/global_costmap/…` — `costmap`, `costmap_updates`,

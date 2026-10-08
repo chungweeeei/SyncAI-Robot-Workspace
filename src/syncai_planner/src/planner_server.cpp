@@ -20,6 +20,30 @@ using std::placeholders::_1;
 namespace syncai_planner
 {
 
+namespace
+{
+
+// Index of the pose nearest the robot, searched over the whole path. Shared by
+// is_path_valid and the plan republish on purpose: the route `plan` shows is
+// then exactly the part is_path_valid checks. A route that passes back near
+// itself can match its later leg; both callers inherit that together.
+size_t closestPoseIndex(
+  const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  size_t closest_idx = 0;
+  double closest_dist = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < path.poses.size(); ++i) {
+    const double dist = syncai_util::geometry_utils::euclidean_distance(robot_pose, path.poses[i]);
+    if (dist < closest_dist) {
+      closest_dist = dist;
+      closest_idx = i;
+    }
+  }
+  return closest_idx;
+}
+
+}  // namespace
+
 PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
 : rclcpp::Node("planner_server", options),
   gp_loader_("syncai_nav_core", "syncai_nav_core::GlobalPlanner"),
@@ -126,7 +150,8 @@ void PlannerServer::configure()
   // plan is published once per route instead of once a second, so a viewer
   // that subscribes mid-drive (rviz opened late, a reconnect) saw nothing until
   // the next replan, which may never come. Re-sending the last plan keeps
-  // `plan` showing the route being driven. It goes on showing the last route
+  // `plan` showing the route being driven (the part still ahead; see
+  // republishPlan()). It goes on showing the last route
   // after the goal ends too, as rviz would have kept displaying it anyway:
   // nothing here knows when the navigation that asked for it finished.
   // 0 disables, leaving the plan-time publish only.
@@ -288,15 +313,7 @@ void PlannerServer::isPathValid(
   // may well be blocked now (by the robot's own trail of marks, or by the
   // obstacle it just went around) without that saying anything about the
   // route forward.
-  size_t closest_idx = 0;
-  double closest_dist = std::numeric_limits<double>::max();
-  for (size_t i = 0; i < poses.size(); ++i) {
-    const double dist = syncai_util::geometry_utils::euclidean_distance(robot_pose, poses[i]);
-    if (dist < closest_dist) {
-      closest_dist = dist;
-      closest_idx = i;
-    }
-  }
+  const size_t closest_idx = closestPoseIndex(request->path, robot_pose);
 
   // The same per-cell test SmacPlanner2D's collision checker applies when it
   // expands a node (cost >= INSCRIBED), so "valid" means "the planner would
@@ -347,8 +364,8 @@ void PlannerServer::isPathValid(
       get_logger(),
       "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
       "ahead of the robot, (%.2f, %.2f), cost %d",
-      __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx,
-      ahead, poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_cost);
+      __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx, ahead,
+      poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_cost);
   }
 }
 
@@ -594,6 +611,20 @@ void PlannerServer::republishPlan()
       return;
     }
     *msg = last_plan_;
+  }
+  // Trimmed to the part still ahead, from the pose nearest the robot: the
+  // stored plan starts where the robot was when it was made, which with plans
+  // now rare is often tens of metres back, and a viewer showing the driven
+  // part reads it as the robot being off its route. last_plan_ itself stays
+  // whole, so each tick trims from the full plan, statelessly. No robot pose
+  // (stale TF): the whole plan rather than nothing, since the route is still
+  // what the robot is following.
+  geometry_msgs::msg::PoseStamped robot_pose;
+  if (
+    msg->header.frame_id == costmap_ros_->getGlobalFrameID() &&
+    costmap_ros_->getRobotPose(robot_pose)) {
+    const size_t closest_idx = closestPoseIndex(*msg, robot_pose);
+    msg->poses.erase(msg->poses.begin(), msg->poses.begin() + closest_idx);
   }
   // Restamped: the poses are in the fixed `map` frame, so the content is
   // still true now, and a viewer whose fixed frame is not `map` would

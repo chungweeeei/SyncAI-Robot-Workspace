@@ -160,7 +160,8 @@ protected:
   void publishPlan(const nav_msgs::msg::Path & path);
 
   /**
-   * @brief Timer callback: re-send the last plan, restamped, on `plan`
+   * @brief Timer callback: re-send the last plan on `plan`, restamped and
+   * trimmed to start at the pose nearest the robot
    */
   void republishPlan();
 
