@@ -44,6 +44,14 @@ x-robot-common: &robot-common
   # was deliberately `docker compose stop`ped stays down across the reboot.
   # Matches the backend / tts / frontend containers from the other repos.
   restart: unless-stopped
+  # tini as PID 1, to reap orphans. pgo_node spawns build_octomap detached
+  # (its own session) after a save so that the build survives the mode switch
+  # that kills the mapping session; once pgo_node is gone the finished build
+  # is reparented to PID 1, and `ros2 launch syncai_sys_manager` -- the main
+  # process otherwise -- never waits for a stranger, which leaves a zombie per
+  # such save. Harmless (no memory, one PID) but avoidable. Takes effect on a
+  # container recreate, not an image rebuild.
+  init: true
   user: "${UID:-1000}:${GID:-1000}"
   security_opt:
     - apparmor=unconfined

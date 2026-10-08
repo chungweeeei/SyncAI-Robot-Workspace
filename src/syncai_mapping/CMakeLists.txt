@@ -40,6 +40,9 @@ find_package(message_filters REQUIRED)
 # syncai_pointlio's reset). All three are in syncai_common since the port:
 # the backend, the only caller of the first two, builds against that package.
 find_package(syncai_common REQUIRED)
+# pgo_node finds the build_octomap executable it spawns after a save through
+# the package index, so the install tree it runs from decides which one.
+find_package(ament_index_cpp REQUIRED)
 
 # GTSAM (both nodes) and Sophus (hba_node's BALM) are source-built into
 # /usr/local by the Dockerfile's deps-builder stage (GTSAM 4.2.0 with system
@@ -56,6 +59,14 @@ find_package(OpenMP QUIET)
 # Same arrangement as syncai_localizer: src/third-party/small_gicp is a
 # build_type cmake package, ordered before this one by <depend>small_gicp</depend>.
 find_package(small_gicp REQUIRED)
+# The post-save OctoMap build (2026-10). ros-humble-octomap from apt -- the
+# rosdep key `octomap`, in the Dockerfile's dev stage -- rather than a
+# src/third-party checkout: upstream's top level would also put octovis and
+# dynamicEDT3D into every colcon build. Its config sets OCTOMAP_INCLUDE_DIRS /
+# OCTOMAP_LIBRARIES. Built without OpenMP (OCTOMAP_OMP defaults off), so the
+# ray-cast is single-threaded -- which is what a job running beside pointlio
+# should be anyway.
+find_package(octomap REQUIRED)
 
 set(SYNCAI_MAPPING_DEPS
   rclcpp
@@ -70,6 +81,27 @@ set(SYNCAI_MAPPING_DEPS
   syncai_common
 )
 
+# ---- The post-save OctoMap build: sidecar, builder, CLI ----------------------
+# Split so pgo_node links neither OctoMap nor the ray-cast: it only writes the
+# "converting" sidecar and spawns build_octomap, which does the rest in its
+# own process (see PGONode::startOctomapBuild for why a process).
+add_library(octomap_recipe STATIC src/octomap_recipe.cpp)
+target_include_directories(octomap_recipe PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+
+add_library(octomap_builder STATIC src/octomap_builder.cpp)
+target_include_directories(octomap_builder PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OCTOMAP_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${PCL_INCLUDE_DIRS})
+target_link_libraries(octomap_builder PUBLIC ${OCTOMAP_LIBRARIES} ${PCL_LIBRARIES})
+
+add_executable(build_octomap src/build_octomap_main.cpp)
+target_link_libraries(build_octomap octomap_builder octomap_recipe)
+
 # ---- pgo_node: the online pose graph (mapping session) ----------------------
 add_executable(pgo_node
   src/pgo_main.cpp
@@ -82,7 +114,7 @@ target_include_directories(pgo_node PUBLIC
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS})
-ament_target_dependencies(pgo_node ${SYNCAI_MAPPING_DEPS})
+ament_target_dependencies(pgo_node ${SYNCAI_MAPPING_DEPS} ament_index_cpp)
 # small_gicp::small_gicp carries OpenMP::OpenMP_CXX as a PUBLIC usage
 # requirement; without -fopenmp its omp pragmas are silently ignored and the
 # kd-tree / covariance estimation run single-threaded.
@@ -90,6 +122,7 @@ target_link_libraries(pgo_node
   ${PCL_LIBRARIES}
   gtsam
   small_gicp::small_gicp
+  octomap_recipe
 )
 
 # ---- hba_node: offline hierarchical bundle adjustment (by hand) -------------
@@ -123,7 +156,7 @@ if(OpenMP_CXX_FOUND)
   target_link_libraries(hba_node OpenMP::OpenMP_CXX)
 endif()
 
-install(TARGETS pgo_node hba_node
+install(TARGETS pgo_node hba_node build_octomap
   DESTINATION lib/${PROJECT_NAME}
 )
 

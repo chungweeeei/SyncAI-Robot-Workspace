@@ -457,6 +457,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer-plugins-base1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# OctoMap, for syncai_mapping's build_octomap -- the OctoMap pgo_node builds
+# from a save's patches after save_maps (2026-10). The rosdep key `octomap`
+# resolves to this package; `rosdep check` in scripts/build.sh would flag it
+# otherwise. Its own stanza down here, not a line in the apt lists at the top
+# of this stage, because every layer below an edited one rebuilds: up there it
+# would cost the GStreamer / VizionSDK / Node / Rust toolchain / underlay
+# layers (the underlay alone is a long colcon build); here only the rosdep
+# layers that follow.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-octomap \
+    && rm -rf /var/lib/apt/lists/*
+
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble
 
