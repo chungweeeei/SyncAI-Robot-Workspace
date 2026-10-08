@@ -10,8 +10,10 @@
 
 #include "builtin_interfaces/msg/duration.hpp"
 #include "syncai_costmap_2d/cost_values.hpp"
+#include "syncai_costmap_2d/footprint.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "tf2/utils.h"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -42,6 +44,35 @@ size_t closestPoseIndex(
   return closest_idx;
 }
 
+// Heading the footprint test uses at pose i: the direction to the next pose
+// that is not on top of this one, the previous segment's for the last pose,
+// and the pose's own yaw only for a single-pose path. Not the orientation
+// field, which is meaningful only by accident: SmacPlanner2D writes identity
+// into every pose, its smoother then overwrites segments of more than ten
+// poses with this same direction, so a short path, a short segment, a
+// coincident pair or a NavFn / StraightLine path still carries w = 1 -- and
+// the last pose always carries the goal yaw, which is where the robot ends
+// up, not how it arrives there, and nothing a replan could change.
+double headingAt(const std::vector<geometry_msgs::msg::PoseStamped> & poses, size_t i)
+{
+  constexpr double kSameSpot = 1e-4;  // m; closer than this is one point, not a direction
+  for (size_t j = i + 1; j < poses.size(); ++j) {
+    const double dx = poses[j].pose.position.x - poses[i].pose.position.x;
+    const double dy = poses[j].pose.position.y - poses[i].pose.position.y;
+    if (std::abs(dx) > kSameSpot || std::abs(dy) > kSameSpot) {
+      return std::atan2(dy, dx);
+    }
+  }
+  for (size_t j = i; j > 0; --j) {
+    const double dx = poses[i].pose.position.x - poses[j - 1].pose.position.x;
+    const double dy = poses[i].pose.position.y - poses[j - 1].pose.position.y;
+    if (std::abs(dx) > kSameSpot || std::abs(dy) > kSameSpot) {
+      return std::atan2(dy, dx);
+    }
+  }
+  return tf2::getYaw(poses[i].pose.orientation);
+}
+
 }  // namespace
 
 PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
@@ -56,6 +87,10 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   this->declare_parameter("planner_plugins", default_ids_);
   this->declare_parameter("expected_planner_frequency", 1.0);
   this->declare_parameter("plan_republish_rate", 1.0);
+  this->declare_parameter("is_path_valid.footprint_check", true);
+  this->declare_parameter("is_path_valid.heading_margin", 0.35);
+  path_check_footprint_ = this->get_parameter("is_path_valid.footprint_check").as_bool();
+  path_check_heading_margin_ = this->get_parameter("is_path_valid.heading_margin").as_double();
 
   this->get_parameter("planner_plugins", planner_ids_);
   if (planner_ids_ == default_ids_) {
@@ -89,6 +124,7 @@ void PlannerServer::configure()
 
   costmap_ros_->init();
   costmap_ = costmap_ros_->getCostmap();
+  collision_checker_.setCostmap(costmap_);
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<syncai_util::NodeThread>(costmap_ros_);
@@ -287,10 +323,18 @@ void PlannerServer::isPathValid(
   const std::shared_ptr<nav2_msgs::srv::IsPathValid::Request> request,
   std::shared_ptr<nav2_msgs::srv::IsPathValid::Response> response)
 {
-  // Every "can't tell" below answers invalid. The caller's reaction to invalid
-  // is one fresh plan (what the BT did unconditionally every second before
-  // this service existed), whereas a wrong "valid" keeps the robot on a path
-  // nobody checked.
+  // "Can't tell" has two answers here, and which one is right depends on what
+  // the caller does with each. The BT (move.xml) replans on invalid and keeps
+  // the path on valid. A wrong "invalid" therefore replaces a route nobody
+  // has shown to be blocked -- and since the 2D-raytraced global costmap
+  // forgets a blocker as soon as the robot sees past it, the replacement can
+  // be the very route that ran into it, which is the oscillation this
+  // service exists to stop. A wrong "valid" delays one check by a second,
+  // with RPP's own collision check holding the robot meanwhile. So the
+  // configuration faults (empty path, wrong frame) answer invalid, loudly,
+  // and a momentary TF miss answers valid: the alternative was a replan whose
+  // getStartPose() fails on the same miss and whose RecoveryNode then clears
+  // the global costmap of the marks that justified the current detour.
   response->is_valid = false;
 
   const auto & poses = request->path.poses;
@@ -306,6 +350,10 @@ void PlannerServer::isPathValid(
 
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!costmap_ros_->getRobotPose(robot_pose)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "[PlannerServer][%s] No robot pose; keeping the current path unchecked", __func__);
+    response->is_valid = true;
     return;
   }
 
@@ -315,30 +363,79 @@ void PlannerServer::isPathValid(
   // route forward.
   const size_t closest_idx = closestPoseIndex(request->path, robot_pose);
 
-  // The same per-cell test SmacPlanner2D's collision checker applies when it
-  // expands a node (cost >= INSCRIBED), so "valid" means "the planner would
-  // still have been allowed to produce this path now". >= INSCRIBED also
-  // covers NO_INFORMATION, which matches the configured allow_unknown: false;
-  // if that is ever flipped, unknown cells have to be let through here too or
-  // every path into unexplored space reads blocked. Keepout cells arrive as
-  // LETHAL from the filter, so a zone drawn across the path invalidates it.
+  // Two tests per pose, and they are not nested. The centre cell against
+  // INSCRIBED is SmacPlanner2D's own expansion test: it covers unknown
+  // (allow_unknown: false -- flip that and unknown has to pass here too, or
+  // every path into unexplored space reads blocked), off the map, the
+  // keepout filter's inscribed band, and any lethal cell within the
+  // inscribed radius (0.25 m) of the centre, including one strictly inside
+  // the rectangle, which a perimeter walk cannot see. The padded footprint's
+  // perimeter against LETHAL is the test RPP applies on the local costmap
+  // before it drives (inCollision() -> footprintCostAtPose() >= LETHAL). The
+  // perimeter reaches 0.25 m sideways at the path heading and 0.455 m at the
+  // corners, so a blocker 0.25-0.45 m off the path centre passed the first
+  // test, RPP refused the path, nothing replanned, and FollowPath aborted on
+  // failure_tolerance without a detour ever being tried (2026-10). Running
+  // RPP's test here, on the global costmap while the blocker is still
+  // obstacle_max_range (2.5 m) out, turns that into a replan the robot can
+  // follow without stopping. The heading is tested at +-heading_margin as
+  // well: RPP tracks with up to rotate_to_heading_min_angle (0.25 rad) of
+  // heading error before it rotates in place, and the gait adds yaw sway.
+  //
+  // "Valid" therefore means "RPP will not refuse this for a lethal cell the
+  // global costmap already knows about". Not covered: marks only the local
+  // costmap holds (5 Hz against 1 Hz here, and no static layer there), the
+  // in-place rotation sweep RPP checks, heading error beyond the margin.
+  //
+  // Unknown under the perimeter is deliberately not a block: the local
+  // costmap does not track unknown, so RPP drives those poses, and counting
+  // it would reject every path along the mapping limit -- which Smac returns
+  // again, a 1 Hz replan loop with the robot driving fine. A perimeter vertex
+  // off the map skips the footprint test for that pose for the same reason;
+  // the centre test already rejects an off-map centre.
   //
   // The pose under the robot is included. A robot standing within its
-  // inscribed radius of a wall therefore gets "invalid" on every call and
-  // replans once per BT tick, which is the old behaviour, not a new failure.
+  // inscribed radius of a wall, or with a corner on a lethal cell, gets
+  // "invalid" on every call and replans once per BT tick -- the old
+  // behaviour, not a new failure, and a replan cannot move the start.
+  const bool footprint_check = path_check_footprint_;
+  const double margin = path_check_heading_margin_;
+  const auto footprint = costmap_ros_->getRobotFootprint();  // padded, 0.38 x 0.25
   response->is_valid = true;
-  int first_cost = -1;  // -1: off the map
+  int first_cost = -1;  // centre cost under the first blocked pose; -1: off the map
+  bool first_by_footprint = false;
+  double first_heading = 0.0;
   {
     std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
     for (size_t i = closest_idx; i < poses.size(); ++i) {
+      const double px = poses[i].pose.position.x;
+      const double py = poses[i].pose.position.y;
       unsigned int mx = 0;
       unsigned int my = 0;
-      const bool on_map =
-        costmap_->worldToMap(poses[i].pose.position.x, poses[i].pose.position.y, mx, my);
+      const bool on_map = costmap_->worldToMap(px, py, mx, my);
       const unsigned char cost = on_map ? costmap_->getCost(mx, my) : 0;
-      if (!on_map || cost >= syncai_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+      bool blocked = !on_map || cost >= syncai_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+      bool by_footprint = false;
+      double heading = 0.0;
+      if (!blocked && footprint_check) {
+        const double along = headingAt(poses, i);
+        for (const double offset : {0.0, -margin, margin}) {
+          if (footprintTouchesLethal(px, py, along + offset, footprint)) {
+            blocked = true;
+            by_footprint = true;
+            heading = along + offset;
+            break;
+          }
+          if (margin == 0.0) {
+            break;
+          }
+        }
+      }
+      if (blocked) {
         if (response->is_valid) {
           first_cost = on_map ? cost : -1;
+          first_by_footprint = by_footprint;
+          first_heading = heading;
         }
         response->is_valid = false;
         response->invalid_pose_indices.push_back(static_cast<int32_t>(i));
@@ -347,26 +444,78 @@ void PlannerServer::isPathValid(
   }
 
   // Every "invalid" here becomes a replan, and a replan nobody can explain is
-  // the one thing this service exists to prevent, so say why. The three costs
-  // point at different causes: 254 a marked obstacle (real, or lidar noise /
-  // self-hits in the 0.1-1.5 m band), 253 the path grazing an inflated
-  // obstacle's inscribed core, 255 unknown -- which A* never enters with
-  // allow_unknown: false, but the smoother only rejects cost > 252 *except*
-  // unknown, so a smoothed waypoint can land there. "ahead 0.00 m" means the
-  // robot's own spot (see above).
+  // the one thing this service exists to prevent, so say which test tripped
+  // and why. The centre costs point at different causes: 254 a marked
+  // obstacle (real, or lidar noise / self-hits in the 0.1-1.5 m band), 253
+  // the path grazing an inflated obstacle's inscribed core, 255 unknown --
+  // which neither A* nor the smoother enters with allow_unknown: false
+  // (2026-10), so it means the map under a kept path changed (a reload) or
+  // the robot's own spot. "ahead 0.00 m" means the robot's own spot (see
+  // above).
   if (!response->is_valid) {
     const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
     double ahead = 0.0;
     for (size_t i = closest_idx; i < first_idx; ++i) {
       ahead += syncai_util::geometry_utils::euclidean_distance(poses[i], poses[i + 1]);
     }
-    RCLCPP_INFO(
-      get_logger(),
-      "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
-      "ahead of the robot, (%.2f, %.2f), cost %d",
-      __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx, ahead,
-      poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_cost);
+    if (first_by_footprint) {
+      RCLCPP_INFO(
+        get_logger(),
+        "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
+        "ahead of the robot, (%.2f, %.2f): footprint perimeter on LETHAL at heading %.2f rad "
+        "(centre cost %d)",
+        __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx,
+        ahead, poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_heading,
+        first_cost);
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
+        "ahead of the robot, (%.2f, %.2f): centre cost %d",
+        __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx,
+        ahead, poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_cost);
+    }
   }
+}
+
+bool PlannerServer::footprintTouchesLethal(
+  double x, double y, double theta, const std::vector<geometry_msgs::msg::Point> & footprint)
+{
+  std::vector<geometry_msgs::msg::Point> oriented;
+  syncai_costmap_2d::transformFootprint(x, y, theta, footprint, oriented);
+  if (oriented.size() < 2) {
+    return false;
+  }
+
+  // Every vertex first, so one off the map skips the whole pose (see
+  // isPathValid()) instead of reading as LETHAL the way footprintCost() has it.
+  std::vector<std::pair<int, int>> cells(oriented.size());
+  for (size_t k = 0; k < oriented.size(); ++k) {
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!costmap_->worldToMap(oriented[k].x, oriented[k].y, mx, my)) {
+      return false;
+    }
+    cells[k] = {static_cast<int>(mx), static_cast<int>(my)};
+  }
+
+  // Edge by edge, closing the polygon. lineCost() returns LETHAL the moment it
+  // meets one and the maximum otherwise, and the maximum is where
+  // footprintCost() goes wrong for this purpose: NO_INFORMATION (255) under
+  // one edge outranks LETHAL (254) under another, and this costmap tracks
+  // unknown (track_unknown_space: true) while the local costmap RPP checks
+  // does not. Comparing each edge to LETHAL exactly keeps unknown out of it.
+  for (size_t k = 0; k < cells.size(); ++k) {
+    const auto & a = cells[k];
+    const auto & b = cells[(k + 1) % cells.size()];
+    // lineCost(x0, x1, y0, y1): the x pair first, then the y pair.
+    if (
+      collision_checker_.lineCost(a.first, b.first, a.second, b.second) ==
+      static_cast<double>(syncai_costmap_2d::LETHAL_OBSTACLE)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void PlannerServer::computePlan()
@@ -656,6 +805,20 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
             __func__, parameter.as_double());
           max_planner_duration_ = 0.0;
         }
+      } else if (name == "is_path_valid.heading_margin") {
+        // Dynamic so the on-robot A/B (footprint_check on / off, margin up /
+        // down) needs no rebuild. Beyond a right angle the "margin" would test
+        // headings the controller never drives.
+        if (parameter.as_double() < 0.0 || parameter.as_double() > M_PI_2) {
+          result.successful = false;
+          result.reason = "is_path_valid.heading_margin must be within [0, pi/2] rad";
+          return result;
+        }
+        path_check_heading_margin_ = parameter.as_double();
+      }
+    } else if (type == ParameterType::PARAMETER_BOOL) {
+      if (name == "is_path_valid.footprint_check") {
+        path_check_footprint_ = parameter.as_bool();
       }
     }
   }

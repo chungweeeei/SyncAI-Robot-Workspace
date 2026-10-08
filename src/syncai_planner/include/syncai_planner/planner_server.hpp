@@ -1,12 +1,14 @@
 #ifndef SYNCAI_PLANNER__PLANNER_SERVER_HPP_
 #define SYNCAI_PLANNER__PLANNER_SERVER_HPP_
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
@@ -16,6 +18,7 @@
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_costmap_2d/footprint_collision_checker.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
 #include "syncai_util/simple_action_server.hpp"
@@ -145,13 +148,27 @@ protected:
 
   /**
    * @brief The is_path_valid service callback: is the part of a path still
-   * ahead of the robot free in the current global costmap?
+   * ahead of the robot free in the current global costmap? "Free" is two
+   * tests per pose: the centre cell below INSCRIBED (Smac's own expansion
+   * test) and, with is_path_valid.footprint_check, no LETHAL cell under the
+   * padded footprint's perimeter at the path heading +- heading_margin (the
+   * test RPP applies on the local costmap before it drives).
    * @param request The path to check (in the costmap's global frame)
    * @param response is_valid, plus the indices of every blocked pose
    */
   void isPathValid(
     const std::shared_ptr<nav2_msgs::srv::IsPathValid::Request> request,
     std::shared_ptr<nav2_msgs::srv::IsPathValid::Response> response);
+
+  /**
+   * @brief Is a LETHAL cell under the perimeter of `footprint` placed at
+   * (x, y, theta)? Edge by edge with the collision checker's lineCost(), not
+   * footprintCost(): that one ranks NO_INFORMATION (255) above LETHAL (254)
+   * and reads an off-map vertex as LETHAL, neither of which is a block here.
+   * false also when a vertex is off the map. The costmap mutex must be held.
+   */
+  bool footprintTouchesLethal(
+    double x, double y, double theta, const std::vector<geometry_msgs::msg::Point> & footprint);
 
   /**
    * @brief Publish a path for visualization purposes
@@ -208,6 +225,17 @@ protected:
   // Lets the BT keep its current path until the costmap blocks it, instead of
   // replacing it with whatever a fresh plan returns every RateController tick
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
+
+  // Perimeter walk for is_path_valid over the global costmap (set up in
+  // configure(), once costmap_ exists)
+  syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> collision_checker_;
+
+  // is_path_valid.footprint_check / heading_margin. Read on the main executor
+  // in isPathValid(), written by the parameter callback under
+  // dynamic_params_lock_, which isPathValid() deliberately does not take (a
+  // plan in progress holds that lock for its whole search)
+  std::atomic<bool> path_check_footprint_{true};
+  std::atomic<double> path_check_heading_margin_{0.35};
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;

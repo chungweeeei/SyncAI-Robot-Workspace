@@ -180,10 +180,14 @@ costmap's inflation layer.
 
 Behaviours worth knowing:
 
-- **Only the last pose has a meaningful orientation.** The search is over
-  (x, y); every intermediate pose ships an identity quaternion and the last one
-  is overwritten with the goal yaw. RPP does not read intermediate yaw, so this
-  costs nothing today.
+- **Pose orientations are meaningful only by accident.** The search is over
+  (x, y); `createPlan` writes an identity quaternion into every pose, the
+  smoother then overwrites every segment longer than ten poses with the
+  direction to the next pose (on its bail-out returns too), and the last pose
+  is overwritten with the goal yaw. So a short path, a short segment, a
+  coincident pair, or a NavFn / StraightLine path still carries `w = 1`. RPP
+  does not read intermediate yaw, and `is_path_valid` derives its heading from
+  the geometry rather than the field, so nothing depends on it today.
 - **There is no `smooth_path` toggle.** 2D always smooths, with the smoother
   constructed as holonomic and with no turning-radius constraint.
 - **The smoother follows `allow_unknown`** (2026-10). Upstream always lets a
@@ -192,9 +196,12 @@ Behaviours worth knowing:
   then reported blocked on its first check: the BT replanned into the same
   smoothed path once a second.
 - **`is_path_valid` logs every "blocked" answer** at INFO, with the first
-  blocked pose, how far ahead of the robot it is, and its cost (254 marked
-  obstacle, 253 inscribed, 255 unknown, -1 off the map). Each one is a replan,
-  so this line is where to start when a route changes unexpectedly.
+  blocked pose, how far ahead of the robot it is, and which test tripped: the
+  centre cost (254 marked obstacle, 253 inscribed, 255 unknown, -1 off the
+  map) or "footprint perimeter on LETHAL at heading …" (the padded rectangle,
+  at the path heading or ± `heading_margin`, touches a marked obstacle the
+  centre test did not see). Each one is a replan, so this line is where to
+  start when a route changes unexpectedly.
 - **Debug topic `unsmoothed_plan`** carries the pre-smoother path, published
   only while something is subscribed.
 
@@ -248,9 +255,13 @@ Two gotchas:
 | `planner_plugins` | `["GridBased"]` | IDs; each needs `<id>.plugin` naming the type |
 | `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan at most once a second, and only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
 | `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the pose nearest the robot (the same nearest-pose search `is_path_valid` uses, so what is shown is what is checked; the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. It keeps showing the last route after the goal ends, since the planner cannot tell when the navigation finished. Read once at startup |
+| `is_path_valid.footprint_check` | `true` | Also test the padded footprint's perimeter against LETHAL at each pose ahead of the robot — RPP's own collision test, run on the global costmap. `false` restores the centre-cell test alone (what the service did until 2026-10). Dynamic |
+| `is_path_valid.heading_margin` | `0.35` | Radians either side of the path heading the perimeter is also tested at. RPP tracks with up to `rotate_to_heading_min_angle` (0.25) of heading error before it rotates in place, and the gait adds yaw sway; at 0.35 the rectangle reaches 0.365 m sideways, which is what catches a person 0.3 m beside the route — and what rejects a straight passage narrower than 0.73 m (doors pass). `0` tests the path heading only. Dynamic, clamped to [0, π/2] |
 
-`expected_planner_frequency` is the only parameter the *server's* dynamic
-callback handles, and it takes the same mutex the plan cycle holds.
+`expected_planner_frequency` and the two `is_path_valid.*` parameters are what
+the *server's* dynamic callback handles, and it takes the same mutex the plan
+cycle holds (the `is_path_valid.*` values are atomics the service reads
+without that mutex, so a check never waits behind a plan).
 `SmacPlanner2D` registers its own callback, so `cost_travel_multiplier`,
 `tolerance` and friends are live-tunable with `ros2 param set` (NavFn's are not
 — it reads them once in `initialize()`). Swapping the *plugin* still needs a
@@ -275,18 +286,28 @@ The footprint is a rectangle with half-extents 0.35 × 0.22, **the same
 rectangle as the local costmap** in `syncai_controller` (reconciled 2026-10;
 the local one had been left at 0.28 × 0.20). Only the padding differs, on
 purpose: `footprint_padding: 0.03` here against 0.01 there. The global
-footprint has to be the larger one, or RPP rejects paths the planner considered
-valid ("collision ahead!"); with equal rectangles the 0.02 m padding gap is what
-keeps the planner on the conservative side, and it also absorbs RPP's heading
-error while tracking. Change the rectangle in both files or neither, and never
-let the local padding reach the global one.
+footprint has to be the larger one so that `is_path_valid`'s perimeter test
+(this rectangle, this padding) is stricter than RPP's (same rectangle, the
+local padding) and a path it passes is one RPP will drive. Change the rectangle
+in both files or neither, and never let the local padding reach the global one.
+
+That ordering holds between the two **perimeter** tests, and only since
+2026-10. Before that `is_path_valid` tested the centre cell alone and this
+README claimed the padding gap kept "the planner on the conservative side" —
+it did not. Smac accepts any centre cost below 253, which bounds the centre's
+distance to a lethal cell (the inscribed radius, 0.25 m) and says nothing
+about the corners (0.455 m), so a blocker 0.25–0.45 m off the path was
+Smac-valid, RPP refused it ("collision ahead!"), nothing replanned, and the
+goal aborted on `failure_tolerance` without a detour ever being tried. The
+0.02 m padding gap absorbs about 3° of heading error, not the 14° RPP tracks
+with; `is_path_valid.heading_margin` is what covers that now.
 
 `inflation_radius` (0.8) must stay at or above the padded footprint's
-circumscribed radius, √(0.38² + 0.25²) ≈ 0.455 m: only then does a non-inflated
-cost at the robot centre guarantee the whole footprint is clear, which anything
-that checks a path by centre-cell cost alone relies on. A circular `robot_radius: 0.22`
-was tried before the rectangle and was oversized enough that RPP rejected valid
-paths through ~0.6 m gaps.
+circumscribed radius, √(0.38² + 0.25²) ≈ 0.455 m: the inscribed core (cost
+253) is what the centre test and the keepout filter's own inflation key on,
+and it is only meaningful while the band around it is at least robot-sized. A
+circular `robot_radius: 0.22` was tried before the rectangle and was oversized
+enough that RPP rejected valid paths through ~0.6 m gaps.
 
 ### Notes on the current config
 
@@ -331,7 +352,7 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
-| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free (every cell `< INSCRIBED`, the same test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`)? Called once a second by `move.xml`'s `IsPathValid`, which replans only on `false`. Answers `false` for an empty path, a frame other than the costmap's, or no robot pose. Served on the main executor, so it never queues behind a plan |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by `move.xml`'s `IsPathValid`, which replans only on `false`. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward |
 
 Plus everything the internal costmap exposes under

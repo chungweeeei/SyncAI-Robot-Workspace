@@ -27,6 +27,32 @@
     # so without this a viewer that subscribes mid-drive never sees the route.
     plan_republish_rate: 1.0
 
+    # is_path_valid (the BT's once-a-second check of the path still ahead)
+    # tests each pose twice: the centre cell against INSCRIBED, which is
+    # Smac's own expansion test (unknown, off-map, the keepout band, anything
+    # within the inscribed radius of the centre, including inside the
+    # rectangle), and, with footprint_check, the padded footprint's perimeter
+    # against LETHAL -- the test RPP applies on the local costmap before it
+    # drives. The two are not nested: INSCRIBED at the centre means lethal
+    # within 0.25 m, while the perimeter reaches 0.25 m sideways at the path
+    # heading and 0.455 m at the corners. So a blocker 0.25-0.45 m off the
+    # path centre passed the centre test, RPP refused the path, nothing
+    # replanned, and the goal aborted after failure_tolerance with no detour
+    # tried (2026-10). The perimeter is tested at the path heading and at
+    # +-heading_margin: RPP tracks with up to rotate_to_heading_min_angle
+    # (0.25 rad) of heading error before it rotates in place, the gait adds
+    # yaw sway, and at 0.35 rad the rectangle reaches 0.365 m sideways, which
+    # is what catches a person standing 0.3 m beside the route. The price is
+    # a straight passage narrower than 0.73 m: Smac (> 0.5 m) plans it, this
+    # test rejects it, and the BT replans once a second into the same path
+    # while RPP refuses to drive it -- the same abort as before, with a
+    # noisier log. Doors (0.8-0.9 m) pass. footprint_check: false restores
+    # the centre test alone. Both are dynamic parameters, for A/B on the
+    # robot without a rebuild.
+    is_path_valid:
+      footprint_check: true
+      heading_margin: 0.35
+
     # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
     # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
     # rename here would silently send every task-runner goal to an unknown
@@ -123,22 +149,29 @@
     #
     # The padding differs on purpose: 0.03 here vs 0.01 in the local costmap.
     # The rule this encodes is that the global footprint must be the larger
-    # one, so the planner is the conservative side and RPP never rejects a
-    # path the planner considered valid ("collision ahead!"). With equal
-    # rectangles, the 0.02 m padding difference is what keeps that ordering;
-    # it also absorbs the heading error RPP accumulates while tracking, which
-    # sweeps the corners a little outside the planned pose. Do not equalize
-    # the paddings, and never let the local padding exceed this one.
-    # (A circular robot_radius=0.22 was tried before the rectangle and was
-    # oversized enough to make RPP reject valid paths through ~0.6 m gaps.)
+    # one, so that is_path_valid's perimeter test (same rectangle, this
+    # padding) is stricter than RPP's (same rectangle, the local padding),
+    # and a path it passes is one RPP will drive. That ordering holds only
+    # between the two PERIMETER tests. Until 2026-10 is_path_valid tested the
+    # centre cell alone and this comment claimed the padding gap made the
+    # planner "the conservative side" -- it did not: Smac accepts any centre
+    # cost below 253, which bounds the centre's distance to lethal (0.25 m)
+    # and says nothing about the corners (0.455 m), so a blocker 0.25-0.45 m
+    # off the path was Smac-valid and RPP-refused, and the goal aborted with
+    # no detour. The 0.02 m gap absorbs ~3 degrees of heading error, not the
+    # 14 degrees RPP tracks with; is_path_valid.heading_margin covers that.
+    # Do not equalize the paddings, and never let the local padding exceed
+    # this one. (A circular robot_radius=0.22 was tried before the rectangle
+    # and was oversized enough to make RPP reject valid paths through ~0.6 m
+    # gaps.)
     #
-    # Padded half-extents are 0.38 x 0.25, so the circumscribed radius is
-    # sqrt(0.38^2 + 0.25^2) ~= 0.455 m. inflation_layer.inflation_radius below
-    # (0.5) must stay >= that: only then does a FREE (non-inflated) cell at the
-    # robot centre guarantee that no part of the footprint touches an
-    # obstacle, which anything checking a path by centre-cell cost alone (no
-    # full footprint sweep) depends on. Grow the footprint or padding, or
-    # shrink the inflation radius, and re-check this inequality.
+    # Padded half-extents are 0.38 x 0.25, so the inscribed radius is 0.25 m
+    # and the circumscribed radius sqrt(0.38^2 + 0.25^2) ~= 0.455 m.
+    # inflation_layer.inflation_radius below must stay >= the circumscribed
+    # radius: the inscribed core (cost 253) is what the centre test and the
+    # keepout filter's own inflation key on, and it is only meaningful while
+    # the band around it is at least robot-sized. Grow the footprint or
+    # padding, or shrink the inflation radius, and re-check this inequality.
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.03
 
@@ -160,7 +193,9 @@
     #     and gradient as a wall. Draw the forbidden area only, no margin: a
     #     margin in the mask is now applied twice. Until then keepout cells
     #     were bare LETHAL, and Smac's centre-cell check let a path through
-    #     any gap between two zones that was one free cell wide.
+    #     any gap between two zones that was one free cell wide. is_path_valid
+    #     sees a zone twice over: its inscribed band through the centre test,
+    #     its LETHAL core through the footprint perimeter test.
     #   - clear* services never touch filter output: a keepout is a rule, not
     #     an observation.
     # Only the global costmap runs the filter (2026-09). The controller's local
@@ -276,9 +311,13 @@
       # (2.0 gives 32%). That keeps the centring pull in narrow passages.
       # The price: a route through a passage narrower than 1.6 m now costs
       # at least ~40% more per metre along it (more the narrower it is), so
-      # the planner accepts a somewhat longer way round to avoid one. Nothing here blocks a passage: only >= INSCRIBED
-      # (0.23 m) is lethal to the planner, and IsPathValid tests the same.
-      # Also must stay >= the padded footprint's circumscribed radius
-      # (~0.455 m, see the footprint comment above).
+      # the planner accepts a somewhat longer way round to avoid one. Nothing
+      # here blocks a passage: only >= INSCRIBED (within 0.25 m of a lethal
+      # cell: half-width 0.22 + padding 0.03) is lethal to the planner.
+      # is_path_valid tests that and, on top, the padded perimeter at the
+      # path heading +- heading_margin (see is_path_valid: above), which is
+      # what a lethal cell 0.25-0.45 m off the path trips. Also must stay >=
+      # the padded footprint's circumscribed radius (~0.455 m, see the
+      # footprint comment above).
       inflation_radius: 0.8
       cost_scaling_factor: 1.5
