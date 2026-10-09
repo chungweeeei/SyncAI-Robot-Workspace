@@ -57,6 +57,14 @@ struct NodeConfig
   // filter's gravity magnitude is fixed at 9.81 (point_ekf.cpp). satu_acc is compared
   // against the scaled value.
   double imu_acc_scale = 10.0;
+  // Decimation of the extra body_cloud_dense output, for mapping only (pgo).
+  // The filter and body_cloud keep lidar_filter_num; this one is taken from
+  // the same scan in the same pass, so it costs nothing while nobody
+  // subscribes. 2 is the floor: at 1 a MID360 scan is ~20k points, ~320 KB as
+  // x/y/z/intensity, over CycloneDDS's default 208 KB receive buffer on lo
+  // (see CLAUDE.md, "The live merge is a file"). <= 0 or >= lidar_filter_num:
+  // body_cloud_dense carries body_cloud's points.
+  int dense_filter_num = 2;
 };
 
 struct StateData
@@ -71,6 +79,9 @@ struct StateData
 
   std::deque<IMUData> imu_buffer;
   std::deque<std::pair<double, pcl::PointCloud<pcl::PointXYZINormal>::Ptr>> lidar_buffer;
+  // The dense cloud of each lidar_buffer entry, same index; pushed, popped and
+  // cleared together with it.
+  std::deque<pcl::PointCloud<pcl::PointXYZINormal>::Ptr> lidar_dense_buffer;
 
   nav_msgs::msg::Path path;
 };
@@ -96,6 +107,11 @@ public:
   void publishCloud(
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub, CloudType::Ptr cloud,
     std::string frame_id, const double & time);
+  // x / y / z / intensity only, 16 B a point: pcl::toROSMsg would write the
+  // whole PointXYZINormal (48 B), three times the bytes for fields pgo drops.
+  void publishCompactCloud(
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub, const CloudType & cloud,
+    const std::string & frame_id, const double & time);
   void publishOdometry(
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub, std::string frame_id,
     std::string child_frame, const double & time);
@@ -123,6 +139,7 @@ private:
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_body_cloud_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_world_cloud_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_body_cloud_dense_pub;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr m_path_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_pub;
 

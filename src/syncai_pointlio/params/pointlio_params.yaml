@@ -31,6 +31,11 @@
     imu_acc_scale: 10.0
 
     lidar_filter_num: 6
+    # body_cloud_dense's decimation (2026-10-09): pgo maps from it, at 3x the
+    # points the filter and body_cloud use. Same scan, same pass, published
+    # only while subscribed. 2 is the floor (1 overflows CycloneDDS's default
+    # receive buffer on lo); <= 0 = body_cloud's points.
+    dense_filter_num: 2
     lidar_min_range: 0.5
     lidar_max_range: 30.0
     # Coarser than fastlio2 (0.15): every point group costs an EKF update, keep
