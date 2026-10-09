@@ -409,6 +409,12 @@ void PGONode::loadParameters()
     this->declare_parameter("loop_planar_correction", m_pgo_config.loop_planar_correction);
   m_pgo_config.loop_noise_var_roll_pitch_z = this->declare_parameter(
     "loop_noise_var_roll_pitch_z", m_pgo_config.loop_noise_var_roll_pitch_z);
+  m_pgo_config.loop_noise_yaw_sigma_deg =
+    this->declare_parameter("loop_noise_yaw_sigma_deg", m_pgo_config.loop_noise_yaw_sigma_deg);
+  m_pgo_config.loop_noise_xy_sigma_m =
+    this->declare_parameter("loop_noise_xy_sigma_m", m_pgo_config.loop_noise_xy_sigma_m);
+  m_pgo_config.keyframe_tilt_sigma_deg =
+    this->declare_parameter("keyframe_tilt_sigma_deg", m_pgo_config.keyframe_tilt_sigma_deg);
   if (m_pgo_config.loop_registration != "gicp" && m_pgo_config.loop_registration != "icp") {
     RCLCPP_WARN(
       this->get_logger(), "[PGONode] loop_registration '%s' unknown, using 'gicp'",
@@ -418,10 +424,16 @@ void PGONode::loadParameters()
   RCLCPP_INFO(
     this->get_logger(),
     "[PGONode] loop verification: %s, max corr dist %.2f m, fitness gate %.3f, planar "
-    "correction %s, roll/pitch/z variance %.1e",
+    "correction %s, roll/pitch/z variance %.1e, planar xy sigma %.3f m%s, planar yaw sigma "
+    "%.2f deg%s, keyframe tilt sigma %.2f deg%s",
     m_pgo_config.loop_registration.c_str(), m_pgo_config.loop_icp_max_corr_dist,
     m_pgo_config.loop_score_tresh, m_pgo_config.loop_planar_correction ? "on" : "off",
-    m_pgo_config.loop_noise_var_roll_pitch_z);
+    m_pgo_config.loop_noise_var_roll_pitch_z, m_pgo_config.loop_noise_xy_sigma_m,
+    m_pgo_config.loop_noise_xy_sigma_m > 0.0 ? "" : " (<= 0: variance = fitness)",
+    m_pgo_config.loop_noise_yaw_sigma_deg,
+    m_pgo_config.loop_noise_yaw_sigma_deg > 0.0 ? "" : " (<= 0: variance = fitness)",
+    m_pgo_config.keyframe_tilt_sigma_deg,
+    m_pgo_config.keyframe_tilt_sigma_deg > 0.0 ? "" : " (<= 0: off)");
   m_pgo_config.loop_submap_half_range =
     this->declare_parameter("loop_submap_half_range", m_pgo_config.loop_submap_half_range);
   m_pgo_config.submap_resolution =

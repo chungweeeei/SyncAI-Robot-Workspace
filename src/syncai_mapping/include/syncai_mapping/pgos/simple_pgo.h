@@ -15,6 +15,7 @@
 #include <string>
 
 #include "syncai_mapping/pgos/commons.h"
+#include "syncai_mapping/pgos/gravity_prior_factor.h"
 #include "syncai_mapping/pgos/planar_loop_factor.h"
 
 struct KeyPoseWithCloud
@@ -86,6 +87,30 @@ struct Config
   // registration fitness", which the planar factor uses for all three of
   // its axes as well.
   double loop_noise_var_roll_pitch_z = 1e-2;
+  // Only with loop_planar_correction = true: the planar factor's yaw sigma
+  // (degrees). Its x / y keep "variance = fitness". The fork's convention
+  // put the fitness on yaw as well, read as rad^2: a typical 0.1-0.15 is a
+  // yaw sigma of 18-22 deg, while ~500 odometry edges (rotation variance
+  // 1e-6 each) accumulate about 1 deg -- so the optimiser ignored the loop's
+  // yaw entirely. On dp1f_1008_2 the one loop that closed the east corridor
+  // asked for 8 deg and +1.7 m and moved the keyframe 0.8 m with no yaw,
+  // leaving the two passes 1.1-1.6 m / 5-6 deg apart. <= 0 = the old
+  // behaviour (yaw variance = fitness).
+  double loop_noise_yaw_sigma_deg = 1.5;
+  // Only with loop_planar_correction = true: the planar factor's x / y sigma
+  // (metres). The fork's "variance = fitness" is a 0.25-0.39 m sigma for the
+  // 0.06-0.15 fitness range a corridor loop scores, which a few hundred
+  // odometry edges outvote: with yaw fixed, dp1f_1008_2's east corridor still
+  // closed only to 0.4-0.5 m (0.1 m: 0.08-0.11 m; 0.05 m: 0.01-0.04 m).
+  // <= 0 = variance = fitness.
+  double loop_noise_xy_sigma_m = 0.05;
+  // Per-keyframe tilt anchor (GravityPriorFactor): each keyframe's roll /
+  // pitch w.r.t. gravity held to the LIO's value with this sigma (degrees).
+  // Required once loops correct yaw with real weight -- without it the
+  // optimiser realises a yaw correction partly as pitch and the chain
+  // climbs or sinks (5-17 cm per loop on the 2026-10-09 replays). <= 0 = no
+  // anchor, the behaviour before 2026-10-09.
+  double keyframe_tilt_sigma_deg = 0.5;
   int loop_submap_half_range = 5;
   double submap_resolution = 0.1;
   double min_loop_detect_duration = 10.0;

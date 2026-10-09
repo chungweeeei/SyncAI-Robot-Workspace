@@ -448,7 +448,10 @@ the values are copied into the graph at construction and on every reset, so
 | `loop_gicp_num_threads` | `4` | | **int** |
 | `loop_gicp_num_neighbors` | `20` | | **int**, GICP covariance neighbours |
 | `loop_planar_correction` | `true` | | loop edge is a `PlanarLoopFactor` on the world-frame x / y / yaw only (`pgos/planar_loop_factor.h`); z / roll / pitch stay with the odometry. `false` = the fork's 6-DOF `BetweenFactor` |
-| `loop_noise_var_roll_pitch_z` | `0.01` | | only with `loop_planar_correction: false`: BetweenFactor variance on roll / pitch / z. x / y / yaw always use the fitness score, as the fork did |
+| `loop_noise_var_roll_pitch_z` | `0.01` | | only with `loop_planar_correction: false`: BetweenFactor variance on roll / pitch / z. x / y / yaw use the fitness score, as the fork did |
+| `loop_noise_yaw_sigma_deg` | `1.5` | | only with `loop_planar_correction: true`: the `PlanarLoopFactor`'s yaw sigma, **degrees**; its x / y keep variance = fitness. The fork's fitness-as-rad² yaw (an 18-22 deg sigma) was outvoted by ~1 deg of accumulated odometry, so a loop never corrected yaw (dp1f_1008_2's east corridor: 8 deg asked, none applied, passes left 1.1-1.6 m apart). `<= 0` restores that |
+| `loop_noise_xy_sigma_m` | `0.05` | | only with `loop_planar_correction: true`: the `PlanarLoopFactor`'s x / y sigma, **metres**. Fitness-as-m² (a 0.25-0.39 m sigma) left dp1f_1008_2's east corridor 0.4-0.5 m apart even with the yaw fixed; 0.1 m left 0.08-0.11 m, 0.05 m 0.01-0.04 m, and dp1f_1006 stays within 8 cm at either. `<= 0` = variance = fitness |
+| `keyframe_tilt_sigma_deg` | `0.5` | | **degrees**; a `GravityPriorFactor` (`pgos/gravity_prior_factor.h`) on every keyframe holding its roll / pitch w.r.t. gravity to Point-LIO's value. Needed by the yaw sigma above: without it a yaw correction is realised partly as pitch and the chain climbs or sinks (dp1f_1008_2: keyframe z moved 0.8 m median, 2.2 m worst). `<= 0` = off |
 | `loop_submap_half_range` | `5` | | keyframes each side of the candidate. **An int** — `5.0` is the mirror-image type error. |
 | `submap_resolution` | `0.1` | | m, voxel leaf of the ICP submap |
 | `min_loop_detect_duration` | `5.0` | | s between loop searches |
