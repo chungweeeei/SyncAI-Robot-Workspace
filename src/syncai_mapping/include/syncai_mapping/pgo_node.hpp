@@ -25,9 +25,11 @@
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <sys/types.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -49,6 +51,7 @@
 #include "syncai_common/srv/reset_mapping.hpp"
 #include "syncai_common/srv/save_maps.hpp"
 #include "syncai_common/srv/start_mapping.hpp"
+#include "syncai_mapping/map_cleaner.hpp"
 #include "syncai_mapping/pgos/commons.h"
 #include "syncai_mapping/pgos/simple_pgo.h"
 #include "visualization_msgs/msg/marker.hpp"
@@ -88,6 +91,13 @@ struct NodeConfig
   // control: with it false -- the default, and what the mapping session
   // wants -- nothing reaches the graph until start_mapping is called.
   bool start_on_launch = false;
+  // The post-save map cleaning (see startMapClean): whether a successful
+  // save_maps with save_patches spawns clean_map, the nice value it runs at,
+  // and the parameters it is handed on its command line. map_cleaner::Params
+  // carries the defaults and the why of each.
+  bool map_clean_enabled = true;
+  int map_clean_nice = 10;
+  map_cleaner::Params map_clean;
 };
 
 struct NodeState
@@ -173,6 +183,25 @@ public:
   void publishStatus();
   void statusTimerCB();
 
+  // ---- The post-save map cleaning --------------------------------------------
+  // Spawn `clean_map <map_dir>` detached, after the save has ended the run.
+  // Returns the sentence appended to the save's response message ("" when
+  // map_clean_enabled is false). Never fails the save: the map is on disk.
+  std::string startMapClean(const std::filesystem::path & map_dir, bool have_patches);
+  // Record a clean that could not start in the sidecar; returns the sentence.
+  std::string failMapClean(
+    const std::filesystem::path & map_dir, const std::string & started_at,
+    const std::string & error);
+  // waitpid(WNOHANG) every spawned clean; one log line per outcome. 1 Hz.
+  void reapMapCleans();
+  // SIGTERM any clean still running on map_dir, before a new save replaces
+  // its input. Not waited for; the reaper logs it, and the clean's own
+  // poses.txt fingerprint stops it from renaming anything over the new save.
+  void stopMapCleanFor(const std::filesystem::path & map_dir);
+  // The sidecar of an earlier save into the same directory and the clean's
+  // .tmp files: their input (patches/, poses.txt) is about to be replaced.
+  static void removeMapCleanOutputs(const std::filesystem::path & map_dir);
+
   // 50 ms timer: keyframe selection, loop search, smoothing, TF, outputs.
   void timerCB();
 
@@ -197,6 +226,18 @@ public:
     std::shared_ptr<syncai_common::srv::SaveMaps::Response> response);
 
 private:
+  // Cleans spawned by saveMapsCB and not yet reaped. Touched only by
+  // saveMapsCB, statusTimerCB (the reaper) and the destructor; the first two
+  // share the default MutuallyExclusive group, so it needs no lock. A child
+  // outliving this process is the design (see startMapClean), so the
+  // destructor only logs them.
+  struct MapCleanChild
+  {
+    pid_t pid;
+    std::filesystem::path dir;
+    std::chrono::steady_clock::time_point started;
+  };
+  std::vector<MapCleanChild> m_map_clean_children;
   // The four-phase sequence start_mapping and reset_mapping share (pause,
   // reset the LIO, rebuild the graph, resume). They differ only in the phase
   // they require on entry -- IDLE for a start, MAPPING for a reset -- and in

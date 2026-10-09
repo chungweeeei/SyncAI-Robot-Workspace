@@ -36,6 +36,9 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(message_filters REQUIRED)
+# pgo_node finds the clean_map executable it spawns after a save through the
+# package index, so the install tree it runs from decides which one.
+find_package(ament_index_cpp REQUIRED)
 # SaveMaps / ResetMapping (served here) and ResetLIO (the client that drives
 # syncai_pointlio's reset). All three are in syncai_common since the port:
 # the backend, the only caller of the first two, builds against that package.
@@ -56,6 +59,12 @@ find_package(OpenMP QUIET)
 # Same arrangement as syncai_localizer: src/third-party/small_gicp is a
 # build_type cmake package, ordered before this one by <depend>small_gicp</depend>.
 find_package(small_gicp REQUIRED)
+# clean_map's ray traversal and voxel keys (2026-10). ros-humble-octomap from
+# apt -- the rosdep key `octomap`, in the Dockerfile's dev stage -- rather than
+# a src/third-party checkout: upstream's top level would also put octovis and
+# dynamicEDT3D into every colcon build. Its config sets OCTOMAP_INCLUDE_DIRS /
+# OCTOMAP_LIBRARIES. No tree is ever built (see map_cleaner.hpp).
+find_package(octomap REQUIRED)
 
 set(SYNCAI_MAPPING_DEPS
   rclcpp
@@ -70,6 +79,27 @@ set(SYNCAI_MAPPING_DEPS
   syncai_common
 )
 
+# ---- The post-save map cleaning: sidecar, cleaner, CLI ------------------------
+# Split so pgo_node links neither OctoMap nor the ray-cast: it only writes the
+# "converting" sidecar and spawns clean_map, which does the rest in its own
+# process (see PGONode::startMapClean for why a process).
+add_library(map_clean_recipe STATIC src/map_clean_recipe.cpp)
+target_include_directories(map_clean_recipe PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+
+add_library(map_cleaner STATIC src/map_cleaner.cpp)
+target_include_directories(map_cleaner PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OCTOMAP_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${PCL_INCLUDE_DIRS})
+target_link_libraries(map_cleaner PUBLIC ${OCTOMAP_LIBRARIES} ${PCL_LIBRARIES})
+
+add_executable(clean_map src/clean_map_main.cpp)
+target_link_libraries(clean_map map_cleaner map_clean_recipe)
+
 # ---- pgo_node: the online pose graph (mapping session) ----------------------
 add_executable(pgo_node
   src/pgo_main.cpp
@@ -82,7 +112,7 @@ target_include_directories(pgo_node PUBLIC
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS})
-ament_target_dependencies(pgo_node ${SYNCAI_MAPPING_DEPS})
+ament_target_dependencies(pgo_node ${SYNCAI_MAPPING_DEPS} ament_index_cpp)
 # small_gicp::small_gicp carries OpenMP::OpenMP_CXX as a PUBLIC usage
 # requirement; without -fopenmp its omp pragmas are silently ignored and the
 # kd-tree / covariance estimation run single-threaded.
@@ -90,6 +120,7 @@ target_link_libraries(pgo_node
   ${PCL_LIBRARIES}
   gtsam
   small_gicp::small_gicp
+  map_clean_recipe
 )
 
 # ---- hba_node: offline hierarchical bundle adjustment (by hand) -------------
@@ -123,7 +154,7 @@ if(OpenMP_CXX_FOUND)
   target_link_libraries(hba_node OpenMP::OpenMP_CXX)
 endif()
 
-install(TARGETS pgo_node hba_node
+install(TARGETS pgo_node hba_node clean_map
   DESTINATION lib/${PROJECT_NAME}
 )
 

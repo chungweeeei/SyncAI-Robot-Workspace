@@ -29,7 +29,7 @@
 # changes nothing.
 /**/pgo_node:
   ros__parameters:
-    cloud_topic: /pointlio/body_cloud
+    cloud_topic: /pointlio/body_cloud_dense
     odom_topic: /pointlio/lio_odom
     # pointlio's reset service, driven by pgo/reset_mapping.
     lio_reset_service: /pointlio/reset
@@ -118,3 +118,30 @@
     # the bag-replay knob (`start_on_launch:=true` on the launch), never what
     # the mapping session wants.
     start_on_launch: false
+
+    # Post-save map cleaning (2026-10). After a successful save_maps with
+    # save_patches, pgo_node spawns `clean_map <dir>` as a detached, nice'd
+    # process that counts, per hit voxel, the keyframes that hit it and those
+    # whose rays passed through it, and REPLACES map.pcd -- minutes after the
+    # save -- without the "dynamic" voxels (people: passed through
+    # >= dynamic_min_miss times and >= dynamic_miss_ratio x as often as hit,
+    # between floor + floor_band and floor + max_height) and the "sparse" ones
+    # (hit by < min_hits keyframes, outside the floor band: smear, edge
+    # returns, reflections). Progress and outcome: map_clean.recipe.json. The
+    # README's "Cleaning map.pcd" has the numbers.
+    map_clean_enabled: true
+    map_clean_resolution: 0.1        # voxel edge, m
+    map_clean_max_range: 20.0        # rays truncated here, m
+    map_clean_min_range: 0.5         # the robot's own body, m
+    map_clean_lidar_height: 0.481    # keyframe z minus this is the floor, m
+    map_clean_floor_band: 0.25       # +- m around the floor where neither rule applies
+    map_clean_max_height: 2.0        # people are looked for up to floor + this, m
+    map_clean_floor_radius: 10.0     # keyframes within this give a cell its floor, m
+    map_clean_min_hits: 2            # int; <= 1 turns the sparse rule off
+    map_clean_dynamic_miss_ratio: 2.0
+    map_clean_dynamic_min_miss: 3    # int; <= 0 turns the dynamic rule off
+    # Cut rays at the keyframe's floor - (floor_band - resolution): the 0.4 %
+    # of returns that land under a glossy floor (reflections) would otherwise
+    # count misses for voxels physically under it.
+    map_clean_clip_below_floor: true
+    map_clean_nice: 10               # int, not 10.0

@@ -1,6 +1,8 @@
 # Removing people from `map.pcd` on `dev` — change plan
 
-Status: **plan, not implemented.** This branch (`feat/mapping-dynamic-removal`,
+Status: **implemented on this branch** (2026-10-10; numbers in the
+`syncai_mapping` README's "Cleaning map.pcd"). Kept as the record of what was
+ported and why. This branch (`feat/mapping-dynamic-removal`,
 cut from `dev` at `c2f1d2f`) is where it lands. The work was prototyped and
 measured on `feat/mapping-octomap-loop-noise`; that branch also carries the
 OctoMap display build, which this one deliberately does **not** take, so the

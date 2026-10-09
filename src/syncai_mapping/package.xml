@@ -39,6 +39,12 @@
        src/third-party/small_gicp is a build_type cmake package colcon builds
        first because of this line, exactly as syncai_localizer declares it. -->
   <depend>small_gicp</depend>
+  <!-- pgo_node locates the clean_map executable it spawns. -->
+  <depend>ament_index_cpp</depend>
+  <!-- clean_map (2026-10). Unlike GTSAM / Sophus below, a real rosdep key:
+       it resolves to ros-humble-octomap, which the Dockerfile's dev stage
+       installs, so `rosdep check` stays quiet. -->
+  <depend>octomap</depend>
 
   <!-- Not listed on purpose: PCL, Eigen, GTSAM and Sophus. PCL / Eigen arrive
        through pcl_conversions' own rosdep chain (libpcl-dev, libeigen3-dev).

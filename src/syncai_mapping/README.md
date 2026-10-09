@@ -1,7 +1,7 @@
 # syncai_mapping
 
-The mapping back end, two nodes. `pgo_node` (the rest of this README until
-"hba_node") is a pose graph over `syncai_pointlio`'s odometry and body clouds. It picks keyframes, detects and verifies loop
+The mapping back end, two nodes and a post-save job. `pgo_node` (the rest of
+this README until "hba_node") is a pose graph over `syncai_pointlio`'s odometry and body clouds. It picks keyframes, detects and verifies loop
 closures, smooths the graph with GTSAM iSAM2, broadcasts the resulting
 `map → <robot_id>/pointlio_odom` correction while a map is being built, hands
 the "map so far" to the operator console, and serves the three calls that
@@ -9,7 +9,9 @@ bracket a mapping run: `start_mapping`, `save_maps` and `reset_mapping`. It
 comes up **idle** — nothing is banked until `start_mapping`, and a successful
 `save_maps` ends the run — and reports that state on `mapping_status`. It
 runs only in the mapping session; in navigation `syncai_localizer` owns the
-same TF.
+same TF. After a successful save it spawns `clean_map`, this package's third
+executable, which rewrites the saved `map.pcd` without people and one-off
+returns — detached, so it outlives the session (see "Cleaning map.pcd").
 
 ```
    syncai_pointlio            /<id>/pointlio/{body_cloud, lio_odom}
@@ -43,7 +45,7 @@ MIT); `pgo_node.*` is the ROS shell.
 
 | Input | Kind | Source | Used for |
 |---|---|---|---|
-| `cloud_topic` = `/<robot_id>/pointlio/body_cloud` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The keyframe's body-frame scan |
+| `cloud_topic` = `/<robot_id>/pointlio/body_cloud_dense` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The keyframe's body-frame scan: deskewed, 3× `body_cloud`'s points (2026-10; it was `body_cloud` before). Only x / y / z / intensity are read. The density is what lets `clean_map` tell people from structure. |
 | `odom_topic` = `/<robot_id>/pointlio/lio_odom` | `nav_msgs/Odometry`, depth 10 | `syncai_pointlio` | The keyframe's pose in `local_frame` |
 
 The two are joined by a `message_filters` `ApproximateTime` synchroniser
@@ -122,9 +124,14 @@ next run, and the backend never does.
 
 | File | Content |
 |---|---|
-| `map.pcd` | Every keyframe's body cloud placed with its loop-closure-corrected global pose and concatenated. Binary, **not** voxel-filtered. |
+| `map.pcd` | Every keyframe's body cloud placed with its loop-closure-corrected global pose and concatenated. Binary, **not** voxel-filtered. **Replaced minutes later** by `clean_map`'s copy without people and one-off returns (with `save_patches` and `map_clean_enabled`) — see "Cleaning map.pcd". |
 | `patches/<i>.pcd` | (with `save_patches`) one body-frame cloud per keyframe; the directory is removed and recreated |
 | `poses.txt` | (with `save_patches`) one line per keyframe, `<i>.pcd tx ty tz qw qx qy qz`, bare basenames |
+| `map_clean.recipe.json` | (with `save_patches` and `map_clean_enabled`) the cleaning's status, written `converting` before the response goes out |
+
+A save with `save_patches` also stops a `clean_map` still running on the same
+directory (SIGTERM) and deletes the previous `map_clean.recipe.json` and any
+`map.pcd.tmp` first: their input is being replaced.
 
 That layout is what the workspace's map catalogue expects under `map/<name>/`
 and what `hba_node` (below) refines. Nothing written names the map or holds an
@@ -148,6 +155,110 @@ writes them out. Whatever has not been saved when the process ends — or when
 `reset_mapping` runs — is gone short of replaying a bag. That is why the
 mapping session's `lio` window is not optional, and why a mode switch refuses
 to rebuild the live mode.
+
+### Cleaning map.pcd
+
+Once a save has ended the run, the handler spawns one `clean_map` on the
+directory it just wrote. It counts, per 0.1 m voxel that some keyframe's
+return ended in, how many keyframes **hit** it (H) and how many keyframes'
+rays **passed through** it (M) — per scan, never per ray — and rewrites
+`map.pcd` without the points of two classes:
+
+| Class | Rule | What it catches |
+|---|---|---|
+| dynamic | `M >= dynamic_min_miss` (3), `M >= dynamic_miss_ratio × H` (2.0), between floor + `floor_band` and floor + `max_height` | people: hit by a keyframe or two, seen through by the rest |
+| sparse | `H < min_hits` (2), not within ±`floor_band` of the floor | smear, edge returns, reflections: 92 % of the occupied voxels outside one solid corridor wall were single-keyframe; real wall voxels have a median of 4–5 |
+
+**Offline on purpose** (decided 2026-10-09: the cleanest final map over a
+clean live preview). A voxel is a person only once a later scan sees through
+it — often from another angle, often on a revisit — and the judgement needs
+the final, loop-closed poses: before closure the two passes of `dp1f_1008_2`'s
+east corridor were 1.2–2 m apart, and an online check on those poses would
+have deleted real wall at every revisit. An online, windowed filter here
+(Removert / DUFOMap style) and a synchronous clean inside `saveMapsCB` were
+both rejected. The costs, accepted: `map.pcd` is the raw save for the minutes
+the clean runs, the live preview still shows people, and a clean that fails
+or is killed leaves the raw map.
+
+**Details that matter:**
+
+- *Input: patches + poses, not `map.pcd`.* Seeing through a voxel needs each
+  scan's origin, which only `poses.txt` gives. No clean without
+  `save_patches`. `patches/` stay raw; a rerun re-derives the cleaned map.
+- *The floor band is exempt from both rules.* The lidar samples the floor
+  thinly (12 % of a keyframe's points), so a single hit is the norm there —
+  the sparse rule took 17 % of a corridor floor before the exemption — and
+  rays grazing the floor count misses against real floor voxels.
+- *The local floor is per level.* A voxel's floor is taken from the
+  keyframes whose floor is at or below it, the highest such level, the
+  nearest in xy within `floor_radius`. The xy-nearest keyframe alone gave 1F
+  under 2F the 2F floor.
+- *Rays stop at the floor* (`clip_below_floor`). 0.4 % of the returns land
+  below the floor — long range, half the usual intensity: reflections off a
+  glossy floor. Their rays are cut at keyframe floor − (`floor_band` −
+  resolution) so they count no misses under the floor; the returns still
+  count toward `min_hits`, so a one-off reflection leaves the map and a lower
+  level seen from many keyframes stays.
+- *Thin static structure* (a handrail, a chair leg) has the person signature.
+  On the stairs of `dp1f_1008_2` 5–7 % of the points went at every height,
+  handrail height included, so nothing was singled out; still, measure
+  `dynamic_voxels` and look before tightening the ratio.
+- *It needs the dense input.* On the old 2,640-point `body_cloud` keyframes
+  the same rules removed 31 % of the map and 10–24 % of the walls.
+
+**Numbers** (`dp1f_1008_2`, 2004 dense keyframes, 15.4 M points):
+
+| Region (east corridor unless noted) | `map.pcd` points kept |
+|---|---|
+| corridor interior at person height | 12 % |
+| left / right wall | 91 % / 94 % |
+| outside the left wall (noise) | 71 % |
+| outside the right wall (real structure) | 92 % |
+| floor | 100 % |
+| stairs: treads / whole stairwell | 98.6 % / 94 % |
+| whole map | 1.2 M points removed |
+
+2 min 10 s and 1.0 GB peak on the Mac replay container (no octree is built:
+OctoMap is used only for its voxel keys and ray traversal). With both rules
+off the rewritten `map.pcd` matches pgo's point for point (0.1 mm, from
+`poses.txt`'s 6 significant digits).
+
+**Process model.** A child process, not a thread: the hit-voxel map is
+hundreds of MB that this node's heap would keep, the OOM killer must pick the
+clean (it writes `oom_score_adj 500`) rather than the TF-owning node, and it
+must survive `switch_mode`, which kills the mapping session — saving and
+switching straight to AUTO is the normal flow. `posix_spawn` of
+`<prefix>/lib/syncai_mapping/clean_map` with `POSIX_SPAWN_SETSID`, stop
+signals reset, nice `map_clean_nice`; one at a time per host through a
+`flock` on `/dev/shm/syncai_pgo/clean_map.lock`. This node reaps it from the
+1 s status timer; its destructor neither kills nor waits. The robot service
+runs with `init: true` so a clean orphaned by a mode switch is reaped too.
+A second save into the same directory SIGTERMs the running clean, and every
+clean fingerprints `poses.txt` (device, inode, size, mtime) and re-checks it
+before the rename, failing as `superseded` instead of putting the old save's
+map over the new one.
+
+**Status: `map_clean.recipe.json`**, the only surface: `converting` (written
+by this node before the save responds, again by the clean once it has the
+lock) → `ok` / `failed`, with `started_at`, `finished_at`, the `params` in
+force and, on `ok`, the `measurements` (`dynamic_voxels`, `sparse_voxels`,
+`clipped_rays`, `map_points_removed`, `map_points_kept`, `elapsed_s`, …).
+A hard kill leaves it at `converting` with the raw `map.pcd` in place: age it
+out by `started_at`. **A gridmap converted while it says `converting` was
+made from the raw map**; redo it when it flips to `ok`.
+
+**By hand** — a re-clean of any save with patches; it always starts from the
+patches, so it is idempotent:
+
+```bash
+ros2 run syncai_mapping clean_map map/<name>
+ros2 run syncai_mapping clean_map map/<name> --lock none --dynamic-min-miss 0   # sparse rule only
+#   --resolution 0.1 --max-range 20 --min-range 0.5 --lidar-height 0.481 --floor-band 0.25
+#   --max-height 2.0 --floor-radius 10 --min-hits 2 --dynamic-miss-ratio 2.0
+#   --dynamic-min-miss 3 --clip-below-floor 1 --nice 0 --started-at <ISO-8601>
+# exit 0 ok · 1 usage · 2 no poses.txt / readable patch · 3 failed · 4 interrupted
+cat map/<name>/map_clean.recipe.json
+```
 
 ### The run lifecycle
 
@@ -261,7 +372,7 @@ the values are copied into the graph at construction and on every reset, so
 
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
-| `cloud_topic` | `/pointlio/body_cloud` | `/<robot_id>/pointlio/body_cloud` | absolute; see Inputs |
+| `cloud_topic` | `/pointlio/body_cloud_dense` | `/<robot_id>/pointlio/body_cloud_dense` | absolute; see Inputs |
 | `odom_topic` | `/pointlio/lio_odom` | `/<robot_id>/pointlio/lio_odom` | |
 | `lio_reset_service` | `/pointlio/reset` | `/<robot_id>/pointlio/reset` | the `ResetLIO` client |
 | `map_frame` | `map` | | never prefixed |
@@ -286,6 +397,16 @@ the values are copied into the graph at construction and on every reset, so
 | `map_cloud_resolution` | `0.2` | | m, voxel leaf of the published merge |
 | `map_cloud_pub_period` | `3.0` | | s, floor between merges |
 | `start_on_launch` | `false` | `start_on_launch:=` argument | `true` comes up MAPPING instead of IDLE: the bag-replay knob, never the session's value |
+| `map_clean_enabled` | `true` | | spawn `clean_map` after a save with `save_patches`; `false` spawns nothing and writes no sidecar |
+| `map_clean_resolution` | `0.1` | | m, the voxel a point is judged in |
+| `map_clean_max_range` / `map_clean_min_range` | `20.0` / `0.5` | | m; rays truncated / returns off the robot's body ignored (and kept) |
+| `map_clean_lidar_height` | `0.481` | | m, lidar above the floor; keyframe z minus this is the floor |
+| `map_clean_floor_band` / `map_clean_max_height` | `0.25` / `2.0` | | m; band around the floor where neither rule applies / top of the dynamic window |
+| `map_clean_floor_radius` | `10.0` | | m; keyframes within this give a cell its floor (per level) |
+| `map_clean_min_hits` | `2` | | **int**; fewer keyframes hitting a voxel → its points go. `<= 1` = off |
+| `map_clean_dynamic_miss_ratio` / `map_clean_dynamic_min_miss` | `2.0` / `3` | | the person rule; min_miss is an **int**, `<= 0` = off |
+| `map_clean_clip_below_floor` | `true` | | stop rays at keyframe floor − (`floor_band` − resolution) |
+| `map_clean_nice` | `10` | | **int**, the clean's nice value |
 
 ### Loop verification
 
