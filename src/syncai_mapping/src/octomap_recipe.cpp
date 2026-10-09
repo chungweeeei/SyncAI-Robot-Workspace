@@ -75,7 +75,10 @@ void writeParams(std::ostringstream & os, const octomap_builder::Params & p)
   os << ",\"params\":{\"resolution\":" << p.resolution << ",\"max_range\":" << p.max_range
      << ",\"min_range\":" << p.min_range << ",\"lidar_height\":" << p.lidar_height
      << ",\"floor_band\":" << p.floor_band << ",\"max_height\":" << p.max_height
-     << ",\"floor_radius\":" << p.floor_radius << "}";
+     << ",\"floor_radius\":" << p.floor_radius << ",\"min_hits\":" << p.min_hits
+     << ",\"dynamic_miss_ratio\":" << p.dynamic_miss_ratio
+     << ",\"dynamic_min_miss\":" << p.dynamic_min_miss
+     << ",\"clip_below_floor\":" << (p.clip_below_floor ? "true" : "false") << "}";
 }
 
 }  // namespace
@@ -112,7 +115,11 @@ std::string ok(
      << ",\"leaves\":" << m.leaves << ",\"occupied_leaves\":" << m.occupied_leaves
      << ",\"free_leaves\":" << m.free_leaves << ",\"road_voxels\":" << m.road_voxels
      << ",\"road_area_m2\":" << m.road_area_m2 << ",\"occupied_voxels\":" << m.occupied_voxels
-     << ",\"elapsed_s\":" << m.elapsed_s << "}}";
+     << ",\"dynamic_voxels\":" << m.dynamic_voxels << ",\"sparse_voxels\":" << m.sparse_voxels
+     << ",\"map_points_removed\":" << m.map_points_removed
+     << ",\"map_points_kept\":" << m.map_points_kept
+     << ",\"map_pcd_rewritten\":" << (m.map_pcd_rewritten ? "true" : "false")
+     << ",\"clipped_rays\":" << m.clipped_rays << ",\"elapsed_s\":" << m.elapsed_s << "}}";
   return os.str();
 }
 

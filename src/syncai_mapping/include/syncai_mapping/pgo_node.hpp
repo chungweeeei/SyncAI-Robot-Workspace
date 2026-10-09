@@ -216,8 +216,14 @@ public:
     const std::string & error);
   // waitpid(WNOHANG) every spawned build; one log line per outcome. 1 Hz.
   void reapOctomapBuilds();
+  // SIGTERM any build still running on map_dir, before a new save replaces
+  // its input. Not waited for (it stops at its next keyframe, or later in the
+  // layer stage); the reaper logs it, and the build's own poses.txt
+  // fingerprint stops it from renaming anything over the new save.
+  void stopOctomapBuildFor(const std::filesystem::path & map_dir);
   // The OctoMap outputs of an earlier save into the same directory, and their
-  // .tmp files: their inputs (patches/, poses.txt) are about to be replaced.
+  // .tmp files (map.pcd.tmp included): their inputs (patches/, poses.txt) are
+  // about to be replaced. map.pcd itself is the save's own output, not this.
   static void removeOctomapOutputs(const std::filesystem::path & map_dir);
 
 private:

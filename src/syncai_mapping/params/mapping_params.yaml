@@ -30,7 +30,7 @@
 # changes nothing.
 /**/pgo_node:
   ros__parameters:
-    cloud_topic: /pointlio/body_cloud
+    cloud_topic: /pointlio/body_cloud_dense
     odom_topic: /pointlio/lio_odom
     # pointlio's reset service, driven by pgo/reset_mapping.
     lio_reset_service: /pointlio/reset
@@ -159,3 +159,20 @@
     # nice value of the build (int): one core for minutes, behind pointlio
     # and whatever session the operator starts next.
     octomap_nice: 10   # int, not 10.0
+    # Voxel cleaning (2026-10-09). The build counts, per hit voxel, the scans
+    # that hit it and the scans that passed through it, frees "sparse" voxels
+    # (hit by < min_hits keyframes: smear and one-off returns, 92 % of the
+    # occupied voxels outside dp1f_1008_2's corridor wall) and "dynamic" ones
+    # (passed through >= dynamic_min_miss times and >= dynamic_miss_ratio x
+    # as often as hit, between floor + floor_band and floor + max_height:
+    # people), and REPLACES map.pcd with a copy without their points, minutes
+    # after the save. min_hits 1 + dynamic_min_miss 0 = off, map.pcd untouched.
+    octomap_min_hits: 2            # int
+    octomap_dynamic_miss_ratio: 2.0
+    octomap_dynamic_min_miss: 3    # int
+    # Cut rays at the keyframe's floor - floor_band instead of carving free
+    # space under the floor (2026-10-09). The 0.4 % of returns that land below
+    # the floor -- mostly specular reflections off it, at long range -- were
+    # carving free space under 44 % of dp1f_1008_2's corridor, which takes
+    # those columns out of the road layer.
+    octomap_clip_below_floor: true

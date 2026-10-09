@@ -51,7 +51,7 @@ MIT); `pgo_node.*` is the ROS shell.
 
 | Input | Kind | Source | Used for |
 |---|---|---|---|
-| `cloud_topic` = `/<robot_id>/pointlio/body_cloud` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The keyframe's body-frame scan |
+| `cloud_topic` = `/<robot_id>/pointlio/body_cloud_dense` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The keyframe's body-frame scan: deskewed, 3× `body_cloud`'s points (2026-10-09; it was `body_cloud` before). Only x / y / z / intensity are read. |
 | `odom_topic` = `/<robot_id>/pointlio/lio_odom` | `nav_msgs/Odometry`, depth 10 | `syncai_pointlio` | The keyframe's pose in `local_frame` |
 
 The two are joined by a `message_filters` `ApproximateTime` synchroniser
@@ -130,14 +130,15 @@ next run, and the backend never does.
 
 | File | Content |
 |---|---|
-| `map.pcd` | Every keyframe's body cloud placed with its loop-closure-corrected global pose and concatenated. Binary, **not** voxel-filtered. |
+| `map.pcd` | Every keyframe's body cloud placed with its loop-closure-corrected global pose and concatenated. Binary, **not** voxel-filtered. **Replaced minutes later** by `build_octomap`'s cleaned copy (same points minus people and one-off returns) when the voxel cleaning is on — see "The OctoMap build". |
 | `patches/<i>.pcd` | (with `save_patches`) one body-frame cloud per keyframe; the directory is removed and recreated |
 | `poses.txt` | (with `save_patches`) one line per keyframe, `<i>.pcd tx ty tz qw qx qy qz`, bare basenames |
 | `octomap.recipe.json` | (with `save_patches` and `octomap_enabled`) the OctoMap build's status, written `converting` before the response goes out — see "The OctoMap build" |
-| `octomap.bt`, `octomap_road.pcd`, `octomap_occupied.pcd` | written minutes later by `build_octomap`, not by this handler |
+| `octomap.bt`, `octomap_road.pcd`, `octomap_occupied.pcd` | written minutes later by `build_octomap`, not by this handler — and, with the cleaning on, the cleaned `map.pcd` over the one above |
 
-A save with `save_patches` also deletes the previous `octomap.*` files and
-any `octomap*.tmp` first: their input is being replaced.
+A save with `save_patches` also stops a `build_octomap` still running on the
+same directory (SIGTERM) and deletes the previous `octomap.*` files, any
+`octomap*.tmp` and `map.pcd.tmp` first: their input is being replaced.
 
 That layout is what the workspace's map catalogue expects under `map/<name>/`
 and what `hba_node` (below) refines. Nothing written names the map or holds an
@@ -184,12 +185,27 @@ only if each scan is ray-cast from where it was taken, which is what
 lidar is 5.1 cm away (`syncai_pointlio`'s `t_il`), and since both rays end at
 the same point that offset is under one voxel and inside `min_range` anyway.
 
-Each patch goes through `insertPointCloud` with `discretize` on (a voxel hit
-by several rays of one scan is updated once), rays truncated at `max_range`
-(free space is carved only that far, and a point beyond it is not marked
-occupied) and returns under `min_range` dropped (the robot's own body). The
-tree is pruned and written as a binary `.bt` — max-likelihood occupancy
+Each patch goes through what `insertPointCloud` does with `discretize` on (a
+voxel hit by several rays of one scan is updated once), rays truncated at
+`max_range` (free space is carved only that far, and a point beyond it is not
+marked occupied) and returns under `min_range` dropped (the robot's own body).
+The tree is pruned and written as a binary `.bt` — max-likelihood occupancy
 only, what octovis and `octomap_server` load.
+
+**Rays stop at the floor** (`clip_below_floor`, 2026-10-09). A return more
+than `floor_band − resolution` (0.15 m) below its keyframe's floor has its ray
+cut at that height: free space is carved down to it and no further, and the
+endpoint is not inserted. About 0.4 % of the returns on `dp1f_1008_2` land
+under the floor — long range (median 15 m), half the usual intensity, most
+likely specular reflections off a glossy floor — but each one's ray runs
+metres under the floor, and one miss turns an unknown voxel free. Free space
+under the floor takes a column out of the road layer (below), so with the
+3× denser keyframes of `body_cloud_dense` the east corridor's road coverage
+fell from 87 % to 56 %. Cut at the band edge it came back to 79 % — grazing
+rays carve right down to wherever the cut is, one voxel under the band — and
+one voxel inside the band, 100 %. The clipped returns still count for the
+cleaning below: a one-off reflection leaves `map.pcd`, a lower level seen
+from many keyframes stays.
 
 **The two layers.** The free voxels themselves are useless to look at: every
 one is air a ray passed through (42.6 M of them on `dp1f_1006` at 0.05 m) and
@@ -204,10 +220,19 @@ Both are binary `pcl::PointXYZ` (12 B a point: `FIELDS x y z`), voxel centres
 in the `map` frame — what the backend's PCD reader and its point-cloud wire
 format already take.
 
-The *local* floor is the nearest keyframe's z minus `lidar_height`, looked up
-per 1 m cell within `floor_radius`. One global floor level does not work:
+The *local* floor is a nearby keyframe's z minus `lidar_height`, looked up per
+1 m cell within `floor_radius`. One global floor level does not work:
 `dp1f_1006`'s floor changes height by about 1 m across the site. A 4 m radius
-left square holes in a hall wider than 8 m; 10 m does not.
+left square holes in a hall wider than 8 m; 10 m does not. **Which** keyframe
+depends on the voxel's height too (2026-10-09): only keyframes whose floor is
+at or below the voxel (within `floor_band`) qualify, of those the highest
+level (within 1 m of the highest floor), and of that level the nearest in xy.
+On one floor that is simply the nearest keyframe. Under a second floor the
+xy-nearest keyframe is often upstairs: on `dp1f_1008_2` 51 of the 54 1F path
+cells with no road lay under 2F and took 2F's floor, 5 m off. With the
+height-aware lookup both floors' path cells are 100 % covered, and the 1F
+walls under 2F, filtered out by the same wrong floor, came back (2.3×). On
+the stairs every keyframe has road and a tread under it.
 
 The obvious road definition, "a free voxel with an occupied voxel under it",
 is wrong, and was tried first: it found 391 m² on `dp1f_1006`, the lowest-free
@@ -278,8 +303,65 @@ builds, and the second waits — its sidecar says `converting` meanwhile.
 | OOM | survives | killed first | stuck at `converting` |
 | `docker stop` / reboot | gone | gone | stuck at `converting`; rebuild by hand |
 
-Known edge, not handled: a second save into a directory whose build is still
-running. The backend never saves into an existing map directory.
+**Voxel cleaning: people and one-off returns** (2026-10-09). The build
+counts, per hit voxel, the keyframes whose return ended in it (H) and those
+whose ray passed through it (M) — per scan, never per ray. Pass 1 inserts and
+counts H, pass 2 ray-casts every patch again for M (keyed on hit voxels only:
+keying every crossed voxel would be every free voxel of the site, GBs), then:
+
+| Class | Rule | What it catches |
+|---|---|---|
+| dynamic | `M >= dynamic_min_miss`, `M >= dynamic_miss_ratio × H`, and between floor + `floor_band` and floor + `max_height` | people: hit by a keyframe or two, seen through by the rest. Not in the floor band, where grazing rays carve the real floor free |
+| sparse | `H < min_hits` (clipped returns included), not in the floor band | smear, edge returns, reflections; 92 % of the occupied voxels outside one corridor wall were single-keyframe |
+| static | the rest | |
+
+Dynamic and sparse voxels are set free in the tree (not deleted: unknown
+below is what makes a road voxel), so the `.bt` and both layers agree, and
+pass 3 rewrites `map.pcd` without their points (same concatenation pgo
+writes, poses from `poses.txt`). The floor band is exempt from the sparse
+rule because the lidar samples the floor thinly; applied there it took 17 %
+of a corridor floor.
+
+On `dp1f_1008_2` (3× dense keyframes, east corridor):
+
+| Region | `map.pcd` points kept |
+|---|---|
+| corridor interior at person height | 12 % |
+| left / right wall | 91 % / 94 % |
+| outside the left wall (noise) | 71 % |
+| outside the right wall (real structure) | 92 % |
+| floor | 100 % |
+| ceiling | 98 % |
+| stairs, treads / whole stairwell | 98.6 % / 94 % |
+
+Whole map: 1.2 M of 15.4 M points removed. On the old 2,640-point
+keyframes the same rule removed 31 % and 10–24 % of the walls: it wants
+the dense input. Thin static structure (a handrail, a chair leg) has the
+person signature (small H, large M); the stairwell lost a uniform 5–7 % at
+every height, handrail height included, so nothing was singled out there,
+but measure `dynamic_voxels` and look before tightening the ratio. Cost on
+`dp1f_1008_2`: 11 min, 1.5 GB peak (0.55 GB without cleaning).
+
+**Why the people come out here, not in `pgo_node`** (decided 2026-10-09:
+the cleanest final map over a clean preview). A voxel is a person only once a
+LATER scan sees through it -- often from another angle, often on a revisit --
+and the judgement needs the final, loop-closed poses: before closure the two
+passes of dp1f_1008_2's east corridor were 1.2-2 m apart, and an online check
+on those poses would have deleted real wall at every revisit. Both exist only
+after the save. The ray-casting is also already here. The costs, accepted:
+`map.pcd` is raw for the minutes the build runs (see the table above), the
+live preview still shows people, and a build that fails or is OOM-killed
+leaves the raw map. An online, windowed filter in `pgo_node` (Removert /
+DUFOMap style) and a synchronous one in `saveMapsCB` (11 min on dp1f_1008_2,
+past every caller's timeout) were both considered and rejected.
+
+A second save into a directory whose build is still running is handled twice
+over: `saveMapsCB` SIGTERMs the old build before replacing its input, and
+every build fingerprints `poses.txt` (device, inode, size, mtime) when it
+starts and re-checks it before renaming anything, failing as `superseded`
+instead of putting the old save's outputs — its cleaned `map.pcd` among them —
+over the new one. The new build re-marks the sidecar `converting` once it gets
+the lock, after the stopped one has written its `failed`.
 
 **By hand** — a rebuild of any saved map, with other parameters, or on a
 workstation with only PCL and OctoMap (it is not a ROS node):
@@ -289,6 +371,8 @@ ros2 run syncai_mapping build_octomap map/<name>                      # the defa
 ros2 run syncai_mapping build_octomap map/<name> --resolution 0.05 --lock none
 #   --max-range 20 --min-range 0.5 --lidar-height 0.481 --floor-band 0.25
 #   --max-height 2.0 --floor-radius 10 --nice 0 --started-at <ISO-8601>
+#   --min-hits 2 --dynamic-miss-ratio 2.0 --dynamic-min-miss 3 --clip-below-floor 1
+ros2 run syncai_mapping build_octomap map/<name> --min-hits 1 --dynamic-min-miss 0   # no cleaning
 # exit 0 ok · 1 usage · 2 no poses.txt / readable patch · 3 build or write failed · 4 interrupted
 cat map/<name>/octomap.recipe.json
 ps -o pid,ppid,sid,ni,rss,etime,cmd -C build_octomap
@@ -433,7 +517,7 @@ the values are copied into the graph at construction and on every reset, so
 
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
-| `cloud_topic` | `/pointlio/body_cloud` | `/<robot_id>/pointlio/body_cloud` | absolute; see Inputs |
+| `cloud_topic` | `/pointlio/body_cloud_dense` | `/<robot_id>/pointlio/body_cloud_dense` | absolute; see Inputs |
 | `odom_topic` | `/pointlio/lio_odom` | `/<robot_id>/pointlio/lio_odom` | |
 | `lio_reset_service` | `/pointlio/reset` | `/<robot_id>/pointlio/reset` | the `ResetLIO` client |
 | `map_frame` | `map` | | never prefixed |
@@ -463,8 +547,11 @@ the values are copied into the graph at construction and on every reset, so
 | `octomap_max_range` / `octomap_min_range` | `20.0` / `0.5` | | m; rays truncated / returns off the robot's body dropped |
 | `octomap_lidar_height` | `0.481` | | m, lidar above the floor; keyframe z minus this is the local floor. Wrong → empty road layer → `failed` |
 | `octomap_floor_band` / `octomap_max_height` | `0.25` / `2.0` | | m; road band around the local floor / top of the occupied layer |
-| `octomap_floor_radius` | `10.0` | | m; how far to look for the keyframe that gives a cell its floor |
+| `octomap_floor_radius` | `10.0` | | m; how far to look for the keyframes that give a cell its floor (per level since 2026-10-09: the highest floor at or below the voxel) |
 | `octomap_nice` | `10` | | **int**, the build's nice value |
+| `octomap_min_hits` | `2` | | **int**; a voxel hit by fewer keyframes is freed and its points leave `map.pcd` — except within ±`floor_band` of the floor. `<= 1` = off |
+| `octomap_clip_below_floor` | `true` | | cut rays at keyframe floor − (`floor_band` − resolution) instead of carving free space under the floor; their returns are not inserted but still count for the cleaning |
+| `octomap_dynamic_miss_ratio` / `octomap_dynamic_min_miss` | `2.0` / `3` | | a voxel between floor + `floor_band` and floor + `max_height` passed through ≥ min_miss times and ≥ ratio × as often as hit is a person: freed, points dropped. min_miss is an **int**, `<= 0` = off. Both off → `map.pcd` is left as saved and the `.bt` is byte-identical to a build without cleaning |
 
 ### Loop verification
 

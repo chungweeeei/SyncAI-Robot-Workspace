@@ -443,7 +443,8 @@ void PGONode::loadParameters()
 
   // The post-save OctoMap build. Handed to build_octomap on its command line
   // and recorded in the sidecar, so what a map was built with is on disk
-  // beside it. All doubles except octomap_nice.
+  // beside it. All doubles except octomap_nice, octomap_min_hits and
+  // octomap_dynamic_min_miss.
   m_node_config.octomap_enabled =
     this->declare_parameter("octomap_enabled", m_node_config.octomap_enabled);
   m_node_config.octomap_nice = this->declare_parameter("octomap_nice", m_node_config.octomap_nice);
@@ -455,12 +456,21 @@ void PGONode::loadParameters()
   oc.floor_band = this->declare_parameter("octomap_floor_band", oc.floor_band);
   oc.max_height = this->declare_parameter("octomap_max_height", oc.max_height);
   oc.floor_radius = this->declare_parameter("octomap_floor_radius", oc.floor_radius);
+  oc.min_hits = this->declare_parameter("octomap_min_hits", oc.min_hits);
+  oc.dynamic_miss_ratio =
+    this->declare_parameter("octomap_dynamic_miss_ratio", oc.dynamic_miss_ratio);
+  oc.dynamic_min_miss = this->declare_parameter("octomap_dynamic_min_miss", oc.dynamic_min_miss);
+  oc.clip_below_floor = this->declare_parameter("octomap_clip_below_floor", oc.clip_below_floor);
   RCLCPP_INFO(
     this->get_logger(),
     "[PGONode] octomap after save: %s | %.3f m, range %.1f-%.1f m, lidar height %.3f m, floor "
-    "band %.2f m, max height %.1f m, floor radius %.1f m, nice %d",
+    "band %.2f m, max height %.1f m, floor radius %.1f m, nice %d | cleaning: min hits %d, "
+    "dynamic miss ratio %.2f, dynamic min miss %d (map.pcd %s), clip below floor %s",
     m_node_config.octomap_enabled ? "on" : "off", oc.resolution, oc.min_range, oc.max_range,
-    oc.lidar_height, oc.floor_band, oc.max_height, oc.floor_radius, m_node_config.octomap_nice);
+    oc.lidar_height, oc.floor_band, oc.max_height, oc.floor_radius, m_node_config.octomap_nice,
+    oc.min_hits, oc.dynamic_miss_ratio, oc.dynamic_min_miss,
+    oc.cleaning() ? "replaced by the cleaned copy" : "left raw",
+    oc.clip_below_floor ? "on" : "off");
 
   // The five values the launch is expected to have overridden. A value here
   // without a robot_id prefix means the node was started bare, or the
@@ -1142,6 +1152,7 @@ void PGONode::saveMapsCB(
       if (std::filesystem::exists(poses_txt_path)) {
         std::filesystem::remove(poses_txt_path);
       }
+      stopOctomapBuildFor(p_dir);
       removeOctomapOutputs(p_dir);
       RCLCPP_INFO(this->get_logger(), "Patches Path: %s", patches_dir.string().c_str());
     }
@@ -1284,6 +1295,14 @@ std::string PGONode::startOctomapBuild(const std::filesystem::path & map_dir, bo
     num(oc.max_height),
     "--floor-radius",
     num(oc.floor_radius),
+    "--min-hits",
+    std::to_string(oc.min_hits),
+    "--dynamic-miss-ratio",
+    num(oc.dynamic_miss_ratio),
+    "--dynamic-min-miss",
+    std::to_string(oc.dynamic_min_miss),
+    "--clip-below-floor",
+    oc.clip_below_floor ? "1" : "0",
     "--nice",
     std::to_string(m_node_config.octomap_nice),
     "--started-at",
@@ -1379,6 +1398,25 @@ void PGONode::reapOctomapBuilds()
   }
 }
 
+void PGONode::stopOctomapBuildFor(const std::filesystem::path & map_dir)
+{
+  std::error_code ec;
+  const auto target = std::filesystem::weakly_canonical(map_dir, ec);
+  for (const auto & child : m_octomap_children) {
+    std::error_code cec;
+    if (std::filesystem::weakly_canonical(child.dir, cec) != target) continue;
+    // Only a child not yet reaped is in the list, so the pid is still ours
+    // (a zombie at worst) and cannot have been recycled.
+    if (kill(child.pid, SIGTERM) == 0) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[PGONode][octomap] a new save into %s: stopping build_octomap pid %d, which was "
+        "building the previous one",
+        map_dir.c_str(), child.pid);
+    }
+  }
+}
+
 void PGONode::removeOctomapOutputs(const std::filesystem::path & map_dir)
 {
   std::error_code ec;
@@ -1387,6 +1425,8 @@ void PGONode::removeOctomapOutputs(const std::filesystem::path & map_dir)
         octomap_recipe::kSidecarFile}) {
     std::filesystem::remove(map_dir / name, ec);
   }
+  // The cleaned map.pcd a killed build may have left half-written.
+  std::filesystem::remove(map_dir / (std::string(octomap_builder::kMapFile) + ".tmp"), ec);
   // And any temp file a killed build left: `<output>.tmp`, and the sidecar's
   // per-process `octomap.recipe.json.<pid>.tmp`.
   for (const auto & entry : std::filesystem::directory_iterator(map_dir, ec)) {

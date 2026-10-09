@@ -2,7 +2,14 @@
 //
 //   build_octomap <map_dir> [--resolution 0.1] [--max-range 20] [--min-range 0.5]
 //       [--lidar-height 0.481] [--floor-band 0.25] [--max-height 2.0]
-//       [--floor-radius 10] [--nice 0] [--lock <path>|none] [--started-at <ISO-8601>]
+//       [--floor-radius 10] [--min-hits 2] [--dynamic-miss-ratio 2.0]
+//       [--dynamic-min-miss 3] [--clip-below-floor 1] [--nice 0] [--lock <path>|none]
+//       [--started-at <ISO-8601>]
+//
+// With --min-hits > 1 or --dynamic-min-miss > 0 (the defaults) it also
+// REPLACES map.pcd with a copy minus the sparse and dynamic voxels;
+// --min-hits 1 --dynamic-min-miss 0 --clip-below-floor 0 builds exactly what
+// it built before any of this (byte-identical .bt) and leaves map.pcd alone.
 //
 // pgo_node spawns it after a successful save_maps (detached, nice 10); run by
 // hand it rebuilds any saved map: `ros2 run syncai_mapping build_octomap
@@ -53,6 +60,8 @@ void usage()
                "[--min-range 0.5]\n"
                "         [--lidar-height 0.481] [--floor-band 0.25] [--max-height 2.0] "
                "[--floor-radius 10]\n"
+               "         [--min-hits 2] [--dynamic-miss-ratio 2.0] [--dynamic-min-miss 3]\n"
+               "         [--clip-below-floor 1]\n"
                "         [--nice 0] [--lock /dev/shm/syncai_pgo/build_octomap.lock|none] "
                "[--started-at <ISO-8601 UTC>]\n";
 }
@@ -154,6 +163,17 @@ int main(int argc, char ** argv)
       good = parseDouble(v, params.max_height);
     } else if (a == "--floor-radius") {
       good = parseDouble(v, params.floor_radius);
+    } else if (a == "--min-hits") {
+      good = parseDouble(v, d) && d == static_cast<int>(d);
+      params.min_hits = static_cast<int>(d);
+    } else if (a == "--dynamic-miss-ratio") {
+      good = parseDouble(v, params.dynamic_miss_ratio) && params.dynamic_miss_ratio > 0.0;
+    } else if (a == "--dynamic-min-miss") {
+      good = parseDouble(v, d) && d == static_cast<int>(d);
+      params.dynamic_min_miss = static_cast<int>(d);
+    } else if (a == "--clip-below-floor") {
+      good = (v == "0" || v == "1");
+      params.clip_below_floor = (v == "1");
     } else if (a == "--nice") {
       good = parseDouble(v, d) && d == static_cast<int>(d);
       nice_value = static_cast<int>(d);
@@ -216,19 +236,28 @@ int main(int argc, char ** argv)
     writeFailed("interrupted while waiting for another build");
     return 4;
   }
+  // Once more after the lock: the build that held it may have been an earlier
+  // save of this same directory, stopped by pgo_node, and its "failed:
+  // interrupted" may have landed after the "converting" above.
+  try {
+    recipe::writeAtomic(dir, recipe::converting(params, started_at));
+  } catch (const std::exception & e) {
+    std::cerr << "[build_octomap] " << e.what() << "\n";
+  }
 
   std::cout << "[build_octomap] building " << dir.string() << " at " << params.resolution
             << " m (max range " << params.max_range << " m)" << std::endl;
   ob::Measurements m;
   int rc = 0;
   try {
-    const bool done = ob::build(dir, params, m, [](size_t done, size_t total, size_t points) {
-      if (done % 100 == 0) {
-        std::cout << "[build_octomap] " << done << "/" << total << " keyframes, " << points
-                  << " points" << std::endl;
-      }
-      return g_stop_signal == 0;
-    });
+    const bool done =
+      ob::build(dir, params, m, [](const char * stage, size_t done, size_t total, size_t points) {
+        if (done % 100 == 0) {
+          std::cout << "[build_octomap] " << stage << " " << done << "/" << total << " keyframes, "
+                    << points << " points" << std::endl;
+        }
+        return g_stop_signal == 0;
+      });
     if (!done) {
       writeFailed(
         std::string("interrupted (") + (g_stop_signal == SIGINT ? "SIGINT" : "SIGTERM") + ")");
@@ -244,8 +273,11 @@ int main(int argc, char ** argv)
                 << " skipped=" << m.skipped_patches << " points=" << m.points
                 << " leaves=" << m.leaves << " occupied_leaves=" << m.occupied_leaves
                 << " free_leaves=" << m.free_leaves << " road_voxels=" << m.road_voxels << " ("
-                << m.road_area_m2 << " m2) occupied_voxels=" << m.occupied_voxels << " in "
-                << m.elapsed_s << " s" << std::endl;
+                << m.road_area_m2 << " m2) occupied_voxels=" << m.occupied_voxels
+                << " dynamic_voxels=" << m.dynamic_voxels << " sparse_voxels=" << m.sparse_voxels
+                << " map_points_removed=" << m.map_points_removed
+                << " map_points_kept=" << m.map_points_kept << " clipped_rays=" << m.clipped_rays
+                << " in " << m.elapsed_s << " s" << std::endl;
     }
   } catch (const ob::InputError & e) {
     writeFailed(e.what());

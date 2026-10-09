@@ -102,8 +102,11 @@ def launch_setup(context, *args, **kwargs):
     # starts the front end.
     overrides = {
         # pointlio's outputs live in its own namespace, not pgo's, so relative
-        # names cannot reach them.
-        "cloud_topic": f"/{robot_id}/pointlio/body_cloud",
+        # names cannot reach them. body_cloud_dense, not body_cloud: the same
+        # deskewed scan at 3x the points (pointlio's dense_filter_num), which
+        # is what puts enough floor and wall into each keyframe for the map
+        # and the OctoMap; nothing else subscribes to it.
+        "cloud_topic": f"/{robot_id}/pointlio/body_cloud_dense",
         "odom_topic": f"/{robot_id}/pointlio/lio_odom",
         # pointlio's world_frame override, which pgo's map -> local_frame TF
         # has to correct; see the header.
