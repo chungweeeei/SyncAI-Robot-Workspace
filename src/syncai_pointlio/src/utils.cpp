@@ -1,13 +1,22 @@
 #include "syncai_pointlio/utils.h"
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
-pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range, double max_range)
+#include <numeric>
+
+pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range, double max_range, int dense_filter_num, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out)
 {
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
     const size_t point_num = static_cast<size_t>(msg->width) * static_cast<size_t>(msg->height);
     if (filter_num < 1)
         filter_num = 1;
     cloud->reserve(point_num / filter_num + 1);
+    const bool dense = dense_out && dense_filter_num > 0 && dense_filter_num < filter_num;
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr dense_cloud;
+    if (dense)
+    {
+        dense_cloud.reset(new pcl::PointCloud<pcl::PointXYZINormal>);
+        dense_cloud->reserve(point_num / dense_filter_num + 1);
+    }
 
     sensor_msgs::PointCloud2ConstIterator<float> it_x(*msg, "x");
     sensor_msgs::PointCloud2ConstIterator<float> it_y(*msg, "y");
@@ -28,7 +37,9 @@ pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::ms
     {
         float intensity = 0.0f;
         if (has_intensity) { intensity = *(*it_i); ++(*it_i); }
-        if (idx % filter_num != 0)
+        const bool keep = idx % filter_num == 0;
+        const bool keep_dense = dense && idx % dense_filter_num == 0;
+        if (!keep && !keep_dense)
             continue;
         float x = *it_x, y = *it_y, z = *it_z;
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
@@ -42,18 +53,40 @@ pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::ms
         p.z = z;
         p.intensity = intensity;
         p.curvature = 0.0f; // no per-point time -> snapshot, no deskew
-        cloud->push_back(p);
+        if (keep)
+            cloud->push_back(p);
+        if (keep_dense)
+            dense_cloud->push_back(p);
     }
+    if (dense_out)
+        *dense_out = dense ? dense_cloud : cloud;
     return cloud;
 }
 
-pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::livox2PCL(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg, int filter_num, double min_range, double max_range)
+pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::livox2PCL(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg, int filter_num, double min_range, double max_range, int dense_filter_num, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out)
 {
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
     int point_num = msg->point_num;
     cloud->reserve(point_num / filter_num + 1);
-    for (int i = 0; i < point_num; i += filter_num)
+    // One pass for both clouds. The step is the gcd so every index either
+    // cloud wants is visited; the main cloud keeps exactly the indices it kept
+    // before the dense output existed (i % filter_num == 0), so what the
+    // filter sees does not change with dense_filter_num.
+    const bool dense = dense_out && dense_filter_num > 0 && dense_filter_num < filter_num;
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr dense_cloud;
+    int step = filter_num;
+    if (dense)
     {
+        dense_cloud.reset(new pcl::PointCloud<pcl::PointXYZINormal>);
+        dense_cloud->reserve(point_num / dense_filter_num + 1);
+        step = std::gcd(filter_num, dense_filter_num);
+    }
+    for (int i = 0; i < point_num; i += step)
+    {
+        const bool keep = i % filter_num == 0;
+        const bool keep_dense = dense && i % dense_filter_num == 0;
+        if (!keep && !keep_dense)
+            continue;
         if ((msg->points[i].line < 4) && ((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00))
         {
 
@@ -68,9 +101,14 @@ pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::livox2PCL(const livox_ros_driv
             p.z = z;
             p.intensity = msg->points[i].reflectivity;
             p.curvature = msg->points[i].offset_time / 1000000.0f;
-            cloud->push_back(p);
+            if (keep)
+                cloud->push_back(p);
+            if (keep_dense)
+                dense_cloud->push_back(p);
         }
     }
+    if (dense_out)
+        *dense_out = dense ? dense_cloud : cloud;
     return cloud;
 }
 

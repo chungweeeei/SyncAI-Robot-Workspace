@@ -79,6 +79,11 @@ struct SyncPackage
 {
   Vec<IMUData> imus;
   CloudType::Ptr cloud;
+  // The same scan decimated by dense_filter_num instead of lidar_filter_num
+  // (a superset of `cloud`'s points), or `cloud` itself when the dense output
+  // is off. Never seen by the filter: only deskewed and published for
+  // mapping (body_cloud_dense), so the LIO solution does not depend on it.
+  CloudType::Ptr dense_cloud;
   double cloud_start_time = 0.0;
   double cloud_end_time = 0.0;
 };

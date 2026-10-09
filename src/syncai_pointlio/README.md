@@ -54,8 +54,9 @@ on having a subscriber; the TF is not.
 | Output | Type | Notes |
 |---|---|---|
 | `lio_odom` | `nav_msgs/Odometry` | `world_frame → body_frame`, 6-DOF. Body-frame linear velocity and the output model's own angular-velocity estimate in `twist` (see the `syncai_lio_bridge` README for why the bridge uses the gyro instead). |
-| `body_cloud` | `sensor_msgs/PointCloud2` in `body_frame` | The scan transformed lidar → IMU. What `pgo`, the `localizer`, both costmaps' obstacle layers and the backend's live-cloud WebSocket read. |
-| `world_cloud` | `sensor_msgs/PointCloud2` in `world_frame` | Display only: the whole frame moved with the end-of-scan pose. The points that enter the map are transformed one by one at their own stamps. |
+| `body_cloud` | `sensor_msgs/PointCloud2` in `body_frame` | The scan (every `lidar_filter_num`-th point), **motion-compensated into the body frame at the end-of-scan stamp** — the frame and stamp `lio_odom` carries (see "Deskew" below). What the `localizer`, both costmaps' obstacle layers and the backend's live-cloud WebSocket read. |
+| `body_cloud_dense` | `sensor_msgs/PointCloud2` in `body_frame`, depth 10 | The same deskewed scan decimated by `dense_filter_num` (3× the points at the defaults), x / y / z / intensity only (16 B a point, ~0.12 MB a scan). For mapping: `pgo` (`syncai_mapping`) keyframes are taken from it. Never seen by the filter, so the LIO solution does not depend on it; built in the same ingest pass and published only while subscribed. |
+| `world_cloud` | `sensor_msgs/PointCloud2` in `world_frame` | Display only: the deskewed `body_cloud` moved with the end-of-scan pose. |
 | `lio_path` | `nav_msgs/Path` | Accumulated trajectory for rviz. Published empty, ungated, on a reset so rviz drops the old run. |
 | TF `world_frame → body_frame` | `<robot_id>/pointlio_odom → <robot_id>/pointlio_body` | Broadcast from the timer once the builder reaches `MAPPING`. |
 | `reset` | `syncai_common/srv/ResetLIO` | Start over in place — see below. |
@@ -83,6 +84,26 @@ message stamp, went through the full 6-DOF chain — a ~15° pitch disagreement
 between rviz2 and the operator UI. The launch file's frame overrides are where
 this is enforced; the YAML values (`lidar` / `body`) are only fallbacks for
 running the node bare.
+
+### Deskew
+
+Point-LIO itself needs no undistortion pass — every point group is projected
+with the state of its own instant and updates it (`map_builder.cpp`). The
+*published* clouds used to skip that: `body_cloud` was the raw scan put through
+the lidar → IMU extrinsic only, so every point carried the robot's motion
+during the 0.1 s scan. A keyframe taken while turning smeared each wall into a
+fan; on `dp1f_1008_2` turning keyframes had twice the wall thickness of
+straight ones (5–95 % width 0.56 m vs 0.22 m), which became double walls in
+`map.pcd` and occupied noise beside every wall in the OctoMap.
+
+Since 2026-10-09 `MapBuilder` records the post-update state after every group
+of a MAPPING frame (plus the end state), and `deskewToEndBody` places each
+published point with the state of the last group at or before its time, then
+expresses it in the body frame at `cloud_end_time`. The group times are
+VoxelGrid means of the per-point offsets, not a subset of them, hence "at or
+before" rather than an exact match; the error is a millisecond of motion. The
+MAP_INIT frame has no groups and is published with the end state alone, as
+before. Each deskew runs only when its output has a subscriber.
 
 ### The reset contract
 
@@ -132,7 +153,8 @@ The launch layers the two frame names on top.
 | `lidar_type` | `0` | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
 | `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is fixed at 9.81. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs the per-frame `process()` time as a WARN |
-| `lidar_filter_num` | `6` | | Keep every n-th point |
+| `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
+| `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
 | `scan_resolution` / `map_resolution` | `0.25` / `0.3` | | Voxel sizes. Coarser than fastlio2's 0.15: every point group costs an EKF update, keep headroom on the Jetson. |
 | `cube_len` / `det_range` / `move_thresh` | `300.0` / `60.0` / `1.5` | | Local-map management. **Write floats**: the node declares doubles, and a bare `300` is an int64 override → `InvalidParameterTypeException` at startup. |
