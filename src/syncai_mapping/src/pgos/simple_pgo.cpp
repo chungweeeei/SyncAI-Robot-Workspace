@@ -113,6 +113,19 @@ bool SimplePGO::addKeyPose(const CloudWithPose & cloud_with_pose)
       idx - 1, idx, gtsam::Pose3(gtsam::Rot3(r_between), gtsam::Point3(t_between)), noise));
   }
 
+  // Tilt anchor: world "up" in this keyframe's body frame, as the LIO
+  // measured it. Taken from the LOCAL (LIO) rotation, not init_r: the local
+  // frame is gravity-aligned by construction, while init_r carries whatever
+  // the last optimisation did. The global frame's z is the local frame's z
+  // (node 0's prior is its local pose and loops only rotate about z), so the
+  // two "ups" are the same vector. See gravity_prior_factor.h.
+  if (m_config.keyframe_tilt_sigma_deg > 0.0) {
+    const double s = m_config.keyframe_tilt_sigma_deg * M_PI / 180.0;
+    const V3D up = cloud_with_pose.pose.r.transpose() * V3D::UnitZ();
+    m_graph.add(GravityPriorFactor(
+      idx, gtsam::Vector3(up.x(), up.y(), up.z()), gtsam::noiseModel::Isotropic::Sigma(3, s)));
+  }
+
   // Finally, store the keyframe
   KeyPoseWithCloud item;
   item.time = cloud_with_pose.pose.second;
@@ -291,9 +304,18 @@ void SimplePGO::smoothAndUpdate()
       // handed a z or tilt request with sigma ~0.3 m / 18 deg.
       if (m_config.loop_planar_correction) {
         // World-frame x / y / yaw only; z / roll / pitch are not in the error.
+        // x / y and yaw each have their own sigma (loop_noise_xy_sigma_m,
+        // loop_noise_yaw_sigma_deg); the fork's "variance = fitness" made
+        // the loop too weak to move either -- see the config comments.
+        const double xy_var = m_config.loop_noise_xy_sigma_m > 0.0
+                                ? m_config.loop_noise_xy_sigma_m * m_config.loop_noise_xy_sigma_m
+                                : pair.score;
+        const double yaw_sigma = m_config.loop_noise_yaw_sigma_deg * M_PI / 180.0;
+        const double yaw_var =
+          m_config.loop_noise_yaw_sigma_deg > 0.0 ? yaw_sigma * yaw_sigma : pair.score;
         m_graph.add(PlanarLoopFactor(
           pair.target_id, pair.source_id, pair.planar_meas,
-          gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3::Ones() * pair.score)));
+          gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(xy_var, xy_var, yaw_var))));
         continue;
       }
       const double rpz = m_config.loop_noise_var_roll_pitch_z;

@@ -71,6 +71,25 @@
     # Only used with loop_planar_correction false: BetweenFactor variance on
     # roll / pitch / z. x / y / yaw always use the registration fitness.
     loop_noise_var_roll_pitch_z: 0.01
+    # Only used with loop_planar_correction true: the planar loop factor's yaw
+    # sigma in DEGREES (x / y keep variance = fitness). Fitness-as-rad^2, the
+    # fork's convention, is an 18-22 deg sigma that ~500 odometry edges
+    # (~1 deg) simply outvote: on dp1f_1008_2 the loop closing the east
+    # corridor asked for 8 deg and was applied with none, leaving the two
+    # passes 1.1-1.6 m apart. <= 0 restores that behaviour.
+    loop_noise_yaw_sigma_deg: 1.5
+    # Same for the planar loop factor's x / y, in METRES. Fitness-as-m^2 is
+    # a 0.25-0.39 m sigma that the odometry outvotes: with yaw fixed,
+    # dp1f_1008_2's east corridor still closed only to 0.4-0.5 m; 0.1 m left
+    # 0.08-0.11 m, 0.05 m left 0.01-0.04 m. dp1f_1006 (already closed) stays
+    # within 8 cm at either. <= 0 restores variance = fitness.
+    loop_noise_xy_sigma_m: 0.05
+    # Per-keyframe tilt anchor, sigma in DEGREES: each keyframe's roll / pitch
+    # w.r.t. gravity held to Point-LIO's (gravity-aligned) value. Goes with
+    # the yaw sigma above: a loop that can really correct yaw otherwise gets
+    # it partly as pitch, and the chain climbs or sinks -- 0.8 m median,
+    # 2.2 m worst on dp1f_1008_2 without it. <= 0 = off.
+    keyframe_tilt_sigma_deg: 0.5
     loop_submap_half_range: 5     # int, not 5.0 (see the header)
     submap_resolution: 0.1
     min_loop_detect_duration: 5.0
