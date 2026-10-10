@@ -141,7 +141,7 @@ The next package to move out gets an entry there, not a new file.
 
 **The Rust packages build on an underlay baked into the image.** Besides the
 toolchain (rustup, `cargo-ament-build`, `colcon-cargo` / `colcon-ros-cargo`,
-`libclang-dev`), the `dev` stage builds a ros2-rust underlay into
+`libclang-dev`), the `rust-underlay` stage builds a ros2-rust underlay into
 `/opt/ros2_rust_underlay` (2026-10): ros2-rust's own `ros2_rust_humble.repos`
 minus `examples`, plus `rclrs` from source (crates.io 0.7.0 does not compile
 against the generator on main), with the three ros2-rust repos pinned to SHAs
@@ -317,16 +317,31 @@ not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
 plus any manual deps (Sophus / GTSAM are built from source; `syncai_pointlio`
 needs Sophus, `syncai_mapping` GTSAM).
 
-The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
-→ `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
-— keep it free of anything that changes often so its cache survives) → `dev`
-(rviz2, colcon, byobu, Node.js, the VizionSDK `.deb`, `ros-humble-octomap` for
-`syncai_mapping`'s `clean_map` in a stanza of its own near the end, and the Rust toolchain
-for `rclrs` — rustup under `/opt/rust`, `libclang-dev`, `cargo-ament-build`,
-`colcon-cargo` / `colcon-ros-cargo`, plus the ros2-rust underlay — rclrs,
-`rosidl_generator_rs` and the rebuilt standard interfaces — in
-`/opt/ros2_rust_underlay`; the workspace is
-bind-mounted at `~/robot_ws` and built by hand). Compose builds `target: dev`.
+The `Dockerfile` is multi-stage, and since 2026-10 every slow build is a stage
+of its own that depends only on `base`, so BuildKit runs them in parallel and
+no `dev` edit invalidates them: `base` (ros-base + cyclonedds + uid-1000 user)
+→ `deps-builder` (compiler + Boost / TBB / Eigen, builds nothing) → `livox` /
+`gtsam` / `sophus` (one library each, installed with `DESTDIR=/out`; GTSAM is
+the slow one — keep these stages free of anything that changes often so their
+cache survives); `base` → `rust-underlay` (rustup under `/opt/rust`,
+`cargo-ament-build`, and the ros2-rust underlay — rclrs, `rosidl_generator_rs`
+and the rebuilt standard interfaces — in `/opt/ros2_rust_underlay`; it was two
+stanzas of `dev` until then, so a GStreamer or Node edit re-ran the whole
+underlay build); `base` → `dev` (colcon, byobu, Node.js, the VizionSDK `.deb`,
+`ros-humble-octomap` for `syncai_mapping`'s `clean_map`, `libclang-dev` +
+`colcon-cargo` / `colcon-ros-cargo` for the workspace's Rust packages, and one
+`COPY --from` per stage above; the workspace is bind-mounted at `~/robot_ws` and
+built by hand). There is **no rviz2**, `pcl_ros` or `pointcloud_to_laserscan`
+in the image since 2026-10 (the robot has no display; nothing here depends on
+the other two), and `syncai_costmap_2d`'s `rviz:=true` test launch is the only
+thing here that would start rviz2. `ros-humble-map-msgs` and
+`ros-humble-laser-geometry` are listed explicitly because rviz2 and
+`pointcloud_to_laserscan` were what used to pull them in (`syncai_costmap_2d`
+needs both; `rosdep check` names them if they go missing). Most of `dev`'s largest layer is
+VTK + Qt5 regardless: `libpcl-dev` hard-Depends on them, nothing here links
+them, and apt cannot leave them out. `chmod -R a+w /opt/rust` runs once, at the end of
+`rust-underlay`: a second walk is what made the old underlay layer carry a
+duplicate 516 MB toolchain. Compose builds `target: dev`.
 `dev` carries **no Python web stack** any more: fastapi / uvicorn / sqlalchemy /
 temporalio / open3d / kokoro-onnx were installed here from
 `src/syncai_backend/requirements.txt` until 2026-09, and the `COPY` that read

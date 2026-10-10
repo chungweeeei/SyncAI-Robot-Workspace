@@ -141,7 +141,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── doc/                          # design proposals (agent / MCP integration; not implemented)
 ├── map/                          # LIO map output per map name (map.pcd, poses.txt, gridmap.*, optional keepout.*) — gitignored
 ├── log/stack/<robot_id>/         # multilog capture of every byobu pane — gitignored
-├── Dockerfile                    # multi-stage: base → deps-builder (GTSAM/Sophus/Livox-SDK2) → dev
+├── Dockerfile                    # multi-stage: base → livox / gtsam / sophus + rust-underlay (parallel) → dev
 ├── docker-compose.yml            # infra: postgres (5432) / pgadmin (5050) / temporal (7233) / temporal_ui (8081)
 ├── docker-compose.robots.yml     # robot01 (host networking, nvidia runtime, cameras, audio, D-Bus, avahi); `include`d above
 ├── docker-compose.build.yaml     # standalone one-shot `colcon build` service (same image, own project name)
@@ -276,8 +276,8 @@ throwaway build container is gone when it exits, so the compose route only
 it still reports today are either satisfied by the image under another name or
 harmless.
 
-GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage, and
-OctoMap (`ros-humble-octomap`, for `clean_map`) from its `dev` stage. Two
+GTSAM, Sophus and Livox-SDK2 come from the image's `livox` / `gtsam` /
+`sophus` stages, and OctoMap (`ros-humble-octomap`, for `clean_map`) from its `dev` stage. Two
 things trip a fresh checkout:
 
 - `colcon.meta` (found only because colcon's default is the relative
