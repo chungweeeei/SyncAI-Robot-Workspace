@@ -10,7 +10,7 @@ each construct their own `Costmap2DROS` inside their own process:
 | Owner | Costmap | Typical config |
 |---|---|---|
 | `syncai_global_planner` | `global_costmap` | Full-map, `global_frame: map`, static + obstacle + inflation (+ keepout filter) |
-| `syncai_controller` | `local_costmap` | 3×3 m rolling window, `global_frame: odom`, obstacle + inflation |
+| `syncai_controller` | `local_costmap` | 4×4 m rolling window (3×3 until MPPI, 2026-10), `global_frame: odom`, obstacle + inflation |
 
 `costmap_2d_node` also exists as a standalone runner, used only by the three test
 launch files in this package.

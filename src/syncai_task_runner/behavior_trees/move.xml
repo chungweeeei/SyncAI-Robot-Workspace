@@ -31,16 +31,21 @@
   default_server_timeout: it answers after taking the costmap lock, which a
   costmap update can hold for longer than 20 ms. A timeout keeps the path (a
   replan nobody can justify is the thing this tree exists to avoid; the next
-  check is a second away and RPP holds the robot meanwhile). A timeout WARN in
+  check is a second away and the controller holds the robot meanwhile). A timeout WARN in
   the task_runner log on every tick means the costmap update and the check
   have phase-locked: raise server_timeout here.
 
   FollowPath gets three retries, and they refill (retry_refill_time, 2026-10).
   The count is how long the robot waits for a blocker that stands in front of
-  it: this stack has no local avoidance (RPP is a tracker) and no Wait
-  recovery, so once RPP refuses to drive, the wait is failure_tolerance (3 s)
-  times retries + 1, with a local costmap clear between attempts (re-marked in
-  0.2 s; RPP zeroes its accel baseline on every refusal, so no lurch). One
+  it. FollowPath is MPPI since 2026-10 (controller_server_params.yaml), which
+  bends round a blocker beside the path inside the local costmap; one that
+  closes the way leaves it no feasible trajectory ("Optimizer fail to compute
+  path"), and there is no Wait recovery, so from then on the wait is
+  failure_tolerance (3 s) times retries + 1, with a local costmap clear
+  between attempts (re-marked in 0.2 s; both controllers zero their accel
+  baseline on every refusal, so no lurch). Until then RPP was FollowPath, a
+  tracker that refused at any blocker in its projection; it is still loaded
+  as FollowPathRPP, and controller_id="FollowPathRPP" below is the whole A/B. One
   retry (~6 s) was enough for a person walking across and not for one
   standing and talking; three (~12 s) covers that, at the price of a task
   failure taking ~12 s instead of ~6 s to declare. The progress checker's

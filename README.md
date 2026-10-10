@@ -28,7 +28,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                            ┌─────────────────┴─────────────────┐
                                            ▼                                   ▼
                                  syncai_global_planner                         syncai_controller
-                                   (SmacPlanner2D)                   (Regulated Pure Pursuit)
+                                   (SmacPlanner2D)                     (MPPI / RPP plugins)
                                            │                                   │
                                            └───────── syncai_costmap_2d ───────┘
                                                 (global / local costmaps)          cmd_vel ──▶ syncai_driver_manager ──UDP──▶ gait controller
@@ -54,7 +54,8 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
 | `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
 | `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine and SmacPlanner2D plugins (Smac is configured) |
-| `syncai_controller` | `follow_path` action server; Regulated Pure Pursuit plugin, with its own linear-accel clamp (no velocity smoother) |
+| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and its own Regulated Pure Pursuit as `FollowPathRPP`, each clamping its own acceleration (no velocity smoother) |
+| `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan` |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |

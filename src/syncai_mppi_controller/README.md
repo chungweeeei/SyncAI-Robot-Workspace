@@ -85,7 +85,7 @@ how it differs from upstream's default.
 | `motion_model` | `DiffDrive` | `DiffDrive` | The quadruped can strafe, but `syncai_driver_manager`'s `scale_left` / `scale_right` are unmeasured. Switch to `Omni` together with that calibration. |
 | `vx_max` / `vx_min` | 0.60 / 0.0 | 0.5 / -0.35 | Same calibration as RPP's `desired_linear_vel` and the driver_manager scales. No reversing, as with RPP's `allow_reversing: false`. |
 | `wz_max` | 0.65 | 1.9 | Same calibration as RPP's `rotate_to_heading_angular_vel`. |
-| `time_steps` × `model_dt` | 40 × 0.05 = 2.0 s | 56 × 0.05 | Sized to the 4×4 m local costmap: 2.0 s at 0.60 m/s is 1.2 m, which leaves the footprint room inside the 2 m half-width. A trajectory point off the costmap scores as a collision. |
+| `time_steps` × `model_dt` | 40 × 0.05 = 2.0 s | 56 × 0.05 | Sized to the 4×4 m local costmap: 2.0 s at 0.60 m/s is 1.2 m, which leaves the footprint room inside the 2 m half-width. With `consider_footprint`, a rolled-out footprint that crosses the costmap edge reads as LETHAL (`footprintCost()` treats an off-map vertex as lethal), so a horizon longer than the window makes MPPI slow down for no obstacle. |
 | `batch_size` | 1000 | 1000 | Measure CPU on the Orin before raising. |
 | `model_dt` vs `controller_frequency` | 0.05 / 20 Hz | — | **Keep them equal.** `Optimizer::setOffset()` turns the warm-start shift on only when they match. It warns when the controller period is shorter than `model_dt`, and **throws** when it is longer, from inside `initialize()`, which takes `controller_server` down at startup. So lowering `controller_frequency` alone, for CPU, crashes the server; raise `model_dt` with it. |
 | `max_linear_accel` / `max_angular_accel` | 1.0 / 3.2 | not in Humble | Added here, see above. |

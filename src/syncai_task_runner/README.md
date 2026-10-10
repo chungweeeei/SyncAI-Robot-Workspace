@@ -156,12 +156,16 @@ or a missing robot pose keeps the path. A failure in either branch clears
 common cause.
 
 `FollowPath` gets **three** retries (2026-10; one before), and the count is a
-wait, not a robustness knob: this stack has no local avoidance (RPP is a
-tracker) and no `Wait` recovery, so once RPP refuses to drive, how long the
-robot stands waiting for a blocker to leave is `failure_tolerance` (3 s) ×
+wait, not a robustness knob. The controller behind `FollowPath` is MPPI since
+2026-10 (`syncai_mppi_controller`), which bends round a blocker beside the
+path inside the local costmap; a blocker that closes the way leaves it with no
+feasible trajectory, and there is no `Wait` recovery, so from then on how long
+the robot stands waiting for it to leave is `failure_tolerance` (3 s) ×
 (retries + 1), with a local-costmap clear between attempts (re-marked within
-0.2 s; RPP zeroes its acceleration baseline on every refusal, so there is no
-lurch). One retry (~6 s) covered a person walking across and not one standing
+0.2 s; both controllers zero their acceleration baseline on every refusal, so
+there is no lurch). RPP, `FollowPath` until then, refused at any blocker in
+its projection; it is still loaded as `FollowPathRPP`, and
+`controller_id="FollowPathRPP"` in `move.xml` switches back. One retry (~6 s) covered a person walking across and not one standing
 and talking; three (~12 s) covers that, at the price of a task failure taking
 ~12 s rather than ~6 s to declare. The progress checker's 30 s remains the
 outer bound. The planner branch keeps one retry.
