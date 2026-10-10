@@ -55,8 +55,6 @@
 #   * planner / controller / task_runner — the robot is teleoperated here. Their
 #                   absence also removes the "teleop races the controller"
 #                   hazard that the old byobu_session_dev.sh warned about.
-#   * hba_node    — offline refinement (syncai_mapping's second node), run by
-#                   hand on a saved map, never on a live drive
 #
 # robot_state IS here, although earlier revisions excluded it as nav-oriented.
 # `syncai_backend` is NOT, any more: it left this workspace in 2026-09 for

@@ -53,7 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-ompl \
     && rm -rf /var/lib/apt/lists/*
 
-# Build-from-source deps for syncai_mapping (GTSAM, and Sophus for hba_node)
+# Build-from-source deps for syncai_mapping (GTSAM)
 # and syncai_pointlio (Sophus); syncai_localizer needs neither (small_gicp is a
 # workspace package). GTSAM and Sophus have no usable apt package on jammy, so
 # the two LIO ports expect them built from source (CLAUDE.md's "Build" note). Without
@@ -82,7 +82,7 @@ RUN git clone https://github.com/strasdat/Sophus.git /tmp/Sophus \
     && cmake --install build \
     && rm -rf /tmp/Sophus
 
-# GTSAM 4.1.1 (syncai_mapping: pgo_node's pose graph + hba_node). Flags matter:
+# GTSAM 4.1.1 (syncai_mapping: pgo_node's pose graph). Flags matter:
 #   USE_SYSTEM_EIGEN=ON         -> link the same Eigen 3.4 as the rest of the stack;
 #                                  GTSAM's bundled Eigen otherwise causes ABI/alignment mismatches
 #   BUILD_WITH_MARCH_NATIVE=OFF -> -march=native miscompiles Eigen alignment and is non-portable
