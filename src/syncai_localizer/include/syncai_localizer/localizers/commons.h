@@ -8,9 +8,9 @@
 // Shared aliases of the localizer's maths (ported upstream code, MIT). Kept
 // global rather than in the syncai_localizer namespace because icp_localizer.*
 // is upstream-derived and reads them unqualified -- the same treatment
-// syncai_mapping gives pgos/commons.h and hba/commons.h. Nothing else in the
-// workspace includes this header, so the global names cannot collide; they
-// would if this tree ever shared a translation unit with one of those two.
+// syncai_mapping gives pgos/commons.h. Nothing else in the workspace includes
+// this header, so the global names cannot collide; they would if this tree
+// ever shared a translation unit with that one.
 
 using PointType = pcl::PointXYZI;
 using CloudType = pcl::PointCloud<PointType>;

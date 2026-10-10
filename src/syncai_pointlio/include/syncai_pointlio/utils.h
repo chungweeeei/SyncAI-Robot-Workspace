@@ -24,10 +24,14 @@ public:
     // static pcl::PointCloud<pcl::PointXYZ>::Ptr convertToPCL(const sensor_msgs::msg::PointCloud2 &msg);
     // static sensor_msgs::msg::PointCloud2 convertToROS(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud);
     static double getSec(std_msgs::msg::Header &header);
-    static pcl::PointCloud<pcl::PointXYZINormal>::Ptr livox2PCL(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg, int filter_num, double min_range = 0.5, double max_range = 20.0);
+    // filter_num decimates by raw point index (the cloud the filter sees). With
+    // dense_out and 0 < dense_filter_num < filter_num, *dense_out gets the same
+    // scan decimated by dense_filter_num instead, in the same pass; when
+    // filter_num is a multiple of it, the main cloud's points are a subset.
+    static pcl::PointCloud<pcl::PointXYZINormal>::Ptr livox2PCL(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg, int filter_num, double min_range = 0.5, double max_range = 20.0, int dense_filter_num = 0, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out = nullptr);
     // PointCloud2 path for sensors that publish sensor_msgs/PointCloud2 (e.g. Isaac Sim):
     // no per-point time, so curvature (per-point time offset in ms) is set to 0 -> treated
     // as an instantaneous snapshot (no motion deskew), matching a full rendered scan.
-    static pcl::PointCloud<pcl::PointXYZINormal>::Ptr pc2ToPCL(const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range = 0.5, double max_range = 20.0);
+    static pcl::PointCloud<pcl::PointXYZINormal>::Ptr pc2ToPCL(const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range = 0.5, double max_range = 20.0, int dense_filter_num = 0, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out = nullptr);
     static builtin_interfaces::msg::Time getTime(const double& sec);
 };

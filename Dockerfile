@@ -112,7 +112,7 @@ RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
     ldconfig && \
     rm -rf /tmp/Livox-SDK2
 
-# GTSAM 4.2.0: syncai_mapping (pgo_node + hba_node) links libgtsam (find_package(GTSAM)).
+# GTSAM 4.2.0: syncai_mapping's pgo_node links libgtsam (find_package(GTSAM)).
 # No apt/PPA GTSAM on arm64, so build from source into /usr/local. Flags follow
 # the LIO-SAM recipe: system Eigen + no march-native to avoid Eigen-alignment
 # crashes when mixed with PCL; TBB on; shared libs.
@@ -131,9 +131,9 @@ RUN git clone --branch 4.2.0 --depth 1 https://github.com/borglab/gtsam.git /tmp
     ldconfig && \
     rm -rf /tmp/gtsam
 
-# Sophus 1.22.10: syncai_pointlio + syncai_mapping's hba_node need find_package(Sophus). Header-only;
+# Sophus 1.22.10: syncai_pointlio needs find_package(Sophus). Header-only;
 # SOPHUS_USE_BASIC_LOGGING=ON drops the fmt dependency (matches the
-# add_compile_definitions in their CMake).
+# add_compile_definitions in its CMake).
 RUN git clone --branch 1.22.10 --depth 1 https://github.com/strasdat/Sophus.git /tmp/Sophus && \
     cd /tmp/Sophus && \
     mkdir build && cd build && \
@@ -187,13 +187,12 @@ RUN apt-get update && apt-get install -y \
 # System deps for workspace packages that have no ament/CMake config:
 #   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
-#   - nlohmann-json3-dev: header-only JSON library. Its only consumer was
-#     syncai_robot_state, which left the workspace in 2026-10 and flattens
-#     WifiStatus with serde_json now — nothing here includes it today. Kept
-#     because dropping an apt line from this stage invalidates the layer for
-#     everything below it, and because a C++ package wanting JSON is likely
-#     enough; drop it with the next deliberate image rebuild if it is still
-#     unused.
+#   - nlohmann-json3-dev: header-only JSON library (rosdep key
+#     nlohmann-json-dev). Its consumer is syncai_mapping (imported by
+#     dependencies.repos), whose clean_map reads and writes
+#     map_clean.recipe.json with it. It used to be syncai_robot_state, which
+#     left in 2026-10 and flattens WifiStatus with serde_json now; the line
+#     was nearly dropped as unused in between -- do not.
 #   - libapr1-dev / libaprutil1-dev: livox_ros_driver2
 #   - libboost-all-dev / libtbb-dev / libeigen3-dev: GTSAM/Sophus headers
 #     (the libs themselves come prebuilt from deps-builder below)
@@ -341,8 +340,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        package.xml + Cargo.toml package. That is three
 #                        packages since 2026-10 -- syncai_driver_manager,
 #                        syncai_robot_state and syncai_lio_bridge, which vcs
-#                        imports from their own repos (see driver-manager.repos
-#                        / robot-state.repos / lio-bridge.repos);
+#                        imports from their own repos (see
+#                        dependencies.repos);
 #                        the rest of src/ has no Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override
@@ -432,6 +431,19 @@ RUN mkdir -p "${ROS2_RUST_UNDERLAY}/src" && cd "${ROS2_RUST_UNDERLAY}" && \
     rm -rf build log "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
     chmod -R a+w /opt/rust && \
     echo "source ${ROS2_RUST_UNDERLAY}/install/setup.bash" >> /home/syncrobotic/.bashrc
+
+# OctoMap, for syncai_mapping's clean_map -- the post-save map cleaning
+# pgo_node spawns after save_maps (2026-10), which uses OctoMap's ray
+# traversal and voxel keys. The rosdep key `octomap` resolves to this package;
+# `rosdep check` in scripts/build.sh would flag it otherwise. Its own stanza
+# down here, not a line in the apt lists at the top of this stage, because
+# every layer below an edited one rebuilds: up there it would cost the
+# GStreamer / VizionSDK / Node / Rust toolchain / underlay layers (the
+# underlay alone is a long colcon build); here only the rosdep layers that
+# follow.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-octomap \
+    && rm -rf /var/lib/apt/lists/*
 
 # Initialize rosdep
 RUN rosdep init || true && rosdep update --rosdistro humble

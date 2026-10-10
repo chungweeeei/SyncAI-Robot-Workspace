@@ -28,8 +28,9 @@
   <depend>livox_ros_driver2</depend>
   <!-- The `reset` service type (syncai_common/srv/ResetLIO). It lives in the
        workspace-wide interface package, materialised by
-       `vcs import < interface.repos`, because the client (pgo_node) is in
-       SyncAI-Fast-LIO2 and the server is here. -->
+       `vcs import < dependencies.repos`, because the client (pgo_node,
+       syncai_mapping) lives in its own repository, SyncAI-Robot-3D-Mapping,
+       and the server is here. -->
   <depend>syncai_common</depend>
 
   <!-- Not listed on purpose: PCL, Eigen and Sophus. PCL / Eigen arrive through

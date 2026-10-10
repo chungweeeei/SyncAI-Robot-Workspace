@@ -1,0 +1,107 @@
+# Our own packages that live in their own repositories, materialised back into
+# src/ with vcstool -- the first-party counterpart of third-party.repos, which
+# manages the upstream code under src/third-party/. One file since 2026-10; it
+# replaced interface.repos, driver-manager.repos, robot-state.repos and
+# lio-bridge.repos, one per package, and took syncai_mapping on when that
+# package moved out the same month.
+#
+#   vcs import < dependencies.repos          # populate a fresh clone
+#   vcs import < dependencies.repos --force  # re-checkout after changing a pin
+#
+# The keys already carry `src/`, so run this from the workspace root without an
+# extra `src` argument, or the packages land in `src/src/`.
+#
+# Every directory below is gitignored -- edit a package in its checkout (its own
+# git repo) and commit there, never here; the next --force import overwrites
+# anything uncommitted. The ROS surface of each one (package name, executables,
+# launch files, topics, services) did not move when the package did, so the
+# session specs in config/sessions/ name them exactly as before.
+#
+# Every entry tracks `dev`, its repo's working branch: each `main` lags behind
+# it (SyncAI-LIO-Bridge's and SyncAI-Robot-3D-Mapping's hold little more than
+# the initial commit). interface used to say `main` until 2026-09, which left
+# `vcs import` without the ResetLIO srv syncai_pointlio serves.
+#
+# HTTPS rather than the SSH remotes: all five repos are public, so the build
+# container needs no keys. `git@github.com:chungweeeei/<repo>.git` is the same
+# checkout for anyone who prefers to push over SSH.
+#
+# scripts/build.sh refuses to build when one of these directories is empty, and
+# its dir:repos table is where the next package that moves out gets added
+# alongside the entry here. Most of them fail nothing when absent -- colcon
+# happily builds a workspace without them -- which is why that check exists.
+repositories:
+  # Our own wire format (SyncAI-Robot-Interface): every msg / srv / action the
+  # stack and the backend share. Left in the 2026-09 split so the backend can
+  # build against the interfaces without checking out this workspace. Every
+  # package in the workspace fails at once without it.
+  src/syncai_common:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-Interface.git
+    version: dev
+
+  # The mapping back end (SyncAI-Robot-3D-Mapping): pgo_node and the post-save
+  # clean_map job, C++ (rclcpp), the only package here that is not Rust. Left
+  # in 2026-10 with the ROS surface unchanged -- same `mapping.launch.py`, same
+  # /<robot_id>/pgo/... names -- so start_mapping.yaml did not move. What did
+  # change on the way out is its parameter names: the keyframe, loop and
+  # map-cleaning keys were renamed (key_pose_delta_trans -> keyframe_delta_m,
+  # map_clean_min_hits -> map_clean_sparse_min_hits, ...; the list is in that
+  # repo's history), and so were clean_map's flags and the keys of
+  # map_clean.recipe.json's "params". A params file or a by-hand clean_map call
+  # written for the in-tree version is silently ignored or rejected. It needs
+  # GTSAM and OctoMap from the image and small_gicp from third-party.repos.
+  # Its own repo carries a dependencies.repos for building it standalone
+  # (syncai_common + small_gicp); keep those pins in step with this file's
+  # and third-party.repos'.
+  src/syncai_mapping:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-3D-Mapping.git
+    version: dev
+
+  # --- The three rclrs (Rust, ament_cargo) packages --------------------------
+  # Each left in 2026-10 and was rewritten against rclrs on the way out. Their
+  # Rust message crates (std_msgs / sensor_msgs / geometry_msgs / std_srvs /
+  # nav_msgs / syncai_common) are generated at build time by
+  # rosidl_generator_rs, which the image provides as a ros2-rust underlay at
+  # /opt/ros2_rust_underlay (the Dockerfile's underlay stanza), next to the Rust
+  # toolchain. An image built before that stanza has no underlay, and a colcon
+  # build that reaches one of these fails on the missing crates. `tf2_msgs` is
+  # the exception: the ros-humble-tf2-msgs deb already ships generated Rust
+  # bindings, so syncai_robot_state and syncai_lio_bridge need nothing from the
+  # underlay for it (rclrs has no tf2_ros binding; both do their own /tf).
+  #
+  # A params file for an rclrs node is keyed on a bare `/**`, not the
+  # `/**/<node>` the rest of the workspace uses: rclrs matches a key only when
+  # it is exactly `/**` or exactly the node's fully-qualified name, so the
+  # wildcard form matches nothing and every parameter silently falls back to
+  # its code default.
+
+  # The UDP bridge to the gait controller: cmd_vel with the per-direction
+  # velocity scales, telemetry, set_motion_key, and the latched safety_locked.
+  src/syncai_driver_manager:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-Driver-Manager.git
+    version: dev
+
+  # The status aggregator that publishes syncai_common/RobotState (1 Hz from
+  # its params file). `transform_tolerance` has no effect: it looks up in its
+  # own in-memory /tf buffer and does not expire a stale transform. Its WifiStatus
+  # -> JSON flattening is serde_json, which left nlohmann-json3-dev with
+  # syncai_mapping as its only consumer.
+  src/syncai_robot_state:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-State.git
+    version: dev
+
+  # The LIO -> planar odom / TF bridge, the stack's only odometry source.
+  # `lio_bridge.launch.py` is byte-for-byte the rclcpp one, with every
+  # parameter inline and no params file, so the bare-`/**` rule above does not
+  # arise. A malformed pointlio/lio_odom pose is dropped with a throttled
+  # warning instead of being broadcast as a NaN transform; there is no SIGINT
+  # handler (rclrs handles no signals). The package README lists every
+  # deviation from the C++ node.
+  src/syncai_lio_bridge:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-LIO-Bridge.git
+    version: dev

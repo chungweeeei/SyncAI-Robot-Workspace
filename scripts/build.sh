@@ -59,8 +59,10 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
         "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
 
 # --- 1. vcs checkouts --------------------------------------------------------
-# Four groups of directories in src/ are materialised by vcstool rather than
-# tracked here, and all of them are empty in a fresh clone. Importing is left to
+# Two groups of directories in src/ are materialised by vcstool rather than
+# tracked here -- src/third-party/ by third-party.repos, our own packages that
+# live in their own repos by dependencies.repos -- and all of them are empty in
+# a fresh clone. Importing is left to
 # the host on purpose: the checkouts are the host's working tree bind-mounted
 # in, and a build must not mutate what git sees on the host (the one SSH
 # remote, the FAST-LIO2 fork, left in 2026-09 with the localizer port, so
@@ -72,14 +74,16 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 #     packages and fail on the first `find_package` that needed one of them;
 #   - an absent src/syncai_common fails every package at once with a message
 #     about a missing ament package;
-#   - an absent first-party package (syncai_driver_manager, syncai_robot_state,
-#     syncai_lio_bridge) fails NOTHING. colcon happily builds a workspace with
-#     no bridge to the gait controller, nothing publishing RobotState and no
-#     odometry source, so the robot stands still at the first cmd_vel, the
-#     console's telemetry never arrives, and the nav session's costmaps wait
-#     forever on an odom -> base_link nobody broadcasts.
+#   - an absent first-party package (syncai_mapping, syncai_driver_manager,
+#     syncai_robot_state, syncai_lio_bridge) fails NOTHING. colcon happily
+#     builds a workspace with nothing to save a map with, no bridge to the gait
+#     controller, nothing publishing RobotState and no odometry source, so the
+#     mapping session's lio window dies on a missing package, the robot stands
+#     still at the first cmd_vel, the console's telemetry never arrives, and
+#     the nav session's costmaps wait forever on an odom -> base_link nobody
+#     broadcasts.
 # This does. The dir:repos table is the one place to add the next package that
-# moves out to its own repository.
+# moves out to its own repository (and dependencies.repos the place to pin it).
 step "checking vcs checkouts"
 missing=""
 for entry in third-party/behaviortree_cpp_v3:third-party.repos \
@@ -87,10 +91,11 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
              third-party/livox_ros_driver2:third-party.repos \
              third-party/small_gicp:third-party.repos \
              third-party/vizionsdk-ros2:third-party.repos \
-             syncai_common:interface.repos \
-             syncai_driver_manager:driver-manager.repos \
-             syncai_robot_state:robot-state.repos \
-             syncai_lio_bridge:lio-bridge.repos; do
+             syncai_common:dependencies.repos \
+             syncai_mapping:dependencies.repos \
+             syncai_driver_manager:dependencies.repos \
+             syncai_robot_state:dependencies.repos \
+             syncai_lio_bridge:dependencies.repos; do
     dir="${entry%%:*}"
     repos="${entry##*:}"
     if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
@@ -99,7 +104,8 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
     fi
 done
 if [ -n "${missing}" ]; then
-    # Deduplicate: five empty third-party dirs are still one missing import.
+    # Deduplicate: five empty third-party dirs are still one missing import, and
+    # so are five empty first-party ones.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
     die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
         "$(for l in ${lists}; do printf '\n  vcs import < %s' "$l"; done)"
