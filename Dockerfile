@@ -209,6 +209,18 @@ RUN apt-get update && apt-get install -y \
     libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# xtensor / xsimd: syncai_mppi_controller (the MPPI port) evaluates its batch
+# of sampled trajectories as xtensor expressions, vectorised through xsimd
+# (NEON on the Jetson). Both are header-only, so this is a build dependency
+# and lives in dev, not base. Jammy ships xtensor 0.23 / xsimd 7.6, the pair
+# Humble's nav2_mppi_controller is built against (rosdep keys xtensor /
+# xsimd); a newer xtensor from source would need the upstream port's
+# post-Humble API changes too. Its own layer, so the one above keeps its cache.
+RUN apt-get update && apt-get install -y \
+    libxtensor-dev \
+    libxsimd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # GStreamer for the camera stream. The base image carries only
 # gstreamer1.0-plugins-base, which is why a pipeline built here fails with
 # `no element "v4l2src"`:
