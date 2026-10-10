@@ -58,7 +58,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
-| `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud, the `pointlio_odom → pointlio_body` TF, and `reset` |
+| `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud (deskewed to the end of the scan; plus `body_cloud_dense` for mapping), the `pointlio_odom → pointlio_body` TF, and `reset` |
 | `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`; plus `clean_map`, the post-save job that removes people from `map.pcd`. **Not tracked here**, see below |
 | `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction, `relocalize` / `relocalize_check` and `initialpose` |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source). **Not tracked here**, see below |
@@ -276,7 +276,8 @@ throwaway build container is gone when it exits, so the compose route only
 it still reports today are either satisfied by the image under another name or
 harmless.
 
-GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage. Two
+GTSAM, Sophus and Livox-SDK2 come from the image's `deps-builder` stage, and
+OctoMap (`ros-humble-octomap`, for `clean_map`) from its `dev` stage. Two
 things trip a fresh checkout:
 
 - `colcon.meta` (found only because colcon's default is the relative
@@ -339,7 +340,14 @@ pgo comes up idle and banks nothing until then), drive the robot, then save.
 ends the run, leaving pgo idle for the next Start; `pgo/reset_mapping` throws a
 run away mid-drive and starts over.
 
-From a shell you get those three files and no gridmap: both pcd → gridmap
+`map.pcd` is not final when the save returns: pgo then spawns `clean_map`, a
+detached job that survives the mode switch and, a few minutes later, atomically
+replaces `map.pcd` with a copy without people and one-off returns.
+`map_clean.recipe.json` beside it says `converting` → `ok` / `failed`; a
+gridmap converted before `ok` was made from the raw map. `patches/` stay raw,
+so `ros2 run syncai_mapping clean_map map/<name>` re-cleans by hand.
+
+From a shell you get those files and no gridmap: both pcd → gridmap
 recipes left with the backend, so the console's save button
 (`POST /api/v1/maps`) is what calls the service and converts in one step. Then
 point the robot at the new map — `[map] name` in the instance INI, or the

@@ -320,7 +320,8 @@ needs Sophus, `syncai_mapping` GTSAM).
 The `Dockerfile` is multi-stage: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (GTSAM / Sophus / Livox-SDK2 into `/usr/local`, the slow stage
 — keep it free of anything that changes often so its cache survives) → `dev`
-(rviz2, colcon, byobu, Node.js, the VizionSDK `.deb`, and the Rust toolchain
+(rviz2, colcon, byobu, Node.js, the VizionSDK `.deb`, `ros-humble-octomap` for
+`syncai_mapping`'s `clean_map` in a stanza of its own near the end, and the Rust toolchain
 for `rclrs` — rustup under `/opt/rust`, `libclang-dev`, `cargo-ament-build`,
 `colcon-cargo` / `colcon-ros-cargo`, plus the ros2-rust underlay — rclrs,
 `rosidl_generator_rs` and the rebuilt standard interfaces — in
@@ -645,7 +646,8 @@ something to verify or edit here.
   needs `apparmor=unconfined` + sudo) and the avahi socket's directory
   `/run/avahi-daemon` (so `libnss-mdns` resolves `*.local`; the directory rather
   than the socket file, because a file bind mount goes stale when
-  `avahi-daemon.socket` restarts), run with `runtime: nvidia`, and pass through the cameras
+  `avahi-daemon.socket` restarts), run with `runtime: nvidia` and `init: true` (tini as PID 1, to reap the
+  `clean_map` a mode switch orphans; takes effect on a container recreate), and pass through the cameras
   as `/dev/syncai/camera0` / `camera1` (stable udev symlinks from
   `src/syncai_sys_manager/udev/99-syncai-devices.rules`, keyed on serial so the
   two cameras cannot swap on reboot) plus `/dev/snd` (for TTS, which now plays
