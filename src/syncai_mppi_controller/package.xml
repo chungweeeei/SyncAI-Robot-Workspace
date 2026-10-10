@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>syncai_mppi_controller</name>
+  <version>0.0.0</version>
+  <description>MPPI controller plugin (local trajectory optimisation with obstacle avoidance) for syncai_controller, ported from nav2_mppi_controller (humble)</description>
+  <maintainer email="chungweeeei@gmail.com">ros</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>angles</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>syncai_costmap_2d</depend>
+  <depend>syncai_nav_core</depend>
+  <depend>syncai_util</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
+  <depend>xsimd</depend>
+  <depend>xtensor</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <syncai_nav_core plugin="${prefix}/mppic.xml" />
+  </export>
+</package>
