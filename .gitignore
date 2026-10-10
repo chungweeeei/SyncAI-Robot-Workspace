@@ -73,16 +73,6 @@ data/
 src/third-party/*
 !src/third-party/gitkeep
 
-# Same arrangement for a standalone clone of the backend (chungweeeei/
-# SyncAI-Robot-Backend), if anyone keeps one here to develop it against the ROS
-# interfaces. It is a different repository's working tree and must never be
-# committed into this one; it was 120 tracked files here until the 2026-09
-# split, which git history still has. Note colcon WILL pick a clone up and
-# build it — that is the point of putting it here rather than beside the
-# workspace, but it also means `colcon build` failures from it are not this
-# repo's.
-src/syncai_backend/
-
 # LIO map output (pcd / gridmap / poses — regenerated, not tracked).
 # Anchored with a leading slash: a bare `map/` matches a directory of that name
 # at any depth, and it was silently swallowing a `repositories/map/` package
