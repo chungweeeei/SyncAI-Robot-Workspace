@@ -29,11 +29,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgraphicsmagick++1-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# nlohmann-json3-dev: was for syncai_robot_state, which flattened WifiStatus
-# into the JSON string in RobotState.network_status. That package left the
-# workspace in 2026-10 (SyncAI-Robot-State, see robot-state.repos) and uses
-# serde_json now, so nothing here includes it — kept for the reason the robot
-# image keeps it.
+# nlohmann-json3-dev: for syncai_mapping's clean_map (map_clean.recipe.json),
+# imported by dependencies.repos. It was syncai_robot_state's until that
+# package left in 2026-10 for serde_json -- see the robot image's note.
 # libapr1-dev / libaprutil1-dev: livox_ros_driver2 pkg-checks apr-1 — same
 # pair the robot image (/workspace/Dockerfile) installs for it.
 RUN apt-get update && apt-get install -y --no-install-recommends \

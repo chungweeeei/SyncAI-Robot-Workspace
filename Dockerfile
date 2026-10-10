@@ -187,13 +187,12 @@ RUN apt-get update && apt-get install -y \
 # System deps for workspace packages that have no ament/CMake config:
 #   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
-#   - nlohmann-json3-dev: header-only JSON library. Its only consumer was
-#     syncai_robot_state, which left the workspace in 2026-10 and flattens
-#     WifiStatus with serde_json now — nothing here includes it today. Kept
-#     because dropping an apt line from this stage invalidates the layer for
-#     everything below it, and because a C++ package wanting JSON is likely
-#     enough; drop it with the next deliberate image rebuild if it is still
-#     unused.
+#   - nlohmann-json3-dev: header-only JSON library (rosdep key
+#     nlohmann-json-dev). Its consumer is syncai_mapping (imported by
+#     dependencies.repos), whose clean_map reads and writes
+#     map_clean.recipe.json with it. It used to be syncai_robot_state, which
+#     left in 2026-10 and flattens WifiStatus with serde_json now; the line
+#     was nearly dropped as unused in between -- do not.
 #   - libapr1-dev / libaprutil1-dev: livox_ros_driver2
 #   - libboost-all-dev / libtbb-dev / libeigen3-dev: GTSAM/Sophus headers
 #     (the libs themselves come prebuilt from deps-builder below)
@@ -341,8 +340,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 #                        package.xml + Cargo.toml package. That is three
 #                        packages since 2026-10 -- syncai_driver_manager,
 #                        syncai_robot_state and syncai_lio_bridge, which vcs
-#                        imports from their own repos (see driver-manager.repos
-#                        / robot-state.repos / lio-bridge.repos);
+#                        imports from their own repos (see
+#                        dependencies.repos);
 #                        the rest of src/ has no Cargo.toml and is unaffected.
 #
 # Installed under /opt/rust rather than ~/.cargo because compose may override

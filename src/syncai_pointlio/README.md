@@ -208,13 +208,15 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 ## Gotchas
 
 - **Nothing here changes the ROS surface, and nothing should without a
-  cross-repo commit.** `syncai_mapping/launch/mapping.launch.py` and
-  `syncai_localizer/launch/localizer.launch.py` hardcode
-  `/<robot_id>/pointlio/{body_cloud,lio_odom}`, `/<robot_id>/pointlio/reset`
-  and the `<robot_id>/pointlio_odom` frame; the
-  backend reads `pointlio/body_cloud`; the planner / controller costmaps
-  source it; `syncai_lio_bridge` subscribes `pointlio/lio_odom`. Renaming any
-  of those is a change in two repositories.
+  cross-repo commit.** `syncai_localizer/launch/localizer.launch.py` hardcodes
+  `/<robot_id>/pointlio/{body_cloud,lio_odom}` and the
+  `<robot_id>/pointlio_odom` frame; `syncai_mapping`'s `pgo_node` (its own
+  repo, SyncAI-Robot-3D-Mapping, since 2026-10) derives
+  `/<robot_id>/pointlio/{body_cloud_dense,lio_odom}`, `/<robot_id>/pointlio/reset`
+  and that frame from its namespace; the backend reads `pointlio/body_cloud`;
+  the planner / controller costmaps source it; `syncai_lio_bridge` (also its
+  own repo) subscribes `pointlio/lio_odom`. Renaming any of those is a change
+  in several repositories.
 - **`syncai_mapping`'s `local_frame` must equal `world_frame` here.** `pgo_node` does
   not adopt the frame from the odom header (the localizer does); if the two
   disagree, `map → local_frame` lands on a frame nobody looks up.

@@ -106,36 +106,20 @@ src/syncai_backend/
 # and would silently swallow a future src/**/record/ package directory.
 /record/
 
-# Materialised by `vcs import < interface.repos`, not committed -- the same
-# arrangement src/third-party/ has. It was 28 tracked files in this repo until
-# the 2026-09 split moved it to SyncAI-Robot-Interface, so that the backend
-# could build against the interfaces without checking out the whole workspace.
-# Edit the messages THERE; a change made in this directory is untracked and the
+# Materialised by `vcs import < dependencies.repos`, not committed -- the same
+# arrangement src/third-party/ has, for our own packages that live in their own
+# repositories. Each was tracked here until it moved out: syncai_common (28
+# files) in the 2026-09 split, so the backend could build against the
+# interfaces without checking out the whole workspace; syncai_driver_manager,
+# syncai_robot_state and syncai_lio_bridge in 2026-10, each rewritten against
+# rclrs on the way out; and syncai_mapping (pgo_node + clean_map) the same
+# month, still C++. git history has every one of them as it was here. Edit a
+# package THERE; a change made in one of these directories is untracked and the
 # next --force import overwrites it.
 src/syncai_common/
-
-# Materialised by `vcs import < driver-manager.repos`, not committed -- same
-# arrangement as src/syncai_common above. It was 9 tracked files (the rclcpp
-# node) in this repo until 2026-10, when it moved to SyncAI-Robot-Driver-Manager
-# and was rewritten against rclrs; git history still has the C++ version.
-# Edit the node THERE; a change made in this directory is untracked and the next
-# --force import overwrites it.
+src/syncai_mapping/
 src/syncai_driver_manager/
-
-# Materialised by `vcs import < robot-state.repos`, not committed -- same
-# arrangement as src/syncai_driver_manager above, and for the same reason: it
-# moved to SyncAI-Robot-State in 2026-10 and was rewritten against rclrs. It was
-# 9 tracked files (the rclcpp node) here until then; git history still has them.
-# Edit the node THERE; a change made in this directory is untracked and the next
-# --force import overwrites it.
 src/syncai_robot_state/
-
-# Materialised by `vcs import < lio-bridge.repos`, not committed -- same
-# arrangement as src/syncai_robot_state above, and for the same reason: it moved
-# to SyncAI-LIO-Bridge in 2026-10 and was rewritten against rclrs. It was 7
-# tracked files (the rclcpp node) here until then; git history still has them.
-# Edit the node THERE; a change made in this directory is untracked and the next
-# --force import overwrites it.
 src/syncai_lio_bridge/
 
 # Written by colcon-ros-cargo on every build that reaches an ament_cargo package

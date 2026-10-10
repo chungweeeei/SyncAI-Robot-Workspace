@@ -13,7 +13,7 @@
 #   bringup (MID360 + lidar_top static TF)
 #     -> pointlio.launch.py # the LIO front end (src/syncai_pointlio)
 #     -> mapping.launch.py  # loop closure over pointlio's odom + body_cloud
-#                           # (pgo_node, src/syncai_mapping) -- comes up IDLE
+#                           # (pgo_node, syncai_mapping) -- comes up IDLE
 #     -> /<robot_id>/pgo/start_mapping  # robot still; the console's "Start mapping"
 #     -> drive by hand      # teleop -> driver_manager -> gait controller
 #     -> /<robot_id>/pgo/save_maps   =>  map.pcd + patches/ + poses.txt, and the
@@ -125,9 +125,10 @@ windows:
 
   # ---------- Window 1: LIO front end + loop closure -------------------------
   # Two panes, in start order: pointlio (src/syncai_pointlio, the front end)
-  # then pgo_node (src/syncai_mapping). Both are workspace packages since
-  # 2026-09 -- the FASTLIO2_ROS2 fork contributes nothing to this session any
-  # more. Until then one pane brought up both, because the fork's pgo_launch.py
+  # then pgo_node (syncai_mapping). Both have been ours since 2026-09 -- the
+  # FASTLIO2_ROS2 fork contributes nothing to this session any more -- and
+  # syncai_mapping moved out to its own repo (SyncAI-Robot-3D-Mapping, imported
+  # into src/ by dependencies.repos) in 2026-10 with its launch unchanged. Until then one pane brought up both, because the fork's pgo_launch.py
   # include()d pointlio_launch.py; the front end moved first and the include
   # went with it, then pgo followed. pointlio's launch is still the single
   # definition of how pointlio_node is configured, and the

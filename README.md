@@ -59,7 +59,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
 | `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud, the `pointlio_odom → pointlio_body` TF, and `reset` |
-| `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`. |
+| `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`; plus `clean_map`, the post-save job that removes people from `map.pcd`. **Not tracked here**, see below |
 | `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction, `relocalize` / `relocalize_check` and `initialpose` |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source). **Not tracked here**, see below |
 | `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |
@@ -67,20 +67,22 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState`. **Not tracked here**, see below |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
 
-Four packages in the table are **not tracked in this repo**. Each lives in its
+Five packages in the table are **not tracked in this repo**. Each lives in its
 own repository and is imported back into `src/` by vcstool (see "Getting
 started"); edit them in their own checkouts.
 
 | Package | Repo | Notes |
 |---|---|---|
 | `syncai_common` | `SyncAI-Robot-Interface` | The wire format every package here and the backend build against |
+| `syncai_mapping` | `SyncAI-Robot-3D-Mapping` | C++ (rclcpp); needs GTSAM / OctoMap from the image and `small_gicp` from `third-party.repos` |
 | `syncai_driver_manager` | `SyncAI-Robot-Driver-Manager` | Rust (rclrs, `ament_cargo`) |
 | `syncai_robot_state` | `SyncAI-Robot-State` | Rust (rclrs, `ament_cargo`) |
 | `syncai_lio_bridge` | `SyncAI-LIO-Bridge` | Rust (rclrs, `ament_cargo`) |
 
-The three Rust packages keep their package name, executable and launch file, so
-the session specs are unchanged; the Rust message crates they need come from a
-ros2-rust underlay baked into the robot image (see "Getting started").
+All four that moved out after `syncai_common` keep their package name,
+executables and launch file, so the session specs are unchanged. The Rust
+message crates the three Rust ones need come from a ros2-rust underlay baked
+into the robot image (see "Getting started").
 
 The operator half — `SyncAI-Robot-Backend` (FastAPI + rclpy on port **3000**:
 tasks, map catalogue, TTS, WebSockets) and `SyncAI-Robot-Frontend` (the Next.js
@@ -146,10 +148,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
 ├── ruff.toml                     # Python lint config (syncai_sys_manager, scripts/)
 ├── third-party.repos             # vcstool: src/third-party/ — upstream, pinned
-├── interface.repos               # vcstool: src/syncai_common — SyncAI-Robot-Interface
-├── driver-manager.repos          # vcstool: src/syncai_driver_manager — SyncAI-Robot-Driver-Manager
-├── robot-state.repos             # vcstool: src/syncai_robot_state — SyncAI-Robot-State
-├── lio-bridge.repos              # vcstool: src/syncai_lio_bridge — SyncAI-LIO-Bridge
+├── dependencies.repos            # vcstool: our own packages in their own repos (src/syncai_common, _mapping, _driver_manager, _robot_state, _lio_bridge)
 ├── .devcontainer/                # VS Code "Reopen in Container"
 └── .env                          # compose env + secrets (gitignored — never commit)
 ```
@@ -161,26 +160,26 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ```bash
 sudo apt update && sudo apt install python3-vcstool -y
 vcs import < third-party.repos     # src/third-party/ — upstream code, pinned
-vcs import < interface.repos       # src/syncai_common — our own wire format
-vcs import < driver-manager.repos  # src/syncai_driver_manager — the gait-controller bridge
-vcs import < robot-state.repos     # src/syncai_robot_state — the status aggregator
-vcs import < lio-bridge.repos      # src/syncai_lio_bridge — the only odometry source
+vcs import < dependencies.repos    # src/syncai_{common,mapping,driver_manager,robot_state,lio_bridge} — our own, in their own repos
 ```
 
-All five are required before the first `colcon build`. The four `src/syncai_*`
-directories are gitignored: edit them in their own checkouts, because the next
-`--force` import overwrites whatever is in them.
+Both are required before the first `colcon build`. The five `src/syncai_*`
+directories `dependencies.repos` imports are gitignored: edit them in their own
+checkouts, because the next `--force` import overwrites whatever is in them.
 
 Only a missing `src/syncai_common` fails loudly (every package at once). A
-missing `src/syncai_driver_manager`, `src/syncai_robot_state` or
-`src/syncai_lio_bridge` builds fine and leaves the robot with no bridge to the
-gait controller, nothing publishing `RobotState` and no odometry source — so
+missing `src/syncai_mapping`, `src/syncai_driver_manager`,
+`src/syncai_robot_state` or `src/syncai_lio_bridge` builds fine and leaves the
+robot with nothing to save a map with, no bridge to the gait controller,
+nothing publishing `RobotState` and no odometry source — so
 `scripts/build.sh` refuses to start on an empty checkout and names the `.repos`
 file to import.
 
 **On an existing robot**, the pull that moves a package out deletes its
-directory and nothing puts it back: run the matching `vcs import` before the
-next build.
+directory and nothing puts it back: run `vcs import < dependencies.repos`
+before the next build. That also fetches and checks out the pin in every
+checkout that is already there; add `--skip-existing` to clone only the missing
+one and leave the others as they are.
 
 #### The three Rust packages
 
@@ -210,12 +209,12 @@ build failing on a srv it predates (`ResetLIO`, `SaveMaps`, `StartMapping`, …)
 ```bash
 git -C src/syncai_common rev-parse --show-toplevel   # must print .../src/syncai_common
 mv src/syncai_common ~/syncai_common.stale           # if it does not
-vcs import < interface.repos
+vcs import < dependencies.repos
 ```
 
 Keep it current with `vcs pull src/syncai_common`, or
-`vcs import < interface.repos --force` to re-checkout at the pin (drops local
-edits), then rebuild.
+`vcs import < dependencies.repos --force` to re-checkout at the pins (drops
+local edits — in all five checkouts, not only this one), then rebuild.
 
 ### 2. Pick the robot identity
 
