@@ -19,7 +19,7 @@ RViz "2D Goal Pose" ──/goal_pose topic────────────�
                                                                   │  ticks behavior_trees/move.xml
                                               ┌───────────────────┴───────────────────┐
                                               ▼                                       ▼
-                                  ComputePathToPose ──► syncai_planner    FollowPath ──► syncai_controller
+                                  ComputePathToPose ──► syncai_global_planner    FollowPath ──► syncai_controller
                                   ClearEntireCostmap ─► syncai_costmap_2d (both costmaps)
 ```
 

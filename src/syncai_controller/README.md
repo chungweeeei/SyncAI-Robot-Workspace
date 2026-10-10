@@ -445,7 +445,7 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
 - **The footprint is shared with the global costmap; the padding is not.** Both
   costmaps use `[[0.35,0.22],…]` (reconciled 2026-10 — this file had been left
   at `[[0.28,0.20],…]`). `footprint_padding` is 0.01 here and 0.03 in
-  `syncai_planner`'s `global_costmap`, deliberately: the planner's
+  `syncai_global_planner`'s `global_costmap`, deliberately: the planner's
   `is_path_valid` runs the same perimeter-on-LETHAL test RPP runs here
   (2026-10), and the 0.02 m gap makes the planner's the stricter of the two, so
   a path it passes is one RPP will drive and one RPP would refuse is replanned

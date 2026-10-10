@@ -27,7 +27,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                           compute_path_to_pose│follow_path
                                            ┌─────────────────┴─────────────────┐
                                            ▼                                   ▼
-                                    syncai_planner                      syncai_controller
+                                 syncai_global_planner                         syncai_controller
                                    (SmacPlanner2D)                   (Regulated Pure Pursuit)
                                            │                                   │
                                            └───────── syncai_costmap_2d ───────┘
@@ -53,7 +53,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
 | `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
-| `syncai_planner` | `compute_path_to_pose` action server; NavFn, StraightLine and SmacPlanner2D plugins (Smac is configured) |
+| `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine and SmacPlanner2D plugins (Smac is configured) |
 | `syncai_controller` | `follow_path` action server; Regulated Pure Pursuit plugin, with its own linear-accel clamp (no velocity smoother) |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | BT navigator: serves `NavigateToPose`, ticks `behavior_trees/move.xml` |
@@ -248,7 +248,7 @@ is a live robot** — build deliberately, not on every edit.
 
 ```bash
 docker compose -f docker-compose.build.yaml run --rm build                                  # everything
-docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_planner # colcon args pass through
+docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_global_planner # colcon args pass through
 BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build                 # skip the rosdep report
 ```
 
@@ -268,7 +268,7 @@ colcon build --symlink-install                       # or: scripts/build.sh
 source install/setup.bash
 
 # build a single package
-colcon build --packages-select syncai_planner
+colcon build --packages-select syncai_global_planner
 ```
 
 `rosdep install` only makes sense inside robot01: anything installed into the

@@ -4,12 +4,12 @@ The occupancy representation the planner and controller both plan against: a
 layered 2D costmap with pluginlib layers, sensor-driven obstacle marking and
 clearing, inflation, and costmap filters. Port of `nav2_costmap_2d`.
 
-It is used as a **library, not a node**. `syncai_planner` and `syncai_controller`
+It is used as a **library, not a node**. `syncai_global_planner` and `syncai_controller`
 each construct their own `Costmap2DROS` inside their own process:
 
 | Owner | Costmap | Typical config |
 |---|---|---|
-| `syncai_planner` | `global_costmap` | Full-map, `global_frame: map`, static + obstacle + inflation (+ keepout filter) |
+| `syncai_global_planner` | `global_costmap` | Full-map, `global_frame: map`, static + obstacle + inflation (+ keepout filter) |
 | `syncai_controller` | `local_costmap` | 3×3 m rolling window, `global_frame: odom`, obstacle + inflation |
 
 `costmap_2d_node` also exists as a standalone runner, used only by the three test
@@ -222,7 +222,7 @@ must stay at their defaults (0.0 / 1.0) for keepout semantics — anything else 
 logged as an error.
 
 It is enabled on the planner's global costmap (`filters: ["keepout_filter"]` in
-`syncai_planner`'s `planner_server_params.yaml`, 2026-09) and not on the
+`syncai_global_planner`'s `planner_server_params.yaml`, 2026-09) and not on the
 controller's local costmap. The mask is `map/<name>/keepout.yaml`, served by
 `syncai_map_server`'s `costmap_filter_info.launch.py` from the nav session,
 which writes a blank all-unknown mask of the gridmap's geometry when a map has
@@ -245,7 +245,7 @@ on filters too), never per update cycle:
 - Radii come from the costmap the filter is attached to, not from parameters
   of its own: the inscribed radius from `LayeredCostmap::getInscribedRadius()`
   (the padded footprint), `inflation_radius` / `cost_scaling_factor` read off
-  the costmap's `InflationLayer` the way `syncai_planner`'s
+  the costmap's `InflationLayer` the way `syncai_global_planner`'s
   `findCircumscribedCost()` finds it. A zone therefore carries exactly the band
   and gradient a wall does. No `InflationLayer` → the INSCRIBED disc only, with
   a warning.
@@ -398,7 +398,7 @@ correctly); renaming it means touching its two includes.
 - **`update_frequency: 0.0` disables the update thread** — the costmap is created,
   publishes nothing, and never becomes current, which reads like a TF problem.
 - **Footprints must agree across costmaps; paddings deliberately do not.** The
-  planner's global costmap (`syncai_planner/params/planner_server_params.yaml`)
+  planner's global costmap (`syncai_global_planner/params/planner_server_params.yaml`)
   and the controller's local costmap
   (`syncai_controller/params/controller_server_params.yaml`) both carry
   `[[0.35,0.22],…]` (reconciled 2026-10; the local one had been left at

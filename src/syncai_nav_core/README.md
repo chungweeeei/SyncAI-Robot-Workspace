@@ -13,7 +13,7 @@ depend on, so neither has to depend on the other.
                  ▲      ▲      ▲
       implements │      │      │ loads via pluginlib
                  │      │      │
-   syncai_planner plugins    syncai_planner / syncai_controller (servers)
+   syncai_global_planner plugins    syncai_global_planner / syncai_controller (servers)
    syncai_controller plugins
 ```
 
@@ -21,7 +21,7 @@ depend on, so neither has to depend on the other.
 
 | Header | Class | Implemented by |
 |---|---|---|
-| `global_planner.hpp` | `GlobalPlanner` | `syncai_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (the one the shipped params select) |
+| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (the one the shipped params select) |
 | `controller.hpp` | `Controller` | `syncai_controller`: `RegulatedPurePursuitController` |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker`, `StoppedGoalChecker`, `PositionGoalChecker` |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker`, `PoseProgressChecker` |
@@ -143,12 +143,12 @@ registered against it regardless of which package the plugin lives in.
   a pure-virtual signature silently breaks the ABI between a server and an
   already-built plugin `.so`; the symptom is a load failure or a crash at the
   first virtual call, not a compile error. Use
-  `colcon build --packages-up-to syncai_planner syncai_controller`.
+  `colcon build --packages-up-to syncai_global_planner syncai_controller`.
 - **A plugin load failure is fatal.** Both servers call `exit(-1)` on a
   `pluginlib::PluginlibException`, so a typo in a `.plugin` string takes the
   whole process down at startup.
-- **The two packages spell plugin names differently in params.** `syncai_planner`
-  uses the pluginlib *lookup name* (`syncai_planner/NavfnPlanner`, declared via
+- **The two packages spell plugin names differently in params.** `syncai_global_planner`
+  uses the pluginlib *lookup name* (`syncai_global_planner/NavfnPlanner`, declared via
   the `name=` attribute in its XML), while `syncai_controller` and
   `syncai_costmap_2d` use the fully-qualified *type*
   (`syncai_controller::RegulatedPurePursuitController`). Both are valid — the

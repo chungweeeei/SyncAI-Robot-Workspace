@@ -24,7 +24,7 @@ syncai_task_runner (rclcpp::Node)
             ├─ BehaviorTreeEngine                (factory + fixed-rate tick loop)
             └─ BT::Tree from move.xml
                  ├─ PipelineSequence / RateController / RecoveryNode   ← plugins
-                 ├─ ComputePathToPose  ──action──►  syncai_planner
+                 ├─ ComputePathToPose  ──action──►  syncai_global_planner
                  ├─ FollowPath         ──action──►  syncai_controller
                  └─ ClearEntireCostmap ──service─►  syncai_costmap_2d
 ```
@@ -222,7 +222,7 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `PipelineSequence` | control | `syncai_pipeline_sequence_bt_node` | — |
 | `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1), `retry_refill_time` (s, default 0 = never) |
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
-| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout` |
+| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout` |
 | `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
 | `InitialPoseReceived` | condition | `syncai_initial_pose_received_condition_bt_node` | reads blackboard `initial_pose_received` |
 

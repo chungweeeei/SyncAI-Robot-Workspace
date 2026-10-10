@@ -47,8 +47,8 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 # against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
 # in the container. tzdata: containers default to UTC — set local time so log
 # timestamps (ros2 launch, byobu panes) match the host / operators.
-# ompl: Dubins/Reeds-Shepp state spaces for syncai_planner's smac plugins —
-# libsyncai_planner.so links libompl.so, so it is a runtime dep, not dev-only.
+# ompl: Dubins/Reeds-Shepp state spaces for syncai_global_planner's smac plugins —
+# libsyncai_global_planner.so links libompl.so, so it is a runtime dep, not dev-only.
 RUN apt-get update && apt-get install -y \
     ros-humble-ros-base \
     ros-humble-tf2-tools \

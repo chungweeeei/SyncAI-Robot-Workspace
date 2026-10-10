@@ -7,7 +7,7 @@
 # the same thing.
 #
 #   docker compose -f docker-compose.build.yaml run --rm build
-#   docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_planner
+#   docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_global_planner
 #   BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build
 #
 # Anything after `build` is appended to `colcon build --symlink-install` (the
