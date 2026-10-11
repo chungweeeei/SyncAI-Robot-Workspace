@@ -47,8 +47,8 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 # against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
 # in the container. tzdata: containers default to UTC — set local time so log
 # timestamps (ros2 launch, byobu panes) match the host / operators.
-# ompl: Dubins/Reeds-Shepp state spaces for syncai_planner's smac plugins —
-# libsyncai_planner.so links libompl.so, so it is a runtime dep, not dev-only.
+# ompl: Dubins/Reeds-Shepp state spaces for syncai_global_planner's smac plugins —
+# libsyncai_global_planner.so links libompl.so, so it is a runtime dep, not dev-only.
 RUN apt-get update && apt-get install -y \
     ros-humble-ros-base \
     ros-humble-tf2-tools \
@@ -207,6 +207,18 @@ RUN apt-get update && apt-get install -y \
     libboost-all-dev \
     libtbb-dev \
     libeigen3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# xtensor / xsimd: syncai_mppi_controller (the MPPI port) evaluates its batch
+# of sampled trajectories as xtensor expressions, vectorised through xsimd
+# (NEON on the Jetson). Both are header-only, so this is a build dependency
+# and lives in dev, not base. Jammy ships xtensor 0.23 / xsimd 7.6, the pair
+# Humble's nav2_mppi_controller is built against (rosdep keys xtensor /
+# xsimd); a newer xtensor from source would need the upstream port's
+# post-Humble API changes too. Its own layer, so the one above keeps its cache.
+RUN apt-get update && apt-get install -y \
+    libxtensor-dev \
+    libxsimd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # GStreamer for the camera stream. The base image carries only

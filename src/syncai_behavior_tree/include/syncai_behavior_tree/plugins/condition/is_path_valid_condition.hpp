@@ -15,7 +15,7 @@ namespace syncai_behavior_tree
 
 /**
  * @brief SUCCESS while the part of {path} ahead of the robot is still free in the
- * planner's global costmap (syncai_planner's is_path_valid service), FAILURE otherwise.
+ * planner's global costmap (syncai_global_planner's is_path_valid service), FAILURE otherwise.
  * Port of nav2's IsPathValidCondition.
  *
  * Synchronous on purpose, as upstream: a ConditionNode that never returns RUNNING

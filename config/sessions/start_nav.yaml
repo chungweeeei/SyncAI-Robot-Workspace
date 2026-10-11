@@ -122,7 +122,7 @@ windows:
   # ---------- Window 4: planner / controller ----------
   - name: plan_ctrl
     panes:
-      - cmd: ros2 launch syncai_planner planner_server.launch.py
+      - cmd: ros2 launch syncai_global_planner planner_server.launch.py
         sleep: 4
         log: planner
       - cmd: ros2 launch syncai_controller controller_server.launch.py

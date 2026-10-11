@@ -261,6 +261,25 @@ void Costmap2DROS::activate()
     r.sleep();
   }
 
+  // The loop also ends on shutdown (Ctrl-C, or switch_mode killing the session
+  // before odom -> base_link has ever arrived). Going on to start() from there
+  // activates the layers, the obstacle layer's first subscribe() throws
+  // RCLError "rcl node's context is invalid", nothing catches it, and the
+  // server aborts (exit 134) instead of exiting -- the same in planner_server
+  // and controller_server, whose configure() calls this. Stop here instead:
+  // with no update thread and no layer activated, deactivate() (stop() on
+  // layers that never subscribed, a null map_update_thread_) is safe. The
+  // caller must not build an executor afterwards either: both servers' main()
+  // check rclcpp::ok() after configure() and return.
+  if (!rclcpp::ok()) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[Costmap2DROS][%s] Shutdown requested while waiting for transform %s -> %s; "
+      "not activating",
+      __func__, robot_base_frame_.c_str(), global_frame_.c_str());
+    return;
+  }
+
   // Create the thread that periodically updates and publishes the costmap.
   map_update_thread_shutdown_ = false;
   stopped_ = true;        // force start() to (re)activate the layer plugins

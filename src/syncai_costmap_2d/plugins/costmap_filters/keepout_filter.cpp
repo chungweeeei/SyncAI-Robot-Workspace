@@ -137,7 +137,7 @@ void KeepoutFilter::inflateMask()
   // the planner treats the two differently. The inscribed radius is derived
   // from the padded footprint by LayeredCostmap::setFootprint(); the radius
   // and decay are read off the InflationLayer the same way
-  // syncai_planner's findCircumscribedCost() finds it.
+  // syncai_global_planner's findCircumscribedCost() finds it.
   const double inscribed_radius = layered_costmap_->getInscribedRadius();
   double inflation_radius = inscribed_radius;
   double cost_scaling_factor = 0.0;

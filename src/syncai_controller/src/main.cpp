@@ -12,6 +12,15 @@ int main(int argc, char ** argv)
   // owned by a shared_ptr.
   node->configure();
 
+  // configure() returns early on a shutdown that arrives while the costmap is
+  // still waiting for its first transform (Costmap2DROS::activate()). Building
+  // the executor on the dead context then throws RCLError "failed to create
+  // guard condition" out of main(), and the process aborts (exit 134) instead
+  // of exiting cleanly.
+  if (!rclcpp::ok()) {
+    return 0;
+  }
+
   // A SingleThreadedExecutor suffices here: the FollowPath execute callback
   // runs on the SimpleActionServer's own spin thread, and the costmap node is
   // spun by its own NodeThread. This executor services the odom and

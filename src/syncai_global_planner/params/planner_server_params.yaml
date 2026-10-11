@@ -1,0 +1,323 @@
+# Parameters for the syncai_global_planner "planner_server" node and its internal
+# global costmap node. The /**/ wildcard keys match the node names in any
+# namespace, so the same file works for any robot_id: the launch file reads
+# robot_id from config/system.ini and uses it as the node namespace. Topic
+# values below are RELATIVE names — they get the namespace prefix
+# automatically (e.g. map -> /<robot_id>/map). TF frame names are NOT
+# namespaced by ROS, so the launch file overrides robot_base_frame /
+# sensor_frame with the <robot_id>/ prefix at launch time — the values below
+# are only fallbacks when the node is run without the launch file. The
+# costmap's global_frame stays "map".
+/**/planner_server:
+  ros__parameters:
+    use_sim_time: false
+
+    # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
+    # This is a warning threshold only — nothing throttles or aborts on it.
+    # 20 Hz (50 ms) is a generous ceiling: the BT's RateController only asks
+    # for a plan at most once a second (only when is_path_valid says the
+    # current one is blocked), so the warning is a canary for a pathological
+    # Smac search (a huge unknown region, a goal buried in lethal cost), not a
+    # cadence anyone is trying to hit. A Smac plan on a 0.05 m hall map
+    # normally lands well under it.
+    expected_planner_frequency: 20.0
+
+    # Re-send the last plan on `plan` this often (Hz), restamped; 0 = publish
+    # only when a plan is made. move.xml plans only when the path is blocked,
+    # so without this a viewer that subscribes mid-drive never sees the route.
+    plan_republish_rate: 1.0
+
+    # is_path_valid (the BT's once-a-second check of the path still ahead)
+    # tests each pose twice: the centre cell against INSCRIBED, which is
+    # Smac's own expansion test (unknown, off-map, the keepout band, anything
+    # within the inscribed radius of the centre, including inside the
+    # rectangle), and, with footprint_check, the padded footprint's perimeter
+    # against LETHAL -- the test RPP applies on the local costmap before it
+    # drives. The two are not nested: INSCRIBED at the centre means lethal
+    # within 0.25 m, while the perimeter reaches 0.25 m sideways at the path
+    # heading and 0.455 m at the corners. So a blocker 0.25-0.45 m off the
+    # path centre passed the centre test, RPP refused the path, nothing
+    # replanned, and the goal aborted after failure_tolerance with no detour
+    # tried (2026-10). The perimeter is tested at the path heading and at
+    # +-heading_margin: RPP tracks with up to rotate_to_heading_min_angle
+    # (0.25 rad) of heading error before it rotates in place, the gait adds
+    # yaw sway, and at 0.35 rad the rectangle reaches 0.365 m sideways, which
+    # is what catches a person standing 0.3 m beside the route. The price is
+    # a straight passage narrower than 0.73 m: Smac (> 0.5 m) plans it, this
+    # test rejects it, and the BT replans once a second into the same path
+    # while RPP refuses to drive it -- the same abort as before, with a
+    # noisier log. Doors (0.8-0.9 m) pass. footprint_check: false restores
+    # the centre test alone. Both are dynamic parameters, for A/B on the
+    # robot without a rebuild.
+    is_path_valid:
+      footprint_check: true
+      heading_margin: 0.35
+
+    # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
+    # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
+    # rename here would silently send every task-runner goal to an unknown
+    # planner (getPlan() logs an error and returns an empty path). Swapping the
+    # plugin under the existing id is what makes the change take effect without
+    # touching the behavior tree.
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "syncai_global_planner/SmacPlanner2D"
+
+      # Cost-aware grid A*. Replaced NavFn because NavFn's gradient descent
+      # cuts corners against the inflation gradient; here the inflation cost is
+      # inside the edge cost, so the path drifts to the centreline of a
+      # corridor on its own. The Hybrid-A* planner was evaluated and removed:
+      # G23 turns in place, so its minimum_turning_radius (which Dubins cannot
+      # take as 0) only bought detours, and RPP cannot follow a reversing path.
+      tolerance: 0.5        # accept goals within this distance (m) of the requested pose
+      allow_unknown: false   # allow planning through unknown space
+
+      # Weight on costmap cost relative to travel distance, applied as
+      # 1.0 + cost_travel_multiplier * (cell_cost / 252). This is the knob that
+      # makes the planner cost-aware at all; 0.0 degenerates to plain A* on
+      # distance. Tuned against the inflation layer below when it was
+      # cost_scaling_factor 2.0 / inflation_radius 0.5 (0.8 / 1.5 since
+      # 2026-10, not re-tuned here) — raise it to hug the centreline harder at
+      # the price of longer paths, lower it if the robot refuses tight gaps.
+      # Lowered 2.0 -> 1.0: at 2.0 the paths bowed noticeably along the
+      # inflation gradient in open space; 1.0 keeps enough cost-awareness to
+      # stay off walls while letting distance dominate, so open-space legs come
+      # out near-straight. Safety clearance still comes from the inflated
+      # footprint, not this weight.
+      cost_travel_multiplier: 1.0
+
+      # Post-search gradient-descent smoother (upstream Smac defaults are
+      # w_data 0.2 / w_smooth 0.3). w_smooth pulls each waypoint toward the
+      # midpoint of its neighbours (straightens), w_data anchors it to the raw
+      # A* path (keeps the search's obstacle clearance). Nudged toward smooth
+      # to iron out the grid-A* staircase, then w_data 0.2 -> 0.1 (2026-10)
+      # for rounder corners still. The smoother has NO cost term: the only
+      # thing it respects is "never land a waypoint above cost 252", so every
+      # step toward smooth is a step toward cutting corners at the wall. That
+      # is why the wall clearance comes from the inflation band below, which
+      # moves the raw A* path off the wall before smoothing starts, and not
+      # from these weights. Keep w_smooth well below ~0.5 regardless.
+      #
+      # One more reason clearance helps smoothness: the first waypoint update
+      # that lands above 252 aborts smoothing for the WHOLE path (it returns
+      # the previous iteration), so a raw path grazing the inscribed edge in
+      # one spot comes out staircased everywhere.
+      smoother:
+        w_data: 0.1
+        w_smooth: 0.4
+        max_iterations: 1000
+        do_refinement: true
+
+      # 0.05 m maps here are small enough to search at full resolution.
+      # Downsampling would also publish a debug "downsampled_costmap" topic.
+      downsample_costmap: false
+      downsampling_factor: 1
+
+    # NavfnPlanner ("syncai_global_planner/NavfnPlanner", params: tolerance /
+    #   use_astar / allow_unknown / use_final_approach_orientation) and
+    #   StraightLinePlanner are still built and registered. To fall back, set
+    #   plugin: above — do not add a second id, since move.xml only ever asks
+    #   for GridBased.
+
+# The global costmap is an internal node created by planner_server
+# (constructed as a plain node named "global_costmap").
+/**/global_costmap:
+  ros__parameters:
+    use_sim_time: false
+
+    # Frames (robot_base_frame is overridden by the launch file with
+    # <robot_id>/ prefix; global_frame stays "map")
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.3
+
+    # Update / publish rates
+    update_frequency: 1.0
+    publish_frequency: 1.0
+
+    # Geometry: the static layer resizes the master costmap to the map, so
+    # width/height here are only the pre-map defaults.
+    rolling_window: false
+    track_unknown_space: true
+    resolution: 0.05
+
+    # Robot footprint: rectangle with half-extents 0.35 x 0.22 (0.70 x 0.44 m
+    # overall) around base_link for the G23 chassis. It is the SAME rectangle
+    # as the controller's local_costmap in controller_server_params.yaml —
+    # one robot, one footprint; change both or neither. The two used to drift
+    # (local stayed at 0.28 x 0.20 after this one grew), reconciled 2026-10.
+    #
+    # The padding differs on purpose: 0.03 here vs 0.01 in the local costmap.
+    # The rule this encodes is that the global footprint must be the larger
+    # one, so that is_path_valid's perimeter test (same rectangle, this
+    # padding) is stricter than RPP's (same rectangle, the local padding),
+    # and a path it passes is one RPP will drive. That ordering holds only
+    # between the two PERIMETER tests. Until 2026-10 is_path_valid tested the
+    # centre cell alone and this comment claimed the padding gap made the
+    # planner "the conservative side" -- it did not: Smac accepts any centre
+    # cost below 253, which bounds the centre's distance to lethal (0.25 m)
+    # and says nothing about the corners (0.455 m), so a blocker 0.25-0.45 m
+    # off the path was Smac-valid and RPP-refused, and the goal aborted with
+    # no detour. The 0.02 m gap absorbs ~3 degrees of heading error, not the
+    # 14 degrees RPP tracks with; is_path_valid.heading_margin covers that.
+    # Do not equalize the paddings, and never let the local padding exceed
+    # this one. (A circular robot_radius=0.22 was tried before the rectangle
+    # and was oversized enough to make RPP reject valid paths through ~0.6 m
+    # gaps.)
+    #
+    # Padded half-extents are 0.38 x 0.25, so the inscribed radius is 0.25 m
+    # and the circumscribed radius sqrt(0.38^2 + 0.25^2) ~= 0.455 m.
+    # inflation_layer.inflation_radius below must stay >= the circumscribed
+    # radius: the inscribed core (cost 253) is what the centre test and the
+    # keepout filter's own inflation key on, and it is only meaningful while
+    # the band around it is at least robot-sized. Grow the footprint or
+    # padding, or shrink the inflation radius, and re-check this inequality.
+    footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
+    footprint_padding: 0.03
+
+    # Relative topic: resolves to /<robot_id>/map (matches map_server's
+    # output in the same namespace)
+    map_topic: map
+
+    # Layer stack — order matters: static -> obstacle(mark/clear) -> inflation
+    plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+    # Costmap filters run AFTER the layer stack, on the combined grid (see
+    # syncai_costmap_2d's README, "pipeline"): the layers write into a primary
+    # grid, that window is copied to the master, and the filters are applied
+    # last, so a keepout zone never feeds back into the layers as an obstacle.
+    # Two consequences worth knowing before drawing a mask:
+    #   - inflation has already run by then, so the KeepoutFilter inflates the
+    #     mask itself (2026-10) with THIS costmap's inscribed radius and the
+    #     inflation_layer values below — a zone gets the same INSCRIBED band
+    #     and gradient as a wall. Draw the forbidden area only, no margin: a
+    #     margin in the mask is now applied twice. Until then keepout cells
+    #     were bare LETHAL, and Smac's centre-cell check let a path through
+    #     any gap between two zones that was one free cell wide. is_path_valid
+    #     sees a zone twice over: its inscribed band through the centre test,
+    #     its LETHAL core through the footprint perimeter test.
+    #   - clear* services never touch filter output: a keepout is a rule, not
+    #     an observation.
+    # Only the global costmap runs the filter (2026-09). The controller's local
+    # costmap does not, so RPP cannot reject a path for grazing a zone edge;
+    # the planner alone keeps the robot out. Adding the filter to the local
+    # costmap too (nav2's recommendation) is a follow-up once the zones have
+    # been driven against for a while.
+    filters: ["keepout_filter"]
+
+    keepout_filter:
+      plugin: "syncai_costmap_2d::KeepoutFilter"
+      enabled: true
+      # Relative on purpose: CostmapFilter joins it with the costmap node's
+      # PARENT namespace (/<robot_id>/global_costmap -> /<robot_id>), so it
+      # meets costmap_filter_info_server's publisher in the robot namespace,
+      # the same way StaticLayer's `map` reaches /<robot_id>/map. The mask
+      # topic itself is not configured here -- it arrives inside the
+      # CostmapFilterInfo message (keepout_filter_mask) and is resolved the
+      # same way.
+      filter_info_topic: "costmap_filter_info"
+      # Only used when the mask frame differs from `map`; ours is stamped
+      # `map` by filter_mask_server, so this is the fallback path's tolerance.
+      transform_tolerance: 0.1
+      # The filter is on unconditionally, so a mask edited later only needs
+      # filter_mask_server/load_map, not a planner restart. That costs nothing
+      # on a map without a keepout: costmap_filter_info.launch.py writes a
+      # blank (all-unknown) mask of the gridmap's geometry and serves it, and
+      # unknown mask cells are skipped. "Filter mask was not received" every
+      # 2 s therefore means the `keepout` pane is actually down (or the
+      # gridmap.yaml it sizes the mask from is unreadable) -- until 2026-09-30
+      # it was the expected noise on every map without a mask.
+
+    static_layer:
+      plugin: "syncai_costmap_2d::StaticLayer"
+      enabled: true
+      map_subscribe_transient_local: true
+
+    obstacle_layer:
+      plugin: "syncai_costmap_2d::ObstacleLayer"
+      enabled: true
+      footprint_clearing_enabled: true
+      max_obstacle_height: 2.0
+      combination_method: 1            # 0=Overwrite, 1=Maximum
+      observation_sources: scan pointcloud
+      scan:
+        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan)
+        topic: scan
+        # TF frame (overridden by the launch file with <robot_id>/ prefix)
+        sensor_frame: scan
+        data_type: "LaserScan"
+        marking: true
+        clearing: true
+        min_obstacle_height: 0.0
+        max_obstacle_height: 2.0
+        obstacle_max_range: 2.5
+        obstacle_min_range: 0.0
+        raytrace_max_range: 3.0
+        raytrace_min_range: 0.0
+        # true: laser rays that return no hit (inf, e.g. open warehouse space)
+        # are treated as range_max so they still raytrace-clear up to
+        # raytrace_max_range. With false those rays are dropped, so a removed
+        # obstacle whose ray now reads inf never gets cleared -> residual cost.
+        inf_is_valid: true
+
+      # 3D LiDAR obstacle source: Point-LIO's per-scan body cloud, used to catch
+      # obstacles the 2D scan plane misses (e.g. another robot's chassis).
+      pointcloud:
+        # pointlio_node publishes body_cloud relative to its namespace, so with
+        # the robot_id-namespaced launch this resolves to
+        # /<robot_id>/pointlio/body_cloud. Relative name (like `scan` above):
+        # the planner_server runs in the <robot_id> namespace, so each robot
+        # only marks its own cloud even on a shared DDS domain.
+        topic: pointlio/body_cloud
+        # Leave sensor_frame empty on purpose: the observation buffer then uses
+        # the cloud's own header frame_id (<robot_id>/pointlio_body, Point-LIO's
+        # body_frame) as the raytrace origin, so this source needs no per-robot
+        # launch-file frame override. The TF chain resolves via the localizer's
+        # map -> <robot_id>/pointlio_odom (i.e. only after relocalize).
+        sensor_frame: ""
+        data_type: "PointCloud2"
+        marking: true
+        clearing: true
+        # Heights are evaluated in the costmap global frame (map) = metres above
+        # the floor (the TF chain keeps z; a floor point lands at map z ~ 0).
+        # Slice a robot-height band: skip the ground plane, keep the chassis.
+        min_obstacle_height: 0.1
+        max_obstacle_height: 1.5
+        obstacle_max_range: 2.5
+        obstacle_min_range: 0.0
+        raytrace_max_range: 3.0
+        raytrace_min_range: 0.0
+
+    inflation_layer:
+      plugin: "syncai_costmap_2d::InflationLayer"
+      enabled: true
+      # Global costmap only; the controller's local costmap has its own block
+      # and is deliberately untouched (RPP's collision check and cost-scaled
+      # speed run on that one).
+      #
+      # This band is what keeps Smac's paths off the walls. Cost decays as
+      # 252 * exp(-cost_scaling_factor * (d - inscribed)) out to
+      # inflation_radius and is 0 beyond it, and Smac pays
+      # (1 + cost_travel_multiplier * cost / 252) per metre. Two regimes:
+      #   - a passage narrower than 2 * inflation_radius has cost all the way
+      #     across, and the cheapest line is its centre;
+      #   - in wider space the band edge is a cliff and the path rides it,
+      #     inflation_radius from the wall (robot centre to wall).
+      # So inflation_radius is, directly, the wall clearance in open space.
+      # 0.5 -> 0.8 (2026-10): at 0.5 the body edge passed ~0.27 m from walls
+      # (half-width 0.22 + padding 0.01); at 0.8 it is ~0.57 m.
+      # cost_scaling_factor 2.0 -> 1.5 with it, so the cost is still ~42% of
+      # lethal at the band edge (exp(-1.5 * 0.57)) instead of fading out
+      # (2.0 gives 32%). That keeps the centring pull in narrow passages.
+      # The price: a route through a passage narrower than 1.6 m now costs
+      # at least ~40% more per metre along it (more the narrower it is), so
+      # the planner accepts a somewhat longer way round to avoid one. Nothing
+      # here blocks a passage: only >= INSCRIBED (within 0.25 m of a lethal
+      # cell: half-width 0.22 + padding 0.03) is lethal to the planner.
+      # is_path_valid tests that and, on top, the padded perimeter at the
+      # path heading +- heading_margin (see is_path_valid: above), which is
+      # what a lethal cell 0.25-0.45 m off the path trips. Also must stay >=
+      # the padded footprint's circumscribed radius (~0.455 m, see the
+      # footprint comment above).
+      inflation_radius: 0.8
+      cost_scaling_factor: 1.5
