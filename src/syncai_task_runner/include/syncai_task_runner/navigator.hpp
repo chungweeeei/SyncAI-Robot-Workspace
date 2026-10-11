@@ -137,12 +137,13 @@ public:
     blackboard->set<bool>("initial_pose_received", false);
     blackboard->set<int>("number_recoveries", 0);
     blackboard->set<std::shared_ptr<syncai_util::OdomSmoother>>("odom_smoother", odom_smoother);
-    // The failure-attribution and plan-count keys the BT action nodes write
+    // The failure-attribution, plan-count and status keys the BT nodes write
     // (blackboard_keys.hpp): created here so a get<> before the first write
     // finds them, reset per goal by the subclass.
     blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kFailedNode, "");
     blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kFailureMsg, "");
     blackboard->set<int>(syncai_behavior_tree::blackboard_keys::kNumberPlans, 0);
+    blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kNavStatusMsg, "");
 
     // initialize the navigator-specific objects
     return configure(node, odom_smoother);

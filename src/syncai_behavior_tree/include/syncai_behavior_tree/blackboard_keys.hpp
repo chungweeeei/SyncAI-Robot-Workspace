@@ -28,6 +28,25 @@ inline constexpr char kFailureMsg[] = "failure_msg";
 // replans, i.e. detours, since the tree plans only when the path is blocked).
 inline constexpr char kNumberPlans[] = "number_plans";
 
+// What the navigator is doing right now, as one English sentence for the
+// operator console (NavigateToGoal feedback `status_msg`). Written at each
+// turn of move.xml -- IsPathValid / GlobalUpdatedGoal when a replan starts,
+// ComputePathToPose when a path lands or the planner gives up, FollowPath when
+// the controller gives up or a retry resumes -- and set to the planning
+// sentence by the navigator at every goal. Last writer wins, and that is the
+// right answer for the same reason as kFailedNode: the node that wrote last is
+// the one whose outcome the robot is now acting on. The ClearEntireCostmap
+// nodes stay silent: they only run because an action node just failed, and
+// that node's sentence already says the costmap is being cleared. Free text
+// on the wire; nothing may branch on it.
+inline constexpr char kNavStatusMsg[] = "nav_status_msg";
+
+// The sentences more than one site needs: the navigator seeds the first, and
+// FollowPath writes the second on a resume only after its own gave-up
+// sentence, so it can compare (see FollowPathAction::on_tick).
+inline constexpr char kStatusPlanning[] = "Planning a path to the goal";
+inline constexpr char kStatusFollowing[] = "Following the path";
+
 }  // namespace blackboard_keys
 }  // namespace syncai_behavior_tree
 

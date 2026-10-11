@@ -6,9 +6,10 @@ that drives the planner and controller. Port of `nav2_bt_navigator`.
 
 The two actions are one navigation. `NavigateToGoal` (2026-10) is nav2's action
 with a **reason** in the result (`error_code` / `error_msg`: did planning fail
-or path following?) and `number_of_replans` in the feedback, because the
-backend's MOVE step got `ABORTED` with an empty `std_msgs/Empty` result and
-could not tell the operator why. The backend still sends the nav2 one; it
+or path following?) and `number_of_replans` / `status_msg` in the feedback,
+because the backend's MOVE step got `ABORTED` with an empty `std_msgs/Empty`
+result and could not tell the operator why — nor, while it ran, what the robot
+was doing. The backend still sends the nav2 one; it
 migrates at its own pace, and the nav2 action (and the rviz `goal_pose`
 subscriber with it) goes only after that.
 
@@ -77,7 +78,8 @@ subclass goalReceived(goal):
     loadBehaviorTree(goal.behavior_tree)   ← empty string = the default tree
     failed to load?             → release the mutex, reject (ABORTED, empty result)
     initializeGoalPose(goal):
-        reset number_recoveries, failed_node, failure_msg, number_plans; stamp start_time_
+        reset number_recoveries, failed_node, failure_msg, number_plans;
+        set nav_status_msg to "Planning a path to the goal"; stamp start_time_
         write goal.pose to the blackboard under goal_blackboard_id ("goal"); clear "path"
   ⋯ BtActionServer runs the engine loop, calling onLoop() each tick ⋯
 onCompletion: release the mutex, then goalCompleted(result, status) fills the result
@@ -129,6 +131,7 @@ both actions, the sixth on `NavigateToGoal` only):
 | `number_of_recoveries` | Blackboard `number_recoveries`, incremented by the `ClearEntireCostmap` BT nodes |
 | `navigation_time` | Now minus `start_time_` |
 | `number_of_replans` (`NavigateToGoal`) | Blackboard `number_plans` (incremented by `ComputePathToPose` on success) minus one, floored at 0 — the detours, since the tree plans only when the path is blocked or the goal changed |
+| `status_msg` (`NavigateToGoal`) | Blackboard `nav_status_msg`: one sentence the BT nodes write at each turn of `move.xml` — "Planning a path to the goal" (set per goal), "Following the path", "Path blocked; replanning", "Goal changed; replanning", and a retry sentence when the planner or the controller gives up. For the operator console, which otherwise could only say "running"; free text, never to be switched on. Not visible: the controller holding at a blocker inside `failure_tolerance` (Humble's `FollowPath` feedback cannot tell that from a stop), which reads "Following the path" until the abort |
 
 The path lookup is wrapped in `try { … } catch (...) {}` — before the first
 `ComputePathToPose` completes there is no `path` on the blackboard, so
@@ -270,7 +273,7 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 | Kind | Name | Type |
 |---|---|---|
 | Action server | `navigate_to_pose` | `nav2_msgs/NavigateToPose` — what the backend sends today; result empty |
-| Action server | `navigate_to_goal` | `syncai_common/NavigateToGoal` — the same navigation, result `error_code` / `error_msg`, feedback `+ number_of_replans` (2026-10) |
+| Action server | `navigate_to_goal` | `syncai_common/NavigateToGoal` — the same navigation, result `error_code` / `error_msg`, feedback `+ number_of_replans`, `status_msg` (2026-10) |
 | Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) → `navigate_to_pose` |
 | Action client | `compute_path_to_pose` | via the BT node |
 | Action client | `follow_path` | via the BT node |
@@ -301,7 +304,7 @@ ros2 action send_goal /<robot_id>/navigate_to_pose nav2_msgs/action/NavigateToPo
     orientation: {w: 1.0}}}}" --feedback
 
 # Same goal, with a reason in the result when it fails (and number_of_replans
-# in the feedback):
+# and status_msg in the feedback):
 ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/NavigateToGoal \
   "{pose: {header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0},
     orientation: {w: 1.0}}}}" --feedback

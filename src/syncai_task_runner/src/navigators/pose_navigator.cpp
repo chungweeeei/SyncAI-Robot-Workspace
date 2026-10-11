@@ -245,6 +245,8 @@ void PoseNavigator<ActionT>::onLoop()
     int plans = 0;
     blackboard->get<int>(keys::kNumberPlans, plans);
     feedback_msg->number_of_replans = static_cast<uint16_t>(std::max(plans - 1, 0));
+
+    blackboard->get<std::string>(keys::kNavStatusMsg, feedback_msg->status_msg);
   }
 
   this->bt_action_server_->publishFeedback(feedback_msg);
@@ -293,14 +295,17 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
     goal->pose.pose.position.y);
 
   // Reset state for new action feedback. A preempt comes through here too, so
-  // the superseding goal starts with a clean attribution and its first plan
-  // is not counted as a replan.
+  // the superseding goal starts with a clean attribution, its first plan is
+  // not counted as a replan, and its status says it is planning.
   start_time_ = this->clock_->now();
   BT::Blackboard::Ptr blackboard = this->bt_action_server_->getBlackboard();
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
   blackboard->set<std::string>(keys::kFailedNode, "");
   blackboard->set<std::string>(keys::kFailureMsg, "");
   blackboard->set<int>(keys::kNumberPlans, 0);
+  // Seeded rather than cleared: the tree's first write is the first path
+  // landing, and until then planning is what the robot is doing.
+  blackboard->set<std::string>(keys::kNavStatusMsg, keys::kStatusPlanning);
 
   // Update the goal pose on the blackboard
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
