@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "syncai_behavior_tree/blackboard_keys.hpp"
+
 namespace syncai_behavior_tree
 {
 
@@ -80,7 +82,14 @@ BT::NodeStatus IsPathValidCondition::tick()
     return BT::NodeStatus::SUCCESS;
   }
 
-  return future.get()->is_valid ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+  if (future.get()->is_valid) {
+    return BT::NodeStatus::SUCCESS;
+  }
+  // Only a service answer says "blocked": the empty-path and timeout returns
+  // above are not evidence of a blocker and leave the sentence alone.
+  config().blackboard->set<std::string>(  // NOLINT
+    blackboard_keys::kNavStatusMsg, "Path blocked; replanning");
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace syncai_behavior_tree

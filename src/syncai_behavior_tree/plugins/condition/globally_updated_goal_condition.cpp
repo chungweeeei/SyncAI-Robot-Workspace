@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "syncai_behavior_tree/blackboard_keys.hpp"
+
 namespace syncai_behavior_tree
 {
 
@@ -28,6 +30,15 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
 
   if (goal_ != current_goal) {
     goal_ = current_goal;
+    // Said only once this goal has had a path: the first tick of every new
+    // goal lands here too (see above), and there the navigator's "Planning"
+    // sentence is the true one -- nothing is being re-planned yet.
+    int plans = 0;
+    config().blackboard->get<int>(blackboard_keys::kNumberPlans, plans);  // NOLINT
+    if (plans > 0) {
+      config().blackboard->set<std::string>(  // NOLINT
+        blackboard_keys::kNavStatusMsg, "Goal changed; replanning");
+    }
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::FAILURE;
@@ -38,6 +49,5 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
 #include "behaviortree_cpp_v3/bt_factory.h"
 BT_REGISTER_NODES(factory)
 {
-  factory.registerNodeType<syncai_behavior_tree::GloballyUpdatedGoalCondition>(
-    "GlobalUpdatedGoal");
+  factory.registerNodeType<syncai_behavior_tree::GloballyUpdatedGoalCondition>("GlobalUpdatedGoal");
 }

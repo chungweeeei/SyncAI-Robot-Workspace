@@ -3,8 +3,16 @@
 #include <memory>
 #include <string>
 
+#include "syncai_behavior_tree/blackboard_keys.hpp"
+
 namespace syncai_behavior_tree
 {
+
+// Humble's FollowPath result carries no reason, so the sentence names the
+// three causes the controller aborts on (see on_aborted).
+static constexpr char kControllerGaveUp[] =
+  "Controller gave up (blocked, no progress, or pose lost); clearing the local costmap and "
+  "retrying";
 
 FollowPathAction::FollowPathAction(
   const std::string & xml_tag_name, const std::string & action_name,
@@ -36,6 +44,19 @@ void FollowPathAction::on_tick()
       node_->get_logger(),
       "[FollowPathAction][%s] No path to follow (empty path); not sending the goal", __func__);
     should_send_goal_ = false;
+    return;
+  }
+
+  // A goal is going out: the first drive (ComputePathToPose already said
+  // "Following the path" in this tick) or a retry after the controller gave
+  // up. Only the retry needs saying, and only over this node's own sentence:
+  // overwriting unconditionally would hide a replan the planner branch
+  // started in the same tick (it is ticked first) for its whole duration.
+  std::string status;
+  config().blackboard->get<std::string>(blackboard_keys::kNavStatusMsg, status);  // NOLINT
+  if (status == kControllerGaveUp) {
+    config().blackboard->set<std::string>(  // NOLINT
+      blackboard_keys::kNavStatusMsg, blackboard_keys::kStatusFollowing);
   }
 }
 
@@ -74,6 +95,21 @@ void FollowPathAction::on_wait_for_result(
     goal_.goal_checker_id = new_goal_checker_id;
     goal_updated_ = true;
   }
+}
+
+BT::NodeStatus FollowPathAction::on_aborted()
+{
+  // Humble's FollowPath result carries no reason either, so "patience
+  // exceeded", "failed to make progress" and a lost robot pose all arrive
+  // here as one ABORTED; the controller log has which. The navigator turns
+  // this into FOLLOW_PATH_FAILED if the tree ends on it.
+  report_failure("controller " + action_name_ + " aborted the goal");
+  // A retry, as in ComputePathToPose::on_aborted: move.xml clears the local
+  // costmap and sends the path again, up to three times, and the last
+  // failure ends the goal with error_msg instead.
+  config().blackboard->set<std::string>(
+    blackboard_keys::kNavStatusMsg, kControllerGaveUp);  // NOLINT
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace syncai_behavior_tree
