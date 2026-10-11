@@ -197,3 +197,51 @@
     refine_translation_eps: 0.0005
     refine_registration_type: "GICP"
     refine_voxel_resolution: 0.5
+
+    # auto_localize: the hint-free global search for a kidnapped robot
+    # (2026-10; localizers/global_localizer.h has the design, the README the
+    # walk-through). None of these values is measured yet -- they are first
+    # guesses to be tuned on a replay (dp1f against map/dp1f_1006, which has a
+    # poses.txt), and min_inlier_ratio / ambiguity_ratio above all: too loose
+    # accepts a wrong place, too tight fails every call.
+    auto_loc:
+      # One second of body_cloud. A single scan (filter_num 6) is too sparse
+      # to tell places apart; the odom poses line the ten up.
+      accum_scans: 10
+      # Keyframe thinning: the poses.txt trajectory is sampled at this
+      # spacing, so a candidate starts at most ~0.7x this off in x / y.
+      candidate_spacing: 1.0
+      # Yaw sweep: 24 yaws per position. The fine stage's rough GICP has to
+      # absorb half a step (7.5 deg, ~2.6 m at 20 m range).
+      yaw_step_deg: 15.0
+      # Coarse stage: cheap inlier counting, loose on purpose -- the candidate
+      # is up to half a grid step and half a yaw step off.
+      coarse_scan_resolution: 0.5
+      coarse_max_points: 400
+      coarse_inlier_dist: 1.0
+      # Distinct candidates that get rough + refine GICP. Each costs roughly
+      # one timer round or two (30-100 ms).
+      top_k: 10
+      # Wider than the timer's rough_max_corr_dist (2.0), which starts from
+      # last round's answer rather than from a grid point.
+      rough_max_corr_dist: 3.0
+      max_iteration: 50
+      # Final score: fraction of refine-resolution scan points within this of
+      # the 0.1 m map. This, not refine_score_thresh (a sanity bound that
+      # rejects nothing, see above), is the acceptance gate.
+      refine_inlier_dist: 0.3
+      min_inlier_ratio: 0.6
+      # Reject when a runner-up further than ambiguity_trans / ambiguity_yaw_deg
+      # from the winner scores at least this fraction of it: a symmetric
+      # corridor fails instead of guessing.
+      ambiguity_ratio: 0.9
+      ambiguity_trans: 1.0
+      ambiguity_yaw_deg: 10.0
+      # Deadlines (<= 0 disables). search includes building the GICP targets
+      # and KD-trees on the first call after a map load. converge bounds the
+      # wait for the timer's own registration against the winner -- without
+      # it a guess that never converges is retried every round forever; on
+      # timeout the guess is withdrawn and localization is left as it was.
+      # A caller's client timeout must exceed the sum.
+      search_timeout_sec: 10.0
+      converge_timeout_sec: 5.0

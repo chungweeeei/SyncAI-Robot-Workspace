@@ -29,7 +29,8 @@ find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
-# Relocalize / IsValid, the two services served here. They were already in
+# Relocalize / IsValid / AutoLocalize, the services served here (AutoLocalize
+# is new in 2026-10; the other two are the ported ones). They were already in
 # syncai_common (SyncAI-Robot-Interface) before this port -- they moved there
 # from the fork's `interface` package with the hba port, because the backend,
 # their only caller, builds against syncai_common.
@@ -49,6 +50,7 @@ add_executable(localizer_node
   src/main.cpp
   src/localizer_node.cpp
   src/localizers/icp_localizer.cpp
+  src/localizers/global_localizer.cpp
 )
 target_include_directories(localizer_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -70,7 +72,8 @@ ament_target_dependencies(localizer_node
 # for the Eigen3::Eigen and OpenMP::OpenMP_CXX usage requirements it carries as
 # PUBLIC -- without -fopenmp, small_gicp's omp pragmas are silently ignored and
 # KD-tree construction and the reductions all fall back to a single thread
-# (same result, just slower, and num_threads becomes a no-op).
+# (same result, just slower, and num_threads becomes a no-op). The same flag
+# parallelises global_localizer.cpp's own coarse-stage loop.
 target_link_libraries(localizer_node
   ${PCL_LIBRARIES}
   small_gicp::small_gicp
