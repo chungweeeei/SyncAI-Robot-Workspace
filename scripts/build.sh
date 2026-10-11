@@ -25,6 +25,8 @@
 # Steps, each switchable through the environment (defaults in parentheses):
 #   BUILD_ROSDEP    check|install|off  (check)   see below
 #   BUILD_COLCON    1|0                (1)       off = run only the checks above it
+#                                                (and skip the Rust-source prune
+#                                                that follows the build)
 #
 # `rosdep check` rather than `rosdep install` by default: when this runs in the
 # throwaway build container, anything apt installs there is gone at exit and
@@ -166,6 +168,38 @@ esac
 if [ "$BUILD_COLCON" = "1" ]; then
     step "colcon build --symlink-install $*"
     colcon build --symlink-install "$@"
+
+    # --- 5. prune the rclrs nodes' installed source ------------------------
+    # cargo-ament-build copies every ament_cargo package's Cargo.toml,
+    # Cargo.lock and src/ into install/<pkg>/share/<pkg>/rust and drops a
+    # `rust_packages` marker in the ament index, unconditionally (it has no
+    # flag to skip it). That copy exists so a downstream Rust package can depend
+    # on the crate: colcon-ros-cargo turns every marker on AMENT_PREFIX_PATH into
+    # a `[patch.crates-io]` entry pointing at that directory. These three are
+    # binary-only nodes nothing depends on, and at runtime they need lib/,
+    # launch/ and params/ only -- so the copy is dead weight, and source we
+    # would rather not ship in an install/ that goes to the customer IPC.
+    #
+    # The marker goes with the directory, never the directory alone: a marker
+    # whose rust/ is gone becomes a patch to a missing path, and cargo fails
+    # every later Rust build on it ("failed to read .../rust/Cargo.toml") even
+    # though no package uses the patch -- checked 2026-10-12. That bites as
+    # soon as install/setup.bash is sourced before a build, which puts all three
+    # prefixes on AMENT_PREFIX_PATH.
+    #
+    # An explicit list, not "every rust_packages marker": syncai_common's
+    # share/syncai_common/rust is the rosidl_generator_rs crate every Rust node
+    # builds against, and pruning it breaks all three. A plain `colcon build`
+    # (not through this script) still leaves the copy; the next run here
+    # removes it.
+    step "pruning installed Rust source of the rclrs nodes"
+    for pkg in syncai_driver_manager syncai_robot_state syncai_lio_bridge; do
+        prefix="install/${pkg}"
+        [ -d "${prefix}" ] || continue
+        rm -rf "${prefix}/share/${pkg}/rust" \
+               "${prefix}/share/ament_index/resource_index/rust_packages/${pkg}"
+        echo "  ${pkg}"
+    done
 fi
 
 step "done: ${WS}"
