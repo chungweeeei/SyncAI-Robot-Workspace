@@ -248,7 +248,7 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     // Every exception out of the body means this cycle commands a stop, so the
     // acceleration-clamp baseline has to follow the stop and not the velocity we
     // abandoned halfway through computing it. ControllerServer answers a PlannerException
-    // with a zero cmd_vel while failure_tolerance (0.3 s = six cycles) lasts, and past
+    // with a zero cmd_vel while failure_tolerance (3.0 s) lasts, and past
     // that patience it fails the goal and calls publishZeroVelocity() on the way out;
     // either way the robot is told to stop. The baseline is our own last *command*
     // precisely because it is not the measurement (see the clamp in the body), so nothing
@@ -265,8 +265,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     // Deliberately catch-all rather than per-throw-site: the empty-plan and TF-failure
     // throws in transformGlobalPlan(), and costAtPose()'s "costmap too small", all reach
     // the server the same way, and a throw added later would otherwise reintroduce this
-    // silently. reset() does not cover any of them — it runs once per goal, while the
-    // whole episode fits inside one goal's grace window.
+    // silently. reset() does not cover any of them — it runs at goal start and on
+    // cycles that never reach this function (a robot-pose failure in the server).
     last_cmd_vel_ = geometry_msgs::msg::Twist();
     throw;
   }

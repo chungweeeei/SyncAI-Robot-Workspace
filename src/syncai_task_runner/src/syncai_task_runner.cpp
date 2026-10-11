@@ -20,6 +20,8 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
     "syncai_pipeline_sequence_bt_node",
     "syncai_recovery_node_bt_node",
     "syncai_rate_controller_bt_node",
+    "syncai_is_path_valid_condition_bt_node",
+    "syncai_globally_updated_goal_condition_bt_node",
   };
 
   syncai_util::declare_parameter_if_not_declared(

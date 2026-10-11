@@ -1,12 +1,64 @@
 <!--
-  Navigate-to-pose with periodic replanning (1 Hz, every second) and
-  contextual recovery,
-  based on nav2's navigate_to_pose_w_replanning_and_recovery.xml but without
-  its outer system-level RecoveryNode: a planner / controller failure clears
-  its own costmap and retries once, since stale obstacles in the costmap are
-  the most common cause. nav2's system-level branch (clear both costmaps,
+  Navigate-to-pose, replanning only when the current path becomes invalid, with
+  contextual recovery. Based on nav2's
+  navigate_w_replanning_only_if_path_becomes_invalid.xml but without its outer
+  system-level RecoveryNode: a planner / controller failure clears its own
+  costmap and retries once, since stale obstacles in the costmap are the most
+  common cause. nav2's system-level branch (clear both costmaps,
   Spin/Wait/BackUp via RoundRobin, abort on GoalUpdated) is left out for now;
   most of its BT nodes and the behavior server are not ported yet.
+
+  Why not replan every tick (this tree did, at 1 Hz, until 2026-10): a fresh
+  plan always wins, so the route is only as stable as the costmap's memory of
+  what it has seen. The global costmap's obstacle layer raytraces the 3D cloud
+  in 2D, so a ray to a wall point above a low blocker clears the blocker's cell
+  as soon as the robot can see past it. Half-way round a detour the original
+  route then read free and shortest again, and the robot turned back into the
+  blocker. Now a path is kept until IsPathValid sees, on the part still ahead,
+  a centre cell at >= INSCRIBED cost (the planner's own rejection test) or a
+  LETHAL cell under the padded footprint's perimeter at the path heading
+  +-0.35 rad (the test RPP applies before it drives, run on the global costmap
+  while the blocker is still 2.5 m out -- without it a blocker 0.25-0.45 m
+  beside the route passed the centre test, RPP refused the path, and the goal
+  aborted with no detour), or the goal changes. The price: a blocker that
+  leaves does not shorten the route back; the detour is finished. That is the
+  recoverable side, and no "switch when the new path is X% shorter" threshold
+  had to be invented to get it.
+
+  The 1 Hz RateController now paces validity checks; a plan only runs when the
+  check fails, so a blocked path is still noticed within ~1 s of the global
+  costmap (also 1 Hz) marking it. IsPathValid gets 100 ms instead of the 20 ms
+  default_server_timeout: it answers after taking the costmap lock, which a
+  costmap update can hold for longer than 20 ms. A timeout keeps the path (a
+  replan nobody can justify is the thing this tree exists to avoid; the next
+  check is a second away and the controller holds the robot meanwhile). A timeout WARN in
+  the task_runner log on every tick means the costmap update and the check
+  have phase-locked: raise server_timeout here.
+
+  FollowPath gets three retries, and they refill (retry_refill_time, 2026-10).
+  The count is how long the robot waits for a blocker that stands in front of
+  it. FollowPath is MPPI since 2026-10 (controller_server_params.yaml), which
+  bends round a blocker beside the path inside the local costmap; one that
+  closes the way leaves it no feasible trajectory ("Optimizer fail to compute
+  path"), and there is no Wait recovery, so from then on the wait is
+  failure_tolerance (3 s) times retries + 1, with a local costmap clear
+  between attempts (re-marked in 0.2 s; both controllers zero their accel
+  baseline on every refusal, so no lurch). Until then RPP was FollowPath, a
+  tracker that refused at any blocker in its projection; it is still loaded
+  as FollowPathRPP, and controller_id="FollowPathRPP" below is the whole A/B. One
+  retry (~6 s) was enough for a person walking across and not for one
+  standing and talking; three (~12 s) covers that, at the price of a task
+  failure taking ~12 s instead of ~6 s to declare. The progress checker's
+  30 s movement_time_allowance remains the outer bound. The refill: the
+  RecoveryNode only resets when it returns, and FollowPath is RUNNING for the
+  whole goal, so the retries used to be per goal -- a blocker met early used
+  them up and the next one, however much later, failed the goal outright. An
+  attempt that ran at least 60 s before failing now earns them back. 60 s is
+  twice movement_time_allowance: an attempt that never gets going fails
+  sooner than that (3 s of failure_tolerance, or ~30 s without progress), so
+  a dead end still runs out of retries; it must not drop to 30 or below. The
+  planner branch's RecoveryNode keeps one retry and needs no refill:
+  ComputePathToPose returns each tick, which resets that node.
 
   Costmap clear services live on the costmap nodes owned by the planner
   (global_costmap) and controller (local_costmap). Relative service names
@@ -17,11 +69,19 @@
     <PipelineSequence name="NavigateWithReplanning">
       <RateController hz="1.0">
         <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          <Fallback name="FallbackComputePathToPose">
+            <ReactiveSequence name="CheckIfNewPathNeeded">
+              <Inverter>
+                <GlobalUpdatedGoal/>
+              </Inverter>
+              <IsPathValid path="{path}" server_timeout="100"/>
+            </ReactiveSequence>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          </Fallback>
           <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
         </RecoveryNode>
       </RateController>
-      <RecoveryNode number_of_retries="1" name="FollowPath">
+      <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
         <FollowPath path="{path}" controller_id="FollowPath"/>
         <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
       </RecoveryNode>

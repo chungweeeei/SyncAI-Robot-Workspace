@@ -57,8 +57,11 @@ public:
   virtual void setPlan(const nav_msgs::msg::Path & path) = 0;
 
   /**
-   * @brief Clear per-goal controller state. Called once when a goal is
-   * accepted, before the first setPlan(), and never again for that goal.
+   * @brief Clear the controller's cross-cycle state: the robot was told to
+   * stop without this plugin being asked. Called when a goal is accepted,
+   * before the first setPlan(), and again mid-goal on every cycle the server
+   * commands a stop without calling computeVelocityCommands() (a robot-pose
+   * lookup failure inside failure_tolerance). Never on a replan.
    *
    * Default is a no-op: only plugins that carry state across control cycles
    * (RPP's acceleration-clamp baseline) need to override it. Not pure virtual

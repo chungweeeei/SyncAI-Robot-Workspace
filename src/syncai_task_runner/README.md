@@ -19,7 +19,7 @@ RViz "2D Goal Pose" ──/goal_pose topic────────────�
                                                                   │  ticks behavior_trees/move.xml
                                               ┌───────────────────┴───────────────────┐
                                               ▼                                       ▼
-                                  ComputePathToPose ──► syncai_planner    FollowPath ──► syncai_controller
+                                  ComputePathToPose ──► syncai_global_planner    FollowPath ──► syncai_controller
                                   ClearEntireCostmap ─► syncai_costmap_2d (both costmaps)
 ```
 
@@ -114,29 +114,83 @@ real navigation.
 
 ## The behavior tree
 
-`behavior_trees/move.xml` — replanning at 1 Hz with contextual recovery:
+`behavior_trees/move.xml` — replanning only when the current path becomes
+invalid (or the goal changes), with contextual recovery:
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">
   <RateController hz="1.0">
     <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      <Fallback name="FallbackComputePathToPose">
+        <ReactiveSequence name="CheckIfNewPathNeeded">
+          <Inverter>
+            <GlobalUpdatedGoal/>
+          </Inverter>
+          <IsPathValid path="{path}" server_timeout="100"/>
+        </ReactiveSequence>
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      </Fallback>
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
-  <RecoveryNode number_of_retries="1" name="FollowPath">
+  <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
-    <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+    <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>
 </PipelineSequence>
 ```
 
 `PipelineSequence` is what makes this work: it re-ticks the planner branch every
-round even while `FollowPath` is still `RUNNING`, so the path is refreshed
-underneath the controller. A failure in either branch clears **that branch's own
-costmap** and retries once — stale obstacles being the most common cause.
+round even while `FollowPath` is still `RUNNING`, so the path can be replaced
+underneath the controller. Once a second that branch asks the planner's
+`is_path_valid` whether the part of `{path}` still ahead is free — free
+meaning no centre cell at or above INSCRIBED **and** no LETHAL cell under the
+padded footprint's perimeter at the path heading ± 0.35 rad, which is the
+test RPP applies before it drives, run on the global costmap while the
+blocker is still 2.5 m out (2026-10; the centre test alone let a blocker
+0.25–0.45 m beside the route through, RPP refused it, and the goal aborted
+with no detour). Only a blocked path, a changed goal (`GlobalUpdatedGoal`,
+i.e. a preempt) or no path at all runs `ComputePathToPose`; a service timeout
+or a missing robot pose keeps the path. A failure in either branch clears
+**that branch's own costmap** and retries — stale obstacles being the most
+common cause.
 
-Adapted from nav2's `navigate_to_pose_w_replanning_and_recovery.xml`, minus the
+`FollowPath` gets **three** retries (2026-10; one before), and the count is a
+wait, not a robustness knob. The controller behind `FollowPath` is MPPI since
+2026-10 (`syncai_mppi_controller`), which bends round a blocker beside the
+path inside the local costmap; a blocker that closes the way leaves it with no
+feasible trajectory, and there is no `Wait` recovery, so from then on how long
+the robot stands waiting for it to leave is `failure_tolerance` (3 s) ×
+(retries + 1), with a local-costmap clear between attempts (re-marked within
+0.2 s; both controllers zero their acceleration baseline on every refusal, so
+there is no lurch). RPP, `FollowPath` until then, refused at any blocker in
+its projection; it is still loaded as `FollowPathRPP`, and
+`controller_id="FollowPathRPP"` in `move.xml` switches back. One retry (~6 s) covered a person walking across and not one standing
+and talking; three (~12 s) covers that, at the price of a task failure taking
+~12 s rather than ~6 s to declare. The progress checker's 30 s remains the
+outer bound. The planner branch keeps one retry.
+
+The retries are per incident, not per goal. A `RecoveryNode` resets its retry
+count only when it returns, and `FollowPath` is `RUNNING` for the whole goal,
+so until 2026-10 the first blocker used the budget up and a second one, minutes
+later, failed the goal with no retry at all. `retry_refill_time="60.0"` gives
+the budget back to an attempt that ran at least 60 s before failing. It must
+stay above the progress checker's `movement_time_allowance` (30 s): an attempt
+that never gets going fails within that (3 s of `failure_tolerance`, or 30 s
+without progress), so a dead end still exhausts its retries. The planner
+branch needs no refill — `ComputePathToPose` returns every tick, which resets
+its `RecoveryNode`.
+
+Until 2026-10 the branch replanned unconditionally at 1 Hz, and a fresh plan
+always replaced the path. The global costmap raytraces the 3D cloud in 2D, so
+rays to points above a low blocker erase it once the robot can see past it, and
+half-way round a detour the original route read shortest again: the robot
+turned back into the blocker. The cost of the fix is that a blocker which leaves
+no longer shortens the route; the detour is finished. The navigator clears
+`{path}` at every new goal, because nothing else does and a still-free path from
+the previous goal would otherwise be kept.
+
+Adapted from nav2's `navigate_w_replanning_only_if_path_becomes_invalid.xml`, minus the
 outer system-level recovery branch (Spin / Wait / BackUp via `RoundRobin`,
 abort on `GoalUpdated`). Those BT nodes and the behavior server are not ported;
 see `syncai_nav_core`'s missing `Behavior` interface.
@@ -152,7 +206,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
-| `plugin_lib_names` | six BT node libraries | Must list every library whose tags `move.xml` uses. `syncai_behavior_tree` builds a seventh, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — `move.xml` has no `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time |
+| `plugin_lib_names` | eight BT node libraries | Must list every library whose tags `move.xml` uses. `syncai_behavior_tree` builds a ninth, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — `move.xml` has no `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time |
 | `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 

@@ -1,6 +1,7 @@
 #ifndef SYNCAI_BEHAVIOR_TREE__PLUGINS__CONTROL__RECOVERY_NODE_HPP_
 #define SYNCAI_BEHAVIOR_TREE__PLUGINS__CONTROL__RECOVERY_NODE_HPP_
 
+#include <chrono>
 #include <string>
 
 #include "behaviortree_cpp_v3/control_node.h"
@@ -28,13 +29,21 @@ public:
    */
   static BT::PortsList providedPorts()
   {
-    return {BT::InputPort<int>("number_of_retries", 1, "Number of retries")};
+    return {
+      BT::InputPort<int>("number_of_retries", 1, "Number of retries"),
+      BT::InputPort<double>(
+        "retry_refill_time", 0.0,
+        "Seconds child 0 must have run before failing for the retry budget to refill; "
+        "<= 0 never refills (upstream)")};
   }
 
 private:
   unsigned int current_child_idx_;
   unsigned int number_of_retries_;
   unsigned int retry_count_;
+  double retry_refill_time_;
+  // When child 0's current attempt was first ticked (it was IDLE then)
+  std::chrono::steady_clock::time_point first_child_start_;
 
   /**
    * @brief The main override required by a BT action

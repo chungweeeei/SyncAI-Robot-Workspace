@@ -24,6 +24,11 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>tf2_ros</depend>
 
+  <!-- Runtime only: controller_server loads its MPPIController through
+       pluginlib (FollowPath in params/controller_server_params.yaml); nothing
+       here compiles against it. -->
+  <exec_depend>syncai_mppi_controller</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

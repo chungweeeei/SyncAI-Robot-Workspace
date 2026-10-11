@@ -4,13 +4,13 @@ The occupancy representation the planner and controller both plan against: a
 layered 2D costmap with pluginlib layers, sensor-driven obstacle marking and
 clearing, inflation, and costmap filters. Port of `nav2_costmap_2d`.
 
-It is used as a **library, not a node**. `syncai_planner` and `syncai_controller`
+It is used as a **library, not a node**. `syncai_global_planner` and `syncai_controller`
 each construct their own `Costmap2DROS` inside their own process:
 
 | Owner | Costmap | Typical config |
 |---|---|---|
-| `syncai_planner` | `global_costmap` | Full-map, `global_frame: map`, static + obstacle + inflation (+ keepout filter) |
-| `syncai_controller` | `local_costmap` | 3×3 m rolling window, `global_frame: odom`, obstacle + inflation |
+| `syncai_global_planner` | `global_costmap` | Full-map, `global_frame: map`, static + obstacle + inflation (+ keepout filter) |
+| `syncai_controller` | `local_costmap` | 4×4 m rolling window (3×3 until MPPI, 2026-10), `global_frame: odom`, obstacle + inflation |
 
 `costmap_2d_node` also exists as a standalone runner, used only by the three test
 launch files in this package.
@@ -108,6 +108,14 @@ itself, because a joinable `std::thread` destroyed without `join()` calls
 **`activate()` blocks** until `global_frame → robot_base_frame` is available. On
 a cold start that means the whole hosting node waits there — which is exactly why
 the byobu scripts stagger the planner and controller behind `sleep`.
+A shutdown during that wait (Ctrl-C, or `switch_mode` tearing the session down
+before odometry ever arrived) returns from `activate()` **without** starting the
+layers or the update thread. Until 2026-10 it fell through to `start()`, whose
+first layer `subscribe()` threw `RCLError` "context is invalid" on the dead
+context, and `planner_server` / `controller_server` aborted (exit 134) instead of
+exiting. A host node must check `rclcpp::ok()` after `activate()` returns, too:
+both servers' `main()` do, because constructing an executor on the dead context
+throws the same way ("failed to create guard condition").
 
 **The costmap gets its own sub-namespace.** The node is constructed with
 `__ns:=<parent_namespace>/<local_namespace>`, so the controller's costmap lives at
@@ -222,7 +230,7 @@ must stay at their defaults (0.0 / 1.0) for keepout semantics — anything else 
 logged as an error.
 
 It is enabled on the planner's global costmap (`filters: ["keepout_filter"]` in
-`syncai_planner`'s `planner_server_params.yaml`, 2026-09) and not on the
+`syncai_global_planner`'s `planner_server_params.yaml`, 2026-09) and not on the
 controller's local costmap. The mask is `map/<name>/keepout.yaml`, served by
 `syncai_map_server`'s `costmap_filter_info.launch.py` from the nav session,
 which writes a blank all-unknown mask of the gridmap's geometry when a map has
@@ -245,7 +253,7 @@ on filters too), never per update cycle:
 - Radii come from the costmap the filter is attached to, not from parameters
   of its own: the inscribed radius from `LayeredCostmap::getInscribedRadius()`
   (the padded footprint), `inflation_radius` / `cost_scaling_factor` read off
-  the costmap's `InflationLayer` the way `syncai_planner`'s
+  the costmap's `InflationLayer` the way `syncai_global_planner`'s
   `findCircumscribedCost()` finds it. A zone therefore carries exactly the band
   and gradient a wall does. No `InflationLayer` → the INSCRIBED disc only, with
   a warning.
@@ -398,14 +406,17 @@ correctly); renaming it means touching its two includes.
 - **`update_frequency: 0.0` disables the update thread** — the costmap is created,
   publishes nothing, and never becomes current, which reads like a TF problem.
 - **Footprints must agree across costmaps; paddings deliberately do not.** The
-  planner's global costmap (`syncai_planner/params/planner_server_params.yaml`)
+  planner's global costmap (`syncai_global_planner/params/planner_server_params.yaml`)
   and the controller's local costmap
   (`syncai_controller/params/controller_server_params.yaml`) both carry
   `[[0.35,0.22],…]` (reconciled 2026-10; the local one had been left at
-  `[[0.28,0.20],…]`). `footprint_padding` is 0.03 global vs 0.01 local: when the
-  *local* footprint is the larger, RPP rejects paths the planner considers valid
-  ("collision ahead!"), so the padding gap is what keeps the planner the
-  conservative side. Change the rectangle in both files or neither.
+  `[[0.28,0.20],…]`). `footprint_padding` is 0.03 global vs 0.01 local: the
+  planner's `is_path_valid` walks the padded perimeter against LETHAL exactly
+  as RPP does (2026-10), and the padding gap is what keeps the planner's copy
+  of that test the stricter of the two, so a path it passes is one RPP will
+  drive. (The centre-cell test the planner used alone before then never
+  ordered against RPP's perimeter test at all, whatever the padding.) Change
+  the rectangle in both files or neither.
 - **`inflation_radius` smaller than the inscribed radius** leaves lethal cells the
   planner will happily route the robot's corners through.
 - `package.xml` still carries `TODO: Package description` and

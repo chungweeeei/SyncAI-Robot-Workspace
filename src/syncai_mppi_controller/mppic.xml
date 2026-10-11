@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="syncai_mppi_controller">
+    <class type="syncai_mppi_controller::MPPIController" base_class_type="syncai_nav_core::Controller">
+      <description>MPPI controller: samples control sequences on the local costmap, scores them with critics, and outputs cmd_vel directly</description>
+    </class>
+  </library>
+</class_libraries>

@@ -5,13 +5,25 @@ a rolling local costmap and drives a pluggable controller at a fixed rate. Porte
 from `nav2_controller`, with `nav2_regulated_pure_pursuit_controller` merged in
 as a plugin of this package.
 
+Two controllers are loaded (2026-10):
+
+- **`FollowPath` is MPPI**, from `syncai_mppi_controller` (its README has the
+  port). It does local obstacle avoidance: it samples (v, ω) sequences on the
+  local costmap and bends round a blocker beside the path.
+- **`FollowPathRPP` is RPP**, which this README mostly describes. RPP tracks
+  the path and stops when the path is blocked. It was `FollowPath` until then.
+
+The FollowPath goal's `controller_id` picks between them, so
+`controller_id="FollowPathRPP"` in `move.xml` is the whole A/B.
+
 ```
 syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server
                                                    │
                           ┌────────────────────────┼────────────────────────┐
                           ▼                        ▼                        ▼
-                  progress checker           goal checker            Controller plugin
-              "still moving?"           "close enough?"        Regulated Pure Pursuit
+                  progress checker           goal checker            Controller plugins
+              "still moving?"           "close enough?"     FollowPath    = MPPI
+                                                            FollowPathRPP = RPP
                           └────────────────────────┼────────────────────────┘
                                                    │  local_costmap (internal node)
                                                    ▼
@@ -91,6 +103,18 @@ path from the closest pose), and publish the twist.
 failed cycle publishes zero velocity and keeps trying until that many seconds
 have passed since the last *valid* command, then gives up. `-1.0` retries
 forever, `0.0` fails on the first exception.
+
+It covers two things: an exception out of `computeVelocityCommands()`, and —
+since 2026-10, not upstream — a failed **robot-pose lookup**. Upstream throws
+"Failed to obtain robot pose" unconditionally, so one stale `odom → base_link`
+failed `FollowPath` at once while the same TF miss inside RPP's
+`transformGlobalPlan()` got the whole grace window, and it used up the BT's
+retry. A pose failure now publishes zero, skips the progress checker and the
+feedback (both need the pose) and calls the controller's `reset()`: RPP's
+catch-all cannot zero its accel baseline on a cycle in which it is never
+called, and without the reset the first cycle after the TF returned would
+lurch from 0 to near the pre-outage speed. It does **not** cover the progress
+checker's "Failed to make progress", which is meant to end the goal.
 
 **`publishVelocity` skips publishing when nothing is subscribed** to `cmd_vel` —
 worth knowing when debugging with `ros2 topic echo`, since attaching the echo
@@ -181,7 +205,9 @@ against the last command keeps the *command trajectory* kinematically feasible
 without coupling to gait noise.
 
 `last_cmd_vel_` is zeroed in `reset()` — called once per goal by
-`ControllerServer::computeControl()` — so every new goal ramps from a standstill.
+`ControllerServer::computeControl()`, so every new goal ramps from a standstill,
+and on every cycle a robot-pose failure makes the server stop the robot without
+calling RPP (see `failure_tolerance` above).
 `rotateToHeading()` applies the same pattern with `max_angular_accel`, plus a
 `sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target instead of
 overshooting.
@@ -206,13 +232,14 @@ The wrapper is catch-all rather than one zeroing per `throw`: `"collision
 ahead!"` is the frequent case, but `transformGlobalPlan()`'s empty-plan and
 TF-failure throws and `costAtPose()`'s "costmap too small" all reach the server
 by the same path, and a `throw` added later would otherwise reintroduce the stale
-baseline silently. `reset()` covers none of them — it runs once per goal, while a
-whole brake-and-recover episode fits inside one goal's grace window.
+baseline silently. `reset()` covers none of them — it runs at goal start and on
+cycles that never reach RPP, while these throws happen inside RPP mid-goal.
 
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
-cost us once: `setPlan()` is also the mid-navigation replan path. The BT's
-`RateController hz="1.0"` in `move.xml` hands `FollowPath` a fresh path every
-~1 s, which reaches the server as an action preempt and lands in
+cost us once: `setPlan()` is also the mid-navigation replan path. Every replan
+in `move.xml` (once a second until 2026-10, only when `IsPathValid` reports the
+path blocked since) hands `FollowPath` a fresh path, which reaches the server
+as an action preempt and lands in
 `updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
 clamped the very next command to a single accel step, so the command re-ramped
 from ~0 on every replan. Measured on the real robot over a two-goal run (at the
@@ -267,9 +294,20 @@ interfaces. Selection is by ID: the parameter names an ID, and `<id>.plugin`
 names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
-one entry only: `RegulatedPurePursuitController`. The IDs are what a `FollowPath`
-goal's `controller_id` field selects; with a single plugin loaded, an empty
-`controller_id` picks it and warns once.
+two entries since 2026-10:
+
+| ID | Plugin |
+|---|---|
+| `FollowPath` | `syncai_mppi_controller::MPPIController` |
+| `FollowPathRPP` | `syncai_controller::RegulatedPurePursuitController` |
+
+The IDs are what a `FollowPath` goal's `controller_id` field selects.
+
+- **An empty `controller_id` now fails the goal** ("does not exist"). The
+  server only falls back to the sole plugin when exactly one is loaded, as it
+  did while RPP was alone.
+- Both plugins share the one local costmap and its mutex. Only the selected
+  one runs a cycle.
 
 **Progress checkers** (`syncai_nav_core::ProgressChecker`, parameter
 `progress_checker_plugin` — singular, only one is loaded):
@@ -304,7 +342,7 @@ Server-level (`/**/controller_server`):
 | `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
-| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `0.3`**, which is materially different from the default: at `0.0` the first `PlannerException` out of RPP ("collision ahead!", a transform failure) fails the goal outright; at `0.3` the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once 300 ms have passed since the last valid command — six control cycles of grace for a transient TF hiccup or a single sway-induced collision flag, with the robot braking rather than coasting through them |
+| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and since `is_path_valid` runs RPP's own footprint test a refused path is replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, three since 2026-10 (~12 s). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
 | `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` |
@@ -430,11 +468,17 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
 - **The footprint is shared with the global costmap; the padding is not.** Both
   costmaps use `[[0.35,0.22],…]` (reconciled 2026-10 — this file had been left
   at `[[0.28,0.20],…]`). `footprint_padding` is 0.01 here and 0.03 in
-  `syncai_planner`'s `global_costmap`, deliberately: the "collision ahead!" spam
-  happens when the *local* footprint is the larger, so the planner must stay the
-  conservative side, and with equal rectangles the 0.02 m padding gap is what
-  guarantees it (it also covers RPP's heading error while tracking). Change the
-  rectangle in both files together, and never raise this padding to the global one.
+  `syncai_global_planner`'s `global_costmap`, deliberately: the planner's
+  `is_path_valid` runs the same perimeter-on-LETHAL test RPP runs here
+  (2026-10), and the 0.02 m gap makes the planner's the stricter of the two, so
+  a path it passes is one RPP will drive and one RPP would refuse is replanned
+  2.5 m out. That ordering holds between the two *perimeter* tests only — the
+  centre-cell test the planner used alone before then never bounded the
+  corners, so RPP refused paths the planner had passed and nothing replanned
+  (the goal aborted with no detour). The gap absorbs ~3° of heading error, not
+  the 14° RPP tracks with; `is_path_valid.heading_margin` covers that. Change
+  the rectangle in both files together, and never raise this padding to the
+  global one.
 - **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
   spin has no timeout: if an observation source stops publishing, the control
   loop stalls there with the goal still active rather than failing.

@@ -68,6 +68,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtbb-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# xtensor / xsimd: header-only build deps of syncai_mppi_controller, the same
+# pair the robot image (/workspace/Dockerfile) installs for it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxtensor-dev \
+    libxsimd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Sophus 1.22.10, the version the FAST-LIO2 fork's README pinned before its
 # packages were ported in-tree (syncai_pointlio / syncai_mapping build against
 # it). SOPHUS_USE_BASIC_LOGGING=ON drops the fmt dependency the newer Sophus

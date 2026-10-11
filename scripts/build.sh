@@ -19,7 +19,7 @@
 #   docker compose exec robot01 scripts/build.sh [colcon args...]
 #
 # Every argument is appended to `colcon build --symlink-install`, so
-# `--packages-select syncai_planner` or `--parallel-workers 2` work as they
+# `--packages-select syncai_global_planner` or `--parallel-workers 2` work as they
 # would on a bare colcon invocation.
 #
 # Steps, each switchable through the environment (defaults in parentheses):

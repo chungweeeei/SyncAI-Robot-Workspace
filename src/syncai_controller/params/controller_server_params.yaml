@@ -20,7 +20,37 @@
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Seconds the server tolerates controller exceptions (MPPI's "Optimizer
+    # fail to compute path" once every candidate collides; RPP's "collision
+    # ahead!"; a TF miss in either's path transform) before failing the goal with
+    # "Controller patience exceeded"; every failed cycle publishes zero
+    # velocity, so the robot brakes and waits rather than coasting. Raised
+    # 0.3 -> 3.0 so a blocked path re-routes instead of aborting. The detour
+    # comes from the BT's 1 Hz IsPathValid check and the replan it triggers
+    # (move.xml RateController) on the global costmap, which itself updates
+    # at 1 Hz and is not in phase with it, so a blocker that appears inside
+    # RPP's ~0.6 m collision projection takes up to ~2.2-2.5 s (<= 1 s to be
+    # marked, <= 1 s to the next check, Smac's search, one BT tick and one
+    # control cycle) to turn into a new path. At 0.3 the FollowPath action aborted first; its RecoveryNode then
+    # cleared the local costmap and re-sent the *same* old path (the
+    # blackboard path had not changed yet), RPP refused again, and
+    # PipelineSequence failed the whole NavigateToPose in ~0.6-1 s -- before
+    # the detour ever arrived. The timer resets on the first valid command, so
+    # a path that routes around the blocker costs nothing extra -- and
+    # deliberately NOT when a replanned path is accepted on preempt
+    # (updateGlobalPath): a drivable path resets it on its first cycle anyway,
+    # and since is_path_valid runs RPP's own footprint test (2026-10) a path
+    # RPP refuses is replanned once a second, so a reset per preempt would
+    # leave the progress checker's movement_time_allowance (30 s) as the only
+    # abort. That 30 s stays the outer bound on standing still. With the
+    # footprint test the detour normally arrives before RPP refuses (the
+    # blocker is seen 2.5 m out); this window is for one that appears inside
+    # the 0.6 m projection. A map with no second corridor still aborts, ~3 s
+    # per attempt -- how many attempts, and so how long the robot waits for a
+    # live blocker to leave, is move.xml's FollowPath retry count (3, ~12 s
+    # in all); a Wait/RoundRobin recovery is not ported, and this knob is not
+    # it. Do not go below ~2.5: the worst case above would no longer fit.
+    failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
     # Gate the goal check on path progress: only consult the goal checker once
@@ -32,7 +62,15 @@
 
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]
-    controller_plugins: ["FollowPath"]
+    # Two controllers, one local costmap. FollowPath is MPPI
+    # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
+    # local costmap and bends round a blocker inside it, which RPP cannot --
+    # RPP tracks the path and refuses to drive when the path is blocked.
+    # FollowPathRPP is the RPP that was FollowPath until then, kept loaded so
+    # the A/B is move.xml's controller_id="FollowPathRPP" with no rebuild, and
+    # as the fallback while MPPI is unproven on the robot. Only the controller
+    # a FollowPath goal names runs; the other costs memory, not CPU.
+    controller_plugins: ["FollowPath", "FollowPathRPP"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -50,6 +88,127 @@
       stateful: true
 
     FollowPath:
+      plugin: "syncai_mppi_controller::MPPIController"
+      # Starting values, not a tuning: nothing below has driven the robot yet.
+      # Upstream's README example, except where a line says otherwise.
+      #
+      # Velocity bounds are the RPP calibration (FollowPathRPP's
+      # desired_linear_vel 0.60 / rotate_to_heading_angular_vel 0.65) and with
+      # it driver_manager's scale_fwd / scale_turn_*: one calibration, change
+      # them together. vx_min 0.0 disables reversing, as RPP's
+      # allow_reversing: false does; PathAngleCritic then forces
+      # forward_preference on by itself.
+      vx_max: 0.60
+      vx_min: 0.0
+      wz_max: 0.65
+      # DiffDrive although the quadruped can strafe: driver_manager's
+      # scale_left / scale_right are unmeasured (1.0 placeholders), so lateral
+      # commands would be tracked at an unknown gain. Omni goes in together
+      # with that calibration (and vy_max / vy_std).
+      motion_model: "DiffDrive"
+      # Not upstream (Humble bounds velocity only): clamp on the output,
+      # same values as RPP's -- there is no velocity smoother.
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
+      # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
+      # 2 m half-width. With consider_footprint, a rolled-out point off the
+      # costmap is checked as a footprint, and footprintCost() reads an
+      # off-map vertex as LETHAL, so a horizon longer than the window makes
+      # every fast candidate "collide" at its far end and MPPI slows down for
+      # no obstacle. model_dt must stay 1 / controller_frequency:
+      # equal turns on the warm-start shift, a longer controller period throws
+      # out of initialize() and takes controller_server down.
+      time_steps: 40
+      model_dt: 0.05
+      # Upstream's default 1000 (the README example uses 2000). Measure the
+      # controller process's CPU on the Orin before raising it or time_steps:
+      # a cycle past 50 ms shows up as "Control loop missed its desired rate".
+      batch_size: 1000
+      iteration_count: 1
+      vx_std: 0.2
+      wz_std: 0.4
+      temperature: 0.3
+      gamma: 0.015
+      # Path kept ahead of the robot; must stay inside the local costmap too.
+      prune_distance: 1.5
+      transform_tolerance: 0.2
+      # Same reach as RPP's max_robot_pose_search_dist: a path that loops back
+      # near itself must not snap to its later leg.
+      max_robot_pose_search_dist: 10.0
+      # Off: candidates are 1000 x 40 markers a cycle. local_plan (the optimal
+      # trajectory, not upstream) is published regardless.
+      visualize: false
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      # No VelocityDeadbandCritic, although the gait controller has a floor
+      # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
+      # zero*, so it would also fight stopping and turning in place. If MPPI's
+      # slow approach commands turn out not to move the robot, that is the
+      # first thing to check on the robot, not something to guess here.
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
+                "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      # The obstacle term. consider_footprint: the footprint is a 0.70 x 0.44
+      # rectangle, and a centre-point check would let a corner clip a blocker
+      # the radius test calls clear. It reads inflation_radius /
+      # cost_scaling_factor from the local costmap's inflation_layer below
+      # (first InflationLayer when inflation_layer_name is empty), so those
+      # are not repeated here.
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        forward_preference: true
+
+    # FollowPath until 2026-10; unchanged since, apart from the id.
+    FollowPathRPP:
       plugin: "syncai_controller::RegulatedPurePursuitController"
       # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
       # so pure pursuit was computing its arcs (w = v * curvature) for a speed
@@ -123,10 +282,14 @@
     update_frequency: 5.0
     publish_frequency: 2.0
 
-    # Fixed-size rolling window centered on the robot
+    # Fixed-size rolling window centered on the robot. 3 -> 4 m for MPPI
+    # (2026-10): its 2.0 s horizon (1.2 m at full speed) plus the footprint
+    # has to fit inside the 2 m half-width, because a rolled-out footprint
+    # crossing the costmap edge reads as LETHAL in MPPI's CostCritic. Still inside the sensors'
+    # obstacle_max_range (2.5 m), so the extra ring is observed, not blank.
     rolling_window: true
-    width: 3
-    height: 3
+    width: 4
+    height: 4
     resolution: 0.05
 
     # Robot footprint: rectangular chassis half-extents 0.35 x 0.22 — the SAME
@@ -135,12 +298,18 @@
     # after the global one grew.)
     #
     # The padding differs on purpose: 0.01 here vs 0.03 on the global costmap.
-    # If the local footprint ends up the larger (padding included), RPP
-    # spam-rejects paths the planner considered valid ("collision ahead!"), so
-    # the planner must stay the conservative side. With equal rectangles the
-    # 0.02 m padding gap is what guarantees that, and it leaves room for the
-    # heading error RPP accumulates while tracking. Never raise this padding
-    # to or above the global one.
+    # The planner's is_path_valid runs the same perimeter-on-LETHAL test RPP
+    # runs here (2026-10), with the global padding; the 0.02 m gap is what
+    # makes that test the stricter of the two, so a path it passes is one RPP
+    # will drive, and a path RPP would refuse is replanned before RPP meets
+    # it. The ordering holds only between those two perimeter tests. Until
+    # 2026-10 the global side tested the centre cell alone and this comment
+    # said the gap kept "the planner the conservative side" -- it did not:
+    # the centre test bounds the centre's distance to lethal (0.25 m), not
+    # the corners' (0.455 m), so RPP refused paths the planner had passed and
+    # nothing replanned. The gap absorbs ~3 degrees of heading error, not the
+    # 14 degrees RPP tracks with; is_path_valid.heading_margin covers that.
+    # Never raise this padding to or above the global one.
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 
