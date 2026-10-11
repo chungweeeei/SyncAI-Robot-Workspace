@@ -108,6 +108,14 @@ itself, because a joinable `std::thread` destroyed without `join()` calls
 **`activate()` blocks** until `global_frame → robot_base_frame` is available. On
 a cold start that means the whole hosting node waits there — which is exactly why
 the byobu scripts stagger the planner and controller behind `sleep`.
+A shutdown during that wait (Ctrl-C, or `switch_mode` tearing the session down
+before odometry ever arrived) returns from `activate()` **without** starting the
+layers or the update thread. Until 2026-10 it fell through to `start()`, whose
+first layer `subscribe()` threw `RCLError` "context is invalid" on the dead
+context, and `planner_server` / `controller_server` aborted (exit 134) instead of
+exiting. A host node must check `rclcpp::ok()` after `activate()` returns, too:
+both servers' `main()` do, because constructing an executor on the dead context
+throws the same way ("failed to create guard condition").
 
 **The costmap gets its own sub-namespace.** The node is constructed with
 `__ns:=<parent_namespace>/<local_namespace>`, so the controller's costmap lives at
