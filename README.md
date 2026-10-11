@@ -200,6 +200,13 @@ If configure fails on a missing `register_rs.cmake`, delete the stale `build/` +
 `install/` copies of the interface packages that shadow the underlay. The pins
 and the reasoning are in the `Dockerfile`'s underlay stanza and `CLAUDE.md`.
 
+A Rust package that fails to link with `cannot find
+-llivox_ros_driver2__rosidl_generator_c` (or another workspace interface
+package's typesupport) was built once without `install/setup.bash` sourced and
+then with it, on an image older than 2026-10-12: its rclrs build scripts kept
+the old link-search paths. Rebuild the image (the underlay now patches them),
+or until then `rm -rf build/<pkg>` and build again.
+
 #### Re-importing `src/syncai_common` (stale checkout)
 
 A `src/syncai_common/` left over as a **plain directory** (no `.git` inside)
@@ -255,7 +262,10 @@ BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build     
 It runs `scripts/build.sh`: check every vcs checkout (naming the `.repos` file
 to import if one is empty), restore the `livox_ros_driver2` `package.xml` if
 missing, `rosdep check` (report only — see below), then
-`colcon build --symlink-install`. Toggles: `BUILD_COLCON` (`1`/`0`),
+`colcon build --symlink-install`, then delete the copy of the three Rust
+nodes' source that cargo-ament-build always installs
+(`install/<pkg>/share/<pkg>/rust/` and its `rust_packages` index marker — the
+nodes never need it at runtime; a plain `colcon build` leaves it). Toggles: `BUILD_COLCON` (`1`/`0`),
 `BUILD_ROSDEP` (`check`/`install`/`off`). The container exits when the build
 does; robot01 picks the new `install/` up on the next session (re)build
 (`switch_mode`).

@@ -294,6 +294,22 @@ RUN apt-get update && apt-get install -y \
 # changed. That is what made the old underlay layer 599 MB for a 77 MB
 # install/. dev now COPYs the final trees, so no intermediate layer here
 # reaches the image anyway; one chmod is still the right number.
+#
+# rclrs's and rosidl_runtime_rs's build.rs are patched before the build, both
+# the same way: each one emits a `rustc-link-search` for every
+# AMENT_PREFIX_PATH entry but declares only `rerun-if-env-changed=ROS_DISTRO`,
+# so cargo keeps the search paths of whichever AMENT_PREFIX_PATH the build
+# directory was first built with. ros-env, which generates the message modules,
+# does rerun on AMENT_PREFIX_PATH. A workspace built once without
+# install/setup.bash sourced (scripts/build.sh in the build service) and then
+# with it (robot01's ~/.bashrc sources it) therefore pulls livox_ros_driver2's
+# message crate in through ros-env, links its C typesupport, and fails at the
+# link step: "cannot find -llivox_ros_driver2__rosidl_generator_c", although
+# the library sits in install/livox_ros_driver2/lib (checked 2026-10-12, the
+# Rust packages had never had livox in their link line). The patch adds the
+# missing `rerun-if-env-changed=AMENT_PREFIX_PATH`. Upstream main still lacks
+# it as of that date. Drop this when a pin bump brings it in. The grep makes a
+# bump that moves the line fail here instead of building unpatched.
 ARG ROS2_RUST_SHA=1d361a8c5f0e69d530feb62f93b92e46dff369a4
 ARG ROSIDL_RUST_SHA=19d57818dab3b51e418c0893b70b3a1a8b64c495
 ARG ROSIDL_RUNTIME_RS_SHA=21def427689fda0156dd4b0dff28d8d0318af03b
@@ -305,6 +321,12 @@ RUN mkdir -p "${ROS2_RUST_UNDERLAY}/src" && cd "${ROS2_RUST_UNDERLAY}" && \
     rm -rf src/ros2-rust/examples && \
     git -C src/ros2-rust/rosidl_rust checkout "${ROSIDL_RUST_SHA}" && \
     git -C src/ros2-rust/rosidl_runtime_rs checkout "${ROSIDL_RUNTIME_RS_SHA}" && \
+    for f in src/ros2-rust/ros2_rust/rclrs/build.rs \
+             src/ros2-rust/rosidl_runtime_rs/rosidl_runtime_rs/build.rs; do \
+        sed -i 's|^\( *\)println!("cargo:rerun-if-env-changed={ROS_DISTRO}");|&\n\1println!("cargo:rerun-if-env-changed=AMENT_PREFIX_PATH");|' "$f" && \
+        grep -q 'rerun-if-env-changed=AMENT_PREFIX_PATH' "$f" || \
+            { echo "rerun-if-env-changed patch did not apply to $f" >&2; exit 1; }; \
+    done && \
     . /opt/ros/humble/setup.sh && \
     colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log "${CARGO_HOME}/registry" "${CARGO_HOME}/git" && \
