@@ -21,8 +21,13 @@
   <depend>eigen</depend>
   <depend>syncai_util</depend>
 
-  <!-- GraphicsMagick++ (Magick++) is a system dependency used by map_io -->
-  <depend>libgraphicsmagick++1-dev</depend>
+  <!-- GraphicsMagick++ (Magick++) is a system dependency used by map_io.
+       `graphicsmagick` is the rosdep key, as for upstream nav2_map_server; on
+       jammy it resolves to libgraphicsmagick++1-dev plus
+       graphicsmagick-libmagick-dev-compat. The apt package name that used to
+       be here is not a key, so `rosdep install` skipped it and the build only
+       worked because the image already had the library. -->
+  <depend>graphicsmagick</depend>
 
   <!-- Launch-time dependencies -->
   <exec_depend>launch</exec_depend>
