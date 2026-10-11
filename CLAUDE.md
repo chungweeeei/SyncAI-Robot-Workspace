@@ -380,6 +380,24 @@ cp -f src/third-party/livox_ros_driver2/package_ROS2.xml \
 plain CMake package via `project(livox_sdk2)`. Adding one would turn it into an
 ament package and require a build type and dependency list it does not have.
 
+**Every colcon run prints an `ERROR` for `behaviortree_cpp_v3` — ignore it.**
+It reads `Exception in package identification extension 'ament_cargo' in
+'src/third-party/behaviortree_cpp_v3' … Only one <build_type> element is
+permitted.` and comes with a traceback, but nothing is broken: BT.CPP's
+`package.xml` has two `<build_type>`s gated by `$ROS_VERSION` conditions (valid
+format 3), and `colcon-ros-cargo` 0.2.0's identification calls
+`get_build_type()` before evaluating them. colcon then falls back to the ROS
+identification, which lists it as `ros.ament_cmake` and builds it normally.
+Upstream fixed this in colcon-ros-cargo PR #32 (2024-12) but has not released it
+(PyPI is still 0.2.0). Main at `dc26ba5` was checked on 2026-10-11: with it, the
+`ERROR` is gone, the Rust packages show up as `ros.ament_cargo`, and
+`syncai_robot_state` builds. Bump the pin (`COLCON_CARGO_PIP` in the
+`Dockerfile`) when a 0.2.1 / 0.3.0 ships, not to a git SHA: that `ARG` also
+feeds `rust-underlay`, so changing it invalidates that stage's cache. Do not
+silence the error by editing BT.CPP's `package.xml` either, because the
+checkout is pinned and unmodified and the next `vcs import --force` would
+revert the edit.
+
 ## Running the stack
 
 The stack comes up as a **byobu session, one per operating mode**, built by
