@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -38,6 +41,7 @@ LocalizerNode::LocalizerNode() : Node("localizer_node")
 
   // localizer
   m_localizer = std::make_shared<ICPLocalizer>(m_localizer_config);
+  m_global_localizer = std::make_shared<GlobalLocalizer>(m_global_config, m_localizer_config);
 
   // The services live in their own callback group (paired with the MultiThreadedExecutor in
   // main), so the slow loadMap inside relocCB cannot stall the TF rebroadcast running in the
@@ -56,6 +60,14 @@ LocalizerNode::LocalizerNode() : Node("localizer_node")
   m_reloc_check_srv = this->create_service<syncai_common::srv::IsValid>(
     "relocalize_check",
     std::bind(&LocalizerNode::relocCheckCB, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default, m_srv_cb_group);
+
+  // Same group as relocalize on purpose: the two are mutually exclusive, so the
+  // map cannot be swapped in the middle of a search, and the search (seconds)
+  // runs on the group's own thread while the timer keeps the TF going.
+  m_auto_loc_srv = this->create_service<syncai_common::srv::AutoLocalize>(
+    "auto_localize",
+    std::bind(&LocalizerNode::autoLocCB, this, std::placeholders::_1, std::placeholders::_2),
     rmw_qos_profile_services_default, m_srv_cb_group);
 
   // Initial guesses from sources such as RViz's "2D Pose Estimate": they take the same
@@ -120,6 +132,7 @@ void LocalizerNode::loadInitialMap()
       m_config.map_path.c_str());
     return;
   }
+  m_state.loaded_map_path = m_config.map_path;
   RCLCPP_INFO(this->get_logger(), "map preloaded from %s", m_config.map_path.c_str());
   builtin_interfaces::msg::Time stamp = this->now();
   publishMapCloud(stamp);
@@ -205,6 +218,40 @@ void LocalizerNode::loadParameters()
     "refine_registration_type", m_localizer_config.refine_registration_type);
   m_localizer_config.refine_voxel_resolution = declare_parameter<double>(
     "refine_voxel_resolution", m_localizer_config.refine_voxel_resolution);
+
+  // auto_localize's global search; see GlobalLocConfig for what each one does.
+  m_global_config.accum_scans =
+    declare_parameter<int>("auto_loc.accum_scans", m_global_config.accum_scans);
+  m_global_config.candidate_spacing =
+    declare_parameter<double>("auto_loc.candidate_spacing", m_global_config.candidate_spacing);
+  m_global_config.yaw_step_deg =
+    declare_parameter<double>("auto_loc.yaw_step_deg", m_global_config.yaw_step_deg);
+  m_global_config.coarse_scan_resolution = declare_parameter<double>(
+    "auto_loc.coarse_scan_resolution", m_global_config.coarse_scan_resolution);
+  m_global_config.coarse_max_points =
+    declare_parameter<int>("auto_loc.coarse_max_points", m_global_config.coarse_max_points);
+  m_global_config.coarse_inlier_dist =
+    declare_parameter<double>("auto_loc.coarse_inlier_dist", m_global_config.coarse_inlier_dist);
+  m_global_config.top_k = declare_parameter<int>("auto_loc.top_k", m_global_config.top_k);
+  m_global_config.rough_max_corr_dist =
+    declare_parameter<double>("auto_loc.rough_max_corr_dist", m_global_config.rough_max_corr_dist);
+  m_global_config.max_iteration =
+    declare_parameter<int>("auto_loc.max_iteration", m_global_config.max_iteration);
+  m_global_config.refine_inlier_dist =
+    declare_parameter<double>("auto_loc.refine_inlier_dist", m_global_config.refine_inlier_dist);
+  m_global_config.min_inlier_ratio =
+    declare_parameter<double>("auto_loc.min_inlier_ratio", m_global_config.min_inlier_ratio);
+  m_global_config.ambiguity_ratio =
+    declare_parameter<double>("auto_loc.ambiguity_ratio", m_global_config.ambiguity_ratio);
+  m_global_config.ambiguity_trans =
+    declare_parameter<double>("auto_loc.ambiguity_trans", m_global_config.ambiguity_trans);
+  m_global_config.ambiguity_yaw_deg =
+    declare_parameter<double>("auto_loc.ambiguity_yaw_deg", m_global_config.ambiguity_yaw_deg);
+  m_global_config.search_timeout_sec =
+    declare_parameter<double>("auto_loc.search_timeout_sec", m_global_config.search_timeout_sec);
+  m_global_config.converge_timeout_sec = declare_parameter<double>(
+    "auto_loc.converge_timeout_sec", m_global_config.converge_timeout_sec);
+  m_global_config.accum_scans = std::max(1, m_global_config.accum_scans);
 
   // Log the instance values, so a bare run (subscribing to /pointlio/..., which nothing
   // publishes) shows up in the log as the wrong names rather than as silence.
@@ -365,9 +412,16 @@ void LocalizerNode::syncCB(
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr & cloud_msg,
   const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg)
 {
+  // A fresh cloud per message rather than refilling last_cloud in place:
+  // recent_scans keeps the previous ones by pointer for auto_localize, and a
+  // snapshot of those pointers must not change under the search. Converted
+  // before taking the lock -- it is the expensive part.
+  CloudType::Ptr cloud = std::make_shared<CloudType>();
+  pcl::fromROSMsg(*cloud_msg, *cloud);
+
   std::lock_guard<std::mutex> lock(m_state.message_mutex);
 
-  pcl::fromROSMsg(*cloud_msg, *m_state.last_cloud);
+  m_state.last_cloud = cloud;
 
   m_state.last_r = Eigen::Quaterniond(
                      odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
@@ -376,6 +430,10 @@ void LocalizerNode::syncCB(
   m_state.last_t = V3D(
     odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y, odom_msg->pose.pose.position.z);
   m_state.last_message_time = cloud_msg->header.stamp;
+  m_state.recent_scans.push_back({cloud, m_state.last_r, m_state.last_t});
+  while (m_state.recent_scans.size() > static_cast<size_t>(m_global_config.accum_scans)) {
+    m_state.recent_scans.pop_front();
+  }
   if (!m_state.message_received) {
     m_state.message_received = true;
     // Adopt the LIO's odom frame from the message rather than trusting the local_frame
@@ -431,6 +489,7 @@ void LocalizerNode::relocCB(
     response->message = "load map failed";
     return;
   }
+  m_state.loaded_map_path = pcd_path;
   // The request's RAW 6-DOF pose, deliberately NOT through applyPlanarGuess: a caller that
   // knows the full pose (a bag, a test) must be able to hand it over. The price is that a flat
   // guess from a 2D source never converges on this robot's tilted mount, which is why the
@@ -484,6 +543,7 @@ void LocalizerNode::initialPoseCB(
         m_config.map_path.c_str());
       return;
     }
+    m_state.loaded_map_path = m_config.map_path;
     builtin_interfaces::msg::Time stamp = this->now();
     publishMapCloud(stamp);
   }
@@ -544,6 +604,172 @@ void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char 
     this->get_logger(),
     "guess from %s applied: x=%.3f y=%.3f z=%.3f yaw=%.3f (roll/pitch/z from current estimate)",
     source, guess_t.x(), guess_t.y(), guess_t.z(), yaw);
+}
+
+void LocalizerNode::autoLocCB(
+  const std::shared_ptr<syncai_common::srv::AutoLocalize::Request> /*request*/,
+  std::shared_ptr<syncai_common::srv::AutoLocalize::Response> response)
+{
+  using Clock = GlobalLocalizer::Clock;
+  const auto t_start = Clock::now();
+  auto seconds = [](double s) {
+    return std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(s));
+  };
+  auto fail = [&](const std::string & message) {
+    response->success = false;
+    response->message = message;
+    RCLCPP_WARN(this->get_logger(), "auto_localize failed: %s", message.c_str());
+  };
+
+  if (!m_localizer->isMapLoaded() || m_state.loaded_map_path.empty()) {
+    fail("no map loaded");
+    return;
+  }
+  std::vector<ScanRecord> scans;
+  {
+    std::lock_guard<std::mutex> lock(m_state.message_mutex);
+    scans.assign(m_state.recent_scans.begin(), m_state.recent_scans.end());
+  }
+  if (scans.empty()) {
+    fail("no scan received yet on " + m_config.cloud_topic);
+    return;
+  }
+
+  // poses.txt sits beside map.pcd (syncai_mapping's save_maps with
+  // save_patches writes both into map/<name>/).
+  const std::string poses_path =
+    (std::filesystem::path(m_state.loaded_map_path).parent_path() / "poses.txt").string();
+  std::vector<V3D> positions;
+  std::string error;
+  if (!m_global_localizer->loadCandidatePositions(poses_path, positions, error)) {
+    fail(error);
+    return;
+  }
+
+  // Accumulate the recent scans into the newest one's gravity-level, yaw-zero
+  // frame ("level"): odom (pointlio_odom) is gravity-aligned and so is the
+  // map, so only x / y / z / yaw are left for the search -- the tilt of the
+  // mount is carried in level_body_r and never searched. The odom poses
+  // compensate any motion between the scans.
+  const ScanRecord & ref = scans.back();
+  const double ref_yaw = std::atan2(ref.r(1, 0), ref.r(0, 0));
+  const M3D level_local_r = Eigen::AngleAxisd(-ref_yaw, V3D::UnitZ()).toRotationMatrix();
+  const M3D level_body_r = level_local_r * ref.r;
+  CloudType::Ptr accumulated = std::make_shared<CloudType>();
+  for (const ScanRecord & rec : scans) {
+    const M3D R = level_local_r * rec.r;
+    const V3D t = level_local_r * (rec.t - ref.t);
+    for (const PointType & p : *rec.cloud) {
+      const V3D q = R * V3D(p.x, p.y, p.z) + t;
+      PointType o = p;
+      o.x = static_cast<float>(q.x());
+      o.y = static_cast<float>(q.y());
+      o.z = static_cast<float>(q.z());
+      accumulated->push_back(o);
+    }
+  }
+  RCLCPP_INFO(
+    this->get_logger(), "auto_localize: %zu scans, %zu points, %zu candidate positions",
+    scans.size(), accumulated->size(), positions.size());
+
+  const GlobalLocResult found = m_global_localizer->search(
+    accumulated, positions, m_localizer->roughMap(), m_localizer->refineMap(),
+    t_start + seconds(m_global_config.search_timeout_sec));
+  response->candidates = found.candidates;
+
+  // map_T_body at the reference scan = map_T_level * level_T_body.
+  const M3D map_level_r = found.pose.block<3, 3>(0, 0).cast<double>();
+  const M3D map_body_r = map_level_r * level_body_r;
+  const V3D map_body_t = found.pose.block<3, 1>(0, 3).cast<double>();
+  if (found.has_pose) {
+    response->x = static_cast<float>(map_body_t.x());
+    response->y = static_cast<float>(map_body_t.y());
+    response->z = static_cast<float>(map_body_t.z());
+    response->yaw = static_cast<float>(std::atan2(map_body_r(1, 0), map_body_r(0, 0)));
+    response->fitness = static_cast<float>(found.fitness);
+    response->inlier_ratio = static_cast<float>(found.inlier_ratio);
+  }
+  if (!found.success) {
+    fail(found.message);
+    return;
+  }
+
+  // Hand over as map_T_localmap, then re-apply it to the newest odom pose: the
+  // search took seconds and the robot may have moved since the reference
+  // scan. From here on it is relocalize's path exactly -- the timer takes
+  // initial_guess, bypasses the motion gate and opens the settle window.
+  const M3D offset_r = map_body_r * ref.r.transpose();
+  const V3D offset_t = map_body_t - offset_r * ref.t;
+  M4F guess = M4F::Identity();
+  {
+    std::lock_guard<std::mutex> lock(m_state.message_mutex);
+    guess.block<3, 3>(0, 0) = (offset_r * m_state.last_r).cast<float>();
+    guess.block<3, 1>(0, 3) = (offset_r * m_state.last_t + offset_t).cast<float>();
+  }
+  {
+    std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    m_state.initial_guess = guess;
+    m_state.service_received = true;
+    m_state.localize_success = false;
+  }
+  RCLCPP_INFO(
+    this->get_logger(), "auto_localize: search done in %.2f s, handed to the timer: %s",
+    std::chrono::duration<double>(Clock::now() - t_start).count(), found.message.c_str());
+
+  // Wait for the timer's own (converged-gated) registration against a fresh
+  // scan. This is the timeout that matters most: a guess the timer cannot
+  // converge on is retried by it every round, forever -- relocalize and
+  // initialpose have exactly that failure mode, and nothing ever withdraws
+  // their guess. Here a non-converging candidate is withdrawn instead, the
+  // timer falls back to its previous offset + odometry (last_offset_* is only
+  // written by a successful align, so it is still the pre-call value), and the
+  // caller gets a definite failure.
+  const bool bounded = m_global_config.converge_timeout_sec > 0;
+  const auto converge_deadline = Clock::now() + seconds(m_global_config.converge_timeout_sec);
+  bool converged = false;
+  bool superseded = false;
+  while (rclcpp::ok()) {
+    {
+      std::lock_guard<std::mutex> lock(m_state.service_mutex);
+      if (m_state.localize_success) {
+        converged = true;
+        break;
+      }
+      // Nothing on this callback group can replace the guess meanwhile, but
+      // the timer applies the INI's [initial_pose] once on its first odom --
+      // if that lands now, it is the newer guess and is left alone.
+      if (m_state.initial_guess != guess) {
+        superseded = true;
+        break;
+      }
+    }
+    if (bounded && Clock::now() > converge_deadline) break;
+    std::this_thread::sleep_for(50ms);
+  }
+
+  if (!converged) {
+    if (!superseded) {
+      std::lock_guard<std::mutex> lock(m_state.service_mutex);
+      m_state.service_received = false;
+    }
+    char buf[160];
+    std::snprintf(
+      buf, sizeof(buf), "found (%.2f, %.2f, %.1f deg) but ", response->x, response->y,
+      response->yaw * 180.0 / M_PI);
+    fail(
+      std::string(buf) +
+      (superseded ? "another guess replaced it before the timer converged"
+                  : "the timer did not converge on it within " +
+                      std::to_string(m_global_config.converge_timeout_sec) +
+                      " s (auto_loc.converge_timeout_sec); withdrawn, localization unchanged"));
+    return;
+  }
+
+  response->success = true;
+  response->message = found.message;
+  RCLCPP_INFO(
+    this->get_logger(), "auto_localize succeeded in %.2f s: %s",
+    std::chrono::duration<double>(Clock::now() - t_start).count(), found.message.c_str());
 }
 
 void LocalizerNode::relocCheckCB(

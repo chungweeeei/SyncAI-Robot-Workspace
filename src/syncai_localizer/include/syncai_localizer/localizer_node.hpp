@@ -5,8 +5,9 @@
 // itself lives in localizers/ (icp_localizer.*, small_gicp's RegistrationPCL
 // under a rough + refine schedule); this class owns the cloud/odom sync, the
 // timer that re-registers and rebroadcasts map -> local_frame, the motion
-// gate, and the three ways a guess reaches it (relocalize, initialpose, the
-// INI's [initial_pose]).
+// gate, and the four ways a guess reaches it (relocalize, initialpose, the
+// INI's [initial_pose], and auto_localize's global search -- the one that
+// needs no pose from anyone; localizers/global_localizer.* does the search).
 //
 // Ported into the workspace from SyncAI-Fast-LIO2's `localizer` package in
 // 2026-09, the last node in that fork, with the ROS surface unchanged: node
@@ -25,7 +26,9 @@
 // `localizer/relocalize` cost it a stack_not_ready refusal against a healthy
 // stack. So the resolved names are /<robot_id>/relocalize,
 // /<robot_id>/relocalize_check, /<robot_id>/initialpose, /<robot_id>/map_cloud
-// and the node is /<robot_id>/localizer_node. The port keeps that, because
+// and the node is /<robot_id>/localizer_node. auto_localize (2026-10, the
+// kidnap recovery) followed the same rule: /<robot_id>/auto_localize. The
+// port keeps that, because
 // moving the namespace is a cross-repository change the backend would have
 // to follow; the docs were corrected instead.
 
@@ -38,13 +41,16 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 
+#include "syncai_common/srv/auto_localize.hpp"
 #include "syncai_common/srv/is_valid.hpp"
 #include "syncai_common/srv/relocalize.hpp"
 #include "syncai_localizer/localizers/commons.h"
+#include "syncai_localizer/localizers/global_localizer.h"
 #include "syncai_localizer/localizers/icp_localizer.h"
 
 namespace syncai_localizer
@@ -102,6 +108,15 @@ struct NodeConfig
   double post_reloc_settle = 3.0;
 };
 
+// One synchronised body cloud with the odom pose it was taken at, for
+// auto_localize's accumulation.
+struct ScanRecord
+{
+  CloudType::Ptr cloud;
+  M3D r;  // localmap_body_r
+  V3D t;  // localmap_body_t
+};
+
 struct NodeState
 {
   std::mutex message_mutex;
@@ -117,6 +132,15 @@ struct NodeState
   rclcpp::Time last_send_tf_time = rclcpp::Clock().now();
   builtin_interfaces::msg::Time last_message_time;
   CloudType::Ptr last_cloud = std::make_shared<CloudType>();
+  // The last GlobalLocConfig::accum_scans synchronised clouds, newest at the
+  // back (message_mutex). Each is its own allocation, so a snapshot of the
+  // pointers stays valid while syncCB keeps going.
+  std::deque<ScanRecord> recent_scans;
+  // The PCD the localizer currently registers against, set on every
+  // successful loadMap; auto_localize reads poses.txt beside it. Only written
+  // during construction and on the services' callback group, and only read on
+  // that group, so it needs no lock.
+  std::string loaded_map_path;
   M3D last_r;                           // localmap_body_r
   V3D last_t;                           // localmap_body_t
   M3D last_offset_r = M3D::Identity();  // map_localmap_r
@@ -172,6 +196,13 @@ public:
   // never converges on this robot.
   void applyPlanarGuess(double x, double y, double yaw, const char * source);
 
+  // `auto_localize`: hint-free global search, then a wait for the timer to
+  // register against the winner. Both halves have a deadline, and a failure in
+  // either leaves localization as it was. Same callback group as the services.
+  void autoLocCB(
+    const std::shared_ptr<syncai_common::srv::AutoLocalize::Request> request,
+    std::shared_ptr<syncai_common::srv::AutoLocalize::Response> response);
+
   // `relocalize_check`: did the first registration after the last guess succeed?
   void relocCheckCB(
     const std::shared_ptr<syncai_common::srv::IsValid::Request> request,
@@ -185,6 +216,10 @@ private:
 
   ICPConfig m_localizer_config;
   std::shared_ptr<ICPLocalizer> m_localizer;
+  GlobalLocConfig m_global_config;
+  // Only ever used from autoLocCB (services' group, mutually exclusive), so
+  // one search at a time and no lock of its own.
+  std::shared_ptr<GlobalLocalizer> m_global_localizer;
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> m_cloud_sub;
   message_filters::Subscriber<nav_msgs::msg::Odometry> m_odom_sub;
   rclcpp::TimerBase::SharedPtr m_timer;
@@ -198,6 +233,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_srv_cb_group;
   rclcpp::Service<syncai_common::srv::Relocalize>::SharedPtr m_reloc_srv;
   rclcpp::Service<syncai_common::srv::IsValid>::SharedPtr m_reloc_check_srv;
+  rclcpp::Service<syncai_common::srv::AutoLocalize>::SharedPtr m_auto_loc_srv;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr m_initialpose_sub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_map_cloud_pub;
 };

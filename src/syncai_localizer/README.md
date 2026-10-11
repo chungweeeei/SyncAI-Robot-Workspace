@@ -6,8 +6,9 @@ saved `map.pcd` with two stages of GICP (rough, 0.25 m voxels, then refine,
 0.1 m; [small_gicp](https://github.com/koide3/small_gicp) as the backend) and
 broadcasts the result as the `map → <robot_id>/pointlio_odom` correction that
 `syncai_lio_bridge` turns into `map → odom`. It serves `relocalize` /
-`relocalize_check`, listens on `initialpose`, and applies the INI's
-`[initial_pose]` as a boot guess. In the mapping session `syncai_mapping`'s
+`relocalize_check`, listens on `initialpose`, applies the INI's
+`[initial_pose]` as a boot guess, and serves `auto_localize`, a hint-free
+global search for a kidnapped robot. In the mapping session `syncai_mapping`'s
 `pgo_node` owns the same TF instead; this node is never up at the same time.
 
 ```
@@ -85,6 +86,7 @@ silence.
 |---|---|---|
 | TF `map → local_frame` | `<robot_id>/pointlio_odom` | Rebroadcast from a 10 ms timer on every tick, re-solved at most `update_hz` and only when the motion gate says so. `local_frame` is **adopted from the first odom message**; the YAML value is a placeholder. |
 | `map_cloud` | `PointCloud2`, depth 1, TRANSIENT_LOCAL | The refine-resolution map, published once per `loadMap` (construction, `relocalize`, the `initialpose` fallback). For rviz; set the display's durability to Transient Local. |
+| `auto_localize` | `syncai_common/srv/AutoLocalize` | Kidnap recovery, no hint. **Blocks** until a pose is found *and* the timer has registered against it, or fails with localization unchanged. See below. |
 | `relocalize_check` | `syncai_common/srv/IsValid` | `code: 1` always answers `valid: true` (liveness); anything else answers whether the first registration after the last guess converged. **The stack's only localization-quality signal.** |
 
 Nothing is broadcast until the first cloud/odom pair has arrived; with no map
@@ -113,6 +115,55 @@ The consequence for callers: a `relocalize` from a 2D source (the console's
 gridmap click) must be **followed by an `initialpose` publish**, which
 overwrites the flat guess with a tilt-correct one before the next round. The
 backend's map switch does exactly that, in that order. Keep both paths.
+
+### `auto_localize`: the kidnap recovery
+
+The three paths above all need someone to know roughly where the robot is.
+After a kidnap (carried somewhere, booted away from `[initial_pose]`, or
+localization simply lost) nobody does, and the timer keeps re-registering from
+a wrong offset. `auto_localize` finds the robot with no hint
+(`localizers/global_localizer.*`):
+
+1. **Accumulate** the last `auto_loc.accum_scans` body clouds (10 ≈ 1 s; a
+   single filter_num-6 scan is too sparse to tell places apart) into the newest
+   scan's **gravity-level, yaw-zero** frame through the odom poses. Odom and the
+   map are both gravity-aligned, so only x / y / z / yaw are searched — the
+   mount tilt is carried, never searched, for the same reason as
+   `applyPlanarGuess`.
+2. **Candidates** are the map's own mapping trajectory: `poses.txt` beside the
+   loaded PCD, thinned to `candidate_spacing`, × a `yaw_step_deg` sweep. Places
+   the robot has stood are walkable by construction and carry the right z.
+3. **Coarse**: a few hundred scan points per candidate, inlier ratio against
+   the rough map's KD-tree (parallel, `num_threads`).
+4. **Fine**: the `top_k` best *distinct* candidates (non-max suppressed, or
+   they would all be one place at neighbouring yaws) get rough GICP (wider
+   `auto_loc.rough_max_corr_dist`) + refine GICP and are scored by inlier ratio
+   at refine resolution.
+5. **Accept** only if fitness ≤ `refine_score_thresh`, inlier ratio ≥
+   `min_inlier_ratio`, and no distinct runner-up (> `ambiguity_trans` or >
+   `ambiguity_yaw_deg` away) scores ≥ `ambiguity_ratio` × the winner. A
+   symmetric corridor fails as **ambiguous** instead of guessing.
+6. **Hand over** as `map → pointlio_odom` re-applied to the newest odom pose,
+   through `relocalize`'s path (`initial_guess`, gate bypass, settle window),
+   and **wait for the timer's own converged-gated registration**.
+
+Both halves have a deadline, `search_timeout_sec` (10 s, includes building the
+GICP targets and KD-trees on the first call after a map load) and
+`converge_timeout_sec` (5 s). The second is the important one: a guess the
+timer cannot converge on is otherwise retried every round forever — exactly
+the failure mode of `relocalize` / `initialpose` — so on that timeout the
+candidate is **withdrawn**, the timer falls back to its previous offset +
+odometry (`last_offset_*` is only written by a successful align, so it is
+still the pre-call value), and the call fails. A client's timeout must exceed
+the sum. A search timeout never returns a best-so-far: an unranked or
+unchecked pose is not one to hand over.
+
+Limits: only maps saved with `save_patches` have a `poses.txt`; a robot far
+(≫ `candidate_spacing`) from the mapping trajectory may not be found; and if
+the kidnap made Point-LIO itself diverge (lifted, shaken), reset it first —
+`pointlio/reset`, robot stationary — this service does not. The acceptance
+values (`min_inlier_ratio`, `ambiguity_ratio`) are first guesses, not
+measured; tune them on a replay.
 
 ### The motion gate
 
@@ -158,6 +209,21 @@ throwing. The launch layers the instance values on top.
 | `refine_*` | `0.1` / `0.1` m, `20` iters, score `0.1`, corr `0.5` m, `GICP`, voxel `0.5` | | The fine stage |
 | `refine_rotation_eps` / `refine_translation_eps` | `0.002` rad / `0.0005` m | | Same for refine; kept at small_gicp's defaults, since this solution becomes the TF |
 
+`auto_loc.*` (the global search; struct `GlobalLocConfig`, see the section above):
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `accum_scans` | `10` | Body clouds accumulated per search |
+| `candidate_spacing` | `1.0` m | Keyframe thinning |
+| `yaw_step_deg` | `15.0` | Yaw sweep per position |
+| `coarse_scan_resolution` / `coarse_max_points` / `coarse_inlier_dist` | `0.5` m / `400` / `1.0` m | Coarse stage |
+| `top_k` | `10` | Distinct candidates given GICP |
+| `rough_max_corr_dist` / `max_iteration` | `3.0` m / `50` | Fine-stage GICP (starts further off than the timer's) |
+| `refine_inlier_dist` | `0.3` m | Final inlier ratio |
+| `min_inlier_ratio` / `ambiguity_ratio` | `0.6` / `0.9` | Acceptance — **unmeasured first guesses** |
+| `ambiguity_trans` / `ambiguity_yaw_deg` | `1.0` m / `10.0` | What counts as a distinct runner-up |
+| `search_timeout_sec` / `converge_timeout_sec` | `10.0` / `5.0` s | `<= 0` disables |
+
 **Write floats** for double parameters (`2.0`, not `2`): a bare integer is an
 int64 override and the node dies with `InvalidParameterTypeException`.
 
@@ -196,12 +262,15 @@ ros2 topic pub --once /<robot_id>/initialpose geometry_msgs/msg/PoseWithCovarian
   "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0}, orientation: {w: 1.0}}}}"
 # did the first registration after that guess succeed?
 ros2 service call /<robot_id>/relocalize_check syncai_common/srv/IsValid "{code: 0}"
+
+# kidnapped: find the robot with no hint (blocks up to ~15 s)
+ros2 service call /<robot_id>/auto_localize syncai_common/srv/AutoLocalize "{}"
 ```
 
 Checking it:
 
 ```bash
-ros2 node info /<robot_id>/localizer_node                 # subs /<id>/pointlio/{body_cloud,lio_odom}, initialpose; srvs relocalize, relocalize_check
+ros2 node info /<robot_id>/localizer_node                 # subs /<id>/pointlio/{body_cloud,lio_odom}, initialpose; srvs relocalize, relocalize_check, auto_localize
 ros2 param get /<robot_id>/localizer_node update_hz       # 5.0 → the params file was found
 ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; identity until a guess converges
 ```
@@ -214,6 +283,9 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `guess from initialpose applied: … (roll/pitch/z from current estimate)` | An `initialpose` went through `applyPlanarGuess` |
 | `rough : converged=no iters=20 …` every round | Stuck: the guess is too far off, or a flat guess on the tilted mount — publish an `initialpose` |
 | `refine: converged=yes … fitness=0.0xx` | A registration was accepted; the TF moved |
+| `coarse: N candidates … best 0.xx, K kept for GICP` | `auto_localize` coarse stage; one `fine: …` line per kept candidate follows |
+| `search failed …: ambiguous, a distinct pose scores alike` | Symmetric surroundings; move the robot somewhere more distinctive and retry |
+| `… the timer did not converge on it within …; withdrawn` | The search's pose did not hold against a fresh scan; localization is as before the call |
 | `initialpose ignored: map not loaded …` | No `map_path` and no `relocalize` yet; the message was dropped, not queued |
 
 ## Gotchas
@@ -221,6 +293,7 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 - **The namespace is `/<robot_id>`, not `/<robot_id>/localizer`.** See above.
   The rviz config in `config/rviz2/` reads `/<robot_id>/map_cloud`.
 - **`relocalize` success is a receipt.** Poll `relocalize_check`.
+  **`auto_localize` success is a result** — the opposite — and it blocks.
   `RobotState.localization_valid` is TF presence only and reads true against a
   map the robot was never localized in; do not turn it into a quality signal
   from anything but `relocalize_check`.
