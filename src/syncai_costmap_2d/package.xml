@@ -27,7 +27,9 @@
   <depend>std_srvs</depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>rviz2</exec_depend>
+  <!-- No rviz2 exec_depend: three_layer_test.launch.py starts it only with
+       rviz:=true (default false), and the robot image has no rviz2 since
+       2026-10 - run that launch where rviz2 is installed. -->
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -27,7 +27,7 @@
   <depend>tf2_ros</depend>
   <depend>pcl_conversions</depend>
   <!-- Relocalize / IsValid (served here). The workspace-wide interface
-       package, materialised by `vcs import < interface.repos`; the backend,
+       package, materialised by `vcs import < dependencies.repos`; the backend,
        the only caller of both, builds against it. -->
   <depend>syncai_common</depend>
   <!-- The registration backend. Not a rosdep key: src/third-party/small_gicp

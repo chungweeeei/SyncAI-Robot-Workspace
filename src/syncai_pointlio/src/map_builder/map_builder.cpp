@@ -1,5 +1,7 @@
 #include "syncai_pointlio/map_builder/map_builder.h"
 
+#include <algorithm>
+
 MapBuilder::MapBuilder(Config & config, std::shared_ptr<PointEKF> kf) : m_config(config), m_kf(kf)
 {
   m_kf->setConfig(config);
@@ -39,6 +41,10 @@ void MapBuilder::process(SyncPackage & package)
     }
     return;
   }
+
+  // Rebuilt for every frame; empty for the MAP_INIT frame, whose cloud is
+  // then published with the end state alone (see deskewToEndBody).
+  m_group_poses.clear();
 
   if (m_status == BuilderStatus::MAP_INIT) {
     // This frame only advances the state and builds the initial map with the end-of-frame pose
@@ -87,6 +93,9 @@ void MapBuilder::process(SyncPackage & package)
     }
     predictTo(group.time);
     m_lidar_processor->processGroup(group);
+    // After the update, also when it found no plane to use: this is the
+    // state updateChunk projected the group into the map with.
+    m_group_poses.push_back({group.time, m_kf->x().r_wi, m_kf->x().t_wi});
   }
 
   // After the last point group there may still be IMU samples left to consume
@@ -95,8 +104,46 @@ void MapBuilder::process(SyncPackage & package)
     imu_idx++;
   }
   predictTo(package.cloud_end_time);
+  m_group_poses.push_back({package.cloud_end_time, m_kf->x().r_wi, m_kf->x().t_wi});
 
   // After downsampling, each map voxel keeps only the point closest to its centre.
   // Done incrementally: the map is not rebuilt, only the incoming points are judged for insertion
   m_lidar_processor->incrCloudMap();
+}
+
+CloudType::Ptr MapBuilder::deskewToEndBody(
+  const CloudType::Ptr & cloud, double cloud_start_time) const
+{
+  const State & end = m_kf->x();
+  const M3D r_end_t = end.r_wi.transpose();
+  CloudType::Ptr out(new CloudType);
+  out->resize(cloud->size());
+  out->header = cloud->header;
+  for (size_t i = 0; i < cloud->size(); ++i) {
+    const PointType & p = cloud->points[i];
+    const V3D b(p.x, p.y, p.z);
+    const V3D in_imu = end.r_il * b + end.t_il;
+    V3D w;
+    if (m_group_poses.empty()) {
+      w = end.r_wi * in_imu + end.t_wi;
+    } else {
+      // The group times are VoxelGrid means of the raw per-point offsets, not
+      // a subset of them, so this is "the last group at or before the point"
+      // rather than an exact match. Points before the first group take the
+      // first group's state; the list ends with the end state.
+      const double t = cloud_start_time + p.curvature / 1000.0;
+      auto it = std::upper_bound(
+        m_group_poses.begin(), m_group_poses.end(), t,
+        [](double v, const StampedPose & s) { return v < s.t; });
+      const StampedPose & s = (it == m_group_poses.begin()) ? *it : *(it - 1);
+      w = s.r_wi * in_imu + s.t_wi;
+    }
+    const V3D e = r_end_t * (w - end.t_wi);
+    PointType & q = out->points[i];
+    q = p;
+    q.x = static_cast<float>(e.x());
+    q.y = static_cast<float>(e.y());
+    q.z = static_cast<float>(e.z());
+  }
+  return out;
 }

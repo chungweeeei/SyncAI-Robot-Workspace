@@ -19,9 +19,9 @@
 # src/syncai_localizer -- pointlio, pgo, hba and its `interface` srvs had gone
 # the same way earlier that month. These five plus interface.repos were the whole
 # build at that point (verified with the fork's directory deleted: 22 packages,
-# 2026-09-28); driver-manager.repos and robot-state.repos added a 23rd and 24th
-# in 2026-10, when syncai_driver_manager and syncai_robot_state moved out to
-# their own repos and were rewritten in Rust.
+# 2026-09-28). Our own packages that live in their own repos -- syncai_common
+# and, since 2026-10, syncai_mapping and the three Rust ones -- are all in
+# dependencies.repos, which replaced interface.repos and its three siblings.
 # An old checkout of it still on disk builds a second `localizer` package with
 # its own localizer_node; delete the directory (and build/localizer,
 # install/localizer) rather than keeping it.

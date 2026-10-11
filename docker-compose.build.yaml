@@ -72,6 +72,12 @@ services:
       #                             is being fixed — robot01 will still lack them
       BUILD_COLCON: "${BUILD_COLCON:-1}"
       BUILD_ROSDEP: "${BUILD_ROSDEP:-check}"
+      # The image's rosdep cache is in /home/syncrobotic/.ros. On the Jetson the
+      # host uid is 1000 = syncrobotic and HOME resolves there by itself; any
+      # other uid (a Mac's 501) has no passwd entry in the image, HOME falls
+      # back to /, and `rosdep check` reports "not initialized" instead of
+      # checking anything.
+      HOME: /home/syncrobotic
       # Same reasons as x-robot-env: plain-text logs, prompt Python output.
       RCUTILS_COLORIZED_OUTPUT: "0"
       PYTHONUNBUFFERED: "1"
