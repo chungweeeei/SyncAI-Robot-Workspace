@@ -471,6 +471,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-alsa \
     && rm -rf /var/lib/apt/lists/*
 
+# GStreamer headers, .pc files and the unversioned .so links, for
+# syncai_camera_feeder: its `gstreamer` / `gstreamer-app` crates find the
+# libraries through pkg-config in their build scripts and link with
+# -lgstreamer-1.0 / -lgstapp-1.0 / -lglib-2.0, none of which the runtime
+# packages above ship (they carry only the versioned .so.0). The package's
+# manifest and its own devcontainer both list these two; this image did not,
+# and the build only ever passed in a container where they had been installed
+# by hand -- the 2026-10-12 image rebuild dropped them and the link failed
+# with `cannot find -lgstapp-1.0`. It got that far rather than failing at
+# pkg-config because cargo reused the build-script output cached in
+# build/syncai_camera_feeder from the run that had them. Its own layer, so
+# the runtime layer above keeps its cache.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # aplay, to check the robot's speaker from a shell in here (`aplay -l`, then
 # play something at it). It used to be a dependency: the in-tree backend's TTS
 # gateway shelled out to aplay for its /speak route rather than pull in a

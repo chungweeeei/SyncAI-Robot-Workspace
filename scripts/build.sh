@@ -2,9 +2,9 @@
 # =============================================================================
 # Build the workspace with colcon. Everything under src/ is a package colcon
 # knows how to build on its own — ament_cmake, plain CMake, ament_python, and
-# since 2026-10 three ament_cargo packages (syncai_driver_manager,
-# syncai_robot_state and syncai_lio_bridge, through the colcon-cargo /
-# colcon-ros-cargo the image installs) — so "every ROS 2 package" and "everything colcon finds" are the
+# since 2026-10 four ament_cargo packages (syncai_driver_manager,
+# syncai_robot_state, syncai_lio_bridge and syncai_camera_feeder, through the
+# colcon-cargo / colcon-ros-cargo the image installs) — so "every ROS 2 package" and "everything colcon finds" are the
 # same set. The two exceptions this header
 # used to carve out (syncai_frontend, built by npm; syncai_backend, whose deps
 # came from pip) both left the workspace in 2026-09 for their own repositories.
@@ -77,13 +77,13 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 #   - an absent src/syncai_common fails every package at once with a message
 #     about a missing ament package;
 #   - an absent first-party package (syncai_mapping, syncai_driver_manager,
-#     syncai_robot_state, syncai_lio_bridge) fails NOTHING. colcon happily
-#     builds a workspace with nothing to save a map with, no bridge to the gait
-#     controller, nothing publishing RobotState and no odometry source, so the
-#     mapping session's lio window dies on a missing package, the robot stands
-#     still at the first cmd_vel, the console's telemetry never arrives, and
-#     the nav session's costmaps wait forever on an odom -> base_link nobody
-#     broadcasts.
+#     syncai_robot_state, syncai_lio_bridge, syncai_camera_feeder) fails
+#     NOTHING. colcon happily builds a workspace with nothing to save a map
+#     with, no bridge to the gait controller, nothing publishing RobotState, no
+#     odometry source and no camera feed, so the mapping session's lio window
+#     dies on a missing package, the robot stands still at the first cmd_vel,
+#     the console's telemetry never arrives, and the nav session's costmaps
+#     wait forever on an odom -> base_link nobody broadcasts.
 # This does. The dir:repos table is the one place to add the next package that
 # moves out to its own repository (and dependencies.repos the place to pin it).
 step "checking vcs checkouts"
@@ -97,7 +97,8 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
              syncai_mapping:dependencies.repos \
              syncai_driver_manager:dependencies.repos \
              syncai_robot_state:dependencies.repos \
-             syncai_lio_bridge:dependencies.repos; do
+             syncai_lio_bridge:dependencies.repos \
+             syncai_camera_feeder:dependencies.repos; do
     dir="${entry%%:*}"
     repos="${entry##*:}"
     if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
@@ -107,7 +108,7 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
 done
 if [ -n "${missing}" ]; then
     # Deduplicate: five empty third-party dirs are still one missing import, and
-    # so are five empty first-party ones.
+    # so are six empty first-party ones.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
     die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
         "$(for l in ${lists}; do printf '\n  vcs import < %s' "$l"; done)"
@@ -175,7 +176,7 @@ if [ "$BUILD_COLCON" = "1" ]; then
     # `rust_packages` marker in the ament index, unconditionally (it has no
     # flag to skip it). That copy exists so a downstream Rust package can depend
     # on the crate: colcon-ros-cargo turns every marker on AMENT_PREFIX_PATH into
-    # a `[patch.crates-io]` entry pointing at that directory. These three are
+    # a `[patch.crates-io]` entry pointing at that directory. These four are
     # binary-only nodes nothing depends on, and at runtime they need lib/,
     # launch/ and params/ only -- so the copy is dead weight, and source we
     # would rather not ship in an install/ that goes to the customer IPC.
@@ -184,16 +185,17 @@ if [ "$BUILD_COLCON" = "1" ]; then
     # whose rust/ is gone becomes a patch to a missing path, and cargo fails
     # every later Rust build on it ("failed to read .../rust/Cargo.toml") even
     # though no package uses the patch -- checked 2026-10-12. That bites as
-    # soon as install/setup.bash is sourced before a build, which puts all three
+    # soon as install/setup.bash is sourced before a build, which puts all four
     # prefixes on AMENT_PREFIX_PATH.
     #
     # An explicit list, not "every rust_packages marker": syncai_common's
     # share/syncai_common/rust is the rosidl_generator_rs crate every Rust node
-    # builds against, and pruning it breaks all three. A plain `colcon build`
+    # builds against, and pruning it breaks all four. A plain `colcon build`
     # (not through this script) still leaves the copy; the next run here
     # removes it.
     step "pruning installed Rust source of the rclrs nodes"
-    for pkg in syncai_driver_manager syncai_robot_state syncai_lio_bridge; do
+    for pkg in syncai_driver_manager syncai_robot_state syncai_lio_bridge \
+               syncai_camera_feeder; do
         prefix="install/${pkg}"
         [ -d "${prefix}" ] || continue
         rm -rf "${prefix}/share/${pkg}/rust" \
