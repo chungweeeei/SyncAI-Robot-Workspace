@@ -115,10 +115,13 @@ repositories:
   # this tree -- it was written in its own repo from the start. It links
   # GStreamer through the gstreamer / gstreamer-app crates, so it needs the
   # image's libgstreamer1.0-dev and libgstreamer-plugins-base1.0-dev (the
-  # Dockerfile says why they are their own layer). Nothing starts it yet: it is
-  # in neither session spec, and it cannot run beside the host-side
+  # Dockerfile says why they are their own layer). The nav session starts it
+  # (the camera_feeder window of start_nav.yaml, 2026-10-12; the mapping
+  # session does not), and it cannot run beside the host-side
   # scripts/publish_camera_crop.sh, which opens the same device -- the second
-  # opener dies at S_FMT, not at open().
+  # opener dies at S_FMT, not at open(), and the feeder's launch respawns it
+  # every 2 s, so on a robot booting into AUTO the host script must be stopped
+  # or that pane crash-loops on EBUSY.
   src/syncai_camera_feeder:
     type: git
     url: https://github.com/chungweeeei/SyncAI-Robot-Camera-Feeder.git
