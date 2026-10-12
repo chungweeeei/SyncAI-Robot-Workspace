@@ -295,14 +295,18 @@ colcon build --packages-select syncai_global_planner
 source install/setup.bash
 
 # or from the host, in a throwaway container made from the same image:
-docker compose -f docker-compose.build.yaml run --rm build [colcon args...]
+docker compose -f docker-compose.build.yml run --rm build [colcon args...]
 ```
 
-`docker-compose.build.yaml` is **standalone** (own project `name:
+`docker-compose.build.yml` is **standalone** (own project `name:
 syncai-build`, not `include`d — a build is not something to `up`) and its one
 service runs `scripts/build.sh` as its *entrypoint*, which is why
 `run build --packages-select x` appends to `colcon build --symlink-install`
-instead of replacing it. Same image as robot01 on purpose: the artefacts land
+instead of replacing it. It is a **release build** (`BUILD_TYPE`, default
+`Release`: `-DCMAKE_BUILD_TYPE` plus `--cargo-args --release`; a plain
+`colcon build` leaves every package but pointlio / mapping / localizer
+unoptimised), and an own `--cmake-args` / `--cargo-args` replaces those, so
+repeat the build type in it. Same image as robot01 on purpose: the artefacts land
 in the shared bind-mounted `build/` + `install/`, so the toolchain and headers
 must be what robot01 has. It therefore only `rosdep check`s by default
 (`BUILD_ROSDEP=check`) — an apt install into a throwaway container never
@@ -779,7 +783,7 @@ something to verify or edit here.
 - `scripts/`: `attach.sh` (host-side: attaches to whichever byobu session is
   live in the container — the session name follows the mode, so a hardcoded
   alias is wrong half the time), `build.sh` (in-image: the build
-  steps behind `docker-compose.build.yaml`, see Build), `publish_camera_crop.sh` + `.env` (host-side
+  steps behind `docker-compose.build.yml`, see Build), `publish_camera_crop.sh` + `.env` (host-side
   camera publisher, see Infrastructure), `urdf2glb.py` (robot mesh for the
   console's 3D view, see "Out of tree"), and `release/` (`build_images.sh` / `save_images.sh` /
   `load_and_up.sh` / `.env.example` — an offline release bundle for the

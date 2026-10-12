@@ -10,23 +10,42 @@
 # came from pip) both left the workspace in 2026-09 for their own repositories.
 #
 # Runs INSIDE the robot image, either as the entrypoint of the one-shot
-# service in docker-compose.build.yaml
+# service in docker-compose.build.yml
 #
-#   docker compose -f docker-compose.build.yaml run --rm build [colcon args...]
+#   docker compose -f docker-compose.build.yml run --rm build [colcon args...]
 #
 # or by hand in the live robot container
 #
 #   docker compose exec robot01 scripts/build.sh [colcon args...]
 #
-# Every argument is appended to `colcon build --symlink-install`, so
-# `--packages-select syncai_global_planner` or `--parallel-workers 2` work as they
-# would on a bare colcon invocation.
+# Every argument is appended to `colcon build --symlink-install` plus the
+# build-type arguments below, so `--packages-select syncai_global_planner` or
+# `--parallel-workers 2` work as they would on a bare colcon invocation.
 #
 # Steps, each switchable through the environment (defaults in parentheses):
 #   BUILD_ROSDEP    check|install|off  (check)   see below
 #   BUILD_COLCON    1|0                (1)       off = run only the checks above it
 #                                                (and skip the Rust-source prune
 #                                                that follows the build)
+#   BUILD_TYPE      Release|RelWithDebInfo|Debug|MinSizeRel|off  (Release)
+#
+# BUILD_TYPE is a release build by default. Without it every ament_cmake
+# package configures with an empty CMAKE_BUILD_TYPE -- no -O at all -- and only
+# the three packages that guard it in their own CMakeLists (syncai_pointlio,
+# syncai_mapping, syncai_localizer) came out optimised; the nav stack (costmap,
+# planner, MPPI, which samples thousands of trajectories per cycle) did not.
+# The same goes for the ament_cargo packages, which colcon-ros-cargo builds as
+# cargo's dev profile unless --release is passed. So the value becomes both
+# `--cmake-args -DCMAKE_BUILD_TYPE=<type>` and, for anything but Debug,
+# `--cargo-args --release`; colcon extends colcon.meta's per-package
+# cmake-args with the command line's, so livox_ros_driver2 keeps its flags.
+# `off` passes neither, which is a plain `colcon build`.
+#
+# Passing your own `--cmake-args` / `--cargo-args` among the arguments REPLACES
+# these (argparse keeps the last occurrence of an option), so spell the build
+# type out in them too, or set BUILD_TYPE=off and own them entirely.
+# Switching type on an existing build/ needs no clean: -D overrides the cached
+# value and cargo keeps one target directory per profile.
 #
 # `rosdep check` rather than `rosdep install` by default: when this runs in the
 # throwaway build container, anything apt installs there is gone at exit and
@@ -52,13 +71,14 @@ WS="$(pwd)"
 
 BUILD_ROSDEP="${BUILD_ROSDEP:-check}"
 BUILD_COLCON="${BUILD_COLCON:-1}"
+BUILD_TYPE="${BUILD_TYPE:-Release}"
 
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 
 [ -f /opt/ros/humble/setup.bash ] || \
     die "no ROS 2 Humble at /opt/ros/humble — run this inside the robot image" \
-        "(docker compose -f docker-compose.build.yaml run --rm build), not on the host."
+        "(docker compose -f docker-compose.build.yml run --rm build), not on the host."
 
 # --- 1. vcs checkouts --------------------------------------------------------
 # Two groups of directories in src/ are materialised by vcstool rather than
@@ -166,9 +186,24 @@ case "$BUILD_ROSDEP" in
 esac
 
 # --- 4. colcon ---------------------------------------------------------------
+# Validated here rather than left to CMake: a misspelt type ("release") is
+# accepted by CMake as a custom configuration with no flags, which is the
+# unoptimised build this exists to prevent, with no error anywhere.
+type_args=()
+case "$BUILD_TYPE" in
+    Debug)
+        type_args=(--cmake-args "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}") ;;
+    Release|RelWithDebInfo|MinSizeRel)
+        type_args=(--cmake-args "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+                   --cargo-args --release) ;;
+    off) ;;
+    *) die "BUILD_TYPE must be Release, RelWithDebInfo, Debug, MinSizeRel or off" \
+           "(got '${BUILD_TYPE}')" ;;
+esac
+
 if [ "$BUILD_COLCON" = "1" ]; then
-    step "colcon build --symlink-install $*"
-    colcon build --symlink-install "$@"
+    step "colcon build --symlink-install ${type_args[*]} $*"
+    colcon build --symlink-install "${type_args[@]}" "$@"
 
     # --- 5. prune the rclrs nodes' installed source ------------------------
     # cargo-ament-build copies every ament_cargo package's Cargo.toml,
