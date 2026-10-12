@@ -67,7 +67,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock. **Not tracked here**, see below |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState`. **Not tracked here**, see below |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
-| `syncai_camera_feeder` | Sole owner of `/dev/syncai/camera0`: its MJPEG stream, undecoded, as RTP/JPEG to the WebRTC worker and as `image_raw/compressed` to ROS. In no session spec yet. **Not tracked here**, see below |
+| `syncai_camera_feeder` | Sole owner of `/dev/syncai/camera0`: its MJPEG stream, undecoded, as RTP/JPEG to the WebRTC worker and as `image_raw/compressed` to ROS. Started by the nav session only. **Not tracked here**, see below |
 
 Six packages in the table are **not tracked in this repo**. Each lives in its
 own repository and is imported back into `src/` by vcstool (see "Getting
@@ -316,7 +316,7 @@ Nothing has to be launched by hand. The robot container's main process is
 `ros2 launch syncai_sys_manager sys_manager.launch.py`; on start it builds the
 **AUTO** byobu session (`syncai-dev`) from `config/sessions/start_nav.yaml`:
 bringup → map_server + keepout → pointlio + localizer → lio_bridge → planner +
-controller → task_runner → driver_manager → robot_state, with `sleep` offsets
+controller → task_runner → driver_manager → robot_state → camera_feeder, with `sleep` offsets
 standing in for the missing lifecycle manager. The `keepout` pane serves
 `map/<name>/keepout.yaml` to the planner's costmap filter, writing a blank
 (all-unknown) one of the gridmap's size first when the map has none yet. Draw a
@@ -385,7 +385,9 @@ bash scripts/publish_camera_crop.sh stop
 
 It pushes RTSP to the remote MediaMTX named in `scripts/publish_camera_crop.env`.
 The ROS camera node in `bringup.launch.py` is off by default because the two
-cannot share the V4L2 device.
+cannot share the V4L2 device — and neither can the nav session's
+`camera_feeder` window (`syncai_camera_feeder`), which opens the same device:
+on a robot that boots into AUTO, stop the host script first.
 
 **Logs.** Every pane is captured by multilog under
 `log/stack/<robot_id>/<window>/` (`mapping/` subtree for the mapping session):

@@ -91,10 +91,12 @@ usable intrinsics). The camera is configured in `params/bringup.yaml` and
 `scripts/publish_camera_crop.env`, not in the instance INI. Crop values in that
 `.env` are per-robot (fisheye black-arc widths), and the stream path is
 prefixed with the robot name so several robots can publish to one MediaMTX.
-`syncai_camera_feeder` (see "Hardware & system") is a third would-be owner,
-built here but started by nothing yet: it holds the device itself and fans the
-undecoded MJPEG out to both the WebRTC worker and ROS, so whichever change puts
-it in a session spec also has to retire the host script on that robot.
+`syncai_camera_feeder` (see "Hardware & system") is a third owner: it holds
+the device itself and fans the undecoded MJPEG out to both the WebRTC worker
+and ROS. Since 2026-10-12 the nav session starts it (`camera_feeder` window of
+`start_nav.yaml`; the mapping session does not), so on a robot booting into
+`AUTO` the host script has to be stopped — otherwise the feeder, which its
+launch respawns every 2 s, crash-loops on `EBUSY` in that pane.
 
 ### Hardware & system
 
@@ -103,7 +105,7 @@ it in a session spec also has to retire the host script on that robot.
 | `syncai_driver_manager` | **UDP bridge to the gait controller — not in this repo.** It moved to `chungweeeei/SyncAI-Robot-Driver-Manager` in 2026-10 and is materialised back into `src/` by `vcs import < dependencies.repos` (branch `dev`), the same arrangement `syncai_common` has; it was rewritten there against **rclrs** (Rust, `ament_cargo`), so the C++ node this table used to describe is history now — `git log -- src/syncai_driver_manager` has it. The ROS surface did not move with it: same package name, same `driver_manager_node` executable, same `driver_manager.launch.py`, so both session specs are unchanged. Sends `cmd_vel` with a per-direction velocity-scale correction (the gait controller tracks commands asymmetrically). The six scales (`scale_fwd` … `scale_turn_r`) are **ROS parameters** loaded from `params/driver_manager_params.yaml` (1.40 fwd / 1.40 turn today) and survive restarts; a runtime `set_speed_scale` override is what does *not* persist. That file is keyed on a bare `/**` there, not the `/**/driver_manager` the rest of this workspace uses — rclrs matches a params key only when it is exactly `/**` or exactly the node's fully-qualified name, with no wildcard expansion, so the old key matched nothing and every scale fell back to its code default. Receives ASCII telemetry, and owns the safe-shutdown path (safety lock + MODE X / lie down) — which still has **zero call sites** (`SafetyLock::trigger` is called only from tests; the joint-overheat monitor that would engage it is a TODO in `telemetry.rs`). The lock's state is published on a latched `safety_locked` (`std_msgs/Bool`, RELIABLE + TRANSIENT_LOCAL depth 1) — new with the Rust port — and surfaces as `RobotState.low_level_mode.safety_state`, so that field reads `false` today for want of a trigger, not because anything was checked. Edit it in that checkout and commit there. |
 | `syncai_robot_state` | **Aggregates odom / battery / wifi / motor_states / the gait controller's `mode` / `safety_locked` / TF into `syncai_common/RobotState` — not in this repo.** It moved to `chungweeeei/SyncAI-Robot-State` in 2026-10, the second package that month to go out to its own repo and be rewritten against **rclrs** (Rust, `ament_cargo`), and is materialised back into `src/` by `vcs import < dependencies.repos` (branch `dev`); `git log -- src/syncai_robot_state` has the C++ node. The ROS surface did not move: same package name, same `robot_state_node` executable, same `robot_state.launch.py` (still reading `[system] robot_id` and `[map] map` from the INI to override `robot_id` / `base_frame` / `map`), so both session specs are unchanged. The code default is 10 Hz but the shipped params file sets `publish_rate: 1.0`, so it runs at **1 Hz** — and that file is keyed on a bare `/**` there, not `/**/syncai_robot_state`, for the same rclrs reason `syncai_driver_manager`'s is. `RobotState.mode` is no longer hardcoded `AUTO`: it polls `syncai_sys_manager`'s `get_mode` (`mode_poll_rate`, 1 Hz, one request in flight at most) and reads `AUTO` until the first answer. Also derives the `state` field: `UNINITIALIZED` (no pose) / `WARNING` (battery <20%, cleared above 25% — latched with hysteresis) / `IDLE`. Reports only — no threshold here commands the robot. Two more things the port makes explicit: `transform_tolerance` has no effect (it looks up in its own in-memory `/tf` buffer and does **not** expire a stale transform), and the `WifiStatus` → JSON flattening is `serde_json` now, which left `nlohmann-json3-dev` to `syncai_mapping`'s `clean_map` alone. |
 | `syncai_sys_manager` | Python. Five managers behind ROS services: wifi (`scan_wifi` / `connect_wifi`, `wifi_status` at 1 Hz from a cache refreshed every 5 s), mDNS (`avahi-publish <robot_id>.local`), conf (declares `robot_id`), monitor (host memory / disk to stdout at 1 Hz), and **node** (`NodeManager` — byobu session lifecycle, `switch_mode` / `get_mode`; see "Running the stack"). Also ships the host udev rules (`udev/99-syncai-devices.rules`). |
-| `syncai_camera_feeder` | **The single opener of `/dev/syncai/camera0` — not in this repo, and never was.** Written in `chungweeeei/SyncAI-Robot-Camera-Feeder` against **rclrs** (Rust, `ament_cargo`, the fourth) and GStreamer, and materialised into `src/` by `vcs import < dependencies.repos` (branch `dev`). One `v4l2src` (MJPEG 1280×720@60) teed, undecoded, into RTP/JPEG on `udp://127.0.0.1:5008` for the WebRTC worker and `image_raw/compressed` (`sensor_msgs/CompressedImage`, 30 Hz by `ros_framerate`, SensorData QoS, capture-time stamps, frame `<robot_id>/camera_optical_frame`); it exits on any pipeline error and its launch respawns it. Its params file is keyed on a bare `/**`, the rclrs rule. Links GStreamer through the `gstreamer` / `gstreamer-app` crates, which is why the `dev` stage installs `libgstreamer1.0-dev` / `libgstreamer-plugins-base1.0-dev` (2026-10-12; until then it built only where they had been installed by hand). **In neither session spec yet**, and it cannot run beside the host-side `publish_camera_crop.sh` — see "Camera". Edit it in that checkout and commit there. |
+| `syncai_camera_feeder` | **The single opener of `/dev/syncai/camera0` — not in this repo, and never was.** Written in `chungweeeei/SyncAI-Robot-Camera-Feeder` against **rclrs** (Rust, `ament_cargo`, the fourth) and GStreamer, and materialised into `src/` by `vcs import < dependencies.repos` (branch `dev`). One `v4l2src` (MJPEG 1280×720@60) teed, undecoded, into RTP/JPEG on `udp://127.0.0.1:5008` for the WebRTC worker and `image_raw/compressed` (`sensor_msgs/CompressedImage`, 30 Hz by `ros_framerate`, SensorData QoS, capture-time stamps, frame `<robot_id>/camera_optical_frame`); it exits on any pipeline error and its launch respawns it. Its params file is keyed on a bare `/**`, the rclrs rule. Links GStreamer through the `gstreamer` / `gstreamer-app` crates, which is why the `dev` stage installs `libgstreamer1.0-dev` / `libgstreamer-plugins-base1.0-dev` (2026-10-12; until then it built only where they had been installed by hand). **Started by the nav session only** (`camera_feeder` window of `start_nav.yaml`, 2026-10-12; not in `start_mapping.yaml`), and it cannot run beside the host-side `publish_camera_crop.sh` — see "Camera". Edit it in that checkout and commit there. |
 
 ### Application layer
 
@@ -478,7 +480,7 @@ is where the startup ordering lives, since there is no lifecycle manager. The
 nav session's windows, in order: `bringup` → `map_server` (map_server +
 keepout) → `localization` (pointlio + localizer) → `lio_bridge` → `plan_ctrl`
 (planner + controller) →
-`task_runner` → `driver_manager` → `robot_state`. The `keepout` pane
+`task_runner` → `driver_manager` → `robot_state` → `camera_feeder`. The `keepout` pane
 (`costmap_filter_info.launch.py`) writes a blank `map/<name>/keepout.yaml` +
 `.pgm` of the gridmap's geometry when the map has none, then serves it — so
 every pane of a normal boot stays up, and "Filter mask was not received" in the
@@ -512,7 +514,8 @@ these nodes over DDS from the backend's container. Their logs go to separate sub
 stops the two specs from interleaving two multilogs into one directory. The 2D / AMCL session was retired along with
 `bringup_2d.launch.py`. Neither spec has an rviz2 window (the robot has no
 display; `config/rviz2/<robot_id>.rviz` is for running rviz2 from a
-workstation) or a camera window (the RTSP publisher runs on the host).
+workstation). The nav spec's `camera_feeder` window (2026-10-12) is the only
+camera window; the mapping spec has none.
 
 There is no log-reading helper. Read a subsystem back by hand — multilog writes
 `current` plus gzipped rotations (16 MiB × 10):
