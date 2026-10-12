@@ -6,12 +6,19 @@ import netifaces
 import pytest
 
 from syncai_common.msg import WifiNetwork
-from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks
+from syncai_common.srv import (
+    ActivateWifiConnection,
+    ConnectWifiNetwork,
+    DeleteWifiConnection,
+    ListWifiConnections,
+    ScanWifiNetworks,
+)
 
 from syncai_sys_manager.managers.wifi_manager import (
     WifiManager,
     WifiNetworkInfo,
     WifiStatus,
+    split_terse,
 )
 
 # Plain pytest + unittest.mock on purpose. This file used to need assertpy and
@@ -96,7 +103,13 @@ def test_init_registers_services_and_timers(node):
 
     services = [c.kwargs["srv_name"] for c in node.create_service.call_args_list]
     periods = [c.kwargs["timer_period_sec"] for c in node.create_timer.call_args_list]
-    assert services == ["scan_wifi", "connect_wifi"]
+    assert services == [
+        "scan_wifi",
+        "connect_wifi",
+        "list_wifi_connections",
+        "activate_wifi_connection",
+        "delete_wifi_connection",
+    ]
     assert periods == [1.0, 5.0]
 
 
@@ -367,3 +380,133 @@ def test_connect_nmcli_error(manager, run):
         "Failed to connect to MyWiFiNetwork: Error: Connection activation failed."
     )
     assert len(run.calls) == 1
+
+
+# --- saved connections -------------------------------------------------------
+
+
+NMCLI_CONNECTIONS = [
+    "nmcli", "-t", "-f", "NAME,UUID,TYPE,TIMESTAMP,ACTIVE", "connection", "show",
+]
+
+
+def nmcli_ssid(uuid: str) -> list:
+    return ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "uuid", uuid]
+
+
+# A wired profile in the middle, and a WiFi name with an escaped ':' in it.
+CONNECTIONS_OUTPUT = (
+    "site-wifi:aaaa-1:802-11-wireless:1760000000:yes\n"
+    "Wired connection 1:bbbb-2:802-3-ethernet:1760000100:yes\n"
+    "Lab\\: 5G:cccc-3:802-11-wireless:0:no\n"
+)
+
+
+def list_connections(manager) -> ListWifiConnections.Response:
+    return manager._list_wifi_connections(
+        ListWifiConnections.Request(), ListWifiConnections.Response()
+    )
+
+
+def queue_connections(run):
+    run.queue(done(CONNECTIONS_OUTPUT), done("site-wifi\n"), done("lab\\:5g\n"))
+
+
+def test_split_terse_honours_escapes():
+    assert split_terse("a\\:b:c\\\\d:") == ["a:b", "c\\d", ""]
+
+
+def test_list_keeps_wifi_profiles_only(manager, run):
+    queue_connections(run)
+
+    response = list_connections(manager)
+
+    assert response.success
+    assert run.calls == [NMCLI_CONNECTIONS, nmcli_ssid("aaaa-1"), nmcli_ssid("cccc-3")]
+    assert [(c.uuid, c.name, c.ssid, c.active, c.last_used) for c in response.connections] == [
+        ("aaaa-1", "site-wifi", "site-wifi", True, 1760000000),
+        ("cccc-3", "Lab: 5G", "lab:5g", False, 0),
+    ]
+
+
+def test_list_falls_back_to_name_when_ssid_unreadable(manager, run):
+    run.queue(done("Office:dddd-4:802-11-wireless:0:no\n"), timeout())
+
+    response = list_connections(manager)
+
+    assert response.connections[0].ssid == "Office"
+
+
+def test_list_reports_nmcli_failure(manager, run):
+    run.queue(done(returncode=8, stderr="Error: NetworkManager is not running."))
+
+    response = list_connections(manager)
+
+    assert not response.success
+    assert response.message == (
+        "Failed to list saved WiFi networks: Error: NetworkManager is not running."
+    )
+
+
+def activate(manager, uuid: str) -> ActivateWifiConnection.Response:
+    return manager._activate_wifi_connection(
+        ActivateWifiConnection.Request(uuid=uuid), ActivateWifiConnection.Response()
+    )
+
+
+def test_activate_brings_profile_up_and_refreshes(manager, run, ifaces):
+    ifaces({})
+    queue_connections(run)
+    run.queue(done("Connection successfully activated"), done(STATUS_OUTPUT))
+
+    response = activate(manager, "cccc-3")
+
+    assert response.success
+    assert response.ssid == "lab:5g"
+    assert run.calls[3:] == [["sudo", "nmcli", "connection", "up", "uuid", "cccc-3"], NMCLI_STATUS]
+
+
+def test_activate_unknown_uuid(manager, run):
+    queue_connections(run)
+
+    response = activate(manager, "gone")
+
+    assert not response.success
+    assert response.message == "That saved network no longer exists"
+    assert len(run.calls) == 3
+
+
+def test_activate_nmcli_error_names_the_network(manager, run):
+    queue_connections(run)
+    run.queue(done(returncode=4, stderr="Error: Secrets were required."))
+
+    response = activate(manager, "cccc-3")
+
+    assert not response.success
+    assert response.message == "Failed to connect to lab:5g: Error: Secrets were required."
+
+
+def delete(manager, uuid: str) -> DeleteWifiConnection.Response:
+    return manager._delete_wifi_connection(
+        DeleteWifiConnection.Request(uuid=uuid), DeleteWifiConnection.Response()
+    )
+
+
+def test_delete_removes_profile(manager, run):
+    queue_connections(run)
+    run.queue(done("Connection 'Lab: 5G' successfully deleted."))
+
+    response = delete(manager, "cccc-3")
+
+    assert response.success
+    assert run.calls[3] == ["sudo", "nmcli", "connection", "delete", "uuid", "cccc-3"]
+
+
+def test_delete_refuses_the_active_profile(manager, run):
+    queue_connections(run)
+
+    response = delete(manager, "aaaa-1")
+
+    assert not response.success
+    assert response.message == "Cannot forget site-wifi while the robot is connected to it"
+    assert len(run.calls) == 3

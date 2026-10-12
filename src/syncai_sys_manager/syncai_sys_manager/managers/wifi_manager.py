@@ -8,9 +8,42 @@ from rclpy import qos
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
-from syncai_common.msg import WifiNetwork
+from syncai_common.msg import WifiConnection, WifiNetwork
 from syncai_common.msg import WifiStatus as WifiStatusMsg
-from syncai_common.srv import ConnectWifiNetwork, ScanWifiNetworks
+from syncai_common.srv import (
+    ActivateWifiConnection,
+    ConnectWifiNetwork,
+    DeleteWifiConnection,
+    ListWifiConnections,
+    ScanWifiNetworks,
+)
+
+# nmcli's TYPE for a WiFi connection profile in terse output.
+WIFI_CONNECTION_TYPE = "802-11-wireless"
+
+
+def split_terse(line: str) -> list:
+    """Split one line of `nmcli -t` output into its fields.
+
+    Terse mode separates fields with ':' and escapes a literal ':' or '\\'
+    inside a value with a backslash, so a profile named "Lab: 5G" arrives as
+    `Lab\\: 5G:...`. A plain str.split(":") would cut that name in two and
+    shift every field after it.
+    """
+    fields, current, escaped = [], [], False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    fields.append("".join(current))
+    return fields
 
 
 @dataclass
@@ -73,6 +106,30 @@ class WifiManager:
             srv_type=ConnectWifiNetwork,
             srv_name="connect_wifi",
             callback=self._connect_wifi_network,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        # The saved networks: what the console lists as cards, rejoins without
+        # a password and forgets. Each on its own group like the two above, so
+        # listing is not stuck behind a 60 s activation.
+        self._node.create_service(
+            srv_type=ListWifiConnections,
+            srv_name="list_wifi_connections",
+            callback=self._list_wifi_connections,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        self._node.create_service(
+            srv_type=ActivateWifiConnection,
+            srv_name="activate_wifi_connection",
+            callback=self._activate_wifi_connection,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        self._node.create_service(
+            srv_type=DeleteWifiConnection,
+            srv_name="delete_wifi_connection",
+            callback=self._delete_wifi_connection,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
@@ -281,6 +338,204 @@ class WifiManager:
                 f"[WifiManager][connect_wifi] Connected to {ssid} but could not "
                 f"refresh WiFi status: {err}"
             )
+        response.success = True
+        response.message = ""
+        return response
+
+    def read_wifi_connections(self) -> list:
+        """The saved WiFi profiles, as WifiConnection messages.
+
+        Plain `connection show` needs no sudo: it reads profiles, not secrets.
+        The SSID is a second read per profile because NAME is only a label —
+        `nmcli device wifi connect` names the profile after the SSID, but one
+        renamed or made by hand need not match, and the console has to show the
+        network it will actually join.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "nmcli",
+                    "-t",
+                    "-f",
+                    "NAME,UUID,TYPE,TIMESTAMP,ACTIVE",
+                    "connection",
+                    "show",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("Timed out listing saved WiFi networks")
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to list saved WiFi networks: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+
+        connections = []
+        for line in result.stdout.splitlines():
+            fields = split_terse(line)
+            if len(fields) != 5 or fields[2] != WIFI_CONNECTION_TYPE:
+                continue
+            name, uuid, _, timestamp, active = fields
+            connections.append(
+                WifiConnection(
+                    uuid=uuid,
+                    name=name,
+                    ssid=self._read_connection_ssid(uuid) or name,
+                    active=active == "yes",
+                    last_used=int(timestamp) if timestamp.isdigit() else 0,
+                )
+            )
+        return connections
+
+    def _read_connection_ssid(self, uuid: str) -> str:
+        # Best effort: a profile whose SSID cannot be read still lists, under
+        # its name, rather than failing the whole list.
+        try:
+            result = subprocess.run(
+                ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "uuid", uuid],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+        except subprocess.TimeoutExpired:
+            return ""
+        if result.returncode != 0:
+            return ""
+        # Rejoined rather than indexed: whether -g escapes a single value's ':'
+        # or not, this hands back the SSID whole.
+        return ":".join(split_terse(result.stdout.strip()))
+
+    def _find_wifi_connection(self, uuid: str):
+        return next((c for c in self.read_wifi_connections() if c.uuid == uuid), None)
+
+    def _list_wifi_connections(
+        self,
+        _: ListWifiConnections.Request,
+        response: ListWifiConnections.Response,
+    ) -> ListWifiConnections.Response:
+        try:
+            response.connections = self.read_wifi_connections()
+        except Exception as err:
+            response.success = False
+            response.message = str(err)
+            return response
+
+        response.success = True
+        response.message = ""
+        return response
+
+    def _activate_wifi_connection(
+        self,
+        request: ActivateWifiConnection.Request,
+        response: ActivateWifiConnection.Response,
+    ) -> ActivateWifiConnection.Response:
+        # Looked up first so a refusal can name the network rather than an id
+        # the operator never sees, and so a stale card gets a plain sentence.
+        try:
+            connection = self._find_wifi_connection(request.uuid)
+        except Exception as err:
+            response.success = False
+            response.message = str(err)
+            return response
+
+        if connection is None:
+            response.success = False
+            response.message = "That saved network no longer exists"
+            return response
+
+        response.ssid = connection.ssid
+        try:
+            result = subprocess.run(
+                ["sudo", "nmcli", "connection", "up", "uuid", request.uuid],
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+            )
+        except subprocess.TimeoutExpired:
+            response.success = False
+            response.message = (
+                f"Timed out connecting to {connection.ssid} within 60 seconds"
+            )
+            return response
+
+        if result.returncode != 0:
+            response.success = False
+            response.message = (
+                f"Failed to connect to {connection.ssid}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+            return response
+
+        self._logger.info(
+            f"[WifiManager][activate_wifi_connection] Connected to saved WiFi "
+            f"network {connection.ssid}"
+        )
+        # Same reason and same best effort as after connect_wifi.
+        try:
+            self.update_wifi_status()
+        except Exception as err:
+            self._logger.warning(
+                f"[WifiManager][activate_wifi_connection] Connected to "
+                f"{connection.ssid} but could not refresh WiFi status: {err}"
+            )
+        response.success = True
+        response.message = ""
+        return response
+
+    def _delete_wifi_connection(
+        self,
+        request: DeleteWifiConnection.Request,
+        response: DeleteWifiConnection.Response,
+    ) -> DeleteWifiConnection.Response:
+        try:
+            connection = self._find_wifi_connection(request.uuid)
+        except Exception as err:
+            response.success = False
+            response.message = str(err)
+            return response
+
+        if connection is None:
+            response.success = False
+            response.message = "That saved network no longer exists"
+            return response
+
+        # Deleting the active profile takes the robot off the network, and
+        # quite possibly off the only path the console has to it. Refused here
+        # rather than only greyed in the UI, so no caller can do it by accident.
+        if connection.active:
+            response.success = False
+            response.message = (
+                f"Cannot forget {connection.ssid} while the robot is connected to it"
+            )
+            return response
+
+        try:
+            result = subprocess.run(
+                ["sudo", "nmcli", "connection", "delete", "uuid", request.uuid],
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+            )
+        except subprocess.TimeoutExpired:
+            response.success = False
+            response.message = f"Timed out forgetting {connection.ssid}"
+            return response
+
+        if result.returncode != 0:
+            response.success = False
+            response.message = (
+                f"Failed to forget {connection.ssid}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+            return response
+
+        self._logger.info(
+            f"[WifiManager][delete_wifi_connection] Forgot saved WiFi network {connection.ssid}"
+        )
         response.success = True
         response.message = ""
         return response
