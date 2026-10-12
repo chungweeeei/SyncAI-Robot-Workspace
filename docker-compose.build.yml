@@ -6,9 +6,9 @@
 # own repositories, so colcon's package discovery and "the workspace" are now
 # the same thing.
 #
-#   docker compose -f docker-compose.build.yaml run --rm build
-#   docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_global_planner
-#   BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build
+#   docker compose -f docker-compose.build.yml run --rm build
+#   docker compose -f docker-compose.build.yml run --rm build --packages-select syncai_global_planner
+#   BUILD_ROSDEP=off docker compose -f docker-compose.build.yml run --rm build
 #
 # Anything after `build` is appended to `colcon build --symlink-install` (the
 # service uses an entrypoint, not a command, precisely so that `run` appends

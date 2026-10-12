@@ -139,7 +139,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   └── rviz2/robot01.rviz        # for running rviz2 from a workstation (no display on the robot)
 ├── scripts/
 │   ├── attach.sh                 # host-side: attach to whichever byobu session is live in the container
-│   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yaml
+│   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml
 │   ├── publish_camera_crop.sh    # host-side camera → RTSP publisher (GStreamer → remote MediaMTX)
 │   ├── publish_camera_crop.env   # its per-robot settings (crop, stream path, MediaMTX host)
 │   ├── urdf2glb.py               # bakes G23.urdf into the GLB the operator console renders (handed over to its repo)
@@ -150,7 +150,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── Dockerfile                    # multi-stage: base → livox / gtsam / sophus + rust-underlay (parallel) → dev
 ├── docker-compose.yml            # infra: postgres (5432) / pgadmin (5050) / temporal (7233) / temporal_ui (8081)
 ├── docker-compose.robots.yml     # robot01 (host networking, nvidia runtime, cameras, audio, D-Bus, avahi); `include`d above
-├── docker-compose.build.yaml     # standalone one-shot `colcon build` service (same image, own project name)
+├── docker-compose.build.yml      # standalone one-shot `colcon build` service (same image, own project name)
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
 ├── ruff.toml                     # Python lint config (syncai_sys_manager, scripts/)
 ├── third-party.repos             # vcstool: src/third-party/ — upstream, pinned
@@ -257,12 +257,12 @@ Alternatively open the folder in VS Code and **Reopen in Container**
 Two ways, same image, same `build/` + `install/` on disk. **The robot container
 is a live robot** — build deliberately, not on every edit.
 
-**From the host**, in a throwaway container (`docker-compose.build.yaml`):
+**From the host**, in a throwaway container (`docker-compose.build.yml`):
 
 ```bash
-docker compose -f docker-compose.build.yaml run --rm build                                  # everything
-docker compose -f docker-compose.build.yaml run --rm build --packages-select syncai_global_planner # colcon args pass through
-BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build                 # skip the rosdep report
+docker compose -f docker-compose.build.yml run --rm build                                  # everything
+docker compose -f docker-compose.build.yml run --rm build --packages-select syncai_global_planner # colcon args pass through
+BUILD_ROSDEP=off docker compose -f docker-compose.build.yml run --rm build                 # skip the rosdep report
 ```
 
 It runs `scripts/build.sh`: check every vcs checkout (naming the `.repos` file

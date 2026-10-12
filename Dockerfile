@@ -597,7 +597,7 @@ WORKDIR /home/syncrobotic
 # Populate the rosdep cache for the syncrobotic user, so `rosdep check` /
 # `rosdep install` work at runtime. Made world-readable and -writable for the
 # same reason as /home/syncrobotic in base: rosdep rewrites its cache index on
-# every check, and under a runtime uid other than 1000 (docker-compose.build.yaml
+# every check, and under a runtime uid other than 1000 (docker-compose.build.yml
 # on a Mac runs as 501) a 1000-owned cache fails with "Permission denied:
 # .../sources.cache/index" before checking anything. a+rwX, not a+w: the
 # cache files are written 0600, and a+w alone leaves them -rw--w--w-, which
