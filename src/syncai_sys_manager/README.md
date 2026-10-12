@@ -8,7 +8,7 @@ is the only package in the stack that shells out to host tooling (`nmcli`,
 `avahi-publish`, `byobu`) instead of talking to hardware or other ROS nodes.
 
 ```
-syncai_backend ──scan_wifi / connect_wifi (services)──►  ┌────────────────────┐
+syncai_backend ──scan / connect / *_wifi_connection(s)─►  ┌────────────────────┐
                                                           │  WifiManager       │──nmcli──► host NetworkManager
 syncai_robot_state ◄──wifi_status (1 Hz topic)───────────│                    │
                                                           ├────────────────────┤
@@ -33,7 +33,7 @@ stack it brings up starts talking to it.
 
 | Manager | Owns |
 |---|---|
-| `WifiManager` | `scan_wifi` / `connect_wifi` services, the `wifi_status` publisher and its 5 s refresh, and all `nmcli` invocation |
+| `WifiManager` | `scan_wifi` / `connect_wifi` and the saved-network (`list_wifi_connections` / `activate_wifi_connection` / `delete_wifi_connection`) services, the `wifi_status` publisher and its 5 s refresh, and all `nmcli` invocation |
 | `ConfManager` | Just the `robot_id` parameter — the seam where more system-level config would go |
 | `MdnsManager` | The `avahi-publish` child process advertising `<robot_id>.local` |
 | `MonitorManager` | A 1 Hz log line of host memory and disk usage (reporting only) |
@@ -41,15 +41,19 @@ stack it brings up starts talking to it.
 
 ## WifiManager
 
-**Services** (both on their own `MutuallyExclusiveCallbackGroup`, so a long scan
+**Services** (each on its own `MutuallyExclusiveCallbackGroup`, so a long scan
 does not block a connect):
 
 | Service | Type | Implementation | Timeout |
 |---|---|---|---|
 | `scan_wifi` | `syncai_common/ScanWifiNetworks` | `sudo nmcli device wifi rescan` then `nmcli -f BSSID,SIGNAL,SSID device wifi list` | 10 s rescan + 30 s list |
 | `connect_wifi` | `syncai_common/ConnectWifiNetwork` | `sudo nmcli device wifi connect <ssid> [password <pw>]` | 60 s |
+| `list_wifi_connections` | `syncai_common/ListWifiConnections` | `nmcli -t -f NAME,UUID,TYPE,TIMESTAMP,ACTIVE connection show`, WiFi profiles only, then `nmcli -g 802-11-wireless.ssid connection show uuid <uuid>` each | 10 s + 5 s each |
+| `activate_wifi_connection` | `syncai_common/ActivateWifiConnection` | `sudo nmcli connection up uuid <uuid>` (the saved password, none asked) | 60 s |
+| `delete_wifi_connection` | `syncai_common/DeleteWifiConnection` | `sudo nmcli connection delete uuid <uuid>`; refused for the active profile | 15 s |
 
-The backend's `RobotGateway` waits 45 s and 70 s respectively — deliberate
+The backend's `RobotGateway` waits 45 s and 70 s for scan and connect (and
+15 s / 70 s / 20 s for the three saved-network services) — deliberate
 headroom over these numbers.
 
 Details that matter:
@@ -63,6 +67,15 @@ Details that matter:
 - **`nmcli`'s `SIGNAL` column is 0–100, not dBm.** It is converted with
   `ceil(signal / 2 - 100)` to get an approximate dBm for `WifiNetwork.rssi`.
 - Hidden SSIDs (`--`) and duplicate SSIDs are dropped from scan results.
+- **Terse (`-t`) output escapes `:` and `\\` inside a value**, so the profile list
+  is split by `split_terse`, never `str.split(":")` — a profile named
+  `Lab: 5G` would otherwise shift every column after it.
+- **A profile's NAME is not its SSID.** `device wifi connect` names it after the
+  SSID, but a renamed or hand-made one need not match, so the SSID is read per
+  profile and NAME is only the fallback.
+- **The active profile cannot be deleted.** Forgetting it would take the robot
+  off the network, likely the one the console reaches it over; the service
+  refuses rather than leaving that to the UI.
 
 **`wifi_status` topic** — published at 1 Hz (BEST_EFFORT, VOLATILE, KeepLast(3))
 and consumed only by `syncai_robot_state`, which flattens it into
@@ -237,6 +250,9 @@ All relative, so they inherit the `<robot_id>` namespace.
 |---|---|---|---|
 | Service | `scan_wifi` | `syncai_common/ScanWifiNetworks` | `WifiManager` |
 | Service | `connect_wifi` | `syncai_common/ConnectWifiNetwork` | `WifiManager` |
+| Service | `list_wifi_connections` | `syncai_common/ListWifiConnections` | `WifiManager` |
+| Service | `activate_wifi_connection` | `syncai_common/ActivateWifiConnection` | `WifiManager` |
+| Service | `delete_wifi_connection` | `syncai_common/DeleteWifiConnection` | `WifiManager` |
 | Service | `switch_mode` | `syncai_common/SwitchMode` | `NodeManager` |
 | Service | `restart_mode` | `syncai_common/RestartMode` | `NodeManager` |
 | Service | `get_mode` | `syncai_common/GetMode` | `NodeManager` |
