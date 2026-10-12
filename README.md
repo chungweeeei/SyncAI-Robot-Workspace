@@ -67,8 +67,9 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock. **Not tracked here**, see below |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState`. **Not tracked here**, see below |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
+| `syncai_camera_feeder` | Sole owner of `/dev/syncai/camera0`: its MJPEG stream, undecoded, as RTP/JPEG to the WebRTC worker and as `image_raw/compressed` to ROS. In no session spec yet. **Not tracked here**, see below |
 
-Five packages in the table are **not tracked in this repo**. Each lives in its
+Six packages in the table are **not tracked in this repo**. Each lives in its
 own repository and is imported back into `src/` by vcstool (see "Getting
 started"); edit them in their own checkouts.
 
@@ -79,11 +80,15 @@ started"); edit them in their own checkouts.
 | `syncai_driver_manager` | `SyncAI-Robot-Driver-Manager` | Rust (rclrs, `ament_cargo`) |
 | `syncai_robot_state` | `SyncAI-Robot-State` | Rust (rclrs, `ament_cargo`) |
 | `syncai_lio_bridge` | `SyncAI-LIO-Bridge` | Rust (rclrs, `ament_cargo`) |
+| `syncai_camera_feeder` | `SyncAI-Robot-Camera-Feeder` | Rust (rclrs, `ament_cargo`) + GStreamer; written there, never in this tree |
 
 All four that moved out after `syncai_common` keep their package name,
 executables and launch file, so the session specs are unchanged. The Rust
-message crates the three Rust ones need come from a ros2-rust underlay baked
-into the robot image (see "Getting started").
+message crates the four Rust ones need come from a ros2-rust underlay baked
+into the robot image (see "Getting started"). `syncai_camera_feeder` also
+links GStreamer, whose `-dev` packages the image installs, and cannot run
+beside the host-side `scripts/publish_camera_crop.sh`: both open
+`/dev/syncai/camera0`, and only one may.
 
 The operator half — `SyncAI-Robot-Backend` (FastAPI + rclpy on port **3000**:
 tasks, map catalogue, TTS, WebSockets) and `SyncAI-Robot-Frontend` (the Next.js
@@ -149,7 +154,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
 ├── ruff.toml                     # Python lint config (syncai_sys_manager, scripts/)
 ├── third-party.repos             # vcstool: src/third-party/ — upstream, pinned
-├── dependencies.repos            # vcstool: our own packages in their own repos (src/syncai_common, _mapping, _driver_manager, _robot_state, _lio_bridge)
+├── dependencies.repos            # vcstool: our own packages in their own repos (src/syncai_common, _mapping, _driver_manager, _robot_state, _lio_bridge, _camera_feeder)
 ├── .devcontainer/                # VS Code "Reopen in Container"
 └── .env                          # compose env + secrets (gitignored — never commit)
 ```
@@ -161,18 +166,19 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ```bash
 sudo apt update && sudo apt install python3-vcstool -y
 vcs import < third-party.repos     # src/third-party/ — upstream code, pinned
-vcs import < dependencies.repos    # src/syncai_{common,mapping,driver_manager,robot_state,lio_bridge} — our own, in their own repos
+vcs import < dependencies.repos    # src/syncai_{common,mapping,driver_manager,robot_state,lio_bridge,camera_feeder} — our own, in their own repos
 ```
 
-Both are required before the first `colcon build`. The five `src/syncai_*`
+Both are required before the first `colcon build`. The six `src/syncai_*`
 directories `dependencies.repos` imports are gitignored: edit them in their own
 checkouts, because the next `--force` import overwrites whatever is in them.
 
 Only a missing `src/syncai_common` fails loudly (every package at once). A
 missing `src/syncai_mapping`, `src/syncai_driver_manager`,
-`src/syncai_robot_state` or `src/syncai_lio_bridge` builds fine and leaves the
-robot with nothing to save a map with, no bridge to the gait controller,
-nothing publishing `RobotState` and no odometry source — so
+`src/syncai_robot_state`, `src/syncai_lio_bridge` or `src/syncai_camera_feeder`
+builds fine and leaves the robot with nothing to save a map with, no bridge to
+the gait controller, nothing publishing `RobotState`, no odometry source and no
+camera feed — so
 `scripts/build.sh` refuses to start on an empty checkout and names the `.repos`
 file to import.
 
@@ -182,10 +188,10 @@ before the next build. That also fetches and checks out the pin in every
 checkout that is already there; add `--skip-existing` to clone only the missing
 one and leave the others as they are.
 
-#### The three Rust packages
+#### The four Rust packages
 
-`syncai_driver_manager`, `syncai_robot_state` and `syncai_lio_bridge` are
-`ament_cargo` (rclrs), and need nothing beyond `vcs import`: the robot image
+`syncai_driver_manager`, `syncai_robot_state`, `syncai_lio_bridge` and
+`syncai_camera_feeder` are `ament_cargo` (rclrs), and need nothing beyond `vcs import`: the robot image
 carries the Rust toolchain and a ros2-rust underlay at `/opt/ros2_rust_underlay`
 (rclrs plus the Humble interfaces rebuilt with Rust bindings, which the apt
 copies lack), sourced between `/opt/ros/humble` and the workspace. An image
@@ -193,7 +199,7 @@ built before it has no underlay, and `scripts/build.sh` says so instead of
 letting cargo fail. The C++ stack still builds without the Rust packages:
 
 ```bash
-colcon build --symlink-install --packages-skip syncai_driver_manager syncai_robot_state syncai_lio_bridge
+colcon build --symlink-install --packages-skip syncai_driver_manager syncai_robot_state syncai_lio_bridge syncai_camera_feeder
 ```
 
 If configure fails on a missing `register_rs.cmake`, delete the stale `build/` +
@@ -222,7 +228,7 @@ vcs import < dependencies.repos
 
 Keep it current with `vcs pull src/syncai_common`, or
 `vcs import < dependencies.repos --force` to re-checkout at the pins (drops
-local edits — in all five checkouts, not only this one), then rebuild.
+local edits — in all six checkouts, not only this one), then rebuild.
 
 ### 2. Pick the robot identity
 
@@ -262,7 +268,7 @@ BUILD_ROSDEP=off docker compose -f docker-compose.build.yaml run --rm build     
 It runs `scripts/build.sh`: check every vcs checkout (naming the `.repos` file
 to import if one is empty), restore the `livox_ros_driver2` `package.xml` if
 missing, `rosdep check` (report only — see below), then
-`colcon build --symlink-install`, then delete the copy of the three Rust
+`colcon build --symlink-install`, then delete the copy of the four Rust
 nodes' source that cargo-ament-build always installs
 (`install/<pkg>/share/<pkg>/rust/` and its `rust_packages` index marker — the
 nodes never need it at runtime; a plain `colcon build` leaves it). Toggles: `BUILD_COLCON` (`1`/`0`),

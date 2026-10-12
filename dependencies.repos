@@ -3,7 +3,8 @@
 # manages the upstream code under src/third-party/. One file since 2026-10; it
 # replaced interface.repos, driver-manager.repos, robot-state.repos and
 # lio-bridge.repos, one per package, and took syncai_mapping on when that
-# package moved out the same month.
+# package moved out the same month, then syncai_camera_feeder, which was never
+# in this tree.
 #
 #   vcs import < dependencies.repos          # populate a fresh clone
 #   vcs import < dependencies.repos --force  # re-checkout after changing a pin
@@ -22,7 +23,7 @@
 # the initial commit). interface used to say `main` until 2026-09, which left
 # `vcs import` without the ResetLIO srv syncai_pointlio serves.
 #
-# HTTPS rather than the SSH remotes: all five repos are public, so the build
+# HTTPS rather than the SSH remotes: all six repos are public, so the build
 # container needs no keys. `git@github.com:chungweeeei/<repo>.git` is the same
 # checkout for anyone who prefers to push over SSH.
 #
@@ -59,8 +60,9 @@ repositories:
     url: https://github.com/chungweeeei/SyncAI-Robot-3D-Mapping.git
     version: dev
 
-  # --- The three rclrs (Rust, ament_cargo) packages --------------------------
-  # Each left in 2026-10 and was rewritten against rclrs on the way out. Their
+  # --- The four rclrs (Rust, ament_cargo) packages ---------------------------
+  # The first three left in 2026-10 and were rewritten against rclrs on the way
+  # out; syncai_camera_feeder, at the end, was written against it. Their
   # Rust message crates (std_msgs / sensor_msgs / geometry_msgs / std_srvs /
   # nav_msgs / syncai_common) are generated at build time by
   # rosidl_generator_rs, which the image provides as a ros2-rust underlay at
@@ -104,4 +106,20 @@ repositories:
   src/syncai_lio_bridge:
     type: git
     url: https://github.com/chungweeeei/SyncAI-LIO-Bridge.git
+    version: dev
+
+  # The camera fan-out (SyncAI-Robot-Camera-Feeder): the sole opener of
+  # /dev/syncai/camera0, sending its MJPEG stream untouched to the WebRTC
+  # worker as RTP/JPEG on 127.0.0.1:5008 and to ROS as
+  # <robot_id>/image_raw/compressed. Unlike the three above it was never in
+  # this tree -- it was written in its own repo from the start. It links
+  # GStreamer through the gstreamer / gstreamer-app crates, so it needs the
+  # image's libgstreamer1.0-dev and libgstreamer-plugins-base1.0-dev (the
+  # Dockerfile says why they are their own layer). Nothing starts it yet: it is
+  # in neither session spec, and it cannot run beside the host-side
+  # scripts/publish_camera_crop.sh, which opens the same device -- the second
+  # opener dies at S_FMT, not at open().
+  src/syncai_camera_feeder:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-Camera-Feeder.git
     version: dev
