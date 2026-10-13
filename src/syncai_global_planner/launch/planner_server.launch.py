@@ -6,6 +6,12 @@
 # rewrite the global costmap TF frame parameters (robot_base_frame /
 # sensor_frame), since TF frame names are not namespaced by ROS. The costmap's
 # global_frame stays "map" (the shared global frame) and is not rewritten.
+#
+# The same INI's [map] pcd locates the map directory, from which the OctoMap
+# planner's octomap.bt is derived (the way costmap_filter_info.launch.py
+# derives keepout.yaml from [map] map): no new INI key, so the backend's
+# one-line map switch is unaffected. A map without the file still launches;
+# the Octo3D plugin then logs one error and fails its own plans only.
 
 import configparser
 import os
@@ -49,11 +55,53 @@ def read_robot_id(config_path: str) -> str:
     return robot_id
 
 
+def read_map_pcd(config_path: str) -> str:
+    """[map] pcd from the INI, made absolute against the workspace root.
+
+    The instance INI writes it as `map/%(name)s/map.pcd` (relative to the
+    workspace root), and the INI sits at <workspace>/config/system.ini, so two
+    dirname()s up from it is the root. Same helper as localizer.launch.py's.
+    An empty value is returned as-is so the caller can say "no map".
+    """
+    config = configparser.ConfigParser()
+    if not config.read(config_path):
+        return ""
+    pcd = config.get("map", "pcd", fallback="").strip()
+    if not pcd or os.path.isabs(pcd):
+        return pcd
+    workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
+    return os.path.join(workspace_root, pcd)
+
+
+def read_map_octomap(config_path: str) -> str:
+    """map/<name>/octomap.bt next to [map] pcd, or "" when there is no map.
+
+    The file is clean_map's (`--octomap 1` / map_clean_octomap) and is not
+    written for every save, so its absence is logged, not fatal: the plugin
+    is still loaded and reports map_not_loaded on its own plans.
+    """
+    pcd = read_map_pcd(config_path)
+    if not pcd:
+        logger.warning(
+            f"No [map] pcd in '{config_path}'; the Octo3D planner has no octomap.bt"
+        )
+        return ""
+    octomap = os.path.join(os.path.dirname(pcd), "octomap.bt")
+    if not os.path.isfile(octomap):
+        logger.warning(
+            f"'{octomap}' does not exist; the Octo3D planner will fail every plan "
+            "with map_not_loaded until clean_map writes it (ros2 run syncai_mapping "
+            "clean_map map/<name> --octomap 1)"
+        )
+    return octomap
+
+
 def launch_setup(context, *args, **kwargs):
     # LaunchConfiguration values only resolve inside an OpaqueFunction, and we
     # need the resolved robot_id here to namespace the node and its frames.
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
+    octomap_file = read_map_octomap(config_path)
 
     params_file = LaunchConfiguration("params_file")
 
@@ -81,6 +129,11 @@ def launch_setup(context, *args, **kwargs):
                 # in this list take precedence over the params file.
                 "robot_base_frame": f"{robot_id}/base_link",
                 "obstacle_layer.scan.sensor_frame": f"{robot_id}/laser",
+                # OctomapPlanner3D (planner id Octo3D): the tree next to the
+                # map's pcd, and the LIO body frame it reads the robot's real
+                # height from (map -> base_link is planar, z = 0).
+                "Octo3D.octomap_file": octomap_file,
+                "Octo3D.body_frame": f"{robot_id}/pointlio_body",
             },
         ],
     )

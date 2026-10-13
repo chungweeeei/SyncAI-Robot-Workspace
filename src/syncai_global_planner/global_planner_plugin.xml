@@ -14,4 +14,9 @@
          base_class_type="syncai_nav_core::GlobalPlanner">
     <description>Cost-aware 2D A* planner ported from nav2_smac_planner.</description>
   </class>
+  <class name="syncai_global_planner/OctomapPlanner3D"
+         type="syncai_global_planner::OctomapPlanner3D"
+         base_class_type="syncai_nav_core::GlobalPlanner">
+    <description>Ground-constrained 3D planner for the quadruped: A* over the floor surfaces of the map's octomap.bt (ramps yes, stairs / kerbs / drop-offs no).</description>
+  </class>
 </library>

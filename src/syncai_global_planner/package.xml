@@ -3,7 +3,7 @@
 <package format="3">
   <name>syncai_global_planner</name>
   <version>0.0.0</version>
-  <description>Global planner action server ported from nav2_planner to a non-lifecycle rclcpp::Node, with the NavFn planner plugin (from nav2_navfn_planner) and the Smac planner family (from nav2_smac_planner) merged into the same package</description>
+  <description>Global planner action server ported from nav2_planner to a non-lifecycle rclcpp::Node, with the NavFn planner plugin (from nav2_navfn_planner), the Smac planner family (from nav2_smac_planner) and the OctoMap surface planner for the quadruped (OctomapPlanner3D) merged into the same package</description>
   <maintainer email="chungweeeei@gmail.com">syncrobotic</maintainer>
   <license>Apache-2.0</license>
 
@@ -32,8 +32,14 @@
   <depend>eigen</depend>
   <depend>ompl</depend>
 
+  <!-- OctomapPlanner3D reads map/<name>/octomap.bt (octomap::OcTree). The
+       same rosdep key syncai_mapping's clean_map uses; the image's dev stage
+       installs ros-humble-octomap for it. -->
+  <depend>octomap</depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

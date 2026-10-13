@@ -43,9 +43,15 @@ plugins/
   straight_line_planner/           a minimal reference plugin
   smac_planner/                    SmacPlanner2D + its search core
                                    (A*, smoother, collision checker, Node2D)
+  octomap_planner_3d/              OctomapPlanner3D (planner id Octo3D): the
+                                   ROS-free core (surface_map, surface_astar,
+                                   path_postprocess), the plugin, the offline
+                                   CLI, and standalone/CMakeLists.txt to build
+                                   the CLI without ROS
 global_planner_plugin.xml          pluginlib manifest, exported to syncai_nav_core
 params/planner_server_params.yaml
 launch/planner_server.launch.py
+test/test_surface_map.cpp          OctomapPlanner3D's geometry rules on synthetic scenes
 ```
 
 Everything builds into one library, `libsyncai_global_planner.so`, which is both
@@ -260,13 +266,178 @@ Two gotchas:
   so a second instance overwrites the first's tuning — same limitation
   upstream, just less obvious here where all plugins live in one library.
 
+### OctomapPlanner3D (`syncai_global_planner/OctomapPlanner3D`) — planner id `Octo3D`, prototype (2026-10)
+
+The quadruped's ground-constrained 3D planner, on `map/<name>/octomap.bt` —
+the `octomap::OcTree` that `syncai_mapping`'s `clean_map --octomap 1` writes
+beside `map.pcd` (0.1 m; free **and** occupied, so never-seen space is
+unknown; hit floor-band voxels kept occupied). It is loaded beside
+`GridBased` as a second id. `move.xml` still asks for `GridBased`, so it is
+reached with `planner_id: Octo3D` on `compute_path_to_pose` (see Running) or
+a one-line edit of the tree; the 2D costmap is used for its frame id only.
+
+**Why a surface map and not a free-space search.** The first attempt (the
+device workspace's `octo_planner_3d`) ran a 26-neighbour A* over the free
+voxels with "something occupied one cell below" as ground support and a
+blacklist of wall-foot cells to keep it from climbing. That is a drone
+planner with patches: a free cell beside a wall is "supported" at any height,
+the body is a 0.3 m half-sphere, and nothing asks whether a step is one the
+legs can take. Here the tree is reduced, once at startup, to a **multi-layer
+2.5D surface map** — every xy column's floor surfaces, each judged with the
+robot's geometry — and the search only ever moves between cells that passed.
+So a path cannot leave the ground, climb a wall, cross a stair riser, a kerb
+or a drop-off, or jump between floors; it takes ramps, which are runs of
+one-cell steps on a plane under the slope limit.
+
+**The build** (`surface_map.cpp`; ~1 s and 355 MB peak for dp1f_1012_v2's
+7.3 M nodes, ~30 MB kept once the tree is freed; in a background thread so
+`planner_server::configure()` and the other ids are not held up — plans
+arriving meanwhile fail with `map_loading`):
+
+1. One pass over the leaves into per-column `known` / `occupied` bitmasks,
+   pruned blocks expanded by key range (never `search()` in a loop).
+2. A **surface** is an occupied voxel with a non-occupied voxel above and a
+   `body_clearance` (0.6 m) band of non-occupied voxels on top. Unknown in
+   the band is tolerated (the lidar looks outward from 0.48 m, so the band
+   is observed only where the robot passed), but the voxel right above the
+   surface must have been observed free (`min_known_free_above: 1`): a floor
+   the robot stood on always has, a ceiling seen from below never has — that
+   one rule took dp1f_1012_v2 from 748 "components" to 153.
+3. **Hole fill.** The MID360's lower field of view is −7°, so the floor
+   nearer than ~4 m is never seen directly and the floor under the robot's
+   own track is hit only from afar: ~5 % of those columns are empty. A column
+   with no surface whose neighbours within 0.3 m agree on a height, from at
+   least three of the four quadrants around it and with ≥ 50 % support, and
+   with nothing occupied near that height, gets an *inferred* surface. The
+   quadrant rule is what keeps a balcony edge from being extended into the
+   void (one-sided support); each height group of the neighbours is judged
+   on its own, because at a two-storey column the complete upper floor is
+   the largest group and would otherwise hide the missing lower one.
+4. **Step rule**: every 8-neighbour column must hold a usable surface within
+   `max_step_height` (0.1 m = one cell; `[0.1, 0.2)` all mean one cell, and
+   0.2 would let a 0.17 m stair riser through).
+5. **Footprint**: every column within `robot_radius` (0.25 m, the 2D
+   costmap's inscribed radius) must hold a usable surface inside the slope
+   cone (tolerance grows with distance, or a 15° ramp rejects its own
+   neighbours), and the plane fitted through them must tilt ≤
+   `max_slope_deg` (20) with residuals ≤ one cell. A fit, not max−min: a flat
+   floor read cell by cell looks 11° tilted across a 0.5 m disc. This is the
+   implicit inflation of walls, drop-offs and unfillable holes.
+6. 8-connected components (no corner cutting), so a disconnected goal fails
+   before the search and a goal snaps to the robot's floor, not the one below
+   a balcony edge.
+7. A clearance distance field propagated over the surface graph (not the
+   2D grid, or a ground-floor wall would cost the floor above it) out to
+   `clearance_cost_radius` (0.55 from the traversable boundary = 0.8 from
+   the wall, the costmap's `inflation_radius`).
+
+Every rejected surface keeps its reason (`clearance_occupied`,
+`no_free_above`, `step`, `footprint_blocked`, `slope`, `residual`), which is
+what the CLI dumps and a failed snap reports.
+
+**Search** (`surface_astar.cpp`): A* over the traversable cells, 8 xy
+neighbours each resolved to the layer within one step (unique, since two
+layers of a column are never that close), diagonals only when both
+orthogonal neighbours pass. Edge cost = 3D move length ×
+`(1 + clearance_cost_weight · exp(−clearance_cost_scaling · d))` inside the
+band (the costmap's inflation curve and Smac's `cost_travel_multiplier` in
+one; a multiplier, because a per-node penalty makes diagonals cheaper per
+metre and bends paths 45°), × 1.2 on inferred cells. The 3D Euclidean
+distance is admissible, so `heuristic_weight: 1.0` is optimal; a 25 m plan on
+dp1f_1012_v2 takes 11 k iterations and 1 ms, a 46 m plan upstairs 22 k and
+3 ms.
+
+**Snap.** The server's start pose is the planar `map → base_link`, z = 0
+always, so the robot's height is read from TF to `body_frame`
+(`<robot_id>/pointlio_body`, the LIO chain that keeps z) minus
+`lidar_height`; without the TF the request's z is used (right on the ground
+floor, wrong upstairs). The goal's z is the request's (`goal_z_mode:
+request`; a 2D backend's 0 lands on the ground floor, whose surface is
+~0.5 m *below* the map origin — the first lidar pose) or the start's
+(`start`). Both snap to the nearest traversable cell within `snap_xy_radius`
+whose top face is within `snap_z_window` (1.0 m, far below the 5.7 m floor
+spacing) of the hint; the goal only within the start's component. A failed
+snap says what *is* there — `goal_unavailable: … surfaces in that column:
+z=[-0.40 (untraversable: footprint_blocked), 4.80 (traversable, component
+2)]` — or that the nearest surface is on another floor.
+
+**Output** (`path_postprocess.cpp`): a line-of-sight shortcut checked with a
+supercover traversal (every cell the segment touches; Bresenham skips the
+corner cell a wall foot sits in), step-continuous along the segment, and
+never closer to the boundary than the cells it replaces (Smac's "never above
+252" rule); then a resample at `interpolation_resolution` with z read back
+from the surface. Poses carry z = the floor's top face (+ `path_z_offset`),
+yaw toward the next pose, the goal's orientation last; the 2D controllers
+ignore z.
+
+**Measured on dp1f_1012_v2** (2026-10-13; 1F and 2F, 2 576 keyframes): 1.26 M
+columns, 724 k surface cells (24 k inferred), 158 k traversable in 146
+components, the two floors being 118 k and 33 k. 86 % of the keyframes stand
+on a traversable cell, 90 % within one cell of one, 99.5 % on *a* surface.
+What the rest is, by inspection: the robot's own feet (0.3 m clusters of
+occupied voxels 0.2–0.3 m above the floor exactly at keyframes — at ~0.54 m
+from the lidar they survive `clean_map`'s 0.5 m `min_range`; the fix is in
+that repo, the planner routes around them), the 1F–2F spiral staircase (an
+87 m, 5.8 m climb in a 4 × 3 m well; rejected by design, so the floors are
+separate components), and a short ~30° ramp on 2F.
+
+**The CLI.** `ros2 run syncai_global_planner octomap_planner_3d_cli` runs the
+same core without the stack, and is the first thing to run on a new map:
+
+```bash
+octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects, components, floors, timings
+   … --self-test                                                 # recompute random columns with OcTree::search()
+   … --poses map/<name>/poses.txt --check-poses                  # the map's own track on traversable ground?
+   … --poses … --inspect-misses 3 / --inspect-kf 19 / --inspect x y   # ASCII map of the cells around a point
+   … --dump-image out.bmp [--image-z 5.1] [--image-region x0 y0 x1 y1 --image-scale 4] [--image-components]
+   … --dump-pcd out.pcd                                          # x y z label reject unknown clearance component
+   … --plan sx sy sz gx gy gz --out path.csv / --plan-poses i j  # z are height hints
+   … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
+   … --synthetic ramp|stairs|kerb|wall|hole|two_floors           # the test scenes
+   … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
+```
+
+**Seeing a route.** Online, rviz2 from a workstation with
+`config/rviz2/<robot_id>.rviz` already shows `plan` (`nav_msgs/Path`) over
+the localizer's latched `map_cloud`, and the poses carry the floor's z, so an
+`Octo3D` route lies on the floor of the point cloud; `Octo3D.publish_raw_plan`
+adds the un-shortcut chain on `Octo3D/raw_plan`. Offline, `--dump-html`
+writes a self-contained three.js page (~6 MB for a site map; the same page
+style as the OctoMap viewer `clean_map`'s display build makes): the
+traversable cells coloured by floor height, hole-filled ones tinted, a
+subsample of the rejected cells in grey for the walls, and every `--plan` /
+`--plan-poses` of the run as a tube with its start and goal, with a "hide
+ground above z" slider to look at one floor of a multi-storey map.
+`--dump-image` draws the same routes on the top-down raster (blue, start
+magenta, goal yellow), and `--dump-pcd` + `--out path.csv` are the raw
+material for CloudCompare or a script.
+
+On a workstation without ROS, `plugins/octomap_planner_3d/standalone/CMakeLists.txt`
+builds the same binary against the system's octomap
+(`cmake -S … -B /tmp/octo3d -DCMAKE_PREFIX_PATH=/opt/homebrew`); the core
+headers include nothing of ROS on purpose.
+
+**Known limits** (prototype):
+
+- `is_path_valid` and the republish trim run on the 2D costmap: fine on the
+  ground floor, meaningless for a path upstairs (checked against the
+  ground-floor gridmap).
+- A 2D backend's z = 0 goal is only right on the ground floor; upstairs it
+  needs a real z or `goal_z_mode: start`.
+- `map_server/load_map` does not reload `octomap.bt`; a map switch needs a
+  planner_server restart for `Octo3D` (the build-time parameters likewise).
+- Shallow stairs with 0.1 m risers are a 19° ramp at this resolution; the
+  tilt limit is the only guard, and a quadruped walks them anyway.
+- The failure reason reaches `NavigateToGoal.error_msg` only as
+  `PLAN_FAILED`; the text is in the planner log.
+
 ## Parameters
 
 **Server** (`/**/planner_server`):
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `planner_plugins` | `["GridBased"]` | IDs; each needs `<id>.plugin` naming the type |
+| `planner_plugins` | `["GridBased"]` (config: `["GridBased", "Octo3D"]`) | IDs; each needs `<id>.plugin` naming the type. With more than one loaded, an empty `planner_id` in a goal is an error rather than "the only plugin" |
 | `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan at most once a second, and only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
 | `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the pose nearest the robot (the same nearest-pose search `is_path_valid` uses, so what is shown is what is checked; the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. It keeps showing the last route after a goal succeeds or fails, since the planner cannot tell when the navigation finished; a **cancelled** goal is the exception, reported by the task_runner through `clear_plan`. Read once at startup |
 | `is_path_valid.footprint_check` | `true` | Also test the padded footprint's perimeter against LETHAL at each pose ahead of the robot — RPP's own collision test, run on the global costmap. `false` restores the centre-cell test alone (what the service did until 2026-10). Dynamic |
@@ -358,6 +529,28 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py            # map/<na
 ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other/keepout.yaml
 ```
 
+**OctomapPlanner3D** (`Octo3D.*`; the YAML carries the reasoning per line):
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `octomap_file` | `""` (launch: `map/<name>/octomap.bt`) | Derived by the launch file from the directory of `[map] pcd`; empty or missing → every `Octo3D` plan fails with `map_not_loaded`, nothing else is affected |
+| `body_frame`, `lidar_height` | `pointlio_body` (launch: `<robot_id>/pointlio_body`), `0.481` | The frame the robot's real height is read from, and the sensor's height above the ground (`map_clean.recipe.json`'s `lidar_height`). Dynamic |
+| `goal_z_mode` | `request` | `request`: the goal's own z picks the floor; `start`: the robot's floor. Dynamic |
+| `robot_radius`, `body_clearance` | `0.25`, `0.6` | Footprint disc (= the costmap's inscribed radius) and the band above a surface the body needs. Build-time |
+| `max_step_height`, `max_slope_deg` | `0.10`, `20.0` | One cell per move; tilt of the fitted plane under the disc. Build-time |
+| `max_unknown_clearance_cells`, `min_known_free_above` | `-1` (all), `1` | Unknown tolerated in the band; observed-free voxels required right above a surface. Build-time |
+| `hole_fill_radius`, `hole_fill_min_support`, `hole_fill_passes` | `0.3`, `0.5`, `2` | See the build, step 3. Build-time |
+| `clearance_cost_radius` | `0.55` | Reach of the clearance field from the traversable boundary. Build-time |
+| `clearance_cost_weight`, `clearance_cost_scaling` | `1.0`, `1.5` | Edge cost multiplier inside the band. Dynamic |
+| `inferred_cost_multiplier` | `1.2` | Prefer observed floor. Dynamic |
+| `heuristic_weight`, `max_iterations`, `max_planning_time` | `1.0`, `2000000`, `2.0` s | Weighted A* and the guards. Dynamic |
+| `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
+| `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |
+| `publish_raw_plan` | `false` | Also publish the un-shortcut chain on `Octo3D/raw_plan` |
+
+A build-time parameter set through `ros2 param set` is refused with the
+reason; it needs a planner_server restart.
+
 ## Interfaces
 
 With the node at `/<robot_id>`:
@@ -369,6 +562,7 @@ With the node at `/<robot_id>`:
 | Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled**, which until then left the cancelled route on `plan` until the next goal. A new plan stops the repeats. Main executor, the republish timer's thread |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` |
+| Publisher | `Octo3D/raw_plan` | `nav_msgs/Path`, only with `Octo3D.publish_raw_plan`: the A* cell chain before the shortcut, for comparing against `plan` |
 
 Plus everything the internal costmap exposes under
 `/<robot_id>/global_costmap/…` — `costmap`, `costmap_updates`,
@@ -381,6 +575,16 @@ services the BT's recovery branch calls.
 ros2 launch syncai_global_planner planner_server.launch.py
 ros2 launch syncai_global_planner planner_server.launch.py \
     system_config:=config/instances/robot02.ini
+```
+
+A plan from the OctoMap surface planner (the BT keeps asking `GridBased`),
+and the same core offline on the map's own tree (see OctomapPlanner3D above):
+
+```bash
+ros2 action send_goal /<robot_id>/compute_path_to_pose nav2_msgs/action/ComputePathToPose \
+  "{goal: {header: {frame_id: map}, pose: {position: {x: 10.0, y: 2.0, z: 0.0}, orientation: {w: 1.0}}}, planner_id: Octo3D}"
+ros2 run syncai_global_planner octomap_planner_3d_cli map/<name>/octomap.bt --stats \
+  --poses map/<name>/poses.txt --check-poses
 ```
 
 Both byobu sessions start it in the `plan_ctrl` window after `sleep 4` — the
@@ -435,3 +639,14 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
 Upstream references: [`nav2_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_planner),
 [`nav2_navfn_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_navfn_planner),
 and [`nav2_smac_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_smac_planner).
+- **`Octo3D` paths are judged by `is_path_valid` on the 2D costmap.** On
+  the ground floor that is the same check `GridBased` paths get; upstairs
+  the path is compared with the ground-floor gridmap and the BT replans into
+  the same path once a second. There is no 3D-aware validity check yet.
+- **`Octo3D` does not follow a map switch.** `map_server/load_map` reloads
+  the gridmap; the octree is read once at startup, so a map switch (or a
+  change of a build-time parameter) needs a planner_server restart — the
+  session's `plan_ctrl` pane, or `restart_mode`.
+- **`Octo3D` trips the `expected_planner_frequency` warning** on a long
+  plan only in theory (a 50 m search is a few ms); if it does, it is the
+  canary described under Parameters, not a fault.

@@ -59,7 +59,17 @@
     # planner (getPlan() logs an error and returns an empty path). Swapping the
     # plugin under the existing id is what makes the change take effect without
     # touching the behavior tree.
-    planner_plugins: ["GridBased"]
+    #
+    # Two ids on purpose (2026-10). GridBased is what move.xml asks for and
+    # stays Smac2D on the 2D costmap. Octo3D is the OctoMap surface planner
+    # for the quadruped (OctomapPlanner3D, below), reachable with
+    # planner_id "Octo3D" on compute_path_to_pose -- `ros2 action send_goal`,
+    # or a one-line edit of move.xml -- while it is a prototype. Loading it
+    # costs a background build of a few seconds at startup and ~30 MB; a map
+    # without octomap.bt logs one error and leaves GridBased untouched. With
+    # two ids loaded an EMPTY planner_id no longer falls back to the only
+    # plugin (getPlan() needs the id); the BT always names one.
+    planner_plugins: ["GridBased", "Octo3D"]
     GridBased:
       plugin: "syncai_global_planner/SmacPlanner2D"
 
@@ -116,8 +126,125 @@
     # NavfnPlanner ("syncai_global_planner/NavfnPlanner", params: tolerance /
     #   use_astar / allow_unknown / use_final_approach_orientation) and
     #   StraightLinePlanner are still built and registered. To fall back, set
-    #   plugin: above — do not add a second id, since move.xml only ever asks
-    #   for GridBased.
+    #   plugin: above under GridBased -- a third id would be as invisible to
+    #   move.xml as Octo3D is.
+
+    # OctomapPlanner3D: A* over the floor surfaces of map/<name>/octomap.bt
+    # (the tree clean_map writes beside map.pcd), for the quadruped. The tree
+    # is reduced once at startup to a multi-layer 2.5D surface map -- every
+    # column's floor surfaces, each judged with the geometry below -- and a
+    # path only ever runs over cells that passed, so it cannot leave the
+    # ground, climb a wall, cross a stair riser or a kerb, or jump floors; it
+    # takes ramps. The 2D costmap is used for its frame id only. Offline the
+    # same code runs as `octomap_planner_3d_cli map/<name>/octomap.bt --stats`
+    # (also --check-poses, --dump-image, --plan); that is where these values
+    # were set, on dp1f_1012_v2 (2026-10). The README's OctomapPlanner3D
+    # section has the algorithm.
+    Octo3D:
+      plugin: "syncai_global_planner/OctomapPlanner3D"
+
+      # Set by the launch file to map/<name>/octomap.bt, derived from the
+      # directory of [map] pcd (no INI key: the backend's map switch writes
+      # [map] name alone). Empty or missing file = every Octo3D plan fails
+      # with map_not_loaded, nothing else is affected.
+      octomap_file: ""
+
+      # The server hands the planner the planar map -> base_link pose, whose
+      # z is always 0, so the robot's real height comes from TF to this frame
+      # (the LIO body, which keeps z; overridden by the launch file with the
+      # <robot_id>/ prefix) minus lidar_height, the sensor's height above the
+      # ground -- the same number clean_map was run with (map_clean.recipe.json
+      # lidar_height). Without the TF the request's z is used, which is right
+      # on the ground floor and wrong upstairs.
+      body_frame: pointlio_body
+      lidar_height: 0.481
+
+      # request: the goal's own z picks the floor, within snap_z_window. The
+      # backend sends z = 0, which lands on the ground floor (its surface is
+      # ~0.5 m below the map origin, the first lidar pose). start: use the
+      # robot's floor instead, for sending a 2D goal while it is upstairs.
+      goal_z_mode: request
+
+      # ---- surface map (baked in at startup; a change needs a restart) ----
+      # Hard clearance: every column within this radius of a cell must hold a
+      # usable surface, else the cell is blocked -- the implicit inflation of
+      # walls, drop-offs and unfillable holes. Same 0.25 m as the global
+      # costmap's inscribed radius (padded half-width of the footprint), so
+      # Octo3D and GridBased refuse the same gaps.
+      robot_radius: 0.25
+      # Non-occupied voxels needed above a surface for the body to fit. The
+      # lidar top is ~0.55 m up; 6 cells at 0.1 m.
+      body_clearance: 0.6
+      # Largest height change between neighbouring cells, in whole cells: at
+      # res 0.1 everything in [0.1, 0.2) means one cell, and 0.2 would let a
+      # 0.17 m stair riser through (a riser lands on one or two cells).
+      max_step_height: 0.10
+      # Tilt limit of the plane fitted under the footprint disc. Stairs are
+      # already out by the step rule; this catches the shallow stair with
+      # 0.1 m risers (a 19 deg "ramp" at this resolution) and nothing a
+      # quadruped cannot walk. A fit, not max-minus-min: a flat floor read
+      # cell by cell looks 11 deg tilted across a 0.5 m disc.
+      max_slope_deg: 20.0
+      # Unknown voxels tolerated in the clearance band (-1 = all). The lidar
+      # looks mostly outward from 0.48 m up, so the band is observed only where
+      # the robot passed; a strict value punches holes in exactly the
+      # corridors the path needs. An occupied voxel in the band always rejects.
+      max_unknown_clearance_cells: -1
+      # The voxel right above a floor must have been observed free: a floor
+      # the robot stood on always has, a ceiling / slab underside seen from
+      # below never has. 1 removed every ceiling island of the multi-storey
+      # dp1f_1012_v2 (748 -> 153 components); 0 disables.
+      min_known_free_above: 1
+      # Floor voxels exist only where a scan hit them, and the lidar's lower
+      # field of view (-7 deg) cannot see the floor nearer than ~4 m, so the
+      # floor under the robot's own track is seen only from afar: ~5 % of
+      # the columns under it are empty. A column with no surface whose
+      # neighbours within the radius agree on a height from three of the four
+      # quadrants around it, with at least min_support of them, and with no
+      # occupied voxel near that height, gets an inferred surface. The
+      # quadrant rule keeps a floor edge or a balcony from being extended
+      # (one-sided support). Two passes close a hole from the rim inward.
+      # dp1f_1012_v2: 86 % of the keyframes on a traversable cell with this,
+      # 74 % without.
+      hole_fill_radius: 0.3
+      hole_fill_min_support: 0.5
+      hole_fill_passes: 2
+      # Reach of the soft clearance cost, from the traversable boundary (which
+      # already sits robot_radius from the wall): 0.55 puts the band edge
+      # 0.8 m from the wall, the global costmap's inflation_radius.
+      clearance_cost_radius: 0.55
+
+      # ---- search (dynamic) ----
+      # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
+      # band, x 1 beyond: the costmap's inflation curve (cost_scaling_factor
+      # 1.5) and Smac's cost_travel_multiplier (1.0) in one. A multiplier, not
+      # a per-node penalty, so diagonals are not cheaper per metre.
+      clearance_cost_weight: 1.0
+      clearance_cost_scaling: 1.5
+      # Prefer observed floor over hole-filled floor, mildly.
+      inferred_cost_multiplier: 1.2
+      # 1.0 = optimal (3D Euclidean is admissible here). A 50 m plan on
+      # dp1f_1012_v2 takes a few ms at 1.0; raise only if that ever matters.
+      heuristic_weight: 1.0
+      max_iterations: 2000000
+      max_planning_time: 2.0
+      # Snap: nearest traversable cell within the xy radius (Smac's tolerance)
+      # whose top face is within the z window of the height hint. 1.0 covers
+      # the 0.48 m lidar-to-floor offset of a goal at the robot's height and
+      # is far below the spacing of two floors (~5.7 m here).
+      snap_xy_radius: 0.5
+      snap_z_window: 1.0
+
+      # ---- output ----
+      # Line-of-sight shortcut of the cell chain (supercover, step-continuous,
+      # never closer to the boundary than the search was), then a resample
+      # at interpolation_resolution with z read from the surface. Poses carry
+      # z = the floor's top face + path_z_offset; the 2D controllers ignore z.
+      shortcut: true
+      interpolation_resolution: 0.1
+      path_z_offset: 0.0
+      # Publish the un-shortcut chain on Octo3D/raw_plan for comparison.
+      publish_raw_plan: false
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").

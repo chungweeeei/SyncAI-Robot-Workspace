@@ -28,7 +28,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                            ┌─────────────────┴─────────────────┐
                                            ▼                                   ▼
                                  syncai_global_planner                         syncai_controller
-                                   (SmacPlanner2D)                     (MPPI / RPP plugins)
+                              (SmacPlanner2D / Octo3D)                (MPPI / RPP plugins)
                                            │                                   │
                                            └───────── syncai_costmap_2d ───────┘
                                                 (global / local costmaps)          cmd_vel ──▶ syncai_driver_manager ──UDP──▶ gait controller
@@ -53,7 +53,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
 | `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
-| `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine and SmacPlanner2D plugins (Smac is configured) |
+| `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine, SmacPlanner2D and OctomapPlanner3D plugins (Smac is configured as `GridBased`; OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`, is loaded beside it as `Octo3D`) |
 | `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and its own Regulated Pure Pursuit as `FollowPathRPP`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap |
 | `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan` |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`), plus the docking nodes `DockToPose`, `SetMotionKey`, `ComputeStagingPose`, `Wait` (2026-10) |
