@@ -28,6 +28,11 @@ find_package(syncai_nav_core REQUIRED)
 find_package(angles REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(ompl REQUIRED)
+# OctomapPlanner3D: octomap's humble config also exports only the classic
+# OCTOMAP_INCLUDE_DIRS / OCTOMAP_LIBRARIES variables (the imported targets
+# arrived in 1.10), so it is linked by variable like OMPL. It is the same
+# ros-humble-octomap syncai_mapping's clean_map builds against.
+find_package(octomap REQUIRED)
 
 set(dependencies
   rclcpp
@@ -60,6 +65,10 @@ add_library(${library_name} SHARED
   plugins/smac_planner/node_basic.cpp
   plugins/smac_planner/smac_planner_2d.cpp
   plugins/smac_planner/smoother.cpp
+  plugins/octomap_planner_3d/surface_map.cpp
+  plugins/octomap_planner_3d/surface_astar.cpp
+  plugins/octomap_planner_3d/path_postprocess.cpp
+  plugins/octomap_planner_3d/octomap_planner_3d.cpp
   src/planner_server.cpp
 )
 
@@ -69,11 +78,12 @@ target_include_directories(${library_name} PUBLIC
 )
 # SYSTEM keeps the workspace-wide -Wpedantic from flagging OMPL's headers,
 # which were never written against it.
-target_include_directories(${library_name} SYSTEM PUBLIC ${OMPL_INCLUDE_DIRS})
+target_include_directories(${library_name} SYSTEM PUBLIC ${OMPL_INCLUDE_DIRS} ${OCTOMAP_INCLUDE_DIRS})
 
 ament_target_dependencies(${library_name} ${dependencies})
 target_link_libraries(${library_name}
   ${OMPL_LIBRARIES}
+  ${OCTOMAP_LIBRARIES}
   Eigen3::Eigen
 )
 # The smac A* search is the hot path and upstream always builds it -O3; plan
@@ -86,6 +96,16 @@ add_executable(${executable_name} src/main.cpp)
 target_link_libraries(${executable_name} ${library_name})
 ament_target_dependencies(${executable_name} ${dependencies})
 
+# The offline driver of OctomapPlanner3D's ROS-free core: builds the surface
+# map from a map's octomap.bt, prints what it made of it, checks it against
+# the map's own poses.txt, dumps it for a viewer, plans. It links the planner
+# library for the three core objects (the simplest thing inside the ROS
+# build); plugins/octomap_planner_3d/standalone/CMakeLists.txt builds the same
+# binary with octomap alone on a workstation without ROS.
+add_executable(octomap_planner_3d_cli plugins/octomap_planner_3d/octomap_planner_3d_cli.cpp)
+target_link_libraries(octomap_planner_3d_cli ${library_name})
+target_compile_options(octomap_planner_3d_cli PRIVATE -O3)
+
 install(
   TARGETS ${library_name}
   EXPORT export_${library_name}
@@ -95,7 +115,7 @@ install(
 )
 
 install(
-  TARGETS ${executable_name}
+  TARGETS ${executable_name} octomap_planner_3d_cli
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -118,6 +138,12 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # OctomapPlanner3D's geometry rules on synthetic scenes (ramp / stairs /
+  # kerb / wall / holes / two floors); no ROS, runs in seconds.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_surface_map test/test_surface_map.cpp)
+  target_link_libraries(test_surface_map ${library_name})
 endif()
 
 ament_export_include_directories(include)
