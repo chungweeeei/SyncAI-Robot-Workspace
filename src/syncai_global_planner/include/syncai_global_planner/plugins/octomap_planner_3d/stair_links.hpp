@@ -35,7 +35,15 @@
 // The points of a link are the keyframes' ground points with every loop cut
 // out (the track coming back within loop_radius and loop_dz of an earlier
 // point): a robot driven by hand turns and waits on landings, and the path
-// should not.
+// should not. What is left is then smoothed (smooth_passes of a three-point
+// moving average, the ends fixed), because a hand-driven track also weaves
+// by a few centimetres from keyframe to keyframe and the body pitches on a
+// flight, which the ground estimate (pose z - lidar_height) inherits.
+//
+// What could not be linked is reported in StairLinks::notes, for the plugin
+// to log and the CLI to print: a height change on the track that stayed
+// unlinked because its stretch was longer than max_length, and large
+// components at different heights that no chain of links joins.
 //
 // ROS-free (see surface_map.hpp).
 
@@ -71,6 +79,8 @@ struct StairLinkParams
   // earlier one closes a loop, and everything in between is dropped.
   double loop_radius = 0.4;
   double loop_dz = 0.15;
+  // Three-point moving-average passes over the link's points (0 = raw).
+  int smooth_passes = 2;
 };
 
 struct StairLink
@@ -100,6 +110,8 @@ public:
   // component -> group: components joined by links share a group. Sized to
   // the map's component count; a component no link touches is its own group.
   std::vector<uint32_t> group;
+  // What stayed unlinked, one sentence each (see the header).
+  std::vector<std::string> notes;
 
   uint32_t groupOf(uint32_t component) const
   {

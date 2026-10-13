@@ -30,6 +30,8 @@ const char * rejectName(Reject r)
       return "step";
     case Reject::FootprintBlocked:
       return "footprint_blocked";
+    case Reject::FootprintGap:
+      return "footprint_gap";
     case Reject::Slope:
       return "slope";
     case Reject::Residual:
@@ -431,6 +433,10 @@ size_t holeFillPass(
 
 // ---- stage 4: step rule ----------------------------------------------------
 
+// A neighbour column that holds surfaces, none of them usable within one
+// step, is a drop, a ledge or an obstacle: the cell is rejected. A column
+// that holds no surface at all was never observed there; that is a gap,
+// counted by the footprint rule, and no move goes that way anyway.
 void applyStepRule(SurfaceMap & m)
 {
   std::vector<uint8_t> fail(m.cells.size(), 0);
@@ -446,7 +452,11 @@ void applyStepRule(SurfaceMap & m)
         fail[c] = 1;
         break;
       }
-      const CellId n = m.layerNear(m.col(nx_, ny_), kz, m.step_cells);
+      const uint32_t nc = m.col(nx_, ny_);
+      if (m.col_begin[nc] == m.col_begin[nc + 1]) {
+        continue;  // a gap
+      }
+      const CellId n = m.layerNear(nc, kz, m.step_cells);
       if (n == kNoCell || m.cells[n].reject != static_cast<uint8_t>(Reject::None)) {
         fail[c] = 1;
         break;
@@ -462,20 +472,26 @@ void applyStepRule(SurfaceMap & m)
 
 // ---- stage 5: footprint disc + plane fit -----------------------------------
 
+// Per cell: every column of the disc is resolved to its layer on the slope
+// cone. A column with no surface at all is a gap (counted; too many reject
+// the cell as FootprintGap); one whose surfaces are all out of reach or
+// unusable blocks the cell (FootprintBlocked); the rest go into a
+// least-squares plane whose tilt and residuals are judged. The fit is a full
+// three-parameter one because with gaps the disc is no longer symmetric
+// about its centre and the axes do not decouple.
 void applyFootprintRule(const std::vector<Offset> & disc, SurfaceMap & m)
 {
   const double tan_slope = std::tan(m.params.max_slope_deg * M_PI / 180.0);
   const double max_residual = m.res + 1e-6;
+  const int max_gaps = static_cast<int>(std::floor(
+    (1.0 - std::min(1.0, std::max(0.0, m.params.footprint_min_support))) * disc.size() + 1e-9));
   std::vector<uint8_t> reject(m.cells.size(), 0);
-  std::vector<double> zs;
-  zs.reserve(disc.size());
-  // The disc is symmetric about its centre, so with x, y taken relative to
-  // the centre the plane fit decouples: a = Sxz/Sxx, b = Syz/Syy, c = mean z.
-  double sxx = 0, syy = 0;
-  for (const Offset & o : disc) {
-    sxx += static_cast<double>(o.dx) * o.dx * m.res * m.res;
-    syy += static_cast<double>(o.dy) * o.dy * m.res * m.res;
-  }
+  struct Sample
+  {
+    double x, y, z;
+  };
+  std::vector<Sample> pts;
+  pts.reserve(disc.size());
   for (CellId c = 0; c < m.cells.size(); ++c) {
     if (m.cells[c].reject != static_cast<uint8_t>(Reject::None)) {
       continue;
@@ -484,42 +500,84 @@ void applyFootprintRule(const std::vector<Offset> & disc, SurfaceMap & m)
     const int kz = m.cells[c].kz;
     const double zc = m.zTop(c);
     bool blocked = false;
-    double sz = 0, sxz = 0, syz = 0;
-    zs.clear();
+    int gaps = 0;
+    pts.clear();
     for (const Offset & o : disc) {
       const int nx_ = ix + o.dx, ny_ = iy + o.dy;
       if (!m.inGrid(nx_, ny_)) {
-        blocked = true;
+        blocked = true;  // beyond the map: unknown ground, treated as a drop
         break;
+      }
+      const uint32_t nc = m.col(nx_, ny_);
+      if (m.col_begin[nc] == m.col_begin[nc + 1]) {
+        ++gaps;
+        continue;
       }
       // A neighbour on a ramp sits higher the farther out it is: the allowed
       // height difference grows along the slope cone, not just +-one step.
       const int tol = m.step_cells + static_cast<int>(std::ceil(tan_slope * o.d_m / m.res - 1e-9));
-      const CellId n = m.layerNear(m.col(nx_, ny_), kz, tol);
+      const CellId n = m.layerNear(nc, kz, tol);
       if (n == kNoCell || m.cells[n].reject != static_cast<uint8_t>(Reject::None)) {
         blocked = true;
         break;
       }
-      const double z = m.zTop(n) - zc;
-      zs.push_back(z);
-      sz += z;
-      sxz += o.dx * m.res * z;
-      syz += o.dy * m.res * z;
+      pts.push_back({o.dx * m.res, o.dy * m.res, m.zTop(n) - zc});
     }
     if (blocked) {
       reject[c] = static_cast<uint8_t>(Reject::FootprintBlocked);
       continue;
     }
-    const double a = sxx > 0 ? sxz / sxx : 0.0;
-    const double b = syy > 0 ? syz / syy : 0.0;
-    const double cz = sz / static_cast<double>(disc.size());
+    m.cells[c].gap_cnt = static_cast<uint8_t>(std::min(gaps, 255));
+    if (gaps > max_gaps) {
+      reject[c] = static_cast<uint8_t>(Reject::FootprintGap);
+      continue;
+    }
+    // A disc whose surfaces span at most one step is level ground, with or
+    // without a kerb in it: the step rule has already allowed the kerb, and
+    // a plane fitted across it would read as a 30 deg slope with residuals
+    // of half a step. A flight shows more than one riser in a 0.5 m disc
+    // (treads are ~0.29 m) and goes on to the fit, which refuses it.
+    double zlo = pts.front().z, zhi = zlo;
+    for (const Sample & q : pts) {
+      zlo = std::min(zlo, q.z);
+      zhi = std::max(zhi, q.z);
+    }
+    if (zhi - zlo <= m.step_cells * m.res + 1e-9) {
+      continue;
+    }
+    // Plane z = a x + b y + d through the samples (x, y relative to the
+    // centre), by the normal equations; the centre sample is always there.
+    double sxx = 0, sxy = 0, syy = 0, sx = 0, sy = 0, sxz = 0, syz = 0, sz = 0;
+    for (const Sample & q : pts) {
+      sxx += q.x * q.x;
+      sxy += q.x * q.y;
+      syy += q.y * q.y;
+      sx += q.x;
+      sy += q.y;
+      sxz += q.x * q.z;
+      syz += q.y * q.z;
+      sz += q.z;
+    }
+    const double n = static_cast<double>(pts.size());
+    // Solve [sxx sxy sx; sxy syy sy; sx sy n] [a b d]' = [sxz syz sz]'.
+    const double det =
+      sxx * (syy * n - sy * sy) - sxy * (sxy * n - sy * sx) + sx * (sxy * sy - syy * sx);
+    double a = 0, b = 0, d = sz / n;
+    if (std::fabs(det) > 1e-12) {
+      a =
+        (sxz * (syy * n - sy * sy) - sxy * (syz * n - sy * sz) + sx * (syz * sy - syy * sz)) / det;
+      b =
+        (sxx * (syz * n - sy * sz) - sxz * (sxy * n - sy * sx) + sx * (sxy * sz - syz * sx)) / det;
+      d =
+        (sxx * (syy * sz - syz * sy) - sxy * (sxy * sz - syz * sx) + sxz * (sxy * sy - syy * sx)) /
+        det;
+    }
     if (std::hypot(a, b) > tan_slope) {
       reject[c] = static_cast<uint8_t>(Reject::Slope);
       continue;
     }
-    for (size_t i = 0; i < disc.size(); ++i) {
-      const double fit = a * disc[i].dx * m.res + b * disc[i].dy * m.res + cz;
-      if (std::fabs(zs[i] - fit) > max_residual) {
+    for (const Sample & q : pts) {
+      if (std::fabs(q.z - (a * q.x + b * q.y + d)) > max_residual) {
         reject[c] = static_cast<uint8_t>(Reject::Residual);
         break;
       }
@@ -635,7 +693,7 @@ std::shared_ptr<const SurfaceMap> buildSurfaceMap(
   SurfaceMap & m = *map;
   m.params = params;
   m.res = tree.getResolution();
-  m.step_cells = std::max(0, static_cast<int>(std::floor(params.max_step_height / m.res + 1e-6)));
+  m.step_cells = std::max(0, static_cast<int>(std::lround(params.max_step_height / m.res)));
   const int clearance_cells =
     std::max(1, static_cast<int>(std::ceil(params.body_clearance / m.res - 1e-9)));
   const int max_unknown = params.max_unknown_clearance_cells < 0
@@ -696,7 +754,9 @@ std::shared_ptr<const SurfaceMap> buildSurfaceMap(
   stats.t_step = since(t);
 
   t = Clock::now();
-  applyFootprintRule(discOffsets(params.robot_radius, m.res, true), m);
+  const auto footprint = discOffsets(params.robot_radius, m.res, true);
+  m.footprint_n = static_cast<int>(footprint.size());
+  applyFootprintRule(footprint, m);
   stats.t_footprint = since(t);
 
   for (SurfaceCell & c : m.cells) {

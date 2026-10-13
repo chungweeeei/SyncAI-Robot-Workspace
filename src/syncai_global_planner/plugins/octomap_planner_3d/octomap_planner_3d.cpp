@@ -78,6 +78,7 @@ void OctomapPlanner3D::initialize(
   dp("stair_max_length", rclcpp::ParameterValue(stair_params_.max_length));
   dp("stair_anchor_z_window", rclcpp::ParameterValue(stair_params_.anchor_z_window));
   dp("stair_anchor_min_area", rclcpp::ParameterValue(stair_params_.anchor_min_area));
+  dp("stair_smooth_passes", rclcpp::ParameterValue(stair_params_.smooth_passes));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -114,6 +115,7 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".stair_max_length", stair_params_.max_length);
   node->get_parameter(name + ".stair_anchor_z_window", stair_params_.anchor_z_window);
   node->get_parameter(name + ".stair_anchor_min_area", stair_params_.anchor_min_area);
+  node->get_parameter(name + ".stair_smooth_passes", stair_params_.smooth_passes);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -235,6 +237,9 @@ void OctomapPlanner3D::buildMap()
           logger_,
           "[OctomapPlanner3D][%s]   stair link kf %zu -> %zu: z %.2f -> %.2f, %.1f m, %zu points",
           __func__, l.kf_a, l.kf_b, map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size());
+      }
+      for (const std::string & note : links->notes) {
+        RCLCPP_WARN(logger_, "[OctomapPlanner3D][%s] stair links: %s", __func__, note.c_str());
       }
     } else {
       RCLCPP_WARN(

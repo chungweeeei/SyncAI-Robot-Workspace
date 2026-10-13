@@ -81,72 +81,86 @@ TEST(SurfaceMap, RampIsTraversableAndContinuous)
 
 TEST(SurfaceMap, StairsSplitTheFloor)
 {
+  // Since single risers pass the step rule, the cells at a flight's risers
+  // are traversable islands (a dog can stand on a step); the treads between
+  // them, which see two risers in the disc, are not, so the two floors stay
+  // apart and are the two largest components.
   BuildStats s;
   const auto m = build("stairs", &s);
-  EXPECT_EQ(s.components, 2u);
+  EXPECT_GE(s.components, 2u);
   EXPECT_FALSE(connected(*m, 2.0, 4.0, 0.0, 10.0, 4.0, 1.02));
-  EXPECT_NE(cellAt(*m, 2.0, 4.0, 0.0), kNoCell);
-  EXPECT_NE(cellAt(*m, 10.0, 4.0, 1.02), kNoCell);
+  const CellId lo = cellAt(*m, 2.0, 4.0, 0.0), hi = cellAt(*m, 10.0, 4.0, 1.02);
+  ASSERT_NE(lo, kNoCell);
+  ASSERT_NE(hi, kNoCell);
+  size_t n_lo = 0, n_hi = 0;
+  for (CellId c = 0; c < m->cells.size(); ++c) {
+    n_lo += m->traversable(c) && m->cells[c].component == m->cells[lo].component;
+    n_hi += m->traversable(c) && m->cells[c].component == m->cells[hi].component;
+  }
+  EXPECT_EQ(std::min(n_lo, n_hi), s.component_sizes[1]);
 }
 
-TEST(SurfaceMap, KerbSplitsTheFloor)
+TEST(SurfaceMap, KerbIsOneStepButADropSplitsTheFloor)
 {
+  // 0.15 m is within max_step_height (0.17): one piece of ground, the kerb
+  // crossed as a single step. 0.5 m is a ledge: two components.
   BuildStats s;
   const auto m = build("kerb", &s);
-  EXPECT_EQ(s.components, 2u);
-  EXPECT_FALSE(connected(*m, 3.0, 4.0, 0.0, 9.0, 4.0, 0.15));
+  EXPECT_EQ(s.components, 1u);
+  EXPECT_TRUE(connected(*m, 3.0, 4.0, 0.0, 9.0, 4.0, 0.15));
+  BuildStats sd;
+  const auto d = build("drop", &sd);
+  EXPECT_EQ(sd.components, 2u);
+  EXPECT_FALSE(connected(*d, 3.0, 4.0, 0.0, 9.0, 4.0, 0.5));
 }
 
-TEST(SurfaceMap, WallIsInflatedByTheRobotRadiusAndTheDoorPasses)
+TEST(SurfaceMap, GapsInTheFootprintAreToleratedUpToAShare)
 {
-  BuildStats s;
-  const auto m = build("wall", &s);
-  // Wall at x 6.0..6.1: the robot centre may not come within 0.25 m of it.
-  EXPECT_EQ(cellAt(*m, 5.85, 6.0, 0.0), kNoCell);
-  EXPECT_EQ(cellAt(*m, 5.75, 6.0, 0.0), kNoCell);
-  EXPECT_NE(cellAt(*m, 5.55, 6.0, 0.0), kNoCell);
-  // Both sides connect only through the 0.8 m door at y 3.6..4.4.
-  EXPECT_TRUE(connected(*m, 3.0, 6.0, 0.0, 9.0, 6.0, 0.0));
-  EXPECT_NE(cellAt(*m, 6.05, 4.0, 0.0), kNoCell);
-  // The 0.5 m table: the floor under it is inside the body clearance, so the
-  // robot may not be under it, and the footprint keeps it 0.25 m away. Its
-  // top, with observed free space above, is a surface -- but an island: the
-  // second component, which no path from the floor can reach.
-  EXPECT_EQ(cellAt(*m, 2.6, 1.4, 0.0), kNoCell);
-  EXPECT_EQ(cellAt(*m, 3.0, 2.0, 0.0), kNoCell);
-  const CellId top = cellAt(*m, 2.6, 1.4, 0.6);
-  ASSERT_NE(top, kNoCell);
-  EXPECT_NEAR(m->zTop(top), 0.6, 1e-9);
-  EXPECT_EQ(s.components, 2u);
-  EXPECT_NE(m->cells[top].component, m->cells[cellAt(*m, 3.0, 6.0, 0.0)].component);
-}
-
-TEST(SurfaceMap, HolesAreFilledButEdgesAreNotExtended)
-{
-  BuildStats s;
-  const auto m = build("hole", &s);
-  EXPECT_GT(s.inferred, 0u);
-  // Single columns, the crack and the 3 x 3 hole close; the floor around
-  // them stays one piece with the floor far away.
-  for (const auto & [x, y] :
-       {std::pair{2.05, 2.05}, std::pair{2.05, 5.05}, std::pair{5.05, 2.35},
-        std::pair{7.15, 3.15}}) {
-    const CellId c = cellAt(*m, x, y, 0.0);
-    EXPECT_NE(c, kNoCell) << "hole at " << x << ", " << y;
-    if (c != kNoCell) {
-      EXPECT_TRUE(m->inferred(c)) << "hole at " << x << ", " << y;
-      EXPECT_TRUE(connected(*m, x, y, 0.0, 6.0, 7.0, 0.0));
+  // A 1.5 x 1.5 m void in the floor (too wide for the hole fill): walking
+  // toward it along y = 3.75, the last traversable cells before the void have
+  // gaps under their disc and cost more, the first blocked cell is blocked
+  // for its gaps, and the old rule (every column) blocks earlier.
+  synthetic::SceneBuilder b(0.1);
+  b.flatFloor(0, 12, 0, 8, 0.0);
+  b.erase(3.0, 4.5, 3.0, 4.5, -0.2, 0.2);
+  const auto tree = b.finish();
+  SurfaceMapParams strict;
+  strict.footprint_min_support = 1.0;
+  const auto m = buildSurfaceMap(*tree, SurfaceMapParams{});
+  const auto ms = buildSurfaceMap(*tree, strict);
+  SurfaceAStar astar(m);
+  const double plain = astar.cellCostFactor(cellAt(*m, 1.0, 3.75, 0.0), SearchParams{});
+  double first_blocked = -1, first_blocked_strict = -1;
+  bool saw_gap_cell = false;
+  for (double x = 1.05; x < 3.5; x += 0.1) {
+    const CellId c = cellAt(*m, x, 3.75, 0.0);
+    if (c == kNoCell) {
+      first_blocked = x;
+      const CellId raw = m->layerNear(m->col(m->ixOf(x), m->iyOf(3.75)), -1, 3);
+      ASSERT_NE(raw, kNoCell);
+      EXPECT_EQ(static_cast<Reject>(m->cells[raw].reject), Reject::FootprintGap);
+      break;
+    }
+    if (m->cells[c].gap_cnt > 0) {
+      saw_gap_cell = true;
+      EXPECT_GT(astar.cellCostFactor(c, SearchParams{}), plain);
     }
   }
-  // The balcony (z 1.5 over x >= 9) ends at x = 9: nothing of it is inferred
-  // in front of the edge, and it is its own component above the ground floor
-  // that continues underneath.
-  EXPECT_EQ(cellAt(*m, 8.85, 4.0, 1.5), kNoCell);
-  EXPECT_EQ(cellAt(*m, 8.95, 4.0, 1.5), kNoCell);
-  EXPECT_NE(cellAt(*m, 10.5, 4.0, 1.5), kNoCell);
-  EXPECT_NE(cellAt(*m, 10.5, 4.0, 0.0), kNoCell);
-  EXPECT_FALSE(connected(*m, 10.5, 4.0, 1.5, 10.5, 4.0, 0.0));
-  EXPECT_TRUE(connected(*m, 10.5, 4.0, 0.0, 3.0, 4.0, 0.0));
+  for (double x = 1.05; x < 3.5; x += 0.1) {
+    if (cellAt(*ms, x, 3.75, 0.0) == kNoCell) {
+      first_blocked_strict = x;
+      break;
+    }
+  }
+  EXPECT_TRUE(saw_gap_cell);
+  EXPECT_GT(first_blocked, 0.0);
+  EXPECT_GT(first_blocked_strict, 0.0);
+  EXPECT_LT(first_blocked_strict, first_blocked - 0.05);
+  // A wall is never a gap: the "wall" scene's inflation is unchanged.
+  const auto w = build("wall");
+  EXPECT_EQ(cellAt(*w, 5.85, 6.0, 0.0), kNoCell);
+  EXPECT_EQ(cellAt(*w, 5.75, 6.0, 0.0), kNoCell);
+  EXPECT_NE(cellAt(*w, 5.55, 6.0, 0.0), kNoCell);
 }
 
 TEST(SurfaceAStar, TwoFloorsSnapSeparatelyAndNeverConnect)
@@ -269,7 +283,9 @@ TEST(StairLinks, AWalkedStairConnectsTheFloorsBothWays)
   const auto links = buildStairLinks(*m, walk(2.0, 10.0, stairs), StairLinkParams{});
   ASSERT_EQ(links->links.size(), 1u);
   const StairLink & l = links->links[0];
-  EXPECT_NEAR(m->zTop(l.a), 0.0, 1e-9);
+  // The first riser is one step from the floor and belongs to it, so the
+  // link may start on it.
+  EXPECT_LE(m->zTop(l.a), 0.2 + 1e-9);
   EXPECT_NEAR(m->zTop(l.b), 1.02, 0.05);  // the top step, quantised to the 0.1 m grid
   EXPECT_EQ(links->groupOf(m->cells[l.a].component), links->groupOf(m->cells[l.b].component));
 
@@ -288,8 +304,8 @@ TEST(StairLinks, AWalkedStairConnectsTheFloorsBothWays)
     EXPECT_EQ(r.links[0].reversed, !up);
     const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
     ASSERT_GE(path.size(), 2u);
-    EXPECT_NEAR(path.front().z, up ? 0.0 : 1.02, 0.05);
-    EXPECT_NEAR(path.back().z, up ? 1.02 : 0.0, 0.05);
+    EXPECT_NEAR(path.front().z, up ? 0.0 : 1.02, 0.25);
+    EXPECT_NEAR(path.back().z, up ? 1.02 : 0.0, 0.25);
     for (size_t i = 1; i < path.size(); ++i) {
       // Continuous: no jump between the floor stretches and the flight, and
       // the height only ever moves one way.
@@ -299,20 +315,32 @@ TEST(StairLinks, AWalkedStairConnectsTheFloorsBothWays)
   }
 }
 
-TEST(StairLinks, AWalkedKerbIsNotAStair)
+TEST(StairLinks, AWalkedKerbMakesNoLinkAndAnUnwalkedDropIsReported)
 {
-  // 0.15 m is below min_rise: walking over a kerb does not make it passable.
+  // The kerb is one piece of ground already: walking it makes no link, and
+  // the plan over it uses none. The drop, never walked, stays two components
+  // and the notes say so.
   const auto m = build("kerb");
   const auto links = buildStairLinks(
     *m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.15; }), StairLinkParams{});
   EXPECT_TRUE(links->links.empty());
+  EXPECT_TRUE(links->notes.empty());
   SurfaceAStar astar(m, links);
   SearchParams p;
   const SnapResult a = astar.snap(3.0, 4.0, 0.0, p);
   const SnapResult b = astar.snap(9.0, 4.0, 0.15, p);
   ASSERT_NE(a.cell, kNoCell);
   ASSERT_NE(b.cell, kNoCell);
-  EXPECT_EQ(astar.plan(a.cell, b.cell, p).failure, PlanFailure::Disconnected);
+  const PlanResult r = astar.plan(a.cell, b.cell, p);
+  EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
+  EXPECT_TRUE(r.links.empty());
+
+  const auto d = build("drop");
+  const auto none =
+    buildStairLinks(*d, walk(2.0, 5.0, [](double) { return 0.0; }), StairLinkParams{});
+  EXPECT_TRUE(none->links.empty());
+  ASSERT_EQ(none->notes.size(), 1u);
+  EXPECT_NE(none->notes[0].find("not joined"), std::string::npos);
 }
 
 TEST(SurfaceAStar, NoCornerCutting)

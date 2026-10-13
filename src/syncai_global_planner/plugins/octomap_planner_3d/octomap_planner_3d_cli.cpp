@@ -72,7 +72,7 @@ void usage()
     "  --no-stair-links         do not turn the --poses track's flights into stair links\n"
     "  --dump-html <out.html>   self-contained three.js viewer of the surface map and the planned "
     "paths\n"
-    "synthetic scenes: flat wall ramp stairs kerb hole two_floors\n");
+    "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors\n");
 }
 
 struct Pose
@@ -147,6 +147,8 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.loop_radius = v;
   } else if (k == "stair_loop_dz") {
     st.loop_dz = v;
+  } else if (k == "stair_smooth_passes") {
+    st.smooth_passes = static_cast<int>(v);
   } else if (k == "robot_radius") {
     p.robot_radius = v;
   } else if (k == "body_clearance") {
@@ -167,6 +169,10 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     p.hole_fill_passes = static_cast<int>(v);
   } else if (k == "clearance_cost_radius") {
     p.clearance_cost_radius = v;
+  } else if (k == "footprint_min_support") {
+    p.footprint_min_support = v;
+  } else if (k == "gap_cost_weight") {
+    sp.gap_cost_weight = v;
   } else {
     return false;
   }
@@ -358,6 +364,8 @@ char stateLetter(const SurfaceMap & m, uint32_t c, double z, int * dkz = nullptr
       return 'S';
     case Reject::FootprintBlocked:
       return 'F';
+    case Reject::FootprintGap:
+      return 'G';
     case Reject::Slope:
       return 'L';
     case Reject::Residual:
@@ -372,7 +380,8 @@ void inspect(const SurfaceMap & m, double x, double y, double z)
   const int cx = m.ixOf(x), cy = m.iyOf(y), r = 7;
   std::printf(
     "inspect (%.2f, %.2f) at z %.2f -- state | kz offset from z (. traversable, i inferred, "
-    "S step, F footprint, O clearance_occupied, N no_free_above, U clearance_unknown, L slope, "
+    "S step, F footprint, G footprint_gap, O clearance_occupied, N no_free_above, U "
+    "clearance_unknown, L slope, "
     "R residual, blank = no layer within 1 m); y grows upward, x to the right\n",
     x, y, z);
   for (int iy = cy + r; iy >= cy - r; --iy) {
@@ -564,7 +573,7 @@ void debugFill(const octomap::OcTree & tree, const SurfaceMap & m, double x, dou
         // At fill time only the clearance rejects exist; everything else was decided later.
         if (
           rj == Reject::None || rj == Reject::Step || rj == Reject::FootprintBlocked ||
-          rj == Reject::Slope || rj == Reject::Residual) {
+          rj == Reject::FootprintGap || rj == Reject::Slope || rj == Reject::Residual) {
           gathered.emplace_back(m.cells[i].kz, q);
         }
       }
@@ -1194,6 +1203,9 @@ int main(int argc, char ** argv)
         "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points\n", l.kf_a,
         l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
         map->cells[l.b].component, l.length, l.pts.size());
+    }
+    for (const std::string & note : links->notes) {
+      std::printf("  note: %s\n", note.c_str());
     }
   }
   if (!plans.empty()) {

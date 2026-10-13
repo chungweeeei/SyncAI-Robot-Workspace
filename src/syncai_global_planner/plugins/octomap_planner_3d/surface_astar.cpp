@@ -69,6 +69,9 @@ double SurfaceAStar::cellCostFactor(CellId c, const SearchParams & p) const
   if (cell.flags & kInferred) {
     f *= p.inferred_cost_multiplier;
   }
+  if (cell.gap_cnt > 0 && map_->footprint_n > 0) {
+    f *= 1.0 + p.gap_cost_weight * cell.gap_cnt / static_cast<double>(map_->footprint_n);
+  }
   return f;
 }
 
