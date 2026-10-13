@@ -135,7 +135,10 @@
     # column's floor surfaces, each judged with the geometry below -- and a
     # path only ever runs over cells that passed, so it cannot leave the
     # ground, climb a wall, cross a stair riser or a kerb, or jump floors; it
-    # takes ramps. The 2D costmap is used for its frame id only. Offline the
+    # takes ramps. The one way between floors is a stair the robot walked
+    # while mapping: poses.txt next to the tree turns each flight on the track
+    # into a stair link (stair_* below). The 2D costmap is used for its frame
+    # id only. Offline the
     # same code runs as `octomap_planner_3d_cli map/<name>/octomap.bt --stats`
     # (also --check-poses, --dump-image, --plan); that is where these values
     # were set, on dp1f_1012_v2 (2026-10). The README's OctomapPlanner3D
@@ -148,6 +151,10 @@
       # [map] name alone). Empty or missing file = every Octo3D plan fails
       # with map_not_loaded, nothing else is affected.
       octomap_file: ""
+      # The map's track, for the stair links. Empty = poses.txt next to
+      # octomap_file (map/<name>/poses.txt, written by every save_maps with
+      # patches). Missing = a warning and no links: the floors stay apart.
+      poses_file: ""
 
       # The server hands the planner the planar map -> base_link pose, whose
       # z is always 0, so the robot's real height comes from TF to this frame
@@ -214,6 +221,31 @@
       # 0.8 m from the wall, the global costmap's inflation_radius.
       clearance_cost_radius: 0.55
 
+      # ---- stair links (baked in at startup) ----
+      # The geometry rules refuse every stair (step and slope), and relaxing
+      # them map-wide would pass every 0.2 m kerb and drop-off too. Instead a
+      # stretch of the map's own track that leaves one floor and arrives on
+      # another, at least stair_min_rise higher or lower and at most
+      # stair_max_length of track later, becomes a link the search may take
+      # both ways and the path follows keyframe by keyframe (loops from turns
+      # and waits on the landings cut out). Links end only in components of
+      # stair_anchor_min_area or more: a stairwell's landings rarely survive
+      # the rules (dp1f_1012: small, walled, the air above never observed),
+      # so a link spans the whole stairwell, floor to floor. Stairs the robot
+      # never walked stay refused. dp1f_1012 (2026-10-14): one 1F -> 2F link
+      # over the switchback stair (four flights, 5.3 m, 39 m of track after
+      # the loop cut), plus two over a 0.4 m step on 2F.
+      stair_links: true
+      # Above a kerb (0.15) and one stair step, below a flight between landings.
+      stair_min_rise: 0.3
+      # dp1f_1012's stairwell took 32 m of track with the turns on its landings.
+      stair_max_length: 60.0
+      # Track ground (pose z - lidar_height) to a cell's top face.
+      stair_anchor_z_window: 0.3
+      # m2. The two storeys of dp1f_1012 are 1200 and 330, the stairwell's
+      # islands at most ~11.
+      stair_anchor_min_area: 10.0
+
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
       # band, x 1 beyond: the costmap's inflation curve (cost_scaling_factor
@@ -234,6 +266,9 @@
       # is far below the spacing of two floors (~5.7 m here).
       snap_xy_radius: 0.5
       snap_z_window: 1.0
+      # Factor on a stair link's 3D length: a level detour up to this many
+      # times longer wins over the stairs. >= 1 (keeps the heuristic admissible).
+      stair_cost_multiplier: 2.0
 
       # ---- output ----
       # Line-of-sight shortcut of the cell chain (supercover, step-continuous,

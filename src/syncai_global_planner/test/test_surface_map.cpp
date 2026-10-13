@@ -3,7 +3,9 @@
 // quadruped planner has to keep: a ramp is one piece of ground, a stair is
 // not, a kerb is a wall, a wall is inflated by the robot radius, a hole in the
 // observed floor is closed but a floor edge is not extended, two floors never
-// connect, and a goal snaps to the floor the robot is on.
+// connect, and a goal snaps to the floor the robot is on -- except over a
+// stair the robot walked, which a stair link joins in both directions while
+// a walked kerb stays a wall.
 
 #include <gtest/gtest.h>
 
@@ -244,6 +246,73 @@ TEST(SurfaceAStar, RampPathFollowsTheSurface)
     EXPECT_LE(std::fabs(path[i].z - path[i - 1].z), 0.1 + 1e-9);  // one step per 0.1 m at most
   }
   EXPECT_NEAR(zmax, top, 0.15);
+}
+
+// The track a robot leaves walking along y = 4 from x0 to x1 on a scene whose
+// ground height is height(x): one ground point every 0.25 m.
+template <typename H>
+std::vector<Waypoint> walk(double x0, double x1, H height)
+{
+  std::vector<Waypoint> t;
+  for (double x = x0; x <= x1 + 1e-9; x += 0.25) {
+    t.push_back({x, 4.0, height(x)});
+  }
+  return t;
+}
+
+TEST(StairLinks, AWalkedStairConnectsTheFloorsBothWays)
+{
+  const auto m = build("stairs");
+  const auto stairs = [](double x) {
+    return x < 4.0 ? 0.0 : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
+  };
+  const auto links = buildStairLinks(*m, walk(2.0, 10.0, stairs), StairLinkParams{});
+  ASSERT_EQ(links->links.size(), 1u);
+  const StairLink & l = links->links[0];
+  EXPECT_NEAR(m->zTop(l.a), 0.0, 1e-9);
+  EXPECT_NEAR(m->zTop(l.b), 1.02, 0.05);  // the top step, quantised to the 0.1 m grid
+  EXPECT_EQ(links->groupOf(m->cells[l.a].component), links->groupOf(m->cells[l.b].component));
+
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult lo = astar.snap(2.0, 4.0, 0.0, p);
+  ASSERT_NE(lo.cell, kNoCell);
+  // The upper floor is reachable now, so preferring the start's component
+  // no longer refuses it.
+  const SnapResult hi = astar.snap(10.0, 4.0, 1.02, p, m->cells[lo.cell].component);
+  ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+  for (const bool up : {true, false}) {
+    const PlanResult r = up ? astar.plan(lo.cell, hi.cell, p) : astar.plan(hi.cell, lo.cell, p);
+    ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+    ASSERT_EQ(r.links.size(), 1u);
+    EXPECT_EQ(r.links[0].reversed, !up);
+    const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
+    ASSERT_GE(path.size(), 2u);
+    EXPECT_NEAR(path.front().z, up ? 0.0 : 1.02, 0.05);
+    EXPECT_NEAR(path.back().z, up ? 1.02 : 0.0, 0.05);
+    for (size_t i = 1; i < path.size(); ++i) {
+      // Continuous: no jump between the floor stretches and the flight, and
+      // the height only ever moves one way.
+      EXPECT_LE(std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y), 0.1 + 1e-6);
+      EXPECT_GE((up ? 1 : -1) * (path[i].z - path[i - 1].z), -1e-9);
+    }
+  }
+}
+
+TEST(StairLinks, AWalkedKerbIsNotAStair)
+{
+  // 0.15 m is below min_rise: walking over a kerb does not make it passable.
+  const auto m = build("kerb");
+  const auto links = buildStairLinks(
+    *m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.15; }), StairLinkParams{});
+  EXPECT_TRUE(links->links.empty());
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult a = astar.snap(3.0, 4.0, 0.0, p);
+  const SnapResult b = astar.snap(9.0, 4.0, 0.15, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  EXPECT_EQ(astar.plan(a.cell, b.cell, p).failure, PlanFailure::Disconnected);
 }
 
 TEST(SurfaceAStar, NoCornerCutting)

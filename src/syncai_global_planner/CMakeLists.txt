@@ -68,6 +68,7 @@ add_library(${library_name} SHARED
   plugins/octomap_planner_3d/surface_map.cpp
   plugins/octomap_planner_3d/surface_astar.cpp
   plugins/octomap_planner_3d/path_postprocess.cpp
+  plugins/octomap_planner_3d/stair_links.cpp
   plugins/octomap_planner_3d/octomap_planner_3d.cpp
   src/planner_server.cpp
 )

@@ -9,7 +9,9 @@
 // thing to run on a new map: --stats says how much of the map is ground the
 // robot may stand on and why the rest is not, --check-poses says whether the
 // floor the robot actually walked on survived as traversable (the hole-fill's
-// acceptance test), --dump-pcd shows both in any point-cloud viewer.
+// acceptance test), --dump-pcd shows both in any point-cloud viewer. With
+// --poses, the track's flights also become stair links (stair_links.hpp), as
+// in the plugin, so --plan / --plan-poses can go between floors.
 
 #include <octomap/OcTree.h>
 
@@ -67,6 +69,7 @@ void usage()
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
     "  --no-shortcut            keep the raw A* cell chain\n"
+    "  --no-stair-links         do not turn the --poses track's flights into stair links\n"
     "  --dump-html <out.html>   self-contained three.js viewer of the surface map and the planned "
     "paths\n"
     "synthetic scenes: flat wall ramp stairs kerb hole two_floors\n");
@@ -106,7 +109,7 @@ bool readPoses(const std::string & path, std::vector<Pose> & out)
   return true;
 }
 
-bool setParam(SurfaceMapParams & p, SearchParams & sp, const std::string & kv)
+bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, const std::string & kv)
 {
   const auto eq = kv.find('=');
   if (eq == std::string::npos) {
@@ -130,6 +133,20 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, const std::string & kv)
     sp.snap_xy_radius = v;
   } else if (k == "snap_z_window") {
     sp.snap_z_window = v;
+  } else if (k == "stair_cost_multiplier") {
+    sp.stair_cost_multiplier = v;
+  } else if (k == "stair_min_rise") {
+    st.min_rise = v;
+  } else if (k == "stair_max_length") {
+    st.max_length = v;
+  } else if (k == "stair_anchor_z_window") {
+    st.anchor_z_window = v;
+  } else if (k == "stair_anchor_min_area") {
+    st.anchor_min_area = v;
+  } else if (k == "stair_loop_radius") {
+    st.loop_radius = v;
+  } else if (k == "stair_loop_dz") {
+    st.loop_dz = v;
   } else if (k == "robot_radius") {
     p.robot_radius = v;
   } else if (k == "body_clearance") {
@@ -672,8 +689,8 @@ int runPlan(
     m.cellXY(r.cells[i], bx, by);
     raw_len += std::hypot(bx - ax, by - ay);
   }
-  std::vector<CellId> chain = shortcut ? shortcutPath(m, r.cells) : r.cells;
-  const auto path = resamplePath(m, chain, 0.1);
+  size_t vertices = 0;
+  const auto path = buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices);
   if (planned) {
     PlannedPath pp;
     pp.start = Waypoint{sxc, syc, m.zTop(s.cell)};
@@ -700,9 +717,15 @@ int runPlan(
   std::printf(
     "plan: ok -- %zu cells, cost %.2f, %zu iterations, search %.3f s, total %.3f s; "
     "shortcut to %zu vertices; %zu poses, %.2f m (raw %.2f m), z %.2f..%.2f, min clearance %.2f "
-    "m\n",
-    raw_cells, r.cost, r.iterations, r.search_s, total, chain.size(), path.size(), len, raw_len,
-    zmin, zmax, min_clear);
+    "m, %zu stair links\n",
+    raw_cells, r.cost, r.iterations, r.search_s, total, vertices, path.size(), len, raw_len, zmin,
+    zmax, min_clear, r.links.size());
+  for (const LinkUse & u : r.links) {
+    const StairLink & l = astar.links()->links[u.link];
+    std::printf(
+      "plan:   stairs kf %zu %s %zu: z %.2f -> %.2f, %.1f m\n", l.kf_a, u.reversed ? "<-" : "->",
+      l.kf_b, m.zTop(u.reversed ? l.b : l.a), m.zTop(u.reversed ? l.a : l.b), l.length);
+  }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
     out << "x,y,z\n";
@@ -967,6 +990,8 @@ int main(int argc, char ** argv)
   double lidar_height = 0.481;
   SurfaceMapParams params;
   SearchParams search;
+  StairLinkParams stair_params;
+  bool stair_links = true;
   struct PlanReq
   {
     bool by_pose;
@@ -990,7 +1015,7 @@ int main(int argc, char ** argv)
       scene = next("--synthetic");
     } else if (a == "--param") {
       const std::string kv = next("--param");
-      if (!setParam(params, search, kv)) {
+      if (!setParam(params, search, stair_params, kv)) {
         std::fprintf(stderr, "unknown parameter '%s'\n", kv.c_str());
         return 2;
       }
@@ -1035,6 +1060,8 @@ int main(int argc, char ** argv)
       out_path = next("--out");
     } else if (a == "--no-shortcut") {
       shortcut = false;
+    } else if (a == "--no-stair-links") {
+      stair_links = false;
     } else if (a == "--inspect-kf") {
       inspect_kf.push_back(std::strtoul(next("--inspect-kf").c_str(), nullptr, 10));
     } else if (a == "--image-region") {
@@ -1153,8 +1180,24 @@ int main(int argc, char ** argv)
     std::printf("keyframe %zu:\n", i);
     inspect(*map, poses[i].x, poses[i].y, poses[i].z - lidar_height);
   }
+  std::shared_ptr<const StairLinks> links;
+  if (stair_links && !poses.empty()) {
+    std::vector<Waypoint> track;
+    track.reserve(poses.size());
+    for (const Pose & p : poses) {
+      track.push_back({p.x, p.y, p.z - lidar_height});
+    }
+    links = buildStairLinks(*map, track, stair_params);
+    std::printf("stair links: %zu (min_rise %.2f m)\n", links->links.size(), stair_params.min_rise);
+    for (const StairLink & l : links->links) {
+      std::printf(
+        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points\n", l.kf_a,
+        l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+        map->cells[l.b].component, l.length, l.pts.size());
+    }
+  }
   if (!plans.empty()) {
-    SurfaceAStar astar(map);
+    SurfaceAStar astar(map, links);
     for (const PlanReq & r : plans) {
       double v[6];
       std::copy(r.v, r.v + 6, v);

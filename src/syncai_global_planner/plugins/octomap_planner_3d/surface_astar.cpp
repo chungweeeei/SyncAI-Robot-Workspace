@@ -41,13 +41,22 @@ const char * planFailureName(PlanFailure f)
   }
 }
 
-SurfaceAStar::SurfaceAStar(std::shared_ptr<const SurfaceMap> map)
+SurfaceAStar::SurfaceAStar(
+  std::shared_ptr<const SurfaceMap> map, std::shared_ptr<const StairLinks> links)
 : map_(std::move(map)),
+  links_(std::move(links)),
   g_(map_->cells.size(), 0.f),
   parent_(map_->cells.size(), kNoCell),
+  parent_link_(map_->cells.size(), -1),
   open_stamp_(map_->cells.size(), 0),
   closed_stamp_(map_->cells.size(), 0)
 {
+}
+
+uint32_t SurfaceAStar::reach(CellId c) const
+{
+  const uint32_t comp = map_->cells[c].component;
+  return links_ ? links_->groupOf(comp) : comp;
 }
 
 double SurfaceAStar::cellCostFactor(CellId c, const SearchParams & p) const
@@ -79,6 +88,9 @@ SnapResult SurfaceAStar::snap(
     return out;
   }
   const int r = static_cast<int>(std::ceil(p.snap_xy_radius / m.res));
+  const uint32_t want = links_ && prefer_component != kNoComponent
+                          ? links_->groupOf(prefer_component)
+                          : prefer_component;
   CellId best = kNoCell, best_other = kNoCell;
   double best_xy = 0, best_dz = 0, other_xy = 0;
   for (int dy = -r; dy <= r; ++dy) {
@@ -100,7 +112,7 @@ SnapResult SurfaceAStar::snap(
         if (std::fabs(dz) > p.snap_z_window) {
           continue;
         }
-        if (prefer_component != kNoComponent && m.cells[i].component != prefer_component) {
+        if (prefer_component != kNoComponent && reach(i) != want) {
           if (best_other == kNoCell || xy < other_xy) {
             best_other = i;
             other_xy = xy;
@@ -158,12 +170,13 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
     r.cells.push_back(start);
     return r;
   }
-  if (m.cells[start].component != m.cells[goal].component) {
+  if (reach(start) != reach(goal)) {
     r.failure = PlanFailure::Disconnected;
     char buf[160];
     std::snprintf(
       buf, sizeof buf,
-      "start (component %u, z %.2f) and goal (component %u, z %.2f) are on disconnected ground",
+      "start (component %u, z %.2f) and goal (component %u, z %.2f) are on disconnected ground "
+      "(no stair link joins them)",
       m.cells[start].component, m.zTop(start), m.cells[goal].component, m.zTop(goal));
     r.detail = buf;
     return r;
@@ -190,6 +203,8 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
   std::priority_queue<Item, std::vector<Item>, std::greater<Item>> open;
   g_[start] = 0.f;
   parent_[start] = kNoCell;
+  parent_link_[start] = -1;
+  const double stair_factor = std::max(1.0, p.stair_cost_multiplier);
   open_stamp_[start] = gen;
   open.push({static_cast<float>(heuristic(start)), start});
 
@@ -202,10 +217,20 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
     closed_stamp_[c] = gen;
     ++r.iterations;
     if (c == goal) {
+      std::vector<int32_t> via;
       for (CellId k = goal; k != kNoCell; k = parent_[k]) {
         r.cells.push_back(k);
+        via.push_back(parent_link_[k]);
       }
       std::reverse(r.cells.begin(), r.cells.end());
+      std::reverse(via.begin(), via.end());
+      // via[i] is the link that led INTO cells[i], i.e. the move i-1 -> i.
+      for (size_t i = 1; i < r.cells.size(); ++i) {
+        if (via[i] >= 0) {
+          const StairLink & l = links_->links[static_cast<size_t>(via[i])];
+          r.links.push_back({i - 1, static_cast<uint32_t>(via[i]), l.a != r.cells[i - 1]});
+        }
+      }
       r.cost = g_[goal];
       r.search_s = std::chrono::duration<double>(Clock::now() - t0).count();
       return r;
@@ -242,9 +267,30 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
         open_stamp_[n] = gen;
         g_[n] = ng;
         parent_[n] = c;
+        parent_link_[n] = -1;
         open.push({ng + static_cast<float>(heuristic(n)), n});
       }
     });
+    if (links_) {
+      const auto it = links_->at.find(c);
+      if (it != links_->at.end()) {
+        for (const uint32_t li : it->second) {
+          const StairLink & l = links_->links[li];
+          const CellId n = l.a == c ? l.b : l.a;
+          if (closed_stamp_[n] == gen) {
+            continue;
+          }
+          const float ng = g_[c] + static_cast<float>(l.length * stair_factor);
+          if (open_stamp_[n] != gen || ng < g_[n]) {
+            open_stamp_[n] = gen;
+            g_[n] = ng;
+            parent_[n] = c;
+            parent_link_[n] = static_cast<int32_t>(li);
+            open.push({ng + static_cast<float>(heuristic(n)), n});
+          }
+        }
+      }
+    }
   }
   if (r.failure == PlanFailure::None) {
     r.failure = PlanFailure::NoPath;

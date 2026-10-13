@@ -287,7 +287,8 @@ legs can take. Here the tree is reduced, once at startup, to a **multi-layer
 robot's geometry — and the search only ever moves between cells that passed.
 So a path cannot leave the ground, climb a wall, cross a stair riser, a kerb
 or a drop-off, or jump between floors; it takes ramps, which are runs of
-one-cell steps on a plane under the slope limit.
+one-cell steps on a plane under the slope limit. The one way between floors
+is a stair the robot walked while mapping (see **Stairs** below).
 
 **The build** (`surface_map.cpp`; ~1 s and 355 MB peak for dp1f_1012_v2's
 7.3 M nodes, ~30 MB kept once the tree is freed; in a background thread so
@@ -361,6 +362,28 @@ snap says what *is* there — `goal_unavailable: … surfaces in that column:
 z=[-0.40 (untraversable: footprint_blocked), 4.80 (traversable, component
 2)]` — or that the nearest surface is on another floor.
 
+**Stairs** (`stair_links.cpp`, 2026-10). The geometry rules refuse every
+stair on purpose — a riser is more than one step, a flight is steeper than
+20° — and relaxing them map-wide would pass every 0.2 m kerb and drop-off
+too. So stairs come from the map's own track instead: `poses.txt` (next to
+`octomap.bt`, or `poses_file`) is where the robot stood while mapping, and a
+stretch of it that leaves one large component (≥ `stair_anchor_min_area`,
+10 m²) and arrives in another at least `stair_min_rise` (0.3 m) higher or
+lower, within `stair_max_length` (60 m) of track, is a stair the legs have
+taken. It becomes a **stair link** between the traversable cells at its ends,
+carrying the keyframes' ground points with every loop cut out (turns and
+waits on a landing). The search may take a link in either direction at its 3D
+length × `stair_cost_multiplier` (2.0; ≥ 1 keeps the heuristic admissible),
+components joined by links count as one for the snap and the
+disconnected-check, and the path follows the link's points through the
+flight; the line-of-sight shortcut is applied to the floor stretches only.
+Only large components end a link because a stairwell's own floor rarely
+survives the rules: on dp1f_1012 the three landings of the switchback stair
+came out as a few square metres of islands or not at all (small, walled, the
+air above them never observed), so the link runs floor to floor over the
+whole well. Stairs the robot never walked stay refused; a kerb walked over
+(< 0.3 m) makes no link. `stair_links: false` restores separate floors.
+
 **Output** (`path_postprocess.cpp`): a line-of-sight shortcut checked with a
 supercover traversal (every cell the segment touches; Bresenham skips the
 corner cell a wall foot sits in), step-continuous along the segment, and
@@ -377,9 +400,17 @@ on a traversable cell, 90 % within one cell of one, 99.5 % on *a* surface.
 What the rest is, by inspection: the robot's own feet (0.3 m clusters of
 occupied voxels 0.2–0.3 m above the floor exactly at keyframes — at ~0.54 m
 from the lidar they survive `clean_map`'s 0.5 m `min_range`; the fix is in
-that repo, the planner routes around them), the 1F–2F spiral staircase (an
-87 m, 5.8 m climb in a 4 × 3 m well; rejected by design, so the floors are
-separate components), and a short ~30° ramp on 2F.
+that repo, the planner routes around them), the 1F–2F stairwell (a
+switchback stair, four flights and three landings, 5.3 m up in a 4 × 3 m
+well; refused by the geometry rules, so the floors are separate components
+and only a stair link joins them), and a short ~30° ramp on 2F.
+
+**Stairs on dp1f_1012** (2026-10-14, the map after `syncai_mapping`'s
+local-floor and pool fixes): 3 stair links — kf 1677 → 1913 from 1F (z −0.10)
+to 2F (5.20), 39 m and 87 points after the loop cut, and two across a 0.4 m
+step on 2F. 1F → 2F plans (kf 0 → 2000: 85.6 m; kf 22 → 1913: 42 m, of
+which the link is 39) take 15–30 ms and climb the four flights and three
+landings in order; 2F → 1F takes the same link backwards.
 
 **The CLI.** `ros2 run syncai_global_planner octomap_planner_3d_cli` runs the
 same core without the stack, and is the first thing to run on a new map:
@@ -393,6 +424,7 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --dump-pcd out.pcd                                          # x y z label reject unknown clearance component
    … --plan sx sy sz gx gy gz --out path.csv / --plan-poses i j  # z are height hints
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
+   … --poses … --plan-poses 0 2000 [--no-stair-links]           # with --poses, the track's stairs are links
    … --synthetic ramp|stairs|kerb|wall|hole|two_floors           # the test scenes
    … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
 ```
@@ -420,8 +452,14 @@ headers include nothing of ROS on purpose.
 **Known limits** (prototype):
 
 - `is_path_valid` and the republish trim run on the 2D costmap: fine on the
-  ground floor, meaningless for a path upstairs (checked against the
-  ground-floor gridmap).
+  ground floor, meaningless for a path upstairs or on the stairs (checked
+  against the ground-floor gridmap).
+- A route over a stair link is only a route: nothing here switches the gait
+  controller into a stair mode, and the 2D controllers follow its xy. Climbing
+  is the driver's and the gait controller's job, untested on the robot.
+- A stair link is the mapping run's track, drift and all, and it exists only
+  where the robot walked; a stair blocked since (or walked only one way by a
+  robot that cannot descend) is still linked both ways.
 - A 2D backend's z = 0 goal is only right on the ground floor; upstairs it
   needs a real z or `goal_z_mode: start`.
 - `map_server/load_map` does not reload `octomap.bt`; a map switch needs a
@@ -534,6 +572,7 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | Parameter | Default | Notes |
 |---|---|---|
 | `octomap_file` | `""` (launch: `map/<name>/octomap.bt`) | Derived by the launch file from the directory of `[map] pcd`; empty or missing → every `Octo3D` plan fails with `map_not_loaded`, nothing else is affected |
+| `poses_file` | `""` (= `poses.txt` next to `octomap_file`) | The map's track, for the stair links; missing → a warning and no links. Build-time |
 | `body_frame`, `lidar_height` | `pointlio_body` (launch: `<robot_id>/pointlio_body`), `0.481` | The frame the robot's real height is read from, and the sensor's height above the ground (`map_clean.recipe.json`'s `lidar_height`). Dynamic |
 | `goal_z_mode` | `request` | `request`: the goal's own z picks the floor; `start`: the robot's floor. Dynamic |
 | `robot_radius`, `body_clearance` | `0.25`, `0.6` | Footprint disc (= the costmap's inscribed radius) and the band above a surface the body needs. Build-time |
@@ -541,6 +580,8 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | `max_unknown_clearance_cells`, `min_known_free_above` | `-1` (all), `1` | Unknown tolerated in the band; observed-free voxels required right above a surface. Build-time |
 | `hole_fill_radius`, `hole_fill_min_support`, `hole_fill_passes` | `0.3`, `0.5`, `2` | See the build, step 3. Build-time |
 | `clearance_cost_radius` | `0.55` | Reach of the clearance field from the traversable boundary. Build-time |
+| `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m² | Stair links from the track (see **Stairs**). Build-time |
+| `stair_cost_multiplier` | `2.0` | Factor on a link's 3D length (≥ 1). Dynamic |
 | `clearance_cost_weight`, `clearance_cost_scaling` | `1.0`, `1.5` | Edge cost multiplier inside the band. Dynamic |
 | `inferred_cost_multiplier` | `1.2` | Prefer observed floor. Dynamic |
 | `heuristic_weight`, `max_iterations`, `max_planning_time` | `1.0`, `2000000`, `2.0` s | Weighted A* and the guards. Dynamic |

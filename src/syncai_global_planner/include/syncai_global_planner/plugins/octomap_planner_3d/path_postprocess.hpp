@@ -14,19 +14,19 @@
 // boundary than the sub-path it replaces, so smoothing never pulls the path
 // into the clearance band (the same rule as Smac's "never above cost 252").
 //
+// A route that takes a stair link (stair_links.hpp) is assembled by
+// buildPath: the shortcut and the floor-height lookup apply to the floor
+// stretches only, and the flight follows the keyframes the robot walked.
+//
 // ROS-free (see surface_map.hpp).
 
 #include <vector>
 
+#include "syncai_global_planner/plugins/octomap_planner_3d/stair_links.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 
 namespace syncai_global_planner::octomap_planner_3d
 {
-
-struct Waypoint
-{
-  double x, y, z;
-};
 
 // True if the straight segment between the centres of a and b runs over
 // traversable cells only (step-continuous from a) with clearance_d >=
@@ -47,6 +47,16 @@ std::vector<CellId> shortcutPath(const SurfaceMap & m, const std::vector<CellId>
 // not), else the interpolation.
 std::vector<Waypoint> resamplePath(
   const SurfaceMap & m, const std::vector<CellId> & cells, double spacing);
+
+// The whole route of a plan: the cell chain split at its stair links, each
+// floor stretch shortcut (when asked) and resampled on its own -- a shortcut
+// never spans a link -- and each link's recorded ground points, oriented the
+// way it is taken and resampled at the same spacing, spliced in between.
+// With vertices set, the number of vertices before resampling (shortcut
+// vertices plus link points).
+std::vector<Waypoint> buildPath(
+  const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
+  const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices = nullptr);
 
 }  // namespace syncai_global_planner::octomap_planner_3d
 
