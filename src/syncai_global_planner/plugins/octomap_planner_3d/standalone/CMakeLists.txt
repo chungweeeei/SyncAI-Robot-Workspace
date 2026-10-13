@@ -27,6 +27,7 @@ add_executable(octomap_planner_3d_cli
   ${core_dir}/surface_map.cpp
   ${core_dir}/surface_astar.cpp
   ${core_dir}/path_postprocess.cpp
+  ${core_dir}/stair_links.cpp
 )
 target_include_directories(octomap_planner_3d_cli PRIVATE ${include_dir})
 target_include_directories(octomap_planner_3d_cli SYSTEM PRIVATE ${OCTOMAP_INCLUDE_DIRS})

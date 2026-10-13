@@ -15,12 +15,19 @@
 // at least its 3D length, so the 3D Euclidean distance to the goal is an
 // admissible heuristic (heuristic_weight 1 = optimal paths).
 //
+// With StairLinks (stair_links.hpp) the graph also has the links between the
+// ends of each stair the robot walked while mapping: a link is one move whose
+// cost is its 3D length times stair_cost_multiplier (>= 1, so the heuristic
+// stays admissible), and two cells are reachable when their components are in
+// the same linked group rather than the same component.
+//
 // ROS-free (see surface_map.hpp).
 
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "syncai_global_planner/plugins/octomap_planner_3d/stair_links.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 
 namespace syncai_global_planner::octomap_planner_3d
@@ -51,6 +58,10 @@ struct SearchParams
   // height (0.48 m) and is far below the spacing of two floors.
   double snap_xy_radius = 0.5;
   double snap_z_window = 1.0;
+  // Factor on a stair link's length: a flight is slower and riskier than
+  // the same length of floor, so a level detour up to this many times longer
+  // wins. Clamped to >= 1.
+  double stair_cost_multiplier = 2.0;
 };
 
 enum class PlanFailure {
@@ -83,21 +94,26 @@ struct PlanResult
   std::string detail;
   size_t iterations = 0;
   double search_s = 0.0;
-  double cost = 0.0;          // g of the goal
-  std::vector<CellId> cells;  // start .. goal inclusive, adjacent under the move rule
+  double cost = 0.0;           // g of the goal
+  std::vector<CellId> cells;   // start .. goal inclusive, adjacent under the move rule or a link
+  std::vector<LinkUse> links;  // the moves of cells that are stair links, in order
 };
 
 class SurfaceAStar
 {
 public:
-  explicit SurfaceAStar(std::shared_ptr<const SurfaceMap> map);
+  explicit SurfaceAStar(
+    std::shared_ptr<const SurfaceMap> map, std::shared_ptr<const StairLinks> links = nullptr);
 
   const SurfaceMap & map() const { return *map_; }
+  const StairLinks * links() const { return links_.get(); }
 
-  // With prefer_component set, only cells of that component qualify (a goal
-  // is snapped to the floor the robot is on, not to the floor below a
-  // balcony edge); the detail then names the nearest cell that was refused
-  // for being elsewhere, so the message says "wrong floor" and not "nothing".
+  // With prefer_component set, only cells reachable from that component
+  // qualify -- the same component, or with stair links the same linked group
+  // (a goal is snapped to the floor the robot can get to, not to the floor
+  // below a balcony edge); the detail then names the nearest cell that was
+  // refused for being elsewhere, so the message says "wrong floor" and not
+  // "nothing".
   SnapResult snap(
     double x, double y, double z_hint, const SearchParams & p,
     uint32_t prefer_component = kNoComponent) const;
@@ -108,11 +124,16 @@ public:
   double cellCostFactor(CellId c, const SearchParams & p) const;
 
 private:
+  // The linked group of a cell's component (the component itself without links).
+  uint32_t reach(CellId c) const;
+
   std::shared_ptr<const SurfaceMap> map_;
+  std::shared_ptr<const StairLinks> links_;
   // Scratch, sized to the map once; a generation stamp instead of a memset
   // per plan.
   std::vector<float> g_;
   std::vector<CellId> parent_;
+  std::vector<int32_t> parent_link_;  // the link used to reach a cell, -1 for a move
   std::vector<uint32_t> open_stamp_, closed_stamp_;
   uint32_t gen_ = 0;
 };

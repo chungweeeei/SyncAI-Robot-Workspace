@@ -35,7 +35,11 @@ namespace syncai_global_planner
  * result (path_postprocess.hpp) and returns it in the costmap's global frame
  * with z = the floor's top face. The path therefore never leaves the ground,
  * climbs a wall, crosses a stair riser or a kerb, or jumps between floors;
- * it takes ramps.
+ * it takes ramps. The one way between floors is a stair the robot walked
+ * while the map was made: the map's poses.txt is read next to the tree and
+ * every flight on that track becomes a stair link (stair_links.hpp), which
+ * the search may take in either direction and the path follows point by
+ * point.
  *
  * What it takes from the planner server and what it ignores: the 2D costmap
  * is used only for its global frame id. The start pose the server passes
@@ -83,15 +87,17 @@ protected:
   std::string global_frame_, name_;
 
   // Parameters (see planner_server_params.yaml for the reasoning).
-  std::string octomap_file_, body_frame_, goal_z_mode_;
+  std::string octomap_file_, poses_file_, body_frame_, goal_z_mode_;
   double lidar_height_{0.481}, interpolation_resolution_{0.1}, path_z_offset_{0.0};
-  bool shortcut_{true}, publish_raw_plan_{false};
+  bool shortcut_{true}, publish_raw_plan_{false}, stair_links_{true};
   octomap_planner_3d::SurfaceMapParams map_params_;
+  octomap_planner_3d::StairLinkParams stair_params_;
   octomap_planner_3d::SearchParams search_params_;
 
   // One lock around createPlan, the parameter callback and the map swap.
   std::mutex mutex_;
   std::shared_ptr<const octomap_planner_3d::SurfaceMap> map_;
+  std::shared_ptr<const octomap_planner_3d::StairLinks> links_;
   std::unique_ptr<octomap_planner_3d::SurfaceAStar> astar_;
   std::thread build_thread_;
   std::atomic<bool> building_{false};

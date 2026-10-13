@@ -53,6 +53,12 @@ using CellId = uint32_t;
 constexpr CellId kNoCell = ~CellId(0);
 constexpr uint32_t kNoComponent = ~uint32_t(0);
 
+// A point of a path or of a stair link: x, y and the ground's height.
+struct Waypoint
+{
+  double x, y, z;
+};
+
 // Geometry the map is judged with. All of these bake into the map at build
 // time (a change needs a rebuild -- "requires restart" in the ROS plugin).
 struct SurfaceMapParams

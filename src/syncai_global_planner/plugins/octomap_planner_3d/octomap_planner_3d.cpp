@@ -52,6 +52,7 @@ void OctomapPlanner3D::initialize(
     declare_parameter_if_not_declared(node, name + "." + key, def);
   };
   dp("octomap_file", rclcpp::ParameterValue(std::string("")));
+  dp("poses_file", rclcpp::ParameterValue(std::string("")));
   dp("body_frame", rclcpp::ParameterValue(std::string("pointlio_body")));
   dp("lidar_height", rclcpp::ParameterValue(lidar_height_));
   dp("goal_z_mode", rclcpp::ParameterValue(std::string("request")));
@@ -71,6 +72,12 @@ void OctomapPlanner3D::initialize(
   dp("hole_fill_min_support", rclcpp::ParameterValue(map_params_.hole_fill_min_support));
   dp("hole_fill_passes", rclcpp::ParameterValue(map_params_.hole_fill_passes));
   dp("clearance_cost_radius", rclcpp::ParameterValue(map_params_.clearance_cost_radius));
+  // Stair links (build time).
+  dp("stair_links", rclcpp::ParameterValue(stair_links_));
+  dp("stair_min_rise", rclcpp::ParameterValue(stair_params_.min_rise));
+  dp("stair_max_length", rclcpp::ParameterValue(stair_params_.max_length));
+  dp("stair_anchor_z_window", rclcpp::ParameterValue(stair_params_.anchor_z_window));
+  dp("stair_anchor_min_area", rclcpp::ParameterValue(stair_params_.anchor_min_area));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -80,8 +87,10 @@ void OctomapPlanner3D::initialize(
   dp("max_planning_time", rclcpp::ParameterValue(search_params_.max_planning_time));
   dp("snap_xy_radius", rclcpp::ParameterValue(search_params_.snap_xy_radius));
   dp("snap_z_window", rclcpp::ParameterValue(search_params_.snap_z_window));
+  dp("stair_cost_multiplier", rclcpp::ParameterValue(search_params_.stair_cost_multiplier));
 
   node->get_parameter(name + ".octomap_file", octomap_file_);
+  node->get_parameter(name + ".poses_file", poses_file_);
   node->get_parameter(name + ".body_frame", body_frame_);
   node->get_parameter(name + ".lidar_height", lidar_height_);
   node->get_parameter(name + ".goal_z_mode", goal_z_mode_);
@@ -100,6 +109,11 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".hole_fill_min_support", map_params_.hole_fill_min_support);
   node->get_parameter(name + ".hole_fill_passes", map_params_.hole_fill_passes);
   node->get_parameter(name + ".clearance_cost_radius", map_params_.clearance_cost_radius);
+  node->get_parameter(name + ".stair_links", stair_links_);
+  node->get_parameter(name + ".stair_min_rise", stair_params_.min_rise);
+  node->get_parameter(name + ".stair_max_length", stair_params_.max_length);
+  node->get_parameter(name + ".stair_anchor_z_window", stair_params_.anchor_z_window);
+  node->get_parameter(name + ".stair_anchor_min_area", stair_params_.anchor_min_area);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -110,6 +124,15 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".max_planning_time", search_params_.max_planning_time);
   node->get_parameter(name + ".snap_xy_radius", search_params_.snap_xy_radius);
   node->get_parameter(name + ".snap_z_window", search_params_.snap_z_window);
+  node->get_parameter(name + ".stair_cost_multiplier", search_params_.stair_cost_multiplier);
+  // poses.txt sits next to octomap.bt in map/<name>/, so it is derived the
+  // way the launch derives the tree from [map] pcd.
+  if (poses_file_.empty() && !octomap_file_.empty()) {
+    const auto slash = octomap_file_.find_last_of('/');
+    poses_file_ =
+      (slash == std::string::npos ? std::string() : octomap_file_.substr(0, slash + 1)) +
+      "poses.txt";
+  }
 
   if (goal_z_mode_ != "request" && goal_z_mode_ != "start") {
     RCLCPP_WARN(
@@ -197,6 +220,29 @@ void OctomapPlanner3D::buildMap()
     rej(o3d::Reject::ClearanceOccupied), rej(o3d::Reject::NoFreeAbove),
     rej(o3d::Reject::ClearanceUnknown), rej(o3d::Reject::Step), rej(o3d::Reject::FootprintBlocked),
     rej(o3d::Reject::Slope), rej(o3d::Reject::Residual), stats.t_total);
+  std::shared_ptr<const o3d::StairLinks> links;
+  if (stair_links_) {
+    std::vector<o3d::Waypoint> track;
+    std::string track_error;
+    if (o3d::readTrack(poses_file_, lidar_height_, track, track_error)) {
+      links = o3d::buildStairLinks(*map, track, stair_params_);
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s] %zu stair links from %zu keyframes of %s (min_rise %.2f m)",
+        __func__, links->links.size(), track.size(), poses_file_.c_str(), stair_params_.min_rise);
+      for (const auto & l : links->links) {
+        RCLCPP_INFO(
+          logger_,
+          "[OctomapPlanner3D][%s]   stair link kf %zu -> %zu: z %.2f -> %.2f, %.1f m, %zu points",
+          __func__, l.kf_a, l.kf_b, map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size());
+      }
+    } else {
+      RCLCPP_WARN(
+        logger_,
+        "[OctomapPlanner3D][%s] %s: no stair links, so the floors of this map do not connect",
+        __func__, track_error.c_str());
+    }
+  }
   if (stats.traversable == 0) {
     RCLCPP_WARN(
       logger_,
@@ -206,7 +252,8 @@ void OctomapPlanner3D::buildMap()
   }
   std::lock_guard<std::mutex> lock(mutex_);
   map_ = map;
-  astar_ = std::make_unique<o3d::SurfaceAStar>(map_);
+  links_ = links;
+  astar_ = std::make_unique<o3d::SurfaceAStar>(map_, links_);
   building_ = false;
 }
 
@@ -310,11 +357,12 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   if (raw_plan_pub_) {
     nav_msgs::msg::Path raw;
     raw.header = path.header;
-    toPoses(o3d::resamplePath(*map_, r.cells, map_->res), raw);
+    toPoses(o3d::buildPath(*map_, links_.get(), r.cells, r.links, false, map_->res), raw);
     raw_plan_pub_->publish(raw);
   }
-  const std::vector<o3d::CellId> chain = shortcut_ ? o3d::shortcutPath(*map_, r.cells) : r.cells;
-  const auto wps = o3d::resamplePath(*map_, chain, interpolation_resolution_);
+  size_t vertices = 0;
+  const auto wps = o3d::buildPath(
+    *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &vertices);
   toPoses(wps, path);
 
   double length = 0.0, zmin = wps.empty() ? 0.0 : wps.front().z, zmax = zmin;
@@ -327,9 +375,10 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     logger_,
     "[OctomapPlanner3D][createPlan] %zu poses, %.1f m, z %.2f..%.2f (start snapped %.2f m, goal "
     "%.2f m), "
-    "%zu cells -> %zu vertices, %zu iterations, search %.3f s, total %.3f s",
-    path.poses.size(), length, zmin, zmax, s.xy_dist, g.xy_dist, r.cells.size(), chain.size(),
-    r.iterations, r.search_s, std::chrono::duration<double>(Clock::now() - t0).count());
+    "%zu cells -> %zu vertices, %zu stair links, %zu iterations, search %.3f s, total %.3f s",
+    path.poses.size(), length, zmin, zmax, s.xy_dist, g.xy_dist, r.cells.size(), vertices,
+    r.links.size(), r.iterations, r.search_s,
+    std::chrono::duration<double>(Clock::now() - t0).count());
   return path;
 }
 
@@ -363,6 +412,8 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         search_params_.snap_xy_radius = v;
       } else if (key == "snap_z_window") {
         search_params_.snap_z_window = v;
+      } else if (key == "stair_cost_multiplier") {
+        search_params_.stair_cost_multiplier = v;
       } else if (key == "interpolation_resolution") {
         interpolation_resolution_ = v;
       } else if (key == "path_z_offset") {

@@ -187,4 +187,90 @@ std::vector<Waypoint> resamplePath(
   return out;
 }
 
+namespace
+{
+
+// Points every `spacing` metres (xy) along a polyline, both ends included,
+// z interpolated: the recorded ground of a flight is already the height the
+// path should have, with nothing to snap it to.
+void resamplePolyline(
+  const std::vector<Waypoint> & pts, double spacing, std::vector<Waypoint> & out)
+{
+  if (pts.empty()) {
+    return;
+  }
+  out.push_back(pts.front());
+  double carry = 0.0;
+  for (size_t i = 1; i < pts.size(); ++i) {
+    const Waypoint & p = pts[i - 1];
+    const Waypoint & q = pts[i];
+    const double seg = std::hypot(q.x - p.x, q.y - p.y);
+    double s = spacing - carry;
+    while (s < seg - 1e-9) {
+      const double t = s / seg;
+      out.push_back({p.x + t * (q.x - p.x), p.y + t * (q.y - p.y), p.z + t * (q.z - p.z)});
+      s += spacing;
+    }
+    carry = seg - (s - spacing);
+  }
+  const Waypoint & last = out.back();
+  const Waypoint & end = pts.back();
+  if (std::hypot(last.x - end.x, last.y - end.y) > 1e-9 || std::fabs(last.z - end.z) > 1e-9) {
+    out.push_back(end);
+  }
+}
+
+// Appends b to a, dropping b's first point when it repeats a's last.
+void append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b)
+{
+  size_t from = 0;
+  if (!a.empty() && !b.empty()) {
+    const Waypoint & p = a.back();
+    const Waypoint & q = b.front();
+    if (std::hypot(p.x - q.x, p.y - q.y) < 1e-9 && std::fabs(p.z - q.z) < 1e-9) {
+      from = 1;
+    }
+  }
+  a.insert(a.end(), b.begin() + static_cast<std::ptrdiff_t>(from), b.end());
+}
+
+}  // namespace
+
+std::vector<Waypoint> buildPath(
+  const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
+  const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices)
+{
+  std::vector<Waypoint> out;
+  size_t nvert = 0;
+  spacing = std::max(spacing, m.res * 0.25);
+  size_t from = 0;  // first cell of the current floor stretch
+  auto floorStretch = [&](size_t to) {
+    const std::vector<CellId> seg(
+      cells.begin() + static_cast<std::ptrdiff_t>(from),
+      cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
+    const std::vector<CellId> chain = shortcut ? shortcutPath(m, seg) : seg;
+    nvert += chain.size();
+    append(out, resamplePath(m, chain, spacing));
+  };
+  for (const LinkUse & u : uses) {
+    floorStretch(u.index);
+    std::vector<Waypoint> pts = links->links[u.link].pts;
+    if (u.reversed) {
+      std::reverse(pts.begin(), pts.end());
+    }
+    nvert += pts.size();
+    std::vector<Waypoint> flight;
+    resamplePolyline(pts, spacing, flight);
+    append(out, flight);
+    from = u.index + 1;
+  }
+  if (!cells.empty()) {
+    floorStretch(cells.size() - 1);
+  }
+  if (vertices) {
+    *vertices = nvert;
+  }
+  return out;
+}
+
 }  // namespace syncai_global_planner::octomap_planner_3d
