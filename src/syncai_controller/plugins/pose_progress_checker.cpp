@@ -22,7 +22,11 @@
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "pluginlib/class_list_macros.hpp"
+// tf2_geometry_msgs supplies the inline tf2::fromMsg(Quaternion) that getYaw()
+// needs; without it a Release build leaves the symbol undefined in the plugin
+// .so. See simple_progress_checker.cpp.
 #include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
