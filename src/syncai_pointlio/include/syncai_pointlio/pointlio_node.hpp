@@ -95,7 +95,9 @@ public:
   // definition for why these are ROS parameters and not a hand-parsed YAML.
   void loadParameters();
 
-  // Subscription callbacks: buffer only, no processing.
+  // Subscription callbacks: buffer only, no processing. They run in
+  // m_sensor_group, concurrently with timerCB / resetCB, so every touch of
+  // StateData's buffers holds that buffer's mutex.
   void imuCB(const sensor_msgs::msg::Imu::SharedPtr msg);
   void lidarCB(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
   void pc2CB(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
@@ -124,10 +126,13 @@ public:
 
   // 20 ms wall timer: sync, process, publish.
   void timerCB();
+  // The publish half of timerCB, once the builder is MAPPING: TF, odometry,
+  // the deskewed clouds and the path, all for m_package.
+  void publishResults();
 
   // The `reset` service: throw the whole solution away and start over, in
-  // place. Relies on the single-threaded executor (see main.cpp and the
-  // definition's comment) -- it takes no lock against timerCB.
+  // place. Takes no lock against timerCB: it relies on sharing the default
+  // callback group with it (see main.cpp and the definition's comment).
   void resetCB(
     const std::shared_ptr<syncai_common::srv::ResetLIO::Request> request,
     std::shared_ptr<syncai_common::srv::ResetLIO::Response> response);
@@ -143,6 +148,9 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr m_path_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_pub;
 
+  // The lidar / IMU subscriptions only; timer and reset stay in the default
+  // group. See the constructor.
+  rclcpp::CallbackGroup::SharedPtr m_sensor_group;
   rclcpp::TimerBase::SharedPtr m_timer;
   rclcpp::Service<syncai_common::srv::ResetLIO>::SharedPtr m_reset_srv;
   // Stamp of the last odometry sample this node published, in the lidar's clock
