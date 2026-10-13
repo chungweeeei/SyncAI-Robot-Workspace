@@ -182,16 +182,30 @@
       # Non-occupied voxels needed above a surface for the body to fit. The
       # lidar top is ~0.55 m up; 6 cells at 0.1 m.
       body_clearance: 0.6
-      # Largest height change between neighbouring cells, in whole cells: at
-      # res 0.1 everything in [0.1, 0.2) means one cell, and 0.2 would let a
-      # 0.17 m stair riser through (a riser lands on one or two cells).
-      max_step_height: 0.10
-      # Tilt limit of the plane fitted under the footprint disc. Stairs are
-      # already out by the step rule; this catches the shallow stair with
-      # 0.1 m risers (a 19 deg "ramp" at this resolution) and nothing a
-      # quadruped cannot walk. A fit, not max-minus-min: a flat floor read
-      # cell by cell looks 11 deg tilted across a 0.5 m disc.
+      # Largest height change between neighbouring cells: the legs' step
+      # capability, 0.17 m = a standard riser, which the G23 was driven up
+      # while mapping dp1f_1012 (0.10 until 2026-10-14, chosen to refuse
+      # stairs, which the stair links below now handle). Rounded to whole
+      # cells: at res 0.1 this is two cells, so a 0.15 m kerb is one step
+      # and a 0.5 m ledge is not.
+      max_step_height: 0.17
+      # Tilt limit of the plane fitted under the footprint disc. With single
+      # risers allowed this is what refuses a stair flight (~30 deg): a disc
+      # whose surfaces span at most one step is level ground with a kerb and
+      # is not fitted; a flight shows two risers in a 0.5 m disc and is. Also
+      # the only guard against a shallow stair with 0.1 m risers (a 19 deg
+      # "ramp" at this resolution). A fit, not max-minus-min: a flat floor
+      # read cell by cell looks 11 deg tilted across a 0.5 m disc.
       max_slope_deg: 20.0
+      # Share of the footprint disc's columns that must hold a usable
+      # surface. The rest may be gaps -- columns nothing was ever seen in --
+      # never a wall, a drop or an obstacle, which block outright. The lidar
+      # sees the floor at grazing angles only, so the observed floor is
+      # sparse: with every column required (the rule until 2026-10-14) 13 %
+      # of dp1f_1012's own keyframes stood on "untraversable" ground. The
+      # missing share is also paid for in cost (gap_cost_weight). 1.0 = the
+      # old rule.
+      footprint_min_support: 0.8
       # Unknown voxels tolerated in the clearance band (-1 = all). The lidar
       # looks mostly outward from 0.48 m up, so the band is observed only where
       # the robot passed; a strict value punches holes in exactly the
@@ -245,6 +259,10 @@
       # m2. The two storeys of dp1f_1012 are 1200 and 330, the stairwell's
       # islands at most ~11.
       stair_anchor_min_area: 10.0
+      # Three-point moving-average passes over a link's points after the loop
+      # cut: a hand-driven track weaves by centimetres and the body pitches
+      # on a flight. 0 = the raw keyframes.
+      stair_smooth_passes: 2
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
@@ -255,6 +273,9 @@
       clearance_cost_scaling: 1.5
       # Prefer observed floor over hole-filled floor, mildly.
       inferred_cost_multiplier: 1.2
+      # Move length x (1 + weight * gaps / footprint columns): prefer ground
+      # seen all of, take sparse ground when that is what there is.
+      gap_cost_weight: 1.0
       # 1.0 = optimal (3D Euclidean is admissible here). A 50 m plan on
       # dp1f_1012_v2 takes a few ms at 1.0; raise only if that ever matters.
       heuristic_weight: 1.0

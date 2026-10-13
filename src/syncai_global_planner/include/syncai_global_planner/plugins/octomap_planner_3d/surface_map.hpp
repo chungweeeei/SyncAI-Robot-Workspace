@@ -15,12 +15,14 @@
 // list of surfaces it holds -- an occupied voxel with nothing occupied above
 // it and a body-height band of non-occupied voxels on top -- and each surface
 // cell is then judged with the robot's geometry: the footprint disc has to
-// find a surface at every column inside it, those surfaces have to lie on a
-// plane the legs can stand on, and every neighbour has to be within one step.
-// The A* in surface_astar.hpp only ever moves between cells that passed, so a
-// path can neither leave the ground nor cross a stair riser, a kerb, a
-// drop-off or a wall foot; it can take a ramp, because a ramp is a run of
-// one-cell steps on a plane under the slope limit.
+// find a surface at nearly every column inside it (a column nothing was ever
+// seen in is a gap, tolerated up to a share and paid for in cost; a column
+// with a wall, a drop or an obstacle in it is not), those surfaces have to
+// lie on a plane the legs can stand on, and every neighbour has to be within
+// one step. The A* in surface_astar.hpp only ever moves between cells that
+// passed, so a path can neither leave the ground nor cross a stair flight, a
+// drop-off or a wall foot; it can take a kerb up to max_step_height and a
+// ramp, which is a run of steps on a plane under the slope limit.
 //
 // A column can hold several surfaces (two floors, a table top above a floor),
 // hence "multi-layer": the map is a dense column grid with a CSR list of
@@ -73,18 +75,36 @@ struct SurfaceMapParams
   // The lidar top is ~0.55 m above the ground; 0.6 = 6 cells at 0.1 m.
   double body_clearance = 0.6;
   // Largest height change between two neighbouring cells the legs can take
-  // in one move. Quantised to whole cells: at res 0.1 every value in
-  // [0.1, 0.2) means "one cell", and 0.2 would let a 0.17 m stair riser
-  // through, since a riser lands on either one or two cells.
-  double max_step_height = 0.10;
+  // in one move: the quadruped's step capability (0.17 m since 2026-10-14,
+  // the riser of a standard stair, which the G23 was driven up while mapping
+  // dp1f_1012; 0.10 before, chosen to refuse stairs, which the stair links
+  // of stair_links.hpp now handle). Quantised to the nearest whole cell: at
+  // res 0.1, 0.17 is two cells, so two surfaces whose top faces are up to
+  // 0.2 m apart are one step (true heights up to ~0.3 m can land that way).
+  // A flight of such steps is still refused, by the slope rule below.
+  double max_step_height = 0.17;
   // Largest tilt of the plane fitted through the surfaces under the
-  // footprint disc. Stairs (riser 0.17 / tread 0.29 ~ 30 deg) are already
-  // rejected by the step rule; this is the second guard, and the only one
+  // footprint disc. This is what refuses a stair flight (riser 0.17 / tread
+  // 0.29 ~ 30 deg) now that single risers pass the step rule -- a disc whose
+  // surfaces span no more than one step is level ground with a kerb and is
+  // not fitted at all, so the cells at a flight's risers pass as islands
+  // while its treads, which see two risers, do not -- and the only guard
   // against a shallow stair with 0.1 m risers, which is a 19 deg ramp at
   // this resolution. The plane fit averages the quantisation noise out --
   // a flat floor read cell by cell can look 11 deg tilted across a 0.5 m
   // disc -- which is why this is a fit and not a max-minus-min test.
   double max_slope_deg = 20.0;
+  // Share of the footprint disc's columns that must hold a usable surface.
+  // The rest may be *gaps* -- columns nothing was ever seen in -- never a
+  // column with a surface out of reach (a drop, a ledge) or an unusable one
+  // (a wall foot, an obstacle top), which block the cell outright. The lidar
+  // sees the floor at grazing angles only, so the observed floor is sparse
+  // away from the track and under it where the hole fill gives up; with
+  // every column required (the rule until 2026-10-14) 13 % of dp1f_1012's
+  // own keyframes stood on "untraversable" ground. The missing share is
+  // also paid for in cost (SearchParams::gap_cost_weight). 1.0 = the old
+  // rule.
+  double footprint_min_support = 0.8;
   // How many voxels of the clearance band may be unknown (never observed).
   // -1 = all of them. The lidar sits 0.48 m up and looks mostly outward, so
   // the 0.1-0.6 m band above a floor is observed only where the robot
@@ -127,7 +147,8 @@ enum class Reject : uint8_t {
   ClearanceUnknown,   // too many unknown voxels in the band
   NoFreeAbove,        // the voxel(s) right above were never observed: a ceiling seen from below
   Step,               // an 8-neighbour column has no usable surface within max_step_height
-  FootprintBlocked,   // a column inside the footprint disc has no usable surface on the slope cone
+  FootprintBlocked,   // a column inside the footprint disc holds a surface out of reach or unusable
+  FootprintGap,       // more than 1 - footprint_min_support of the disc's columns hold nothing
   Slope,              // the fitted plane under the disc is steeper than max_slope_deg
   Residual,           // the surfaces under the disc do not lie on a plane (rough / broken ground)
   Count_
@@ -145,6 +166,7 @@ struct SurfaceCell
   uint8_t flags;        // CellFlag bits
   uint8_t reject;       // Reject
   uint8_t unknown_cnt;  // unknown voxels in the clearance band (information only)
+  uint8_t gap_cnt;  // footprint-disc columns with no surface at all (of SurfaceMap::footprint_n)
   float
     clearance_d;  // xy distance (m) to the nearest non-traversable cell, clamped to clearance_cost_radius
   uint32_t component;  // 8-connected component id among traversable cells, kNoComponent otherwise
@@ -166,7 +188,8 @@ public:
   // Grid geometry. Cell (ix, iy, kz) spans [x0 + ix*res, x0 + (ix+1)*res) etc.
   double res = 0.1, x0 = 0, y0 = 0, z0 = 0;
   int nx = 0, ny = 0, nz = 0;
-  int step_cells = 1;  // max_step_height in cells
+  int step_cells = 1;   // max_step_height in cells
+  int footprint_n = 1;  // columns in the footprint disc (gap_cnt's denominator)
   SurfaceMapParams params;
 
   // CSR: the cells of column c are cells[col_begin[c] .. col_begin[c+1]),

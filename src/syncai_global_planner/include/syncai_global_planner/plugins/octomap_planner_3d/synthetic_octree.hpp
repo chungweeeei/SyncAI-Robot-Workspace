@@ -118,7 +118,8 @@ private:
 //                and a 0.5 m high table (slab + four legs) at x 2..3.2, y 1..1.8
 //   ramp       floor rising 15 deg between x = 4 and x = 8, flat beyond
 //   stairs     six 0.17 m risers / 0.29 m treads from x = 4, flat beyond
-//   kerb       a 0.15 m step up at x = 6
+//   kerb       a 0.15 m step up at x = 6 (one step for the quadruped)
+//   drop       a 0.5 m step up at x = 6 (a ledge: more than one step)
 //   hole       single missing columns, a 1 x 6 crack, a 3 x 3 and a 7 x 7 hole
 //              in the floor, and a balcony (second floor at 1.5 m over
 //              x >= 9 with the ground floor continuing underneath)
@@ -154,6 +155,8 @@ inline std::unique_ptr<octomap::OcTree> makeScene(const std::string & name, doub
     });
   } else if (name == "kerb") {
     b.floor(0, X, 0, Y, [](double x, double) { return x < 6.0 ? 0.0 : 0.15; });
+  } else if (name == "drop") {
+    b.floor(0, X, 0, Y, [](double x, double) { return x < 6.0 ? 0.0 : 0.5; });
   } else if (name == "hole") {
     b.flatFloor(0, X, 0, Y, 0.0);
     b.flatFloor(9.0, X, 0, Y, 1.5);

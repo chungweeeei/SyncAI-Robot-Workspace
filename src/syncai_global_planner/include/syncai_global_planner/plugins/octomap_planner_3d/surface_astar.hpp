@@ -47,6 +47,11 @@ struct SearchParams
   double clearance_cost_scaling = 1.5;
   // Prefer observed floor over hole-filled floor, mildly.
   double inferred_cost_multiplier = 1.2;
+  // Factor 1 + weight * (gaps / footprint columns) on a move into a cell
+  // whose footprint disc has columns nothing was seen in: the planner
+  // prefers ground it has seen all of, and takes sparse ground when that is
+  // what there is.
+  double gap_cost_weight = 1.0;
   // > 1 is weighted A*: faster, paths up to this factor longer than optimal.
   double heuristic_weight = 1.0;
   // Guards. Iterations are heap pops; the time is checked every 1024 of them.

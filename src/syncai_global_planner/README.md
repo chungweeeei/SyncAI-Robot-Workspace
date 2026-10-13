@@ -314,16 +314,27 @@ arriving meanwhile fail with `map_loading`):
    void (one-sided support); each height group of the neighbours is judged
    on its own, because at a two-storey column the complete upper floor is
    the largest group and would otherwise hide the missing lower one.
-4. **Step rule**: every 8-neighbour column must hold a usable surface within
-   `max_step_height` (0.1 m = one cell; `[0.1, 0.2)` all mean one cell, and
-   0.2 would let a 0.17 m stair riser through).
-5. **Footprint**: every column within `robot_radius` (0.25 m, the 2D
-   costmap's inscribed radius) must hold a usable surface inside the slope
-   cone (tolerance grows with distance, or a 15° ramp rejects its own
-   neighbours), and the plane fitted through them must tilt ≤
-   `max_slope_deg` (20) with residuals ≤ one cell. A fit, not max−min: a flat
-   floor read cell by cell looks 11° tilted across a 0.5 m disc. This is the
-   implicit inflation of walls, drop-offs and unfillable holes.
+4. **Step rule**: every 8-neighbour column that holds surfaces must hold a
+   usable one within `max_step_height` (0.17 m, the legs' step capability
+   and a standard riser; rounded to two cells at 0.1 m, so a 0.15 m kerb is
+   one step and a 0.5 m ledge is not). A neighbour column with no surface at
+   all is a *gap* (never observed), left to the footprint rule.
+5. **Footprint**: of the columns within `robot_radius` (0.25 m, the 2D
+   costmap's inscribed radius), at least `footprint_min_support` (80 %) must
+   hold a usable surface inside the slope cone (tolerance grows with
+   distance, or a 15° ramp rejects its own neighbours); a column whose
+   surfaces are all out of reach or unusable — a wall foot, a drop, an
+   obstacle top — blocks the cell outright, a column with no surface is a
+   gap, counted (`gap_cnt`) and paid for in cost. If the surfaces span more
+   than one step, the plane fitted through them must tilt ≤ `max_slope_deg`
+   (20) with residuals ≤ one cell: that is what refuses a flight (two risers
+   in a 0.5 m disc, ~30°) while a kerb, one step, is level ground. A fit,
+   not max−min: a flat floor read cell by cell looks 11° tilted across a
+   0.5 m disc. This is the implicit inflation of walls, drop-offs and
+   unfillable holes; the gap share exists because the lidar sees the floor
+   at grazing angles only and the observed floor is sparse — with every
+   column required, 13 % of dp1f_1012's own keyframes stood on
+   "untraversable" ground.
 6. 8-connected components (no corner cutting), so a disconnected goal fails
    before the search and a goal snaps to the robot's floor, not the one below
    a balcony edge.
@@ -343,7 +354,8 @@ orthogonal neighbours pass. Edge cost = 3D move length ×
 `(1 + clearance_cost_weight · exp(−clearance_cost_scaling · d))` inside the
 band (the costmap's inflation curve and Smac's `cost_travel_multiplier` in
 one; a multiplier, because a per-node penalty makes diagonals cheaper per
-metre and bends paths 45°), × 1.2 on inferred cells. The 3D Euclidean
+metre and bends paths 45°), × 1.2 on inferred cells, × (1 + `gap_cost_weight`
+· gaps / footprint columns) on cells with gaps under the disc. The 3D Euclidean
 distance is admissible, so `heuristic_weight: 1.0` is optimal; a 25 m plan on
 dp1f_1012_v2 takes 11 k iterations and 1 ms, a 46 m plan upstairs 22 k and
 3 ms.
@@ -372,7 +384,11 @@ stretch of it that leaves one large component (≥ `stair_anchor_min_area`,
 lower, within `stair_max_length` (60 m) of track, is a stair the legs have
 taken. It becomes a **stair link** between the traversable cells at its ends,
 carrying the keyframes' ground points with every loop cut out (turns and
-waits on a landing). The search may take a link in either direction at its 3D
+waits on a landing) and smoothed (`stair_smooth_passes`; a hand-driven track
+weaves, and the ground estimate inherits the body's pitch on a flight).
+What could not be linked is logged at startup: a climb on the track longer
+than `stair_max_length`, and large components at different heights no link
+joins — the floors this map cannot get between. The search may take a link in either direction at its 3D
 length × `stair_cost_multiplier` (2.0; ≥ 1 keeps the heuristic admissible),
 components joined by links count as one for the snap and the
 disconnected-check, and the path follows the link's points through the
@@ -397,10 +413,12 @@ ignore z.
 columns, 724 k surface cells (24 k inferred), 158 k traversable in 146
 components, the two floors being 118 k and 33 k. 86 % of the keyframes stand
 on a traversable cell, 90 % within one cell of one, 99.5 % on *a* surface.
-What the rest is, by inspection: the robot's own feet (0.3 m clusters of
-occupied voxels 0.2–0.3 m above the floor exactly at keyframes — at ~0.54 m
-from the lidar they survive `clean_map`'s 0.5 m `min_range`; the fix is in
-that repo, the planner routes around them), the 1F–2F stairwell (a
+What the rest is, by inspection: people's feet and ankles (0.3 m clusters
+of occupied voxels 0.1–0.25 m above the floor at the robot's stops — the
+operator's, seen once from ~3 m ahead and passed through 30–40 times, kept
+by `clean_map`'s floor-band exemption until its `floor_band_dynamic` of
+2026-10-14; they read as "the robot's own feet" at first, but the hits come
+from a keyframe metres behind), the 1F–2F stairwell (a
 switchback stair, four flights and three landings, 5.3 m up in a 4 × 3 m
 well; refused by the geometry rules, so the floors are separate components
 and only a stair link joins them), and a short ~30° ramp on 2F.
@@ -425,7 +443,7 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --plan sx sy sz gx gy gz --out path.csv / --plan-poses i j  # z are height hints
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
    … --poses … --plan-poses 0 2000 [--no-stair-links]           # with --poses, the track's stairs are links
-   … --synthetic ramp|stairs|kerb|wall|hole|two_floors           # the test scenes
+   … --synthetic ramp|stairs|kerb|drop|wall|hole|two_floors      # the test scenes
    … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
 ```
 
@@ -576,14 +594,16 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | `body_frame`, `lidar_height` | `pointlio_body` (launch: `<robot_id>/pointlio_body`), `0.481` | The frame the robot's real height is read from, and the sensor's height above the ground (`map_clean.recipe.json`'s `lidar_height`). Dynamic |
 | `goal_z_mode` | `request` | `request`: the goal's own z picks the floor; `start`: the robot's floor. Dynamic |
 | `robot_radius`, `body_clearance` | `0.25`, `0.6` | Footprint disc (= the costmap's inscribed radius) and the band above a surface the body needs. Build-time |
-| `max_step_height`, `max_slope_deg` | `0.10`, `20.0` | One cell per move; tilt of the fitted plane under the disc. Build-time |
+| `max_step_height`, `max_slope_deg` | `0.17`, `20.0` | The legs' step (two cells at 0.1 m); tilt of the fitted plane under a disc spanning more than one step. Build-time |
+| `footprint_min_support` | `0.8` | Share of the disc's columns that must hold a usable surface; the rest may be gaps (never observed), not walls or drops. `1.0` = every column. Build-time |
 | `max_unknown_clearance_cells`, `min_known_free_above` | `-1` (all), `1` | Unknown tolerated in the band; observed-free voxels required right above a surface. Build-time |
 | `hole_fill_radius`, `hole_fill_min_support`, `hole_fill_passes` | `0.3`, `0.5`, `2` | See the build, step 3. Build-time |
 | `clearance_cost_radius` | `0.55` | Reach of the clearance field from the traversable boundary. Build-time |
-| `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m² | Stair links from the track (see **Stairs**). Build-time |
+| `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area`, `stair_smooth_passes` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m², `2` | Stair links from the track (see **Stairs**). Build-time |
 | `stair_cost_multiplier` | `2.0` | Factor on a link's 3D length (≥ 1). Dynamic |
 | `clearance_cost_weight`, `clearance_cost_scaling` | `1.0`, `1.5` | Edge cost multiplier inside the band. Dynamic |
 | `inferred_cost_multiplier` | `1.2` | Prefer observed floor. Dynamic |
+| `gap_cost_weight` | `1.0` | Cost factor 1 + weight × gaps / disc columns. Dynamic |
 | `heuristic_weight`, `max_iterations`, `max_planning_time` | `1.0`, `2000000`, `2.0` s | Weighted A* and the guards. Dynamic |
 | `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
 | `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |

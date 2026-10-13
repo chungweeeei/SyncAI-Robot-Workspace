@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <numeric>
 #include <sstream>
@@ -110,6 +111,26 @@ std::vector<Waypoint> cutLoops(const std::vector<Waypoint> & p, double radius, d
   return out;
 }
 
+// smooth_passes of a three-point moving average, the first and last point
+// fixed (they are the anchors' cell centres).
+void smoothPolyline(std::vector<Waypoint> & p, int passes)
+{
+  if (p.size() < 3) {
+    return;
+  }
+  std::vector<Waypoint> q(p.size());
+  for (int pass = 0; pass < passes; ++pass) {
+    q.front() = p.front();
+    q.back() = p.back();
+    for (size_t i = 1; i + 1 < p.size(); ++i) {
+      q[i] = {
+        (p[i - 1].x + p[i].x + p[i + 1].x) / 3.0, (p[i - 1].y + p[i].y + p[i + 1].y) / 3.0,
+        (p[i - 1].z + p[i].z + p[i + 1].z) / 3.0};
+    }
+    p.swap(q);
+  }
+}
+
 uint32_t findRoot(std::vector<uint32_t> & parent, uint32_t i)
 {
   while (parent[i] != i) {
@@ -162,6 +183,16 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     }
     if (walked > params.max_length) {
       // Lost the ground for too long to trust what happened in between.
+      if (std::fabs(m.zTop(c) - m.zTop(anchor)) >= params.min_rise) {
+        char buf[200];
+        std::snprintf(
+          buf, sizeof buf,
+          "keyframes %zu..%zu climb %.2f m (z %.2f -> %.2f) over %.0f m of track, more than "
+          "stair_max_length %.0f m: no link",
+          anchor_kf, k, m.zTop(c) - m.zTop(anchor), m.zTop(anchor), m.zTop(c), walked,
+          params.max_length);
+        out->notes.push_back(buf);
+      }
       anchor = c;
       anchor_kf = k;
       walked = 0.0;
@@ -188,6 +219,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     }
     link.pts.push_back({bx, by, m.zTop(c)});
     link.pts = cutLoops(link.pts, params.loop_radius, params.loop_dz);
+    smoothPolyline(link.pts, params.smooth_passes);
     for (size_t i = 1; i < link.pts.size(); ++i) {
       const Waypoint & p = link.pts[i - 1];
       const Waypoint & q = link.pts[i];
@@ -209,6 +241,35 @@ std::shared_ptr<const StairLinks> buildStairLinks(
   }
   for (uint32_t i = 0; i < ncomp; ++i) {
     out->group[i] = findRoot(out->group, i);
+  }
+  // Large components the links leave apart although they lie at different
+  // heights: the floors of this map the planner cannot get between.
+  std::vector<double> zsum(ncomp, 0.0);
+  for (CellId c = 0; c < m.cells.size(); ++c) {
+    if (m.cells[c].component != kNoComponent) {
+      zsum[m.cells[c].component] += m.zTop(c);
+    }
+  }
+  std::vector<uint32_t> large;
+  for (uint32_t i = 0; i < ncomp; ++i) {
+    if (static_cast<double>(comp_cells[i]) >= min_cells) {
+      large.push_back(i);
+    }
+  }
+  for (size_t i = 0; i < large.size(); ++i) {
+    for (size_t j = i + 1; j < large.size(); ++j) {
+      const uint32_t a = large[i], b = large[j];
+      const double za = zsum[a] / comp_cells[a], zb = zsum[b] / comp_cells[b];
+      if (std::fabs(za - zb) >= params.min_rise && out->group[a] != out->group[b]) {
+        char buf[200];
+        std::snprintf(
+          buf, sizeof buf,
+          "component %u (%.0f m2, z ~%.2f) and component %u (%.0f m2, z ~%.2f) are not joined by "
+          "any stair link",
+          a, comp_cells[a] * m.res * m.res, za, b, comp_cells[b] * m.res * m.res, zb);
+        out->notes.push_back(buf);
+      }
+    }
   }
   return out;
 }
