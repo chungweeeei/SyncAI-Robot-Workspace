@@ -11,26 +11,59 @@ using namespace std::chrono_literals;
 namespace syncai_pointlio
 {
 
+namespace
+{
+// See imuCB.
+constexpr double kImuGapWarnSec = 0.030;
+}  // namespace
+
 PointLIONode::PointLIONode() : Node("pointlio_node")
 {
   RCLCPP_INFO(this->get_logger(), "[PointLIONode][%s] Point-LIO Node Started", __func__);
   loadParameters();
 
-  // register imu subscriber
+  // The sensor callbacks get a callback group of their own, and main() runs
+  // a two-thread MultiThreadedExecutor, so ingest never waits for timerCB.
+  // Until 2026-10 everything shared the default group under a single-threaded
+  // spin(): imuCB could not run while timerCB was busy, the IMU reader held
+  // 10 samples (50 ms at 200 Hz), and any timerCB longer than that (an
+  // ikd-tree rebuild, the two deskews, a big toROSMsg) let the reader history
+  // overwrite its oldest samples -- silently; RELIABLE does not help, the drop
+  // is the reader's own. The filter then predicted across the hole with no
+  // measurement and drifted with no error anywhere. Suspected replaying
+  // dp1f_1012, whose bag itself is gap-free (200 Hz, no hole past 23 ms).
+  //
+  // MutuallyExclusive, not Reentrant: with two threads, a reentrant sensor
+  // group could take both and leave the timer waiting -- the inverse of the
+  // bug. timerCB and resetCB stay in the default group, so they still exclude
+  // each other; see resetCB for why that is load-bearing.
+  m_sensor_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions sensor_options;
+  sensor_options.callback_group = m_sensor_group;
+
+  // register imu subscriber. Depth 2000 (~10 s at the MID360's 200 Hz) is the
+  // backstop now, not the fix: the sensor group has its own thread, but
+  // lidarCB's conversion runs in the same group, and a starved reader should
+  // cost latency rather than samples. Upstream Point-LIO uses 200000.
   m_imu_sub = this->create_subscription<sensor_msgs::msg::Imu>(
-    "imu", 10, std::bind(&PointLIONode::imuCB, this, std::placeholders::_1));
+    "imu", rclcpp::QoS(rclcpp::KeepLast(2000)),
+    std::bind(&PointLIONode::imuCB, this, std::placeholders::_1), sensor_options);
 
   // register scan subscriber. Log the resolved name so a missing/incorrect
-  // remapping is visible at startup instead of showing up as "no data".
+  // remapping is visible at startup instead of showing up as "no data". Depth
+  // 100 (10 s at 10 Hz) for the same reason as the IMU's; 10 was a full second
+  // there, so it never bit, but a stalled reader should cost lag, not scans.
   if (m_node_config.lidar_type == 1) {
     m_pc2_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "lidar", 10, std::bind(&PointLIONode::pc2CB, this, std::placeholders::_1));
+      "lidar", rclcpp::QoS(rclcpp::KeepLast(100)),
+      std::bind(&PointLIONode::pc2CB, this, std::placeholders::_1), sensor_options);
     RCLCPP_INFO(
       this->get_logger(), "[PointLIONode][%s] Lidar input: sensor_msgs/PointCloud2 (%s)", __func__,
       m_pc2_sub->get_topic_name());
   } else {
     m_lidar_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-      "lidar", 10, std::bind(&PointLIONode::lidarCB, this, std::placeholders::_1));
+      "lidar", rclcpp::QoS(rclcpp::KeepLast(100)),
+      std::bind(&PointLIONode::lidarCB, this, std::placeholders::_1), sensor_options);
     RCLCPP_INFO(
       this->get_logger(), "[PointLIONode][%s] Lidar input: livox_ros_driver2/CustomMsg (%s)",
       __func__, m_lidar_sub->get_topic_name());
@@ -187,6 +220,17 @@ void PointLIONode::imuCB(const sensor_msgs::msg::Imu::SharedPtr msg)
   if (timestamp < m_state_data.last_imu_time) {
     RCLCPP_WARN(this->get_logger(), "[PointLIONode][%s] IMU Message is out of order", __func__);
     std::deque<IMUData>().swap(m_state_data.imu_buffer);
+  } else if (
+    m_state_data.last_imu_time >= 0.0 && timestamp - m_state_data.last_imu_time > kImuGapWarnSec) {
+    // A hole in the IMU stream is otherwise invisible: processIMU just
+    // predicts across a longer dt with no measurement. 30 ms, not "one missed
+    // 5 ms period", because the MID360 itself stamps up to ~23 ms apart a few
+    // times an hour (3 in the 30 min of dp1f_1012); a reader-history overflow
+    // loses whole bursts, well past that.
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[PointLIONode][%s] IMU gap of %.1f ms (samples lost before this node?)", __func__,
+      (timestamp - m_state_data.last_imu_time) * 1000.0);
   }
 
   // push latest imu data into imu_buffer
@@ -247,6 +291,13 @@ void PointLIONode::pc2CB(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 
 bool PointLIONode::syncPackage()
 {
+  // Both buffers, for the whole function: the sensor callbacks append to them
+  // from the other executor thread. scoped_lock takes the pair deadlock-free;
+  // the callbacks and resetCB only ever hold one at a time. Held across the
+  // sort below, which is a few thousand points and cheaper than juggling the
+  // cloud out from under the lock.
+  std::scoped_lock lock(m_state_data.lidar_mutex, m_state_data.imu_mutex);
+
   if (m_state_data.imu_buffer.empty() || m_state_data.lidar_buffer.empty()) return false;
 
   // A lidar frame is not processed as soon as it arrives; it has to wait until the IMU data
@@ -411,18 +462,26 @@ void PointLIONode::timerCB()
 {
   if (!syncPackage()) return;
 
-  auto t1 = std::chrono::high_resolution_clock::now();
+  auto t1 = std::chrono::steady_clock::now();
   m_builder->process(m_package);
-  auto t2 = std::chrono::high_resolution_clock::now();
+  auto t2 = std::chrono::steady_clock::now();
+  if (m_builder->status() == BuilderStatus::MAPPING) publishResults();
+  auto t3 = std::chrono::steady_clock::now();
 
+  // Both numbers, because the total is the real per-scan budget: a scan
+  // every 100 ms, so a total that stays above that means lidar_buffer grows
+  // without bound. It used to print process() alone, which hid the deskews
+  // and the cloud conversions behind a smaller number.
   if (m_node_config.print_time_cost) {
-    auto time_used =
-      std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count() * 1000;
-    RCLCPP_WARN(this->get_logger(), "Time cost: %.2f ms", time_used);
+    using ms = std::chrono::duration<double, std::milli>;
+    RCLCPP_WARN(
+      this->get_logger(), "Time cost: process %.2f ms, total %.2f ms", ms(t2 - t1).count(),
+      ms(t3 - t1).count());
   }
+}
 
-  if (m_builder->status() != BuilderStatus::MAPPING) return;
-
+void PointLIONode::publishResults()
+{
   // The stamp resetCB hands back to pgo, recorded HERE rather than inside
   // publishOdometry: that one returns early when nothing is subscribed, and
   // the ordering gate must not depend on who happens to be listening. Past
@@ -478,16 +537,17 @@ void PointLIONode::timerCB()
 // LidarProcessor and its ikd-tree, whose destructor joins the tree's rebuild
 // thread -- the one genuinely blocking step here).
 //
-// NO LOCKING against the executor, and that is load-bearing: main() spins this
-// node with rclcpp::spin(), so every callback shares the default
-// MutuallyExclusive group and timerCB cannot be halfway through
-// MapBuilder::process() while the builder is swapped out. Moving this node to
-// a MultiThreadedExecutor, or putting this service in its own callback group,
-// breaks that and needs a mutex shared with timerCB. (pgo_node does exactly
-// that, for a reason that does not apply here: it has to wait on a client
-// future from inside its handler.) The two sensor mutexes below are a
-// different matter -- they guard against the subscription callbacks, which are
-// in the same group but would be a real race the moment anything changes.
+// NO LOCK against timerCB, and that is load-bearing: this service and the
+// timer are both in the node's default MutuallyExclusive group, so timerCB
+// cannot be halfway through MapBuilder::process() while the builder is swapped
+// out, even under main()'s MultiThreadedExecutor. Moving this service (or the
+// timer) into another callback group breaks that and needs a mutex shared with
+// timerCB around m_builder / m_kf / m_package. The two sensor mutexes below are
+// a different matter: the subscription callbacks have their own group and run
+// concurrently with this handler on the other thread (since 2026-10). A
+// sample that lands between the buffer clear and the builder swap goes into
+// the new run's buffer, which is where it belongs -- the robot is standing
+// still for the re-init anyway.
 void PointLIONode::resetCB(
   const std::shared_ptr<syncai_common::srv::ResetLIO::Request> request,
   std::shared_ptr<syncai_common::srv::ResetLIO::Response> response)

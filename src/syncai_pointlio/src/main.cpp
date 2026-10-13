@@ -6,16 +6,18 @@
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  // Single-threaded rclcpp::spin() is load-bearing, not a default left alone:
-  // PointLIONode::resetCB takes NO lock against timerCB and relies on every
-  // callback sharing the default MutuallyExclusive group, so the timer cannot
-  // be halfway through MapBuilder::process() while the builder is swapped out.
-  // Moving this node to a MultiThreadedExecutor, or giving the reset service
-  // its own callback group, needs a mutex shared with timerCB around m_builder
-  // / m_kf first. (pgo_node in syncai_mapping does run multi-threaded, for a
-  // reason that does not apply here: it has to wait on a client future from
-  // inside its handler.)
-  rclcpp::spin(std::make_shared<syncai_pointlio::PointLIONode>());
+  // Two threads, one per callback group (2026-10; a single-threaded spin()
+  // until then): the sensor subscriptions in their own group, timerCB and
+  // resetCB together in the default one. That keeps IMU ingest running while
+  // timerCB processes a scan -- under spin() it could not, and the IMU reader
+  // dropped samples whenever timerCB outlasted its queue -- while timerCB and
+  // resetCB still exclude each other, which resetCB's lock-free builder swap
+  // depends on. More threads would buy nothing: both groups are
+  // MutuallyExclusive, so a third thread has nothing it is allowed to run.
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
+  auto node = std::make_shared<syncai_pointlio::PointLIONode>();
+  executor.add_node(node);
+  executor.spin();
   rclcpp::shutdown();
   return 0;
 }

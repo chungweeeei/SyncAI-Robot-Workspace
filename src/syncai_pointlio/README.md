@@ -36,14 +36,26 @@ had to. `map_builder/` is the ported math (`point_ekf`, `imu_initializer`,
 
 | Input | Kind | Source | Used for |
 |---|---|---|---|
-| `lidar` → `/<robot_id>/livox/lidar` | `livox_ros_driver2/CustomMsg` (`lidar_type: 0`) or `sensor_msgs/PointCloud2` (`lidar_type: 1`), depth 10 | `syncai_bringup`'s Livox driver | The scan. `CustomMsg` carries per-point time in `curvature`; a `PointCloud2` does not, so the update degrades to one batch per scan (warned once). |
-| `imu` → `/<robot_id>/livox/imu` | `sensor_msgs/Imu`, depth 10 | the lidar's built-in IMU | Fused as a **measurement** (output model). Accelerations are multiplied by `imu_acc_scale` (Livox reports g-units). |
+| `lidar` → `/<robot_id>/livox/lidar` | `livox_ros_driver2/CustomMsg` (`lidar_type: 0`) or `sensor_msgs/PointCloud2` (`lidar_type: 1`), depth 100 | `syncai_bringup`'s Livox driver | The scan. `CustomMsg` carries per-point time in `curvature`; a `PointCloud2` does not, so the update degrades to one batch per scan (warned once). |
+| `imu` → `/<robot_id>/livox/imu` | `sensor_msgs/Imu`, depth 2000 | the lidar's built-in IMU | Fused as a **measurement** (output model). Accelerations are multiplied by `imu_acc_scale` (Livox reports g-units). |
 
 The two topics are **remapped by the launch file**, not parameters: the node
 subscribes to the relative names `lidar` / `imu`, which would otherwise resolve
 inside its own `/<robot_id>/pointlio` namespace. `ros2 node info` shows the
 resolved names, and the node logs them at startup so a wrong remap shows up as
 a wrong name rather than as "no data".
+
+**Ingest has its own thread, and the queues are deep (2026-10).** Until then
+the node spun single-threaded, so neither subscription callback ran while
+`timerCB` did, and a KEEP_LAST reader history overwrites its oldest sample when
+it fills — RELIABLE does not prevent that, the drop is the reader's own. At
+depth 10 the IMU queue held 50 ms of 200 Hz data, so every `timerCB` longer
+than that lost IMU samples, and the filter predicted across the hole with
+nothing to say so. Replaying `dp1f_1012` (a gap-free bag) is where it was
+suspected. Now the subscriptions sit in a callback group of their own under a
+two-thread `MultiThreadedExecutor`, so they are drained while a scan is
+processed; the depths (2000 / 100, ~10 s of each) are the backstop, and an IMU
+gap over 30 ms is logged (see "Checking it").
 
 ## Outputs
 
@@ -126,12 +138,14 @@ Two things the code relies on and enforces in comments rather than locks:
   downstream can tell a bad gravity vector from a good one. Deliberately not
   gated on a stationarity check — the node cannot tell a still robot from a
   gently vibrating one, and refusing a robot that *is* still is worse.
-- **`resetCB` takes no lock against `timerCB`.** `main.cpp` spins the node
-  with single-threaded `rclcpp::spin()`, so every callback shares one
-  MutuallyExclusive group and the timer cannot be halfway through
-  `MapBuilder::process()` while the builder is swapped. Moving to a
-  `MultiThreadedExecutor`, or giving the service its own callback group, needs
-  a mutex around `m_builder` / `m_kf` first.
+- **`resetCB` takes no lock against `timerCB`.** The two share the node's
+  default MutuallyExclusive callback group, so even under `main.cpp`'s
+  two-thread `MultiThreadedExecutor` the timer cannot be halfway through
+  `MapBuilder::process()` while the builder is swapped. Only the sensor
+  subscriptions have a group of their own (and run concurrently; the buffers
+  they share with the timer and the reset are behind `imu_mutex` /
+  `lidar_mutex`). Moving the service or the timer into another group needs a
+  mutex around `m_builder` / `m_kf` / `m_package` first.
 
 The request is empty on purpose: a reset is not a reconfigure, and the
 parameters / extrinsics stay as launched. The comments in
@@ -152,7 +166,7 @@ The launch layers the two frame names on top.
 | `body_frame` | `body` | `<robot_id>/pointlio_body` | |
 | `lidar_type` | `0` | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
 | `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is fixed at 9.81. `satu_acc` is compared **after** scaling. |
-| `print_time_cost` | `false` | | Logs the per-frame `process()` time as a WARN |
+| `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |
 | `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
@@ -201,6 +215,7 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 |---|---|
 | `Lidar input: livox_ros_driver2/CustomMsg (/robot01/livox/lidar)` | The remap resolved; if this says `/robot01/pointlio/lidar` the launch was bypassed |
 | `IMU Message is out of order` / `Lidar Message is out of order` | Buffer flushed after a backwards stamp (bag loop, driver restart) |
+| `IMU gap of N ms (samples lost before this node?)` | Two consecutive IMU stamps more than 30 ms apart (throttled to 1 s). The MID360 alone stays under ~23 ms; a gap past that is samples dropped by the driver, DDS or this node's queue — the filter coasted through it without a measurement |
 | `PointCloud2 input has no per-point time` | `lidar_type: 1` — batch update per scan, expected on Isaac |
 | `[resetCB] LIO reset; re-initialising IMU (robot must be still).` | A `reset` landed (normally from `pgo/reset_mapping`) |
 | `t_il needs 3 elements` / `r_il needs 9 elements` | Malformed extrinsic in the params file; the default was kept |
