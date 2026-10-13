@@ -22,7 +22,17 @@
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "pluginlib/class_list_macros.hpp"
+// tf2_geometry_msgs is not optional here. tf2/utils.h's getYaw() calls
+// tf2::fromMsg(Quaternion), which tf2/impl/utils.hpp only *declares* (non-inline)
+// and tf2_geometry_msgs.hpp defines inline; libtf2 exports no such symbol. With
+// the declaration alone this TU emits an external call. At -O0 that call was
+// satisfied by accident, by the out-of-line copy the goal checker / RPP TUs emit
+// into the same .so; a Release build inlines theirs away, the .so links anyway
+// (shared libraries may leave symbols undefined), and controller_server died
+// with "symbol lookup error" at the first goal, when pluginlib's lazy binding
+// first resolved it (2026-10-13).
 #include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
