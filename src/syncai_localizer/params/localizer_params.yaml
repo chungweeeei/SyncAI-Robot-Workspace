@@ -245,3 +245,19 @@
       # A caller's client timeout must exceed the sum.
       search_timeout_sec: 10.0
       converge_timeout_sec: 5.0
+
+    # reset_odometry (2026-10): zero Point-LIO and carry the map pose across,
+    # the recovery for a diverged front end (robot01 2026-10-13: lio_odom at
+    # ~1000 m/s with the robot parked, and auto_localize unable to help while
+    # its scan window was posed by that odometry). ResetOdometry.srv has the
+    # contract; the README the walk-through. The deadlines are first guesses.
+    reset_odom:
+      # Relative: /<robot_id>/pointlio/reset from this node's namespace.
+      lio_reset_service: "pointlio/reset"
+      lio_reset_timeout_sec: 2.0
+      # pointlio publishes nothing until its static IMU init is done.
+      wait_lio_timeout_sec: 10.0
+      converge_timeout_sec: 5.0
+      # A registration seeds a later reset only if the odometry moved slower
+      # than this since the previous one. Never affects what is broadcast.
+      max_lio_speed: 3.0

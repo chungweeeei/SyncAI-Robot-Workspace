@@ -8,7 +8,8 @@ broadcasts the result as the `map → <robot_id>/pointlio_odom` correction that
 `syncai_lio_bridge` turns into `map → odom`. It serves `relocalize` /
 `relocalize_check`, listens on `initialpose`, applies the INI's
 `[initial_pose]` as a boot guess, and serves `auto_localize`, a hint-free
-global search for a kidnapped robot. In the mapping session `syncai_mapping`'s
+global search for a kidnapped robot, and `reset_odometry`, which zeroes a
+diverged Point-LIO and carries the map pose across. In the mapping session `syncai_mapping`'s
 `pgo_node` owns the same TF instead; this node is never up at the same time.
 
 ```
@@ -87,6 +88,7 @@ silence.
 | TF `map → local_frame` | `<robot_id>/pointlio_odom` | Rebroadcast from a 10 ms timer on every tick, re-solved at most `update_hz` and only when the motion gate says so. `local_frame` is **adopted from the first odom message**; the YAML value is a placeholder. |
 | `map_cloud` | `PointCloud2`, depth 1, TRANSIENT_LOCAL | The refine-resolution map, published once per `loadMap` (construction, `relocalize`, the `initialpose` fallback). For rviz; set the display's durability to Transient Local. |
 | `auto_localize` | `syncai_common/srv/AutoLocalize` | Kidnap recovery, no hint. **Blocks** until a pose is found *and* the timer has registered against it, or fails with localization unchanged. See below. |
+| `reset_odometry` | `syncai_common/srv/ResetOdometry` | Zero the odometry, keep the map pose: calls `pointlio/reset` and re-seeds the new run. **Blocks**, robot **stationary**. See below. |
 | `relocalize_check` | `syncai_common/srv/IsValid` | `code: 1` always answers `valid: true` (liveness); anything else answers whether the first registration after the last guess converged. **The stack's only localization-quality signal.** |
 
 Nothing is broadcast until the first cloud/odom pair has arrived; with no map
@@ -160,10 +162,68 @@ unchecked pose is not one to hand over.
 
 Limits: only maps saved with `save_patches` have a `poses.txt`; a robot far
 (≫ `candidate_spacing`) from the mapping trajectory may not be found; and if
-the kidnap made Point-LIO itself diverge (lifted, shaken), reset it first —
-`pointlio/reset`, robot stationary — this service does not. The acceptance
+Point-LIO itself has diverged (lifted, shaken, or starved — see below), this
+service cannot help, because its scan window is posed by that odometry. Use
+`reset_odometry` with `global_fallback: true`, which ends in this same search
+on clean scans. The acceptance
 values (`min_inlier_ratio`, `ambiguity_ratio`) are first guesses, not
 measured; tune them on a replay.
+
+### `reset_odometry`: zeroing a diverged Point-LIO
+
+What resetting the encoders is on a wheeled robot. Point-LIO can diverge
+silently — on robot01 on 2026-10-13 `lio_odom` read ~1000 m/s with the robot
+parked, 4 of 10 boots that week — and nothing above it recovers on its own:
+
+- **`pointlio/reset` alone is not enough.** It restarts the odometry at the
+  robot's current spot, but this node's `map → pointlio_odom` was solved
+  against the *old* origin: the next guess is that old offset times an
+  identity odom pose, unrelated to where the robot is, and GICP never
+  converges.
+- **`auto_localize` alone is not enough** while `recent_scans` holds scans
+  posed by the diverged odometry: the accumulated cloud is smeared over
+  kilometres.
+
+`reset_odometry` does the whole sequence, in this order:
+
+1. **Seed** — the request's `x` / `y` / `yaw` with `use_hint`, otherwise the
+   **last trusted registration**: the last one that converged while the
+   odometry it was chained to moved slower than `reset_odom.max_lio_speed`
+   (3 m/s; the robot tops out at 0.6). A diverging LIO can still drag a GICP
+   round or two to "converged", and the speed gate keeps those out of the
+   seed; such a round logs `LIO moved … m/s … Point-LIO may be diverging`.
+   z always comes from the last trusted registration. No seed → it fails
+   before resetting anything.
+2. **Pause, then reset**: the timer stops registering (it keeps rebroadcasting
+   the TF) and `syncCB` drops every pair, then `pointlio/reset`.
+3. **Gate**: only pairs stamped strictly after `ResetLIO`'s `last_odom_time`
+   are accepted — pgo_node's boundary, same contract — and `recent_scans` is
+   cleared. Waits for the first new-run pair (pointlio's static IMU init).
+4. **Re-seed the offset directly**, with `applyPlanarGuess`'s construction
+   (roll / pitch from the new run's gravity alignment, yaw turned to the
+   seed's), so `map → body` is continuous from the first new odometry on —
+   `syncai_lio_bridge` composes from the newest TF and holds no state, so it
+   needs nothing. Then the seed goes to the timer as a service guess and the
+   call waits for its converged registration.
+5. **`global_fallback`**: if that times out, `auto_localize`'s search on the
+   new-run scans, and another wait.
+
+On a failure after step 2 the reset is **not** undone (the old odometry was
+the problem) and the offset stays at the seed, so the TF stays continuous;
+retry with a hint, or relocalize. `odom → base_link` jumps back to the origin
+once — the local costmap's marks shift with it — which is one more reason the
+robot has to be stopped first. **The robot must be standing still** for the
+whole call: pointlio's re-init is a static, gravity-aligning one, and one done
+in motion tilts the new odometry for the rest of the run with no error
+anywhere. Nothing here can check that; cancel navigation before calling.
+
+The client is in its own callback group and `main.cpp` runs **three**
+threads (two until 2026-10): the handler blocks on `ResetLIO`'s future, and
+the response has to be delivered on a thread the handler is not holding —
+pgo_node's arrangement, for the same client.
+
+This is the bandage, not the fix: a front end that cannot keep up with the
+lidar (136 ms a scan against a 100 ms period on robot01) will diverge again.
 
 ### The motion gate
 
@@ -224,6 +284,19 @@ throwing. The launch layers the instance values on top.
 | `ambiguity_trans` / `ambiguity_yaw_deg` | `1.0` m / `10.0` | What counts as a distinct runner-up |
 | `search_timeout_sec` / `converge_timeout_sec` | `10.0` / `5.0` s | `<= 0` disables |
 
+`reset_odom.*` (see the section above):
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `lio_reset_service` | `pointlio/reset` | Relative → `/<robot_id>/pointlio/reset` |
+| `lio_reset_timeout_sec` | `2.0` s | Wait for `ResetLIO`'s response |
+| `wait_lio_timeout_sec` | `10.0` s | Wait for the first new-run odometry (IMU init) |
+| `converge_timeout_sec` | `5.0` s | Wait for the timer to register against the seed |
+| `max_lio_speed` | `3.0` m/s | A registration seeds a later reset only below this; never affects the TF |
+
+A client's timeout must exceed the sum (17 s), plus `auto_loc`'s two (15 s)
+with `global_fallback`.
+
 **Write floats** for double parameters (`2.0`, not `2`): a bare integer is an
 int64 override and the node dies with `InvalidParameterTypeException`.
 
@@ -265,12 +338,19 @@ ros2 service call /<robot_id>/relocalize_check syncai_common/srv/IsValid "{code:
 
 # kidnapped: find the robot with no hint (blocks up to ~15 s)
 ros2 service call /<robot_id>/auto_localize syncai_common/srv/AutoLocalize "{}"
+
+# Point-LIO diverged (lio_odom velocities in the hundreds of m/s): STOP THE
+# ROBOT, then zero the odometry from the last trusted pose (up to ~17 s) ...
+ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry "{}"
+# ... or from a hint, with the global search as the net (up to ~32 s)
+ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry \
+  "{use_hint: true, x: 1.0, y: 2.0, yaw: 0.0, global_fallback: true}"
 ```
 
 Checking it:
 
 ```bash
-ros2 node info /<robot_id>/localizer_node                 # subs /<id>/pointlio/{body_cloud,lio_odom}, initialpose; srvs relocalize, relocalize_check, auto_localize
+ros2 node info /<robot_id>/localizer_node                 # subs /<id>/pointlio/{body_cloud,lio_odom}, initialpose; srvs relocalize, relocalize_check, auto_localize, reset_odometry
 ros2 param get /<robot_id>/localizer_node update_hz       # 5.0 → the params file was found
 ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; identity until a guess converges
 ```
@@ -286,6 +366,8 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `coarse: N candidates … best 0.xx, K kept for GICP` | `auto_localize` coarse stage; one `fine: …` line per kept candidate follows |
 | `search failed …: ambiguous, a distinct pose scores alike` | Symmetric surroundings; move the robot somewhere more distinctive and retry |
 | `… the timer did not converge on it within …; withdrawn` | The search's pose did not hold against a fresh scan; localization is as before the call |
+| `LIO moved … m/s > reset_odom.max_lio_speed …` | Point-LIO is probably diverging; the round still updated the TF but will not seed `reset_odometry` |
+| `reset_odometry: seed from … resetting Point-LIO` | A reset started; `new odometry after … s; seeded` and then `odometry reset; localized from …` (or `reset_odometry failed: …`) follow |
 | `initialpose ignored: map not loaded …` | No `map_path` and no `relocalize` yet; the message was dropped, not queued |
 
 ## Gotchas
@@ -293,7 +375,8 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 - **The namespace is `/<robot_id>`, not `/<robot_id>/localizer`.** See above.
   The rviz config in `config/rviz2/` reads `/<robot_id>/map_cloud`.
 - **`relocalize` success is a receipt.** Poll `relocalize_check`.
-  **`auto_localize` success is a result** — the opposite — and it blocks.
+  **`auto_localize` and `reset_odometry` success is a result** — the
+  opposite — and both block.
   `RobotState.localization_valid` is TF presence only and reads true against a
   map the robot was never localized in; do not turn it into a quality signal
   from anything but `relocalize_check`.

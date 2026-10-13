@@ -8,6 +8,8 @@
 // gate, and the four ways a guess reaches it (relocalize, initialpose, the
 // INI's [initial_pose], and auto_localize's global search -- the one that
 // needs no pose from anyone; localizers/global_localizer.* does the search).
+// reset_odometry (2026-10) is the fifth, and the only one that also changes
+// the odometry under it: it zeroes Point-LIO and carries the map pose across.
 //
 // Ported into the workspace from SyncAI-Fast-LIO2's `localizer` package in
 // 2026-09, the last node in that fork, with the ROS surface unchanged: node
@@ -27,8 +29,8 @@
 // stack. So the resolved names are /<robot_id>/relocalize,
 // /<robot_id>/relocalize_check, /<robot_id>/initialpose, /<robot_id>/map_cloud
 // and the node is /<robot_id>/localizer_node. auto_localize (2026-10, the
-// kidnap recovery) followed the same rule: /<robot_id>/auto_localize. The
-// port keeps that, because
+// kidnap recovery) followed the same rule: /<robot_id>/auto_localize, and so
+// did reset_odometry: /<robot_id>/reset_odometry. The port keeps that, because
 // moving the namespace is a cross-repository change the backend would have
 // to follow; the docs were corrected instead.
 
@@ -41,6 +43,8 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <atomic>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -49,6 +53,8 @@
 #include "syncai_common/srv/auto_localize.hpp"
 #include "syncai_common/srv/is_valid.hpp"
 #include "syncai_common/srv/relocalize.hpp"
+#include "syncai_common/srv/reset_lio.hpp"
+#include "syncai_common/srv/reset_odometry.hpp"
 #include "syncai_localizer/localizers/commons.h"
 #include "syncai_localizer/localizers/global_localizer.h"
 #include "syncai_localizer/localizers/icp_localizer.h"
@@ -106,6 +112,25 @@ struct NodeConfig
   // the first successful align would leave a parked robot refining at one
   // alpha=0.1 step per max_update_interval, i.e. tens of seconds to converge.
   double post_reloc_settle = 3.0;
+
+  // reset_odometry. The service name is relative, so from this node's
+  // /<robot_id> namespace it resolves to pointlio's /<robot_id>/pointlio/reset.
+  std::string lio_reset_service = "pointlio/reset";
+  // How long to wait for pointlio's reset response (it swaps the builder and
+  // joins the old ikd-tree's rebuild thread -- well under a second normally).
+  double lio_reset_timeout_sec = 2.0;
+  // How long to wait for the first odometry of the new run: pointlio re-runs
+  // its static IMU init (imu_init_num samples at 200 Hz) and publishes nothing
+  // until it is done.
+  double wait_lio_timeout_sec = 10.0;
+  // How long the timer gets to register against the seeded pose.
+  double converge_timeout_sec = 5.0;
+  // A registration only becomes the seed for a later reset_odometry when the
+  // odometry it was chained to moved slower than this since the previous one.
+  // A diverged Point-LIO reports 10-10^4 m/s (robot01 2026-10-13); the robot
+  // tops out at 0.6. Generous on purpose: this only decides what is
+  // remembered, never what is broadcast.
+  double max_lio_speed = 3.0;
 };
 
 // One synchronised body cloud with the odom pose it was taken at, for
@@ -155,7 +180,49 @@ struct NodeState
   rclcpp::Time last_reg_time{0, 0, RCL_SYSTEM_TIME};
   // Full-rate window after a relocalize; see NodeConfig::post_reloc_settle.
   rclcpp::Time settle_until{0, 0, RCL_SYSTEM_TIME};
+
+  // The last TRUSTED registration, map_T_body: one that converged while the
+  // odometry moved plausibly (NodeConfig::max_lio_speed). reset_odometry's
+  // default seed. Written by the timer, read by the service (service_mutex).
+  bool has_good = false;
+  M3D good_map_body_r = M3D::Identity();
+  V3D good_map_body_t = V3D::Zero();
+
+  // reset_odometry's hold on the pipeline while Point-LIO restarts.
+  //  - lio_resetting: the timer only rebroadcasts the TF, no registration,
+  //    no write to last_offset_* (which the service writes meanwhile).
+  //  - intake_paused (message_mutex): syncCB drops everything -- the old
+  //    run's tail is still in flight when the reset lands.
+  //  - lio_boundary (message_mutex): afterwards, syncCB drops every pair
+  //    stamped at or before ResetLIO's last_odom_time, the same gate pgo_node
+  //    uses. -1 until the first reset, i.e. nothing is dropped.
+  //  - scan_seq (message_mutex): pairs accepted so far, so the service can
+  //    wait for the first one of the new run.
+  //  - reset_epoch (message_mutex): bumped when a reset starts; a timer round
+  //    that snapshotted an older epoch drops its result instead of writing
+  //    an old-run offset over the new run's seed.
+  //  - skip_speed_check: the next registration straddles the odometry jump;
+  //    measuring LIO speed across it would read the jump as divergence.
+  std::atomic<bool> lio_resetting{false};
+  bool intake_paused = false;
+  double lio_boundary = -1.0;
+  uint64_t scan_seq = 0;
+  uint64_t reset_epoch = 0;
+  std::atomic<bool> skip_speed_check{false};
 };
+
+// What globalSearch() hands back: the search result, the pose it found at the
+// reference scan, and that pose re-applied to the newest odometry -- the
+// guess to give the timer.
+struct GlobalSearchOutcome
+{
+  GlobalLocResult found;
+  M3D map_body_r = M3D::Identity();
+  V3D map_body_t = V3D::Zero();
+  M4F guess = M4F::Identity();
+};
+
+enum class Convergence { kConverged, kSuperseded, kTimedOut };
 
 class LocalizerNode : public rclcpp::Node
 {
@@ -203,6 +270,14 @@ public:
     const std::shared_ptr<syncai_common::srv::AutoLocalize::Request> request,
     std::shared_ptr<syncai_common::srv::AutoLocalize::Response> response);
 
+  // `reset_odometry`: zero Point-LIO (pointlio/reset) and carry the map pose
+  // across the jump, then wait for the timer to confirm it -- optionally
+  // falling back to auto_localize's search. The robot must be standing still.
+  // Same callback group as the services; ResetOdometry.srv is the contract.
+  void resetOdomCB(
+    const std::shared_ptr<syncai_common::srv::ResetOdometry::Request> request,
+    std::shared_ptr<syncai_common::srv::ResetOdometry::Response> response);
+
   // `relocalize_check`: did the first registration after the last guess succeed?
   void relocCheckCB(
     const std::shared_ptr<syncai_common::srv::IsValid::Request> request,
@@ -211,14 +286,29 @@ public:
   void publishMapCloud(builtin_interfaces::msg::Time & time);
 
 private:
+  // auto_localize's search half, shared with reset_odometry's fallback:
+  // accumulate recent_scans, search poses.txt, re-apply the winner to the
+  // newest odom. False with `error` set when it could not run or found nothing
+  // acceptable; `out.found` is filled whenever the search ran, for diagnosis.
+  bool globalSearch(
+    GlobalLocalizer::Clock::time_point deadline, GlobalSearchOutcome & out, std::string & error);
+
+  // Hand `guess` (map_T_body) to the timer as a service guess and wait for
+  // its converged registration. On timeout the guess is withdrawn and the
+  // timer goes back to its offset + odometry. timeout_sec <= 0 waits forever.
+  Convergence handOverAndAwait(const M4F & guess, double timeout_sec);
+
+  // map_T_body at the newest odometry, from the current offset.
+  void currentMapPose(M3D & r, V3D & t);
+
   NodeConfig m_config;
   NodeState m_state;
 
   ICPConfig m_localizer_config;
   std::shared_ptr<ICPLocalizer> m_localizer;
   GlobalLocConfig m_global_config;
-  // Only ever used from autoLocCB (services' group, mutually exclusive), so
-  // one search at a time and no lock of its own.
+  // Only ever used from the services' group (auto_localize, reset_odometry;
+  // mutually exclusive), so one search at a time and no lock of its own.
   std::shared_ptr<GlobalLocalizer> m_global_localizer;
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> m_cloud_sub;
   message_filters::Subscriber<nav_msgs::msg::Odometry> m_odom_sub;
@@ -228,12 +318,18 @@ private:
     m_sync;
   std::shared_ptr<tf2_ros::TransformBroadcaster> m_tf_broadcaster;
   // The services and initialpose live here, apart from the timer/subscriber
-  // group, paired with the 2-thread MultiThreadedExecutor in main.cpp: a
+  // group, paired with the 3-thread MultiThreadedExecutor in main.cpp: a
   // multi-second loadMap inside relocCB must not gap the TF rebroadcast.
   rclcpp::CallbackGroup::SharedPtr m_srv_cb_group;
   rclcpp::Service<syncai_common::srv::Relocalize>::SharedPtr m_reloc_srv;
   rclcpp::Service<syncai_common::srv::IsValid>::SharedPtr m_reloc_check_srv;
   rclcpp::Service<syncai_common::srv::AutoLocalize>::SharedPtr m_auto_loc_srv;
+  rclcpp::Service<syncai_common::srv::ResetOdometry>::SharedPtr m_reset_odom_srv;
+  // reset_odometry blocks on this client's future, so its response must be
+  // delivered on a different executor thread -- a group of its own, and the
+  // third thread in main.cpp. Same arrangement as pgo_node's ResetLIO client.
+  rclcpp::CallbackGroup::SharedPtr m_cli_cb_group;
+  rclcpp::Client<syncai_common::srv::ResetLIO>::SharedPtr m_lio_reset_cli;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr m_initialpose_sub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_map_cloud_pub;
 };
