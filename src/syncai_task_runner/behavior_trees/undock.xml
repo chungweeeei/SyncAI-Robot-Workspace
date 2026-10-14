@@ -29,20 +29,30 @@
   rotation leaves the robot facing the dock at the staging pose, so the MOVE
   that follows starts from a known heading.
 
-  The two Waits are guesses: 4000 ms for standing up, 1500 ms for the gait
-  transition into MPC. Neither can be verified today -- SetMotionKey is a
-  one-way UDP datagram with no acknowledgement, and the gait controller's
-  reported mode (the `mode` topic, data[1]) has no known value for MPC. Once
-  that code and the stand-up time have been read off the robot, both Waits
-  become WaitForMotionState nodes in the same positions. A Wait too short
-  switches modes mid stand-up or starts the back-out mid transition; do not
-  shorten them without the measurement.
+  The MPC switch is CHECKED, as in dock.xml (2026-10-14): SetMotionKey is a
+  one-way UDP datagram, so WaitForMotionState waits (up to 5 s) for the
+  controller to report MPC -- 5 on the `mode` topic's data[1], read off the
+  robot -- and a Wait of 2000 ms then lets the gait settle before the robot
+  moves; see dock.xml's header. The stand-up is still a plain 4000 ms Wait,
+  a guess: Stand reports 0 on data[1], which is also what the topic reads
+  before anything was heard, so a WaitForMotionState on it would prove
+  nothing. A stand-up Wait too short switches modes mid stand-up; do not
+  shorten it without the measurement.
 
   Gait on exit: RL (key="1") on success, since a MOVE follows -- unlike
-  dock.xml, which ends lying down on the dock and never switches back. On any failure after the MPC switch was attempted the Fallback's
-  second child restores RL as well; a failure of the stand-up itself (the
-  driver's safety lock, "LOCKED") fails before the gait was touched and needs
-  no restore -- the robot is still lying down. A CANCEL during the back-out
+  dock.xml, which ends lying down on the dock and never switches back. The
+  switch back is CHECKED like the one into MPC (2026-10-14):
+  WaitForMotionState waits (up to 5 s) for Locomotion, 1 on `mode` data[1],
+  so SUCCEEDED means the robot is walking in RL and the MOVE that follows
+  will not be sent to a gait still in transition. No settling Wait after it:
+  the next step is a separate goal, which already costs a round trip through
+  the backend. If RL is never reported, the step fails inside the Sequence
+  and the Fallback sends key="1" once more (RestoreRL) before the goal ends
+  DOCK_FAILED -- one retry of the same key, harmless. On any failure after
+  the MPC switch was attempted -- the MPC state never reported included --
+  the Fallback's second child restores RL as well; a failure of the stand-up
+  itself (the driver's safety lock, "LOCKED") fails before the gait was
+  touched and needs no restore -- the robot is still lying down. A CANCEL during the back-out
   halts the tree without the restore, leaving MPC on with the robot standing
   somewhere between the dock and the staging pose; re-sending this goal
   continues from there (the staging pose is still behind the robot), or the
@@ -68,11 +78,15 @@
         <Sequence name="SwitchAndBackOut">
           <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for undocking"/>
           <SetMotionKey key="5" server_timeout="500"/>
-          <!-- Stand-in for a WaitForMotionState check; the value is a guess (header) -->
-          <Wait msec="1500"/>
+          <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
+          <WaitForMotionState state="5" timeout="5000"/>
+          <Wait msec="2000"/>
           <ComputeStagingPose dock_pose="{goal}" distance="1.0" staging_pose="{staging_pose}"/>
           <DockToPose dock_pose="{staging_pose}" controller_id="Undocking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
+          <SetBlackboard output_key="nav_status_msg" value="Switching the gait back to RL"/>
           <SetMotionKey name="BackToRL" key="1" server_timeout="500"/>
+          <!-- Confirm the controller reports RL locomotion (mode data[1] == 1) before SUCCEEDED (header) -->
+          <WaitForMotionState state="1" timeout="5000"/>
         </Sequence>
         <ForceFailure>
           <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>

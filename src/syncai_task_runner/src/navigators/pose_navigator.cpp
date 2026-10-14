@@ -57,6 +57,11 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
     "or lie-down)"}},
   {"DockToPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock approach did not complete"}},
   {"ComputeStagingPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock pose is unusable"}},
+  // 2026-10-14: the check after a gait switch; the detail names the state
+  // waited for and the last one the controller reported.
+  {"WaitForMotionState",
+   {GoalResult::DOCK_FAILED,
+    "Docking failed: the gait controller did not reach the requested motion state"}},
 };
 
 // NavigateToGoal.behavior_tree, as the client sent it, to the file to load.

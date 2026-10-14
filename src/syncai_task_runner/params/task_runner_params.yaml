@@ -28,7 +28,7 @@
     # nodes ported so far are listed — extend as recovery/condition/control
     # nodes are added. XML tag names must match what each plugin registers.
     # The list is duplicated as the C++ default in syncai_task_runner.cpp;
-    # keep the two in sync. The last four are the docking nodes (dock.xml /
+    # keep the two in sync. The last five are the docking nodes (dock.xml /
     # undock.xml, 2026-10): a library is loaded at startup, but a node and
     # its wait for its server exist only once a tree using the tag is
     # loaded, so they cost nothing at boot -- dock_to_pose and
@@ -47,3 +47,4 @@
       - syncai_set_motion_key_service_bt_node
       - syncai_compute_staging_pose_action_bt_node
       - syncai_wait_action_bt_node
+      - syncai_wait_for_motion_state_action_bt_node

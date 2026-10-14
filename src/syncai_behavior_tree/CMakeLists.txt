@@ -88,6 +88,10 @@ add_library(syncai_wait_action_bt_node SHARED
   plugins/action/wait_action.cpp)
 list(APPEND plugin_libs syncai_wait_action_bt_node)
 
+add_library(syncai_wait_for_motion_state_action_bt_node SHARED
+  plugins/action/wait_for_motion_state.cpp)
+list(APPEND plugin_libs syncai_wait_for_motion_state_action_bt_node)
+
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)

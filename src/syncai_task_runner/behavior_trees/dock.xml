@@ -27,19 +27,19 @@
   xy_goal_tolerance (0.15 m) and yaw_goal_tolerance (0.1 rad) of the staging
   pose; that residual is the docking controller's starting error.
 
-  Why the gait switch cannot be verified today, and what the Wait is: MPC is
-  SetMotionKey key="5" -> syncai_driver_manager -> `MODE M` over one-way UDP,
-  and the driver's `success` means the datagram left, nothing more. The
-  controller reports its motion state on the `mode` topic
-  (std_msgs/Int32MultiArray, data[1]), but the code it reports for MPC is
-  unknown (syncai_common/msg/RobotLowLevelMode.msg), so no condition node can
-  check it yet. The Wait stands in for that check: 1500 ms is a GUESS at how
-  long the gait transition takes, not a measurement. Once the MPC code has
-  been read off the robot, a WaitForMotionState node (a `mode` subscriber
-  returning RUNNING until data[1] matches, with its own timeout) replaces the
-  Wait in the same position, and the guess goes away. Do not shorten the Wait
-  without that: a dock approach started mid transition is the failure this
-  tree exists to prevent.
+  How the gait switch is checked (2026-10-14): MPC is SetMotionKey key="5"
+  -> syncai_driver_manager -> `MODE M` over one-way UDP, and the driver's
+  `success` means the datagram left, nothing more. The controller reports its
+  motion state on the `mode` topic (std_msgs/Int32MultiArray, data[1]), and
+  for MPC that is 5 (read off the robot on 2026-10-14). WaitForMotionState
+  waits for it, up to `timeout` (5000 ms); a controller that never reports it
+  fails the step, the Fallback restores RL, and the goal is DOCK_FAILED with
+  the last state seen in error_msg. The node logs how long the switch took --
+  the number to tune the timeout with. The Wait of 2000 ms after it is
+  deliberate settling time: the controller reports MPC when it has entered
+  the mode, not when the gait under it is steady, and a dock approach started
+  mid transition is the failure this tree exists to prevent. Until 2026-10-14
+  the whole check was a fixed 1500 ms Wait, a guess.
 
   Why the tree lies the robot down itself (2026-10-14): a dock is not done
   until the robot is resting on the contacts, and a backend LIEDOWN step
@@ -72,8 +72,9 @@
   Attribution (last writer wins, see move.xml and blackboard_keys.hpp): the
   staging subtree writes ComputePathToPose / FollowPath as in move.xml;
   SetMotionKey writes itself on a refused key or an unanswered call;
-  DockToPose writes itself with the controller's reason. The navigator maps
-  the last two (and ComputeStagingPose) to DOCK_FAILED. One accepted
+  WaitForMotionState writes itself when MPC is never reported; DockToPose
+  writes itself with the controller's reason. The navigator maps the last
+  three (and ComputeStagingPose) to DOCK_FAILED. One accepted
   consequence: when the dock approach fails AND the restore is refused
   (LOCKED), the restore's SetMotionKey is the last writer, so error_msg says
   LOCKED and the approach's reason is in the task_runner log at ERROR
@@ -138,8 +139,9 @@
         <Sequence name="SwitchAndDock">
           <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for docking"/>
           <SetMotionKey key="5" server_timeout="500"/>
-          <!-- Stand-in for a WaitForMotionState check; the value is a guess (header) -->
-          <Wait msec="1500"/>
+          <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
+          <WaitForMotionState state="5" timeout="5000"/>
+          <Wait msec="2000"/>
           <DockToPose dock_pose="{goal}" controller_id="Docking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
         </Sequence>
         <ForceFailure>
