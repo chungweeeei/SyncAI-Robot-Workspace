@@ -14,6 +14,7 @@ find_package(nav_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rcl_interfaces REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
@@ -36,6 +37,7 @@ set(dependencies
   nav2_msgs
   builtin_interfaces
   rcl_interfaces
+  std_srvs
   tf2_ros
   pluginlib
   syncai_util

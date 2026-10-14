@@ -10,6 +10,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "std_srvs/srv/empty.hpp"
 #include "syncai_common/action/navigate_to_goal.hpp"
 #include "syncai_task_runner/navigator.hpp"
 #include "syncai_util/odometry_utils.hpp"
@@ -93,7 +94,8 @@ protected:
    * @brief Fill the result for a tree that ran and FAILED: the failed_node /
    * failure_msg blackboard keys the BT action nodes wrote, mapped to the
    * action's error_code (NavigateToGoal only; the nav2 result has no fields).
-   * SUCCEEDED and CANCELED leave the default (NONE). A goal superseded by a
+   * SUCCEEDED and CANCELED leave the default (NONE); CANCELED also asks the
+   * planner to clear the route it keeps re-sending on `plan`. A goal superseded by a
    * preempt or rejected before the tree ran never gets here -- the action
    * server aborts it with an empty result, which is why ABORTED + NONE means
    * "not a navigation failure" to the client.
@@ -104,11 +106,21 @@ protected:
 
   void initializeGoalPose(typename ActionT::Goal::ConstSharedPtr goal);
 
+  /**
+   * @brief Ask the planner (clear_plan) to stop re-sending the last route on
+   * `plan` and send an empty one. Fire and forget.
+   */
+  void clearPlannerPlan();
+
   rclcpp::Time start_time_;
 
   // Only the rviz-driving instantiation creates these (Traits::kDrivesRvizGoalPose)
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   typename rclcpp_action::Client<ActionT>::SharedPtr self_client_;
+
+  // The planner's clear_plan: called on cancel, so the console stops showing
+  // the route of a navigation that no longer exists
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr clear_plan_client_;
 
   std::string goal_blackboard_id_;
   std::string path_blackboard_id_;

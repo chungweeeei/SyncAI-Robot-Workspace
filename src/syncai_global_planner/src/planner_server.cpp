@@ -187,10 +187,11 @@ void PlannerServer::configure()
   // that subscribes mid-drive (rviz opened late, a reconnect) saw nothing until
   // the next replan, which may never come. Re-sending the last plan keeps
   // `plan` showing the route being driven (the part still ahead; see
-  // republishPlan()). It goes on showing the last route
-  // after the goal ends too, as rviz would have kept displaying it anyway:
-  // nothing here knows when the navigation that asked for it finished.
-  // 0 disables, leaving the plan-time publish only.
+  // republishPlan()). It goes on showing the last route after the goal ends
+  // too, as rviz would have kept displaying it anyway: nothing here knows when
+  // the navigation that asked for it finished -- except a cancel, which the
+  // task_runner reports through clear_plan below. 0 disables, leaving the
+  // plan-time publish only.
   double plan_republish_rate;
   get_parameter("plan_republish_rate", plan_republish_rate);
   if (plan_republish_rate > 0.0) {
@@ -204,6 +205,12 @@ void PlannerServer::configure()
   is_path_valid_service_ = this->create_service<nav2_msgs::srv::IsPathValid>(
     "is_path_valid",
     std::bind(&PlannerServer::isPathValid, this, std::placeholders::_1, std::placeholders::_2));
+
+  // Also on the main executor, which is the thread the republish timer runs
+  // on, so a clear can never interleave with a republish in progress.
+  clear_plan_service_ = this->create_service<std_srvs::srv::Empty>(
+    "clear_plan",
+    std::bind(&PlannerServer::clearPlan, this, std::placeholders::_1, std::placeholders::_2));
 
   // Create the action server for path planning to a pose. spin_thread=true
   // gives the server its own callback group and executor thread, so the
@@ -741,6 +748,7 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path)
     // the timer.
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = path;
+    clear_resends_left_ = 0;
   }
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
   if (plan_publisher_->get_subscription_count() > 0) {
@@ -757,6 +765,12 @@ void PlannerServer::republishPlan()
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     if (last_plan_.poses.empty()) {
+      if (clear_resends_left_ > 0) {
+        --clear_resends_left_;
+        msg->header.frame_id = costmap_ros_->getGlobalFrameID();
+        msg->header.stamp = now();
+        plan_publisher_->publish(std::move(msg));
+      }
       return;
     }
     *msg = last_plan_;
@@ -780,6 +794,34 @@ void PlannerServer::republishPlan()
   // otherwise fail to transform a stamp that has aged out of its TF buffer.
   msg->header.stamp = now();
   plan_publisher_->publish(std::move(msg));
+}
+
+void PlannerServer::clearPlan(
+  const std::shared_ptr<std_srvs::srv::Empty::Request> /*request*/,
+  std::shared_ptr<std_srvs::srv::Empty::Response> /*response*/)
+{
+  // The republish would otherwise keep a cancelled route on `plan` for good:
+  // the backend forwards it to the console, which drew the last route until
+  // the next goal replaced it. An empty path is the clear both rviz and the
+  // backend's path subscriber already understand. Its frame is the global
+  // frame, not empty: the backend drops any `plan` whose frame is not `map`
+  // before it looks at the poses, which would leave the old route up.
+  constexpr int kClearResends = 3;
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    last_plan_ = nav_msgs::msg::Path();
+    // The immediate publish below is the first of the repeats; the timer sends
+    // the rest, one per plan_republish_rate tick (none when it is 0).
+    clear_resends_left_ = kClearResends - 1;
+  }
+  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared (navigation cancelled)", __func__);
+
+  if (plan_publisher_->get_subscription_count() > 0) {
+    auto msg = std::make_unique<nav_msgs::msg::Path>();
+    msg->header.frame_id = costmap_ros_->getGlobalFrameID();
+    msg->header.stamp = now();
+    plan_publisher_->publish(std::move(msg));
+  }
 }
 
 rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallback(

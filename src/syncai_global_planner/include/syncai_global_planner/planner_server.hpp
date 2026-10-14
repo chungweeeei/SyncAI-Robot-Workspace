@@ -17,6 +17,7 @@
 #include "pluginlib/class_loader.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_srvs/srv/empty.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
 #include "syncai_costmap_2d/footprint_collision_checker.hpp"
 #include "syncai_nav_core/global_planner.hpp"
@@ -183,6 +184,14 @@ protected:
   void republishPlan();
 
   /**
+   * @brief Service callback: forget the last plan and send an empty one on
+   * `plan`, so a viewer stops showing a route nobody is driving any more
+   */
+  void clearPlan(
+    const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+    std::shared_ptr<std_srvs::srv::Empty::Response> response);
+
+  /**
    * @brief Callback executed when a parameter change is detected
    * @param parameters The changed parameters
    */
@@ -221,6 +230,16 @@ protected:
   nav_msgs::msg::Path last_plan_;
   std::mutex last_plan_mutex_;
   rclcpp::TimerBase::SharedPtr plan_republish_timer_;
+
+  // Empty plans the timer still owes `plan` after a clear_plan, under
+  // last_plan_mutex_. The backend reads `plan` BEST_EFFORT, so one empty
+  // message can be dropped and leave the console showing the cancelled route
+  // for good; a few repeats make that unlikely without sending an empty path
+  // every second for as long as the robot is idle. A new plan zeroes it.
+  int clear_resends_left_{0};
+
+  // Called by the task_runner when a navigation is cancelled
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr clear_plan_service_;
 
   // Lets the BT keep its current path until the costmap blocks it, instead of
   // replacing it with whatever a fresh plan returns every RateController tick

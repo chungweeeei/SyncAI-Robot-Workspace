@@ -25,6 +25,30 @@
   recoverable side, and no "switch when the new path is X% shorter" threshold
   had to be invented to get it.
 
+  Every new goal starts by clearing the global costmap (2026-10-14). The
+  obstacle layer only clears a mark by raytracing through it, out to
+  raytrace_max_range (3 m), so a mark the robot drives away from is kept for
+  good, and the next goal planned round it. On robot01 the return leg of an
+  A <-> B shuttle came out 60 m instead of 17.5 m: 509 LETHAL cells, absent
+  from the static map, closed the corridor the previous leg had just driven
+  (most likely people beside or behind the robot, whose bodies hid their own
+  trail from the rays). Re-solving that costmap offline gave the same 60 m,
+  so the planner was right and the memory was stale. The clear is cheap and
+  safe: the planner waits for the costmap to be current again (<= 1 s at
+  1 Hz) before it plans; that update re-copies the static map and marks the
+  latest cloud, so a blocker within the 2.5 m obstacle range is back before
+  the first plan; one further out is marked on approach and IsPathValid
+  replans round it, the same as a blocker that appears mid-drive; and the
+  keepout mask survives (the filter re-subscribes, logging "New filter mask
+  arrived", but swaps masks under its lock and never runs without one). Only
+  at tree start, so a preempt (the tree keeps running) does not clear: the
+  memory that makes a detour stick is the point mid-goal. ForceSuccess,
+  because a clear that times out (1 s; it waits on the costmap lock, which
+  an update can hold well past the 20 ms default) must not fail the goal --
+  the stale-memory route is still a route. Side effect: ClearEntireCostmap
+  counts itself into number_recoveries, so the feedback's
+  number_of_recoveries now starts at 1 on every goal (nothing reads it today).
+
   The 1 Hz RateController now paces validity checks; a plan only runs when the
   check fails, so a blocked path is still noticed within ~1 s of the global
   costmap (also 1 Hz) marking it. IsPathValid gets 100 ms instead of the 20 ms
@@ -73,10 +97,12 @@
   0, so FollowPath wrote last. Either way the key names the branch that
   actually failed the tree, and a node that aborted and was retried
   successfully is overwritten by whichever node fails later. The
-  ClearEntireCostmap nodes stay silent on purpose: one only runs because an
-  action node just failed, so the last action-node write already names the
-  right branch, and a service timeout there would otherwise overwrite it with
-  something that maps to UNKNOWN. Accepted limitation: a successfully retried
+  ClearEntireCostmap nodes stay silent on purpose: a recovery one only runs
+  because an action node just failed, so the last action-node write already
+  names the right branch, and a service timeout there would otherwise
+  overwrite it with something that maps to UNKNOWN. (The new-goal clear runs
+  before either branch and, under ForceSuccess, never fails the tree, so it
+  has nothing to name either.) Accepted limitation: a successfully retried
   abort leaves its entry behind, so a tree that later fails through a path
   that writes nothing (an exception) reports the stale one.
 
@@ -98,25 +124,30 @@
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <PipelineSequence name="NavigateWithReplanning">
-      <RateController hz="1.0">
-        <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-          <Fallback name="FallbackComputePathToPose">
-            <ReactiveSequence name="CheckIfNewPathNeeded">
-              <Inverter>
-                <GlobalUpdatedGoal/>
-              </Inverter>
-              <IsPathValid path="{path}" server_timeout="100"/>
-            </ReactiveSequence>
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-          </Fallback>
-          <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+    <Sequence name="NavigateFromFreshGlobalCostmap">
+      <ForceSuccess>
+        <ClearEntireCostmap name="ClearGlobalCostmap-NewGoal" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="1000"/>
+      </ForceSuccess>
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <Fallback name="FallbackComputePathToPose">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}" server_timeout="100"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            </Fallback>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
-      </RateController>
-      <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
-        <FollowPath path="{path}" controller_id="FollowPath"/>
-        <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
-      </RecoveryNode>
-    </PipelineSequence>
+      </PipelineSequence>
+    </Sequence>
   </BehaviorTree>
 </root>

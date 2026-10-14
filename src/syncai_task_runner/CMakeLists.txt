@@ -14,6 +14,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(syncai_behavior_tree REQUIRED)
 find_package(syncai_common REQUIRED)
 find_package(syncai_util REQUIRED)
@@ -27,6 +28,7 @@ set(dependencies
   nav_msgs
   rclcpp
   rclcpp_action
+  std_srvs
   syncai_behavior_tree
   syncai_common
   syncai_util

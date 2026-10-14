@@ -81,10 +81,23 @@
       plugin: "syncai_controller::SimpleGoalChecker"
       # Widened from 0.05: the robot's minimum forward speed is ~0.3 m/s, so it
       # cannot creep in slowly to satisfy a tight tolerance and would overshoot
-      # / stall short of a 5 cm window. 0.2 m gives it room to declare the goal
-      # reached at its floor speed.
-      xy_goal_tolerance: 0.15
-      yaw_goal_tolerance: 0.1
+      # / stall short of a 5 cm window. Raised 0.15 -> 0.3 (2026-10-14): under
+      # MPPI the approach to the goal decelerates through the gait floor, and
+      # on robot01 the robot stopped dead 0.23 m and 0.29 m short (cmd_vel
+      # still non-zero, odom zero) until the progress checker aborted after
+      # 30 s. 0.3 covers both stalls. It is also MPPI GoalAngleCritic's
+      # threshold_to_consider below: change the two together.
+      xy_goal_tolerance: 0.3
+      # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
+      # not turn below ~0.3 rad/s (MPPI's -0.115 rad/s left odom at zero), so
+      # the final rotation cannot slow into a narrow window: a command that
+      # tapers below the floor near the goal heading stalls the robot short of
+      # it, and one above it carries the body on through the command latency
+      # and the stop of a heavy quadruped. At the 0.3 rad/s floor the +/-0.2
+      # window takes ~1.3 s to cross, enough for ~0.6 s of latency + braking
+      # without overshooting it. Estimated, not measured: hold wz 0.3 for 2 s,
+      # zero it, and read the extra rotation off /odom before tightening this.
+      yaw_goal_tolerance: 0.2
       stateful: true
 
     FollowPath:
@@ -159,11 +172,20 @@
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 1.4
+      # threshold_to_consider equals goal_checker.xy_goal_tolerance on purpose
+      # (lowered 0.5 -> 0.3, 2026-10-14), so the robot turns to the goal
+      # heading only once the position is already accepted (stateful: true
+      # latches it). At 0.5 it started turning while still short; on robot01
+      # it stopped 0.29 m out facing the goal yaw, with the goal ~158 deg
+      # behind it. vx_min 0 rules out reversing, the turn back (~4.2 s at
+      # wz_max) outlasts the 2 s horizon, and turning away from the goal yaw
+      # costs here, so standing still scored best. MPPI held a -0.115 rad/s
+      # command under the turn floor until the progress checker aborted.
       GoalAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 3.0
-        threshold_to_consider: 0.5
+        threshold_to_consider: 0.3
       PreferForwardCritic:
         enabled: true
         cost_power: 1
