@@ -47,13 +47,20 @@ public:
    * the messages
    * @param  tf_tolerance The amount of time to wait for a transform to be available when setting a
    * new global frame
+   * @param  height_reference What min / max_obstacle_height are measured from: "global" (z = 0 of
+   * the global frame, upstream's behaviour) or "sensor" (the ground under the sensor: the sensor
+   * origin's z in the global frame minus sensor_height). With "sensor" the buffered cloud's z,
+   * and its origin's, are stored relative to that ground, so the obstacle layer's own
+   * min / max_obstacle_height read the same way
+   * @param  sensor_height The sensor's height above the ground, for height_reference "sensor"
    */
   ObservationBuffer(
     const rclcpp::Node::SharedPtr & parent, std::string topic_name, double observation_keep_time,
     double expected_update_rate, double min_obstacle_height, double max_obstacle_height,
     double obstacle_max_range, double obstacle_min_range, double raytrace_max_range,
     double raytrace_min_range, tf2_ros::Buffer & tf2_buffer, std::string global_frame,
-    std::string sensor_frame, tf2::Duration tf_tolerance);
+    std::string sensor_frame, tf2::Duration tf_tolerance,
+    const std::string & height_reference = "global", double sensor_height = 0.0);
 
   /**
    * @brief  Destructor... cleans up
@@ -112,6 +119,8 @@ private:
   std::list<Observation> observation_list_;
   std::string topic_name_;
   double min_obstacle_height_, max_obstacle_height_;
+  bool heights_from_sensor_;  ///< @brief height_reference == "sensor"
+  double sensor_height_;
   std::recursive_mutex lock_;  ///< @brief A lock for accessing data in callbacks safely
   double obstacle_max_range_, obstacle_min_range_, raytrace_max_range_, raytrace_min_range_;
   tf2::Duration tf_tolerance_;
