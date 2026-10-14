@@ -19,6 +19,9 @@ namespace syncai_behavior_tree
  * ("Undocking"): direction is the controller the goal names, not a goal
  * field, see DockToPose.action.
  *
+ * The port is a PoseStamped (the trees' {goal} / {staging_pose}); the node
+ * converts it to the action's planar frame_id / x / y / yaw.
+ *
  * Writes the navigator's status sentence from the controller's feedback
  * ("Docking: 0.42 m from the dock") and report_failure()s on abort with the
  * controller's own reason, which the navigator maps to DOCK_FAILED.
@@ -74,7 +77,9 @@ public:
   {
     return providedBasicPorts({
       BT::InputPort<geometry_msgs::msg::PoseStamped>(
-        "dock_pose", "Pose to end on, any TF frame; the server transforms it to odom once"),
+        "dock_pose",
+        "Pose to end on, any TF frame; sent as frame_id / x / y / yaw, and the server "
+        "transforms it to odom once"),
       BT::InputPort<std::string>(
         "controller_id", "Docking",
         "controller_server's controller_plugins id: Docking (forward) or Undocking (reverse)"),

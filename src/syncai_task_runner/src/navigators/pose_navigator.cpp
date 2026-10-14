@@ -49,8 +49,12 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
   // generic node mapped to a docking code because those two trees are its
   // only callers today -- a third tree using it would need a tree-aware
   // answer. Wait never fails on a configured tree and has no row.
+  // Since dock.xml lies the robot down itself (2026-10-14) the refused key
+  // can also be the final lie-down; the detail in parentheses names the key.
   {"SetMotionKey",
-   {GoalResult::DOCK_FAILED, "Docking failed: the gait controller refused the motion-mode switch"}},
+   {GoalResult::DOCK_FAILED,
+    "Docking failed: the gait controller refused a motion command (gait switch, stand-up "
+    "or lie-down)"}},
   {"DockToPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock approach did not complete"}},
   {"ComputeStagingPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock pose is unusable"}},
 };

@@ -1,7 +1,7 @@
 <!--
   Dock: navigate to a staging pose in front of the dock with move.xml's
-  machinery, switch the gait to MPC, wait, then hand the last metre to the
-  controller's DockToPose. Selected per goal by NavigateToGoal.behavior_tree
+  machinery, switch the gait to MPC, wait, hand the last metre to the
+  controller's DockToPose, then lie down on the dock. Selected per goal by NavigateToGoal.behavior_tree
   ("dock.xml" -- a bare name resolves against this directory -- or the
   absolute share path); there is no separate dock action, so a dock reports
   through the same error_code / status_msg surface as a move, and the goal's
@@ -41,10 +41,23 @@
   without that: a dock approach started mid transition is the failure this
   tree exists to prevent.
 
-  Why RL is restored only on failure: on success the robot is ON the dock and
-  the backend's next step is typically LIEDOWN (or, later, undock.xml, which
-  stands the robot up itself); switching back to RL would be a step the task
-  never asked for. On any failure after the switch was attempted -- the
+  Why the tree lies the robot down itself (2026-10-14): a dock is not done
+  until the robot is resting on the contacts, and a backend LIEDOWN step
+  after every DOCK was one more step to forget. LieDownOnDock sends key="2"
+  (`MODE X`) once DockToPose has succeeded, then a Wait of 4000 ms -- a GUESS
+  at the lie-down time, the counterpart of undock.xml's stand-up Wait, to be
+  replaced by a WaitForMotionState in the same place -- so SUCCEEDED means
+  "lying on the dock", not "lie-down sent". It sits OUTSIDE the DockInMpc
+  Fallback: a refused lie-down (LOCKED, an unanswered call) must not run
+  RestoreRL, which would switch a robot standing on the dock to the walking
+  gait for nothing. Such a failure is DOCK_FAILED with SetMotionKey's reason
+  and leaves the robot standing on the dock in MPC; undock.xml starts from
+  there as well (its stand-up key is a no-op for a standing robot).
+
+  Why RL is restored only on failure: on success the robot lies down on the
+  dock (above), and the next step is undock.xml, which stands it up itself;
+  switching back to RL first would be a step the task never asked for. On
+  any failure after the switch was attempted -- the
   switch refused (LOCKED), or the approach aborted -- the Fallback's second
   child sends key="1" (`MODE C`, RL locomotion) so the robot is left as the
   step found it, and ForceFailure keeps the goal a failure. The Fallback
@@ -53,8 +66,8 @@
   PLAN_FAILED / FOLLOW_PATH_FAILED, "the dock was unreachable" -- is more
   useful than DOCK_FAILED would be. A CANCEL during the approach halts the
   tree and cannot run the restore (halt() does not tick), so a cancelled dock
-  leaves the gait in MPC; the backend restores RL itself, as it does after a
-  successful dock, before the next MOVE.
+  leaves the gait in MPC, standing; the backend restores RL itself before
+  the next MOVE.
 
   Attribution (last writer wins, see move.xml and blackboard_keys.hpp): the
   staging subtree writes ComputePathToPose / FollowPath as in move.xml;
@@ -73,14 +86,15 @@
   switching -- written by the tree, not by SetMotionKey, which is a generic
   node that does not know why it is sending key 5 -- and DockToPose writes
   "Approaching the dock", "Docking: 0.42 m from the dock" from the
-  controller's feedback, and "Docked" / "Dock approach failed". output_key is
+  controller's feedback, and "Docked" / "Dock approach failed"; the tree's
+  last sentence is "Docked; lying down". output_key is
   the BARE key on purpose: with {nav_status_msg} SetBlackboard would read the
   current sentence and use it as the key name. During the approach the
   navigator's distance_remaining is still measured along the staging path
   (the robot stands at its end, so it reads <= 0.15 m); the dock distance is
   in status_msg only.
 
-  server_timeout="500" on both SetMotionKey calls: the default 20 ms is the
+  server_timeout="500" on every SetMotionKey call: the default 20 ms is the
   action-ack budget, but for a service it is the whole call, and the
   driver's four services share one worker thread, so a set_speed_scale in
   flight from the console would time the switch out. Half a second is still
@@ -132,6 +146,15 @@
           <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
         </ForceFailure>
       </Fallback>
+
+      <!-- On the dock: lie down. Outside DockInMpc on purpose -- a refused
+           lie-down must not switch a robot standing on the dock to RL (header) -->
+      <Sequence name="LieDownOnDock">
+        <SetBlackboard output_key="nav_status_msg" value="Docked; lying down"/>
+        <SetMotionKey name="LieDown" key="2" server_timeout="500"/>
+        <!-- Lie-down time: a guess until measured, like undock.xml's stand-up (header) -->
+        <Wait msec="4000"/>
+      </Sequence>
     </Sequence>
   </BehaviorTree>
 </root>

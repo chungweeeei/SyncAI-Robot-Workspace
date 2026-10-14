@@ -5,9 +5,44 @@
 #include <string>
 
 #include "syncai_behavior_tree/blackboard_keys.hpp"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#include "tf2/utils.h"
+#pragma GCC diagnostic pop
+// tf2::getYaw() on a geometry_msgs quaternion needs the fromMsg() overload
+// this header provides in the same translation unit: without it a Release
+// build links and then dies with a symbol lookup error when the plugin loads
+// (syncai_controller's simple_progress_checker.cpp records the incident).
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 namespace syncai_behavior_tree
 {
+
+namespace
+{
+
+using DockGoal = syncai_common::action::DockToPose::Goal;
+
+// The trees carry poses as PoseStamped ({goal}, {staging_pose}); the action
+// takes a planar frame_id / x / y / yaw since 2026-10-14 (a quaternion is
+// what a hand-written CLI goal gets wrong, and the controller uses nothing
+// else). The conversion lives here, the one client, so the port stays a
+// PoseStamped and neither tree changes. The quaternion was validated by
+// ComputeStagingPose earlier in both trees. Returns whether anything changed.
+bool fillPlanarPose(const geometry_msgs::msg::PoseStamped & pose, DockGoal & goal)
+{
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  const bool changed = goal.frame_id != pose.header.frame_id ||
+                       goal.x != pose.pose.position.x || goal.y != pose.pose.position.y ||
+                       goal.yaw != yaw;
+  goal.frame_id = pose.header.frame_id;
+  goal.x = pose.pose.position.x;
+  goal.y = pose.pose.position.y;
+  goal.yaw = yaw;
+  return changed;
+}
+
+}  // namespace
 
 DockToPoseAction::DockToPoseAction(
   const std::string & xml_tag_name, const std::string & action_name,
@@ -18,18 +53,19 @@ DockToPoseAction::DockToPoseAction(
 
 void DockToPoseAction::on_tick()
 {
-  getInput("dock_pose", goal_.dock_pose);
+  geometry_msgs::msg::PoseStamped dock_pose;
+  getInput("dock_pose", dock_pose);
   getInput("controller_id", goal_.controller_id);
   getInput("goal_checker_id", goal_.goal_checker_id);
   double timeout = 0.0;
   getInput("timeout", timeout);
   goal_.timeout = static_cast<float>(timeout);
 
-  // The server cannot transform a frameless pose and would answer
-  // TRANSFORM_FAILED; failing here names the real cause (a goal built without
-  // a header, usually) before anything is sent. tick() returns FAILURE when
-  // should_send_goal_ is false.
-  if (goal_.dock_pose.header.frame_id.empty()) {
+  // The server would read an empty frame_id as "map" and dock somewhere
+  // plausible-looking; failing here names the real cause (a pose built
+  // without a header, usually) before anything is sent. tick() returns
+  // FAILURE when should_send_goal_ is false.
+  if (dock_pose.header.frame_id.empty()) {
     RCLCPP_ERROR(
       node_->get_logger(), "[DockToPoseAction][%s] dock_pose has no frame_id; not sending the goal",
       __func__);
@@ -37,6 +73,7 @@ void DockToPoseAction::on_tick()
     should_send_goal_ = false;
     return;
   }
+  fillPlanarPose(dock_pose, goal_);
 
   // The one hint this node has about direction. It only picks sentences;
   // the goal goes out as the ports say.
@@ -75,8 +112,7 @@ void DockToPoseAction::on_wait_for_result(
   // is_preempt_requested() every cycle, as it does for FollowPath).
   geometry_msgs::msg::PoseStamped new_pose;
   getInput("dock_pose", new_pose);
-  if (goal_.dock_pose != new_pose && !new_pose.header.frame_id.empty()) {
-    goal_.dock_pose = new_pose;
+  if (!new_pose.header.frame_id.empty() && fillPlanarPose(new_pose, goal_)) {
     goal_updated_ = true;
   }
 

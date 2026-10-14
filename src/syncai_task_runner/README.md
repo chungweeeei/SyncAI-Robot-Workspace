@@ -372,13 +372,16 @@ pose whichever way the robot is going.
 `dock.xml`: the `move.xml` structure navigates to the staging pose (MPPI,
 local costmap — this is where obstacle avoidance happens), then
 `SetMotionKey key="5"` switches the gait to MPC, `Wait msec="1500"` stands in
-for a mode check, and `DockToPose controller_id="Docking"` drives the last
-metre blind (the docking controller reads no costmap: the dock is itself a
-lethal cell). On any failure after the switch, `SetMotionKey key="1"`
-restores RL locomotion; a staging-leg failure never switched the gait and
-reports 100 / 200 as a move would. On **success the gait stays MPC** (the
-backend's next step is LIEDOWN), and so it does after a cancel, which halts
-the tree before the restore.
+for a mode check, `DockToPose controller_id="Docking"` drives the last metre
+blind (the docking controller reads no costmap: the dock is itself a lethal
+cell), and on arrival `SetMotionKey key="2"` + `Wait msec="4000"` **lie the
+robot down on the dock** (2026-10-14; it was the backend's LIEDOWN step
+before), so SUCCEEDED means lying on the contacts. On any failure of the MPC
+switch or the approach, `SetMotionKey key="1"` restores RL locomotion; a
+staging-leg failure never switched the gait and reports 100 / 200 as a move
+would. A refused lie-down is `DOCK_FAILED` **without** the RL restore — the
+robot stays standing on the dock in MPC, which `undock.xml` also starts from.
+A cancel halts the tree before any restore and leaves MPC on, standing.
 
 `undock.xml`: from lying on the dock — `SetMotionKey key="0"` (stand),
 `Wait 4000`, `key="5"`, `Wait 1500`, `ComputeStagingPose`, `DockToPose
@@ -387,11 +390,11 @@ controller_id="Undocking"` backing straight out to the staging pose, then
 MOVE straight off the dock is not reliable because the robot's footprint sits
 on the dock's lethal cells.
 
-Both `Wait`s are guesses: `set_motion_key` is one-way UDP and the gait
+Every `Wait` is a guess (MPC switch, stand-up, lie-down): `set_motion_key` is one-way UDP and the gait
 controller's reported mode has no known value for MPC yet. Once that code is
 read off the robot, a `WaitForMotionState` node replaces each `Wait` in the
-same position. The typical backend sequence is MOVE(`dock.xml`) → LIEDOWN → …
-→ MOVE(`undock.xml`) → MOVE. The XML headers carry the full rationale.
+same position. The typical backend sequence is MOVE(`dock.xml`) → … (charging)
+→ MOVE(`undock.xml`) → MOVE; there is no separate LIEDOWN step any more. The XML headers carry the full rationale.
 
 Preemption follows the move rules: a dock goal re-sent with the same tree is
 accepted in place (the staging pose is recomputed, or the approach re-targets

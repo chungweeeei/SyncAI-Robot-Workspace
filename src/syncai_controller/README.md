@@ -329,7 +329,10 @@ and `syncai_controller::DockingController`, loaded twice as `Docking` and
 
 ### The action
 
-`syncai_common/action/DockToPose` — goal `dock_pose` (any TF frame),
+`syncai_common/action/DockToPose` — goal a **planar** pose, `frame_id` (any
+TF frame, empty → `map`) / `x` / `y` / `yaw` (rad), not a `PoseStamped` since
+2026-10-14 (the controller uses nothing else, and a hand-written quaternion is
+what a CLI goal gets wrong; the BT node converts the trees' `PoseStamped`),
 `controller_id` (empty → `default_dock_controller_id`, `Docking`),
 `goal_checker_id` (empty → `default_dock_goal_checker_id`, `dock_goal_checker`),
 `timeout` (s, `<= 0` → `dock_approach_timeout`, 60). Result `error_code` /
@@ -340,7 +343,7 @@ last cycle that had a robot pose (`-1.0` distance when none did). Feedback
 | `error_code` | When | Zero twist published? |
 |---|---|---|
 | `NONE` 0 | `SUCCEEDED`; `CANCELED`; **`ABORTED` + `NONE` = superseded by a preempting dock goal** (default result from `accept_pending_goal`) | yes / yes / — |
-| `TRANSFORM_FAILED` 301 | `dock_pose` has no `frame_id` or no transform into odom; robot pose unavailable at acceptance | yes |
+| `TRANSFORM_FAILED` 301 | No transform from the goal's `frame_id` into odom; robot pose unavailable at acceptance | yes |
 | `CONTROLLER_BUSY` 302 | `follow_path` holds the lock | **no** |
 | `FAILED_TO_CONTROL` 303 | any `PlannerException` (patience exceeded, no progress, the plugin's own throws), `error_msg` = its text | yes |
 | `TIMEOUT` 304 | the per-goal timeout | yes |
@@ -357,7 +360,7 @@ the hundreds, as for 1xx / 2xx. Only the trees `dock.xml` / `undock.xml` in
 
 ```
 bounded lock (100 ms)                   ← else CONTROLLER_BUSY, no zero twist
-acceptDockGoal(goal)                    ← ids resolved (empty → defaults), dock_pose transformed into
+acceptDockGoal(goal)                    ← ids resolved (empty → defaults), the goal pose transformed into
                                           odom ONCE (stamp Time(0)), robot pose fetched, a 2-pose path
                                           [robot start, dock pose] handed to setPlannerPath();
                                           controller->reset() + progress checker reset per goal
@@ -673,13 +676,15 @@ ros2 action send_goal /<robot_id>/follow_path nav2_msgs/action/FollowPath \
 ros2 topic echo /<robot_id>/cmd_vel
 ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expect?
 
-# Docking, without the task runner: a pose 1 m ahead in odom (or in map after
-# a relocalize). With the robot lying down or driver_manager stopped this is a
-# safe way to watch the command ramp; expect "Failed to make progress" after
-# 30 s when nothing moves.
+# Docking, without the task runner: a pose 1 m ahead of where the robot
+# stands now (base_link is resolved once, at acceptance). Switch the gait to
+# MPC first (set_motion_key "5") -- nothing here does it. With the robot lying
+# down or driver_manager stopped this is a safe way to watch the command ramp;
+# expect "Failed to make progress" after 30 s when nothing moves. A map-frame
+# dock pose is frame_id: map (or empty) with the map x / y / yaw.
 ros2 action send_goal /<robot_id>/dock_to_pose syncai_common/action/DockToPose \
-  "{dock_pose: {header: {frame_id: <robot_id>/odom}, pose: {position: {x: 1.0},
-    orientation: {w: 1.0}}}, timeout: 0.0}" --feedback
+  "{frame_id: <robot_id>/base_link, x: 1.0, y: 0.0, yaw: 0.0}" --feedback
+# Backing out 1 m: controller_id: Undocking, x: -1.0
 ros2 topic echo /<robot_id>/local_plan           # the predicted approach (also MPPI's topic)
 ros2 topic echo /<robot_id>/docking_target       # the target in the base frame
 ```

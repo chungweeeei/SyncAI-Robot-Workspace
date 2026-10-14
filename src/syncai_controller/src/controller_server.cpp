@@ -695,20 +695,25 @@ bool ControllerServer::acceptDockGoal(
   // the approach must not move the target under a robot 20 cm from it. The
   // stamp is Time(0) for the latest map -> odom, the same fix isGoalReached()
   // needed for stale path stamps.
+  //
+  // The goal is planar (frame_id, x, y, yaw; 2026-10-14, it was a
+  // PoseStamped): rebuilt into a PoseStamped here so the transform and
+  // everything downstream are unchanged. An empty frame_id means "map", the
+  // frame tasks give dock poses in -- the literal name, as global_frame is
+  // plain `map` everywhere in this stack (it is not namespaced by robot_id).
   const std::string & global_frame = costmap_ros_->getGlobalFrameID();
-  geometry_msgs::msg::PoseStamped dock_in = goal.dock_pose;
-  if (dock_in.header.frame_id.empty()) {
-    error_code = DockAction::Result::TRANSFORM_FAILED;
-    error_msg = "dock_pose has no frame_id";
-    return false;
-  }
+  geometry_msgs::msg::PoseStamped dock_in;
+  dock_in.header.frame_id = goal.frame_id.empty() ? std::string("map") : goal.frame_id;
   dock_in.header.stamp = rclcpp::Time(0);
+  dock_in.pose.position.x = goal.x;
+  dock_in.pose.position.y = goal.y;
+  dock_in.pose.orientation = syncai_util::geometry_utils::orientationAroundZAxis(goal.yaw);
   geometry_msgs::msg::PoseStamped dock_odom;
   if (!syncai_util::transformPoseInTargetFrame(
         dock_in, dock_odom, *costmap_ros_->getTfBuffer(), global_frame,
         costmap_ros_->getTransformTolerance())) {
     error_code = DockAction::Result::TRANSFORM_FAILED;
-    error_msg = "cannot transform dock_pose from '" + dock_in.header.frame_id + "' into '" +
+    error_msg = "cannot transform the dock pose from '" + dock_in.header.frame_id + "' into '" +
                 global_frame + "'";
     return false;
   }
@@ -727,10 +732,9 @@ bool ControllerServer::acceptDockGoal(
     get_logger(),
     "Dock pose (%.3f, %.3f, yaw %.3f) in '%s' -> (%.3f, %.3f, yaw %.3f) in '%s'; controller '%s', "
     "goal checker '%s', timeout %.1f s%s",
-    goal.dock_pose.pose.position.x, goal.dock_pose.pose.position.y,
-    tf2::getYaw(goal.dock_pose.pose.orientation), goal.dock_pose.header.frame_id.c_str(),
-    dock_odom.pose.position.x, dock_odom.pose.position.y, tf2::getYaw(dock_odom.pose.orientation),
-    global_frame.c_str(), controller.c_str(), goal_checker.c_str(),
+    goal.x, goal.y, goal.yaw, dock_in.header.frame_id.c_str(), dock_odom.pose.position.x,
+    dock_odom.pose.position.y, tf2::getYaw(dock_odom.pose.orientation), global_frame.c_str(),
+    controller.c_str(), goal_checker.c_str(),
     goal.timeout > 0.0f ? static_cast<double>(goal.timeout) : dock_approach_timeout_,
     is_preempt ? " (preempt)" : "");
 

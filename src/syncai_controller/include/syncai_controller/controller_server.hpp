@@ -98,18 +98,18 @@ protected:
 
   /**
    * @brief DockToPose action server callback: drive to ONE pose with the
-   * docking controller and stop there. The goal's dock_pose is transformed
-   * into the local costmap's global frame (odom) once, here, and tracked in
-   * that frame for the rest of the goal; the plugin gets it as the last pose
-   * of a 2-pose path [robot start, dock pose] through setPlannerPath(), so
-   * everything after that is the FollowPath machinery. Blocks until the goal
-   * ends, like computeControl().
+   * docking controller and stop there. The goal's planar pose (frame_id, x,
+   * y, yaw) is transformed into the local costmap's global frame (odom)
+   * once, here, and tracked in that frame for the rest of the goal; the
+   * plugin gets it as the last pose of a 2-pose path [robot start, dock pose]
+   * through setPlannerPath(), so everything after that is the FollowPath
+   * machinery. Blocks until the goal ends, like computeControl().
    */
   void dockControl();
 
   /**
    * @brief Resolve a dock goal's plugin ids (empty -> the server defaults),
-   * transform its dock_pose into the costmap's global frame, and hand the
+   * transform its planar pose into the costmap's global frame, and hand the
    * resulting 2-pose path to the controller. Called once per goal and again
    * on every preempt.
    * @param goal The accepted goal
