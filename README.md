@@ -52,9 +52,9 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SwitchMode`, `SetMotionKey`, `ExecuteTask`, …). **Not tracked here**, see below |
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
-| `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter) |
+| `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter); an obstacle source can measure its height band from the ground under the robot (`height_reference: sensor`) instead of the global frame's `z = 0` |
 | `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine, SmacPlanner2D and OctomapPlanner3D plugins (Smac is configured as `GridBased`; OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`, is loaded beside it as `Octo3D`) |
-| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and its own Regulated Pure Pursuit as `FollowPathRPP`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap |
+| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and its own Regulated Pure Pursuit as `FollowPathRPP`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap. RPP and the goal check follow paths with heights (`Octo3D`) in 3D, and RPP climbs stairs in a *stair mode* that switches the gait controller's RL policy |
 | `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan` |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`), plus the docking nodes `DockToPose`, `SetMotionKey`, `ComputeStagingPose`, `Wait` (2026-10) |
 | `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` — or `dock.xml` / `undock.xml` when the goal names them |
@@ -346,6 +346,35 @@ that API. A raw `nav2_msgs/NavigateToPose` goal to `/<robot_id>/navigate_to_pose
 (or a `syncai_common/NavigateToGoal` one to `/<robot_id>/navigate_to_goal`,
 which also says why a failed goal failed) works as well, and is the route that
 needs nothing outside this repo.
+
+**3D navigation and stairs (prototype).** The configured path is 2D:
+`move.xml` asks for `planner_id="GridBased"` (SmacPlanner2D) and
+`controller_id="FollowPath"` (MPPI). To plan on the map's `octomap.bt` and climb
+the stairs the robot walked while mapping, change those two attributes to
+`Octo3D` and `FollowPathRPP` and restart the `task_runner` pane — it is a
+fleet-wide change, every MOVE goal goes the new way. Then:
+
+- `Octo3D` plans across floors over *stair links* taken from `poses.txt`; a
+  goal's z picks the floor (z = 0 lands on 1F).
+- RPP matches the robot to the path in 3D (its height is
+  `<robot_id>/pointlio_body`'s z minus `lidar_height`, since `base_link` is
+  planar), and a goal only counts within `goal_z_tolerance` (0.5 m) of the end
+  pose's height.
+- Where the path rises 0.3 m within 1 m, RPP enters **stair mode**: it stops,
+  calls `set_policy_mode` with `stair_policy_mode` (1, HIMLOCO), stands
+  `stair_policy_settle_time` (3 s), climbs at 0.2 m/s with a 0.4 m carrot, and
+  past the flight stops again to switch back to the policy the controller
+  reported on `<robot_id>/mode`. Without `set_policy_mode` it does not climb.
+  The short 2F ramp of dp1f_1012 is taken in stair mode too. The state is on
+  `<robot_id>/stair_mode`.
+
+Climbing has **not** been run on the robot: whether HIMLOCO takes the spiral
+stair, and whether a switch standing still is enough, are open. Test it
+attended, ESTOP in hand, from a short goal near the stair foot. MPPI has no
+stair mode, and the planner's `is_path_valid` still checks the path on the 2D
+global costmap, so expect a replan a second on 2F (Octo3D returns the same
+path). `syncai_controller/README.md` ("Paths with heights", "Stairs") and
+`syncai_global_planner/README.md` have the details.
 
 **Mapping loop.** Switch to MANUAL — the mapping session runs bringup +
 pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state, and none of

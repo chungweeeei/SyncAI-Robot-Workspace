@@ -76,6 +76,30 @@
     default_dock_goal_checker_id: "dock_goal_checker"
     dock_approach_timeout: 60.0
 
+    # Paths with heights (2026-10): OctomapPlanner3D writes the ground height
+    # on every pose, and its stair links climb. On dp1f_1012's spiral stair
+    # the path is back over the same x / y every 8.1 m, 2.5 m higher, so a
+    # planar match puts the robot on the wrong turn -- RPP's nearest-pose
+    # search spans 10 m -- and a 2F goal can be "reached" from the 1F
+    # corridor under it. A path whose poses do not all share one z is
+    # therefore matched in 3D, by RPP (nearest pose, local window) and by the
+    # goal check here; a 2D planner's path (all z = 0) is untouched. The
+    # robot's height is not in its pose -- lio_bridge projects base_link onto
+    # the plane -- so it is body_frame's z in the path's frame minus
+    # lidar_height: the planner's own start-height lookup, and the same two
+    # values (planner_server_params.yaml, Octo3D). body_frame gets the
+    # <robot_id>/ prefix from the launch file; without that TF a path with
+    # heights fails each cycle in RPP and never reaches its goal, rather
+    # than being tracked on x / y. path_height.hpp has the rest.
+    body_frame: pointlio_body
+    lidar_height: 0.481
+    # How far the ground under the robot may be from the end pose's height
+    # for the goal to count. The end pose is the top of a 0.1 m cell and the
+    # ground estimate rides the lidar's z (1F keyframes spread 0.24 m on a
+    # floor the planner calls level), so 0.5 m: well clear of both, and far
+    # under the 2.5 m of one stair turn or the ~5.5 m between floors.
+    goal_z_tolerance: 0.5
+
     progress_checker_plugin: "progress_checker"
     # ORDER MATTERS: a FollowPath goal that names no goal checker (move.xml
     # names none, and the BT node defaults it to "") gets the FIRST entry, so
@@ -448,6 +472,42 @@
       inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
 
+      # Stair mode (2026-10, RPP only; README "Stairs"). On a path with heights
+      # (OctomapPlanner3D) a stretch rising stair_min_rise within
+      # stair_enter_dist ahead is a stair: the robot stops, set_policy_mode
+      # switches the gait controller to stair_policy_mode, it stands
+      # stair_policy_settle_time, and climbs at stair_linear_vel with a
+      # stair_lookahead_dist carrot. It leaves once the path from
+      # stair_exit_behind_dist back to stair_exit_ahead_dist ahead rises less
+      # than stair_min_rise, stopping again to switch the policy back.
+      # Windows from dp1f_1012's Octo3D paths: level paths rise at most
+      # 0.10-0.20 m within 1 m, the 2F ramp 0.47 m (so it is climbed in stair
+      # mode too, 1.9 m of it), the spiral stair 0.68 m; with these values
+      # each stair path enters stair mode once, and its landings keep it.
+      use_stair_mode: true
+      stair_min_rise: 0.3
+      stair_enter_dist: 1.0
+      stair_exit_behind_dist: 0.8
+      stair_exit_ahead_dist: 2.5
+      # 0.2 m/s and a 0.4 m carrot keep RPP's collision projection (carrot +
+      # 0.36 m of footprint) within ~0.76 m, where a 0.17 / 0.28 m stair has
+      # risen ~0.46 m -- under the local costmap's 0.58 m obstacle floor, so
+      # the treads ahead do not read as a wall while the stairwell's walls do.
+      stair_linear_vel: 0.2
+      stair_lookahead_dist: 0.4
+      # 3 s standing after each policy switch, in and out (asked for on
+      # 2026-10-14; nothing measured yet). Two stops per flight, so ~6 s plus
+      # braking added to a stair path -- far inside the progress checker's 30 s.
+      stair_policy_settle_time: 3.0
+      # The gait controller's RL policy index (syncai_common
+      # RobotLowLevelMode.msg: 0 PPO, 1 HIMLOCO, 2 CHAMP, 3 ISSAC). HIMLOCO
+      # for stairs. flat_policy_mode -1 = go back to the policy the controller
+      # reported on <robot_id>/mode before the switch; with no report heard,
+      # the robot stays on HIMLOCO. stair_policy_mode -1 = never switch (speed
+      # and carrot only, no stops).
+      stair_policy_mode: 1
+      flat_policy_mode: -1
+
     # The last metre onto the dock (2026-10): dock_to_pose's default
     # controller, driven by dock.xml. One pose, no path, NO COSTMAP -- this
     # plugin never reads cost data and never checks for collisions (the dock
@@ -637,6 +697,9 @@
       plugin: "syncai_costmap_2d::ObstacleLayer"
       enabled: true
       footprint_clearing_enabled: true
+      # Layer-wide cap, applied after each source's own band. For the
+      # pointcloud source (height_reference: sensor) it reads as height above
+      # the robot's ground too, so it must stay >= that source's 1.98.
       max_obstacle_height: 2.0
       combination_method: 1            # 0=Overwrite, 1=Maximum
       observation_sources: scan pointcloud
@@ -674,10 +737,25 @@
         data_type: "PointCloud2"
         marking: true
         clearing: true
-        # map -> odom is planar (z preserved), so heights here are still metres
-        # above the floor: skip the ground plane, keep chassis-height obstacles.
-        min_obstacle_height: 0.1
-        max_obstacle_height: 1.5
+        # Heights from the ground under the robot, not from odom's z = 0
+        # (height_reference, 2026-10; ObservationBuffer). lio_bridge keeps
+        # map -> odom and odom -> base_link planar, so a point's z in odom is
+        # its height in the map, whose origin is the lidar where mapping
+        # started: the 1F floor is at about -0.48 there, and the old fixed
+        # band of 0.1-1.5 -- documented as "above the floor" -- was 0.58-1.98
+        # above it on 1F, and above everything on 2F (~5.5 m up), where this
+        # source saw nothing at all; on a stair it slid past the robot. Now the
+        # band rides with the robot: ground = the sensor's (pointlio_body's) z
+        # minus sensor_height, lidar_height in planner_server_params.yaml.
+        # The numbers below are that same 0.58-1.98 above the floor, i.e. what
+        # 1F has always actually run with, so 1F does not change; whether the
+        # local costmap should see lower things (the 0.1 the old comment meant:
+        # boxes, low carts) is a separate decision -- it would also mark ramps
+        # and kerbs the planner accepts, and MPPI would steer round them.
+        height_reference: sensor
+        sensor_height: 0.481
+        min_obstacle_height: 0.58
+        max_obstacle_height: 1.98
         obstacle_max_range: 2.5
         obstacle_min_range: 0.0
         raytrace_max_range: 3.0

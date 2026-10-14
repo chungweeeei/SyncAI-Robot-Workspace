@@ -1,12 +1,14 @@
 #include "syncai_controller/plugins/regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "syncai_controller/path_height.hpp"
 #include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
@@ -177,6 +179,72 @@ void RegulatedPurePursuitController::initialize(
   node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist", max_robot_pose_search_dist_);
   node->get_parameter(plugin_name_ + ".use_interpolation", use_interpolation_);
 
+  // Server-level, not per plugin: the controller_server's goal check needs the
+  // same robot height, and two copies of a frame name drift. Declared here only
+  // so the plugin still loads in a host that does not declare them.
+  declare_parameter_if_not_declared(node, "body_frame", rclcpp::ParameterValue("pointlio_body"));
+  declare_parameter_if_not_declared(node, "lidar_height", rclcpp::ParameterValue(0.481));
+  node->get_parameter("body_frame", body_frame_);
+  node->get_parameter("lidar_height", body_height_);
+
+  // Stairs (see the header and the README's "Stairs"). The windows were set on
+  // dp1f_1012's Octo3D paths: the most any level path (1F or 2F) rises within
+  // 1 m is 0.10-0.20 m, the stair link 0.68 m and the 2F ramp 0.47 m, so 0.3 m
+  // takes the stairs and the ramp and nothing else, once each. The exit window
+  // looks 2.5 m ahead so a landing (rarely longer than ~2 m on a spiral) keeps
+  // stair mode instead of switching the policy twice per turn, and 0.8 m behind
+  // so the hind legs are off the last step before it ends.
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_stair_mode", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_min_rise", rclcpp::ParameterValue(0.3));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_enter_dist", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_exit_behind_dist", rclcpp::ParameterValue(0.8));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_exit_ahead_dist", rclcpp::ParameterValue(2.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_linear_vel", rclcpp::ParameterValue(0.2));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_lookahead_dist", rclcpp::ParameterValue(0.4));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_policy_settle_time", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_policy_mode", rclcpp::ParameterValue(1));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".flat_policy_mode", rclcpp::ParameterValue(-1));
+  node->get_parameter(plugin_name_ + ".use_stair_mode", use_stair_mode_);
+  node->get_parameter(plugin_name_ + ".stair_min_rise", stair_min_rise_);
+  node->get_parameter(plugin_name_ + ".stair_enter_dist", stair_enter_dist_);
+  node->get_parameter(plugin_name_ + ".stair_exit_behind_dist", stair_exit_behind_dist_);
+  node->get_parameter(plugin_name_ + ".stair_exit_ahead_dist", stair_exit_ahead_dist_);
+  node->get_parameter(plugin_name_ + ".stair_linear_vel", stair_linear_vel_);
+  node->get_parameter(plugin_name_ + ".stair_lookahead_dist", stair_lookahead_dist_);
+  node->get_parameter(plugin_name_ + ".stair_policy_settle_time", stair_policy_settle_time_);
+  node->get_parameter(plugin_name_ + ".stair_policy_mode", stair_policy_mode_);
+  node->get_parameter(plugin_name_ + ".flat_policy_mode", flat_policy_mode_);
+  RCLCPP_INFO(
+    logger_,
+    "[RegulatedPurePursuitController][%s] stair mode %s: rise %.2f m, %.2f m/s, lookahead "
+    "%.2f m, policy %d (back to %d, -1 = the one reported on `mode`)",
+    __func__, use_stair_mode_ ? "on" : "off", stair_min_rise_, stair_linear_vel_,
+    stair_lookahead_dist_, stair_policy_mode_, flat_policy_mode_);
+
+  // Relative names: /<robot_id>/set_policy_mode and /<robot_id>/mode, both
+  // syncai_driver_manager's. `mode` is published reliable by the Rust driver and
+  // best effort by older ones; a best-effort reader takes either.
+  policy_client_ = node->create_client<syncai_common::srv::SetPolicyMode>("set_policy_mode");
+  mode_sub_ = node->create_subscription<std_msgs::msg::Int32MultiArray>(
+    "mode", rclcpp::SensorDataQoS(), [this](const std_msgs::msg::Int32MultiArray::SharedPtr msg) {
+      if (!msg->data.empty()) {
+        reported_policy_.store(msg->data[0]);
+      }
+    });
+  stair_mode_pub_ = node->create_publisher<std_msgs::msg::Bool>(
+    "stair_mode", rclcpp::QoS(1).reliable().transient_local());
+  publishStairMode();
+
   transform_tolerance_ = tf2::durationFromSec(transform_tolerance);
   control_duration_ = 1.0 / control_frequency;
 
@@ -295,8 +363,68 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   // Transform path to robot base frame, that is convert pose from map frame to odom frame
   auto transformed_plan = transformGlobalPlan(pose);
 
+  // Stairs: a change of mode is made standing still. The robot brakes (the
+  // acceleration clamps below shape it), the policy goes out once it is commanded
+  // to a stop, and it stands for stair_policy_settle_time before moving off under
+  // the new one. A transition whose policy has not gone out yet is dropped if the
+  // plan stops asking for it (a replan round the stairs); once sent, it completes.
+  bool stair_hold = false;
+  if (use_stair_mode_) {
+    const bool want = wantStairs();
+    if (stair_transition_ == StairTransition::None && want != on_stairs_) {
+      int target = -1;
+      if (want) {
+        // Back to what flat_policy_mode names, else to what the controller reported
+        // before the switch; with neither known, leaving the stairs keeps the stair
+        // policy rather than guessing an index.
+        const int reported = reported_policy_.load();
+        restore_policy_ = flat_policy_mode_ >= 0 ? flat_policy_mode_ : reported;
+        // Already on it (the controller says so): no stop, nothing to send.
+        target = reported == stair_policy_mode_ ? -1 : stair_policy_mode_;
+      } else {
+        target = restore_policy_;
+      }
+      if (target < 0 || (!want && target == stair_policy_mode_)) {
+        // Nothing to switch: change speed and lookahead only, without stopping.
+        on_stairs_ = want;
+        publishStairMode();
+        RCLCPP_INFO(
+          logger_, "%s stair mode (no policy switch)", want ? "Entering" : "Leaving");
+      } else {
+        if (want && !policy_client_->service_is_ready()) {
+          // set_policy_mode is the only thing that puts the gait controller on its
+          // stair policy; climbing on the level-ground one is not what this mode
+          // promises. Fail the cycle; the server stops the robot.
+          throw syncai_nav_core::PlannerException(
+                  "Stairs ahead but set_policy_mode is unavailable; not climbing without "
+                  "the stair policy");
+        }
+        stair_transition_ = want ? StairTransition::Entering : StairTransition::Leaving;
+        policy_sent_ = false;
+        RCLCPP_INFO(
+          logger_, "%s stair mode: stopping to switch the policy to %d",
+          want ? "Entering" : "Leaving", target);
+      }
+    }
+    if (stair_transition_ != StairTransition::None) {
+      const bool entering = stair_transition_ == StairTransition::Entering;
+      if (!policy_sent_ && want != entering) {
+        stair_transition_ = StairTransition::None;
+      } else {
+        stair_hold = true;
+      }
+    }
+  }
+
   // Find look ahead distance and point on path and publish
   double lookahead_dist = getLookAheadDistance(speed);
+  if (on_stairs_) {
+    // A spiral stair's turns are tight (radius ~1.3 m on dp1f_1012) and its inside
+    // treads are the narrowest; a long carrot cuts toward them. The shorter carrot
+    // also keeps the collision projection (carrot + 0.36 m of footprint) short of
+    // the treads that already rise past the local costmap's obstacle band.
+    lookahead_dist = std::min(lookahead_dist, stair_lookahead_dist_);
+  }
 
   // Check for reverse driving
   if (allow_reversing_) {
@@ -400,6 +528,40 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
     const double max_feasible_angular_speed =
       last_cmd_vel_.angular.z + max_angular_accel_ * control_duration_;
     angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
+  }
+
+  if (on_stairs_) {
+    // Stair speed. A cap only lowers |v|, so it cannot break the clamp above, and the
+    // curvature is the path's either way: w scales with v.
+    if (std::fabs(linear_vel) > stair_linear_vel_) {
+      const double scale = stair_linear_vel_ / std::fabs(linear_vel);
+      linear_vel *= scale;
+      if (!is_rotating_to_heading) {
+        angular_vel *= scale;
+      }
+    }
+  }
+
+  if (stair_hold) {
+    // Brake to a stop for the policy switch, at the clamps' own rates.
+    const double dv = max_linear_accel_ * control_duration_;
+    const double dw = max_angular_accel_ * control_duration_;
+    linear_vel = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+    angular_vel = std::clamp(0.0, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+
+    if (linear_vel == 0.0 && angular_vel == 0.0) {
+      const bool entering = stair_transition_ == StairTransition::Entering;
+      if (!policy_sent_) {
+        sendPolicy(entering ? stair_policy_mode_ : restore_policy_);
+        policy_sent_ = true;
+        settle_until_ = clock_->now() + rclcpp::Duration::from_seconds(stair_policy_settle_time_);
+      } else if (clock_->now() >= settle_until_) {
+        on_stairs_ = entering;
+        stair_transition_ = StairTransition::None;
+        publishStairMode();
+        RCLCPP_INFO(logger_, "%s stair mode: policy settled", entering ? "In" : "Out of");
+      }
+    }
   }
 
   // The (v, w) just computed defines an arc. Before actually executing it, simulate the robot
@@ -764,6 +926,8 @@ void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
   // needed 8 cycles to recover — a 0.32 Hz sawtooth on cmd_vel that burned ~16%
   // of the drive re-accelerating. Per-goal reset lives in reset().
   global_plan_ = path;
+  full_plan_ = path;
+  plan_has_height_ = pathHasHeight(path);
 }
 
 void RegulatedPurePursuitController::reset()
@@ -771,6 +935,87 @@ void RegulatedPurePursuitController::reset()
   // New goal: zero the accel-clamp baseline so the first command ramps up from
   // a standstill rather than inheriting the previous goal's velocity.
   last_cmd_vel_ = geometry_msgs::msg::Twist();
+
+  // on_stairs_ deliberately survives: it is the policy the gait controller is on,
+  // and that outlives a cancelled goal. A transition cut short by the goal ending
+  // counts as done if its policy went out, and as never started if not; the next
+  // goal's first cycle then switches back if its plan is level.
+  if (stair_transition_ != StairTransition::None && policy_sent_) {
+    on_stairs_ = stair_transition_ == StairTransition::Entering;
+    publishStairMode();
+  }
+  stair_transition_ = StairTransition::None;
+  policy_sent_ = false;
+}
+
+double RegulatedPurePursuitController::stairRise(size_t idx, double behind, double ahead) const
+{
+  const auto & poses = full_plan_.poses;
+  if (idx >= poses.size()) {
+    return 0.0;
+  }
+  double lo = poses[idx].pose.position.z;
+  double hi = lo;
+  double d = 0.0;
+  for (size_t k = idx; k > 0 && d <= behind; --k) {
+    d += euclidean_distance(poses[k].pose, poses[k - 1].pose);
+    if (d <= behind) {
+      lo = std::min(lo, poses[k - 1].pose.position.z);
+      hi = std::max(hi, poses[k - 1].pose.position.z);
+    }
+  }
+  d = 0.0;
+  for (size_t k = idx; k + 1 < poses.size() && d <= ahead; ++k) {
+    d += euclidean_distance(poses[k].pose, poses[k + 1].pose);
+    if (d <= ahead) {
+      lo = std::min(lo, poses[k + 1].pose.position.z);
+      hi = std::max(hi, poses[k + 1].pose.position.z);
+    }
+  }
+  return hi - lo;
+}
+
+bool RegulatedPurePursuitController::wantStairs() const
+{
+  // A level path (every 2D planner) never asks for stairs, which also takes a robot
+  // left in stair mode by a cancelled goal back out on the next one.
+  if (!plan_has_height_ || full_plan_.poses.size() < global_plan_.poses.size()) {
+    return false;
+  }
+  // transformGlobalPlan() pruned everything before the pose nearest the robot.
+  const size_t idx = full_plan_.poses.size() - global_plan_.poses.size();
+  if (!on_stairs_) {
+    return stairRise(idx, 0.0, stair_enter_dist_) >= stair_min_rise_;
+  }
+  return stairRise(idx, stair_exit_behind_dist_, stair_exit_ahead_dist_) >= stair_min_rise_;
+}
+
+void RegulatedPurePursuitController::sendPolicy(int mode)
+{
+  if (mode < 0 || mode > 255) {
+    return;
+  }
+  if (!policy_client_->service_is_ready()) {
+    // Only reachable on the way off the stairs (entering checks first): the robot
+    // walks on under the stair policy, which is the safer of the two to be left in.
+    RCLCPP_WARN(
+      logger_, "set_policy_mode unavailable; policy %d not sent, staying on the current one",
+      mode);
+    return;
+  }
+  auto request = std::make_shared<syncai_common::srv::SetPolicyMode::Request>();
+  request->mode = static_cast<uint8_t>(mode);
+  policy_client_->async_send_request(request);
+  RCLCPP_INFO(logger_, "set_policy_mode %d sent", mode);
+}
+
+void RegulatedPurePursuitController::publishStairMode()
+{
+  if (stair_mode_pub_) {
+    std_msgs::msg::Bool msg;
+    msg.data = on_stairs_;
+    stair_mode_pub_->publish(msg);
+  }
 }
 
 void RegulatedPurePursuitController::setSpeedLimit(
@@ -814,6 +1059,28 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
       "Unable to transform robot pose into global plan's frame");
   }
 
+  // A plan with heights (OctomapPlanner3D) is matched in 3D: robot_pose comes from the
+  // planar base_link (z = 0), so its z is replaced by the ground height under the robot
+  // in the plan's frame (path_height.hpp has why, and the spiral stair that needs it).
+  // Then both the nearest-pose search below and the window's far end count height: the
+  // turn of a spiral stair 2.5 m above the robot is neither "the closest pose" nor
+  // "inside the local costmap". No height, no matching: on a stair that would mean
+  // steering by whichever turn happens to be nearest in x / y, so this cycle fails and
+  // the server holds the robot (failure_tolerance) until the TF is back.
+  if (plan_has_height_) {
+    std::string error;
+    double ground_z = 0.0;
+    if (!lookupGroundZ(
+          *tf_, global_plan_.header.frame_id, body_frame_, body_height_, ground_z, &error))
+    {
+      throw syncai_nav_core::PlannerException(
+              "Plan has heights but the robot's (" + body_frame_ + " in " +
+              global_plan_.header.frame_id + ") is unknown: " + error);
+    }
+    robot_pose.pose.position.z = ground_z;
+  }
+  const bool is_3d = plan_has_height_;
+
   // We'll discard points on the plan that are outside the local costmap
   double max_costmap_extent = getCostmapMaxExtent();
 
@@ -824,15 +1091,16 @@ nav_msgs::msg::Path RegulatedPurePursuitController::transformGlobalPlan(
   // Within the range found above, find the path point closest to the robot
   auto transformation_begin = syncai_util::geometry_utils::min_by(
     global_plan_.poses.begin(), closest_pose_upper_bound,
-    [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
-      return euclidean_distance(robot_pose, ps);
+    [&robot_pose, is_3d](const geometry_msgs::msg::PoseStamped & ps) {
+      return euclidean_distance(robot_pose, ps, is_3d);
     });
 
   // Scan forward from transformation_begin and take the first point whose straight-line
   // distance from the robot exceeds the local costmap extent as transformation_end
   auto transformation_end = std::find_if(
-    transformation_begin, global_plan_.poses.end(),
-    [&](const auto & pose) { return euclidean_distance(pose, robot_pose) > max_costmap_extent; });
+    transformation_begin, global_plan_.poses.end(), [&](const auto & pose) {
+      return euclidean_distance(pose, robot_pose, is_3d) > max_costmap_extent;
+    });
 
   // Lambda to transform a PoseStamped from global frame to local
   auto transformGlobalPoseToLocal = [&](const auto & global_plan_pose) {
@@ -975,6 +1243,14 @@ rcl_interfaces::msg::SetParametersResult RegulatedPurePursuitController::dynamic
         max_linear_accel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".rotate_to_heading_min_angle") {
         rotate_to_heading_min_angle_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_min_rise") {
+        stair_min_rise_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_linear_vel") {
+        stair_linear_vel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_lookahead_dist") {
+        stair_lookahead_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_policy_settle_time") {
+        stair_policy_settle_time_ = parameter.as_double();
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
       if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
