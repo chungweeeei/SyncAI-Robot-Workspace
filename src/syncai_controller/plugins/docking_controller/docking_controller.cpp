@@ -62,13 +62,13 @@ void DockingController::initialize(
   declare_parameter_if_not_declared(node, plugin_name_ + ".beta", rclcpp::ParameterValue(0.4));
   declare_parameter_if_not_declared(node, plugin_name_ + ".lambda", rclcpp::ParameterValue(2.0));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".v_linear_min", rclcpp::ParameterValue(0.30));
+    node, plugin_name_ + ".v_linear_min", rclcpp::ParameterValue(0.05));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".v_linear_max", rclcpp::ParameterValue(0.40));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".v_angular_max", rclcpp::ParameterValue(0.65));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".v_angular_min", rclcpp::ParameterValue(0.20));
+    node, plugin_name_ + ".v_angular_min", rclcpp::ParameterValue(0.03));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".slowdown_radius", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
@@ -332,9 +332,9 @@ geometry_msgs::msg::Twist DockingController::rotateToTarget(double angle_to_targ
   // Upstream: proportional, w = factor * angle * w_max, which at the 0.05 rad
   // yaw error of the final alignment is 0.016 rad/s -- nothing a gait turns
   // at. The floor is the local addition: the robot turns at least
-  // v_angular_min until the goal checker says the yaw is in, 0.2 rad/s x
-  // 50 ms = 0.01 rad per cycle, so a few cycles of gait latency still land
-  // inside a 0.05 rad window. No sqrt(2 * accel * angle) deceleration cap
+  // v_angular_min until the goal checker says the yaw is in; at the MPC floor
+  // (0.03 rad/s, measured 2026-10-14) that is 1.5 mrad per 50 ms cycle, so a
+  // few cycles of gait latency still land inside a 0.05 rad window. No sqrt(2 * accel * angle) deceleration cap
   // (RPP's rotateToHeading has one): a cap that tends to zero would fight
   // the floor exactly where the floor is the point.
   const double w = rotation_scaling_factor_ * angle_to_target * v_angular_max_;
@@ -350,15 +350,16 @@ void DockingController::clampAcceleration(
   // measured twist (gait sway), and there is no velocity smoother in the
   // stack, so the controller owns kinematic feasibility. The first command
   // after reset() ramps 0 -> v_linear_min over v_linear_min / (accel * dt)
-  // cycles (six at the defaults, ~0.3 s), during which the robot stands --
-  // same as RPP today.
+  // cycles (one at the MPC floor of 0.05 m/s; six, ~0.3 s of standing, at
+  // RL's 0.30).
   const double dv = max_linear_accel_ * control_duration_;
   const double dw = max_angular_accel_ * control_duration_;
 
   // The one exception, local: the stop into the final rotation is NOT
-  // ramped. At the floor speed of 0.30 m/s a 1.0 m/s^2 ramp-down takes six
-  // cycles, ~4.5 cm of travel after the xy latch -- the entire 5 cm window
-  // the latch was taken on. A one-step zero is what publishZeroVelocity()
+  // ramped. At the MPC floor (0.05 m/s) a ramp-down is one cycle anyway; the
+  // rule is for a floor raised again -- at RL's 0.30 m/s a 1.0 m/s^2
+  // ramp-down takes six cycles, ~4.5 cm of travel after the xy latch, the
+  // entire 5 cm window the latch was taken on. A one-step zero is what publishZeroVelocity()
   // already sends at every goal end and on cancel, so the gait controller
   // sees nothing it has not seen before. The angular clamp stays on in
   // every branch (the hand-over out of a 0.65 rad/s rotation is RPP's

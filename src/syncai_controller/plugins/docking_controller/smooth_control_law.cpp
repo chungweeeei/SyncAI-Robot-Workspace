@@ -85,12 +85,14 @@ geometry_msgs::msg::Twist SmoothControlLaw::calculateRegularVelocity(
   // executed arc keeps exactly the law's curvature, and for a wheeled base a
   // slow tight arc is fine. On the quadruped v_linear_min is the gait
   // controller's walking floor: a forward command below it does not make the
-  // robot walk slowly, it makes it stand (~0.3 m/s in RL mode, see
-  // controller_server_params.yaml). At the curvature the law asks for when
-  // the hand-over from the initial rotation happens 1 m out (|kappa| ~ 4),
-  // w_bound / kappa is 0.65 / 4 ~ 0.16 m/s -- below the floor -- and the
-  // robot would stand there with a non-zero command until the server's
-  // progress checker ended the goal 30 s later. Holding v at the floor
+  // robot walk slowly, it makes it stand (0.05 m/s under MPC, measured
+  // 2026-10-14; ~0.3 m/s under RL -- see controller_server_params.yaml).
+  // Under RL, at the curvature the law asks for when the hand-over from the
+  // initial rotation happens 1 m out (|kappa| ~ 4), w_bound / kappa is
+  // 0.65 / 4 ~ 0.16 m/s -- below the floor -- and the robot would stand
+  // there with a non-zero command until the server's progress checker ended
+  // the goal 30 s later. Under MPC that hand-over is above the floor and the
+  // rule only bites on the tightest arcs. Holding v at the floor
   // instead executes a WIDER arc than the law wants (curvature w_bound / v
   // rather than kappa) and lets the feedback law correct it next cycle:
   // slightly less graceful, but moving. This is also why docking must start

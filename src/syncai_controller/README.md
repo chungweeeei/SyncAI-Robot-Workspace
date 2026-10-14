@@ -413,19 +413,25 @@ Three local rules, all forced by the quadruped, and one deliberate omission:
 
 - **`v_linear_min` is the gait's walking floor, applied *after* the law's
   angular bound.** Upstream shrinks `v` to `w_max/κ` to keep the arc exact, and
-  for a wheeled base a slow tight arc is fine; the gait does not walk below
-  ~0.3 m/s, it stands, and the robot would stand with a non-zero command until
+  for a wheeled base a slow tight arc is fine; below its floor the gait does
+  not walk, it stands, and the robot would stand with a non-zero command until
   the progress checker ended the goal. Holding the floor executes a wider arc
   and lets the feedback correct it next cycle. The floor is pre-scale like
-  every other velocity here (driver_manager's `scale_fwd` 1.40 applies after),
-  and a **placeholder until measured under MPC** — the yaml says how.
+  every other velocity here (driver_manager's `scale_fwd` 1.40 applies after).
+  **Measured under MPC on 2026-10-14: 0.05 m/s** (RL's is ~0.3 m/s, which is
+  why the docking trees switch to MPC first). At that floor the rule only
+  bites on the tightest arcs, and `slowdown_radius` brings the robot in at
+  the floor instead of at 0.30.
 - **`v_angular_min` floors both rotation branches** (not upstream): the
   proportional `0.5·angle·w_max` is 0.016 rad/s at the 0.05 rad error of the
-  final alignment, nothing a gait turns at. Also unmeasured.
+  final alignment, nothing a gait turns at. **Measured under MPC on
+  2026-10-14: 0.03 rad/s**, slow enough that gait latency cannot overshoot
+  the 0.05 rad window; the cost is a few seconds for the last 0.1 rad.
 - **The stop into the final rotation is one step, not a ramp.** The clamp is
   RPP's (baseline = last command, zeroed in `reset()` and the catch-all, never
-  in `setPlan()`), but ramping down from the floor at 1 m/s² is six cycles,
-  4.5 cm of travel after the xy latch — the whole 5 cm window. The angular
+  in `setPlan()`). At the MPC floor a ramp-down is one cycle anyway; the rule
+  is for a floor raised again — from RL's 0.30 at 1 m/s² it would be six
+  cycles, 4.5 cm of travel after the xy latch, the whole 5 cm window. The angular
   clamp stays on in every branch.
 - **No collision checking. The docking controller is blind.** It never reads
   the local costmap (`costmap_ros` is kept for its frame names only), never
@@ -450,7 +456,8 @@ behind the robot (the staging pose sits 1 m behind with the robot's own yaw —
 a straight reverse; an overshoot puts the target ahead and the law drives
 forward to fix it). `undock.xml` sends `controller_id="Undocking"` with the
 staging pose; `dock.xml` sends `"Docking"` with the dock pose. The reverse
-speeds and driver_manager's `scale_back` are all unmeasured.
+floor is assumed equal to the measured forward one (0.05 m/s); it, the
+reverse cap and driver_manager's `scale_back` are unmeasured.
 
 Debug topics, subscriber-gated: `local_plan` (the predicted approach,
 integrated from the law for 3 s — **the same topic MPPI uses**, on purpose:
@@ -460,14 +467,15 @@ one controller runs at a time, one rviz display shows whichever is active) and
 MPC: the docking trees switch the gait to MPC before sending a dock goal; this
 controller does not check it and would drive the RL gait the same way.
 
-Tuning order, once the robot is available: measure `v_linear_min` and
-`v_angular_min` under MPC (step a 20 Hz `cmd_vel` down until odom shows no
-steady motion) → `dock_goal_checker`'s tolerances (widen `yaw_goal_tolerance`
+Tuning order: `v_linear_min` / `v_angular_min` under MPC (done 2026-10-14:
+0.05 m/s / 0.03 rad/s; re-measure by stepping a 20 Hz `cmd_vel` down until
+odom shows no steady motion, and after any `scale_fwd` / `scale_turn_*`
+change) → `dock_goal_checker`'s tolerances (widen `yaw_goal_tolerance`
 to 0.1 before touching the angular floor if the yaw hunts) →
 `initial_rotation_min_angle` (RPP's 0.785 → 0.25 lesson) → `beta` / `k_*`. The
 result's `final_distance_error` is the honest number: the xy latch guarantees
-success, not accuracy, and at a 0.30 m/s floor the stop latency alone can
-exceed 5 cm.
+success, not accuracy, and the gait's stop latency comes on top of the
+2.5 mm a cycle moves at the floor.
 
 ## Plugins
 
@@ -717,11 +725,12 @@ ros2 topic echo /<robot_id>/docking_target       # the target in the base frame
   trajectory and the docking controller's predicted approach share the topic
   on purpose. `ros2 topic info -v` shows them all; only the active controller
   publishes.
-- **The first six cycles of a dock approach command below the gait floor**
-  (the 0 → 0.30 m/s ramp at `max_linear_accel` 1.0), so the robot stands for
-  ~0.3 s before it walks — same as RPP today, not a fault.
-- **`v_linear_min`, `v_angular_min` and every `Undocking` speed are
-  placeholders** until measured under MPC; the yaml says how to measure them.
+- **The floors are MPC numbers** (0.05 m/s, 0.03 rad/s, measured 2026-10-14).
+  Driving the docking controller under RL — a tree whose MPC switch was
+  ignored, or a hand-sent `dock_to_pose` goal — commands speeds the RL gait
+  stands at (its floor is ~0.3 m/s), and the goal ends on the progress
+  checker. The reverse floor and every `Undocking` speed are still
+  unmeasured.
 - **A plugin load failure calls `exit(-1)`.** A typo in a `.plugin` type string
   takes the whole process down at startup rather than degrading.
 - **The byobu session launches this server on its default params file** —
