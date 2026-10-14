@@ -83,6 +83,7 @@ subclass goalReceived(goal):
         write goal.pose to the blackboard under goal_blackboard_id ("goal"); clear "path"
   ⋯ BtActionServer runs the engine loop, calling onLoop() each tick ⋯
 onCompletion: release the mutex, then goalCompleted(result, status) fills the result
+               (CANCELED: also calls the planner's clear_plan, fire and forget)
 ```
 
 The tree reads the goal from the blackboard, not from the action goal — that
@@ -300,6 +301,7 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 | Action client | `follow_path` | via the BT node |
 | Service client | `global_costmap/clear_entirely_global_costmap` | via the BT node |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
+| Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** only, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Not on success (the re-send is trimmed to a stub inside `xy_goal_tolerance`) nor on failure (the route explains the failure). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
 
 Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);
 it is also the suffix of the internal client node `BtActionServer` creates

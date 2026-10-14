@@ -94,6 +94,10 @@ bool PoseNavigator<ActionT>::configure(
 
   odom_smoother_ = odom_smoother;
 
+  // On the node's default callback group, which main()'s spin services, so
+  // the reply is consumed there and goalCompleted() never waits on it.
+  clear_plan_client_ = node->create_client<std_srvs::srv::Empty>("clear_plan");
+
   if constexpr (Traits::kDrivesRvizGoalPose) {
     // register action client
     self_client_ = rclcpp_action::create_client<ActionT>(node, this->getName());
@@ -129,6 +133,7 @@ bool PoseNavigator<ActionT>::cleanup()
 {
   goal_sub_.reset();
   self_client_.reset();
+  clear_plan_client_.reset();
   return true;
 }
 
@@ -158,6 +163,10 @@ void PoseNavigator<ActionT>::goalCompleted(
   // aborts it with an empty result from accept_pending_goal()), nor does one
   // rejected in goalReceived(); both read as ABORTED + NONE on the client,
   // which the .action file documents as "superseded or not started".
+  if (final_bt_status == syncai_behavior_tree::BtStatus::CANCELED) {
+    clearPlannerPlan();
+    return;
+  }
   if (final_bt_status != syncai_behavior_tree::BtStatus::FAILED) {
     return;
   }
@@ -177,6 +186,33 @@ void PoseNavigator<ActionT>::goalCompleted(
   } else {
     (void)result;
   }
+}
+
+template <class ActionT>
+void PoseNavigator<ActionT>::clearPlannerPlan()
+{
+  // The planner re-sends its last plan on `plan` once a second and cannot
+  // tell when the navigation that asked for it ended, so after a cancel the
+  // console kept drawing the abandoned route. Only on cancel: after a success
+  // the re-send trims the plan to a stub no longer than xy_goal_tolerance, and
+  // after a failure the route is what the operator wants to see to understand
+  // it. A preempt never comes here -- the tree keeps running and the next plan
+  // replaces the route anyway.
+  //
+  // Fire and forget: goalCompleted() runs on the action server's thread
+  // before the cancel is acknowledged, and an unreachable planner must not
+  // delay that. The next goal's first plan cannot race this request in
+  // practice: that tree first clears the global costmap and the planner waits
+  // for it to be current again (up to ~1 s) before it plans.
+  if (!clear_plan_client_->service_is_ready()) {
+    RCLCPP_WARN(
+      this->logger_,
+      "[PoseNavigator][%s] %s: planner's clear_plan is not available; `plan` keeps showing the "
+      "cancelled route",
+      __func__, this->getName().c_str());
+    return;
+  }
+  clear_plan_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
 }
 
 template <class ActionT>
