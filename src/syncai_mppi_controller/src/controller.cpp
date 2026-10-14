@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "syncai_mppi_controller/controller.hpp"
+
 #include <stdint.h>
+
 #include <algorithm>
 #include <chrono>
-#include "syncai_mppi_controller/controller.hpp"
+#include <cmath>
+
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_util/geometry_utils.hpp"
 
@@ -46,6 +50,10 @@ void MPPIController::initialize(
   // Not upstream; see clampAcceleration(). <= 0 disables either clamp.
   getParam(max_linear_accel_, "max_linear_accel", 1.0);
   getParam(max_angular_accel_, "max_angular_accel", 3.2);
+  // Not upstream; see applyTurnFloor(). in_place_wz_min <= 0 disables it.
+  getParam(in_place_wz_min_, "in_place_wz_min", 0.0);
+  getParam(in_place_wz_deadband_, "in_place_wz_deadband", 0.05);
+  getParam(in_place_vx_max_, "in_place_vx_max", 0.1);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;
@@ -89,6 +97,7 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
     geometry_msgs::msg::TwistStamped cmd =
       computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
     clampAcceleration(cmd.twist);
+    applyTurnFloor(cmd.twist);
     last_cmd_vel_ = cmd.twist;
     return cmd;
   } catch (...) {
@@ -125,6 +134,34 @@ void MPPIController::clampAcceleration(geometry_msgs::msg::Twist & cmd) const
     const double dw = max_angular_accel_ * control_duration_;
     cmd.angular.z =
       std::clamp(cmd.angular.z, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+  }
+}
+
+void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
+{
+  // The gait controller under RL does not turn in place below a floor: on
+  // robot01 MPPI held -0.115 rad/s at the goal, odom read zero, and the robot
+  // stood there until the progress checker aborted 30 s later (see
+  // GoalAngleCritic in controller_server_params.yaml). MPPI tapers its turn
+  // as the heading error closes, so near the goal yaw it lands under the
+  // floor every time. A VelocityDeadbandCritic would score below-floor
+  // samples down, but it penalises zero too, so it would fight stopping.
+  //
+  // Only in place (|vx| < in_place_vx_max): while walking, a small wz is a
+  // gentle arc, and raising it to the floor would weave a straight line.
+  // Below the deadband the command stays as it is -- that is MPPI's noise
+  // around "do not turn", not a turn it wants. Applied after the
+  // acceleration clamp on purpose: the clamp ramps out of rest at
+  // max_angular_accel x dt (0.16 rad/s a cycle), under the floor, and the
+  // floor has to win or the first cycle of every turn is a no-op. That one
+  // step is the only place it exceeds max_angular_accel. The optimizer is
+  // not told, as with the clamp: its next cycle starts from measured speed.
+  if (in_place_wz_min_ <= 0.0 || std::fabs(cmd.linear.x) >= in_place_vx_max_) {
+    return;
+  }
+  const double wz = std::fabs(cmd.angular.z);
+  if (wz >= in_place_wz_deadband_ && wz < in_place_wz_min_) {
+    cmd.angular.z = std::copysign(in_place_wz_min_, cmd.angular.z);
   }
 }
 

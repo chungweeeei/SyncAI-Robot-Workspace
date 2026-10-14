@@ -256,6 +256,8 @@ protected:
   double desired_linear_vel_, base_desired_linear_vel_;
   double lookahead_dist_;
   double rotate_to_heading_angular_vel_;
+  // Not upstream: the gait's in-place turn floor (see rotateToHeading()).
+  double rotate_to_heading_min_angular_vel_;
   double max_lookahead_dist_;
   double min_lookahead_dist_;
   double lookahead_time_;

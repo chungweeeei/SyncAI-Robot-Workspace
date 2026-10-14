@@ -40,15 +40,17 @@
     # deliberately NOT when a replanned path is accepted on preempt
     # (updateGlobalPath): a drivable path resets it on its first cycle anyway,
     # and since is_path_valid runs RPP's own footprint test (2026-10) a path
-    # RPP refuses is replanned once a second, so a reset per preempt would
+    # RPP refuses was replanned once a second (until move.xml's blocked_time,
+    # 2026-10-14), so a reset per preempt would
     # leave the progress checker's movement_time_allowance (30 s) as the only
     # abort. That 30 s stays the outer bound on standing still. With the
     # footprint test the detour normally arrives before RPP refuses (the
     # blocker is seen 2.5 m out); this window is for one that appears inside
     # the 0.6 m projection. A map with no second corridor still aborts, ~3 s
     # per attempt -- how many attempts, and so how long the robot waits for a
-    # live blocker to leave, is move.xml's FollowPath retry count (3, ~12 s
-    # in all); a Wait/RoundRobin recovery is not ported, and this knob is not
+    # live blocker to leave, is move.xml's FollowPath retry count (4, ~16 s
+    # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
+    # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
     failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
@@ -85,9 +87,13 @@
       # MPPI the approach to the goal decelerates through the gait floor, and
       # on robot01 the robot stopped dead 0.23 m and 0.29 m short (cmd_vel
       # still non-zero, odom zero) until the progress checker aborted after
-      # 30 s. 0.3 covers both stalls. It is also MPPI GoalAngleCritic's
-      # threshold_to_consider below: change the two together.
-      xy_goal_tolerance: 0.3
+      # 30 s. 0.3 covered both stalls. Lowered back 0.3 -> 0.15 the same day:
+      # 0.3 ended an ordinary MOVE too far from its goal. Nothing has fixed
+      # the stalls in between, so they can come back -- a robot standing
+      # 0.15-0.3 m short with cmd_vel non-zero and odom zero, until the
+      # progress checker aborts, is this value. It is also MPPI
+      # GoalAngleCritic's threshold_to_consider below: change the two together.
+      xy_goal_tolerance: 0.15
       # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
       # not turn below ~0.3 rad/s (MPPI's -0.115 rad/s left odom at zero), so
       # the final rotation cannot slow into a narrow window: a command that
@@ -123,6 +129,21 @@
       # same values as RPP's -- there is no velocity smoother.
       max_linear_accel: 1.0
       max_angular_accel: 3.2
+      # Not upstream: the in-place turn floor (2026-10-14). RL does not turn
+      # in place below ~0.3 rad/s at the gait; MPPI tapers its turn into the
+      # goal yaw and held -0.115 rad/s with odom at zero until the progress
+      # checker aborted (see GoalAngleCritic). A command with |vx| under
+      # in_place_vx_max and |wz| between in_place_wz_deadband and
+      # in_place_wz_min is raised to in_place_wz_min, keeping its sign; while
+      # walking nothing changes (a small wz there is an arc, and raising it
+      # would weave). 0.21 = 0.3 / scale_turn 1.40, on the assumption that the
+      # 0.3 is what the gait receives, after driver_manager's scale -- not
+      # confirmed. If it turns out to be the cmd_vel value, this is 0.3.
+      # Same value as FollowPathRPP's rotate_to_heading_min_angular_vel; change
+      # them together. 0 disables it.
+      in_place_wz_min: 0.21
+      in_place_wz_deadband: 0.05
+      in_place_vx_max: 0.1
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
       # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
       # 2 m half-width. With consider_footprint, a rolled-out point off the
@@ -159,7 +180,9 @@
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
       # zero*, so it would also fight stopping and turning in place. If MPPI's
       # slow approach commands turn out not to move the robot, that is the
-      # first thing to check on the robot, not something to guess here.
+      # first thing to check on the robot, not something to guess here. The
+      # turn side has its own fix, in_place_wz_min above, which leaves zero
+      # alone.
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
                 "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
                 "PreferForwardCritic"]
@@ -173,7 +196,7 @@
         cost_weight: 5.0
         threshold_to_consider: 1.4
       # threshold_to_consider equals goal_checker.xy_goal_tolerance on purpose
-      # (lowered 0.5 -> 0.3, 2026-10-14), so the robot turns to the goal
+      # (lowered 0.5 -> 0.3 -> 0.15, 2026-10-14), so the robot turns to the goal
       # heading only once the position is already accepted (stateful: true
       # latches it). At 0.5 it started turning while still short; on robot01
       # it stopped 0.29 m out facing the goal yaw, with the goal ~158 deg
@@ -185,7 +208,7 @@
         enabled: true
         cost_power: 1
         cost_weight: 3.0
-        threshold_to_consider: 0.3
+        threshold_to_consider: 0.15
       PreferForwardCritic:
         enabled: true
         cost_power: 1
@@ -278,6 +301,13 @@
       # is the whole point: rotate-to-heading's exit test only means something
       # if the commanded rate is the real one.
       rotate_to_heading_angular_vel: 0.65
+      # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
+      # in_place_wz_min for the rotate-to-heading branch -- same value, same
+      # unconfirmed pre-/post-scale assumption; change them together. Lifts
+      # the acceleration ramp's first cycle (0.16) and the last hundredths of
+      # a radian of the stop cap, the two places a rotation dips under it.
+      # 0 disables it.
+      rotate_to_heading_min_angular_vel: 0.21
       max_angular_accel: 3.2
       # No velocity smoother in this stack: the controller clamps linear
       # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
