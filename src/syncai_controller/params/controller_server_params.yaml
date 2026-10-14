@@ -62,17 +62,35 @@
     # cycle. <= 0 disables the gate.
     goal_reached_max_remaining_path: 1.0
 
+    # DockToPose (dock_to_pose, 2026-10). What an empty controller_id /
+    # goal_checker_id in a dock goal resolves to -- both must be entries of
+    # the lists below (a missing one only warns at startup and refuses dock
+    # goals, so FollowPath keeps working from a file without the docking
+    # plugin) -- and the approach timeout a goal with timeout <= 0 gets. The
+    # approach is ~1 m at docking speed; a minute means stuck, not slow.
+    default_dock_controller_id: "Docking"
+    default_dock_goal_checker_id: "dock_goal_checker"
+    dock_approach_timeout: 60.0
+
     progress_checker_plugin: "progress_checker"
-    goal_checker_plugins: ["goal_checker"]
-    # Two controllers, one local costmap. FollowPath is MPPI
+    # ORDER MATTERS: a FollowPath goal that names no goal checker (move.xml
+    # names none, and the BT node defaults it to "") gets the FIRST entry, so
+    # the navigation checker stays first. Until 2026-10 an empty id only fell
+    # back with exactly one checker loaded, and adding the second would have
+    # failed every BT navigation.
+    goal_checker_plugins: ["goal_checker", "dock_goal_checker"]
+    # Four controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
     # local costmap and bends round a blocker inside it, which RPP cannot --
     # RPP tracks the path and refuses to drive when the path is blocked.
     # FollowPathRPP is the RPP that was FollowPath until then, kept loaded so
     # the A/B is move.xml's controller_id="FollowPathRPP" with no rebuild, and
-    # as the fallback while MPPI is unproven on the robot. Only the controller
-    # a FollowPath goal names runs; the other costs memory, not CPU.
-    controller_plugins: ["FollowPath", "FollowPathRPP"]
+    # as the fallback while MPPI is unproven on the robot. Docking and
+    # Undocking (2026-10) are two instances of the pose-to-pose docking
+    # controller that the dock_to_pose action drives, differing only in
+    # direction (see their blocks). Only the controller a goal names runs;
+    # the others cost memory, not CPU.
+    controller_plugins: ["FollowPath", "FollowPathRPP", "Docking", "Undocking"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -104,6 +122,23 @@
       # without overshooting it. Estimated, not measured: hold wz 0.3 for 2 s,
       # zero it, and read the extra rotation off /odom before tightening this.
       yaw_goal_tolerance: 0.2
+      stateful: true
+
+    # The dock_to_pose default (dock and undock alike). Tight on purpose: the
+    # robot has to end ON the charging pad. Whether 0.05 holds is decided by
+    # the stop latency, not by the controller -- at the gait floor of
+    # 0.30 m/s one control cycle is 1.5 cm, and the gait's own stopping
+    # distance comes on top. The DockingController reads xy_goal_tolerance
+    # back through getTolerances(): it is where the final in-place rotation
+    # starts, so the two latches (the controller's and this stateful one)
+    # trip on the same number. If the yaw hunts on the robot, widen
+    # yaw_goal_tolerance to 0.1 (what goal_checker uses) before touching the
+    # controller's v_angular_min. The result's final_distance_error /
+    # final_yaw_error report what the robot actually achieved.
+    dock_goal_checker:
+      plugin: "syncai_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.05
       stateful: true
 
     FollowPath:
@@ -318,6 +353,122 @@
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
+
+    # The last metre onto the dock (2026-10): dock_to_pose's default
+    # controller, driven by dock.xml. One pose, no path, NO COSTMAP -- this
+    # plugin never reads cost data and never checks for collisions (the dock
+    # is itself a lethal cell in the local costmap, so any footprint test
+    # refuses the last half metre of every dock); obstacle avoidance is
+    # dock.xml's staging leg, which ends the robot ~1 m in front of the dock
+    # in known-clear space. Park & Kuipers' smooth control law (nav2's
+    # graceful / opennav_docking controller), ported from Humble.
+    #
+    # Starting values, not a tuning: nothing below has driven the robot yet.
+    # Every velocity is PRE-SCALE, like RPP's and MPPI's: driver_manager
+    # multiplies the command by scale_fwd (1.40) after this node, in MPC mode
+    # as in RL -- if scale_fwd changes, re-measure the floor.
+    Docking:
+      plugin: "syncai_controller::DockingController"
+      # Control-law gains, opennav_docking's defaults (graceful's path-following
+      # beta 0.2 is too permissive for a dock: it keeps speed on a tight arc).
+      # k_phi: how hard the dock HEADING pulls the curve; k_delta: how fast the
+      # robot's own heading converges to the curve; beta / lambda: how much
+      # speed drops with curvature.
+      k_phi: 3.0
+      k_delta: 2.0
+      beta: 0.4
+      lambda: 2.0
+      # THE GAIT'S WALKING FLOOR, not a comfort value: a forward command below
+      # it does not make the quadruped walk slowly, it makes it stand (the ~0.3
+      # m/s figure is from RL mode, see goal_checker; under MPC it is
+      # unmeasured). Applied AFTER the law's angular bound, so the controller
+      # executes a wider arc rather than a command the gait ignores. Placeholder
+      # until measured under MPC: step a 20 Hz cmd_vel 0.30 -> 0.25 -> 0.20 ->
+      # 0.15 and read odom; the lowest with steady translation goes here, with
+      # the date.
+      v_linear_min: 0.30
+      # Below the 0.60 calibration point so the gait tracks it, above the floor
+      # so the slowdown has a band to work in.
+      v_linear_max: 0.40
+      # The stack's calibrated in-place rate (FollowPathRPP's
+      # rotate_to_heading_angular_vel, MPPI's wz_max): one calibration with
+      # driver_manager's scale_turn_*, change them together.
+      v_angular_max: 0.65
+      # Not upstream. Floor for both in-place rotation branches: upstream's
+      # proportional rotate-to-target is 0.5 * angle * v_angular_max, i.e.
+      # 0.016 rad/s at the 0.05 rad error of the final alignment -- nothing a
+      # gait turns at. 0.2 rad/s x 50 ms = 0.01 rad per cycle, so a few cycles
+      # of gait latency still land in a 0.05 rad window. Placeholder until
+      # measured (same method as v_linear_min, on angular.z).
+      v_angular_min: 0.20
+      # v = v_linear_max * r / slowdown_radius inside this radius. With the
+      # floor at 0.30 and the cap at 0.40 it only acts between 0.375 and
+      # 0.5 m; it becomes real once the floor can be lowered.
+      slowdown_radius: 0.5
+      # RPP's / MPPI's values; there is no velocity smoother in the stack. The
+      # clamp baselines on the previous COMMAND (gait sway in the odom twist),
+      # and the stop into the final rotation is deliberately NOT ramped: six
+      # cycles of ramp-down from the floor is 4.5 cm of travel after the xy
+      # latch, the whole 5 cm window.
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # Rotate in place first when the dock is further off the nose than
+      # this. The law converges from any pose, but the wide-bearing part of
+      # that convergence is the arc the gait floor executes worst, so it is
+      # cheaper to turn first. RPP's lesson (rotate_to_heading_min_angle 0.785
+      # -> 0.25) is the first knob if the robot "drives away then re-rotates".
+      initial_rotation: true
+      initial_rotation_min_angle: 0.75
+      # Once inside dock_goal_checker's xy tolerance, stop and turn to the
+      # dock yaw; the gain is on the angle, floored by v_angular_min.
+      final_rotation: true
+      rotation_scaling_factor: 0.5
+      # Forward only: scale_back is an unmeasured 1.0 and initial_rotation
+      # cannot coexist with reversing (it turns the nose toward the target).
+      # Undocking below is the reversing instance.
+      allow_backward: false
+      # Only for the one-off transform in setPlan() when the path arrives in
+      # a frame other than odom (dock_to_pose always hands odom, so it is for
+      # driving this plugin through follow_path with a map path).
+      transform_tolerance: 0.2
+
+    # The same plugin, configured to back OUT of the dock to the staging pose
+    # (undock.xml). Direction is this configuration, not a goal field: the
+    # DockToPose action has no `backward` flag because the controller plugin
+    # interface carries a path and nothing else, and nav2's convention is one
+    # configuration, one controller id. With allow_backward the law reverses
+    # by itself when the target is behind the robot -- the staging pose sits
+    # 1 m behind with the robot's own yaw, so it backs out straight; an
+    # overshoot puts the target ahead and the law drives forward to fix it.
+    # Everything not repeated here is the Docking value.
+    Undocking:
+      plugin: "syncai_controller::DockingController"
+      k_phi: 3.0
+      k_delta: 2.0
+      beta: 0.4
+      lambda: 2.0
+      # Reverse floor and cap, BOTH UNMEASURED, and driver_manager's
+      # scale_back is an unmeasured 1.0 too (so unlike forward, what the gait
+      # receives here is the command itself). Cap = floor: back out at one
+      # speed until the floors are known.
+      v_linear_min: 0.30
+      v_linear_max: 0.30
+      v_angular_max: 0.65
+      v_angular_min: 0.20
+      slowdown_radius: 0.5
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # Off, by the upstream rule: an initial rotation turns the nose toward
+      # a target that is meant to stay behind. Also the point of backing out
+      # rather than turning on the dock -- no in-place turn on the contacts.
+      initial_rotation: false
+      initial_rotation_min_angle: 0.75
+      # On: end facing the dock (the staging pose's yaw), so the MOVE that
+      # follows starts from a known heading.
+      final_rotation: true
+      rotation_scaling_factor: 0.5
+      allow_backward: true
+      transform_tolerance: 0.2
 
 # The local costmap is an internal node created by controller_server
 # (constructed as a plain node named "local_costmap").

@@ -13,13 +13,18 @@ namespace blackboard_keys
 // only channel from a BT node to the navigator: no logger is wired into the
 // engine, and an output port would need every tree to wire it in XML.
 
-// Failure attribution, written by BtActionNode::report_failure() and reset by
-// the navigator before every goal. Last writer wins, and that names the
-// branch that failed the tree because PipelineSequence returns at the first
-// FAILURE it meets (move.xml's header has the case analysis). kFailedNode is
-// the node's registration name ("ComputePathToPose", "FollowPath"), or ""
-// when the failure cannot be attributed to a stage (the server never
-// acknowledged the goal); kFailureMsg is the detail in either case.
+// Failure attribution, written by BtActionNode::report_failure() (and, since
+// 2026-10, BtServiceNode's copy of it, plus the docking nodes
+// ComputeStagingPose and Wait by hand) and reset by the navigator before
+// every goal. Last writer wins, and that names the branch that failed the
+// tree because PipelineSequence returns at the first FAILURE it meets
+// (move.xml's header has the case analysis; dock.xml's has the docking
+// case, where a refused gait restore after a failed approach is the last
+// writer on purpose). kFailedNode is the node's registration name
+// ("ComputePathToPose", "FollowPath", "DockToPose", "SetMotionKey",
+// "ComputeStagingPose"), or "" when the failure cannot be attributed to a
+// stage (the server never acknowledged the goal, the service never
+// answered); kFailureMsg is the detail in either case.
 inline constexpr char kFailedNode[] = "failed_node";
 inline constexpr char kFailureMsg[] = "failure_msg";
 
@@ -33,12 +38,17 @@ inline constexpr char kNumberPlans[] = "number_plans";
 // turn of move.xml -- IsPathValid / GlobalUpdatedGoal when a replan starts,
 // ComputePathToPose when a path lands or the planner gives up, FollowPath when
 // the controller gives up or a retry resumes -- and set to the planning
-// sentence by the navigator at every goal. Last writer wins, and that is the
-// right answer for the same reason as kFailedNode: the node that wrote last is
-// the one whose outcome the robot is now acting on. The ClearEntireCostmap
-// nodes stay silent: they only run because an action node just failed, and
-// that node's sentence already says the costmap is being cleared. Free text
-// on the wire; nothing may branch on it.
+// sentence by the navigator at every goal. The docking trees add their own
+// turns: SetBlackboard in dock.xml / undock.xml ("Switching the gait to MPC
+// for docking", "Standing up" -- written by the tree, since SetMotionKey is
+// a generic node that does not know why it is sending a key), and DockToPose
+// ("Approaching the dock", "Docking: 0.42 m from the dock" from the
+// controller's feedback, "Docked", and the undock counterparts). Last writer
+// wins, and that is the right answer for the same reason as kFailedNode: the
+// node that wrote last is the one whose outcome the robot is now acting on.
+// The ClearEntireCostmap nodes stay silent: they only run because an action
+// node just failed, and that node's sentence already says the costmap is
+// being cleared. Free text on the wire; nothing may branch on it.
 inline constexpr char kNavStatusMsg[] = "nav_status_msg";
 
 // The sentences more than one site needs: the navigator seeds the first, and

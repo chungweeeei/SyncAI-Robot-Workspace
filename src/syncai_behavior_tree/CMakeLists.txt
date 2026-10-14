@@ -16,6 +16,13 @@ find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+# A dependency since 2026-10, for the CLIENT types of the docking nodes only
+# (syncai_common/action/DockToPose, syncai_common/srv/SetMotionKey). The rule
+# that kept it out until then still holds: the numeric error codes belong to
+# the action being served, so no BT node reads NavigateToGoal's constants --
+# the node -> code table stays in syncai_task_runner. Consequence: a change
+# to syncai_common now rebuilds this package too.
+find_package(syncai_common REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -31,6 +38,7 @@ set(dependencies
   rclcpp_lifecycle
   std_msgs
   std_srvs
+  syncai_common
   syncai_util
   tf2
   tf2_ros
@@ -62,6 +70,23 @@ list(APPEND plugin_libs syncai_follow_path_action_bt_node)
 add_library(syncai_clear_costmap_service_bt_node SHARED
   plugins/action/clear_costmap_service.cpp)
 list(APPEND plugin_libs syncai_clear_costmap_service_bt_node)
+
+# Docking (2026-10): the nodes dock.xml / undock.xml in syncai_task_runner use
+add_library(syncai_dock_to_pose_action_bt_node SHARED
+  plugins/action/dock_to_pose_action.cpp)
+list(APPEND plugin_libs syncai_dock_to_pose_action_bt_node)
+
+add_library(syncai_set_motion_key_service_bt_node SHARED
+  plugins/action/set_motion_key_service.cpp)
+list(APPEND plugin_libs syncai_set_motion_key_service_bt_node)
+
+add_library(syncai_compute_staging_pose_action_bt_node SHARED
+  plugins/action/compute_staging_pose.cpp)
+list(APPEND plugin_libs syncai_compute_staging_pose_action_bt_node)
+
+add_library(syncai_wait_action_bt_node SHARED
+  plugins/action/wait_action.cpp)
+list(APPEND plugin_libs syncai_wait_action_bt_node)
 
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED

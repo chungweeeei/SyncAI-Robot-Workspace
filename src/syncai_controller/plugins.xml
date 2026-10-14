@@ -18,5 +18,8 @@
     <class type="syncai_controller::RegulatedPurePursuitController" base_class_type="syncai_nav_core::Controller">
       <description>Regulated pure pursuit controller</description>
     </class>
+    <class type="syncai_controller::DockingController" base_class_type="syncai_nav_core::Controller">
+      <description>Pose-to-pose docking controller (Park and Kuipers smooth control law); tracks the last pose of its path in the odom frame, no costmap</description>
+    </class>
   </library>
 </class_libraries>

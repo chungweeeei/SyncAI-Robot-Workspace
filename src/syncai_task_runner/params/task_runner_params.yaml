@@ -27,6 +27,13 @@
     # BT node plugins (shared libraries) to load into the factory. Only the
     # nodes ported so far are listed — extend as recovery/condition/control
     # nodes are added. XML tag names must match what each plugin registers.
+    # The list is duplicated as the C++ default in syncai_task_runner.cpp;
+    # keep the two in sync. The last four are the docking nodes (dock.xml /
+    # undock.xml, 2026-10): a library is loaded at startup, but a node and
+    # its wait for its server exist only once a tree using the tag is
+    # loaded, so they cost nothing at boot -- dock_to_pose and
+    # set_motion_key are first waited for at the first dock goal, and a
+    # missing one fails that goal (ABORTED, NONE), not this node.
     plugin_lib_names:
       - syncai_compute_path_to_pose_action_bt_node
       - syncai_follow_path_action_bt_node
@@ -36,3 +43,7 @@
       - syncai_rate_controller_bt_node
       - syncai_is_path_valid_condition_bt_node
       - syncai_globally_updated_goal_condition_bt_node
+      - syncai_dock_to_pose_action_bt_node
+      - syncai_set_motion_key_service_bt_node
+      - syncai_compute_staging_pose_action_bt_node
+      - syncai_wait_action_bt_node

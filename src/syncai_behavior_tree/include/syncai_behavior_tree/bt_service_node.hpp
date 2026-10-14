@@ -7,6 +7,7 @@
 
 #include "behaviortree_cpp_v3/action_node.h"
 #include "rclcpp/rclcpp.hpp"
+#include "syncai_behavior_tree/blackboard_keys.hpp"
 #include "syncai_behavior_tree/bt_conversions.hpp"
 
 namespace syncai_behavior_tree
@@ -183,6 +184,17 @@ public:
   virtual void on_wait_for_result() {}
 
   /**
+   * @brief Called once when server_timeout_ runs out with no response, just
+   * before tick() returns FAILURE. Empty by default ON PURPOSE: the
+   * ClearEntireCostmap nodes must stay silent on a timeout (move.xml's header
+   * -- one only runs because an action node just failed, and a write here
+   * would replace that node's attribution with one that maps to UNKNOWN). A
+   * node whose timeout IS the failure (SetMotionKey) overrides it to call
+   * report_failure().
+   */
+  virtual void on_timeout() {}
+
+  /**
    * @brief Check the future and decide the status of BT
    * @return BT::NodeStatus SUCCESS if future complete before timeout, FAILURE otherwise
    */
@@ -215,6 +227,7 @@ public:
     RCLCPP_WARN(
       node_->get_logger(), "[BTServiceNode][%s] Node timed out while executing service call to %s.",
       __func__, service_name_.c_str());
+    on_timeout();
     request_sent_ = false;
     return BT::NodeStatus::FAILURE;
   }
@@ -229,6 +242,26 @@ protected:
     config().blackboard->template get<int>("number_recoveries", recovery_count);  // NOLINT
     recovery_count += 1;
     config().blackboard->template set<int>("number_recoveries", recovery_count);  // NOLINT
+  }
+
+  /**
+   * @brief Record on the blackboard that this node failed, for the navigator
+   * to turn into an action result (syncai_task_runner reads the keys in
+   * goalCompleted()). A copy of BtActionNode::report_failure() rather than a
+   * shared helper: the two bases have no common ancestor below
+   * BT::ActionNodeBase, and a free function would need the blackboard handed
+   * in at every call site. Same semantics -- last writer wins, see
+   * blackboard_keys.hpp -- and the same two rules: registrationName(), not
+   * name(), and `attributed = false` when the failure says nothing about the
+   * stage (the service never answered).
+   * @param msg technical detail; the navigator prefixes the operator sentence
+   * @param attributed false when the failure cannot be blamed on a stage
+   */
+  void report_failure(const std::string & msg, bool attributed = true)
+  {
+    config().blackboard->template set<std::string>(
+      blackboard_keys::kFailedNode, attributed ? registrationName() : std::string());
+    config().blackboard->template set<std::string>(blackboard_keys::kFailureMsg, msg);
   }
 
   std::string service_name_, service_node_name_;
