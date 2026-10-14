@@ -213,8 +213,8 @@ BT::NodeStatus IsPathValidCondition::tick()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "[IsPathValidCondition][%s] Path blocked at (%.2f, %.2f) for %.1f s; replanning", __func__,
-    bx, by, blocked_for);
+    "[IsPathValidCondition][%s] Path blocked at (%.2f, %.2f) for %.1f s; replanning", __func__, bx,
+    by, blocked_for);
   resetBlocked();
   config().blackboard->set<std::string>(  // NOLINT
     blackboard_keys::kNavStatusMsg, "Path blocked; replanning");
