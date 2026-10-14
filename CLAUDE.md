@@ -817,6 +817,27 @@ the map catalogue, TF and the telemetry / point-cloud streams — went with
 `syncai_backend` in 2026-09 and runs in that repo, against the interfaces from
 `SyncAI-Robot-Interface`.
 
+**CI** (`.github/workflows/ci.yml`, 2026-10) runs two jobs on every push to
+`main` / `dev` and every PR. `lint` (bare runner): `ruff check` against
+`ruff.toml`, and clang-format 14 over the C++ lines the push or PR *changed* —
+not whole files, because ~90 of the tracked C++ files predate `.clang-format`
+and do not pass it; a wholesale reformat is its own commit, after which the
+check can widen. `build` (an **arm64** runner, because the robot is a Jetson):
+the `dev` image with its layers in the Actions cache, both `.repos` files
+imported, `scripts/build.sh` through `docker-compose.build.yml` (the same path
+a developer uses), then `test_wifi_manager.py`, then a **smoke test**
+(`.github/scripts/smoke_test.sh`): every pane of `start_nav.yaml` and
+`start_mapping.yaml`, read from the specs with their `sleep` offsets, started
+against a generated 5 × 5 m fixture map with `robot_id: ci_smoke`, and failed if
+any launch has exited or logged a crash after 45 s — the check for a
+Release-only undefined symbol at plugin load (PR #32) that a green build misses.
+`camera_feeder` is skipped (no camera); nothing else needs hardware to stay up.
+It refuses to run outside CI or against another INI, because it starts
+`driver_manager` too. The ament linter tests are not run — they were never
+enforced and would fail. The first run, and any run after
+a change to the gtsam / sophus / livox / rust-underlay stages, rebuilds GTSAM
+and the underlay (most of an hour); later runs pay for colcon only.
+
 ```bash
 colcon test --packages-select <package_name>
 colcon test-result --verbose
