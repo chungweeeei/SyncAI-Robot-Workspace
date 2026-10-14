@@ -54,8 +54,9 @@ extend-exclude = [
 #
 # The 471 findings the wider default set reports are not all noise — BLE001
 # (28 blind excepts), RUF013 (17 implicit Optionals) and UP035 are worth a pass
-# each. But there is no CI running Ruff and no test suite to catch a regression
-# from a mechanical --fix, so widening the select is a deliberate decision to
+# each. But CI (.github/workflows/ci.yml, 2026-10) runs exactly this select,
+# and there is still no test suite to catch a regression from a mechanical
+# --fix, so widening the select is a deliberate decision to
 # make later, one family at a time, not something to inherit by default.
 select = ["E4", "E7", "E9", "F"]
 

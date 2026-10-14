@@ -1,0 +1,154 @@
+# CI for the robot workspace.
+#
+# Two jobs, because they answer on very different clocks:
+#
+#   lint   bare runner, under a minute. Ruff over the Python that is left
+#          (syncai_sys_manager + scripts/), and clang-format over the C++ lines
+#          a push or PR *changed* -- not over whole files: ~90 of the 228
+#          tracked C++ files do not pass `.clang-format` today (the nav2 port and
+#          the MPPI / pointlio ports came in unformatted), and reformatting them
+#          wholesale is a separate, deliberate commit. Until that commit lands,
+#          gating on changed lines keeps new code clean without blocking on old.
+#
+#   build  the robot image's `dev` target, then `scripts/build.sh` through
+#          docker-compose.build.yml -- exactly what a developer runs, so the
+#          build that passes here is the one robot01 would load. Both .repos
+#          files are imported first: build.sh refuses an empty checkout, and
+#          most of dependencies.repos fails nothing when absent (see build.sh),
+#          so a build without them would be green and meaningless.
+#
+# The build runs on an arm64 runner because the robot is a Jetson: the
+# Dockerfile's source builds (GTSAM, Sophus, Livox-SDK2), the VizionSDK .deb
+# and the ros2-rust underlay all have arch-specific paths, and an amd64 build
+# would test the one the fleet never runs. arm64 runners are free for public
+# repositories, which this is.
+#
+# The image layers live in the GitHub Actions cache (mode=max, so the
+# intermediate gtsam / sophus / livox / rust-underlay stages are cached too --
+# `dev` only COPYs their output, and without them every run would rebuild
+# GTSAM). The first run, and any run after a change to one of those stages,
+# takes the better part of an hour; later runs only pay for colcon. The image
+# is ~4.5 GB, so a second big cache entry (a long-lived branch with a different
+# Dockerfile) can push the repository past the 10 GB cache limit and evict the
+# first -- that shows up as a slow run, not a failure.
+#
+# Nothing here talks to a robot: there is no DDS traffic in a build, and the
+# one pytest file mocks nmcli.
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff / clang-format (changed lines)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Full history: the clang-format check diffs against the PR base or the
+      # previous tip of the branch, which a depth-1 clone does not have.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pinned for the same reason ruff.toml pins its rule set: the result must
+      # not depend on when a tool last released. 14.0.6 is Ubuntu 22.04's
+      # clang-format, i.e. what the robot image and ament_clang_format on Humble
+      # use; newer majors format a handful of constructs differently.
+      - name: Install linters
+        run: pipx install ruff==0.17.0 && pipx install clang-format==14.0.6
+
+      - name: ruff check
+        run: ruff check .
+
+      # git-clang-format 14 exits 0 even when it has a diff to show, so success
+      # is read off its output instead. src/third-party/ and the vcs-imported
+      # first-party packages are not tracked here, so a plain `git diff` never
+      # sees them.
+      - name: clang-format on changed lines
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ] \
+             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "No base commit to diff against (new branch, force push or manual run) -- skipped."
+            exit 0
+          fi
+          out="$(git clang-format --diff "$BASE" -- \
+                 'src/*.c' 'src/*.cc' 'src/*.cpp' 'src/*.h' 'src/*.hpp')"
+          echo "$out"
+          case "$out" in
+            *"did not modify any files"*|*"no modified files to format"*) ;;
+            *) echo "::error::Changed C++ lines are not clang-format clean." \
+                    "Run: git clang-format $BASE  (clang-format 14)"
+               exit 1 ;;
+          esac
+
+  build:
+    name: colcon build (arm64, robot image)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Tagged with the name docker-compose.build.yml expects, so its `run`
+      # finds the image already loaded and does not try to build it again.
+      - name: Build the robot image (dev target)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dev
+          tags: syncai-robot-base
+          load: true
+          cache-from: type=gha,scope=robot-dev
+          cache-to: type=gha,scope=robot-dev,mode=max
+
+      # vcstool from the image rather than the runner, so nothing beyond Docker
+      # has to exist on it. `export --exact` puts the SHA each `dev` branch
+      # resolved to in the log -- dependencies.repos tracks branches, so this is
+      # the only record of what a given run actually built.
+      - name: Import vcs checkouts
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$GITHUB_WORKSPACE:/ws" -w /ws syncai-robot-base bash -c '
+              set -e
+              vcs import --input third-party.repos
+              vcs import --input dependencies.repos
+              vcs export --exact src'
+
+      # BUILD_ROSDEP=check prints unmet keys without failing (build.sh explains
+      # the known noise); a key that really is missing fails colcon below, which
+      # is the signal that matters. UID / GID are the runner's, so build/,
+      # install/ and log/ stay owned by it -- HOME in the image is
+      # world-writable for exactly this (see docker-compose.build.yml).
+      - name: colcon build (scripts/build.sh)
+        run: |
+          # `env`, not an assignment: UID is a read-only bash variable.
+          env UID="$(id -u)" GID="$(id -g)" \
+            docker compose -f docker-compose.build.yml run --rm build \
+              --event-handlers console_cohesion+
+
+      # The suite in this repo is this one file; the C++ packages have only the
+      # ament linter templates, which are not enforced (see CLAUDE.md, "Tests").
+      - name: pytest syncai_sys_manager
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/home/syncrobotic \
+            -v "$GITHUB_WORKSPACE:/home/syncrobotic/robot_ws" \
+            -w /home/syncrobotic/robot_ws syncai-robot-base bash -c '
+              set -eo pipefail
+              source /opt/ros/humble/setup.bash
+              source /opt/ros2_rust_underlay/install/setup.bash
+              source install/setup.bash
+              python3 -m pytest -v src/syncai_sys_manager/test/test_wifi_manager.py'
