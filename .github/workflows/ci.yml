@@ -95,7 +95,7 @@ jobs:
           esac
 
   build:
-    name: colcon build (arm64, robot image)
+    name: colcon build + smoke (arm64, robot image)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 150
     steps:
@@ -152,3 +152,55 @@ jobs:
               source /opt/ros2_rust_underlay/install/setup.bash
               source install/setup.bash
               python3 -m pytest -v src/syncai_sys_manager/test/test_wifi_manager.py'
+
+      # --- smoke: does every node come up? ----------------------------------
+      # In this job rather than its own, because it needs the install/ the step
+      # above just built (a --symlink-install tree that does not survive being
+      # uploaded as an artifact). What it checks and why is in the script.
+      #
+      # Host networking, like robot01, so config/cyclonedds.xml (loopback, one
+      # unicast peer) works unchanged. livox_ros_driver2 and driver_manager
+      # bind 192.168.1.103 (bringup.yaml host_ip, driver_manager's
+      # telemetry_recv_ip) and die on a runner that lacks it, so it is added to
+      # lo -- nothing answers on it, which is the no-hardware case the test is
+      # about. The INI is mounted over config/system.ini the way compose mounts
+      # robotNN.ini, and robot_id ci_smoke is what the script insists on before
+      # starting anything.
+      - name: smoke test (every node comes up)
+        run: |
+          sudo ip addr add 192.168.1.103/32 dev lo
+          cat > "$RUNNER_TEMP/system.ini" <<'INI'
+          [system]
+          robot_id: ci_smoke
+
+          [map]
+          name: ci_smoke
+          pcd: map/%(name)s/map.pcd
+          map: map/%(name)s/gridmap.yaml
+
+          [initial_pose]
+          x: 0.0
+          y: 0.0
+          z: 0.0
+          yaw: 0.0
+
+          [sensor.lidar]
+          type: mid360
+          ip: 192.168.1.172
+          INI
+          docker run --rm --network host --shm-size 512m \
+            --user "$(id -u):$(id -g)" -e HOME=/home/syncrobotic \
+            -e CI=true -e ROS_DOMAIN_ID=1 -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+            -e CYCLONEDDS_URI=/home/syncrobotic/robot_ws/config/cyclonedds.xml \
+            -e ROS_LOG_DIR=/tmp/ros_log -e RCUTILS_COLORIZED_OUTPUT=0 -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/home/syncrobotic/robot_ws" \
+            -v "$RUNNER_TEMP/system.ini:/home/syncrobotic/robot_ws/config/system.ini:ro" \
+            -w /home/syncrobotic/robot_ws syncai-robot-base \
+            .github/scripts/smoke_test.sh
+
+      - name: upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: log/smoke/
