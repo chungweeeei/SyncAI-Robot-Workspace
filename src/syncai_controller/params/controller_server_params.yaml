@@ -129,6 +129,21 @@
       # same values as RPP's -- there is no velocity smoother.
       max_linear_accel: 1.0
       max_angular_accel: 3.2
+      # Not upstream: the in-place turn floor (2026-10-14). RL does not turn
+      # in place below ~0.3 rad/s at the gait; MPPI tapers its turn into the
+      # goal yaw and held -0.115 rad/s with odom at zero until the progress
+      # checker aborted (see GoalAngleCritic). A command with |vx| under
+      # in_place_vx_max and |wz| between in_place_wz_deadband and
+      # in_place_wz_min is raised to in_place_wz_min, keeping its sign; while
+      # walking nothing changes (a small wz there is an arc, and raising it
+      # would weave). 0.21 = 0.3 / scale_turn 1.40, on the assumption that the
+      # 0.3 is what the gait receives, after driver_manager's scale -- not
+      # confirmed. If it turns out to be the cmd_vel value, this is 0.3.
+      # Same value as FollowPathRPP's rotate_to_heading_min_angular_vel; change
+      # them together. 0 disables it.
+      in_place_wz_min: 0.21
+      in_place_wz_deadband: 0.05
+      in_place_vx_max: 0.1
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
       # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
       # 2 m half-width. With consider_footprint, a rolled-out point off the
@@ -165,7 +180,9 @@
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
       # zero*, so it would also fight stopping and turning in place. If MPPI's
       # slow approach commands turn out not to move the robot, that is the
-      # first thing to check on the robot, not something to guess here.
+      # first thing to check on the robot, not something to guess here. The
+      # turn side has its own fix, in_place_wz_min above, which leaves zero
+      # alone.
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
                 "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
                 "PreferForwardCritic"]
@@ -284,6 +301,13 @@
       # is the whole point: rotate-to-heading's exit test only means something
       # if the commanded rate is the real one.
       rotate_to_heading_angular_vel: 0.65
+      # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
+      # in_place_wz_min for the rotate-to-heading branch -- same value, same
+      # unconfirmed pre-/post-scale assumption; change them together. Lifts
+      # the acceleration ramp's first cycle (0.16) and the last hundredths of
+      # a radian of the stop cap, the two places a rotation dips under it.
+      # 0 disables it.
+      rotate_to_heading_min_angular_vel: 0.21
       max_angular_accel: 3.2
       # No velocity smoother in this stack: the controller clamps linear
       # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).

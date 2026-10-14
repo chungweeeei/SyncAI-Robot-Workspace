@@ -127,6 +127,8 @@ void RegulatedPurePursuitController::initialize(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_angular_accel", rclcpp::ParameterValue(3.2));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".rotate_to_heading_min_angular_vel", rclcpp::ParameterValue(0.0));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(2.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".allow_reversing", rclcpp::ParameterValue(false));
@@ -167,6 +169,8 @@ void RegulatedPurePursuitController::initialize(
   node->get_parameter(plugin_name_ + ".use_rotate_to_heading", use_rotate_to_heading_);
   node->get_parameter(plugin_name_ + ".rotate_to_heading_min_angle", rotate_to_heading_min_angle_);
   node->get_parameter(plugin_name_ + ".max_angular_accel", max_angular_accel_);
+  node->get_parameter(
+    plugin_name_ + ".rotate_to_heading_min_angular_vel", rotate_to_heading_min_angular_vel_);
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_linear_accel_);
   node->get_parameter(plugin_name_ + ".allow_reversing", allow_reversing_);
   node->get_parameter("controller_frequency", control_frequency);
@@ -461,6 +465,19 @@ void RegulatedPurePursuitController::rotateToHeading(
   double max_vel_to_stop = std::sqrt(2 * max_angular_accel_ * fabs(angle_to_path));
   if (fabs(angular_vel) > max_vel_to_stop) {
     angular_vel = sign * max_vel_to_stop;
+  }
+
+  // Not upstream: the gait controller under RL does not turn in place below a
+  // floor, so a command under it is a robot standing still. Two places put
+  // one there: the acceleration clamp ramping out of rest or out of a turn
+  // the other way (0.16 rad/s a cycle at 3.2 rad/s^2), and the stop cap
+  // above in the last few hundredths of a radian. Raised to the floor in the
+  // direction of the target, last, so it wins over both: a ramp that starts
+  // at the floor is one step over max_angular_accel, and the stop cap is
+  // overridden only below sqrt(2 * alpha * theta) = floor, i.e. inside
+  // ~0.007 rad at 0.21 rad/s -- far inside yaw_goal_tolerance. 0 disables it.
+  if (fabs(angular_vel) < rotate_to_heading_min_angular_vel_) {
+    angular_vel = sign * rotate_to_heading_min_angular_vel_;
   }
 }
 

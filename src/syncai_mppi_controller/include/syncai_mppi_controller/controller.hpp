@@ -120,6 +120,12 @@ protected:
   void clampAcceleration(geometry_msgs::msg::Twist & cmd) const;
 
   /**
+    * @brief Raise an in-place turn under the gait's turn floor to the floor
+    * @param cmd Command to adjust in place
+    */
+  void applyTurnFloor(geometry_msgs::msg::Twist & cmd) const;
+
+  /**
     * @brief Publish the optimal trajectory on local_plan as a nav_msgs/Path
     * @param stamp Stamp for the path header
     */
@@ -144,6 +150,9 @@ protected:
   double reset_period_;
   double max_linear_accel_{1.0};
   double max_angular_accel_{3.2};
+  double in_place_wz_min_{0.0};
+  double in_place_wz_deadband_{0.05};
+  double in_place_vx_max_{0.1};
   double control_duration_{0.05};
   // The last command returned, the clamp's reference; zeroed by reset() and
   // by any throw out of computeVelocityCommands().
