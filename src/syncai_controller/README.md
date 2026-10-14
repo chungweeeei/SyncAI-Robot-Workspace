@@ -410,7 +410,8 @@ real-robot ones:
 | Parameter | Value | Why |
 |---|---|---|
 | `use_sim_time` | `false` | No `/clock` on the real robot |
-| `xy_goal_tolerance` | `0.15` | The robot's floor speed is ~0.3 m/s, so it cannot creep into a 5 cm window (the old sim value) |
+| `xy_goal_tolerance` | `0.3` | The robot's floor speed is ~0.3 m/s, so it cannot creep into a 5 cm window (the old sim value). Raised from `0.15` on 2026-10-14 after MPPI's decelerating approach stalled the robot 0.23 m and 0.29 m short. Equal to MPPI `GoalAngleCritic.threshold_to_consider` so the final turn starts only once the position is accepted; change the two together |
+| `yaw_goal_tolerance` | `0.2` | The gait controller does not turn below ~0.3 rad/s, so the final rotation cannot slow into a narrow window. Raised from `0.1` (2026-10-14): ±0.2 rad takes ~1.3 s to cross at that floor, enough for the command latency and the stop of a heavy body. Estimated, not measured |
 | Local costmap sources | `scan` **and** `pointlio/body_cloud` | The 3D stack has no laser scan |
 
 On the real 3D robot the `scan` source receives nothing (no scan merger runs
