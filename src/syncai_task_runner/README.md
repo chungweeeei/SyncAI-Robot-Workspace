@@ -128,7 +128,7 @@ both actions, the sixth on `NavigateToGoal` only):
 | `current_pose` | TF `global_frame → base_frame` |
 | `distance_remaining` | Path length from the closest pose on the blackboard's `path` to its end |
 | `estimated_time_remaining` | `distance_remaining / speed`, from the odom smoother; zero below 0.01 m/s or under 0.1 m remaining |
-| `number_of_recoveries` | Blackboard `number_recoveries`, incremented by the `ClearEntireCostmap` BT nodes |
+| `number_of_recoveries` | Blackboard `number_recoveries`, incremented by the `ClearEntireCostmap` BT nodes — including the new-goal clear at tree start, so it reads at least 1 on every goal and recoveries proper are the value minus one |
 | `navigation_time` | Now minus `start_time_` |
 | `number_of_replans` (`NavigateToGoal`) | Blackboard `number_plans` (incremented by `ComputePathToPose` on success) minus one, floored at 0 — the detours, since the tree plans only when the path is blocked or the goal changed |
 | `status_msg` (`NavigateToGoal`) | Blackboard `nav_status_msg`: one sentence the BT nodes write at each turn of `move.xml` — "Planning a path to the goal" (set per goal), "Following the path", "Path blocked; replanning", "Goal changed; replanning", and a retry sentence when the planner or the controller gives up. For the operator console, which otherwise could only say "running"; free text, never to be switched on. Not visible: the controller holding at a blocker inside `failure_tolerance` (Humble's `FollowPath` feedback cannot tell that from a stop), which reads "Following the path" until the abort |
@@ -171,27 +171,48 @@ it, by flipping two flags in `PoseNavigatorTraits`.
 invalid (or the goal changes), with contextual recovery:
 
 ```xml
-<PipelineSequence name="NavigateWithReplanning">
-  <RateController hz="1.0">
-    <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-      <Fallback name="FallbackComputePathToPose">
-        <ReactiveSequence name="CheckIfNewPathNeeded">
-          <Inverter>
-            <GlobalUpdatedGoal/>
-          </Inverter>
-          <IsPathValid path="{path}" server_timeout="100"/>
-        </ReactiveSequence>
-        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-      </Fallback>
-      <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+<Sequence name="NavigateFromFreshGlobalCostmap">
+  <ForceSuccess>
+    <ClearEntireCostmap name="ClearGlobalCostmap-NewGoal" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="1000"/>
+  </ForceSuccess>
+  <PipelineSequence name="NavigateWithReplanning">
+    <RateController hz="1.0">
+      <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+        <Fallback name="FallbackComputePathToPose">
+          <ReactiveSequence name="CheckIfNewPathNeeded">
+            <Inverter>
+              <GlobalUpdatedGoal/>
+            </Inverter>
+            <IsPathValid path="{path}" server_timeout="100"/>
+          </ReactiveSequence>
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+        </Fallback>
+        <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+      </RecoveryNode>
+    </RateController>
+    <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
+      <FollowPath path="{path}" controller_id="FollowPath"/>
+      <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
     </RecoveryNode>
-  </RateController>
-  <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
-    <FollowPath path="{path}" controller_id="FollowPath"/>
-    <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
-  </RecoveryNode>
-</PipelineSequence>
+  </PipelineSequence>
+</Sequence>
 ```
+
+**Every new goal starts from a cleared global costmap** (2026-10-14). The
+obstacle layer forgets a mark only by raytracing through it, out to 3 m, so
+marks the robot drives away from stay for good and the next goal plans round
+them: the return leg of an A ↔ B shuttle on robot01 came out 60 m instead of
+17.5 m, round 509 LETHAL cells (not in the static map) left in the corridor
+the previous leg had just driven. The planner then waits for the costmap to be
+current (≤ 1 s), which re-copies the static map and re-marks the latest cloud,
+so blockers within 2.5 m are back before the first plan and further ones are
+found on approach by `IsPathValid`. The keepout mask survives the clear. It
+runs at tree start only — a preempt keeps the tree running and keeps the
+costmap's memory, which is what makes a detour stick — and under
+`ForceSuccess` with a 1 s timeout, so a clear that cannot get the costmap lock
+in time leaves the goal to plan on the old costmap rather than fail it. Because
+`ClearEntireCostmap` counts itself as a recovery, `number_of_recoveries` now
+reads at least 1 on every goal.
 
 `PipelineSequence` is what makes this work: it re-ticks the planner branch every
 round even while `FollowPath` is still `RUNNING`, so the path can be replaced
