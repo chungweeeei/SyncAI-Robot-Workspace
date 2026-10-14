@@ -103,6 +103,12 @@ void ObstacleLayer::onInitialize()
     declareParameter(source + "." + "obstacle_min_range", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "raytrace_max_range", rclcpp::ParameterValue(3.0));
     declareParameter(source + "." + "raytrace_min_range", rclcpp::ParameterValue(0.0));
+    // Not upstream (2026-10): measure this source's min / max_obstacle_height from the
+    // ground under the sensor instead of the global frame's z = 0 (ObservationBuffer
+    // has the mechanism, the README why). "global" is upstream's behaviour.
+    declareParameter(
+      source + "." + "height_reference", rclcpp::ParameterValue(std::string("global")));
+    declareParameter(source + "." + "sensor_height", rclcpp::ParameterValue(0.0));
 
     node_->get_parameter(name_ + "." + source + "." + "topic", topic);
     // The costmap node lives in its own sub-namespace; resolve a relative sensor
@@ -138,6 +144,11 @@ void ObstacleLayer::onInitialize()
     node_->get_parameter(name_ + "." + source + "." + "raytrace_min_range", raytrace_min_range);
     node_->get_parameter(name_ + "." + source + "." + "raytrace_max_range", raytrace_max_range);
 
+    std::string height_reference;
+    double sensor_height;
+    node_->get_parameter(name_ + "." + source + "." + "height_reference", height_reference);
+    node_->get_parameter(name_ + "." + source + "." + "sensor_height", sensor_height);
+
     RCLCPP_DEBUG(
       logger_, "Creating an observation buffer for source %s, topic %s, frame %s", source.c_str(),
       topic.c_str(), sensor_frame.c_str());
@@ -149,7 +160,7 @@ void ObstacleLayer::onInitialize()
           node_, topic, observation_keep_time, expected_update_rate, min_obstacle_height,
           max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
           raytrace_min_range, *tf_, global_frame_, sensor_frame,
-          tf2::durationFromSec(transform_tolerance))));
+          tf2::durationFromSec(transform_tolerance), height_reference, sensor_height)));
 
     // check if we'll add this buffer to our marking observation buffers
     if (marking) {

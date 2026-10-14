@@ -178,7 +178,21 @@ Per-source parameters: `topic`, `sensor_frame`, `data_type` (`LaserScan` or
 `PointCloud2`), `marking`, `clearing`, `min_obstacle_height` /
 `max_obstacle_height`, `obstacle_min_range` / `obstacle_max_range` (marking
 range), `raytrace_min_range` / `raytrace_max_range` (clearing range),
-`observation_persistence`, `expected_update_rate`, `inf_is_valid`.
+`observation_persistence`, `expected_update_rate`, `inf_is_valid`, and two that
+are not upstream, `height_reference` / `sensor_height` (below).
+
+**`height_reference`** (2026-10): `global` (default, upstream) measures
+`min_obstacle_height` / `max_obstacle_height` from the global frame's `z = 0`;
+`sensor` measures them from the ground under the sensor — its origin's z in the
+global frame minus `sensor_height`. The buffered cloud (and its origin) are
+stored with z relative to that ground, so the layer-level
+`min_obstacle_height` / `max_obstacle_height` read the same way for that source;
+nothing downstream of the buffer reads z in a 2D costmap. It exists because
+lio_bridge keeps `odom` planar, so z in `odom` is height in the map, whose origin
+is the lidar where mapping started: the 1F floor sits at about -0.48, and on 2F
+(~5.5 m up) a fixed band sees nothing. The controller's `pointcloud` source uses
+`sensor` with `sensor_height: 0.481` and a band chosen to equal what 1F already
+ran with; the global costmap's sources are still `global`.
 
 Two things worth internalising:
 
