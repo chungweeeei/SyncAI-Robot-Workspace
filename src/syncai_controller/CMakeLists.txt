@@ -15,9 +15,11 @@ find_package(pluginlib REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
-# The dock_to_pose action type (syncai_common/action/DockToPose). syncai_common
-# is vcs-imported from SyncAI-Robot-Interface, so that repo's dev branch must
-# carry DockToPose.action before this package configures.
+find_package(std_msgs REQUIRED)
+# The dock_to_pose action type (syncai_common/action/DockToPose), and
+# SetPolicyMode for RPP's stair mode. syncai_common is vcs-imported from
+# SyncAI-Robot-Interface, so that repo's dev branch must carry
+# DockToPose.action before this package configures.
 find_package(syncai_common REQUIRED)
 find_package(syncai_costmap_2d REQUIRED)
 find_package(syncai_nav_core REQUIRED)
@@ -35,6 +37,7 @@ set(dependencies
   rcl_interfaces
   rclcpp
   rclcpp_action
+  std_msgs
   syncai_common
   syncai_costmap_2d
   syncai_nav_core

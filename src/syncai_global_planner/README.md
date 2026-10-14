@@ -406,8 +406,13 @@ corner cell a wall foot sits in), step-continuous along the segment, and
 never closer to the boundary than the cells it replaces (Smac's "never above
 252" rule); then a resample at `interpolation_resolution` with z read back
 from the surface. Poses carry z = the floor's top face (+ `path_z_offset`),
-yaw toward the next pose, the goal's orientation last; the 2D controllers
-ignore z.
+yaw toward the next pose, the goal's orientation last. MPPI ignores z; RPP
+(`FollowPathRPP`) and the controller_server's goal check do not since 2026-10
+— a path whose poses do not all share one z is matched to the robot in 3D
+(a stair link's spiral is back over the same x / y every 8.1 m on
+dp1f_1012), and RPP climbs a stretch rising 0.3 m within 1 m in a stair mode
+that switches the gait policy (`syncai_controller/README.md`, "Paths with
+heights" and "Stairs").
 
 **Measured on dp1f_1012_v2** (2026-10-13; 1F and 2F, 2 576 keyframes): 1.26 M
 columns, 724 k surface cells (24 k inferred), 158 k traversable in 146

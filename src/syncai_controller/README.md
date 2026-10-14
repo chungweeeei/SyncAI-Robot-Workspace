@@ -167,6 +167,80 @@ transformed into the costmap's global frame. Using the path's original stamp mad
 long goals die with a TF "extrapolation into the past" error, so `isGoalReached()`
 never returned true.
 
+### Paths with heights (OctomapPlanner3D)
+
+Every 2D planner writes `z = 0` on every pose; `OctomapPlanner3D` (`Octo3D`)
+writes the ground height, and its stair links climb. That breaks two planar
+assumptions (2026-10), both measured on dp1f_1012's spiral stair, where the path is
+back over the same x / y every **8.1 m, 2.5 m higher**:
+
+- **RPP's nearest-pose search** (`transformGlobalPlan()`) spans
+  `max_robot_pose_search_dist` (10 m) of path, so on x / y alone the turn above or
+  below the robot is as near as the one it stands on — it could prune a whole turn
+  and steer by the wrong one, and the local window (everything within the costmap's
+  half-width, 2 m) took in the next turn too.
+- **The goal check** compares x / y only, so a 2F goal can be "reached" from the
+  1F corridor under it, on the way to the stairs.
+
+So a path whose poses do not all share one z (`pathHasHeight()`, in
+`include/syncai_controller/path_height.hpp`) is matched in **3D**: RPP's nearest
+pose and window end, the patrol gate's nearest pose here, and the goal is only
+reached within **`goal_z_tolerance`** (0.5 m) of the end pose's height. A path of
+all-equal z — every 2D planner — takes the old planar code paths unchanged; a 3D
+distance to a `z = 0` path on 2F would otherwise put every pose 5 m away. The
+robot's height is **not in its pose**: lio_bridge projects `odom -> base_link`
+(and `map -> odom`) onto the plane. It is `body_frame`'s z in the path's frame
+minus `lidar_height` — Point-LIO's body, the one frame that still climbs, and the
+planner's own start-height lookup with the same two values. Without that TF, a
+path with heights fails RPP's cycle (the server holds the robot for
+`failure_tolerance`) and never reaches its goal, rather than being followed on
+x / y. MPPI (`FollowPath`) is **not** height-aware: it matches the path in 2D,
+so a path with a stair link is RPP-only for now.
+
+Climbing itself is RPP's stair mode, next.
+
+### Stairs (RPP stair mode)
+
+On a path with heights, RPP (`FollowPathRPP` only) climbs a stretch that rises
+**`stair_min_rise`** (0.3 m) within **`stair_enter_dist`** (1 m) ahead in *stair
+mode* (2026-10):
+
+1. **Stop and switch the gait policy.** The robot brakes at the clamps' rates; once
+   commanded to a stop it calls the driver's **`set_policy_mode`** with
+   **`stair_policy_mode`** (1, HIMLOCO — the index table is in
+   `syncai_common/msg/RobotLowLevelMode.msg`: 0 PPO, 1 HIMLOCO, 2 CHAMP, 3 ISSAC)
+   and stands **`stair_policy_settle_time`** (3 s in the params file, 1 s in code). The call is fire and forget:
+   the driver's UDP has no acknowledgement. If the service is not up, the cycle
+   fails instead (the robot does not climb on the level-ground policy). If
+   `<robot_id>/mode` already reports the stair policy, nothing is sent and the
+   robot does not stop.
+2. **Climb** at **`stair_linear_vel`** (0.2 m/s) with a **`stair_lookahead_dist`**
+   (0.4 m) carrot. The short carrot keeps RPP off the inside of a spiral's turns
+   (its narrowest treads) and keeps the collision projection (carrot + 0.36 m of
+   footprint, ~0.76 m) short of the treads that rise past the local costmap's
+   obstacle floor (0.58 m above the robot's ground, `height_reference: sensor`):
+   a 0.17 / 0.28 m stair has risen ~0.46 m there. The collision check stays on —
+   the stairwell's walls are still lethal.
+3. **Leave** once the path from **`stair_exit_behind_dist`** (0.8 m) behind to
+   **`stair_exit_ahead_dist`** (2.5 m) ahead rises less than `stair_min_rise`:
+   stop, switch back, settle. Back to **`flat_policy_mode`**, or with -1 (default)
+   to whatever the controller reported on `<robot_id>/mode` (data[0]) when stair
+   mode began; with no report heard, it stays on the stair policy rather than
+   guess an index. The long ahead window is what keeps a landing in stair mode.
+
+The windows come from dp1f_1012's Octo3D paths: level paths on 1F and 2F rise at
+most 0.10–0.20 m within 1 m, the spiral stair 0.68 m, the short 2F ramp 0.47 m —
+so the ramp is taken in stair mode too (1.9 m of it), and each stair path enters
+stair mode exactly once. A change of mode not yet sent is dropped if a replan
+stops asking for it; once sent it completes, and a goal ending mid-switch counts
+it as done (`reset()`). `on_stairs_` outlives the goal on purpose — it is the
+policy the gait controller is on — and the next goal's first level cycle switches
+back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
+
+**Untested on the robot**: whether HIMLOCO climbs this stair, whether a policy
+switch standing still is enough (or the controller wants `Stand` first), and the
+settle time. MPPI has no stair mode and no 3D matching.
+
 ## Regulated Pure Pursuit
 
 Standard pure pursuit picks a lookahead point ("carrot") on the path, fits a
@@ -599,6 +673,9 @@ Server-level (`/**/controller_server`):
 | `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and since `is_path_valid` runs RPP's own footprint test a refused path is replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
+| `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
+| `lidar_height` | `0.481` | `body_frame`'s height above the feet — the planner's `Octo3D.lidar_height`; change both together |
+| `goal_z_tolerance` | `0.5` | Paths with heights: how far the ground under the robot may be from the end pose's height for the goal to count. Dynamically reconfigurable |
 | `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` (the docking controller raises a limit below its gait floor to the floor, with a warning) |
 | `default_dock_controller_id` | `Docking` | What a `DockToPose` goal's empty `controller_id` resolves to; must be in `controller_plugins`, or the server warns at startup and refuses such goals with `INVALID_PLUGIN` (FollowPath keeps working) |
 | `default_dock_goal_checker_id` | `dock_goal_checker` | Same for `goal_checker_id` |
