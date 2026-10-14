@@ -145,7 +145,7 @@ constructor — a missing one is a runtime throw, not a compile error.
 | `number_recoveries` | `int` | ditto (init) | incremented by `increment_recovery_count()` in recovery nodes; surfaced as action feedback |
 | `failed_node` / `failure_msg` | `std::string` | ditto (init, and reset per goal) | written by `BtActionNode::report_failure()` — `ComputePathToPose` and `FollowPath` on abort, the base class on an unacknowledged / rejected goal (with an empty `failed_node`); read by the navigator in `goalCompleted()` to fill `NavigateToGoal`'s `error_code` / `error_msg`. Last writer wins; `move.xml`'s header has why that names the branch that failed the tree. Constants in `blackboard_keys.hpp` |
 | `number_plans` | `int` | ditto (init, reset per goal) | incremented by `ComputePathToPose` on success; the navigator reports `plans − 1` as `number_of_replans` |
-| `nav_status_msg` | `std::string` | ditto (init; set per goal to `kStatusPlanning`) | one English sentence of what the navigator is doing, for `NavigateToGoal`'s `status_msg` feedback (2026-10). Written by `IsPathValid` ("Path blocked; replanning", on a service answer only), `GlobalUpdatedGoal` ("Goal changed; replanning", once the goal has had a path), `ComputePathToPose` ("Following the path" on success, a retry sentence on abort) and `FollowPath` (a retry sentence on abort, "Following the path" when the retry goes out). Last writer wins; the `ClearEntireCostmap` nodes write nothing. Free text, never branched on |
+| `nav_status_msg` | `std::string` | ditto (init; set per goal to `kStatusPlanning`) | one English sentence of what the navigator is doing, for `NavigateToGoal`'s `status_msg` feedback (2026-10). Written by `IsPathValid` ("Path blocked; rerouting if it is still blocked after 10 s" while it keeps a blocked path (the number is `blocked_time`), "Path blocked; replanning" when it gives it up, "Following the path" over its own first sentence when the path clears; on a service answer only), `GlobalUpdatedGoal` ("Goal changed; replanning", once the goal has had a path), `ComputePathToPose` ("Following the path" on success, a retry sentence on abort) and `FollowPath` (a retry sentence on abort, "Following the path" when the retry goes out). Last writer wins; the `ClearEntireCostmap` nodes write nothing. Free text, never branched on |
 | `goal`, `path`, … | msg types | the tree itself, via ports | the tree itself |
 
 `loadBehaviorTree()` re-writes the four server-owned keys onto **every**
@@ -238,7 +238,7 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `PipelineSequence` | control | `syncai_pipeline_sequence_bt_node` | — |
 | `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1), `retry_refill_time` (s, default 0 = never) |
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
-| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout` |
+| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout`, `blocked_time` (s, default 0; `move.xml` sets 10), `blocked_match_distance` (m, default 0.5) |
 | `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
 | `InitialPoseReceived` | condition | `syncai_initial_pose_received_condition_bt_node` | reads blackboard `initial_pose_received` |
 
@@ -274,7 +274,15 @@ Semantics of the non-obvious ones:
   and RPP stops the robot meanwhile. The timeout is the global costmap's 1 Hz
   update holding the costmap mutex past `server_timeout`; a WARN every tick
   means the two loops phase-locked and `server_timeout` in `move.xml` must go
-  up, not that the answer should flip back.
+  up, not that the answer should flip back. Not upstream (2026-10): a
+  `false` answers `FAILURE` only once the same spot (a blocked pose within
+  `blocked_match_distance` of one blocked last time) of the same path (stamp +
+  size) has been answered blocked for `blocked_time` seconds (steady clock,
+  from the first blocked answer); the ones before answer `SUCCESS`, keep the
+  path and log `Path blocked at (x, y) for n of N s; keeping it` in the
+  task_runner log. A valid answer, an empty path or a new plan restarts the
+  wait; a timeout leaves it running. It exists because a person
+  crossing the route was a replan, and the detour then stuck for the goal.
 - **`GlobalUpdatedGoal`** returns `SUCCESS` on the first tick after blackboard
   `goal` changed. The very first tick only records a baseline (`FAILURE`).
   Upstream also watches `goals`; nothing here writes it, so this port does not.
@@ -316,14 +324,14 @@ XML header and `syncai_task_runner`'s README):
           <Inverter>
             <GlobalUpdatedGoal/>
           </Inverter>
-          <IsPathValid path="{path}" server_timeout="100"/>
+          <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
         </ReactiveSequence>
         <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
       </Fallback>
       <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
     </RecoveryNode>
   </RateController>
-  <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
+  <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
     <FollowPath path="{path}" controller_id="FollowPath"/>
     <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
   </RecoveryNode>

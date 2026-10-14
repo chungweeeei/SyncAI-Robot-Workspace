@@ -184,14 +184,14 @@ invalid (or the goal changes), with contextual recovery:
             <Inverter>
               <GlobalUpdatedGoal/>
             </Inverter>
-            <IsPathValid path="{path}" server_timeout="100"/>
+            <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
           </ReactiveSequence>
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
         </Fallback>
         <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
       </RecoveryNode>
     </RateController>
-    <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
+    <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
       <FollowPath path="{path}" controller_id="FollowPath"/>
       <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
     </RecoveryNode>
@@ -241,9 +241,23 @@ the robot stands waiting for it to leave is `failure_tolerance` (3 s) ×
 there is no lurch). RPP, `FollowPath` until then, refused at any blocker in
 its projection; it is still loaded as `FollowPathRPP`, and
 `controller_id="FollowPathRPP"` in `move.xml` switches back. One retry (~6 s) covered a person walking across and not one standing
-and talking; three (~12 s) covers that, at the price of a task failure taking
-~12 s rather than ~6 s to declare. The progress checker's 30 s remains the
-outer bound. The planner branch keeps one retry.
+and talking; three (~12 s) covered that, at the price of a task failure taking
+~12 s rather than ~6 s to declare. Four (~16 s) since 2026-10-14, because the
+wait has to outlast `IsPathValid`'s `blocked_time` (10 s): MPPI refuses a
+person who steps in close at once, the 1 Hz costmap and check can take ~2 s
+more to call the path blocked, and three retries would run out just before
+the replan lands (estimated from `failure_tolerance`, not measured). Keep (retries + 1) × 3 s at least `blocked_time` +
+4 s. The progress checker's 30 s remains the outer bound. The planner branch
+keeps one retry.
+
+**A blocked path is replanned only after 10 s** (`IsPathValid blocked_time`,
+2026-10-14): every check for that long must find the same spot (within 0.5 m)
+of the same path blocked; one clear answer ends the wait with no replan. A
+single blocked answer used to be a replan, so a person crossing the route
+bought a detour that then stuck for the goal. The task_runner log carries the
+decision (`Path blocked at (x, y) for n of 10.0 s; keeping it`, `Path clear
+again after n s blocked`, `... for n s; replanning`); the planner log has the
+detail of each blocked answer.
 
 The retries are per incident, not per goal. A `RecoveryNode` resets its retry
 count only when it returns, and `FollowPath` is `RUNNING` for the whole goal,

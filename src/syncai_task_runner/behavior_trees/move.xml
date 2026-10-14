@@ -59,7 +59,25 @@
   the task_runner log on every tick means the costmap update and the check
   have phase-locked: raise server_timeout here.
 
-  FollowPath gets three retries, and they refill (retry_refill_time, 2026-10).
+  A blocked path is replanned only once it has stayed blocked for 10 s
+  (blocked_time, 2026-10-14): the same spot of the same path (within 0.5 m,
+  blocked_match_distance) answered blocked by every check for that long,
+  with no clear answer in between. Until then the path is kept, the
+  task_runner log says "blocked at (x, y) for n of 10 s; keeping it" and the
+  status sentence says the robot reroutes if it is still blocked after 10 s;
+  one clear answer ends the wait without a replan. Before that day one answer
+  was a replan, and the global costmap marks anything crossing the route within
+  2.5 m, so a person walking across bought a detour that stuck for the rest
+  of the goal (see above): on robot01 (2026-10-14) a ~11 m leg flipped to a
+  ~35 m detour and back, one blocked answer per switch. Three checks in a
+  row (~2 s) was tried first that day; 10 s also waits out a person who
+  stops in the way, which is when a detour is least wanted. Meanwhile MPPI
+  bends round the blocker or stands in front of it. "0" is the old
+  behaviour. The wait restarts on any new path, so it also spaces out a
+  replan whose own result reads blocked. blocked_time is bounded by
+  FollowPath's retries below: lengthen one, re-check the other.
+
+  FollowPath gets four retries, and they refill (retry_refill_time, 2026-10).
   The count is how long the robot waits for a blocker that stands in front of
   it. FollowPath is MPPI since 2026-10 (controller_server_params.yaml), which
   bends round a blocker beside the path inside the local costmap; one that
@@ -71,8 +89,14 @@
   tracker that refused at any blocker in its projection; it is still loaded
   as FollowPathRPP, and controller_id="FollowPathRPP" below is the whole A/B. One
   retry (~6 s) was enough for a person walking across and not for one
-  standing and talking; three (~12 s) covers that, at the price of a task
-  failure taking ~12 s instead of ~6 s to declare. The progress checker's
+  standing and talking; three (~12 s) covered that, at the price of a task
+  failure taking ~12 s instead of ~6 s to declare. Four (~16 s, 2026-10-14)
+  because the wait now has to outlast IsPathValid's blocked_time (10 s): a
+  person who steps in close makes MPPI refuse at once, while the 1 Hz global
+  costmap and the 1 Hz check can take ~2 s more to report the path blocked,
+  so the replan lands ~13 s into the refusals, and three retries run out at
+  ~12-13 s, just before it (estimated, not measured). Keep (retries + 1) x 3 s at
+  least blocked_time + 4 s (15 s would need six). The progress checker's
   30 s movement_time_allowance remains the outer bound. The refill: the
   RecoveryNode only resets when it returns, and FollowPath is RUNNING for the
   whole goal, so the retries used to be per goal -- a blocker met early used
@@ -136,14 +160,14 @@
                 <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
-                <IsPathValid path="{path}" server_timeout="100"/>
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
               </ReactiveSequence>
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
             </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
-        <RecoveryNode number_of_retries="3" retry_refill_time="60.0" name="FollowPath">
+        <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>

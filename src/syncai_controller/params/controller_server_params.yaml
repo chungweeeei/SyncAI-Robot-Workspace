@@ -40,15 +40,17 @@
     # deliberately NOT when a replanned path is accepted on preempt
     # (updateGlobalPath): a drivable path resets it on its first cycle anyway,
     # and since is_path_valid runs RPP's own footprint test (2026-10) a path
-    # RPP refuses is replanned once a second, so a reset per preempt would
+    # RPP refuses was replanned once a second (until move.xml's blocked_time,
+    # 2026-10-14), so a reset per preempt would
     # leave the progress checker's movement_time_allowance (30 s) as the only
     # abort. That 30 s stays the outer bound on standing still. With the
     # footprint test the detour normally arrives before RPP refuses (the
     # blocker is seen 2.5 m out); this window is for one that appears inside
     # the 0.6 m projection. A map with no second corridor still aborts, ~3 s
     # per attempt -- how many attempts, and so how long the robot waits for a
-    # live blocker to leave, is move.xml's FollowPath retry count (3, ~12 s
-    # in all); a Wait/RoundRobin recovery is not ported, and this knob is not
+    # live blocker to leave, is move.xml's FollowPath retry count (4, ~16 s
+    # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
+    # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
     failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
