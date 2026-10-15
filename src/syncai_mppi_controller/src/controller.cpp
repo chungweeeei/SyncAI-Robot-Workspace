@@ -208,8 +208,7 @@ void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
 }
 
 bool MPPIController::rotateToGoalHeading(
-  const geometry_msgs::msg::PoseStamped & robot_pose,
-  syncai_nav_core::GoalChecker * goal_checker,
+  const geometry_msgs::msg::PoseStamped & robot_pose, syncai_nav_core::GoalChecker * goal_checker,
   geometry_msgs::msg::TwistStamped & cmd)
 {
   // Not upstream (2026-10-15): the final turn to the goal heading is not left

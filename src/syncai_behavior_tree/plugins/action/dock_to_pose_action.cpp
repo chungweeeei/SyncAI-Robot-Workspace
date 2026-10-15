@@ -38,9 +38,8 @@ constexpr char kMethodCharger[] = "charger";
 bool fillPlanarPose(const geometry_msgs::msg::PoseStamped & pose, DockGoal & goal)
 {
   const double yaw = tf2::getYaw(pose.pose.orientation);
-  const bool changed = goal.frame_id != pose.header.frame_id ||
-                       goal.x != pose.pose.position.x || goal.y != pose.pose.position.y ||
-                       goal.yaw != yaw;
+  const bool changed = goal.frame_id != pose.header.frame_id || goal.x != pose.pose.position.x ||
+                       goal.y != pose.pose.position.y || goal.yaw != yaw;
   goal.frame_id = pose.header.frame_id;
   goal.x = pose.pose.position.x;
   goal.y = pose.pose.position.y;

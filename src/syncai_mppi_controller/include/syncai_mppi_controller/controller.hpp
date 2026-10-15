@@ -140,8 +140,7 @@ protected:
     * @return Whether this cycle is a final rotation (the optimizer is skipped)
     */
   bool rotateToGoalHeading(
-    const geometry_msgs::msg::PoseStamped & robot_pose,
-    syncai_nav_core::GoalChecker * goal_checker,
+    const geometry_msgs::msg::PoseStamped & robot_pose, syncai_nav_core::GoalChecker * goal_checker,
     geometry_msgs::msg::TwistStamped & cmd);
 
   /**
