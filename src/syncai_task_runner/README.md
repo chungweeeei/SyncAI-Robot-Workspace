@@ -375,7 +375,7 @@ so it backs out 1 m from where it stands.
 local costmap — this is where obstacle avoidance happens), then
 `SetMotionKey key="5"` switches the gait to MPC, `WaitForMotionState
 state="5"` waits (up to 5 s) for the controller to report it on `mode`
-data[1], `Wait msec="2000"` lets the gait settle, `DockToPose method="position" controller_id="Docking"` drives the last metre
+data[1], `Wait msec="3000"` lets the gait settle (2000 until 2026-10-15), `DockToPose method="position" controller_id="Docking"` drives the last metre
 blind (the docking controller reads no costmap: the dock is itself a lethal
 cell), and on arrival `SetMotionKey key="2"` + `Wait msec="4000"` **lie the
 robot down on the dock** (2026-10-14; it was the backend's LIEDOWN step
@@ -387,7 +387,7 @@ robot stays standing on the dock in MPC, which `undock.xml` also starts from.
 A cancel halts the tree before any restore and leaves MPC on, standing.
 
 `undock.xml`: from lying on the dock — `SetMotionKey key="0"` (stand),
-`Wait 4000`, `key="5"`, `WaitForMotionState state="5"` + `Wait 2000`,
+`Wait 4000`, `key="5"`, `WaitForMotionState state="5"` + `Wait 3000`,
 `ComputeBackOutPose` (`(-1, 0)` in the robot's own base frame, transformed
 into odom once by `dock_to_pose` when the back-out starts), `DockToPose
 controller_id="Undocking"` backing straight out to it, then
@@ -400,7 +400,10 @@ The MPC switch is **checked** since 2026-10-14: `set_motion_key` is one-way
 UDP, so `WaitForMotionState` waits for the controller's own report (MPC = 5
 on `mode` data[1], read off the robot), fails the step after its timeout
 (`DOCK_FAILED`, RL restored, the last state seen in `error_msg`), and logs
-how long the switch took. The 2 s after it is settling time on purpose. The
+how long the switch took. The 3 s after it (both trees; 2 s until
+2026-10-15) is settling time on purpose, and a judgement rather than a
+measurement: nothing reports when the gait under MPC is steady. Keep the two
+trees' values equal — it is the same transition. The
 stand-up and lie-down `Wait`s (4 s each) are still guesses: Stand reports 0,
 which is also what `mode` reads before anything was heard, so checking it
 would prove nothing. The typical backend sequence is MOVE(`dock.xml`) → … (charging)

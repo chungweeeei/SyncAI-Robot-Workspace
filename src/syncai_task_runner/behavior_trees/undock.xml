@@ -43,8 +43,10 @@
   The MPC switch is CHECKED, as in dock.xml (2026-10-14): SetMotionKey is a
   one-way UDP datagram, so WaitForMotionState waits (up to 5 s) for the
   controller to report MPC -- 5 on the `mode` topic's data[1], read off the
-  robot -- and a Wait of 2000 ms then lets the gait settle before the robot
-  moves; see dock.xml's header. The stand-up is still a plain 4000 ms Wait,
+  robot -- and a Wait of 3000 ms then lets the gait settle before the robot
+  moves; see dock.xml's header. Raised 2000 -> 3000 ms on 2026-10-15
+  together with dock.xml's: the settling is the same gait transition in
+  both trees, so the two numbers move together. The stand-up is still a plain 4000 ms Wait,
   a guess: Stand reports 0 on data[1], which is also what the topic reads
   before anything was heard, so a WaitForMotionState on it would prove
   nothing. A stand-up Wait too short switches modes mid stand-up; do not
@@ -92,7 +94,7 @@
           <SetMotionKey key="5" server_timeout="500"/>
           <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
           <WaitForMotionState state="5" timeout="5000"/>
-          <Wait msec="2000"/>
+          <Wait msec="3000"/>
           <!-- 1 m behind the robot, in its base frame; the goal's pose is not read (header) -->
           <ComputeBackOutPose distance="1.0" back_out_pose="{back_out_pose}"/>
           <DockToPose method="position" dock_pose="{back_out_pose}" controller_id="Undocking" goal_checker_id="dock_goal_checker" timeout="60.0"/>

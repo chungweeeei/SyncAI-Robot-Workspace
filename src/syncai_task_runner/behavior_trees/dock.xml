@@ -35,11 +35,16 @@
   waits for it, up to `timeout` (5000 ms); a controller that never reports it
   fails the step, the Fallback restores RL, and the goal is DOCK_FAILED with
   the last state seen in error_msg. The node logs how long the switch took --
-  the number to tune the timeout with. The Wait of 2000 ms after it is
+  the number to tune the timeout with. The Wait of 3000 ms after it is
   deliberate settling time: the controller reports MPC when it has entered
   the mode, not when the gait under it is steady, and a dock approach started
-  mid transition is the failure this tree exists to prevent. Until 2026-10-14
-  the whole check was a fixed 1500 ms Wait, a guess.
+  mid transition is the failure this tree exists to prevent. Raised 2000 ->
+  3000 ms on 2026-10-15, during the robot01 dock tests, where the switch
+  itself was reported after 49 ms. The settling time is still not measured
+  (nothing reports "steady"), so the number is a judgement, not a reading;
+  undock.xml's settling Wait is the same transition and moved with it --
+  keep the two equal. Until 2026-10-14 the whole check was a fixed 1500 ms
+  Wait, a guess.
 
   Why the tree lies the robot down itself (2026-10-14): a dock is not done
   until the robot is resting on the contacts, and a backend LIEDOWN step
@@ -146,7 +151,7 @@
           <SetMotionKey key="5" server_timeout="500"/>
           <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
           <WaitForMotionState state="5" timeout="5000"/>
-          <Wait msec="2000"/>
+          <Wait msec="3000"/>
           <DockToPose method="position" dock_pose="{goal}" controller_id="Docking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
         </Sequence>
         <ForceFailure>
