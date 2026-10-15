@@ -23,6 +23,12 @@ namespace
 
 using DockGoal = syncai_common::action::DockToPose::Goal;
 
+// Values of the `method` port. position: dock_pose as given. charger: dock
+// against a tag detected on the charger -- reserved, its detector is not
+// written yet, so on_tick() refuses it rather than fall back to position.
+constexpr char kMethodPosition[] = "position";
+constexpr char kMethodCharger[] = "charger";
+
 // The trees carry poses as PoseStamped ({goal}, {staging_pose}); the action
 // takes a planar frame_id / x / y / yaw since 2026-10-14 (a quaternion is
 // what a hand-written CLI goal gets wrong, and the controller uses nothing
@@ -53,6 +59,25 @@ DockToPoseAction::DockToPoseAction(
 
 void DockToPoseAction::on_tick()
 {
+  // Checked first: a method this node cannot carry out must fail before
+  // anything is sent, whatever the pose. A refused charger dock is
+  // DOCK_FAILED with a reason that says why, not a dock to the configured
+  // pose the caller did not ask for.
+  std::string method = kMethodPosition;
+  getInput("method", method);
+  if (method != kMethodPosition) {
+    const std::string detail = method == kMethodCharger
+                                 ? std::string("dock method 'charger' is not implemented yet")
+                                 : "unknown dock method '" + method + "' (expected '" +
+                                     kMethodPosition + "' or '" + kMethodCharger + "')";
+    RCLCPP_ERROR(
+      node_->get_logger(), "[DockToPoseAction][%s] %s; not sending the goal", __func__,
+      detail.c_str());
+    report_failure(detail);
+    should_send_goal_ = false;
+    return;
+  }
+
   geometry_msgs::msg::PoseStamped dock_pose;
   getInput("dock_pose", dock_pose);
   getInput("controller_id", goal_.controller_id);
@@ -110,6 +135,8 @@ void DockToPoseAction::on_wait_for_result(
   // sets goal_updated_, BtActionNode sends it, and the server's dock loop
   // accepts the pending goal in place (controller_server polls
   // is_preempt_requested() every cycle, as it does for FollowPath).
+  // `method` is not re-read: it decides how the pose is obtained, which is
+  // settled once the goal is out.
   geometry_msgs::msg::PoseStamped new_pose;
   getInput("dock_pose", new_pose);
   if (!new_pose.header.frame_id.empty() && fillPlanarPose(new_pose, goal_)) {

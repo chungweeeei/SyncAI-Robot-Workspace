@@ -101,7 +101,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `NONE` = 0 | success, cancel — **and** a goal that was preempted by a newer one or rejected before the tree ran (another navigator busy, BT file missing). Those two never reach `goalCompleted()`: the action server aborts them with an empty result | empty |
 | `PLAN_FAILED` = 200 | the planner branch failed the tree: `ComputePathToPose` aborted twice (the second time after `ClearGlobalCostmap`) — no route, start or goal in an obstacle / keepout zone, TF | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
-| `DOCK_FAILED` = 300 | the docking branch of `dock.xml` / `undock.xml` failed (2026-10): `SetMotionKey` refused (`LOCKED`), `ComputeStagingPose` rejected the dock pose, or `DockToPose` aborted — the controller's reason follows. A dock goal can still end 100 / 200: that is the staging leg, "the dock was unreachable" | `Docking failed: the dock approach did not complete (controller dock_to_pose aborted the goal: dock approach exceeded 60.0 s (error_code 304))` |
+| `DOCK_FAILED` = 300 | the docking branch of `dock.xml` / `undock.xml` failed (2026-10): `SetMotionKey` refused (`LOCKED`), `ComputeStagingPose` rejected the dock pose, `DockToPose` refused its `method` (`charger` is reserved and not implemented yet), or `DockToPose` aborted — the controller's reason follows. A dock goal can still end 100 / 200: that is the staging leg, "the dock was unreachable" | `Docking failed: the dock approach did not complete (controller dock_to_pose aborted the goal: dock approach exceeded 60.0 s (error_code 304))` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -373,7 +373,7 @@ pose whichever way the robot is going.
 local costmap — this is where obstacle avoidance happens), then
 `SetMotionKey key="5"` switches the gait to MPC, `WaitForMotionState
 state="5"` waits (up to 5 s) for the controller to report it on `mode`
-data[1], `Wait msec="2000"` lets the gait settle, `DockToPose controller_id="Docking"` drives the last metre
+data[1], `Wait msec="2000"` lets the gait settle, `DockToPose method="position" controller_id="Docking"` drives the last metre
 blind (the docking controller reads no costmap: the dock is itself a lethal
 cell), and on arrival `SetMotionKey key="2"` + `Wait msec="4000"` **lie the
 robot down on the dock** (2026-10-14; it was the backend's LIEDOWN step
