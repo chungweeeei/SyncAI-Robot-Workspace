@@ -48,6 +48,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "syncai_common/srv/auto_localize.hpp"
@@ -86,6 +87,10 @@ struct NodeConfig
   double initial_pose_x = 0.0;
   double initial_pose_y = 0.0;
   double initial_pose_yaw = 0.0;
+  // Height of the lidar (Point-LIO's body frame) above the feet, metres. An initialpose that
+  // gives a z gives the ground's height, and this raises it to the body's. The controller's
+  // and the planner's `lidar_height` are the same number; keep the three equal.
+  double lidar_height = 0.481;
   double update_hz = 1.0;
 
   // Motion gate. update_hz is a *ceiling* on re-registration, not a schedule:
@@ -255,13 +260,16 @@ public:
     std::shared_ptr<syncai_common::srv::Relocalize::Response> response);
 
   // `initialpose` (rviz "2D Pose Estimate", the console): x / y / yaw through
-  // applyPlanarGuess. Same callback group as the services.
+  // applyPlanarGuess, plus z as a ground height when the message marks it (a
+  // positive z variance). Same callback group as the services.
   void initialPoseCB(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
 
   // Build the ICP initial guess from a 2D start pose, keeping the current
-  // estimate's roll / pitch / z. See the definition for why a flat guess
-  // never converges on this robot.
-  void applyPlanarGuess(double x, double y, double yaw, const char * source);
+  // estimate's roll / pitch, and its z unless `ground_z` names the storey.
+  // See the definition for why a flat guess never converges on this robot.
+  void applyPlanarGuess(
+    double x, double y, double yaw, const char * source,
+    std::optional<double> ground_z = std::nullopt);
 
   // `auto_localize`: hint-free global search, then a wait for the timer to
   // register against the winner. Both halves have a deadline, and a failure in
