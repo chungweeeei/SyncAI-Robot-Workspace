@@ -68,7 +68,7 @@ void DockingController::initialize(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".v_angular_max", rclcpp::ParameterValue(0.65));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".v_angular_min", rclcpp::ParameterValue(0.03));
+    node, plugin_name_ + ".v_angular_min", rclcpp::ParameterValue(0.15));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".slowdown_radius", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
@@ -278,15 +278,23 @@ geometry_msgs::msg::TwistStamped DockingController::computeVelocityCommandsImpl(
   const double angle_to_target = std::atan2(target.position.y, target.position.x);
 
   // Reversing when allowed and the target is behind: the law then steers the
-  // tail at the target, and its heading is flipped so "tail facing the
-  // target heading" is what converges. This is all the Undocking instance
-  // needs to back straight out: the staging pose sits 1 m behind the robot
-  // with the robot's own yaw, so r = 1, phi ~ 0, delta ~ 0 -> a straight
+  // tail at the target. The target's orientation goes in UNflipped, on
+  // purpose: EgocentricPolarCoordinates flips the line of sight by pi when
+  // backward, and that one flip already gives the tail's view of both phi
+  // and delta. Until 2026-10-15 the yaw was flipped here as well (graceful's
+  // computeVelocityCommands does), which put phi pi off: with the target
+  // dead astern at the robot's own yaw the law read phi = pi and commanded
+  // w ~ 0.2 rad/s instead of 0, and the heading error then grew under it.
+  // On robot01 both undocks veered ~0.5 rad in 5 s, slid the target to the
+  // robot's side (x >= 0, so the law went forward), turned ~180 deg round it
+  // and arrived 2.3 rad off the dock yaw. A closed-loop simulation of this
+  // code reproduces that from a perfect start; unflipped, the same
+  // simulation backs straight out 1 m in 5.3 s. So the Undocking instance's
+  // 1 m back-out target gives r = 1, phi = 0, delta = 0 -> a straight
   // reverse. Overshoot puts the target ahead and the law drives forward to
   // fix it; allow_backward permits reversing, it does not demand it.
   const bool backward = allow_backward_ && target.position.x < 0.0;
-  target.orientation =
-    orientationAroundZAxis(backward ? angles::normalize_angle(yaw_to_dock + M_PI) : yaw_to_dock);
+  target.orientation = orientationAroundZAxis(yaw_to_dock);
 
   if (target_pub_->get_subscription_count() > 0) {
     geometry_msgs::msg::PoseStamped target_msg;
@@ -298,8 +306,8 @@ geometry_msgs::msg::TwistStamped DockingController::computeVelocityCommandsImpl(
 
   // Three branches, upstream's order:
   // 1. inside the xy window (or once inside it): rotate in place to the dock
-  //    yaw -- the REAL yaw, not the flipped one, the robot ends facing the
-  //    way the pose says whichever way it arrived;
+  //    yaw, so the robot ends facing the way the pose says whichever way it
+  //    arrived;
   // 2. the target is far off the nose: rotate in place toward it first,
   //    because the law converges from any pose but spends the wide-bearing
   //    part of that convergence in the arc the gait floor executes badly;
@@ -307,25 +315,17 @@ geometry_msgs::msg::TwistStamped DockingController::computeVelocityCommandsImpl(
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header = pose.header;
   bool instant_linear_stop = false;
+  Branch branch;
   if (final_rotation_ && (r < goal_dist_tol_ || final_rotation_latched_)) {
     final_rotation_latched_ = true;
     cmd_vel.twist = rotateToTarget(yaw_to_dock);
     instant_linear_stop = true;
+    branch = Branch::FinalRotation;
   } else if (initial_rotation_ && std::fabs(angle_to_target) > initial_rotation_min_angle_) {
     cmd_vel.twist = rotateToTarget(angle_to_target);
+    branch = Branch::InitialRotation;
   } else {
     cmd_vel.twist = control_law_->calculateRegularVelocity(target, backward);
-  Branch branch;
-  }
-
-  clampAcceleration(cmd_vel.twist, instant_linear_stop);
-
-    branch = Branch::FinalRotation;
-  publishPreview(pose, target, backward);
-
-    branch = Branch::InitialRotation;
-  // Remember what we actually commanded: next cycle's clamp baseline.
-  last_cmd_vel_ = cmd_vel.twist;
     branch = Branch::ControlLaw;
   }
 
@@ -356,6 +356,14 @@ geometry_msgs::msg::TwistStamped DockingController::computeVelocityCommandsImpl(
         break;
     }
     last_branch_ = branch;
+  }
+
+  clampAcceleration(cmd_vel.twist, instant_linear_stop);
+
+  publishPreview(pose, target, backward);
+
+  // Remember what we actually commanded: next cycle's clamp baseline.
+  last_cmd_vel_ = cmd_vel.twist;
   return cmd_vel;
 }
 
@@ -366,9 +374,12 @@ geometry_msgs::msg::Twist DockingController::rotateToTarget(double angle_to_targ
   // Upstream: proportional, w = factor * angle * w_max, which at the 0.05 rad
   // yaw error of the final alignment is 0.016 rad/s -- nothing a gait turns
   // at. The floor is the local addition: the robot turns at least
-  // v_angular_min until the goal checker says the yaw is in; at the MPC floor
-  // (0.03 rad/s, measured 2026-10-14) that is 1.5 mrad per 50 ms cycle, so a
-  // few cycles of gait latency still land inside a 0.05 rad window. No sqrt(2 * accel * angle) deceleration cap
+  // v_angular_min until the goal checker says the yaw is in. 0.15 rad/s
+  // since 2026-10-15; it was 0.03, from a 2026-10-14 MPC measurement that a
+  // sustained in-place turn did not bear out -- both robot01 undocks stalled
+  // at 0.09 rad/s with the yaw frozen until the progress checker aborted.
+  // 0.15 is 7.5 mrad per 50 ms cycle, which is why dock_goal_checker's yaw
+  // window went 0.05 -> 0.1 with it. No sqrt(2 * accel * angle) deceleration cap
   // (RPP's rotateToHeading has one): a cap that tends to zero would fight
   // the floor exactly where the floor is the point.
   const double w = rotation_scaling_factor_ * angle_to_target * v_angular_max_;

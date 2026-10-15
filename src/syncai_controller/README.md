@@ -443,9 +443,12 @@ Three local rules, all forced by the quadruped, and one deliberate omission:
   the floor instead of at 0.30.
 - **`v_angular_min` floors both rotation branches** (not upstream): the
   proportional `0.5·angle·w_max` is 0.016 rad/s at the 0.05 rad error of the
-  final alignment, nothing a gait turns at. **Measured under MPC on
-  2026-10-14: 0.03 rad/s**, slow enough that gait latency cannot overshoot
-  the 0.05 rad window; the cost is a few seconds for the last 0.1 rad.
+  final alignment, nothing a gait turns at. **0.15 rad/s since 2026-10-15.**
+  The 0.03 measured under MPC on 2026-10-14 did not hold for a sustained
+  in-place turn: both robot01 undocks tapered to 0.087–0.094 rad/s and the
+  yaw froze until the progress checker aborted, while 0.10–0.16 still turned.
+  The real floor is somewhere in 0.09–0.15 and unmeasured; at 0.15 one cycle
+  is 7.5 mrad, so `dock_goal_checker`'s yaw window went 0.05 → 0.1 with it.
 - **The stop into the final rotation is one step, not a ramp.** The clamp is
   RPP's (baseline = last command, zeroed in `reset()` and the catch-all, never
   in `setPlan()`). At the MPC floor a ramp-down is one cycle anyway; the rule
@@ -480,6 +483,18 @@ transform turns into "1 m behind where the robot stands"; `dock.xml` sends `"Doc
 floor is assumed equal to the measured forward one (0.05 m/s); it, the
 reverse cap and driver_manager's `scale_back` are unmeasured.
 
+**The target's yaw is not flipped for the reverse** (fixed 2026-10-15).
+`EgocentricPolarCoordinates` already flips the line of sight by π when
+`backward`, which turns both `phi` and `delta` into the tail's view; the
+plugin flipped the target yaw as well (graceful's controller does), so
+`phi` was π off and a target dead astern at the robot's own yaw read as a
+hard turn (`w` ≈ 0.2 rad/s instead of 0) with the heading error growing
+under it. On robot01 both undocks veered ~0.5 rad in 5 s, slid the target
+to the robot's side, switched to forward, turned ~180° round it and arrived
+2.3 rad off — then stalled in the final rotation (above). A closed-loop
+simulation of the code reproduces it from a perfect start; without the
+second flip it backs straight out 1 m in 5.3 s.
+
 Debug topics, subscriber-gated: `local_plan` (the predicted approach,
 integrated from the law for 3 s — **the same topic MPPI uses**, on purpose:
 one controller runs at a time, one rviz display shows whichever is active) and
@@ -488,11 +503,13 @@ one controller runs at a time, one rviz display shows whichever is active) and
 MPC: the docking trees switch the gait to MPC before sending a dock goal; this
 controller does not check it and would drive the RL gait the same way.
 
-Tuning order: `v_linear_min` / `v_angular_min` under MPC (done 2026-10-14:
-0.05 m/s / 0.03 rad/s; re-measure by stepping a 20 Hz `cmd_vel` down until
-odom shows no steady motion, and after any `scale_fwd` / `scale_turn_*`
-change) → `dock_goal_checker`'s tolerances (widen `yaw_goal_tolerance`
-to 0.1 before touching the angular floor if the yaw hunts) →
+Tuning order: `v_linear_min` / `v_angular_min` under MPC (0.05 m/s measured
+2026-10-14; 0.15 rad/s set on 2026-10-15 above a stall at 0.09, not measured
+-- re-measure by stepping a 20 Hz `cmd_vel` down until odom shows no steady
+motion, holding each step for several seconds, and after any `scale_fwd` /
+`scale_turn_*` change) → `dock_goal_checker`'s tolerances (yaw already
+widened to 0.1 for the 0.15 floor; widen further before lowering the floor
+if the yaw hunts) →
 `initial_rotation_min_angle` (RPP's 0.785 → 0.25 lesson) → `beta` / `k_*`. The
 result's `final_distance_error` is the honest number: the xy latch guarantees
 success, not accuracy, and the gait's stop latency comes on top of the
@@ -543,7 +560,8 @@ one):
 | `PositionGoalChecker` | Position only — orientation ignored entirely |
 
 Two `SimpleGoalChecker` instances are configured: `goal_checker` (0.15 m /
-0.1 rad, navigation) and `dock_goal_checker` (0.05 m / 0.05 rad, docking).
+0.1 rad, navigation) and `dock_goal_checker` (0.05 m / 0.1 rad, docking; the
+yaw was 0.05 until 2026-10-15).
 **An empty `goal_checker_id` resolves to the first entry of
 `goal_checker_plugins`, however many are loaded** (2026-10). Upstream — and this
 server until then — only fell back when exactly one was loaded, which was fine
@@ -748,7 +766,8 @@ ros2 topic echo /<robot_id>/docking_target       # the target in the base frame
   trajectory and the docking controller's predicted approach share the topic
   on purpose. `ros2 topic info -v` shows them all; only the active controller
   publishes.
-- **The floors are MPC numbers** (0.05 m/s, 0.03 rad/s, measured 2026-10-14).
+- **The floors are MPC numbers** (0.05 m/s measured 2026-10-14; 0.15 rad/s
+  set 2026-10-15 above an observed 0.09 rad/s stall).
   Driving the docking controller under RL — a tree whose MPC switch was
   ignored, or a hand-sent `dock_to_pose` goal — commands speeds the RL gait
   stands at (its floor is ~0.3 m/s), and the goal ends on the progress

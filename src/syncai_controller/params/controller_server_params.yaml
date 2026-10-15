@@ -135,14 +135,21 @@
     # cycle was 1.5 cm -- one reason the trees switch to MPC first.) The DockingController reads xy_goal_tolerance
     # back through getTolerances(): it is where the final in-place rotation
     # starts, so the two latches (the controller's and this stateful one)
-    # trip on the same number. If the yaw hunts on the robot, widen
-    # yaw_goal_tolerance to 0.1 (what goal_checker uses) before touching the
-    # controller's v_angular_min. The result's final_distance_error /
+    # trip on the same number. The result's final_distance_error /
     # final_yaw_error report what the robot actually achieved.
+    #
+    # yaw_goal_tolerance 0.05 -> 0.1 (2026-10-15), together with the docking
+    # controllers' v_angular_min 0.03 -> 0.15: at the old 0.03 floor a
+    # 0.05 rad window could not be overshot, but the gait does not turn in
+    # place at 0.09 rad/s, let alone 0.03 (both robot01 undocks stalled there
+    # until the progress checker aborted). At 0.15 one cycle is 7.5 mrad and
+    # the gait's latency carries the yaw further, so the window doubled
+    # rather than letting the final alignment hunt. Not measured: if it still
+    # hunts, widen this before lowering the floor again.
     dock_goal_checker:
       plugin: "syncai_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.1
       stateful: true
 
     FollowPath:
@@ -197,13 +204,6 @@
       in_place_wz_min: 0.3
       in_place_wz_deadband: 0.05
       in_place_vx_max: 0.1
-      # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
-      # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
-      # 2 m half-width. With consider_footprint, a rolled-out point off the
-      # costmap is checked as a footprint, and footprintCost() reads an
-      # off-map vertex as LETHAL, so a horizon longer than the window makes
-      # every fast candidate "collide" at its far end and MPPI slows down for
-      # no obstacle. model_dt must stay 1 / controller_frequency:
       # Not upstream: the final rotation (2026-10-15). Inside
       # goal_checker.xy_goal_tolerance of the path's end, MPPI stops
       # optimising and turns in place to the goal heading, RPP's
@@ -220,6 +220,13 @@
       # through the stop (see yaw_goal_tolerance) -- lower this if the final
       # heading overshoots. 0 disables it (the optimizer turns, as upstream).
       final_rotation_wz: 0.65
+      # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
+      # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
+      # 2 m half-width. With consider_footprint, a rolled-out point off the
+      # costmap is checked as a footprint, and footprintCost() reads an
+      # off-map vertex as LETHAL, so a horizon longer than the window makes
+      # every fast candidate "collide" at its far end and MPPI slows down for
+      # no obstacle. model_dt must stay 1 / controller_frequency:
       # equal turns on the warm-start shift, a longer controller period throws
       # out of initialize() and takes controller_server down.
       time_steps: 40
@@ -272,6 +279,9 @@
       # wz_max) outlasts the 2 s horizon, and turning away from the goal yaw
       # costs here, so standing still scored best. MPPI held a -0.115 rad/s
       # command under the turn floor until the progress checker aborted.
+      # Since final_rotation_wz (2026-10-15) the optimizer no longer runs
+      # inside that distance, so this critic scores nothing while
+      # final_rotation_wz is on; it is the turn again when that is set to 0.
       GoalAngleCritic:
         enabled: true
         cost_power: 1
@@ -279,9 +289,6 @@
         threshold_to_consider: 0.15
       PreferForwardCritic:
         enabled: true
-      # Since final_rotation_wz (2026-10-15) the optimizer no longer runs
-      # inside that distance, so this critic scores nothing while
-      # final_rotation_wz is on; it is the turn again when that is set to 0.
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.5
@@ -434,12 +441,17 @@
       # Not upstream. Floor for both in-place rotation branches: upstream's
       # proportional rotate-to-target is 0.5 * angle * v_angular_max, i.e.
       # 0.016 rad/s at the 0.05 rad error of the final alignment -- nothing a
-      # gait turns at. Measured under MPC on 2026-10-14: 0.03 rad/s is the
-      # slowest in-place turn the gait still executes (pre-scale). 0.03 rad/s
-      # x 50 ms = 1.5 mrad per cycle, so gait latency cannot carry the yaw
-      # through the 0.05 rad window; the cost is time -- the last 0.1 rad of a
-      # final alignment takes a few seconds at the floor.
-      v_angular_min: 0.03
+      # gait turns at. Raised 0.03 -> 0.15 on 2026-10-15 (pre-scale). The 0.03
+      # was measured under MPC on 2026-10-14, but a sustained in-place turn
+      # does not bear it out: in both robot01 undocks the final rotation
+      # tapered to 0.087-0.094 rad/s and the yaw froze there for 30 s until
+      # the progress checker aborted, while 0.10-0.16 still turned. 0.15 sits
+      # above everything seen to stall; the real floor is somewhere in
+      # 0.09-0.15 and unmeasured -- step a held in-place wz under MPC (0.08,
+      # 0.10, 0.12, 0.15) and read /odom before lowering it. The cost of the
+      # higher floor is overshoot, which dock_goal_checker's 0.1 rad yaw window
+      # absorbs (see there).
+      v_angular_min: 0.15
       # v = v_linear_max * r / slowdown_radius inside this radius. With the
       # MPC floor at 0.05 and the cap at 0.40 it acts over almost the whole
       # radius (down to 6 cm out), so the robot arrives at the floor speed
@@ -497,7 +509,8 @@
       v_linear_min: 0.05
       v_linear_max: 0.30
       v_angular_max: 0.65
-      v_angular_min: 0.03
+      # Docking's floor (see there): this instance is where it stalled.
+      v_angular_min: 0.15
       slowdown_radius: 0.5
       max_linear_accel: 1.0
       max_angular_accel: 3.2

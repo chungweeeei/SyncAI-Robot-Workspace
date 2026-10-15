@@ -34,7 +34,10 @@ namespace syncai_controller
  * target in the robot's base frame and leaves `current` at the origin), and
  * the coordinates come out the same whichever frame that is. With `backward`
  * the line of sight is flipped by pi, so the law steers the robot's tail at
- * the target instead of its nose.
+ * the target instead of its nose. Pass the target's own orientation then:
+ * this flip already covers phi as well as delta, and a target yaw flipped by
+ * the caller too puts phi pi off and makes a straight reverse unstable (the
+ * DockingController's undock bug, fixed 2026-10-15).
  */
 struct EgocentricPolarCoordinates
 {
