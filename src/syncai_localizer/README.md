@@ -68,7 +68,7 @@ wrong. Check with `ros2 node info /<robot_id>/localizer_node`, not with
 |---|---|---|---|
 | `cloud_topic` = `/<robot_id>/pointlio/body_cloud` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The scan to register (voxelised twice, at the rough and refine resolutions) |
 | `odom_topic` = `/<robot_id>/pointlio/lio_odom` | `nav_msgs/Odometry`, depth 10 | `syncai_pointlio` | The LIO pose the correction is composed with; its `header.frame_id` becomes `local_frame` |
-| `initialpose` | `geometry_msgs/PoseWithCovarianceStamped`, depth 10 | the console, rviz "2D Pose Estimate", the backend's map switch | A 2D guess through `applyPlanarGuess` (below) |
+| `initialpose` | `geometry_msgs/PoseWithCovarianceStamped`, depth 10 | the console, rviz "2D Pose Estimate", the backend's map switch | A 2D guess through `applyPlanarGuess` (below); `position.z` is the ground's height and taken only when `covariance[14]` (the z variance) is positive |
 | `relocalize` | `syncai_common/srv/Relocalize` | the backend (initial pose, map switch), a shell | (Re)load a PCD and take the request's raw 6-DOF pose as the next guess |
 | `[map] pcd`, `[initial_pose]` | `config/system.ini` via the launch | | `map_path` (loaded during construction) and the boot guess |
 
@@ -112,6 +112,18 @@ loaded the TF stays at identity.
    the old offset and retries forever. Measured on the robot: an `initialpose`
    at (5.0, 0.982) hung; with the 14.6° pitch filled in the same spot
    converged on the first round.
+
+   z is the exception an `initialpose` can make: the current estimate's z is
+   the storey the localizer thinks it is on, so a guess on another storey
+   starts a whole storey (3 m and more) out of the rough stage's reach and
+   hangs the same way. A sender that knows the storey puts the ground's height
+   in `position.z` and **marks it with a positive z variance**
+   (`covariance[14]`); the body then goes `lidar_height` above it. The mark is
+   what keeps rviz's 2D Pose Estimate and every older sender — `position.z` 0,
+   covariance cell 0 — on the storey they are on, rather than pulled to the
+   ground floor. The ground only has to be close: half a metre out (the
+   console's "0 is the ground floor") is well inside `rough_max_corr_dist`.
+   The INI's `[initial_pose]` has no z and stays on the current estimate's.
 
 The consequence for callers: a `relocalize` from a 2D source (the console's
 gridmap click) must be **followed by an `initialpose` publish**, which
@@ -274,6 +286,7 @@ throwing. The launch layers the instance values on top.
 | `local_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | Replaced by the first odom's `frame_id`, but the 10 ms timer broadcasts `map → local_frame` before that, so the launch sets the same name pointlio broadcasts. The YAML said `laser` until 2026-10, and that unprefixed frame was on TF until pointlio's first message |
 | `map_path` | `""` | `[map] pcd`, made absolute | Loaded in the constructor. Empty → the node runs but cannot localize until `relocalize` |
 | `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
+| `lidar_height` | `0.481` m | | Lidar above the feet: how far above a marked `initialpose` z (a ground height) the guess puts the body. Same as the controller's and planner's `lidar_height` |
 | `update_hz` | `5.0` | | Ceiling on re-registration; was 1.0 until 2026-08-28 (staircase corrections at 0.7 m/s) |
 | `min_update_trans` / `min_update_rot` | `0.05` m / `0.02` rad | | Motion gate thresholds |
 | `max_update_interval` | `2.0` s | | Backstop re-registration when parked |
@@ -350,6 +363,9 @@ ros2 service call /<robot_id>/relocalize syncai_common/srv/Relocalize \
 # then a planar guess, so roll/pitch/z are filled in from the current estimate
 ros2 topic pub --once /<robot_id>/initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
   "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0}, orientation: {w: 1.0}}}}"
+# the same on another storey: z is the ground there, marked by the z variance (cell 14)
+ros2 topic pub --once /<robot_id>/initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
+  "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 5.2}, orientation: {w: 1.0}}, covariance: [0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0.01,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0]}}"
 # did the first registration after that guess succeed?
 ros2 service call /<robot_id>/relocalize_check syncai_common/srv/IsValid "{code: 0}"
 
@@ -380,6 +396,7 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `map preloaded from …` | Constructor `loadMap` succeeded; `map_cloud` was published |
 | `initial pose from config: … (applied on first odom)` | `[initial_pose]` was read; `guess from config applied` follows on the first odom |
 | `guess from initialpose applied: … (roll/pitch/z from current estimate)` | An `initialpose` went through `applyPlanarGuess` |
+| `guess from initialpose applied: … (z from the given ground, …)` | The same, with a marked z: the storey came from the sender |
 | `rough : converged=no iters=20 …` every round | Stuck: the guess is too far off, or a flat guess on the tilted mount — publish an `initialpose` |
 | `refine: converged=yes … fitness=0.0xx` | A registration was accepted; the TF moved |
 | `coarse: N candidates … best 0.xx, K kept for GICP` | `auto_localize` coarse stage; one `fine: …` line per kept candidate follows |

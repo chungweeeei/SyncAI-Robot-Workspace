@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -17,6 +18,14 @@ using namespace std::chrono_literals;
 
 namespace syncai_localizer
 {
+
+namespace
+{
+// The cell of PoseWithCovariance's row-major 6x6 that marks an initialpose's z as meant: the z
+// variance, row 2 column 2. RViz's "2D Pose Estimate" and every sender from before leave it 0
+// with position.z 0, and taking that 0 would pull each of their guesses to the ground floor.
+constexpr std::size_t kInitialPoseZVarianceIndex = 2 * 6 + 2;
+}  // namespace
 
 LocalizerNode::LocalizerNode() : Node("localizer_node")
 {
@@ -201,6 +210,7 @@ void LocalizerNode::loadParameters()
   m_config.initial_pose_y = declare_parameter<double>("initial_pose.y", m_config.initial_pose_y);
   m_config.initial_pose_yaw =
     declare_parameter<double>("initial_pose.yaw", m_config.initial_pose_yaw);
+  m_config.lidar_height = declare_parameter<double>("lidar_height", m_config.lidar_height);
 
   // Common parameters of the small_gicp backend, shared by both registration stages.
   m_localizer_config.num_threads =
@@ -650,9 +660,18 @@ void LocalizerNode::initialPoseCB(
     msg->pose.pose.orientation.z);
   q.normalize();
   M3D msg_r = q.toRotationMatrix();
+
+  // position.z is the ground under the pose, and taken only when the sender marks it with a
+  // positive z variance (the backend's set_initial_pose with a z does). Unmarked, it is RViz's
+  // or an older sender's 0, which says nothing about the storey.
+  std::optional<double> ground_z;
+  const double z_variance = msg->pose.covariance[kInitialPoseZVarianceIndex];
+  if (z_variance > 0.0 && std::isfinite(msg->pose.pose.position.z)) {
+    ground_z = msg->pose.pose.position.z;
+  }
   applyPlanarGuess(
     msg->pose.pose.position.x, msg->pose.pose.position.y, std::atan2(msg_r(1, 0), msg_r(0, 0)),
-    "initialpose");
+    "initialpose", ground_z);
 }
 
 // Build the ICP initial guess from a 2D start pose (x, y, yaw). Shared by two sources: the
@@ -666,8 +685,16 @@ void LocalizerNode::initialPoseCB(
 // guess is pending, timerCB also skips the odom feedback path, so localization freezes on the
 // old offset and retries forever (measured on the robot: an initialpose at (5.0, 0.982) hung;
 // with the 14.6° pitch filled in, the same spot converged on the first round).
-// So only x, y, yaw are taken; roll/pitch/z are always filled in from the current estimate.
-void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char * source)
+// So only x, y, yaw are taken; roll/pitch are always filled in from the current estimate.
+//
+// z is too, unless the sender names the storey with `ground_z` (an initialpose with its z
+// variance set): the current estimate's z is the storey the localizer thinks it is on, and a
+// guess on another one starts a whole storey out, beyond rough_max_corr_dist, and hangs the
+// same way. `ground_z` is the ground's height, so the body sits lidar_height above it. It only
+// has to land the rough stage inside its reach, so a storey's ground half a metre out (the
+// console's "0 is the ground floor") still converges.
+void LocalizerNode::applyPlanarGuess(
+  double x, double y, double yaw, const char * source, std::optional<double> ground_z)
 {
   M3D guess_r = Eigen::AngleAxisd(yaw, V3D::UnitZ()).toRotationMatrix();
   V3D guess_t(x, y, 0.0);
@@ -684,6 +711,9 @@ void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char 
     // Early at boot, before any odom has arrived, there is no estimate to fill in from, so the
     // pure 2D pose is used (the config start pose waits for the first odom and never gets here).
   }
+  if (ground_z) {
+    guess_t.z() = *ground_z + m_config.lidar_height;
+  }
 
   std::lock_guard<std::mutex> lock(m_state.service_mutex);
   m_state.initial_guess.setIdentity();
@@ -691,10 +721,13 @@ void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char 
   m_state.initial_guess.block<3, 1>(0, 3) = guess_t.cast<float>();
   m_state.service_received = true;
   m_state.localize_success = false;
+  const char * filled_in = "roll/pitch/z from current estimate";
+  if (ground_z) {
+    filled_in = "z from the given ground, roll/pitch from current estimate";
+  }
   RCLCPP_INFO(
-    this->get_logger(),
-    "guess from %s applied: x=%.3f y=%.3f z=%.3f yaw=%.3f (roll/pitch/z from current estimate)",
-    source, guess_t.x(), guess_t.y(), guess_t.z(), yaw);
+    this->get_logger(), "guess from %s applied: x=%.3f y=%.3f z=%.3f yaw=%.3f (%s)", source,
+    guess_t.x(), guess_t.y(), guess_t.z(), yaw, filled_in);
 }
 
 bool LocalizerNode::globalSearch(
