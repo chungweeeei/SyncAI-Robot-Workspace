@@ -461,8 +461,13 @@ writes a self-contained three.js page (~6 MB for a site map; the same page
 style as the OctoMap viewer `clean_map`'s display build makes): the
 traversable cells coloured by floor height, hole-filled ones tinted, a
 subsample of the rejected cells in grey for the walls, and every `--plan` /
-`--plan-poses` of the run as a tube with its start and goal, with a "hide
-ground above z" slider to look at one floor of a multi-storey map.
+`--plan-poses` of the run as a tube with its start and goal, and, with
+`--poses`, every stair link as a thick magenta tube with a cube on each
+anchor — drawn on their own because a flight is all rejected cells, so
+without them nothing in the page says where the stairs are (2026-10-15).
+A "hide ground above z" slider looks at one floor of a multi-storey map;
+it hides a route or a link only once its lowest point is above the cut, so
+a 1F → 2F route stays whole while 1F is shown.
 `--dump-image` draws the same routes on the top-down raster (blue, start
 magenta, goal yellow), and `--dump-pcd` + `--out path.csv` are the raw
 material for CloudCompare or a script.
