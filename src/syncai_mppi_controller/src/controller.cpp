@@ -50,10 +50,14 @@ void MPPIController::initialize(
   // Not upstream; see clampAcceleration(). <= 0 disables either clamp.
   getParam(max_linear_accel_, "max_linear_accel", 1.0);
   getParam(max_angular_accel_, "max_angular_accel", 3.2);
+  // Not upstream; see applyWalkFloor(). walk_vx_min <= 0 disables it.
+  getParam(walk_vx_min_, "walk_vx_min", 0.0);
   // Not upstream; see applyTurnFloor(). in_place_wz_min <= 0 disables it.
   getParam(in_place_wz_min_, "in_place_wz_min", 0.0);
   getParam(in_place_wz_deadband_, "in_place_wz_deadband", 0.05);
   getParam(in_place_vx_max_, "in_place_vx_max", 0.1);
+  // Not upstream; see rotateToGoalHeading(). final_rotation_wz <= 0 disables it.
+  getParam(final_rotation_wz_, "final_rotation_wz", 0.0);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;
@@ -86,6 +90,7 @@ void MPPIController::reset()
 {
   optimizer_.reset();
   last_cmd_vel_ = geometry_msgs::msg::Twist();
+  rotating_to_goal_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
@@ -94,8 +99,15 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
   syncai_nav_core::GoalChecker * goal_checker)
 {
   try {
-    geometry_msgs::msg::TwistStamped cmd =
-      computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
+    geometry_msgs::msg::TwistStamped cmd;
+    // Before the optimizer, and instead of it: this branch does its own
+    // clamping and flooring, which the three steps below would undo.
+    if (rotateToGoalHeading(robot_pose, goal_checker, cmd)) {
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
+    cmd = computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
+    applyWalkFloor(cmd.twist);
     clampAcceleration(cmd.twist);
     applyTurnFloor(cmd.twist);
     last_cmd_vel_ = cmd.twist;
@@ -137,6 +149,36 @@ void MPPIController::clampAcceleration(geometry_msgs::msg::Twist & cmd) const
   }
 }
 
+void MPPIController::applyWalkFloor(geometry_msgs::msg::Twist & cmd) const
+{
+  // The gait controller under RL does not walk below a floor either: on
+  // robot01 (2026-10-15) a 0.13 m/s command left the robot standing. MPPI
+  // slows down near the goal and around blockers, so it lands in that band
+  // routinely -- the goal_checker stalls 0.23-0.29 m short with cmd_vel
+  // non-zero and odom zero were this. Same shape as applyTurnFloor(): |vx|
+  // under in_place_vx_max is MPPI asking to stand (or to turn in place) and
+  // is left alone; between it and walk_vx_min it is raised to the floor,
+  // sign kept.
+  //
+  // Applied to the optimizer's output BEFORE the acceleration clamp, unlike
+  // the turn floor, because the decision has to be made on what MPPI wants,
+  // not on the ramp: after the clamp, a stop from the floor (0.30 -> 0.25
+  // in one cycle) would land in the band and be raised straight back to
+  // 0.30, so the robot could never stop. Before it, a stop is an output under
+  // in_place_vx_max and ramps down untouched. The cost is the ramp out of
+  // rest: the clamp still walks the command up from zero at
+  // max_linear_accel x dt, so the first ~0.3 s of every start are under the
+  // floor -- RPP's ramp has the same dead time, and RPP is what has driven
+  // the robot.
+  if (walk_vx_min_ <= 0.0) {
+    return;
+  }
+  const double vx = std::fabs(cmd.linear.x);
+  if (vx >= in_place_vx_max_ && vx < walk_vx_min_) {
+    cmd.linear.x = std::copysign(walk_vx_min_, cmd.linear.x);
+  }
+}
+
 void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
 {
   // The gait controller under RL does not turn in place below a floor: on
@@ -163,6 +205,88 @@ void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
   if (wz >= in_place_wz_deadband_ && wz < in_place_wz_min_) {
     cmd.angular.z = std::copysign(in_place_wz_min_, cmd.angular.z);
   }
+}
+
+bool MPPIController::rotateToGoalHeading(
+  const geometry_msgs::msg::PoseStamped & robot_pose, syncai_nav_core::GoalChecker * goal_checker,
+  geometry_msgs::msg::TwistStamped & cmd)
+{
+  // Not upstream (2026-10-15): the final turn to the goal heading is not left
+  // to the optimizer. Inside the xy tolerance the stateful goal checker has
+  // already accepted the position, but MPPI does not know that: GoalCritic
+  // keeps pulling the robot onto the exact goal point while GoalAngleCritic
+  // turns it to the goal yaw, and with no reversing (vx_min 0) the two pull
+  // against each other. The output mixed a small forward vx with a small wz
+  // -- 0.1 rad/s on robot01 -- and applyTurnFloor() only acts with |vx| under
+  // in_place_vx_max, so the turn went out under the gait's floor, came in
+  // jerks, and the progress checker (0.1 m in 30 s; a turn in place is no
+  // progress) aborted the goal with the robot standing on it. This is RPP's
+  // rotate-to-goal-heading instead, with its numbers: vx ramps down to 0 at
+  // max_linear_accel, wz heads for final_rotation_wz at max_angular_accel,
+  // capped at sqrt(2 * alpha * theta) to stop on the heading, and lifted to
+  // in_place_wz_min last so neither the ramp nor the cap goes under the floor.
+  //
+  // Latched like the stateful goal checker: a quadruped turning in place
+  // drifts a few centimetres, and handing a robot that drifted out of the
+  // tolerance back to the optimizer would restart the tug of war. The goal is
+  // the end of the path MPPI is tracking (the pruned path's last pose, as for
+  // its own goal critics), which is also the goal checker's end pose.
+  if (final_rotation_wz_ <= 0.0 || goal_checker == nullptr) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
+  const nav_msgs::msg::Path plan = path_handler_.transformPath(robot_pose);
+  const geometry_msgs::msg::Pose & goal = plan.poses.back().pose;
+
+  if (!rotating_to_goal_) {
+    geometry_msgs::msg::Pose pose_tolerance;
+    geometry_msgs::msg::Twist velocity_tolerance;
+    if (!goal_checker->getTolerances(pose_tolerance, velocity_tolerance)) {
+      return false;
+    }
+    const double dist = std::hypot(
+      goal.position.x - robot_pose.pose.position.x, goal.position.y - robot_pose.pose.position.y);
+    if (dist >= pose_tolerance.position.x) {
+      return false;
+    }
+    rotating_to_goal_ = true;
+    // The warm-started sequence is about driving to the goal point; should a
+    // new path hand the robot back, the optimizer starts from scratch.
+    optimizer_.reset();
+    RCLCPP_INFO(
+      logger_, "Within %.2f m of the goal (xy tolerance %.2f m): rotating in place to its heading",
+      dist, pose_tolerance.position.x);
+  }
+  // The optimizer is not running, so keep computeVelocityCommandsImpl()'s
+  // reset_period from firing on the hand-back: its reset() would zero
+  // last_cmd_vel_, the clamp's baseline, under a robot still turning.
+  last_time_called_ = clock_->now();
+
+  const double angle = angles::shortest_angular_distance(
+    tf2::getYaw(robot_pose.pose.orientation), tf2::getYaw(goal.orientation));
+  const double sign = angle >= 0.0 ? 1.0 : -1.0;
+
+  double wz = sign * final_rotation_wz_;
+  double vx = 0.0;
+  if (max_angular_accel_ > 0.0) {
+    const double dw = max_angular_accel_ * control_duration_;
+    wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+    const double wz_to_stop = std::sqrt(2.0 * max_angular_accel_ * std::fabs(angle));
+    if (std::fabs(wz) > wz_to_stop) {
+      wz = sign * wz_to_stop;
+    }
+  }
+  if (std::fabs(wz) < in_place_wz_min_) {
+    wz = sign * in_place_wz_min_;
+  }
+  if (max_linear_accel_ > 0.0) {
+    const double dv = max_linear_accel_ * control_duration_;
+    vx = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+  }
+
+  cmd = utils::toTwistStamped(vx, wz, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
+  return true;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
@@ -238,6 +362,9 @@ void MPPIController::publishLocalPlan(const rclcpp::Time & stamp)
 void MPPIController::setPlan(const nav_msgs::msg::Path & path)
 {
   path_handler_.setPath(path);
+  // controller_server resets the goal checker with every path; the final
+  // rotation's latch follows it (see rotateToGoalHeading()).
+  rotating_to_goal_ = false;
 }
 
 void MPPIController::setSpeedLimit(const double & speed_limit, const bool & percentage)

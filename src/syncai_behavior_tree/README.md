@@ -143,9 +143,9 @@ constructor — a missing one is a runtime throw, not a compile error.
 | `odom_smoother` | `shared_ptr<syncai_util::OdomSmoother>` | ditto | nodes needing current speed |
 | `initial_pose_received` | `bool` | ditto | `InitialPoseReceived` condition |
 | `number_recoveries` | `int` | ditto (init) | incremented by `increment_recovery_count()` in recovery nodes; surfaced as action feedback |
-| `failed_node` / `failure_msg` | `std::string` | ditto (init, and reset per goal) | written by `BtActionNode::report_failure()` — `ComputePathToPose` and `FollowPath` on abort, the base class on an unacknowledged / rejected goal (with an empty `failed_node`); read by the navigator in `goalCompleted()` to fill `NavigateToGoal`'s `error_code` / `error_msg`. Last writer wins; `move.xml`'s header has why that names the branch that failed the tree. Constants in `blackboard_keys.hpp` |
+| `failed_node` / `failure_msg` | `std::string` | ditto (init, and reset per goal) | written by `BtActionNode::report_failure()` — `ComputePathToPose`, `FollowPath` and `DockToPose` on abort, the base class on an unacknowledged / rejected goal (with an empty `failed_node`) — and, since 2026-10, by `BtServiceNode`'s copy of it (`SetMotionKey` on a refused key; unattributed on a timeout) and by `ComputeStagingPose` / `Wait` by hand; read by the navigator in `goalCompleted()` to fill `NavigateToGoal`'s `error_code` / `error_msg`. Last writer wins; `move.xml`'s header has why that names the branch that failed the tree, `dock.xml`'s has the docking case. Constants in `blackboard_keys.hpp` |
 | `number_plans` | `int` | ditto (init, reset per goal) | incremented by `ComputePathToPose` on success; the navigator reports `plans − 1` as `number_of_replans` |
-| `nav_status_msg` | `std::string` | ditto (init; set per goal to `kStatusPlanning`) | one English sentence of what the navigator is doing, for `NavigateToGoal`'s `status_msg` feedback (2026-10). Written by `IsPathValid` ("Path blocked; rerouting if it is still blocked after 10 s" while it keeps a blocked path (the number is `blocked_time`), "Path blocked; replanning" when it gives it up, "Following the path" over its own first sentence when the path clears; on a service answer only), `GlobalUpdatedGoal` ("Goal changed; replanning", once the goal has had a path), `ComputePathToPose` ("Following the path" on success, a retry sentence on abort) and `FollowPath` (a retry sentence on abort, "Following the path" when the retry goes out). Last writer wins; the `ClearEntireCostmap` nodes write nothing. Free text, never branched on |
+| `nav_status_msg` | `std::string` | ditto (init; set per goal to `kStatusPlanning`) | one English sentence of what the navigator is doing, for `NavigateToGoal`'s `status_msg` feedback (2026-10). Written by `IsPathValid` ("Path blocked; rerouting if it is still blocked after 10 s" while it keeps a blocked path (the number is `blocked_time`), "Path blocked; replanning" when it gives it up, "Following the path" over its own first sentence when the path clears; on a service answer only), `GlobalUpdatedGoal` ("Goal changed; replanning", once the goal has had a path), `ComputePathToPose` ("Following the path" on success, a retry sentence on abort), `FollowPath` (a retry sentence on abort, "Following the path" when the retry goes out), `DockToPose` ("Approaching the dock", "Docking: 0.42 m from the dock" from the controller's feedback, "Docked", and the undock counterparts) and the docking trees themselves through BT.CPP's built-in `SetBlackboard` ("Switching the gait to MPC for docking" — written by the tree because `SetMotionKey` is generic and does not know why it is sending a key; `output_key` is the **bare** key name there). Last writer wins; the `ClearEntireCostmap` nodes write nothing. Free text, never branched on |
 | `goal`, `path`, … | msg types | the tree itself, via ports | the tree itself |
 
 `loadBehaviorTree()` re-writes the four server-owned keys onto **every**
@@ -211,16 +211,25 @@ Ports provided to every subclass by `providedBasicPorts()`: `server_name`
 | `on_tick()` | Fill `request_` from ports; may set `should_send_request_ = false` | empty |
 | `on_completion(response)` | Interpret the response, return the final status | `SUCCESS` |
 | `on_wait_for_result()` | Called on each tick that timed out waiting | empty |
+| `on_timeout()` | Called once when the whole `server_timeout` budget is gone, just before `FAILURE` (2026-10) | empty — **on purpose**: the `ClearEntireCostmap` nodes must stay silent on a timeout (see `move.xml`); a node whose timeout *is* the failure (`SetMotionKey`) overrides it to `report_failure(…, false)` |
 
 A single `request_sent_` flag is the whole state machine. `check_future()` spins
 up to `min(remaining budget, max_timeout_)` each tick: response arrived →
 `on_completion()`; not yet but budget remains → `RUNNING`; budget exhausted →
-`FAILURE`.
+`on_timeout()`, then `FAILURE`.
 
 Note that `halt()` only resets the flag and returns to `IDLE` — a service call
 cannot be cancelled, so an in-flight response is simply ignored.
 
+`report_failure(msg, attributed = true)` exists here too since 2026-10, a
+copy of `BtActionNode`'s with the same semantics (the two bases have no common
+ancestor below `BT::ActionNodeBase`, and a free function would need the
+blackboard handed in at every call site).
+
 Ports provided by `providedBasicPorts()`: `service_name` and `server_timeout`.
+`service_name` has a *description*, not a default, so a subclass passes its
+default service name as the constructor's third argument (`SetMotionKey` →
+`set_motion_key`); the port still overrides it.
 
 ## Node catalogue
 
@@ -232,13 +241,19 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 |---|---|---|---|
 | `ComputePathToPose` | action → `nav2_msgs/ComputePathToPose` on `compute_path_to_pose` | `syncai_compute_path_to_pose_action_bt_node` | in `goal`, `start`, `planner_id`; out `path`. Bumps blackboard `number_plans` on success, `report_failure()`s on abort |
 | `FollowPath` | action → `nav2_msgs/FollowPath` on `follow_path` | `syncai_follow_path_action_bt_node` | in `path`, `controller_id`, `goal_checker_id`. Refuses to send an empty path (`FAILURE` with a WARN, 2026-10) and ignores an empty `path` while running — the controller would throw "Invalid path, Path is empty." and the retry would be spent on a path that cannot change until the planner branch runs again. `report_failure()`s on abort |
+| `DockToPose` | action → `syncai_common/DockToPose` on `dock_to_pose` (syncai_controller) | `syncai_dock_to_pose_action_bt_node` | in `method` (default `position` = `dock_pose` as given; `charger` = dock against a tag on the charger, reserved: refused with `FAILURE` until its detector exists, as is any other value), `dock_pose` (`PoseStamped`, any frame; sent as the action's planar `frame_id` / `x` / `y` / `yaw`), `controller_id` (default `Docking`; `Undocking` backs out), `goal_checker_id` (default `dock_goal_checker`), `timeout` (s, default 0 = server default). Refuses a pose without a `frame_id`. Writes `nav_status_msg` from the controller's feedback; `report_failure()`s on abort with the controller's reason (`ABORTED` + `NONE` is spelled out as "busy or superseded"); `on_cancelled()` returns `FAILURE`. 2026-10 |
+| `SetMotionKey` | service → `syncai_common/SetMotionKey` on `set_motion_key` (syncai_driver_manager) | `syncai_set_motion_key_service_bt_node` | in `key` (**required**: `0` stand, `1` RL, `2` lie down, `3` damping, `4` e-stop, `5` MPC). `FAILURE` + `report_failure()` when the driver refuses (`LOCKED`, unknown key); unattributed on a timeout. `success` means the UDP datagram left, not that the gait changed. 2026-10 |
+| `ComputeStagingPose` | `SyncActionNode`, no ROS | `syncai_compute_staging_pose_action_bt_node` | in `dock_pose`, `distance` (m, default 1.0); out `staging_pose` = the dock pose moved straight back along its yaw. Fails (reason on the blackboard) on a missing pose, `distance <= 0`, or a quaternion that is not a rotation. 2026-10 |
+| `ComputeBackOutPose` | `SyncActionNode`, no TF | `syncai_compute_back_out_pose_action_bt_node` | in `distance` (m, default 1.0); out `back_out_pose` = `(-distance, 0)`, identity orientation, in the BT client node's `base_frame` (`<robot_id>/base_link` from task_runner's launch). No lookup: `dock_to_pose` transforms it into odom at acceptance, so it means "behind where the robot stands when the back-out starts". `undock.xml`'s target. Fails (reason on the blackboard) on `distance <= 0` or an empty `base_frame`. 2026-10-15 |
+| `Wait` | `StatefulActionNode`, no ROS | `syncai_wait_action_bt_node` | in `msec` (**required**). `RUNNING` until a `steady_clock` deadline, then `SUCCESS`. Preferred over BT.CPP's `Delay` decorator, which can only postpone the *next* node's first tick. The docking trees use it for settling time after a confirmed MPC switch (they also used it for the stand-up / lie-down, which cannot be confirmed, until both steps were removed on 2026-10-15). 2026-10 |
+| `WaitForMotionState` | `StatefulActionNode`, subscribes `mode` (`std_msgs/Int32MultiArray`, syncai_driver_manager) | `syncai_wait_for_motion_state_action_bt_node` | in `state` (**required**; 5 = MPC), `index` (default 1 = motion state; 0 = policy), `timeout` (ms, default 5000), `topic` (default `mode`). `RUNNING` until the **latest** sample's `data[index]` equals `state` (a robot already there passes at once — `mode` has no fixed rate and no latch, so a freshness rule would time out a quiet link), then `SUCCESS` with the elapsed ms logged; `FAILURE` + the failure keys after `timeout`, naming the last state seen. Own callback group, spun without blocking each tick. 2026-10-14 |
 | `ClearEntireCostmap` | service → `nav2_msgs/ClearEntireCostmap` | `syncai_clear_costmap_service_bt_node` | in `service_name` |
 | `ClearCostmapExceptRegion` | service | ditto | + in `reset_distance` (default 1) |
 | `ClearCostmapAroundRobot` | service | ditto | + in `reset_distance` (default 1) |
 | `PipelineSequence` | control | `syncai_pipeline_sequence_bt_node` | — |
 | `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1), `retry_refill_time` (s, default 0 = never) |
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
-| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout`, `blocked_time` (s, default 0; `move.xml` sets 10), `blocked_match_distance` (m, default 0.5) |
+| `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout`, `blocked_time` (s, default 0; `move.xml` / `dock.xml` set 10), `blocked_match_distance` (m, default 0.5) |
 | `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
 | `InitialPoseReceived` | condition | `syncai_initial_pose_received_condition_bt_node` | reads blackboard `initial_pose_received` |
 
@@ -342,6 +357,18 @@ The service names are **relative**, so they resolve under the robot namespace
 like everything else in the stack. Plugin libraries and timeouts live in
 `syncai_task_runner/params/task_runner_params.yaml`.
 
+Two more trees since 2026-10, `syncai_task_runner/behavior_trees/dock.xml`
+and `undock.xml`, selected per goal through `NavigateToGoal.behavior_tree`.
+`dock.xml` is the tree above with `goal="{staging_pose}"` (from
+`ComputeStagingPose`) as its first half, then `SetMotionKey key="5"` → `Wait`
+→ `DockToPose`, with `SetMotionKey key="1"` restoring RL locomotion on
+failure; `undock.xml` is stand (`key="0"`) → `Wait` → MPC → `Wait` →
+`ComputeBackOutPose` → `DockToPose controller_id="Undocking"` → RL (no goal pose: 1 m behind the robot, 2026-10-15). Besides
+the docking nodes they use BT.CPP's built-in `Sequence`, `Fallback`,
+`ForceFailure` and `SetBlackboard` (whose `output_key` is the bare key name,
+not `{key}`). The XML headers carry the rationale; `syncai_task_runner`'s
+README has the operator-level description.
+
 Ported from nav2's `navigate_w_replanning_only_if_path_becomes_invalid.xml`, minus the
 outer system-level recovery branch (Spin / Wait / BackUp via RoundRobin) — those
 BT nodes and the behavior server are not ported yet.
@@ -392,6 +419,14 @@ Only the ament linters run under `colcon test`; there are no unit tests.
 - **Plugin library name ≠ XML tag.** Forgetting to add the library to
   `plugin_lib_names` produces an "unknown node type" error at tree load, which
   reads as an XML mistake but is a params mistake.
+- **This package depends on `syncai_common` since 2026-10** — for the client
+  types of `DockToPose` and `SetMotionKey` only. The rule that kept it out
+  (commit `64a471b`) still holds: no BT node reads an action's error-code
+  constants, the node → code table stays in `syncai_task_runner`. A change to
+  `syncai_common` now rebuilds this package too.
+- **`SetBlackboard output_key` is the bare key.** `output_key="nav_status_msg"`
+  writes the key; `output_key="{nav_status_msg}"` reads the current sentence
+  and uses *that* as the key name.
 - **BT node constructors throw when their server is absent.** The tree is built
   at `BtActionServer` construction, so the whole hosting node fails to start.
   Start servers before the task runner.

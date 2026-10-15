@@ -62,17 +62,35 @@
     # cycle. <= 0 disables the gate.
     goal_reached_max_remaining_path: 1.0
 
+    # DockToPose (dock_to_pose, 2026-10). What an empty controller_id /
+    # goal_checker_id in a dock goal resolves to -- both must be entries of
+    # the lists below (a missing one only warns at startup and refuses dock
+    # goals, so FollowPath keeps working from a file without the docking
+    # plugin) -- and the approach timeout a goal with timeout <= 0 gets. The
+    # approach is ~1 m at docking speed; a minute means stuck, not slow.
+    default_dock_controller_id: "Docking"
+    default_dock_goal_checker_id: "dock_goal_checker"
+    dock_approach_timeout: 60.0
+
     progress_checker_plugin: "progress_checker"
-    goal_checker_plugins: ["goal_checker"]
-    # Two controllers, one local costmap. FollowPath is MPPI
+    # ORDER MATTERS: a FollowPath goal that names no goal checker (move.xml
+    # names none, and the BT node defaults it to "") gets the FIRST entry, so
+    # the navigation checker stays first. Until 2026-10 an empty id only fell
+    # back with exactly one checker loaded, and adding the second would have
+    # failed every BT navigation.
+    goal_checker_plugins: ["goal_checker", "dock_goal_checker"]
+    # Four controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
     # local costmap and bends round a blocker inside it, which RPP cannot --
     # RPP tracks the path and refuses to drive when the path is blocked.
     # FollowPathRPP is the RPP that was FollowPath until then, kept loaded so
     # the A/B is move.xml's controller_id="FollowPathRPP" with no rebuild, and
-    # as the fallback while MPPI is unproven on the robot. Only the controller
-    # a FollowPath goal names runs; the other costs memory, not CPU.
-    controller_plugins: ["FollowPath", "FollowPathRPP"]
+    # as the fallback while MPPI is unproven on the robot. Docking and
+    # Undocking (2026-10) are two instances of the pose-to-pose docking
+    # controller that the dock_to_pose action drives, differing only in
+    # direction (see their blocks). Only the controller a goal names runs;
+    # the others cost memory, not CPU.
+    controller_plugins: ["FollowPath", "FollowPathRPP", "Docking", "Undocking"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -88,10 +106,12 @@
       # on robot01 the robot stopped dead 0.23 m and 0.29 m short (cmd_vel
       # still non-zero, odom zero) until the progress checker aborted after
       # 30 s. 0.3 covered both stalls. Lowered back 0.3 -> 0.15 the same day:
-      # 0.3 ended an ordinary MOVE too far from its goal. Nothing has fixed
-      # the stalls in between, so they can come back -- a robot standing
+      # 0.3 ended an ordinary MOVE too far from its goal. The stalls were
+      # MPPI's approach slowing under the gait floor; FollowPath's walk_vx_min
+      # (2026-10-15) holds the command at the floor until MPPI asks to stop,
+      # which should end them -- unverified on the robot. A robot standing
       # 0.15-0.3 m short with cmd_vel non-zero and odom zero, until the
-      # progress checker aborts, is this value. It is also MPPI
+      # progress checker aborts, is still this value. It is also MPPI
       # GoalAngleCritic's threshold_to_consider below: change the two together.
       xy_goal_tolerance: 0.15
       # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
@@ -104,6 +124,32 @@
       # without overshooting it. Estimated, not measured: hold wz 0.3 for 2 s,
       # zero it, and read the extra rotation off /odom before tightening this.
       yaw_goal_tolerance: 0.2
+      stateful: true
+
+    # The dock_to_pose default (dock and undock alike). Tight on purpose: the
+    # robot has to end ON the charging pad. Whether 0.05 holds is decided by
+    # the stop latency, not by the controller. Under MPC the gait walks down
+    # to 0.05 m/s (measured 2026-10-14), so slowdown_radius brings the robot
+    # in at the floor: one control cycle is 2.5 mm there, and the gait's own
+    # stopping distance comes on top. (Under RL, with its ~0.3 m/s floor, a
+    # cycle was 1.5 cm -- one reason the trees switch to MPC first.) The DockingController reads xy_goal_tolerance
+    # back through getTolerances(): it is where the final in-place rotation
+    # starts, so the two latches (the controller's and this stateful one)
+    # trip on the same number. The result's final_distance_error /
+    # final_yaw_error report what the robot actually achieved.
+    #
+    # yaw_goal_tolerance 0.05 -> 0.1 (2026-10-15), together with the docking
+    # controllers' v_angular_min 0.03 -> 0.15: at the old 0.03 floor a
+    # 0.05 rad window could not be overshot, but the gait does not turn in
+    # place at 0.09 rad/s, let alone 0.03 (both robot01 undocks stalled there
+    # until the progress checker aborted). At 0.15 one cycle is 7.5 mrad and
+    # the gait's latency carries the yaw further, so the window doubled
+    # rather than letting the final alignment hunt. Not measured: if it still
+    # hunts, widen this before lowering the floor again.
+    dock_goal_checker:
+      plugin: "syncai_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.1
       stateful: true
 
     FollowPath:
@@ -129,6 +175,19 @@
       # same values as RPP's -- there is no velocity smoother.
       max_linear_accel: 1.0
       max_angular_accel: 3.2
+      # Not upstream: the walking floor (2026-10-15). RL does not walk below
+      # ~0.3 m/s; on robot01 MPPI commanded 0.13 m/s and the robot stood. A
+      # command with |vx| between in_place_vx_max and this is raised to it,
+      # keeping its sign; under in_place_vx_max it is a stop or an in-place
+      # turn and is left alone. Applied before the acceleration clamp, so a
+      # stop still ramps down. 0.30 is FollowPathRPP's
+      # min_approach_linear_velocity / regulated_linear_scaling_min_speed --
+      # the floor RPP has driven the robot with, pre-scale like every value
+      # here; change them together. The cost: MPPI's slow approaches (goal,
+      # blockers) now run at 0.30 instead, so the robot carries more speed
+      # into the goal window and the next cycle re-plans from there. 0
+      # disables it.
+      walk_vx_min: 0.30
       # Not upstream: the in-place turn floor (2026-10-14). RL does not turn
       # in place below ~0.3 rad/s at the gait; MPPI tapers its turn into the
       # goal yaw and held -0.115 rad/s with odom at zero until the progress
@@ -136,14 +195,31 @@
       # in_place_vx_max and |wz| between in_place_wz_deadband and
       # in_place_wz_min is raised to in_place_wz_min, keeping its sign; while
       # walking nothing changes (a small wz there is an arc, and raising it
-      # would weave). 0.21 = 0.3 / scale_turn 1.40, on the assumption that the
-      # 0.3 is what the gait receives, after driver_manager's scale -- not
-      # confirmed. If it turns out to be the cmd_vel value, this is 0.3.
+      # would weave). 0.3 is the gait's floor taken as the cmd_vel value,
+      # pre-scale like every value here (2026-10-15). It was 0.21 = 0.3 /
+      # scale_turn 1.40 for a day, on the assumption -- never confirmed -- that
+      # the 0.3 is what the gait receives after driver_manager's scale.
       # Same value as FollowPathRPP's rotate_to_heading_min_angular_vel; change
       # them together. 0 disables it.
-      in_place_wz_min: 0.21
+      in_place_wz_min: 0.3
       in_place_wz_deadband: 0.05
       in_place_vx_max: 0.1
+      # Not upstream: the final rotation (2026-10-15). Inside
+      # goal_checker.xy_goal_tolerance of the path's end, MPPI stops
+      # optimising and turns in place to the goal heading, RPP's
+      # rotate-to-goal-heading with RPP's numbers: up to this rate
+      # (FollowPathRPP's rotate_to_heading_angular_vel), ramped at
+      # max_angular_accel, capped to stop on the heading, never under
+      # in_place_wz_min; vx ramps to 0. Left to the optimizer, GoalCritic
+      # (the exact point) and GoalAngleCritic (the yaw) pulled against each
+      # other once the position was accepted: a small vx kept the turn floor
+      # off, wz went out at ~0.1 rad/s in jerks, and on robot01 the progress
+      # checker aborted a goal the robot was standing on. The cost is the
+      # heading accuracy: the robot now enters the yaw_goal_tolerance window
+      # at up to 0.65 rad/s instead of tapering into it, and carries on
+      # through the stop (see yaw_goal_tolerance) -- lower this if the final
+      # heading overshoots. 0 disables it (the optimizer turns, as upstream).
+      final_rotation_wz: 0.65
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
       # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
       # 2 m half-width. With consider_footprint, a rolled-out point off the
@@ -178,11 +254,10 @@
         time_step: 3
       # No VelocityDeadbandCritic, although the gait controller has a floor
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
-      # zero*, so it would also fight stopping and turning in place. If MPPI's
-      # slow approach commands turn out not to move the robot, that is the
-      # first thing to check on the robot, not something to guess here. The
-      # turn side has its own fix, in_place_wz_min above, which leaves zero
-      # alone.
+      # zero*, so it would also fight stopping and turning in place. MPPI's
+      # slow commands did turn out not to move the robot (0.13 m/s, robot01,
+      # 2026-10-15); the fix is walk_vx_min / in_place_wz_min above, which
+      # leave zero alone.
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
                 "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
                 "PreferForwardCritic"]
@@ -204,6 +279,9 @@
       # wz_max) outlasts the 2 s horizon, and turning away from the goal yaw
       # costs here, so standing still scored best. MPPI held a -0.115 rad/s
       # command under the turn floor until the progress checker aborted.
+      # Since final_rotation_wz (2026-10-15) the optimizer no longer runs
+      # inside that distance, so this critic scores nothing while
+      # final_rotation_wz is on; it is the turn again when that is set to 0.
       GoalAngleCritic:
         enabled: true
         cost_power: 1
@@ -302,12 +380,12 @@
       # if the commanded rate is the real one.
       rotate_to_heading_angular_vel: 0.65
       # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
-      # in_place_wz_min for the rotate-to-heading branch -- same value, same
-      # unconfirmed pre-/post-scale assumption; change them together. Lifts
+      # in_place_wz_min for the rotate-to-heading branch -- same value, pre-scale
+      # (0.21 for a day, see there); change them together. Lifts
       # the acceleration ramp's first cycle (0.16) and the last hundredths of
       # a radian of the stop cap, the two places a rotation dips under it.
       # 0 disables it.
-      rotate_to_heading_min_angular_vel: 0.21
+      rotate_to_heading_min_angular_vel: 0.3
       max_angular_accel: 3.2
       # No velocity smoother in this stack: the controller clamps linear
       # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
@@ -318,6 +396,135 @@
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
+
+    # The last metre onto the dock (2026-10): dock_to_pose's default
+    # controller, driven by dock.xml. One pose, no path, NO COSTMAP -- this
+    # plugin never reads cost data and never checks for collisions (the dock
+    # is itself a lethal cell in the local costmap, so any footprint test
+    # refuses the last half metre of every dock); obstacle avoidance is
+    # dock.xml's staging leg, which ends the robot ~1 m in front of the dock
+    # in known-clear space. Park & Kuipers' smooth control law (nav2's
+    # graceful / opennav_docking controller), ported from Humble.
+    #
+    # Starting values, not a tuning: nothing below has driven the robot yet.
+    # Every velocity is PRE-SCALE, like RPP's and MPPI's: driver_manager
+    # multiplies the command by scale_fwd (1.40) after this node, in MPC mode
+    # as in RL -- if scale_fwd changes, re-measure the floor.
+    Docking:
+      plugin: "syncai_controller::DockingController"
+      # Control-law gains, opennav_docking's defaults (graceful's path-following
+      # beta 0.2 is too permissive for a dock: it keeps speed on a tight arc).
+      # k_phi: how hard the dock HEADING pulls the curve; k_delta: how fast the
+      # robot's own heading converges to the curve; beta / lambda: how much
+      # speed drops with curvature.
+      k_phi: 3.0
+      k_delta: 2.0
+      beta: 0.4
+      lambda: 2.0
+      # THE GAIT'S WALKING FLOOR, not a comfort value: a forward command below
+      # it does not make the quadruped walk slowly, it makes it stand. Applied
+      # AFTER the law's angular bound, so the controller executes a wider arc
+      # rather than a command the gait ignores. Measured under MPC on
+      # 2026-10-14: 0.05 m/s is the slowest straight-line command the gait
+      # still walks at (pre-scale, the cmd_vel this node publishes). RL's floor
+      # is ~0.3 m/s (see goal_checker), which is why dock.xml / undock.xml
+      # switch to MPC before this controller drives. Re-measure if
+      # driver_manager's scale_fwd changes.
+      v_linear_min: 0.05
+      # Below the 0.60 calibration point so the gait tracks it, above the floor
+      # so the slowdown has a band to work in.
+      v_linear_max: 0.40
+      # The stack's calibrated in-place rate (FollowPathRPP's
+      # rotate_to_heading_angular_vel, MPPI's wz_max): one calibration with
+      # driver_manager's scale_turn_*, change them together.
+      v_angular_max: 0.65
+      # Not upstream. Floor for both in-place rotation branches: upstream's
+      # proportional rotate-to-target is 0.5 * angle * v_angular_max, i.e.
+      # 0.016 rad/s at the 0.05 rad error of the final alignment -- nothing a
+      # gait turns at. Raised 0.03 -> 0.15 on 2026-10-15 (pre-scale). The 0.03
+      # was measured under MPC on 2026-10-14, but a sustained in-place turn
+      # does not bear it out: in both robot01 undocks the final rotation
+      # tapered to 0.087-0.094 rad/s and the yaw froze there for 30 s until
+      # the progress checker aborted, while 0.10-0.16 still turned. 0.15 sits
+      # above everything seen to stall; the real floor is somewhere in
+      # 0.09-0.15 and unmeasured -- step a held in-place wz under MPC (0.08,
+      # 0.10, 0.12, 0.15) and read /odom before lowering it. The cost of the
+      # higher floor is overshoot, which dock_goal_checker's 0.1 rad yaw window
+      # absorbs (see there).
+      v_angular_min: 0.15
+      # v = v_linear_max * r / slowdown_radius inside this radius. With the
+      # MPC floor at 0.05 and the cap at 0.40 it acts over almost the whole
+      # radius (down to 6 cm out), so the robot arrives at the floor speed
+      # instead of hitting the xy latch at 0.30 as it would under RL.
+      slowdown_radius: 0.5
+      # RPP's / MPPI's values; there is no velocity smoother in the stack. The
+      # clamp baselines on the previous COMMAND (gait sway in the odom twist),
+      # and the stop into the final rotation is deliberately NOT ramped. At
+      # the MPC floor a ramp-down is a single cycle anyway; the exception is
+      # kept for a v_linear_min raised again (RL's 0.30 would be six cycles,
+      # 4.5 cm of travel after the xy latch -- the whole 5 cm window).
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # Rotate in place first when the dock is further off the nose than
+      # this. The law converges from any pose, but the wide-bearing part of
+      # that convergence is the arc the gait floor executes worst, so it is
+      # cheaper to turn first. RPP's lesson (rotate_to_heading_min_angle 0.785
+      # -> 0.25) is the first knob if the robot "drives away then re-rotates".
+      initial_rotation: true
+      initial_rotation_min_angle: 0.75
+      # Once inside dock_goal_checker's xy tolerance, stop and turn to the
+      # dock yaw; the gain is on the angle, floored by v_angular_min.
+      final_rotation: true
+      rotation_scaling_factor: 0.5
+      # Forward only: scale_back is an unmeasured 1.0 and initial_rotation
+      # cannot coexist with reversing (it turns the nose toward the target).
+      # Undocking below is the reversing instance.
+      allow_backward: false
+      # Only for the one-off transform in setPlan() when the path arrives in
+      # a frame other than odom (dock_to_pose always hands odom, so it is for
+      # driving this plugin through follow_path with a map path).
+      transform_tolerance: 0.2
+
+    # The same plugin, configured to back OUT of the dock to the staging pose
+    # (undock.xml). Direction is this configuration, not a goal field: the
+    # DockToPose action has no `backward` flag because the controller plugin
+    # interface carries a path and nothing else, and nav2's convention is one
+    # configuration, one controller id. With allow_backward the law reverses
+    # by itself when the target is behind the robot -- the staging pose sits
+    # 1 m behind with the robot's own yaw, so it backs out straight; an
+    # overshoot puts the target ahead and the law drives forward to fix it.
+    # Everything not repeated here is the Docking value.
+    Undocking:
+      plugin: "syncai_controller::DockingController"
+      k_phi: 3.0
+      k_delta: 2.0
+      beta: 0.4
+      lambda: 2.0
+      # Reverse floor: the MPC forward floor (0.05, measured 2026-10-14) is
+      # assumed to hold backwards too -- the reverse was not measured on its
+      # own, and driver_manager's scale_back is an unmeasured 1.0 (so unlike
+      # forward, what the gait receives here is the command itself). The cap
+      # stays at 0.30: blind and backwards, there is no reason to back out
+      # faster than the old single-speed placeholder.
+      v_linear_min: 0.05
+      v_linear_max: 0.30
+      v_angular_max: 0.65
+      # Docking's floor (see there): this instance is where it stalled.
+      v_angular_min: 0.15
+      slowdown_radius: 0.5
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # Off, by the upstream rule: an initial rotation turns the nose toward
+      # a target that is meant to stay behind. Also the point of backing out
+      # rather than turning on the dock -- no in-place turn on the contacts.
+      initial_rotation: false
+      initial_rotation_min_angle: 0.75
+      # On: end facing the dock (the staging pose's yaw), so the MOVE that
+      # follows starts from a known heading.
+      final_rotation: true
+      rotation_scaling_factor: 0.5
+      allow_backward: true
+      transform_tolerance: 0.2
 
 # The local costmap is an internal node created by controller_server
 # (constructed as a plain node named "local_costmap").

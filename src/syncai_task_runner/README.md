@@ -101,6 +101,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `NONE` = 0 | success, cancel — **and** a goal that was preempted by a newer one or rejected before the tree ran (another navigator busy, BT file missing). Those two never reach `goalCompleted()`: the action server aborts them with an empty result | empty |
 | `PLAN_FAILED` = 200 | the planner branch failed the tree: `ComputePathToPose` aborted twice (the second time after `ClearGlobalCostmap`) — no route, start or goal in an obstacle / keepout zone, TF | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
+| `DOCK_FAILED` = 300 | the docking branch of `dock.xml` / `undock.xml` failed (2026-10): `SetMotionKey` refused (`LOCKED`), `ComputeStagingPose` rejected the dock pose, `ComputeBackOutPose` could not build the back-out target (a misconfigured tree or `base_frame`), `DockToPose` refused its `method` (`charger` is reserved and not implemented yet), or `DockToPose` aborted — the controller's reason follows. A dock goal can still end 100 / 200: that is the staging leg, "the dock was unreachable" | `Docking failed: the dock approach did not complete (controller dock_to_pose aborted the goal: dock approach exceeded 60.0 s (error_code 304))` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -295,8 +296,8 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
-| `plugin_lib_names` | eight BT node libraries | Must list every library whose tags `move.xml` uses. `syncai_behavior_tree` builds a ninth, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — `move.xml` has no `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time |
-| `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator |
+| `plugin_lib_names` | thirteen BT node libraries | Must list every library whose tags `move.xml`, `dock.xml` and `undock.xml` use. `syncai_behavior_tree` builds a fourteenth, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — no tree has an `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time. The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`dock.xml`), resolved against the same `behavior_trees/` directory, or an absolute path |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 
 Plus the `BtActionServer` parameters, declared by that class and documented in
@@ -313,9 +314,11 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 | Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) → `navigate_to_pose` |
 | Action client | `compute_path_to_pose` | via the BT node |
 | Action client | `follow_path` | via the BT node |
+| Action client | `dock_to_pose` | `syncai_common/DockToPose`, via the `DockToPose` BT node — `dock.xml` / `undock.xml` only (2026-10) |
 | Service client | `global_costmap/clear_entirely_global_costmap` | via the BT node |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
 | Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** only, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Not on success (the re-send is trimmed to a stub inside `xy_goal_tolerance`) nor on failure (the route explains the failure). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
+| Service client | `set_motion_key` | `syncai_common/SetMotionKey` (`syncai_driver_manager`), via the `SetMotionKey` BT node — the docking trees' gait switch |
 
 Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);
 it is also the suffix of the internal client node `BtActionServer` creates
@@ -348,7 +351,69 @@ ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/Navigate
 
 ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
   "{header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0}, orientation: {w: 1.0}}}"
+
+# Dock: the same action, the DOCK pose, and the docking tree by bare name
+# (or its absolute share path). Undock is the same action with 'undock.xml'
+# and no pose: it backs out 1 m from where the robot stands.
+ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/NavigateToGoal \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0},
+    orientation: {w: 1.0}}}, behavior_tree: 'dock.xml'}" --feedback
 ```
+
+## The docking trees
+
+`behavior_trees/dock.xml` and `undock.xml` (2026-10) are selected per goal by
+`NavigateToGoal.behavior_tree`; there is no separate dock action, so a dock
+reports through the same `error_code` / `status_msg` surface as a move. For
+`dock.xml` the goal's `pose` is the **dock pose** — where `base_link` ends up
+on the charger — and the tree derives the staging pose (1 m straight back
+along the dock's yaw, `ComputeStagingPose`) itself. `undock.xml` takes **no
+pose** (2026-10-15; the field is ignored): the robot is already on the dock,
+so it backs out 1 m from where it stands.
+
+`dock.xml`: the `move.xml` structure navigates to the staging pose (MPPI,
+local costmap — this is where obstacle avoidance happens), then
+`SetMotionKey key="5"` switches the gait to MPC, `WaitForMotionState
+state="5"` waits (up to 5 s) for the controller to report it on `mode`
+data[1], `Wait msec="3000"` lets the gait settle (2000 until 2026-10-15), `DockToPose method="position" controller_id="Docking"` drives the last metre
+blind (the docking controller reads no costmap: the dock is itself a lethal
+cell), and the tree ends there: SUCCEEDED means **standing on the dock in
+MPC**. It does not lie the robot down (2026-10-15; from 2026-10-14 it sent
+`SetMotionKey key="2"` + `Wait 4000` after the approach) — a task that wants
+the robot lying on the contacts sends the backend's LIEDOWN step after the
+DOCK. On any failure of the MPC switch or the approach, `SetMotionKey
+key="1"` restores RL locomotion; a staging-leg failure never switched the
+gait and reports 100 / 200 as a move would. A cancel halts the tree before
+any restore and leaves MPC on, standing.
+
+`undock.xml`: from standing on the dock in MPC — `key="5"`, `WaitForMotionState state="5"` + `Wait 3000`
+(no stand-up step since 2026-10-15: `key="0"` + `Wait 4000` came first, and
+`MODE Z` took a robot already standing in MPC down and up again; a robot laid
+down after the dock needs the backend's STANDUP before the undock),
+`ComputeBackOutPose` (`(-1, 0)` in the robot's own base frame, transformed
+into odom once by `dock_to_pose` when the back-out starts), `DockToPose
+controller_id="Undocking"` backing straight out to it, then
+`key="1"` + `WaitForMotionState state="1"` (Locomotion confirmed on `mode`
+data[1], 5 s timeout). It ends in **RL**, facing the dock, so a plain MOVE can follow; a
+MOVE straight off the dock is not reliable because the robot's footprint sits
+on the dock's lethal cells.
+
+The MPC switch is **checked** since 2026-10-14: `set_motion_key` is one-way
+UDP, so `WaitForMotionState` waits for the controller's own report (MPC = 5
+on `mode` data[1], read off the robot), fails the step after its timeout
+(`DOCK_FAILED`, RL restored, the last state seen in `error_msg`), and logs
+how long the switch took. The 3 s after it (both trees; 2 s until
+2026-10-15) is settling time on purpose, and a judgement rather than a
+measurement: nothing reports when the gait under MPC is steady. Keep the two
+trees' values equal — it is the same transition. The typical backend sequence is MOVE(`dock.xml`) → (LIEDOWN, if
+the robot should rest on the contacts) → … (charging) → (STANDUP, if it lay down) → MOVE(`undock.xml`) → MOVE. The XML headers carry the full rationale.
+
+Preemption follows the move rules: a dock goal re-sent with the same tree is
+accepted in place (the staging pose is recomputed, or the approach re-targets
+mid-way); a MOVE sent while docking is rejected and the dock continues.
+`always_reload_bt_xml: false` compares the file name string, so send it the
+same way every time; alternating move and dock goals reconstructs the tree on
+each switch (milliseconds, every server already up).
 
 ## Gotchas
 
@@ -358,6 +423,15 @@ ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
   (1 s). So the planner, the controller and both costmap clear services must all
   be running first — otherwise `initialize()` returns false and `main.cpp` exits
   with `RCLCPP_FATAL`. The `sleep 10` in the byobu scripts is this constraint.
+  The docking trees are the exception: they are not the default tree, so their
+  nodes are constructed at the **first dock goal**, and a `dock_to_pose` or
+  `set_motion_key` server missing then fails *that goal* (`ABORTED`,
+  `error_code` NONE, the task_runner log names the server), not the node.
+- **During a dock approach `distance_remaining` is the staging path's
+  residual** (≤ 0.15 m, since the robot stands at its end and nothing clears
+  `{path}` — `haltChild()` only halts RUNNING nodes), and 0 for an undock,
+  which has no path. Dock progress is `status_msg` ("Docking: 0.42 m from the
+  dock").
 - **A BT tag with no matching library in `plugin_lib_names` fails at tree load**
   with "unknown node type", which reads like an XML error but is a params error.
   The list is duplicated in both `syncai_task_runner.cpp` (as the default) and

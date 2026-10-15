@@ -120,10 +120,28 @@ protected:
   void clampAcceleration(geometry_msgs::msg::Twist & cmd) const;
 
   /**
+    * @brief Raise a slow walk under the gait's walking floor to the floor
+    * @param cmd Optimizer output to adjust in place, before the clamp
+    */
+  void applyWalkFloor(geometry_msgs::msg::Twist & cmd) const;
+
+  /**
     * @brief Raise an in-place turn under the gait's turn floor to the floor
     * @param cmd Command to adjust in place
     */
   void applyTurnFloor(geometry_msgs::msg::Twist & cmd) const;
+
+  /**
+    * @brief Inside the goal checker's xy tolerance, rotate in place to the goal
+    * heading instead of running the optimizer
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param goal_checker Goal checker whose xy tolerance opens the phase
+    * @param cmd Filled with the rotation command when this returns true
+    * @return Whether this cycle is a final rotation (the optimizer is skipped)
+    */
+  bool rotateToGoalHeading(
+    const geometry_msgs::msg::PoseStamped & robot_pose, syncai_nav_core::GoalChecker * goal_checker,
+    geometry_msgs::msg::TwistStamped & cmd);
 
   /**
     * @brief Publish the optimal trajectory on local_plan as a nav_msgs/Path
@@ -150,9 +168,15 @@ protected:
   double reset_period_;
   double max_linear_accel_{1.0};
   double max_angular_accel_{3.2};
+  double walk_vx_min_{0.0};
   double in_place_wz_min_{0.0};
   double in_place_wz_deadband_{0.05};
   double in_place_vx_max_{0.1};
+  double final_rotation_wz_{0.0};
+  // Set when the robot first comes within the xy tolerance of the path's end,
+  // cleared by setPlan() and reset() -- the same events that clear the
+  // stateful goal checker's latch (see rotateToGoalHeading()).
+  bool rotating_to_goal_{false};
   double control_duration_{0.05};
   // The last command returned, the clamp's reference; zeroed by reset() and
   // by any throw out of computeVelocityCommands().

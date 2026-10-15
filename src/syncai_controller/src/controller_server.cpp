@@ -1,16 +1,26 @@
 #include "syncai_controller/controller_server.hpp"
 
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "angles/angles.h"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "syncai_util/robot_utils.hpp"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#include "tf2/utils.h"
+#pragma GCC diagnostic pop
+// tf2::getYaw() on a geometry_msgs quaternion needs this in the same TU
+// (Release-build symbol lookup error otherwise, see simple_progress_checker.cpp).
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -48,6 +58,14 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
   declare_parameter("goal_reached_max_remaining_path", rclcpp::ParameterValue(1.0));
 
+  // DockToPose (dock_to_pose). The ids are what an empty goal field resolves
+  // to; they must name entries of controller_plugins / goal_checker_plugins,
+  // and configure() only warns when they do not, so a params file without
+  // the docking plugin still serves FollowPath.
+  declare_parameter("default_dock_controller_id", rclcpp::ParameterValue("Docking"));
+  declare_parameter("default_dock_goal_checker_id", rclcpp::ParameterValue("dock_goal_checker"));
+  declare_parameter("dock_approach_timeout", rclcpp::ParameterValue(60.0));
+
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<syncai_costmap_2d::Costmap2DROS>(
     "local_costmap", std::string{get_namespace()}, "local_costmap");
@@ -56,6 +74,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 ControllerServer::~ControllerServer()
 {
   action_server_.reset();
+  dock_action_server_.reset();
   dyn_params_handler_.reset();
   speed_limit_sub_.reset();
   odom_sub_.reset();
@@ -116,6 +135,9 @@ void ControllerServer::configure()
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("publish_zero_velocity", publish_zero_velocity_);
   get_parameter("goal_reached_max_remaining_path", goal_reached_max_remaining_path_);
+  get_parameter("default_dock_controller_id", default_dock_controller_id_);
+  get_parameter("default_dock_goal_checker_id", default_dock_goal_checker_id_);
+  get_parameter("dock_approach_timeout", dock_approach_timeout_);
 
   costmap_ros_->init();
   // Launch a thread to run the costmap node
@@ -181,6 +203,24 @@ void ControllerServer::configure()
     get_logger(), "Controller Server has %s controllers available.",
     controller_ids_concat_.c_str());
 
+  // Not fatal: FollowPath must keep working from a params file that does not
+  // load the docking plugin. The first dock goal then fails with
+  // INVALID_PLUGIN and the list of what is loaded.
+  if (controllers_.find(default_dock_controller_id_) == controllers_.end()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "default_dock_controller_id '%s' is not in controller_plugins (%s); dock_to_pose goals "
+      "with an empty controller_id will be refused",
+      default_dock_controller_id_.c_str(), controller_ids_concat_.c_str());
+  }
+  if (goal_checkers_.find(default_dock_goal_checker_id_) == goal_checkers_.end()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "default_dock_goal_checker_id '%s' is not in goal_checker_plugins (%s); dock_to_pose goals "
+      "with an empty goal_checker_id will be refused",
+      default_dock_goal_checker_id_.c_str(), goal_checker_ids_concat_.c_str());
+  }
+
   odom_sub_ = std::make_unique<syncai_util::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
 
@@ -192,6 +232,16 @@ void ControllerServer::configure()
     shared_from_this(), "follow_path", std::bind(&ControllerServer::computeControl, this), nullptr,
     std::chrono::milliseconds(500), true);
 
+  // The DockToPose server, built the same way. spin_thread=true gives it its
+  // own callback group and executor thread for goal / cancel / accepted
+  // handling, and SimpleActionServer runs the execute callback itself on a
+  // std::async worker, so the two execute callbacks never share a thread:
+  // what serialises them is dynamic_params_lock_ (see the class comment),
+  // not the executor.
+  dock_action_server_ = std::make_unique<DockActionServer>(
+    shared_from_this(), "dock_to_pose", std::bind(&ControllerServer::dockControl, this), nullptr,
+    std::chrono::milliseconds(500), true);
+
   // Set subscribtion to the speed limiting topic
   speed_limit_sub_ = create_subscription<nav2_msgs::msg::SpeedLimit>(
     speed_limit_topic, rclcpp::QoS(10),
@@ -200,6 +250,7 @@ void ControllerServer::configure()
   // Activation phase (nav2 on_activate)
   costmap_ros_->activate();
   action_server_->activate();
+  dock_action_server_->activate();
 
   // Add callback for dynamic parameters
   dyn_params_handler_ = add_on_set_parameters_callback(
@@ -237,23 +288,35 @@ bool ControllerServer::findControllerId(
 bool ControllerServer::findGoalCheckerId(
   const std::string & c_name, std::string & current_goal_checker)
 {
+  // An empty name resolves to the FIRST entry of goal_checker_plugins,
+  // however many are loaded. Upstream (and this server until 2026-10) only
+  // fell back when exactly one was loaded, which was fine while the list had
+  // one entry; adding dock_goal_checker beside goal_checker would have
+  // failed every BT-issued FollowPath at once, because move.xml sets
+  // controller_id and no goal_checker_id (the BT node defaults it to ""),
+  // and nothing in the tree would ever have set it. The asymmetry with
+  // findControllerId() -- which still refuses an empty id with several
+  // controllers loaded -- is deliberate: MPPI vs RPP is a decision a goal
+  // must make, while goal checkers differ only in tolerance and the first
+  // one listed is the navigation default by construction. Put the
+  // navigation checker first in the yaml.
+  if (c_name.empty() && !goal_checker_ids_.empty()) {
+    RCLCPP_WARN_ONCE(
+      get_logger(),
+      "No goal checker was specified in the action call; using the first of "
+      "goal_checker_plugins, '%s'. This warning will appear once.",
+      goal_checker_ids_.front().c_str());
+    current_goal_checker = goal_checker_ids_.front();
+    return true;
+  }
+
   if (goal_checkers_.find(c_name) == goal_checkers_.end()) {
-    if (goal_checkers_.size() == 1 && c_name.empty()) {
-      RCLCPP_WARN_ONCE(
-        get_logger(),
-        "No goal checker was specified in parameter 'current_goal_checker'."
-        " Server will use only plugin loaded %s. "
-        "This warning will appear once.",
-        goal_checker_ids_concat_.c_str());
-      current_goal_checker = goal_checkers_.begin()->first;
-    } else {
-      RCLCPP_ERROR(
-        get_logger(),
-        "FollowPath called with goal_checker name %s in parameter"
-        " 'current_goal_checker', which does not exist. Available goal checkers are: %s.",
-        c_name.c_str(), goal_checker_ids_concat_.c_str());
-      return false;
-    }
+    RCLCPP_ERROR(
+      get_logger(),
+      "Action called with goal_checker name %s, which does not exist. "
+      "Available goal checkers are: %s.",
+      c_name.c_str(), goal_checker_ids_concat_.c_str());
+    return false;
   } else {
     RCLCPP_DEBUG(get_logger(), "Selected goal checker: %s.", c_name.c_str());
     current_goal_checker = c_name;
@@ -264,7 +327,18 @@ bool ControllerServer::findGoalCheckerId(
 
 void ControllerServer::computeControl()
 {
-  std::lock_guard<std::mutex> lock(dynamic_params_lock_);
+  // Bounded, not blocking: a FollowPath goal that arrives while dock_to_pose
+  // is driving must fail now, not queue up and start moving the robot the
+  // moment the dock ends. 100 ms is long enough to wait out a parameter
+  // callback (microseconds) and far shorter than any goal (seconds).
+  std::unique_lock<std::timed_mutex> lock(dynamic_params_lock_, std::chrono::milliseconds(100));
+  if (!lock.owns_lock()) {
+    // No zero twist here: cmd_vel belongs to the loop that holds the lock,
+    // and a zero from this thread would stop a dock approach mid-way.
+    RCLCPP_ERROR(get_logger(), "follow_path refused: dock_to_pose is driving the robot");
+    action_server_->terminate_current();
+    return;
+  }
 
   RCLCPP_INFO(get_logger(), "Received a goal, begin computing control effort.");
 
@@ -375,69 +449,12 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
 
 void ControllerServer::computeAndPublishVelocity()
 {
-  geometry_msgs::msg::PoseStamped pose;
-
-  if (!getRobotPose(pose)) {
-    // Under failure_tolerance like an exception out of the controller. Upstream
-    // throws here unconditionally, so a single stale odom -> base_link (the LIO
-    // bridge's TF, past the costmap's transform_tolerance) failed FollowPath
-    // at once, while the same TF miss inside RPP's transformGlobalPlan() got
-    // the full grace window -- and the RecoveryNode retry it burned was the
-    // one a real blocker later needed. Stopping is safe without a pose; driving
-    // is not, so the cycle commands zero and skips the progress checker and
-    // the feedback, both of which need the pose.
-    //
-    // The controller is never called this cycle, so its catch-all cannot zero
-    // RPP's acceleration-clamp baseline; reset() does it instead. Without it
-    // the first cycle after the TF came back would clamp around the speed held
-    // before the outage and step 0 -> ~0.55 m/s in 50 ms, the lurch the
-    // catch-all exists to prevent.
-    if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
-      RCLCPP_WARN(get_logger(), "Failed to obtain robot pose");
-      controllers_[current_controller_]->reset();
-      if (
-        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
-        failure_tolerance_ != -1.0) {
-        throw syncai_nav_core::PlannerException("Controller patience exceeded");
-      }
-      publishZeroVelocity();
-      return;
-    }
-    throw syncai_nav_core::PlannerException("Failed to obtain robot pose");
+  VelocityCycle cycle;
+  if (!computeVelocityCycle(cycle)) {
+    return;
   }
-
-  if (!progress_checker_->check(pose)) {
-    throw syncai_nav_core::PlannerException("Failed to make progress");
-  }
-
-  geometry_msgs::msg::Twist twist = getThresholdedTwist(odom_sub_->getTwist());
-
-  geometry_msgs::msg::TwistStamped cmd_vel_2d;
-
-  try {
-    cmd_vel_2d = controllers_[current_controller_]->computeVelocityCommands(
-      pose, twist, goal_checkers_[current_goal_checker_].get());
-    last_valid_cmd_time_ = now();
-  } catch (syncai_nav_core::PlannerException & e) {
-    if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
-      RCLCPP_WARN(this->get_logger(), "%s", e.what());
-      cmd_vel_2d.twist.angular.x = 0;
-      cmd_vel_2d.twist.angular.y = 0;
-      cmd_vel_2d.twist.angular.z = 0;
-      cmd_vel_2d.twist.linear.x = 0;
-      cmd_vel_2d.twist.linear.y = 0;
-      cmd_vel_2d.twist.linear.z = 0;
-      cmd_vel_2d.header.frame_id = costmap_ros_->getBaseFrameID();
-      cmd_vel_2d.header.stamp = now();
-      if (
-        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
-        failure_tolerance_ != -1.0) {
-        throw syncai_nav_core::PlannerException("Controller patience exceeded");
-      }
-    } else {
-      throw syncai_nav_core::PlannerException(e.what());
-    }
-  }
+  const geometry_msgs::msg::PoseStamped & pose = cycle.pose;
+  const geometry_msgs::msg::TwistStamped & cmd_vel_2d = cycle.cmd_vel;
 
   std::shared_ptr<Action::Feedback> feedback = std::make_shared<Action::Feedback>();
   feedback->speed = std::hypot(cmd_vel_2d.twist.linear.x, cmd_vel_2d.twist.linear.y);
@@ -464,6 +481,358 @@ void ControllerServer::computeAndPublishVelocity()
 
   RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
   publishVelocity(cmd_vel_2d);
+}
+
+bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
+{
+  // The body of computeAndPublishVelocity() until 2026-10, split out so the
+  // dock loop runs the same pose lookup, patience handling, progress check
+  // and controller call and only the feedback differs. Nothing in here
+  // touches either action server -- that is what makes the split clean.
+  geometry_msgs::msg::PoseStamped & pose = cycle.pose;
+
+  if (!getRobotPose(pose)) {
+    // Under failure_tolerance like an exception out of the controller. Upstream
+    // throws here unconditionally, so a single stale odom -> base_link (the LIO
+    // bridge's TF, past the costmap's transform_tolerance) failed FollowPath
+    // at once, while the same TF miss inside RPP's transformGlobalPlan() got
+    // the full grace window -- and the RecoveryNode retry it burned was the
+    // one a real blocker later needed. Stopping is safe without a pose; driving
+    // is not, so the cycle commands zero and skips the progress checker and
+    // the feedback, both of which need the pose.
+    //
+    // The controller is never called this cycle, so its catch-all cannot zero
+    // RPP's acceleration-clamp baseline; reset() does it instead. Without it
+    // the first cycle after the TF came back would clamp around the speed held
+    // before the outage and step 0 -> ~0.55 m/s in 50 ms, the lurch the
+    // catch-all exists to prevent.
+    if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
+      RCLCPP_WARN(get_logger(), "Failed to obtain robot pose");
+      controllers_[current_controller_]->reset();
+      if (
+        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
+        failure_tolerance_ != -1.0) {
+        throw syncai_nav_core::PlannerException("Controller patience exceeded");
+      }
+      publishZeroVelocity();
+      return false;
+    }
+    throw syncai_nav_core::PlannerException("Failed to obtain robot pose");
+  }
+
+  if (!progress_checker_->check(pose)) {
+    throw syncai_nav_core::PlannerException("Failed to make progress");
+  }
+
+  geometry_msgs::msg::Twist twist = getThresholdedTwist(odom_sub_->getTwist());
+
+  geometry_msgs::msg::TwistStamped & cmd_vel_2d = cycle.cmd_vel;
+
+  try {
+    cmd_vel_2d = controllers_[current_controller_]->computeVelocityCommands(
+      pose, twist, goal_checkers_[current_goal_checker_].get());
+    last_valid_cmd_time_ = now();
+  } catch (syncai_nav_core::PlannerException & e) {
+    if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
+      RCLCPP_WARN(this->get_logger(), "%s", e.what());
+      cmd_vel_2d.twist.angular.x = 0;
+      cmd_vel_2d.twist.angular.y = 0;
+      cmd_vel_2d.twist.angular.z = 0;
+      cmd_vel_2d.twist.linear.x = 0;
+      cmd_vel_2d.twist.linear.y = 0;
+      cmd_vel_2d.twist.linear.z = 0;
+      cmd_vel_2d.header.frame_id = costmap_ros_->getBaseFrameID();
+      cmd_vel_2d.header.stamp = now();
+      if (
+        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
+        failure_tolerance_ != -1.0) {
+        throw syncai_nav_core::PlannerException("Controller patience exceeded");
+      }
+    } else {
+      throw syncai_nav_core::PlannerException(e.what());
+    }
+  }
+
+  return true;
+}
+
+void ControllerServer::dockControl()
+{
+  // Same bounded lock as computeControl(), same rule: zero velocity is
+  // published on every exit path AFTER the lock is owned, never before --
+  // before it, cmd_vel belongs to the FollowPath loop.
+  std::unique_lock<std::timed_mutex> lock(dynamic_params_lock_, std::chrono::milliseconds(100));
+  if (!lock.owns_lock()) {
+    RCLCPP_ERROR(get_logger(), "dock_to_pose refused: follow_path is driving the robot");
+    dock_action_server_->terminate_current(
+      makeDockResult(DockAction::Result::CONTROLLER_BUSY, "follow_path is driving the robot"));
+    return;
+  }
+
+  RCLCPP_INFO(get_logger(), "Received a dock goal, begin computing control effort.");
+  have_last_dock_robot_pose_ = false;
+
+  try {
+    uint16_t error_code = DockAction::Result::NONE;
+    std::string error_msg;
+    if (!acceptDockGoal(*dock_action_server_->get_current_goal(), false, error_code, error_msg)) {
+      RCLCPP_ERROR(get_logger(), "dock_to_pose rejected: %s", error_msg.c_str());
+      publishZeroVelocity();
+      dock_action_server_->terminate_current(makeDockResult(error_code, error_msg));
+      return;
+    }
+
+    last_valid_cmd_time_ = now();
+    rclcpp::WallRate loop_rate(controller_frequency_);
+    while (rclcpp::ok()) {
+      if (dock_action_server_ == nullptr || !dock_action_server_->is_server_active()) {
+        RCLCPP_DEBUG(get_logger(), "Dock action server unavailable or inactive. Stopping.");
+        return;
+      }
+
+      if (dock_action_server_->is_cancel_requested()) {
+        RCLCPP_INFO(get_logger(), "Dock goal was canceled. Stopping the robot.");
+        dock_action_server_->terminate_all(makeDockResult(DockAction::Result::NONE, ""));
+        publishZeroVelocity();
+        return;
+      }
+
+      if ((now() - dock_start_time_).seconds() > dock_timeout_) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "dock approach exceeded %.1f s", dock_timeout_);
+        RCLCPP_ERROR(get_logger(), "%s", buf);
+        publishZeroVelocity();
+        dock_action_server_->terminate_current(makeDockResult(DockAction::Result::TIMEOUT, buf));
+        return;
+      }
+
+      // Unlike computeControl(), no wait for costmap_ros_->isCurrent(): that
+      // wait exists so a path controller never plans on cost data a clear
+      // just invalidated, and the docking controller reads no cost data at
+      // all. Waiting would only turn a dead sensor into an unbounded stall of
+      // the dock loop, past the goal's own timeout.
+
+      if (dock_action_server_->is_preempt_requested()) {
+        RCLCPP_INFO(get_logger(), "Passing new dock pose to controller.");
+        auto goal = dock_action_server_->accept_pending_goal();
+        if (!acceptDockGoal(*goal, true, error_code, error_msg)) {
+          RCLCPP_ERROR(get_logger(), "dock_to_pose preempt rejected: %s", error_msg.c_str());
+          publishZeroVelocity();
+          dock_action_server_->terminate_current(makeDockResult(error_code, error_msg));
+          return;
+        }
+      }
+
+      VelocityCycle cycle;
+      if (computeVelocityCycle(cycle)) {
+        last_dock_robot_pose_ = cycle.pose;
+        have_last_dock_robot_pose_ = true;
+        const auto feedback = publishDockFeedback(cycle.pose, cycle.cmd_vel);
+        publishVelocity(cycle.cmd_vel);
+        // Once a second, the approach as it will be needed after the fact
+        // (2026-10-15): the robot01 dock at 14:26 that day was cancelled after
+        // 40 s with nothing logged between acceptance and the cancel, so how
+        // close it got, and whether it was still moving, was lost -- the
+        // feedback reaches only the BT node, and Point-LIO's lio_path keeps no
+        // history while nobody subscribes. The robot pose (odom, the frame
+        // the dock is tracked in) is logged rather than the odom twist: the
+        // raw twist carries the gait's +/-0.2-0.5 m/s sway, so one sample
+        // cannot tell 0.05 m/s from standing, while the pose difference
+        // between two lines can. Which branch the controller is in is the
+        // DockingController's own log line, on change.
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "Docking %.1f s: robot (%.3f, %.3f, yaw %+.3f) in '%s', %.3f m and %+.3f rad from the "
+          "dock; cmd v %+.3f w %+.3f",
+          (now() - dock_start_time_).seconds(), cycle.pose.pose.position.x,
+          cycle.pose.pose.position.y, tf2::getYaw(cycle.pose.pose.orientation),
+          cycle.pose.header.frame_id.c_str(), feedback->distance_to_dock, feedback->yaw_error,
+          cycle.cmd_vel.twist.linear.x, cycle.cmd_vel.twist.angular.z);
+        if (isDockReached(cycle.pose)) {
+          RCLCPP_INFO(
+            get_logger(), "Reached the dock pose: %.3f m and %+.3f rad from it after %.1f s",
+            feedback->distance_to_dock, feedback->yaw_error, (now() - dock_start_time_).seconds());
+          break;
+        }
+      }
+
+      if (!loop_rate.sleep()) {
+        RCLCPP_WARN(
+          get_logger(), "Dock control loop missed its desired rate of %.4fHz",
+          controller_frequency_);
+        loop_rate.reset();
+      }
+    }
+  } catch (syncai_nav_core::PlannerException & e) {
+    RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+    publishZeroVelocity();
+    dock_action_server_->terminate_current(
+      makeDockResult(DockAction::Result::FAILED_TO_CONTROL, e.what()));
+    return;
+  } catch (std::exception & e) {
+    RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+    publishZeroVelocity();
+    dock_action_server_->terminate_current(makeDockResult(
+      DockAction::Result::FAILED_TO_CONTROL, std::string("unexpected: ") + e.what()));
+    return;
+  }
+
+  // Always, not gated on publish_zero_velocity_: a robot that has reached the
+  // dock pose must stop, and driver_manager has no cmd_vel watchdog that
+  // would stop it otherwise.
+  publishZeroVelocity();
+  dock_action_server_->succeeded_current(makeDockResult(DockAction::Result::NONE, ""));
+}
+
+bool ControllerServer::acceptDockGoal(
+  const DockAction::Goal & goal, bool is_preempt, uint16_t & error_code, std::string & error_msg)
+{
+  // Empty ids resolve to the server defaults HERE, not in findControllerId():
+  // that one only falls back when exactly one controller is loaded, and a
+  // dock goal with an empty controller_id must mean "the docking controller",
+  // not "whatever is loaded".
+  const std::string controller_id =
+    goal.controller_id.empty() ? default_dock_controller_id_ : goal.controller_id;
+  std::string controller;
+  if (!findControllerId(controller_id, controller)) {
+    error_code = DockAction::Result::INVALID_PLUGIN;
+    error_msg =
+      "controller '" + controller_id + "' is not loaded; available: " + controller_ids_concat_;
+    return false;
+  }
+  const std::string goal_checker_id =
+    goal.goal_checker_id.empty() ? default_dock_goal_checker_id_ : goal.goal_checker_id;
+  std::string goal_checker;
+  if (!findGoalCheckerId(goal_checker_id, goal_checker)) {
+    error_code = DockAction::Result::INVALID_PLUGIN;
+    error_msg = "goal checker '" + goal_checker_id +
+                "' is not loaded; available: " + goal_checker_ids_concat_;
+    return false;
+  }
+
+  // Transform the dock pose into the costmap's global frame (odom) ONCE.
+  // From here on the goal is tracked in odom and map is never consulted
+  // again: odom is continuous, map is not, and a localizer correction during
+  // the approach must not move the target under a robot 20 cm from it. The
+  // stamp is Time(0) for the latest map -> odom, the same fix isGoalReached()
+  // needed for stale path stamps.
+  //
+  // The goal is planar (frame_id, x, y, yaw; 2026-10-14, it was a
+  // PoseStamped): rebuilt into a PoseStamped here so the transform and
+  // everything downstream are unchanged. An empty frame_id means "map", the
+  // frame tasks give dock poses in -- the literal name, as global_frame is
+  // plain `map` everywhere in this stack (it is not namespaced by robot_id).
+  const std::string & global_frame = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::PoseStamped dock_in;
+  dock_in.header.frame_id = goal.frame_id.empty() ? std::string("map") : goal.frame_id;
+  dock_in.header.stamp = rclcpp::Time(0);
+  dock_in.pose.position.x = goal.x;
+  dock_in.pose.position.y = goal.y;
+  dock_in.pose.orientation = syncai_util::geometry_utils::orientationAroundZAxis(goal.yaw);
+  geometry_msgs::msg::PoseStamped dock_odom;
+  if (!syncai_util::transformPoseInTargetFrame(
+        dock_in, dock_odom, *costmap_ros_->getTfBuffer(), global_frame,
+        costmap_ros_->getTransformTolerance())) {
+    error_code = DockAction::Result::TRANSFORM_FAILED;
+    error_msg = "cannot transform the dock pose from '" + dock_in.header.frame_id + "' into '" +
+                global_frame + "'";
+    return false;
+  }
+
+  // No point starting a loop that fails on its first cycle.
+  geometry_msgs::msg::PoseStamped start;
+  if (!getRobotPose(start)) {
+    error_code = DockAction::Result::TRANSFORM_FAILED;
+    error_msg = "robot pose unavailable in '" + global_frame + "'";
+    return false;
+  }
+
+  // The one log line that explains "it docked somewhere else" after a
+  // relocalize: the pose as the task gave it, and where that is in odom now.
+  RCLCPP_INFO(
+    get_logger(),
+    "Dock pose (%.3f, %.3f, yaw %.3f) in '%s' -> (%.3f, %.3f, yaw %.3f) in '%s'; controller '%s', "
+    "goal checker '%s', timeout %.1f s%s",
+    goal.x, goal.y, goal.yaw, dock_in.header.frame_id.c_str(), dock_odom.pose.position.x,
+    dock_odom.pose.position.y, tf2::getYaw(dock_odom.pose.orientation), global_frame.c_str(),
+    controller.c_str(), goal_checker.c_str(),
+    goal.timeout > 0.0f ? static_cast<double>(goal.timeout) : dock_approach_timeout_,
+    is_preempt ? " (preempt)" : "");
+
+  // A 2-pose path: the plugin reads only poses.back(); the leading robot
+  // pose keeps nav_msgs/Path meaningful for anyone echoing it (where the
+  // approach started) and keeps calculate_path_length() well-defined.
+  nav_msgs::msg::Path path;
+  path.header.frame_id = global_frame;
+  path.header.stamp = now();
+  start.header = path.header;
+  dock_odom.header = path.header;
+  path.poses = {start, dock_odom};
+
+  // Per-goal controller state is cleared exactly once per goal (the comment
+  // in computeControl() has why not on a preempt), except when a preempt
+  // switches controllers: the newcomer has not run this goal yet.
+  const bool controller_changed = controller != current_controller_;
+  current_controller_ = controller;
+  current_goal_checker_ = goal_checker;
+  if (!is_preempt || controller_changed) {
+    controllers_[current_controller_]->reset();
+  }
+  if (!is_preempt) {
+    progress_checker_->reset();
+  }
+  // A preempting goal carries its own timeout: the clock restarts.
+  dock_start_time_ = now();
+  dock_timeout_ = goal.timeout > 0.0f ? static_cast<double>(goal.timeout) : dock_approach_timeout_;
+
+  setPlannerPath(path);
+  return true;
+}
+
+bool ControllerServer::isDockReached(const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  // Both poses are already in the costmap's global frame; no transform and no
+  // goal_reached_max_remaining_path_ gate (a 2-pose path cannot loop back onto
+  // its own start, which is what the gate guards against).
+  geometry_msgs::msg::Twist velocity = getThresholdedTwist(odom_sub_->getTwist());
+  return goal_checkers_[current_goal_checker_]->isGoalReached(
+    robot_pose.pose, end_pose_.pose, velocity);
+}
+
+std::shared_ptr<ControllerServer::DockAction::Feedback> ControllerServer::publishDockFeedback(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::TwistStamped & cmd_vel)
+{
+  auto feedback = std::make_shared<DockAction::Feedback>();
+  feedback->distance_to_dock =
+    static_cast<float>(syncai_util::geometry_utils::euclidean_distance(robot_pose, end_pose_));
+  feedback->yaw_error = static_cast<float>(angles::shortest_angular_distance(
+    tf2::getYaw(robot_pose.pose.orientation), tf2::getYaw(end_pose_.pose.orientation)));
+  feedback->speed = static_cast<float>(std::fabs(cmd_vel.twist.linear.x));
+  feedback->docking_time = now() - dock_start_time_;
+  dock_action_server_->publish_feedback(feedback);
+  return feedback;
+}
+
+std::shared_ptr<ControllerServer::DockAction::Result> ControllerServer::makeDockResult(
+  uint16_t error_code, const std::string & error_msg)
+{
+  auto result = std::make_shared<DockAction::Result>();
+  result->error_code = error_code;
+  result->error_msg = error_msg;
+  if (have_last_dock_robot_pose_) {
+    result->final_distance_error = static_cast<float>(
+      syncai_util::geometry_utils::euclidean_distance(last_dock_robot_pose_, end_pose_));
+    result->final_yaw_error = static_cast<float>(angles::shortest_angular_distance(
+      tf2::getYaw(last_dock_robot_pose_.pose.orientation),
+      tf2::getYaw(end_pose_.pose.orientation)));
+  } else {
+    // Documented sentinel: no cycle ever had a robot pose (rejected at
+    // acceptance). A distance cannot be negative, so -1.0 is unambiguous.
+    result->final_distance_error = -1.0f;
+    result->final_yaw_error = 0.0f;
+  }
+  return result;
 }
 
 void ControllerServer::updateGlobalPath()
@@ -646,6 +1015,8 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
         failure_tolerance_ = parameter.as_double();
       } else if (name == "goal_reached_max_remaining_path") {
         goal_reached_max_remaining_path_ = parameter.as_double();
+      } else if (name == "dock_approach_timeout") {
+        dock_approach_timeout_ = parameter.as_double();
       }
     }
 

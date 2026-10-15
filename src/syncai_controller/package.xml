@@ -3,7 +3,7 @@
 <package format="3">
   <name>syncai_controller</name>
   <version>0.0.0</version>
-  <description>Controller action server (FollowPath) hosting controller plugins, ported from nav2_controller</description>
+  <description>Controller action server (FollowPath, DockToPose) hosting controller plugins, ported from nav2_controller</description>
   <maintainer email="chungweeeei@gmail.com">ros</maintainer>
   <license>Apache-2.0</license>
 
@@ -17,6 +17,10 @@
   <depend>rcl_interfaces</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
+  <!-- The dock_to_pose action type. syncai_common is vcs-imported from
+       SyncAI-Robot-Interface (dependencies.repos, branch dev); its
+       DockToPose.action must be merged there before this package builds. -->
+  <depend>syncai_common</depend>
   <depend>syncai_costmap_2d</depend>
   <depend>syncai_nav_core</depend>
   <depend>syncai_util</depend>

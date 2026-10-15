@@ -16,16 +16,26 @@ Two controllers are loaded (2026-10):
 The FollowPath goal's `controller_id` picks between them, so
 `controller_id="FollowPathRPP"` in `move.xml` is the whole A/B.
 
+Since 2026-10 the same node also serves a **second action, `DockToPose`**
+(`syncai_common`, on `dock_to_pose`): drive to ONE pose and stop there, the
+last metre onto a charging dock. It runs two more instances of a third plugin,
+the **docking controller** of this package (`Docking` forward, `Undocking`
+backing out), with the same local costmap node, the same `cmd_vel`, and one
+goal at a time across the two servers — see "Docking".
+
 ```
-syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server
+syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server  ◄──DockToPose (syncai_common)── syncai_task_runner
                                                    │
                           ┌────────────────────────┼────────────────────────┐
                           ▼                        ▼                        ▼
-                  progress checker           goal checker            Controller plugins
-              "still moving?"           "close enough?"     FollowPath    = MPPI
-                                                            FollowPathRPP = RPP
+                  progress checker           goal checkers           Controller plugins
+              "still moving?"           goal_checker        FollowPath    = MPPI
+                                        dock_goal_checker   FollowPathRPP = RPP
+                                                            Docking       = DockingController (forward)
+                                                            Undocking     = DockingController (reverse)
                           └────────────────────────┼────────────────────────┘
-                                                   │  local_costmap (internal node)
+                                                   │  local_costmap (internal node;
+                                                   │  the docking controller never reads it)
                                                    ▼
                                        /<robot_id>/cmd_vel  ──►  syncai_driver_manager
 ```
@@ -50,6 +60,10 @@ src/controller_server.cpp        the action server + control loop
 src/main.cpp                     node construction + configure() + spin
 plugins/
   regulated_pure_pursuit_controller/   the controller (911 lines)
+  docking_controller/                  the docking controller (2026-10):
+    docking_controller.cpp               the syncai_nav_core::Controller plugin
+    smooth_control_law.cpp               Park & Kuipers' law, ported from nav2_graceful_controller
+    (ego_polar_coords.hpp in include/)   its polar coordinates, header-only
   simple_progress_checker.cpp          ProgressChecker
   pose_progress_checker.cpp            ProgressChecker (adds rotation)
   simple_goal_checker.cpp              GoalChecker
@@ -97,7 +111,21 @@ costmap, run the progress checker (throws `PlannerException` on "Failed to make
 progress"), threshold the odom twist, call
 `controller->computeVelocityCommands(pose, twist, goal_checker)`, publish
 feedback (`speed` and `distance_to_goal`, the latter measured along the remaining
-path from the closest pose), and publish the twist.
+path from the closest pose), and publish the twist. Since 2026-10 everything up
+to the controller call is `computeVelocityCycle()`, shared with the dock loop
+(`dockControl()`, see "Docking"); only the feedback and the publish are
+FollowPath's own.
+
+**The two action servers are mutually exclusive.** Each execute callback runs
+on its own worker thread and takes `dynamic_params_lock_` (a `std::timed_mutex`
+since 2026-10) for the whole goal, with a 100 ms bound: long enough to wait out
+a parameter callback, far shorter than any goal. A `FollowPath` goal that finds
+the lock held by a dock approach is terminated at once with
+"follow_path refused: dock_to_pose is driving the robot"; a dock goal in the
+reverse case gets `CONTROLLER_BUSY`. Neither loser publishes a zero twist —
+`cmd_vel` belongs to the loop that holds the lock, and a zero from the other
+thread would stop it mid-way. That is the only behavioural change to FollowPath
+from the docking work, and it only triggers while a dock goal is executing.
 
 **`failure_tolerance`** softens controller exceptions: with a positive value a
 failed cycle publishes zero velocity and keeps trying until that many seconds
@@ -211,11 +239,12 @@ calling RPP (see `failure_tolerance` above).
 `rotateToHeading()` applies the same pattern with `max_angular_accel`, plus a
 `sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target instead of
 overshooting. Last of all (not upstream, 2026-10-14) it raises the rotation to
-`rotate_to_heading_min_angular_vel` (0.21), toward the target: RL does not turn
+`rotate_to_heading_min_angular_vel` (0.3), toward the target: RL does not turn
 in place below its floor, and the ramp's first cycle (0.16 rad/s) and the stop
-cap's last ~0.007 rad are both under it. 0.21 assumes the gait's 0.3 rad/s is
-post-`scale_turn` (1.40), unconfirmed; MPPI's `in_place_wz_min` is the same
-floor, so change the two together. 0 disables it.
+cap's last ~0.014 rad are both under it. 0.3 is the gait's floor taken as the
+`cmd_vel` value, pre-scale (2026-10-15; it was 0.21 = 0.3 / `scale_turn` 1.40
+for a day, on the never-confirmed assumption that the floor applies after the
+scale); MPPI's `in_place_wz_min` is the same floor, so change the two together. 0 disables it.
 
 It is also zeroed on **any throw out of the compute cycle**, which is the only
 thing `computeVelocityCommands()` does: it takes `mutex_`, calls
@@ -292,6 +321,200 @@ The clamp deliberately does **not** wrap `rotateToHeading()`'s output. That
 function ends with a `sqrt(2·α·θ)` deceleration cap; a symmetric acceleration
 clamp applied on top of it would pull the command back up and cancel the cap.
 
+## Docking
+
+The last metre onto (or off) the charging dock, 2026-10. Three pieces: the
+`DockToPose` action on `dock_to_pose`, the `dockControl()` loop that serves it,
+and `syncai_controller::DockingController`, loaded twice as `Docking` and
+`Undocking`.
+
+### The action
+
+`syncai_common/action/DockToPose` — goal a **planar** pose, `frame_id` (any
+TF frame, empty → `map`) / `x` / `y` / `yaw` (rad), not a `PoseStamped` since
+2026-10-14 (the controller uses nothing else, and a hand-written quaternion is
+what a CLI goal gets wrong; the BT node converts the trees' `PoseStamped`),
+`controller_id` (empty → `default_dock_controller_id`, `Docking`),
+`goal_checker_id` (empty → `default_dock_goal_checker_id`, `dock_goal_checker`),
+`timeout` (s, `<= 0` → `dock_approach_timeout`, 60). Result `error_code` /
+`error_msg` plus `final_distance_error` / `final_yaw_error`, the residual on the
+last cycle that had a robot pose (`-1.0` distance when none did). Feedback
+`distance_to_dock`, `yaw_error`, `speed`, `docking_time` every cycle.
+
+| `error_code` | When | Zero twist published? |
+|---|---|---|
+| `NONE` 0 | `SUCCEEDED`; `CANCELED`; **`ABORTED` + `NONE` = superseded by a preempting dock goal** (default result from `accept_pending_goal`) | yes / yes / — |
+| `TRANSFORM_FAILED` 301 | No transform from the goal's `frame_id` into odom; robot pose unavailable at acceptance | yes |
+| `CONTROLLER_BUSY` 302 | `follow_path` holds the lock | **no** |
+| `FAILED_TO_CONTROL` 303 | any `PlannerException` (patience exceeded, no progress, the plugin's own throws), `error_msg` = its text | yes |
+| `TIMEOUT` 304 | the per-goal timeout | yes |
+| `INVALID_PLUGIN` 305 | an id not in `controller_plugins` / `goal_checker_plugins`; `error_msg` lists them | yes |
+
+3xx is the range `NavigateToGoal.DOCK_FAILED` (300) owns; a client switches on
+the hundreds, as for 1xx / 2xx. Only the trees `dock.xml` / `undock.xml` in
+`syncai_task_runner` call this action; the backend sends `NavigateToGoal` with
+`behavior_tree: dock.xml`.
+
+### The dock loop
+
+`dockControl()` is `computeControl()` with the path replaced by one pose:
+
+```
+bounded lock (100 ms)                   ← else CONTROLLER_BUSY, no zero twist
+acceptDockGoal(goal)                    ← ids resolved (empty → defaults), the goal pose transformed into
+                                          odom ONCE (stamp Time(0)), robot pose fetched, a 2-pose path
+                                          [robot start, dock pose] handed to setPlannerPath();
+                                          controller->reset() + progress checker reset per goal
+loop at controller_frequency:
+    server inactive?            → return
+    cancel requested?           → terminate_all + zero velocity, return
+    timeout?                    → TIMEOUT + zero velocity, return
+    (no wait for isCurrent())   ← the docking controller reads no cost data; waiting would only
+                                   turn a dead sensor into an unbounded stall past the goal's timeout
+    preempt requested?          → accept in place: acceptDockGoal(goal, is_preempt=true) -- no
+                                   controller reset (the cmd_vel sawtooth), the clock restarts
+    computeVelocityCycle()      ← shared with FollowPath
+    publish feedback, publish velocity
+    isDockReached()?            → break  (goal checker on end_pose_, both already odom; no
+                                           goal_reached_max_remaining_path gate -- a 2-pose path
+                                           cannot loop back onto its start)
+publishZeroVelocity()  (always, not gated on publish_zero_velocity: driver_manager has no watchdog)
+succeeded_current(result with the final residuals)
+```
+
+**The dock pose is tracked in odom, never map.** The goal usually arrives in
+`map` (the task stores it there); the loop transforms it into the local
+costmap's global frame once, at acceptance (and again on a preempt), and the
+plugin only ever sees odom. odom is continuous and map is not: a localizer
+correction during the approach (`map → odom` jumping under a relocalize) would
+otherwise move the target under a robot 20 cm from it. The INFO line at
+acceptance prints the pose in both frames — the one line that explains "it
+docked somewhere else" after a relocalize.
+
+**What the log shows of an approach** (2026-10-15, after a cancelled dock on
+robot01 left nothing between acceptance and the cancel): once a second,
+`Docking <t> s: robot (x, y, yaw) in '<odom>', <d> m and <yaw> rad from the
+dock; cmd v … w …`, and on arrival the achieved residuals. The robot pose is
+logged rather than the odom twist, because the raw twist carries the gait's
+±0.2–0.5 m/s sway: two consecutive poses say whether the robot moved, one
+twist sample does not. The plugin adds one line whenever it changes branch
+(initial rotation / control law / final rotation, with the distance and the
+angle that decided it). Reading them: no final-rotation line means the robot
+never got inside `dock_goal_checker`'s xy tolerance; a final-rotation line
+followed by a yaw error that stops shrinking while `cmd w` stays non-zero is
+the gait's in-place floor (`v_angular_min`), not the tolerance; lines
+alternating between initial rotation and control law are the robot hunting
+at `initial_rotation_min_angle`.
+
+### The controller
+
+A port of Humble's `nav2_graceful_controller` (Park & Kuipers' smooth control
+law, the law `opennav_docking` uses) with the path handling removed: there is
+no lookahead, the target *is* the last pose of the path. The target is turned
+into the robot's base frame by plain 2D math (both poses are odom; no TF per
+cycle) and expressed in egocentric polar coordinates `r`, `phi` (the dock's
+heading relative to the line of sight), `delta` (the robot's); the curvature
+`κ = −(1/r)[k_delta(δ − atan(−k_phi φ)) + (1 + k_phi/(1+(k_phi φ)²)) sin δ]`,
+`v = v_max / (1 + β|κ|^λ)`, `w = κ v` converge to position **and** heading
+along one smooth curve from any initial pose. Three branches per cycle, in this
+order:
+
+1. **final rotation** — once `r` is inside the goal checker's `xy_goal_tolerance`
+   (read back through `getTolerances()`, so the plugin's latch and the stateful
+   `SimpleGoalChecker`'s trip on the same number), stop and turn in place to
+   the dock yaw; latched until `setPlan()` (not `reset()`: a robot-pose outage
+   must not re-arm it while the checker's latch survives);
+2. **initial rotation** — the target further off the nose than
+   `initial_rotation_min_angle`: turn in place toward it first;
+3. **the law**.
+
+Three local rules, all forced by the quadruped, and one deliberate omission:
+
+- **`v_linear_min` is the gait's walking floor, applied *after* the law's
+  angular bound.** Upstream shrinks `v` to `w_max/κ` to keep the arc exact, and
+  for a wheeled base a slow tight arc is fine; below its floor the gait does
+  not walk, it stands, and the robot would stand with a non-zero command until
+  the progress checker ended the goal. Holding the floor executes a wider arc
+  and lets the feedback correct it next cycle. The floor is pre-scale like
+  every other velocity here (driver_manager's `scale_fwd` 1.40 applies after).
+  **Measured under MPC on 2026-10-14: 0.05 m/s** (RL's is ~0.3 m/s, which is
+  why the docking trees switch to MPC first). At that floor the rule only
+  bites on the tightest arcs, and `slowdown_radius` brings the robot in at
+  the floor instead of at 0.30.
+- **`v_angular_min` floors both rotation branches** (not upstream): the
+  proportional `0.5·angle·w_max` is 0.016 rad/s at the 0.05 rad error of the
+  final alignment, nothing a gait turns at. **0.15 rad/s since 2026-10-15.**
+  The 0.03 measured under MPC on 2026-10-14 did not hold for a sustained
+  in-place turn: both robot01 undocks tapered to 0.087–0.094 rad/s and the
+  yaw froze until the progress checker aborted, while 0.10–0.16 still turned.
+  The real floor is somewhere in 0.09–0.15 and unmeasured; at 0.15 one cycle
+  is 7.5 mrad, so `dock_goal_checker`'s yaw window went 0.05 → 0.1 with it.
+- **The stop into the final rotation is one step, not a ramp.** The clamp is
+  RPP's (baseline = last command, zeroed in `reset()` and the catch-all, never
+  in `setPlan()`). At the MPC floor a ramp-down is one cycle anyway; the rule
+  is for a floor raised again — from RL's 0.30 at 1 m/s² it would be six
+  cycles, 4.5 cm of travel after the xy latch, the whole 5 cm window. The angular
+  clamp stays on in every branch.
+- **No collision checking. The docking controller is blind.** It never reads
+  the local costmap (`costmap_ros` is kept for its frame names only), never
+  simulates the approach against it, has no footprint checker and no
+  `use_collision_detection` / `dock_collision_threshold` parameters. The dock
+  is itself a lethal cell in the costmap (the lidar sees it above
+  `min_obstacle_height`), so any footprint test refuses the last half metre of
+  every successful dock; opennav_docking carves out a threshold for that, here
+  the decision (2026-10) was to switch obstacle avoidance off for the whole
+  approach. Avoidance is `dock.xml`'s staging leg (MPPI, local costmap), which
+  ends the robot ~1 m in front of the dock in known-clear space. **Something
+  that steps in between is not detected**: the robot pushes against it until
+  the progress checker (30 s without movement) or `failure_tolerance` ends the
+  goal. The same holds for backing out, where the lidar would not see behind
+  the robot anyway.
+
+Two instances, one class, one params file. **Direction is the configuration,
+not a goal field**: the `Controller` interface carries a path and nothing else,
+so `Undocking` is the same plugin with `allow_backward: true` and
+`initial_rotation: false`, and the law reverses by itself when the target is
+behind the robot (the target sits 1 m behind with the robot's own yaw —
+a straight reverse; an overshoot puts the target ahead and the law drives
+forward to fix it). `undock.xml` sends `controller_id="Undocking"` with
+`(-1, 0)` in the robot's base frame (2026-10-15; it was the staging pose
+derived from the dock pose), which this server's once-at-acceptance
+transform turns into "1 m behind where the robot stands"; `dock.xml` sends `"Docking"` with the dock pose. The reverse
+floor is assumed equal to the measured forward one (0.05 m/s); it, the
+reverse cap and driver_manager's `scale_back` are unmeasured.
+
+**The target's yaw is not flipped for the reverse** (fixed 2026-10-15).
+`EgocentricPolarCoordinates` already flips the line of sight by π when
+`backward`, which turns both `phi` and `delta` into the tail's view; the
+plugin flipped the target yaw as well (graceful's controller does), so
+`phi` was π off and a target dead astern at the robot's own yaw read as a
+hard turn (`w` ≈ 0.2 rad/s instead of 0) with the heading error growing
+under it. On robot01 both undocks veered ~0.5 rad in 5 s, slid the target
+to the robot's side, switched to forward, turned ~180° round it and arrived
+2.3 rad off — then stalled in the final rotation (above). A closed-loop
+simulation of the code reproduces it from a perfect start; without the
+second flip it backs straight out 1 m in 5.3 s.
+
+Debug topics, subscriber-gated: `local_plan` (the predicted approach,
+integrated from the law for 3 s — **the same topic MPPI uses**, on purpose:
+one controller runs at a time, one rviz display shows whichever is active) and
+`docking_target` (the target as the law sees it, in the base frame).
+
+MPC: the docking trees switch the gait to MPC before sending a dock goal; this
+controller does not check it and would drive the RL gait the same way.
+
+Tuning order: `v_linear_min` / `v_angular_min` under MPC (0.05 m/s measured
+2026-10-14; 0.15 rad/s set on 2026-10-15 above a stall at 0.09, not measured
+-- re-measure by stepping a 20 Hz `cmd_vel` down until odom shows no steady
+motion, holding each step for several seconds, and after any `scale_fwd` /
+`scale_turn_*` change) → `dock_goal_checker`'s tolerances (yaw already
+widened to 0.1 for the 0.15 floor; widen further before lowering the floor
+if the yaw hunts) →
+`initial_rotation_min_angle` (RPP's 0.785 → 0.25 lesson) → `beta` / `k_*`. The
+result's `final_distance_error` is the honest number: the xy latch guarantees
+success, not accuracy, and the gait's stop latency comes on top of the
+2.5 mm a cycle moves at the floor.
+
 ## Plugins
 
 Three plugin types, all loaded through pluginlib against `syncai_nav_core`
@@ -299,19 +522,23 @@ interfaces. Selection is by ID: the parameter names an ID, and `<id>.plugin`
 names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
-two entries since 2026-10:
+four entries since 2026-10:
 
-| ID | Plugin |
-|---|---|
-| `FollowPath` | `syncai_mppi_controller::MPPIController` |
-| `FollowPathRPP` | `syncai_controller::RegulatedPurePursuitController` |
+| ID | Plugin | Used by |
+|---|---|---|
+| `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, dock.xml's staging leg) |
+| `FollowPathRPP` | `syncai_controller::RegulatedPurePursuitController` | `follow_path`, the A/B |
+| `Docking` | `syncai_controller::DockingController` (forward) | `dock_to_pose`, dock.xml |
+| `Undocking` | `syncai_controller::DockingController` (`allow_backward`) | `dock_to_pose`, undock.xml |
 
-The IDs are what a `FollowPath` goal's `controller_id` field selects.
+The IDs are what a goal's `controller_id` field selects.
 
-- **An empty `controller_id` now fails the goal** ("does not exist"). The
+- **An empty `controller_id` fails a `FollowPath` goal** ("does not exist"). The
   server only falls back to the sole plugin when exactly one is loaded, as it
-  did while RPP was alone.
-- Both plugins share the one local costmap and its mutex. Only the selected
+  did while RPP was alone. A `DockToPose` goal's empty id resolves to
+  `default_dock_controller_id` instead, in the dock loop itself.
+- All plugins share the one local costmap and its mutex (the docking
+  controller holds the costmap only for its frame names). Only the selected
   one runs a cycle.
 
 **Progress checkers** (`syncai_nav_core::ProgressChecker`, parameter
@@ -332,10 +559,23 @@ one):
 | `StoppedGoalChecker` | `SimpleGoalChecker` **and** speed below `trans_stopped_velocity` / `rot_stopped_velocity` |
 | `PositionGoalChecker` | Position only — orientation ignored entirely |
 
-Only `SimpleGoalChecker` is configured today. Note the coupling to RPP:
-`getTolerances()` feeds `goal_dist_tol_`, which is what decides when RPP switches
-into rotate-to-goal-heading — so widening `xy_goal_tolerance` also makes the robot
-start its final rotation earlier.
+Two `SimpleGoalChecker` instances are configured: `goal_checker` (0.15 m /
+0.1 rad, navigation) and `dock_goal_checker` (0.05 m / 0.1 rad, docking; the
+yaw was 0.05 until 2026-10-15).
+**An empty `goal_checker_id` resolves to the first entry of
+`goal_checker_plugins`, however many are loaded** (2026-10). Upstream — and this
+server until then — only fell back when exactly one was loaded, which was fine
+with one entry; adding `dock_goal_checker` would otherwise have failed every
+BT-issued `FollowPath` at once, because `move.xml` sets `controller_id` and no
+`goal_checker_id` (the BT node defaults it to `""`). The asymmetry with
+controllers is deliberate: MPPI vs RPP is a decision a goal must make, while
+goal checkers differ only in tolerance and the first listed is the navigation
+default by construction — keep it first in the yaml.
+
+Note the coupling to the controllers: `getTolerances()` feeds `goal_dist_tol_`,
+which is what decides when RPP switches into rotate-to-goal-heading and when
+the docking controller starts its final rotation — so widening
+`xy_goal_tolerance` also makes the robot start its final rotation earlier.
 
 ## Parameters
 
@@ -350,8 +590,19 @@ Server-level (`/**/controller_server`):
 | `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and since `is_path_valid` runs RPP's own footprint test a refused path is replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
-| `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` |
-| `progress_checker_plugin` / `goal_checker_plugins` / `controller_plugins` | see above | |
+| `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` (the docking controller raises a limit below its gait floor to the floor, with a warning) |
+| `default_dock_controller_id` | `Docking` | What a `DockToPose` goal's empty `controller_id` resolves to; must be in `controller_plugins`, or the server warns at startup and refuses such goals with `INVALID_PLUGIN` (FollowPath keeps working) |
+| `default_dock_goal_checker_id` | `dock_goal_checker` | Same for `goal_checker_id` |
+| `dock_approach_timeout` | `60.0` | Seconds a dock goal with `timeout <= 0` gets before `TIMEOUT`; dynamically reconfigurable |
+| `progress_checker_plugin` / `goal_checker_plugins` / `controller_plugins` | see above | `goal_checker_plugins` is ordered: the first entry is the empty-id default |
+
+The `Docking` / `Undocking` plugin parameters (`k_phi`, `k_delta`, `beta`,
+`lambda`, `v_linear_min` / `v_linear_max`, `v_angular_min` / `v_angular_max`,
+`slowdown_radius`, `max_linear_accel` / `max_angular_accel`,
+`initial_rotation` / `initial_rotation_min_angle`, `final_rotation` /
+`rotation_scaling_factor`, `allow_backward`, `transform_tolerance`) are
+documented, with their rationale, in the params file — see "Docking" for the
+ones that are placeholders until the robot has been measured.
 
 `controller_frequency`, the three velocity thresholds, `failure_tolerance` and
 `goal_reached_max_remaining_path` are **dynamically reconfigurable** — but the
@@ -460,6 +711,18 @@ ros2 action send_goal /<robot_id>/follow_path nav2_msgs/action/FollowPath \
   "{path: {header: {frame_id: map}, poses: [...]}, controller_id: FollowPath}" --feedback
 ros2 topic echo /<robot_id>/cmd_vel
 ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expect?
+
+# Docking, without the task runner: a pose 1 m ahead of where the robot
+# stands now (base_link is resolved once, at acceptance). Switch the gait to
+# MPC first (set_motion_key "5") -- nothing here does it. With the robot lying
+# down or driver_manager stopped this is a safe way to watch the command ramp;
+# expect "Failed to make progress" after 30 s when nothing moves. A map-frame
+# dock pose is frame_id: map (or empty) with the map x / y / yaw.
+ros2 action send_goal /<robot_id>/dock_to_pose syncai_common/action/DockToPose \
+  "{frame_id: <robot_id>/base_link, x: 1.0, y: 0.0, yaw: 0.0}" --feedback
+# Backing out 1 m: controller_id: Undocking, x: -1.0
+ros2 topic echo /<robot_id>/local_plan           # the predicted approach (also MPPI's topic)
+ros2 topic echo /<robot_id>/docking_target       # the target in the base frame
 ```
 
 ## Gotchas
@@ -487,7 +750,29 @@ ros2 topic echo /<robot_id>/lookahead_point      # is the carrot where you expec
   global one.
 - **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
   spin has no timeout: if an observation source stops publishing, the control
-  loop stalls there with the goal still active rather than failing.
+  loop stalls there with the goal still active rather than failing. The dock
+  loop does not wait on it (it reads no cost data), so a dock goal under a
+  dead sensor ends with its own timeout instead.
+- **The docking controller does not avoid obstacles.** By decision, not
+  omission (see "Docking"): the dock is a lethal cell, so the last metre is
+  driven blind, and a person stepping in between is pushed against until the
+  progress checker or `failure_tolerance` ends the goal. The staging leg of
+  `dock.xml` is where avoidance happens.
+- **`follow_path` and `dock_to_pose` refuse each other** while the other is
+  driving, and the loser publishes no zero twist. A dock goal from the CLI
+  while the BT is navigating is `CONTROLLER_BUSY`; a navigation goal during a
+  dock is terminated with a log line.
+- **Two publishers on `local_plan`** (three with `Undocking`): MPPI's optimal
+  trajectory and the docking controller's predicted approach share the topic
+  on purpose. `ros2 topic info -v` shows them all; only the active controller
+  publishes.
+- **The floors are MPC numbers** (0.05 m/s measured 2026-10-14; 0.15 rad/s
+  set 2026-10-15 above an observed 0.09 rad/s stall).
+  Driving the docking controller under RL — a tree whose MPC switch was
+  ignored, or a hand-sent `dock_to_pose` goal — commands speeds the RL gait
+  stands at (its floor is ~0.3 m/s), and the goal ends on the progress
+  checker. The reverse floor and every `Undocking` speed are still
+  unmeasured.
 - **A plugin load failure calls `exit(-1)`.** A typo in a `.plugin` type string
   takes the whole process down at startup rather than degrading.
 - **The byobu session launches this server on its default params file** —

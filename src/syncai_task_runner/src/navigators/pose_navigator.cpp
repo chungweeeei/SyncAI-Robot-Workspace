@@ -41,7 +41,49 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
   {"FollowPath",
    {GoalResult::FOLLOW_PATH_FAILED,
     "Path following failed: the robot could not reach the goal along its path"}},
+  // The docking branch of dock.xml / undock.xml (2026-10). 300 is the
+  // docking range's base, the same contract as 100 / 200. Three nodes share
+  // it because the backend needs "which step" (a dock), not "which node";
+  // dock and undock share it because the backend knows which tree it sent,
+  // and DockToPose's own detail says approach or back-out. SetMotionKey is a
+  // generic node mapped to a docking code because those two trees are its
+  // only callers today -- a third tree using it would need a tree-aware
+  // answer. Wait never fails on a configured tree and has no row.
+  // The detail in parentheses names the keys the trees send: dock.xml's lie-down
+  // and undock.xml's stand-up (both 2026-10-14) were removed on 2026-10-15, so a
+  // refused key is a gait switch (MPC or RL).
+  {"SetMotionKey",
+   {GoalResult::DOCK_FAILED,
+    "Docking failed: the gait controller refused a motion command (gait switch)"}},
+  {"DockToPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock approach did not complete"}},
+  {"ComputeStagingPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock pose is unusable"}},
+  // undock.xml's back-out target since 2026-10-15; fails only on a
+  // misconfigured tree or node (distance, base_frame), never on the goal.
+  {"ComputeBackOutPose",
+   {GoalResult::DOCK_FAILED, "Undocking failed: the back-out pose could not be computed"}},
+  // 2026-10-14: the check after a gait switch; the detail names the state
+  // waited for and the last one the controller reported.
+  {"WaitForMotionState",
+   {GoalResult::DOCK_FAILED,
+    "Docking failed: the gait controller did not reach the requested motion state"}},
 };
+
+// NavigateToGoal.behavior_tree, as the client sent it, to the file to load.
+// A bare file name ("dock.xml") resolves against this package's own
+// behavior_trees/ directory, so the backend does not have to embed the
+// install prefix -- a workspace-layout detail nothing else here exposes.
+// Anything with a '/' is a path and goes through unchanged (loadBehaviorTree
+// is a plain std::ifstream open: no search of its own). Also applied to a
+// preempting goal's name before the same-tree comparison, or "dock.xml"
+// against a running absolute-path dock would read as a different tree.
+std::string resolveBtFilename(const std::string & requested)
+{
+  if (requested.empty() || requested.find('/') != std::string::npos) {
+    return requested;
+  }
+  return ament_index_cpp::get_package_share_directory("syncai_task_runner") + "/behavior_trees/" +
+         requested;
+}
 
 FailureReason readFailureReason(const BT::Blackboard::Ptr & blackboard)
 {
@@ -140,11 +182,19 @@ bool PoseNavigator<ActionT>::cleanup()
 template <class ActionT>
 bool PoseNavigator<ActionT>::goalReceived(typename ActionT::Goal::ConstSharedPtr goal)
 {
-  auto bt_xml_filename = goal->behavior_tree;
+  const std::string bt_xml_filename = resolveBtFilename(goal->behavior_tree);
 
   if (!this->bt_action_server_->loadBehaviorTree(bt_xml_filename)) {
+    // Two causes, one return value: the file is missing, or a node in it
+    // threw while being constructed -- a BtActionNode / BtServiceNode whose
+    // server is not up within wait_for_service_timeout (the docking trees'
+    // dock_to_pose and set_motion_key are first waited for here, at the
+    // first dock goal, not at startup). BtActionServer logged which just
+    // above this line.
     RCLCPP_ERROR(
-      this->logger_, "[PoseNavigator][%s] %s: BT file not found: %s. Navigation canceled.",
+      this->logger_,
+      "[PoseNavigator][%s] %s: could not load BT %s (file missing, or a node's server is down "
+      "-- see the lines above). Navigation canceled.",
       __func__, this->getName().c_str(), bt_xml_filename.c_str());
     return false;
   }
@@ -295,10 +345,11 @@ void PoseNavigator<ActionT>::onPreempt(typename ActionT::Goal::ConstSharedPtr go
     this->logger_, "[PoseNavigator][%s] %s: received goal preemption request", __func__,
     this->getName().c_str());
 
+  const std::string requested = resolveBtFilename(goal->behavior_tree);
   if (
-    goal->behavior_tree == this->bt_action_server_->getCurrentBTFilename() ||
-    (goal->behavior_tree.empty() && this->bt_action_server_->getCurrentBTFilename() ==
-                                      this->bt_action_server_->getDefaultBTFilename())) {
+    requested == this->bt_action_server_->getCurrentBTFilename() ||
+    (requested.empty() && this->bt_action_server_->getCurrentBTFilename() ==
+                            this->bt_action_server_->getDefaultBTFilename())) {
     // if pending goal requests the same BT as the current goal, accept the pending goal
     // if pending goal has an empty behavior_tree field, it requests the default BT file
     // accept the pending goal if the current goal is running the default BT file

@@ -1,0 +1,114 @@
+<!--
+  Undock: switch the gait to MPC, back straight out
+  1 m from where the robot stands with the controller's DockToPose
+  (controller_id "Undocking"), then return to RL locomotion. Selected per
+  goal by NavigateToGoal.behavior_tree ("undock.xml" or the absolute share
+  path).
+
+  The goal's `pose` is IGNORED (2026-10-15): send it empty. The back-out
+  target is ComputeBackOutPose's (-1, 0) in the robot's own base frame,
+  which controller_server transforms into odom once, when the back-out
+  starts -- "1 m behind where the robot stands now", same heading. Until
+  then the goal carried the dock pose and ComputeStagingPose derived the
+  target from it, which made the backend track which dock the robot was
+  lying on to get it off again. The robot's own pose is that dock pose to
+  within the dock goal checker's 5 cm / 0.05 rad, so nothing was gained.
+  One consequence: a re-sent undock backs out another metre from wherever
+  the robot is, not to a fixed staging pose.
+
+  Starting state: the robot is STANDING on the dock in MPC, which is where
+  dock.xml ends since 2026-10-15. The first step is key="5" (MPC) for the
+  slow, precise walk, exactly as dock.xml; for a robot already in MPC it
+  only re-confirms the mode.
+
+  No stand-up step (removed 2026-10-15). From 2026-10-14 the tree began
+  with SetMotionKey key="0" (`MODE Z`, Stand) and a guessed 4000 ms Wait,
+  because dock.xml then ended with the robot lying down. Once dock.xml
+  stopped lying it down, that key was assumed to be a no-op for a standing
+  robot, and it is not: on robot01 the robot was seen going down right
+  after a dock that sent no lie-down, with this key the only command in
+  between (the backend sent the undock 0.3 s after the dock succeeded), and
+  getting up again for the back-out. A robot LYING on the dock -- a task
+  that sent LIEDOWN after the dock -- is therefore not handled here: what
+  MPC does from lying is unmeasured, so stand it up first (the backend's
+  STANDUP step) before sending this tree.
+
+  Why not a plain MOVE off the dock: the robot's footprint sits on the
+  dock's lethal cells in the local costmap, so MPPI (the FollowPath
+  controller) starts in collision and cannot be relied on to get off it; a
+  mode switch and a navigation would also be two steps the backend has to
+  sequence. The back-out is blind, like the approach -- the docking
+  controller reads no costmap -- which is the point. DockToPose runs with
+  method="position" (the back-out pose as computed); see dock.xml's header
+  for the reserved "charger" method.
+
+  Why backward rather than turning on the dock: the charging contacts are
+  under the robot, an in-place turn on them is wear nobody has measured, and
+  the space beside the dock is unknown; backing out along the line it came
+  in on is the one motion known to be clear (opennav_docking undocks the
+  same way). The Undocking controller instance reverses by itself when the
+  target is behind it (allow_backward, no initial rotation), and the target
+  keeps the robot's heading, so it ends facing the dock 1 m out and the MOVE
+  that follows starts from a known heading.
+
+  The MPC switch is CHECKED, as in dock.xml (2026-10-14): SetMotionKey is a
+  one-way UDP datagram, so WaitForMotionState waits (up to 5 s) for the
+  controller to report MPC -- 5 on the `mode` topic's data[1], read off the
+  robot -- and a Wait of 3000 ms then lets the gait settle before the robot
+  moves; see dock.xml's header. Raised 2000 -> 3000 ms on 2026-10-15
+  together with dock.xml's: the settling is the same gait transition in
+  both trees, so the two numbers move together.
+
+  Gait on exit: RL (key="1") on success, since a MOVE follows -- unlike
+  dock.xml, which ends on the dock in MPC and never switches back. The
+  switch back is CHECKED like the one into MPC (2026-10-14):
+  WaitForMotionState waits (up to 5 s) for Locomotion, 1 on `mode` data[1],
+  so SUCCEEDED means the robot is walking in RL and the MOVE that follows
+  will not be sent to a gait still in transition. No settling Wait after it:
+  the next step is a separate goal, which already costs a round trip through
+  the backend. If RL is never reported, the step fails inside the Sequence
+  and the Fallback sends key="1" once more (RestoreRL) before the goal ends
+  DOCK_FAILED -- one retry of the same key, harmless. On any failure after
+  the MPC switch was attempted -- the MPC state never reported included --
+  the Fallback's second child restores RL as well. A CANCEL during the back-out
+  halts the tree without the restore, leaving MPC on with the robot standing
+  somewhere in the metre behind the dock; re-sending this goal backs out a
+  further metre from there (see above), or the backend restores RL itself.
+
+  Attribution and status sentences follow dock.xml: SetMotionKey and
+  DockToPose write themselves on failure and the navigator maps them to
+  DOCK_FAILED (the DockToPose message says back-out, not approach);
+  SetBlackboard writes the tree's own sentences ("Switching the gait to MPC
+  for undocking", "Switching the gait back to RL"), DockToPose writes "Backing out of the
+  dock", "Undocking: 0.42 m to the staging pose", "Undocked".
+  ComputeBackOutPose fails only on a misconfigured tree or node (distance,
+  base_frame) and is mapped to DOCK_FAILED like the rest. There is no
+  path, so the navigator's distance_remaining reads 0 throughout; progress is
+  in status_msg.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="Undock">
+      <!-- No stand-up step: the robot is already standing in MPC (header) -->
+      <Fallback name="UndockInMpc">
+        <Sequence name="SwitchAndBackOut">
+          <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for undocking"/>
+          <SetMotionKey key="5" server_timeout="500"/>
+          <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
+          <WaitForMotionState state="5" timeout="5000"/>
+          <Wait msec="3000"/>
+          <!-- 1 m behind the robot, in its base frame; the goal's pose is not read (header) -->
+          <ComputeBackOutPose distance="1.0" back_out_pose="{back_out_pose}"/>
+          <DockToPose method="position" dock_pose="{back_out_pose}" controller_id="Undocking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
+          <SetBlackboard output_key="nav_status_msg" value="Switching the gait back to RL"/>
+          <SetMotionKey name="BackToRL" key="1" server_timeout="500"/>
+          <!-- Confirm the controller reports RL locomotion (mode data[1] == 1) before SUCCEEDED (header) -->
+          <WaitForMotionState state="1" timeout="5000"/>
+        </Sequence>
+        <ForceFailure>
+          <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
+        </ForceFailure>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+</root>
