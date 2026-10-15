@@ -101,7 +101,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `NONE` = 0 | success, cancel — **and** a goal that was preempted by a newer one or rejected before the tree ran (another navigator busy, BT file missing). Those two never reach `goalCompleted()`: the action server aborts them with an empty result | empty |
 | `PLAN_FAILED` = 200 | the planner branch failed the tree: `ComputePathToPose` aborted twice (the second time after `ClearGlobalCostmap`) — no route, start or goal in an obstacle / keepout zone, TF | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
-| `DOCK_FAILED` = 300 | the docking branch of `dock.xml` / `undock.xml` failed (2026-10): `SetMotionKey` refused (`LOCKED`), `ComputeStagingPose` rejected the dock pose, `DockToPose` refused its `method` (`charger` is reserved and not implemented yet), or `DockToPose` aborted — the controller's reason follows. A dock goal can still end 100 / 200: that is the staging leg, "the dock was unreachable" | `Docking failed: the dock approach did not complete (controller dock_to_pose aborted the goal: dock approach exceeded 60.0 s (error_code 304))` |
+| `DOCK_FAILED` = 300 | the docking branch of `dock.xml` / `undock.xml` failed (2026-10): `SetMotionKey` refused (`LOCKED`), `ComputeStagingPose` rejected the dock pose, `ComputeBackOutPose` could not build the back-out target (a misconfigured tree or `base_frame`), `DockToPose` refused its `method` (`charger` is reserved and not implemented yet), or `DockToPose` aborted — the controller's reason follows. A dock goal can still end 100 / 200: that is the staging leg, "the dock was unreachable" | `Docking failed: the dock approach did not complete (controller dock_to_pose aborted the goal: dock approach exceeded 60.0 s (error_code 304))` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -296,7 +296,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
-| `plugin_lib_names` | twelve BT node libraries | Must list every library whose tags `move.xml`, `dock.xml` and `undock.xml` use. `syncai_behavior_tree` builds a thirteenth, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — no tree has an `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time. The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `plugin_lib_names` | thirteen BT node libraries | Must list every library whose tags `move.xml`, `dock.xml` and `undock.xml` use. `syncai_behavior_tree` builds a fourteenth, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — no tree has an `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time. The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
 | `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`dock.xml`), resolved against the same `behavior_trees/` directory, or an absolute path |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 
@@ -353,7 +353,8 @@ ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
   "{header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0}, orientation: {w: 1.0}}}"
 
 # Dock: the same action, the DOCK pose, and the docking tree by bare name
-# (or its absolute share path). Undock is the same goal with 'undock.xml'.
+# (or its absolute share path). Undock is the same action with 'undock.xml'
+# and no pose: it backs out 1 m from where the robot stands.
 ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/NavigateToGoal \
   "{pose: {header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0},
     orientation: {w: 1.0}}}, behavior_tree: 'dock.xml'}" --feedback
@@ -364,10 +365,11 @@ ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/Navigate
 `behavior_trees/dock.xml` and `undock.xml` (2026-10) are selected per goal by
 `NavigateToGoal.behavior_tree`; there is no separate dock action, so a dock
 reports through the same `error_code` / `status_msg` surface as a move. For
-both trees the goal's `pose` is the **dock pose** — where `base_link` ends up
+`dock.xml` the goal's `pose` is the **dock pose** — where `base_link` ends up
 on the charger — and the tree derives the staging pose (1 m straight back
-along the dock's yaw, `ComputeStagingPose`) itself, so the backend sends one
-pose whichever way the robot is going.
+along the dock's yaw, `ComputeStagingPose`) itself. `undock.xml` takes **no
+pose** (2026-10-15; the field is ignored): the robot is already on the dock,
+so it backs out 1 m from where it stands.
 
 `dock.xml`: the `move.xml` structure navigates to the staging pose (MPPI,
 local costmap — this is where obstacle avoidance happens), then
@@ -386,8 +388,9 @@ A cancel halts the tree before any restore and leaves MPC on, standing.
 
 `undock.xml`: from lying on the dock — `SetMotionKey key="0"` (stand),
 `Wait 4000`, `key="5"`, `WaitForMotionState state="5"` + `Wait 2000`,
-`ComputeStagingPose`, `DockToPose
-controller_id="Undocking"` backing straight out to the staging pose, then
+`ComputeBackOutPose` (`(-1, 0)` in the robot's own base frame, transformed
+into odom once by `dock_to_pose` when the back-out starts), `DockToPose
+controller_id="Undocking"` backing straight out to it, then
 `key="1"` + `WaitForMotionState state="1"` (Locomotion confirmed on `mode`
 data[1], 5 s timeout). It ends in **RL**, facing the dock, so a plain MOVE can follow; a
 MOVE straight off the dock is not reliable because the robot's footprint sits

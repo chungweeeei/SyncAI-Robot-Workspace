@@ -84,6 +84,10 @@ add_library(syncai_compute_staging_pose_action_bt_node SHARED
   plugins/action/compute_staging_pose.cpp)
 list(APPEND plugin_libs syncai_compute_staging_pose_action_bt_node)
 
+add_library(syncai_compute_back_out_pose_action_bt_node SHARED
+  plugins/action/compute_back_out_pose.cpp)
+list(APPEND plugin_libs syncai_compute_back_out_pose_action_bt_node)
+
 add_library(syncai_wait_action_bt_node SHARED
   plugins/action/wait_action.cpp)
 list(APPEND plugin_libs syncai_wait_action_bt_node)

@@ -455,10 +455,12 @@ Two instances, one class, one params file. **Direction is the configuration,
 not a goal field**: the `Controller` interface carries a path and nothing else,
 so `Undocking` is the same plugin with `allow_backward: true` and
 `initial_rotation: false`, and the law reverses by itself when the target is
-behind the robot (the staging pose sits 1 m behind with the robot's own yaw —
+behind the robot (the target sits 1 m behind with the robot's own yaw —
 a straight reverse; an overshoot puts the target ahead and the law drives
-forward to fix it). `undock.xml` sends `controller_id="Undocking"` with the
-staging pose; `dock.xml` sends `"Docking"` with the dock pose. The reverse
+forward to fix it). `undock.xml` sends `controller_id="Undocking"` with
+`(-1, 0)` in the robot's base frame (2026-10-15; it was the staging pose
+derived from the dock pose), which this server's once-at-acceptance
+transform turns into "1 m behind where the robot stands"; `dock.xml` sends `"Docking"` with the dock pose. The reverse
 floor is assumed equal to the measured forward one (0.05 m/s); it, the
 reverse cap and driver_manager's `scale_back` are unmeasured.
 

@@ -57,6 +57,10 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
     "or lie-down)"}},
   {"DockToPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock approach did not complete"}},
   {"ComputeStagingPose", {GoalResult::DOCK_FAILED, "Docking failed: the dock pose is unusable"}},
+  // undock.xml's back-out target since 2026-10-15; fails only on a
+  // misconfigured tree or node (distance, base_frame), never on the goal.
+  {"ComputeBackOutPose",
+   {GoalResult::DOCK_FAILED, "Undocking failed: the back-out pose could not be computed"}},
   // 2026-10-14: the check after a gait switch; the detail names the state
   // waited for and the last one the controller reported.
   {"WaitForMotionState",

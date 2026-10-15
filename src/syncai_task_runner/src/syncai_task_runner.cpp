@@ -32,6 +32,7 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
     "syncai_dock_to_pose_action_bt_node",
     "syncai_set_motion_key_service_bt_node",
     "syncai_compute_staging_pose_action_bt_node",
+    "syncai_compute_back_out_pose_action_bt_node",
     "syncai_wait_action_bt_node",
     "syncai_wait_for_motion_state_action_bt_node",
   };
