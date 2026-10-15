@@ -26,14 +26,13 @@ namespace syncai_behavior_tree
  * ("Docking: 0.42 m from the dock") and report_failure()s on abort with the
  * controller's own reason, which the navigator maps to DOCK_FAILED.
  *
- * `method` (2026-10) says how the dock pose is known. `position` is the only
- * one implemented: dock_pose is used as given. `charger` will dock against a
- * tag detected on the charger; its detector does not exist yet, so the node
- * refuses it (FAILURE, DOCK_FAILED) instead of silently docking to the
- * configured pose. It is a BT port and not a DockToPose goal field on
- * purpose: the action stays "drive to this pose", and a detection method is
- * expected to produce or refine that pose in the tree before the goal goes
- * out, so neither the action nor controller_server has to change for it.
+ * The node only drives to dock_pose as given; how that pose is known is the
+ * tree's business. A `method` port (`position` | `charger`, the latter
+ * reserved and refused) lived here from 2026-10 until 2026-10-15 and was
+ * removed with `charger`: a dock against a tag detected on the charger will
+ * be a behavior tree of its own, whose detection node produces the pose and
+ * hands it to this same node, so neither the action nor controller_server
+ * has to change for it.
  */
 class DockToPoseAction : public BtActionNode<syncai_common::action::DockToPose>
 {
@@ -85,10 +84,6 @@ public:
   static BT::PortsList providedPorts()
   {
     return providedBasicPorts({
-      BT::InputPort<std::string>(
-        "method", "position",
-        "How the dock pose is known: position (dock_pose as given) or charger (tag "
-        "detection on the charger; not implemented yet, fails)"),
       BT::InputPort<geometry_msgs::msg::PoseStamped>(
         "dock_pose",
         "Pose to end on, any TF frame; sent as frame_id / x / y / yaw, and the server "

@@ -38,9 +38,7 @@
   controller) starts in collision and cannot be relied on to get off it; a
   mode switch and a navigation would also be two steps the backend has to
   sequence. The back-out is blind, like the approach -- the docking
-  controller reads no costmap -- which is the point. DockToPose runs with
-  method="position" (the back-out pose as computed); see dock.xml's header
-  for the reserved "charger" method.
+  controller reads no costmap -- which is the point.
 
   Why backward rather than turning on the dock: the charging contacts are
   under the robot, an in-place turn on them is wear nobody has measured, and
@@ -99,7 +97,7 @@
           <Wait msec="3000"/>
           <!-- 1 m behind the robot, in its base frame; the goal's pose is not read (header) -->
           <ComputeBackOutPose distance="1.0" back_out_pose="{back_out_pose}"/>
-          <DockToPose method="position" dock_pose="{back_out_pose}" controller_id="Undocking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
+          <DockToPose dock_pose="{back_out_pose}" controller_id="Undocking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
           <SetBlackboard output_key="nav_status_msg" value="Switching the gait back to RL"/>
           <SetMotionKey name="BackToRL" key="1" server_timeout="500"/>
           <!-- Confirm the controller reports RL locomotion (mode data[1] == 1) before SUCCEEDED (header) -->

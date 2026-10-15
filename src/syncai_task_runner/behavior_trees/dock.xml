@@ -108,10 +108,11 @@
   standing somewhere in the last metre; a blind in-tree retry from a pose the
   controller already gave up on has no new information.
 
-  method="position" on DockToPose (2026-10): dock to the goal's pose as
-  given. "charger" (dock against a tag detected on the charger) is reserved
-  and refused by the node with DOCK_FAILED until its detector exists; the
-  attribute is spelled out so the choice is visible here.
+  This tree docks to the goal's pose as given. A dock against a tag
+  detected on the charger will be a tree of its own, its detection node
+  producing the pose for the same DockToPose; until 2026-10-15 that choice
+  was a `method` attribute on DockToPose ("position" | a reserved, refused
+  "charger"), removed so the detection lives in the tree that needs it.
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -149,7 +150,7 @@
           <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
           <WaitForMotionState state="5" timeout="5000"/>
           <Wait msec="3000"/>
-          <DockToPose method="position" dock_pose="{goal}" controller_id="Docking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
+          <DockToPose dock_pose="{goal}" controller_id="Docking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
         </Sequence>
         <ForceFailure>
           <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
