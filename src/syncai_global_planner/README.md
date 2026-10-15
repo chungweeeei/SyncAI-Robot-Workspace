@@ -18,7 +18,10 @@ syncai_task_runner ──ComputePathToPose (nav2_msgs)──►  planner_server
                      nav_msgs/Path ──► syncai_controller (FollowPath)
 ```
 
-`SmacPlanner2D` is the configured planner; the other two are built and
+Two planners are loaded: `SmacPlanner2D` as `GridBased`, and
+`OctomapPlanner3D` (not drawn above; its own section below) as `Octo3D`. On
+this branch (`feature/octomap-planner-3d`) `move.xml` asks for `Octo3D`; the
+2D tree on `dev` asks for `GridBased`. NavFn and StraightLine are built and
 registered but not loaded.
 
 Two structural notes carry over from the rest of the stack:
@@ -100,7 +103,8 @@ does not throttle or abort anything.
 
 **`getPlan()` selects the plugin by `planner_id`.** An unknown id logs an error
 and returns an empty path; an *empty* id with exactly one plugin loaded picks
-that one and warns once. The BT passes `planner_id="GridBased"` explicitly.
+that one and warns once. The BT always names one explicitly: `Octo3D` on this
+branch (`feature/octomap-planner-3d`), `GridBased` in the 2D tree on `dev`.
 
 ### ComputePathThroughPoses
 
@@ -166,7 +170,7 @@ add it back to the params file when needed.
 Do not select it on a real robot expecting collision avoidance — it will happily
 plan through a wall.
 
-### SmacPlanner2D (`syncai_global_planner/SmacPlanner2D`) — the configured planner
+### SmacPlanner2D (`syncai_global_planner/SmacPlanner2D`) — the configured 2D planner (`GridBased`)
 
 Port of `nav2_smac_planner` (humble, 1.1.20), reduced to its 2D plugin plus the
 shared search core (`AStarAlgorithm<Node2D>`, `Smoother`,
@@ -272,9 +276,12 @@ The quadruped's ground-constrained 3D planner, on `map/<name>/octomap.bt` —
 the `octomap::OcTree` that `syncai_mapping`'s `clean_map --octomap 1` writes
 beside `map.pcd` (0.1 m; free **and** occupied, so never-seen space is
 unknown; hit floor-band voxels kept occupied). It is loaded beside
-`GridBased` as a second id. `move.xml` still asks for `GridBased`, so it is
-reached with `planner_id: Octo3D` on `compute_path_to_pose` (see Running) or
-a one-line edit of the tree; the 2D costmap is used for its frame id only.
+`GridBased` as a second id, and on this branch `move.xml` asks for it (with
+`controller_id="FollowPathRPP"`, the controller that follows a path with
+heights and climbs stairs — `syncai_controller/README.md`), so every
+navigation goal plans here; `GridBased` is then reached only with
+`planner_id: GridBased` on `compute_path_to_pose` (see Running), until the
+tree's 2D ids go back. The 2D costmap is used for its frame id only.
 
 **Why a surface map and not a free-space search.** The first attempt (the
 device workspace's `octo_planner_3d`) ran a 26-neighbour A* over the free
@@ -481,10 +488,12 @@ headers include nothing of ROS on purpose.
 
 - `is_path_valid` and the republish trim run on the 2D costmap: fine on the
   ground floor, meaningless for a path upstairs or on the stairs (checked
-  against the ground-floor gridmap).
-- A route over a stair link is only a route: nothing here switches the gait
-  controller into a stair mode, and the 2D controllers follow its xy. Climbing
-  is the driver's and the gait controller's job, untested on the robot.
+  against the ground-floor gridmap). That is why this branch's `move.xml`
+  does not call `is_path_valid` and plans once per goal instead.
+- A route over a stair link is only a route: climbing it is RPP's stair mode
+  (`FollowPathRPP`; `syncai_controller/README.md`, "Stairs"), which stops and
+  switches the gait controller's RL policy over `set_policy_mode`. MPPI
+  follows only its x / y. Climbing is untested on the robot.
 - A stair link is the mapping run's track, drift and all, and it exists only
   where the robot walked; a stair blocked since (or walked only one way by a
   robot that cannot descend) is still linked both ways.
@@ -565,7 +574,7 @@ enough that RPP rejected valid paths through ~0.6 m gaps.
 There used to be separate 2D (sim) and 3D (real robot) params files; the 2D
 one went away with `bringup_2d`, and `planner_server_params.yaml` now carries
 the 3D-path configuration: `use_sim_time: false`, `GridBased`
-(`SmacPlanner2D`) only, obstacle
+(`SmacPlanner2D`) and `Octo3D` (`OctomapPlanner3D`), obstacle
 sources `scan` **and** `pointlio/body_cloud`.
 
 The pointcloud source deliberately leaves `sensor_frame` empty so the
@@ -630,7 +639,7 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
-| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by the 2D `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10); the 3D tree (`Octo3D` + `FollowPathRPP`) plans once per goal and does not call it, since it judges on the 2D costmap. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled**, which until then left the cancelled route on `plan` until the next goal. A new plan stops the repeats. Main executor, the republish timer's thread |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` |
 | Publisher | `Octo3D/raw_plan` | `nav_msgs/Path`, only with `Octo3D.publish_raw_plan`: the A* cell chain before the shortcut, for comparing against `plan` |
@@ -648,8 +657,9 @@ ros2 launch syncai_global_planner planner_server.launch.py \
     system_config:=config/instances/robot02.ini
 ```
 
-A plan from the OctoMap surface planner (the BT keeps asking `GridBased`),
-and the same core offline on the map's own tree (see OctomapPlanner3D above):
+A plan from the OctoMap surface planner without the task runner (the same
+planner the BT asks for on this branch), and the same core offline on the
+map's own tree (see OctomapPlanner3D above):
 
 ```bash
 ros2 action send_goal /<robot_id>/compute_path_to_pose nav2_msgs/action/ComputePathToPose \
@@ -706,14 +716,13 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
 - **Dynamic parameter changes are refused mid-plan** by the shared mutex, and
   only `expected_planner_frequency` is handled at all — plugin parameters go to
   each plugin's own callback.
-
-Upstream references: [`nav2_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_planner),
-[`nav2_navfn_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_navfn_planner),
-and [`nav2_smac_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_smac_planner).
-- **`Octo3D` paths are judged by `is_path_valid` on the 2D costmap.** On
-  the ground floor that is the same check `GridBased` paths get; upstairs
-  the path is compared with the ground-floor gridmap and the BT replans into
-  the same path once a second. There is no 3D-aware validity check yet.
+- **`is_path_valid` judges an `Octo3D` path on the 2D costmap.** On the
+  ground floor that is the same check `GridBased` paths get; upstairs the
+  path is compared with the ground-floor gridmap and reads blocked, so a 2D
+  tree with `Octo3D` swapped in would replan into the same path once a
+  second. This branch's `move.xml` therefore leaves `IsPathValid` out and
+  plans once per goal — which also means no replan round a blocker. There
+  is no 3D-aware validity check yet.
 - **`Octo3D` does not follow a map switch.** `map_server/load_map` reloads
   the gridmap; the octree is read once at startup, so a map switch (or a
   change of a build-time parameter) needs a planner_server restart — the
@@ -721,3 +730,7 @@ and [`nav2_smac_planner`](https://github.com/ros-navigation/navigation2/tree/hum
 - **`Octo3D` trips the `expected_planner_frequency` warning** on a long
   plan only in theory (a 50 m search is a few ms); if it does, it is the
   canary described under Parameters, not a fault.
+
+Upstream references: [`nav2_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_planner),
+[`nav2_navfn_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_navfn_planner),
+and [`nav2_smac_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_smac_planner).

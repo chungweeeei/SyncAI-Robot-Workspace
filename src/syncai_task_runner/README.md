@@ -169,8 +169,9 @@ it, by flipping two flags in `PoseNavigatorTraits`.
 
 ## The behavior tree
 
-`behavior_trees/move.xml` — replanning only when the current path becomes
-invalid (or the goal changes), with contextual recovery:
+`behavior_trees/move.xml`. On this branch (`feature/octomap-planner-3d`,
+2026-10-14) it navigates in 3D and plans once per goal (or again when the goal
+changes), with contextual recovery:
 
 ```xml
 <Sequence name="NavigateFromFreshGlobalCostmap">
@@ -185,20 +186,48 @@ invalid (or the goal changes), with contextual recovery:
             <Inverter>
               <GlobalUpdatedGoal/>
             </Inverter>
-            <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
+            <Inverter>
+              <BlackboardCheckInt value_A="{number_plans}" value_B="0" return_on_mismatch="FAILURE">
+                <AlwaysSuccess/>
+              </BlackboardCheckInt>
+            </Inverter>
           </ReactiveSequence>
-          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
         </Fallback>
         <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
       </RecoveryNode>
     </RateController>
     <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
-      <FollowPath path="{path}" controller_id="FollowPath"/>
+      <FollowPath path="{path}" controller_id="FollowPathRPP"/>
       <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
     </RecoveryNode>
   </PipelineSequence>
 </Sequence>
 ```
+
+**Octo3D + RPP, planned once.** `Octo3D` (OctomapPlanner3D on the map's
+`octomap.bt`) is the only planner that routes between floors, over a stair
+link; `FollowPathRPP` is the controller that matches a path with heights in 3D
+and switches the gait policy for stairs, while MPPI scores its rollouts on the
+planar local costmap only. `IsPathValid` is out because it judges the path on
+the 2D global costmap, which upstairs reads a good path as blocked, and a
+replan on the static octomap can only return the same route. In its place, the
+`number_plans == 0` check (`number_plans` is reset to 0 by the navigator on
+every goal, preempts included, and counted by `ComputePathToPose` on success)
+reads "no path yet for this goal". The BT.CPP built-ins it uses need no
+`plugin_lib_names` entry. The price: nothing replans round a blocker the global
+costmap sees, and RPP stops in front of one instead of bending round it, so
+the four `FollowPath` retries (~16 s) are the whole wait before the goal fails
+with `FOLLOW_PATH_FAILED`. A map without `octomap.bt` fails every goal with
+`PLAN_FAILED`. The feedback's `number_of_replans` (plans after the first)
+therefore reads 0 throughout.
+
+**The 2D tree** (`dev`, and this branch's way back): the same tree with
+`<IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>` in
+place of the second `Inverter`, `planner_id="GridBased"` (SmacPlanner2D) and
+`controller_id="FollowPath"` (MPPI). The paragraphs below on `IsPathValid`,
+`blocked_time`, detours and MPPI describe that tree; the new-goal costmap
+clear, the `PipelineSequence`, the retries and their refill apply to both.
 
 **Every new goal starts from a cleared global costmap** (2026-10-14). The
 obstacle layer forgets a mark only by raytracing through it, out to 3 m, so
@@ -231,8 +260,8 @@ or a missing robot pose keeps the path. A failure in either branch clears
 **that branch's own costmap** and retries — stale obstacles being the most
 common cause.
 
-`FollowPath` gets **three** retries (2026-10; one before), and the count is a
-wait, not a robustness knob. The controller behind `FollowPath` is MPPI since
+`FollowPath` gets **four** retries (2026-10-14; one until 2026-10, three in
+between), and the count is a wait, not a robustness knob. The controller behind `FollowPath` is MPPI since
 2026-10 (`syncai_mppi_controller`), which bends round a blocker beside the
 path inside the local costmap; a blocker that closes the way leaves it with no
 feasible trajectory, and there is no `Wait` recovery, so from then on how long

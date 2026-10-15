@@ -14,7 +14,11 @@ Two controllers are loaded (2026-10):
   the path and stops when the path is blocked. It was `FollowPath` until then.
 
 The FollowPath goal's `controller_id` picks between them, so
-`controller_id="FollowPathRPP"` in `move.xml` is the whole A/B.
+`controller_id` in `move.xml` is the whole A/B. On this branch
+(`feature/octomap-planner-3d`) it is **`FollowPathRPP`**, with
+`planner_id="Octo3D"`: RPP is the one of the two that follows a path with
+heights in 3D and climbs stairs (both below); MPPI does neither. The 2D tree on
+`dev` names `FollowPath` (MPPI) with `GridBased`.
 
 Since 2026-10 the same node also serves a **second action, `DockToPose`**
 (`syncai_common`, on `dock_to_pose`): drive to ONE pose and stop there, the
@@ -349,7 +353,8 @@ cycles that never reach RPP, while these throws happen inside RPP mid-goal.
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
 cost us once: `setPlan()` is also the mid-navigation replan path. Every replan
 in `move.xml` (once a second until 2026-10, only when `IsPathValid` reports the
-path blocked since) hands `FollowPath` a fresh path, which reaches the server
+path blocked since; on this branch's Octo3D tree only when the goal changes)
+hands `FollowPath` a fresh path, which reaches the server
 as an action preempt and lands in
 `updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
 clamped the very next command to a single accel step, so the command re-ramped

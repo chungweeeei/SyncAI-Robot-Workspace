@@ -32,8 +32,13 @@ So the stack has two planning layers, not three:
   With MPPI it can bend around a blocker standing beside the path; with RPP it
   can only stop.
 
-The re-route machinery in `move.xml` (`is_path_valid`, FollowPath retries) is
-unchanged and works alongside MPPI:
+This describes the 2D tree on `dev`. On `feature/octomap-planner-3d`,
+`move.xml` names `Octo3D` and `FollowPathRPP` and leaves `is_path_valid` out,
+so MPPI is loaded but unused there, and a blocker gets neither a local bend
+nor a global replan: RPP stops, and the FollowPath retries are the wait.
+
+The re-route machinery in the 2D `move.xml` (`is_path_valid`, FollowPath
+retries) is unchanged and works alongside MPPI:
 
 - When the corridor itself is closed, the global replan handles it.
 - When MPPI finds no feasible trajectory, it throws `PlannerException`
