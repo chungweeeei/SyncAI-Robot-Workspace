@@ -1,7 +1,8 @@
 <!--
   Dock: navigate to a staging pose in front of the dock with move.xml's
   machinery, switch the gait to MPC, wait, hand the last metre to the
-  controller's DockToPose, then lie down on the dock. Selected per goal by NavigateToGoal.behavior_tree
+  controller's DockToPose, and end there, standing on the dock in MPC.
+  Selected per goal by NavigateToGoal.behavior_tree
   ("dock.xml" -- a bare name resolves against this directory -- or the
   absolute share path); there is no separate dock action, so a dock reports
   through the same error_code / status_msg surface as a move, and the goal's
@@ -46,21 +47,17 @@
   keep the two equal. Until 2026-10-14 the whole check was a fixed 1500 ms
   Wait, a guess.
 
-  Why the tree lies the robot down itself (2026-10-14): a dock is not done
-  until the robot is resting on the contacts, and a backend LIEDOWN step
-  after every DOCK was one more step to forget. LieDownOnDock sends key="2"
-  (`MODE X`) once DockToPose has succeeded, then a Wait of 4000 ms -- a GUESS
-  at the lie-down time, the counterpart of undock.xml's stand-up Wait, to be
-  replaced by a WaitForMotionState in the same place -- so SUCCEEDED means
-  "lying on the dock", not "lie-down sent". It sits OUTSIDE the DockInMpc
-  Fallback: a refused lie-down (LOCKED, an unanswered call) must not run
-  RestoreRL, which would switch a robot standing on the dock to the walking
-  gait for nothing. Such a failure is DOCK_FAILED with SetMotionKey's reason
-  and leaves the robot standing on the dock in MPC; undock.xml starts from
-  there as well (its stand-up key is a no-op for a standing robot).
+  The tree does NOT lie the robot down (2026-10-15): SUCCEEDED means
+  "standing on the dock in MPC". From 2026-10-14 to 2026-10-15 a
+  LieDownOnDock sequence after DockToPose sent key="2" (`MODE X`) and waited
+  a guessed 4000 ms; it was removed on request. Lying down on the dock, if a
+  task wants it, is the caller's step again (the backend's LIEDOWN, i.e.
+  set_motion_key 2). undock.xml starts from this end state and has no
+  stand-up step (removed the same day), so a robot laid down after the dock
+  must be stood up by the caller before the undock.
 
-  Why RL is restored only on failure: on success the robot lies down on the
-  dock (above), and the next step is undock.xml, which stands it up itself;
+  Why RL is restored only on failure: on success the robot stays on the dock
+  in MPC, and the next step is undock.xml, which runs in MPC itself;
   switching back to RL first would be a step the task never asked for. On
   any failure after the switch was attempted -- the
   switch refused (LOCKED), or the approach aborted -- the Fallback's second
@@ -92,8 +89,8 @@
   switching -- written by the tree, not by SetMotionKey, which is a generic
   node that does not know why it is sending key 5 -- and DockToPose writes
   "Approaching the dock", "Docking: 0.42 m from the dock" from the
-  controller's feedback, and "Docked" / "Dock approach failed"; the tree's
-  last sentence is "Docked; lying down". output_key is
+  controller's feedback, and "Docked" / "Dock approach failed", which are
+  the tree's last sentences. output_key is
   the BARE key on purpose: with {nav_status_msg} SetBlackboard would read the
   current sentence and use it as the key name. During the approach the
   navigator's distance_remaining is still measured along the staging path
@@ -158,15 +155,6 @@
           <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
         </ForceFailure>
       </Fallback>
-
-      <!-- On the dock: lie down. Outside DockInMpc on purpose -- a refused
-           lie-down must not switch a robot standing on the dock to RL (header) -->
-      <Sequence name="LieDownOnDock">
-        <SetBlackboard output_key="nav_status_msg" value="Docked; lying down"/>
-        <SetMotionKey name="LieDown" key="2" server_timeout="500"/>
-        <!-- Lie-down time: a guess until measured, like undock.xml's stand-up (header) -->
-        <Wait msec="4000"/>
-      </Sequence>
     </Sequence>
   </BehaviorTree>
 </root>
