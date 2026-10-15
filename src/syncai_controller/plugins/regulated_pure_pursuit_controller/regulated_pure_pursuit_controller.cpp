@@ -475,7 +475,7 @@ void RegulatedPurePursuitController::rotateToHeading(
   // direction of the target, last, so it wins over both: a ramp that starts
   // at the floor is one step over max_angular_accel, and the stop cap is
   // overridden only below sqrt(2 * alpha * theta) = floor, i.e. inside
-  // ~0.007 rad at 0.21 rad/s -- far inside yaw_goal_tolerance. 0 disables it.
+  // ~0.014 rad at 0.3 rad/s -- far inside yaw_goal_tolerance. 0 disables it.
   if (fabs(angular_vel) < rotate_to_heading_min_angular_vel_) {
     angular_vel = sign * rotate_to_heading_min_angular_vel_;
   }

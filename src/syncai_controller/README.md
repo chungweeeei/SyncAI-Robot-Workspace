@@ -239,11 +239,12 @@ calling RPP (see `failure_tolerance` above).
 `rotateToHeading()` applies the same pattern with `max_angular_accel`, plus a
 `sqrt(2·α·θ)` cap so the in-place rotation decelerates into its target instead of
 overshooting. Last of all (not upstream, 2026-10-14) it raises the rotation to
-`rotate_to_heading_min_angular_vel` (0.21), toward the target: RL does not turn
+`rotate_to_heading_min_angular_vel` (0.3), toward the target: RL does not turn
 in place below its floor, and the ramp's first cycle (0.16 rad/s) and the stop
-cap's last ~0.007 rad are both under it. 0.21 assumes the gait's 0.3 rad/s is
-post-`scale_turn` (1.40), unconfirmed; MPPI's `in_place_wz_min` is the same
-floor, so change the two together. 0 disables it.
+cap's last ~0.014 rad are both under it. 0.3 is the gait's floor taken as the
+`cmd_vel` value, pre-scale (2026-10-15; it was 0.21 = 0.3 / `scale_turn` 1.40
+for a day, on the never-confirmed assumption that the floor applies after the
+scale); MPPI's `in_place_wz_min` is the same floor, so change the two together. 0 disables it.
 
 It is also zeroed on **any throw out of the compute cycle**, which is the only
 thing `computeVelocityCommands()` does: it takes `mutex_`, calls

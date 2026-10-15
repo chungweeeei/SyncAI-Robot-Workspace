@@ -188,12 +188,13 @@
       # in_place_vx_max and |wz| between in_place_wz_deadband and
       # in_place_wz_min is raised to in_place_wz_min, keeping its sign; while
       # walking nothing changes (a small wz there is an arc, and raising it
-      # would weave). 0.21 = 0.3 / scale_turn 1.40, on the assumption that the
-      # 0.3 is what the gait receives, after driver_manager's scale -- not
-      # confirmed. If it turns out to be the cmd_vel value, this is 0.3.
+      # would weave). 0.3 is the gait's floor taken as the cmd_vel value,
+      # pre-scale like every value here (2026-10-15). It was 0.21 = 0.3 /
+      # scale_turn 1.40 for a day, on the assumption -- never confirmed -- that
+      # the 0.3 is what the gait receives after driver_manager's scale.
       # Same value as FollowPathRPP's rotate_to_heading_min_angular_vel; change
       # them together. 0 disables it.
-      in_place_wz_min: 0.21
+      in_place_wz_min: 0.3
       in_place_wz_deadband: 0.05
       in_place_vx_max: 0.1
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
@@ -353,12 +354,12 @@
       # if the commanded rate is the real one.
       rotate_to_heading_angular_vel: 0.65
       # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
-      # in_place_wz_min for the rotate-to-heading branch -- same value, same
-      # unconfirmed pre-/post-scale assumption; change them together. Lifts
+      # in_place_wz_min for the rotate-to-heading branch -- same value, pre-scale
+      # (0.21 for a day, see there); change them together. Lifts
       # the acceleration ramp's first cycle (0.16) and the last hundredths of
       # a radian of the stop cap, the two places a rotation dips under it.
       # 0 disables it.
-      rotate_to_heading_min_angular_vel: 0.21
+      rotate_to_heading_min_angular_vel: 0.3
       max_angular_accel: 3.2
       # No velocity smoother in this stack: the controller clamps linear
       # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
