@@ -204,6 +204,22 @@
       # off-map vertex as LETHAL, so a horizon longer than the window makes
       # every fast candidate "collide" at its far end and MPPI slows down for
       # no obstacle. model_dt must stay 1 / controller_frequency:
+      # Not upstream: the final rotation (2026-10-15). Inside
+      # goal_checker.xy_goal_tolerance of the path's end, MPPI stops
+      # optimising and turns in place to the goal heading, RPP's
+      # rotate-to-goal-heading with RPP's numbers: up to this rate
+      # (FollowPathRPP's rotate_to_heading_angular_vel), ramped at
+      # max_angular_accel, capped to stop on the heading, never under
+      # in_place_wz_min; vx ramps to 0. Left to the optimizer, GoalCritic
+      # (the exact point) and GoalAngleCritic (the yaw) pulled against each
+      # other once the position was accepted: a small vx kept the turn floor
+      # off, wz went out at ~0.1 rad/s in jerks, and on robot01 the progress
+      # checker aborted a goal the robot was standing on. The cost is the
+      # heading accuracy: the robot now enters the yaw_goal_tolerance window
+      # at up to 0.65 rad/s instead of tapering into it, and carries on
+      # through the stop (see yaw_goal_tolerance) -- lower this if the final
+      # heading overshoots. 0 disables it (the optimizer turns, as upstream).
+      final_rotation_wz: 0.65
       # equal turns on the warm-start shift, a longer controller period throws
       # out of initialize() and takes controller_server down.
       time_steps: 40
@@ -263,6 +279,9 @@
         threshold_to_consider: 0.15
       PreferForwardCritic:
         enabled: true
+      # Since final_rotation_wz (2026-10-15) the optimizer no longer runs
+      # inside that distance, so this critic scores nothing while
+      # final_rotation_wz is on; it is the turn again when that is set to 0.
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.5
