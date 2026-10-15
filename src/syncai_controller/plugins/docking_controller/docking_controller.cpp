@@ -199,6 +199,7 @@ void DockingController::setPlan(const nav_msgs::msg::Path & path)
   have_dock_pose_ = true;
   // New target, new decision: the latch belongs to the pose it was taken on.
   final_rotation_latched_ = false;
+  last_branch_ = Branch::None;
   // last_cmd_vel_ deliberately survives, RPP's rule: setPlan() is also the
   // preempt path (a dock goal re-sent with a corrected pose arrives here
   // mid-approach), and zeroing the acceleration-clamp baseline on a preempt
@@ -314,14 +315,47 @@ geometry_msgs::msg::TwistStamped DockingController::computeVelocityCommandsImpl(
     cmd_vel.twist = rotateToTarget(angle_to_target);
   } else {
     cmd_vel.twist = control_law_->calculateRegularVelocity(target, backward);
+  Branch branch;
   }
 
   clampAcceleration(cmd_vel.twist, instant_linear_stop);
 
+    branch = Branch::FinalRotation;
   publishPreview(pose, target, backward);
 
+    branch = Branch::InitialRotation;
   // Remember what we actually commanded: next cycle's clamp baseline.
   last_cmd_vel_ = cmd_vel.twist;
+    branch = Branch::ControlLaw;
+  }
+
+  if (branch != last_branch_) {
+    switch (branch) {
+      case Branch::FinalRotation:
+        RCLCPP_INFO(
+          logger_,
+          "[DockingController][%s] %.3f m from the dock (xy tolerance %.3f): rotating in place "
+          "to its yaw, %+.3f rad to go",
+          plugin_name_.c_str(), r, goal_dist_tol_, yaw_to_dock);
+        break;
+      case Branch::InitialRotation:
+        RCLCPP_INFO(
+          logger_,
+          "[DockingController][%s] %.3f m from the dock, %+.3f rad off the nose (> %.2f): "
+          "rotating in place toward it",
+          plugin_name_.c_str(), r, angle_to_target, initial_rotation_min_angle_);
+        break;
+      case Branch::ControlLaw:
+        RCLCPP_INFO(
+          logger_,
+          "[DockingController][%s] %.3f m from the dock, %+.3f rad off the nose: following the "
+          "control law%s",
+          plugin_name_.c_str(), r, angle_to_target, backward ? " backwards" : "");
+        break;
+      case Branch::None:
+        break;
+    }
+    last_branch_ = branch;
   return cmd_vel;
 }
 

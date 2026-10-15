@@ -391,6 +391,21 @@ otherwise move the target under a robot 20 cm from it. The INFO line at
 acceptance prints the pose in both frames — the one line that explains "it
 docked somewhere else" after a relocalize.
 
+**What the log shows of an approach** (2026-10-15, after a cancelled dock on
+robot01 left nothing between acceptance and the cancel): once a second,
+`Docking <t> s: robot (x, y, yaw) in '<odom>', <d> m and <yaw> rad from the
+dock; cmd v … w …`, and on arrival the achieved residuals. The robot pose is
+logged rather than the odom twist, because the raw twist carries the gait's
+±0.2–0.5 m/s sway: two consecutive poses say whether the robot moved, one
+twist sample does not. The plugin adds one line whenever it changes branch
+(initial rotation / control law / final rotation, with the distance and the
+angle that decided it). Reading them: no final-rotation line means the robot
+never got inside `dock_goal_checker`'s xy tolerance; a final-rotation line
+followed by a yaw error that stops shrinking while `cmd w` stays non-zero is
+the gait's in-place floor (`v_angular_min`), not the tolerance; lines
+alternating between initial rotation and control law are the robot hunting
+at `initial_rotation_min_angle`.
+
 ### The controller
 
 A port of Humble's `nav2_graceful_controller` (Park & Kuipers' smooth control

@@ -135,9 +135,10 @@ protected:
 
   /**
    * @brief One cycle's DockToPose feedback: distance / yaw to the dock pose,
-   * commanded speed, time since acceptance.
+   * commanded speed, time since acceptance. Returned as well, so the dock
+   * loop's once-a-second log line reports the same numbers.
    */
-  void publishDockFeedback(
+  std::shared_ptr<DockAction::Feedback> publishDockFeedback(
     const geometry_msgs::msg::PoseStamped & robot_pose,
     const geometry_msgs::msg::TwistStamped & cmd_vel);
 

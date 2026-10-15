@@ -627,10 +627,31 @@ void ControllerServer::dockControl()
       if (computeVelocityCycle(cycle)) {
         last_dock_robot_pose_ = cycle.pose;
         have_last_dock_robot_pose_ = true;
-        publishDockFeedback(cycle.pose, cycle.cmd_vel);
+        const auto feedback = publishDockFeedback(cycle.pose, cycle.cmd_vel);
         publishVelocity(cycle.cmd_vel);
+        // Once a second, the approach as it will be needed after the fact
+        // (2026-10-15): the robot01 dock at 14:26 that day was cancelled after
+        // 40 s with nothing logged between acceptance and the cancel, so how
+        // close it got, and whether it was still moving, was lost -- the
+        // feedback reaches only the BT node, and Point-LIO's lio_path keeps no
+        // history while nobody subscribes. The robot pose (odom, the frame
+        // the dock is tracked in) is logged rather than the odom twist: the
+        // raw twist carries the gait's +/-0.2-0.5 m/s sway, so one sample
+        // cannot tell 0.05 m/s from standing, while the pose difference
+        // between two lines can. Which branch the controller is in is the
+        // DockingController's own log line, on change.
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "Docking %.1f s: robot (%.3f, %.3f, yaw %+.3f) in '%s', %.3f m and %+.3f rad from the "
+          "dock; cmd v %+.3f w %+.3f",
+          (now() - dock_start_time_).seconds(), cycle.pose.pose.position.x,
+          cycle.pose.pose.position.y, tf2::getYaw(cycle.pose.pose.orientation),
+          cycle.pose.header.frame_id.c_str(), feedback->distance_to_dock, feedback->yaw_error,
+          cycle.cmd_vel.twist.linear.x, cycle.cmd_vel.twist.angular.z);
         if (isDockReached(cycle.pose)) {
-          RCLCPP_INFO(get_logger(), "Reached the dock pose!");
+          RCLCPP_INFO(
+            get_logger(), "Reached the dock pose: %.3f m and %+.3f rad from it after %.1f s",
+            feedback->distance_to_dock, feedback->yaw_error, (now() - dock_start_time_).seconds());
           break;
         }
       }
@@ -778,7 +799,7 @@ bool ControllerServer::isDockReached(const geometry_msgs::msg::PoseStamped & rob
     robot_pose.pose, end_pose_.pose, velocity);
 }
 
-void ControllerServer::publishDockFeedback(
+std::shared_ptr<ControllerServer::DockAction::Feedback> ControllerServer::publishDockFeedback(
   const geometry_msgs::msg::PoseStamped & robot_pose,
   const geometry_msgs::msg::TwistStamped & cmd_vel)
 {
@@ -790,6 +811,7 @@ void ControllerServer::publishDockFeedback(
   feedback->speed = static_cast<float>(std::fabs(cmd_vel.twist.linear.x));
   feedback->docking_time = now() - dock_start_time_;
   dock_action_server_->publish_feedback(feedback);
+  return feedback;
 }
 
 std::shared_ptr<ControllerServer::DockAction::Result> ControllerServer::makeDockResult(

@@ -204,6 +204,17 @@ protected:
   // rotation branch starts.
   double goal_dist_tol_{0.05};
 
+  // Which of computeVelocityCommandsImpl()'s three branches ran last, for the
+  // INFO line logged when it changes (2026-10-15). The server's once-a-second
+  // dock line has the pose and the command but cannot see the branch, and
+  // the branch is what tells "never got inside the xy window" from "inside it
+  // and not turning". A burst of these lines alternating between the initial
+  // rotation and the control law is a finding, not noise: the robot hunting
+  // at initial_rotation_min_angle. None after setPlan(), so every target
+  // logs its first branch; reset() leaves it alone, like the latch.
+  enum class Branch { None, InitialRotation, ControlLaw, FinalRotation };
+  Branch last_branch_{Branch::None};
+
   // Acceleration-clamp baseline: our own previous command, not the measured
   // odom twist, for the reasons RPP records (gait sway in the raw Point-LIO
   // twist). Zeroed in reset() and in the catch-all of computeVelocityCommands(),
