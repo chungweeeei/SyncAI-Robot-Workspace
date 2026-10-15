@@ -70,8 +70,8 @@ void usage()
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
     "  --no-shortcut            keep the raw A* cell chain\n"
     "  --no-stair-links         do not turn the --poses track's flights into stair links\n"
-    "  --dump-html <out.html>   self-contained three.js viewer of the surface map and the planned "
-    "paths\n"
+    "  --dump-html <out.html>   self-contained three.js viewer of the surface map, the planned "
+    "paths and (with --poses) the stair links\n"
     "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors\n");
 }
 
@@ -775,9 +775,13 @@ void replaceAll(std::string & s, const std::string & from, const std::string & t
 // walls, and every planned path as a tube with its start and goal. Points are
 // sorted by z so the "hide above z" slider is a draw range, which is what
 // makes a two-storey map readable floor by floor. ~5 MB for a site map.
+// `links` may be null (no --poses, or --no-stair-links). They are drawn on
+// their own because the stairwell itself is all rejected cells -- a flight
+// fails the step and slope rules by design -- so without them the only trace
+// of a stair in the viewer is a planned route that happens to take one.
 bool dumpHtml(
   const SurfaceMap & m, const BuildStats & stats, const std::vector<PlannedPath> & paths,
-  const std::string & title, const std::string & path)
+  const StairLinks * links, const std::string & title, const std::string & path)
 {
   constexpr int kRejectedStep = 3;
   std::vector<CellId> trav, rej;
@@ -854,6 +858,27 @@ bool dumpHtml(
     }
     data << "]}";
   }
+  data << "],\"links\":[";
+  if (links) {
+    for (size_t i = 0; i < links->links.size(); ++i) {
+      const StairLink & l = links->links[i];
+      double lz = 1e30;
+      for (const Waypoint & w : l.pts) {
+        lz = std::min(lz, w.z);
+      }
+      char label[160];
+      std::snprintf(
+        label, sizeof label, "stairs kf %zu - %zu: z %.2f - %.2f, %.1f m", l.kf_a, l.kf_b,
+        m.zTop(l.a), m.zTop(l.b), l.length);
+      data << (i ? "," : "") << "{\"label\":\"" << label << "\",\"zmin\":" << f(lz)
+           << ",\"pts\":[";
+      for (size_t k = 0; k < l.pts.size(); ++k) {
+        data << (k ? "," : "") << "[" << f(l.pts[k].x) << "," << f(l.pts[k].y) << ","
+             << f(l.pts[k].z) << "]";
+      }
+      data << "]}";
+    }
+  }
   data << "]}";
 
   std::string html = R"HTML(<!doctype html>
@@ -904,11 +929,13 @@ bool dumpHtml(
   </dl>
   <div class="ramp"></div>
   <div class="ramp-labels muted"><span>floor z {{ZMIN}} m</span><span>{{ZMAX}} m</span></div>
-  <div class="legend muted"><span><span class="sw" style="background:#595959"></span>rejected</span><span><span class="sw" style="background:#3fae5a"></span>start</span><span><span class="sw" style="background:#d1495b"></span>goal</span></div>
+  <div class="legend muted"><span><span class="sw" style="background:#595959"></span>rejected</span><span><span class="sw" style="background:#3fae5a"></span>start</span><span><span class="sw" style="background:#d1495b"></span>goal</span><span><span class="sw" style="background:#ff2bd6"></span>stair link</span></div>
   <label><input type="checkbox" id="rej" checked> rejected cells</label>
+  <label><input type="checkbox" id="lnk" checked> stair links ({{N_LINKS}})</label>
   <label><input type="checkbox" id="inf" checked> tint inferred (hole-filled) cells</label>
   <label><div class="row"><span>point size</span><span id="sizev">0.10</span></div><input type="range" id="size" min="0.05" max="0.40" step="0.01" value="0.10"></label>
   <label><div class="row"><span>hide ground above z</span><span id="zcutv"></span></div><input type="range" id="zcut" min="0" max="1000" value="1000"></label>
+  <div class="paths" id="links"></div>
   <div class="paths" id="paths"></div>
 </div>
 <script type="module">
@@ -946,9 +973,24 @@ D.paths.forEach((p, i) => {
   const tx = document.createElement('span'); tx.textContent = p.label + ' (' + p.pts.length + ' poses)';
   el.append(cb, sw, tx); document.getElementById('paths').appendChild(el); pathChecks.push(cb);
 });
+// Stair links: a thick magenta tube with a cube on each anchor, drawn above
+// the paths' tubes so a route that takes one does not hide it.
+const linkObjs = [];
+D.links.forEach(l => {
+  const grp = new THREE.Group();
+  const pts = l.pts.map(q => new THREE.Vector3(q[0], q[1], q[2] + 0.08));
+  if (pts.length > 1) { const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal'); grp.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(8, pts.length * 3), 0.12, 8, false), new THREE.MeshBasicMaterial({ color: 0xff2bd6, transparent: true, opacity: 0.85 }))); }
+  for (const q of [l.pts[0], l.pts[l.pts.length - 1]]) { const mm = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), new THREE.MeshBasicMaterial({ color: 0xff2bd6 })); mm.position.set(q[0], q[1], q[2] + 0.2); grp.add(mm); }
+  scene.add(grp); linkObjs.push(grp);
+  const el = document.createElement('div');
+  const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = '#ff2bd6';
+  const tx = document.createElement('span'); tx.textContent = l.label;
+  el.append(sw, tx); document.getElementById('links').appendChild(el);
+});
 function upperBound(pos, z) { let lo = 0, hi = pos.length / 3; while (lo < hi) { const mid = (lo + hi) >> 1; if (pos[3 * mid + 2] <= z) lo = mid + 1; else hi = mid; } return lo; }
+const lnk = document.getElementById('lnk'); lnk.onchange = applyZ;
 const zcut = document.getElementById('zcut'), zcutv = document.getElementById('zcutv');
-function applyZ() { const z = D.zmin + zspan * zcut.value / 1000 + 0.01; zcutv.textContent = z.toFixed(2) + ' m'; travPts.geometry.setDrawRange(0, upperBound(trav, z)); rejPts.geometry.setDrawRange(0, upperBound(rej, z)); pathObjs.forEach((g, i) => { g.visible = pathChecks[i].checked && D.paths[i].zmin <= z; }); }
+function applyZ() { const z = D.zmin + zspan * zcut.value / 1000 + 0.01; zcutv.textContent = z.toFixed(2) + ' m'; travPts.geometry.setDrawRange(0, upperBound(trav, z)); rejPts.geometry.setDrawRange(0, upperBound(rej, z)); pathObjs.forEach((g, i) => { g.visible = pathChecks[i].checked && D.paths[i].zmin <= z; }); linkObjs.forEach((g, i) => { g.visible = lnk.checked && D.links[i].zmin <= z; }); }
 zcut.oninput = applyZ; applyZ();
 document.getElementById('rej').onchange = e => { rejPts.visible = e.target.checked; };
 document.getElementById('inf').onchange = e => { travPts.geometry.setAttribute('color', new THREE.BufferAttribute(colorsFor(trav, flags, e.target.checked), 3)); };
@@ -970,6 +1012,7 @@ renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, came
   replaceAll(html, "{{N_INF}}", std::to_string(inferred));
   replaceAll(html, "{{N_REJ}}", std::to_string(rej.size()));
   replaceAll(html, "{{N_REJ_ALL}}", std::to_string(rejected_all));
+  replaceAll(html, "{{N_LINKS}}", std::to_string(links ? links->links.size() : 0));
   replaceAll(html, "{{N_COMP}}", std::to_string(stats.components));
   replaceAll(html, "{{ZMIN}}", f(tz_min));
   replaceAll(html, "{{ZMAX}}", f(tz_max));
@@ -1253,7 +1296,7 @@ int main(int argc, char ** argv)
   }
   if (!html_path.empty()) {
     const std::string title = scene.empty() ? bt_path.substr(bt_path.find_last_of('/') + 1) : scene;
-    if (!dumpHtml(*map, build_stats, planned, title + " surface map", html_path)) {
+    if (!dumpHtml(*map, build_stats, planned, links.get(), title + " surface map", html_path)) {
       std::fprintf(stderr, "cannot write '%s'\n", html_path.c_str());
       return 1;
     }
