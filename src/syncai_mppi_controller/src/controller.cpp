@@ -50,6 +50,8 @@ void MPPIController::initialize(
   // Not upstream; see clampAcceleration(). <= 0 disables either clamp.
   getParam(max_linear_accel_, "max_linear_accel", 1.0);
   getParam(max_angular_accel_, "max_angular_accel", 3.2);
+  // Not upstream; see applyWalkFloor(). walk_vx_min <= 0 disables it.
+  getParam(walk_vx_min_, "walk_vx_min", 0.0);
   // Not upstream; see applyTurnFloor(). in_place_wz_min <= 0 disables it.
   getParam(in_place_wz_min_, "in_place_wz_min", 0.0);
   getParam(in_place_wz_deadband_, "in_place_wz_deadband", 0.05);
@@ -96,6 +98,7 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
   try {
     geometry_msgs::msg::TwistStamped cmd =
       computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
+    applyWalkFloor(cmd.twist);
     clampAcceleration(cmd.twist);
     applyTurnFloor(cmd.twist);
     last_cmd_vel_ = cmd.twist;
@@ -134,6 +137,36 @@ void MPPIController::clampAcceleration(geometry_msgs::msg::Twist & cmd) const
     const double dw = max_angular_accel_ * control_duration_;
     cmd.angular.z =
       std::clamp(cmd.angular.z, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+  }
+}
+
+void MPPIController::applyWalkFloor(geometry_msgs::msg::Twist & cmd) const
+{
+  // The gait controller under RL does not walk below a floor either: on
+  // robot01 (2026-10-15) a 0.13 m/s command left the robot standing. MPPI
+  // slows down near the goal and around blockers, so it lands in that band
+  // routinely -- the goal_checker stalls 0.23-0.29 m short with cmd_vel
+  // non-zero and odom zero were this. Same shape as applyTurnFloor(): |vx|
+  // under in_place_vx_max is MPPI asking to stand (or to turn in place) and
+  // is left alone; between it and walk_vx_min it is raised to the floor,
+  // sign kept.
+  //
+  // Applied to the optimizer's output BEFORE the acceleration clamp, unlike
+  // the turn floor, because the decision has to be made on what MPPI wants,
+  // not on the ramp: after the clamp, a stop from the floor (0.30 -> 0.25
+  // in one cycle) would land in the band and be raised straight back to
+  // 0.30, so the robot could never stop. Before it, a stop is an output under
+  // in_place_vx_max and ramps down untouched. The cost is the ramp out of
+  // rest: the clamp still walks the command up from zero at
+  // max_linear_accel x dt, so the first ~0.3 s of every start are under the
+  // floor -- RPP's ramp has the same dead time, and RPP is what has driven
+  // the robot.
+  if (walk_vx_min_ <= 0.0) {
+    return;
+  }
+  const double vx = std::fabs(cmd.linear.x);
+  if (vx >= in_place_vx_max_ && vx < walk_vx_min_) {
+    cmd.linear.x = std::copysign(walk_vx_min_, cmd.linear.x);
   }
 }
 

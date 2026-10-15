@@ -106,10 +106,12 @@
       # on robot01 the robot stopped dead 0.23 m and 0.29 m short (cmd_vel
       # still non-zero, odom zero) until the progress checker aborted after
       # 30 s. 0.3 covered both stalls. Lowered back 0.3 -> 0.15 the same day:
-      # 0.3 ended an ordinary MOVE too far from its goal. Nothing has fixed
-      # the stalls in between, so they can come back -- a robot standing
+      # 0.3 ended an ordinary MOVE too far from its goal. The stalls were
+      # MPPI's approach slowing under the gait floor; FollowPath's walk_vx_min
+      # (2026-10-15) holds the command at the floor until MPPI asks to stop,
+      # which should end them -- unverified on the robot. A robot standing
       # 0.15-0.3 m short with cmd_vel non-zero and odom zero, until the
-      # progress checker aborts, is this value. It is also MPPI
+      # progress checker aborts, is still this value. It is also MPPI
       # GoalAngleCritic's threshold_to_consider below: change the two together.
       xy_goal_tolerance: 0.15
       # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
@@ -166,6 +168,19 @@
       # same values as RPP's -- there is no velocity smoother.
       max_linear_accel: 1.0
       max_angular_accel: 3.2
+      # Not upstream: the walking floor (2026-10-15). RL does not walk below
+      # ~0.3 m/s; on robot01 MPPI commanded 0.13 m/s and the robot stood. A
+      # command with |vx| between in_place_vx_max and this is raised to it,
+      # keeping its sign; under in_place_vx_max it is a stop or an in-place
+      # turn and is left alone. Applied before the acceleration clamp, so a
+      # stop still ramps down. 0.30 is FollowPathRPP's
+      # min_approach_linear_velocity / regulated_linear_scaling_min_speed --
+      # the floor RPP has driven the robot with, pre-scale like every value
+      # here; change them together. The cost: MPPI's slow approaches (goal,
+      # blockers) now run at 0.30 instead, so the robot carries more speed
+      # into the goal window and the next cycle re-plans from there. 0
+      # disables it.
+      walk_vx_min: 0.30
       # Not upstream: the in-place turn floor (2026-10-14). RL does not turn
       # in place below ~0.3 rad/s at the gait; MPPI tapers its turn into the
       # goal yaw and held -0.115 rad/s with odom at zero until the progress
@@ -215,11 +230,10 @@
         time_step: 3
       # No VelocityDeadbandCritic, although the gait controller has a floor
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
-      # zero*, so it would also fight stopping and turning in place. If MPPI's
-      # slow approach commands turn out not to move the robot, that is the
-      # first thing to check on the robot, not something to guess here. The
-      # turn side has its own fix, in_place_wz_min above, which leaves zero
-      # alone.
+      # zero*, so it would also fight stopping and turning in place. MPPI's
+      # slow commands did turn out not to move the robot (0.13 m/s, robot01,
+      # 2026-10-15); the fix is walk_vx_min / in_place_wz_min above, which
+      # leave zero alone.
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
                 "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
                 "PreferForwardCritic"]

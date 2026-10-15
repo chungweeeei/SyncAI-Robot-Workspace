@@ -120,6 +120,12 @@ protected:
   void clampAcceleration(geometry_msgs::msg::Twist & cmd) const;
 
   /**
+    * @brief Raise a slow walk under the gait's walking floor to the floor
+    * @param cmd Optimizer output to adjust in place, before the clamp
+    */
+  void applyWalkFloor(geometry_msgs::msg::Twist & cmd) const;
+
+  /**
     * @brief Raise an in-place turn under the gait's turn floor to the floor
     * @param cmd Command to adjust in place
     */
@@ -150,6 +156,7 @@ protected:
   double reset_period_;
   double max_linear_accel_{1.0};
   double max_angular_accel_{3.2};
+  double walk_vx_min_{0.0};
   double in_place_wz_min_{0.0};
   double in_place_wz_deadband_{0.05};
   double in_place_vx_max_{0.1};
