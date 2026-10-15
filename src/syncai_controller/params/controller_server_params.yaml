@@ -52,6 +52,10 @@
     # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
     # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
+    # The detour above is the 2D tree's. This branch's move.xml (Octo3D +
+    # FollowPathRPP) has no IsPathValid and plans once per goal, so there is
+    # no detour at all: RPP stops at a blocker, and those retries (~16 s) are
+    # the whole wait before the goal fails.
     failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
@@ -113,7 +117,10 @@
     # Undocking (2026-10) are two instances of the pose-to-pose docking
     # controller that the dock_to_pose action drives, differing only in
     # direction (see their blocks). Only the controller a goal names runs;
-    # the others cost memory, not CPU.
+    # the others cost memory, not CPU. On feature/octomap-planner-3d move.xml
+    # names FollowPathRPP (with planner Octo3D): RPP is the one of the two path
+    # followers that matches a path with heights in 3D and has the stair mode
+    # below; MPPI matches in 2D and has neither.
     controller_plugins: ["FollowPath", "FollowPathRPP", "Docking", "Undocking"]
 
     progress_checker:

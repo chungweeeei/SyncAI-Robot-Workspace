@@ -162,6 +162,14 @@
   sees; RPP stops in front of it, and the FollowPath retries below are the
   whole wait. Put IsPathValid back with the 2D ids.
 
+  What that leaves of the 2D paragraphs above (merged from dev 2026-10-15):
+  the new-goal clear of the global costmap stays, and is a no-op for Octo3D,
+  which uses that costmap for its frame id only; it is kept so that putting
+  the 2D ids back is the whole switch. blocked_time and everything said about
+  IsPathValid describe the 2D tree. The four FollowPath retries stay too, for
+  a different reason than the one given there: with RPP and no replan, the
+  retries are the only wait for a blocker in front of the robot (~16 s).
+
   Costmap clear services live on the costmap nodes owned by the planner
   (global_costmap) and controller (local_costmap). Relative service names
   resolve under the robot namespace because every node in the stack shares it.

@@ -326,8 +326,10 @@ void PoseNavigator<ActionT>::onLoop()
   feedback_msg->navigation_time = this->clock_->now() - start_time_;
 
   if constexpr (Traits::kReportsFailure) {
-    // Plans beyond the first = detours, since move.xml plans only when the
-    // path is blocked or the goal changed.
+    // Plans beyond the first = detours, since the 2D move.xml plans only when
+    // the path is blocked or the goal changed. The Octo3D tree of
+    // feature/octomap-planner-3d plans once per goal, and a goal change resets
+    // the count, so there this reads 0 throughout.
     int plans = 0;
     blackboard->get<int>(keys::kNumberPlans, plans);
     feedback_msg->number_of_replans = static_cast<uint16_t>(std::max(plans - 1, 0));
@@ -398,7 +400,8 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
 
   // Drop the previous goal's path. move.xml keeps {path} for as long as
-  // IsPathValid accepts it, and nothing else clears it between goals
+  // IsPathValid accepts it (the 2D tree) or for the whole goal (the Octo3D
+  // tree, which plans once per goal), and nothing else clears it between goals
   // (haltAllActions() only halts nodes still RUNNING, so ComputePathToPose's
   // halt() rarely runs). A stale path that is still free would otherwise be
   // followed from wherever it starts when the same goal is sent again. On a

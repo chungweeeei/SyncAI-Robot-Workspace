@@ -15,22 +15,26 @@
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
     # This is a warning threshold only — nothing throttles or aborts on it.
     # 20 Hz (50 ms) is a generous ceiling: the BT's RateController only asks
-    # for a plan at most once a second (only when is_path_valid says the
-    # current one is blocked), so the warning is a canary for a pathological
-    # Smac search (a huge unknown region, a goal buried in lethal cost), not a
-    # cadence anyone is trying to hit. A Smac plan on a 0.05 m hall map
-    # normally lands well under it.
+    # for a plan at most once a second (in the 2D tree only when is_path_valid
+    # says the current one is blocked; in this branch's Octo3D tree once per
+    # goal), so the warning is a canary for a pathological search (a huge
+    # unknown region, a goal buried in lethal cost), not a cadence anyone is
+    # trying to hit. A Smac plan on a 0.05 m hall map, and an Octo3D plan
+    # (~1 ms for 25 m, ~30 ms 1F -> 2F on dp1f_1012), land well under it.
     expected_planner_frequency: 20.0
 
     # Re-send the last plan on `plan` this often (Hz), restamped; 0 = publish
-    # only when a plan is made. move.xml plans only when the path is blocked,
-    # so without this a viewer that subscribes mid-drive never sees the route.
+    # only when a plan is made. move.xml plans once per goal (this branch's
+    # Octo3D tree) or only when the path is blocked (the 2D tree), so without
+    # this a viewer that subscribes mid-drive never sees the route.
     plan_republish_rate: 1.0
 
-    # is_path_valid (the BT's once-a-second check of the path still ahead)
-    # tests each pose twice: the centre cell against INSCRIBED, which is
-    # Smac's own expansion test (unknown, off-map, the keepout band, anything
-    # within the inscribed radius of the centre, including inside the
+    # is_path_valid (the 2D tree's once-a-second check of the path still
+    # ahead; this branch's Octo3D tree does not call it, because the check is
+    # 2D and reads a path upstairs as blocked) tests each pose twice: the
+    # centre cell against INSCRIBED, which is Smac's own expansion test
+    # (unknown, off-map, the keepout band, anything within the inscribed
+    # radius of the centre, including inside the
     # rectangle), and, with footprint_check, the padded footprint's perimeter
     # against LETHAL -- the test RPP applies on the local costmap before it
     # drives. The two are not nested: INSCRIBED at the centre means lethal
@@ -53,22 +57,26 @@
       footprint_check: true
       heading_margin: 0.35
 
-    # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
+    # The id stays "GridBased" rather than becoming "Smac2D": the 2D move.xml
     # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
     # rename here would silently send every task-runner goal to an unknown
     # planner (getPlan() logs an error and returns an empty path). Swapping the
     # plugin under the existing id is what makes the change take effect without
     # touching the behavior tree.
     #
-    # Two ids on purpose (2026-10). GridBased is what move.xml asks for and
-    # stays Smac2D on the 2D costmap. Octo3D is the OctoMap surface planner
-    # for the quadruped (OctomapPlanner3D, below), reachable with
-    # planner_id "Octo3D" on compute_path_to_pose -- `ros2 action send_goal`,
-    # or a one-line edit of move.xml -- while it is a prototype. Loading it
-    # costs a background build of a few seconds at startup and ~30 MB; a map
-    # without octomap.bt logs one error and leaves GridBased untouched. With
-    # two ids loaded an EMPTY planner_id no longer falls back to the only
-    # plugin (getPlan() needs the id); the BT always names one.
+    # Two ids on purpose (2026-10). GridBased stays Smac2D on the 2D costmap
+    # and is what move.xml asks for on dev. Octo3D is the OctoMap surface
+    # planner for the quadruped (OctomapPlanner3D, below), and on
+    # feature/octomap-planner-3d move.xml asks for it (with FollowPathRPP, the
+    # controller that follows a path with heights and climbs stairs), so every
+    # task-runner goal plans on the octree there; GridBased is then reached
+    # only with planner_id "GridBased" on compute_path_to_pose, until the
+    # tree's 2D ids go back. Loading Octo3D costs a background build of a few
+    # seconds at startup and ~30 MB. A map without octomap.bt logs one error
+    # and leaves GridBased untouched -- but with move.xml on Octo3D, every
+    # navigation goal on that map then fails (PLAN_FAILED). With two ids
+    # loaded an EMPTY planner_id no longer falls back to the only plugin
+    # (getPlan() needs the id); the BT always names one.
     planner_plugins: ["GridBased", "Octo3D"]
     GridBased:
       plugin: "syncai_global_planner/SmacPlanner2D"
@@ -126,8 +134,8 @@
     # NavfnPlanner ("syncai_global_planner/NavfnPlanner", params: tolerance /
     #   use_astar / allow_unknown / use_final_approach_orientation) and
     #   StraightLinePlanner are still built and registered. To fall back, set
-    #   plugin: above under GridBased -- a third id would be as invisible to
-    #   move.xml as Octo3D is.
+    #   plugin: above under GridBased -- a third id is invisible to move.xml
+    #   until the tree names it.
 
     # OctomapPlanner3D: A* over the floor surfaces of map/<name>/octomap.bt
     # (the tree clean_map writes beside map.pcd), for the quadruped. The tree
