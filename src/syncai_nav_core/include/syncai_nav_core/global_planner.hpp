@@ -43,6 +43,19 @@ public:
   virtual nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) = 0;
+
+  /**
+   * @brief Whether createPlan() reads the costmap's cells.
+   *
+   * The planner server waits, with no timeout, for the costmap to be current
+   * before calling a planner that does, and skips the wait for one that does
+   * not. A planner that takes only the frame id from the costmap must say so:
+   * on a map with no gridmap.yaml, map_server dies, the static layer never
+   * gets a map, the costmap never turns current, and every goal hung in that
+   * wait before reaching the planner. A default body rather than pure
+   * virtual, for the same reason as Controller::reset().
+   */
+  virtual bool usesCostmap() const { return true; }
 };
 
 }  // namespace syncai_nav_core

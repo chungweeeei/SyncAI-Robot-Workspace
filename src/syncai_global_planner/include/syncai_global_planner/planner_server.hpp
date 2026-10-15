@@ -98,6 +98,13 @@ protected:
   void waitForCostmap();
 
   /**
+   * @brief Whether the planner getPlan() would pick for this id reads the
+   * costmap, i.e. whether a goal for it has to waitForCostmap() first.
+   * False for an id getPlan() rejects, which then fails at once.
+   */
+  bool plannerUsesCostmap(const std::string & planner_id) const;
+
+  /**
    * @brief Check if the action server has a preemption request and replaces
    * the goal with the new preemption goal.
    * @param goal Goal to overwrite (by reference, so the caller sees the

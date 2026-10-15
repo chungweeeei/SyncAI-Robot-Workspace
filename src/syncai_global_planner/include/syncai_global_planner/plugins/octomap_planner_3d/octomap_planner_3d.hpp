@@ -68,6 +68,11 @@ public:
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
 
+  // The 2D costmap gives this planner its frame id and nothing else, so a
+  // goal must not wait for it: a 3D-only map has no gridmap.yaml, and its
+  // global costmap never turns current.
+  bool usesCostmap() const override { return false; }
+
 protected:
   // The background thread: load the .bt, build the surface map, swap it in.
   void buildMap();
