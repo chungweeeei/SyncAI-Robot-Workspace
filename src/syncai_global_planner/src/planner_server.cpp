@@ -256,6 +256,16 @@ void PlannerServer::waitForCostmap()
   }
 }
 
+bool PlannerServer::plannerUsesCostmap(const std::string & planner_id) const
+{
+  // Resolved exactly as getPlan() resolves it.
+  auto it = planners_.find(planner_id);
+  if (it == planners_.end() && planners_.size() == 1 && planner_id.empty()) {
+    it = planners_.begin();
+  }
+  return it != planners_.end() && it->second->usesCostmap();
+}
+
 bool PlannerServer::isCancelRequested()
 {
   if (action_server_pose_->is_cancel_requested()) {
@@ -540,9 +550,17 @@ void PlannerServer::computePlan()
       return;
     }
 
-    waitForCostmap();
-
     getPreemptedGoalIfRequested(goal);
+
+    // Only a planner that reads the cells waits for them (upstream waits for
+    // every one, before taking a preempt). Octo3D does not: on a 3D-only map
+    // with no gridmap.yaml this wait never ends, and every goal hung here
+    // without reaching the planner. A goal preempting during the wait is
+    // taken after it, as upstream does.
+    if (plannerUsesCostmap(goal->planner_id)) {
+      waitForCostmap();
+      getPreemptedGoalIfRequested(goal);
+    }
 
     // Use start pose if provided otherwise use current robot pose
     geometry_msgs::msg::PoseStamped start;
@@ -615,10 +633,15 @@ void PlannerServer::computePlanThroughPoses()
       return;
     }
 
-    waitForCostmap();
-
+    // Same rule as computePlan(): only a planner that reads the cells waits.
     if (action_server_poses_->is_preempt_requested()) {
       goal = action_server_poses_->accept_pending_goal();
+    }
+    if (plannerUsesCostmap(goal->planner_id)) {
+      waitForCostmap();
+      if (action_server_poses_->is_preempt_requested()) {
+        goal = action_server_poses_->accept_pending_goal();
+      }
     }
 
     if (goal->goals.empty()) {

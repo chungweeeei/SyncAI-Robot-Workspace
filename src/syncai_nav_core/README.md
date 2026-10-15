@@ -21,7 +21,7 @@ depend on, so neither has to depend on the other.
 
 | Header | Class | Implemented by |
 |---|---|---|
-| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (the one the shipped params select) |
+| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (id `GridBased`), `OctomapPlanner3D` (id `Octo3D`) |
 | `controller.hpp` | `Controller` | `syncai_controller`: `RegulatedPurePursuitController` |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker`, `StoppedGoalChecker`, `PositionGoalChecker` |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker`, `PoseProgressChecker` |
@@ -29,7 +29,12 @@ depend on, so neither has to depend on the other.
 
 **`GlobalPlanner`** — `initialize(node, name, tf, costmap_ros)` then
 `createPlan(start, goal) → nav_msgs::msg::Path`. An empty path means failure;
-there is no separate error channel.
+there is no separate error channel. `usesCostmap()` (not in nav2_core,
+2026-10-15) tells the planner server whether to wait for the costmap to be
+current before `createPlan()`; it defaults to `true`, and a planner that takes
+only the frame id from the costmap (`OctomapPlanner3D`) returns `false`, so a
+map with no `gridmap.yaml` — whose costmap never turns current — does not hang
+its goals in that wait.
 
 **`Controller`** — `initialize(node, name, tf, costmap_ros)`, `setPlan(path)`,
 `reset()`, `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`,

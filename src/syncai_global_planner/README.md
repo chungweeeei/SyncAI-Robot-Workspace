@@ -85,8 +85,10 @@ executor as well.
 
 ```
 server inactive / cancel requested?   → bail
-waitForCostmap()                      ← blocks at 100 Hz until isCurrent()
 accept a preempting goal if pending
+planner reads the costmap?            (GlobalPlanner::usesCostmap(); Octo3D does not)
+  waitForCostmap()                    ← blocks at 100 Hz until isCurrent(), no timeout
+  accept a preempting goal if pending
 start = goal.use_start ? goal.start : costmap.getRobotPose()
 transform start and goal into the costmap global frame
 path = getPlan(start, goal, goal.planner_id)
@@ -281,7 +283,15 @@ unknown; hit floor-band voxels kept occupied). It is loaded beside
 heights and climbs stairs — `syncai_controller/README.md`), so every
 navigation goal plans here; `GridBased` is then reached only with
 `planner_id: GridBased` on `compute_path_to_pose` (see Running), until the
-tree's 2D ids go back. The 2D costmap is used for its frame id only.
+tree's 2D ids go back. The 2D costmap is used for its frame id only, and
+since 2026-10-15 the server does not wait for it to be current before an
+`Octo3D` plan (`usesCostmap()` is `false`): a 3D-only map has no
+`gridmap.yaml`, so `map_server` and the `keepout` pane die at boot, the
+static layer never gets a map, and every goal used to hang in
+`waitForCostmap()` without reaching this planner — no log line, until the BT
+cancelled it. The global costmap still warns at 1 Hz on such a map (no map,
+robot out of bounds of its 5 × 5 m default); that is noise for `Octo3D`, and
+a `planner_id: GridBased` goal there still hangs the server.
 
 **Why a surface map and not a free-space search.** The first attempt (the
 device workspace's `octo_planner_3d`) ran a 26-neighbour A* over the free
