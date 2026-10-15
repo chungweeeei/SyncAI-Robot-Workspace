@@ -272,7 +272,8 @@ public:
 
   // `reset_odometry`: zero Point-LIO (pointlio/reset) and carry the map pose
   // across the jump, then wait for the timer to confirm it -- optionally
-  // falling back to auto_localize's search. The robot must be standing still.
+  // falling back to auto_localize's search, or (skip_seed, the kidnap case)
+  // going straight to it on new-run scans. The robot must be standing still.
   // Same callback group as the services; ResetOdometry.srv is the contract.
   void resetOdomCB(
     const std::shared_ptr<syncai_common::srv::ResetOdometry::Request> request,

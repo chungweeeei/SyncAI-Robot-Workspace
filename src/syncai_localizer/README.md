@@ -88,7 +88,7 @@ silence.
 | TF `map → local_frame` | `<robot_id>/pointlio_odom` | Rebroadcast from a 10 ms timer on every tick, re-solved at most `update_hz` and only when the motion gate says so. `local_frame` is **adopted from the first odom message**; the YAML value is a placeholder. |
 | `map_cloud` | `PointCloud2`, depth 1, TRANSIENT_LOCAL | The refine-resolution map, published once per `loadMap` (construction, `relocalize`, the `initialpose` fallback). For rviz; set the display's durability to Transient Local. |
 | `auto_localize` | `syncai_common/srv/AutoLocalize` | Kidnap recovery, no hint. **Blocks** until a pose is found *and* the timer has registered against it, or fails with localization unchanged. See below. |
-| `reset_odometry` | `syncai_common/srv/ResetOdometry` | Zero the odometry, keep the map pose: calls `pointlio/reset` and re-seeds the new run. **Blocks**, robot **stationary**. See below. |
+| `reset_odometry` | `syncai_common/srv/ResetOdometry` | Zero the odometry, keep the map pose: calls `pointlio/reset` and re-seeds the new run — or, with `skip_seed`, runs `auto_localize`'s search on it (the backend's `POST /api/v1/localization/auto`). **Blocks**, robot **stationary**. See below. |
 | `relocalize_check` | `syncai_common/srv/IsValid` | `code: 1` always answers `valid: true` (liveness); anything else answers whether the first registration after the last guess converged. **The stack's only localization-quality signal.** |
 
 Nothing is broadcast until the first cloud/odom pair has arrived; with no map
@@ -164,8 +164,11 @@ Limits: only maps saved with `save_patches` have a `poses.txt`; a robot far
 (≫ `candidate_spacing`) from the mapping trajectory may not be found; and if
 Point-LIO itself has diverged (lifted, shaken, or starved — see below), this
 service cannot help, because its scan window is posed by that odometry. Use
-`reset_odometry` with `global_fallback: true`, which ends in this same search
-on clean scans. The acceptance
+`reset_odometry` with `skip_seed: true`, which runs this same search on the
+scans of a freshly reset Point-LIO — what the backend's
+`POST /api/v1/localization/auto` calls since 2026-10-15, instead of this
+service, because it cannot tell a kidnap that diverged the LIO from one that
+did not. The acceptance
 values (`min_inlier_ratio`, `ambiguity_ratio`) are first guesses, not
 measured; tune them on a replay.
 
@@ -208,8 +211,22 @@ parked, 4 of 10 boots that week — and nothing above it recovers on its own:
 5. **`global_fallback`**: if that times out, `auto_localize`'s search on the
    new-run scans, and another wait.
 
+**`skip_seed`** (2026-10-15) is the kidnap variant: no seed is tried, so it
+needs neither a hint nor a trusted registration (right after boot there is
+none, and after a carry the last one is wrong by definition — trying it first
+cost `converge_timeout_sec` and risked converging on a look-alike spot).
+Step 4 still writes the offset from the map pose the TF showed before the
+reset, purely to keep `map → body` continuous, but keeps the timer paused;
+the call then waits for a full `auto_loc.accum_scans` window of new-run scans
+(within `wait_lio_timeout_sec`; fewer is a warning, not a failure), runs the
+search, and only then releases the timer onto the winner. Up to 2 + 10 + 10 +
+5 = 27 s by default. The response carries the search's `z` / `fitness` /
+`inlier_ratio` / `candidates` whenever it found a pose, with `method:
+global` — the fields the backend's `POST /api/v1/localization/auto` returns.
+
 On a failure after step 2 the reset is **not** undone (the old odometry was
-the problem) and the offset stays at the seed, so the TF stays continuous;
+the problem) and the offset stays at the seed (with `skip_seed`, the pre-reset
+pose), so the TF stays continuous;
 retry with a hint, or relocalize. `odom → base_link` jumps back to the origin
 once — the local costmap's marks shift with it — which is one more reason the
 robot has to be stopped first. **The robot must be standing still** for the
@@ -345,6 +362,8 @@ ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry "{}
 # ... or from a hint, with the global search as the net (up to ~32 s)
 ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry \
   "{use_hint: true, x: 1.0, y: 2.0, yaw: 0.0, global_fallback: true}"
+# ... or kidnapped as well: no seed, the global search on the new run (up to ~27 s)
+ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry "{skip_seed: true}"
 ```
 
 Checking it:
