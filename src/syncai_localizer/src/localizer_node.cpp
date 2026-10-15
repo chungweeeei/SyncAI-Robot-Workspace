@@ -921,8 +921,23 @@ void LocalizerNode::resetOdomCB(
 
   // ---- 1. The seed: x / y / yaw (map) and z. Roll / pitch come later, from
   // the new run's own gravity alignment. ----
+  //
+  // skip_seed (the kidnap case) tries no seed at all: the last trusted
+  // registration is where the robot was before it was carried, and right
+  // after boot there is none. The map pose the TF shows right now is still
+  // written into the new run's offset in step 4, but only so map -> body
+  // stays continuous while the search runs -- it is never handed to the timer.
+  const bool skip_seed = request->skip_seed;
   double seed_x = 0.0, seed_y = 0.0, seed_yaw = 0.0, seed_z = 0.0;
-  {
+  if (skip_seed) {
+    M3D r;
+    V3D t;
+    currentMapPose(r, t);
+    seed_x = t.x();
+    seed_y = t.y();
+    seed_z = t.z();
+    seed_yaw = std::atan2(r(1, 0), r(0, 0));
+  } else {
     std::lock_guard<std::mutex> lock(m_state.service_mutex);
     if (m_state.has_good) seed_z = m_state.good_map_body_t.z();
     if (request->use_hint) {
@@ -938,15 +953,22 @@ void LocalizerNode::resetOdomCB(
     } else {
       fail(
         "no trusted registration to seed from since this node started; nothing was reset -- "
-        "call again with use_hint and the robot's pose on the map");
+        "call again with use_hint and the robot's pose on the map, or with skip_seed");
       return;
     }
   }
-  RCLCPP_WARN(
-    this->get_logger(),
-    "reset_odometry: seed from %s x=%.3f y=%.3f yaw=%.3f z=%.3f; resetting Point-LIO (the "
-    "robot must be standing still)",
-    response->method.c_str(), seed_x, seed_y, seed_yaw, seed_z);
+  if (skip_seed) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "reset_odometry: no seed (skip_seed), global search after the reset; resetting Point-LIO "
+      "(the robot must be standing still)");
+  } else {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "reset_odometry: seed from %s x=%.3f y=%.3f yaw=%.3f z=%.3f; resetting Point-LIO (the "
+      "robot must be standing still)",
+      response->method.c_str(), seed_x, seed_y, seed_yaw, seed_z);
+  }
 
   // ---- 2. Pause, then reset the front end. ----
   //
@@ -1029,8 +1051,11 @@ void LocalizerNode::resetOdomCB(
       "relocalize or call again");
     return;
   }
-
   // ---- 4. Seed the new run's offset and let the timer refine it. ----
+  //
+  // With skip_seed the "seed" is the pre-reset map pose and the timer is not
+  // released: the offset is written only so map -> body stays continuous from
+  // the first new odometry on, while the search below runs.
   //
   // applyPlanarGuess's construction: keep the new odometry's gravity tilt
   // (pointlio_odom is gravity-aligned from the IMU init that just ran) and
@@ -1049,55 +1074,115 @@ void LocalizerNode::resetOdomCB(
     m_state.last_offset_t = guess_t - m_state.last_offset_r * new_t;
     guess.block<3, 3>(0, 0) = guess_r.cast<float>();
     guess.block<3, 1>(0, 3) = guess_t.cast<float>();
-    report(guess_r, guess_t);
-  }
-  // The guess goes in BEFORE the timer is released, so its first round is a
-  // service round (no motion gate, no blend, settle window) rather than one
-  // that measures the jump to the new origin as motion.
-  {
-    std::lock_guard<std::mutex> lock(m_state.service_mutex);
-    m_state.initial_guess = guess;
-    m_state.service_received = true;
-    m_state.localize_success = false;
-  }
-  m_state.skip_speed_check.store(true);
-  m_state.lio_resetting.store(false);
-  RCLCPP_INFO(
-    this->get_logger(), "reset_odometry: new odometry after %.2f s; seeded, waiting for the timer",
-    std::chrono::duration<double>(Clock::now() - t_start).count());
-
-  Convergence result = handOverAndAwait(guess, m_config.converge_timeout_sec);
-  std::string why;
-  if (result == Convergence::kSuperseded) {
-    why = "another guess replaced the seed before the timer converged";
-  } else if (result == Convergence::kTimedOut) {
-    why = "the timer did not converge on the " + response->method + " seed within " +
-          std::to_string(m_config.converge_timeout_sec) + " s (reset_odom.converge_timeout_sec)";
+    if (!skip_seed) report(guess_r, guess_t);
   }
 
-  // ---- 5. Optional fallback: the hint-free search, on new-run scans only.
-  // By now recent_scans has refilled (10 Hz for converge_timeout_sec).
-  if (result == Convergence::kTimedOut && request->global_fallback) {
-    RCLCPP_WARN(
-      this->get_logger(), "reset_odometry: %s; falling back to the global search", why.c_str());
+  // ---- 5. The hint-free search, on new-run scans only: the fallback of a
+  // seed that did not converge, or with skip_seed the only attempt. Fills the
+  // AutoLocalize-style measurements whenever the search produced a pose. ----
+  auto global = [&](std::string & why) -> Convergence {
     GlobalSearchOutcome out;
     std::string error;
-    if (!globalSearch(Clock::now() + seconds(m_global_config.search_timeout_sec), out, error)) {
-      why += "; the global search failed too: " + error;
-    } else {
-      response->method = "global";
-      report(out.map_body_r, out.map_body_t);
-      result = handOverAndAwait(out.guess, m_global_config.converge_timeout_sec);
-      if (result != Convergence::kConverged) {
-        why += "; the global search found a pose but the timer did not converge on it";
+    const bool found_ok =
+      globalSearch(Clock::now() + seconds(m_global_config.search_timeout_sec), out, error);
+    response->candidates = out.found.candidates;
+    if (out.found.has_pose) {
+      response->z = static_cast<float>(out.map_body_t.z());
+      response->fitness = static_cast<float>(out.found.fitness);
+      response->inlier_ratio = static_cast<float>(out.found.inlier_ratio);
+    }
+    if (!found_ok) {
+      why +=
+        (why.empty() ? "the global search failed: " : "; the global search failed too: ") + error;
+      return Convergence::kTimedOut;
+    }
+    response->method = "global";
+    report(out.map_body_r, out.map_body_t);
+    // A skip_seed call still holds the timer here (the search must not race a
+    // registration around the continuity offset); release it now, with the
+    // jump to the new origin exempt from the speed check, exactly as a seed is.
+    m_state.skip_speed_check.store(true);
+    m_state.lio_resetting.store(false);
+    const Convergence result = handOverAndAwait(out.guess, m_global_config.converge_timeout_sec);
+    if (result != Convergence::kConverged) {
+      why += std::string(why.empty() ? "" : "; ") +
+             "the global search found a pose but the timer did not converge on it";
+    }
+    return result;
+  };
+
+  Convergence result = Convergence::kTimedOut;
+  std::string why;
+  if (skip_seed) {
+    // The search runs straight away, so wait for the whole scan window
+    // (auto_loc.accum_scans), not just the first pair: the seeded path
+    // refills it during its converge wait, this one has none. Same deadline
+    // as the first pair's; recent_scans was cleared at the boundary, so its
+    // size counts new-run scans only.
+    size_t window = 0;
+    while (rclcpp::ok() && Clock::now() < odom_deadline) {
+      {
+        std::lock_guard<std::mutex> lock(m_state.message_mutex);
+        window = m_state.recent_scans.size();
       }
+      if (window >= static_cast<size_t>(m_global_config.accum_scans)) break;
+      std::this_thread::sleep_for(50ms);
+    }
+    if (window < static_cast<size_t>(m_global_config.accum_scans)) {
+      // Not a failure: the search can run on fewer scans, only less reliably.
+      RCLCPP_WARN(
+        this->get_logger(),
+        "reset_odometry: only %zu of %d new-run scans within %.1f s; searching on those", window,
+        m_global_config.accum_scans, m_config.wait_lio_timeout_sec);
+    }
+    RCLCPP_INFO(
+      this->get_logger(), "reset_odometry: %.2f s after the reset; running the global search",
+      std::chrono::duration<double>(Clock::now() - t_start).count());
+    result = global(why);
+  } else {
+    // The guess goes in BEFORE the timer is released, so its first round is a
+    // service round (no motion gate, no blend, settle window) rather than one
+    // that measures the jump to the new origin as motion.
+    {
+      std::lock_guard<std::mutex> lock(m_state.service_mutex);
+      m_state.initial_guess = guess;
+      m_state.service_received = true;
+      m_state.localize_success = false;
+    }
+    m_state.skip_speed_check.store(true);
+    m_state.lio_resetting.store(false);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "reset_odometry: new odometry after %.2f s; seeded, waiting for the timer",
+      std::chrono::duration<double>(Clock::now() - t_start).count());
+
+    result = handOverAndAwait(guess, m_config.converge_timeout_sec);
+    if (result == Convergence::kSuperseded) {
+      why = "another guess replaced the seed before the timer converged";
+    } else if (result == Convergence::kTimedOut) {
+      why = "the timer did not converge on the " + response->method + " seed within " +
+            std::to_string(m_config.converge_timeout_sec) + " s (reset_odom.converge_timeout_sec)";
+    }
+
+    // By now recent_scans has refilled (10 Hz for converge_timeout_sec).
+    if (result == Convergence::kTimedOut && request->global_fallback) {
+      RCLCPP_WARN(
+        this->get_logger(), "reset_odometry: %s; falling back to the global search", why.c_str());
+      result = global(why);
     }
   }
 
   if (result != Convergence::kConverged) {
-    fail(
-      "Point-LIO was reset and the map pose seeded, but " + why +
-      "; the offset is left at the seed -- relocalize, or call again with use_hint");
+    if (skip_seed) {
+      fail(
+        "Point-LIO was reset, but " + why +
+        "; the offset is left where the map pose was before the reset -- relocalize, or call "
+        "again with use_hint");
+    } else {
+      fail(
+        "Point-LIO was reset and the map pose seeded, but " + why +
+        "; the offset is left at the seed -- relocalize, or call again with use_hint");
+    }
     return;
   }
 
