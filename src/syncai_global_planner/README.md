@@ -417,17 +417,17 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
   mean the planner produces paths RPP then rejects with "collision ahead!".
 - **`StraightLinePlanner` ignores obstacles entirely.** If it is ever added
   back to `planner_plugins`, do not select it via `planner_id` on hardware.
-- **The launch file overrides `obstacle_layer.scan.sensor_frame` to
-  `<robot_id>/laser`, but the 2D scan lives in `<robot_id>/scan`.**
-  the merger stamps its output with `<robot_id>/scan` (and the `base_link →
-  scan` TF came from the now-removed `bringup_2d`, so on the 3D stack nothing
-  publishes it at all); `syncai_controller`'s launch file overrides the same
-  parameter to `<robot_id>/scan`. Nothing in the workspace broadcasts a
-  `<robot_id>/laser` frame (the Livox driver only *stamps* messages with it in
-  the 3D path). If that is right, the global costmap's scan observation source
-  cannot resolve its raytrace origin and never marks — masked by the static
-  layer carrying the obstacles that matter. Worth verifying against a live
-  costmap before changing.
+- **The global costmap's `scan` source is silent on the 3D stack.** Nothing
+  publishes `scan` there (the merger went with `bringup_2d`), so only the
+  `pointcloud` source marks. It is kept, like the controller's, for a setup
+  that does publish one, and the launch file overrides its `sensor_frame` to
+  `<robot_id>/scan`, the frame the merger stamped — the same value
+  `syncai_controller`'s launch sets. Until 2026-10 this launch set
+  `<robot_id>/laser` instead, a frame nothing in the workspace broadcast, so a
+  scan could not have been raytraced here even had one arrived; the Livox
+  driver no longer stamps `laser` either (it stamps `<robot_id>/lidar_top`).
+  A setup that brings a scan back also needs the `base_link → scan` TF, which
+  left with `bringup_2d` too.
 - **Dynamic parameter changes are refused mid-plan** by the shared mutex, and
   only `expected_planner_frequency` is handled at all — plugin parameters go to
   each plugin's own callback.
