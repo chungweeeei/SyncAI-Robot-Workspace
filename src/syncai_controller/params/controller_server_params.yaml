@@ -109,10 +109,15 @@
       # 0.3 ended an ordinary MOVE too far from its goal. The stalls were
       # MPPI's approach slowing under the gait floor; FollowPath's walk_vx_min
       # (2026-10-15) holds the command at the floor until MPPI asks to stop,
-      # which should end them -- unverified on the robot. A robot standing
-      # 0.15-0.3 m short with cmd_vel non-zero and odom zero, until the
-      # progress checker aborts, is still this value. It is also MPPI
-      # GoalAngleCritic's threshold_to_consider below: change the two together.
+      # and that did not end them: on 2026-10-16 the robot stood 0.19 m short
+      # with MPPI asking to stand (vx under in_place_vx_max, which the floor
+      # leaves alone). FollowPath's approach_dist (2026-10-16) takes over
+      # there and walks onto the goal -- unverified on the robot. A robot
+      # standing 0.15-0.5 m short with cmd_vel non-zero and odom zero, until
+      # the progress checker aborts, with no "approaching it directly" in the
+      # controller log, is still this value. It is also MPPI
+      # GoalAngleCritic's threshold_to_consider below, and where
+      # approach_dist's walk ends: change them together.
       xy_goal_tolerance: 0.15
       # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
       # not turn below ~0.3 rad/s (MPPI's -0.115 rad/s left odom at zero), so
@@ -220,6 +225,33 @@
       # through the stop (see yaw_goal_tolerance) -- lower this if the final
       # heading overshoots. 0 disables it (the optimizer turns, as upstream).
       final_rotation_wz: 0.65
+      # Not upstream: the direct approach (2026-10-16). Inside this distance
+      # of the path's end, the first cycle in which MPPI asks to stand (raw
+      # |vx| under in_place_vx_max) hands the rest of the approach to RPP's
+      # law: turn in place onto the goal point (final_rotation_wz, floored at
+      # in_place_wz_min) while its bearing is over approach_rotate_min_angle,
+      # else walk at walk_vx_min along the arc through it, until the final
+      # rotation takes over at goal_checker.xy_goal_tolerance. On robot01 the
+      # robot stood 0.19 m from a goal that lay 90 deg to its left, MPPI at
+      # vx 0.02-0.10 and odom zero, and the progress checker aborted it twice
+      # until it was cancelled: inside 0.5 m only GoalCritic still pulls, and
+      # its mean-distance-over-the-horizon cost pays a slow approach best,
+      # under in_place_vx_max for a goal close by or beside the robot. 0.5 is
+      # where PathAlign / PathAngle / PreferForward stop scoring, i.e. where
+      # that starts. MPPI is untouched while it keeps walking, and its
+      # obstacle avoidance with it; the takeover gives that up, so the turn
+      # and the walk are checked against LETHAL footprints each cycle, and a
+      # blocked way hands the robot back to MPPI (the old stall, progress
+      # checker, BT retry). Needs walk_vx_min and final_rotation_wz on. 0
+      # disables it. Unverified on the robot: the controller log says
+      # "approaching it directly" when it opens.
+      approach_dist: 0.5
+      # FollowPathRPP's rotate_to_heading_min_angle: change them together.
+      # Over it the approach turns in place, under it it walks the arc. The
+      # walk's wz is capped at final_rotation_wz, so a short walk off a wide
+      # bearing runs a wider arc than the one through the goal point (a few
+      # mm wide at 0.25 rad and 0.2 m, well inside xy_goal_tolerance).
+      approach_rotate_min_angle: 0.25
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
       # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
       # 2 m half-width. With consider_footprint, a rolled-out point off the

@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 
+#include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_util/geometry_utils.hpp"
 
@@ -58,6 +59,11 @@ void MPPIController::initialize(
   getParam(in_place_vx_max_, "in_place_vx_max", 0.1);
   // Not upstream; see rotateToGoalHeading(). final_rotation_wz <= 0 disables it.
   getParam(final_rotation_wz_, "final_rotation_wz", 0.0);
+  // Not upstream; see approachGoal(). approach_dist <= 0 disables it, and so
+  // does walk_vx_min or final_rotation_wz <= 0: it walks at the one and hands
+  // over to the other.
+  getParam(approach_dist_, "approach_dist", 0.0);
+  getParam(approach_rotate_min_angle_, "approach_rotate_min_angle", 0.25);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;
@@ -67,6 +73,7 @@ void MPPIController::initialize(
   // Configure composed objects
   optimizer_.initialize(parent_, name_, costmap_ros_, parameters_handler_.get());
   path_handler_.initialize(parent_, name_, costmap_ros_, tf_buffer_, parameters_handler_.get());
+  collision_checker_.setCostmap(costmap_ros_->getCostmap());
   trajectory_visualizer_.on_configure(
     parent_, name_,
     costmap_ros_->getGlobalFrameID(), parameters_handler_.get());
@@ -91,6 +98,7 @@ void MPPIController::reset()
   optimizer_.reset();
   last_cmd_vel_ = geometry_msgs::msg::Twist();
   rotating_to_goal_ = false;
+  approaching_goal_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
@@ -106,7 +114,24 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
       last_cmd_vel_ = cmd.twist;
       return cmd;
     }
+    // So does a direct approach already under way, for the same reason. One
+    // whose way has become blocked drops its latch and falls through to the
+    // optimizer.
+    if (approaching_goal_ && approachGoal(robot_pose, goal_checker, cmd)) {
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
     cmd = computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
+    // The optimizer asking to stand (or to turn in place) is what opens the
+    // approach, read off its raw output -- the same |vx| < in_place_vx_max
+    // that the walking floor leaves alone, which is exactly the command that
+    // stalled. The cycle's optimizer output is then discarded.
+    if (
+      std::fabs(cmd.twist.linear.x) < in_place_vx_max_ &&
+      approachGoal(robot_pose, goal_checker, cmd)) {
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
     applyWalkFloor(cmd.twist);
     clampAcceleration(cmd.twist);
     applyTurnFloor(cmd.twist);
@@ -251,6 +276,9 @@ bool MPPIController::rotateToGoalHeading(
       return false;
     }
     rotating_to_goal_ = true;
+    // The direct approach, if it brought the robot here, is done: its walk
+    // ends at this tolerance by design (see approachGoal()).
+    approaching_goal_ = false;
     // The warm-started sequence is about driving to the goal point; should a
     // new path hand the robot back, the optimizer starts from scratch.
     optimizer_.reset();
@@ -265,10 +293,22 @@ bool MPPIController::rotateToGoalHeading(
 
   const double angle = angles::shortest_angular_distance(
     tf2::getYaw(robot_pose.pose.orientation), tf2::getYaw(goal.orientation));
-  const double sign = angle >= 0.0 ? 1.0 : -1.0;
-
-  double wz = sign * final_rotation_wz_;
   double vx = 0.0;
+  double wz = 0.0;
+  rotateInPlace(angle, vx, wz);
+
+  cmd = utils::toTwistStamped(vx, wz, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
+  return true;
+}
+
+void MPPIController::rotateInPlace(double angle, double & vx, double & wz) const
+{
+  // RPP's rotateToHeading() with RPP's numbers; see rotateToGoalHeading() for
+  // why each step is where it is. The floor goes last so that neither the
+  // ramp nor the stopping cap can leave the turn under it.
+  const double sign = angle >= 0.0 ? 1.0 : -1.0;
+  wz = sign * final_rotation_wz_;
+  vx = 0.0;
   if (max_angular_accel_ > 0.0) {
     const double dw = max_angular_accel_ * control_duration_;
     wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
@@ -284,9 +324,185 @@ bool MPPIController::rotateToGoalHeading(
     const double dv = max_linear_accel_ * control_duration_;
     vx = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
   }
+}
+
+bool MPPIController::approachGoal(
+  const geometry_msgs::msg::PoseStamped & robot_pose, syncai_nav_core::GoalChecker * goal_checker,
+  geometry_msgs::msg::TwistStamped & cmd)
+{
+  // Not upstream (2026-10-16): the last few decimetres onto the goal point
+  // are not left to the optimizer once it asks to stand short of them. On
+  // robot01 the robot stopped 0.19 m from the goal -- outside
+  // xy_goal_tolerance, so the final rotation never opened -- with the goal
+  // 90 deg to its left and its heading 2.5 rad off. MPPI held vx 0.02-0.10
+  // with wz either raised to the turn floor or inside its deadband, odom
+  // read zero, and the progress checker aborted the goal twice before it was
+  // cancelled; the goal before it had stalled the same way through three
+  // aborts until the robot happened to drift inside the tolerance. The
+  // walking floor does not touch that: under in_place_vx_max it is MPPI
+  // asking to stand, which it was.
+  //
+  // It was asking to stand because nothing pays it to move. Inside 0.5 m
+  // only GoalCritic, CostCritic and ConstraintCritic still score, and
+  // GoalCritic is the mean distance to the goal over the 2 s horizon: for a
+  // point d straight ahead the best constant speed is d * sqrt(2) / 2 s,
+  // under in_place_vx_max inside ~0.14 m, and a point off to the side of a
+  // DiffDrive robot that cannot reverse scores lower still. RPP never had
+  // this, because past its rotate-to-heading it drives a fixed speed with
+  // min_approach_linear_velocity as the floor -- which is what this does:
+  // turn in place onto the goal point while its bearing is over
+  // approach_rotate_min_angle (RPP's rotate-to-path), else walk at
+  // walk_vx_min along the pure-pursuit arc through it, until the final
+  // rotation takes over at xy_goal_tolerance.
+  //
+  // Opened only when the optimizer's own output would have left the robot
+  // standing (the caller tests that), not on the distance alone, so every
+  // approach MPPI manages by itself -- and its obstacle avoidance with it --
+  // is unchanged. That avoidance is CostCritic's, which is given up here, so
+  // the turn and the walk are first checked against LETHAL as RPP checks
+  // its arc, every cycle; blocked, the latch drops and the optimizer has
+  // the robot again, which is the behaviour before this existed (stand,
+  // progress checker, the BT's retry). Rejected: widening
+  // xy_goal_tolerance (0.3 for a day on 2026-10-14 ended an ordinary MOVE
+  // too far from its goal), and lowering in_place_vx_max so the walking
+  // floor raises the stall to 0.30 (it raises a turn in place too, and
+  // walking straight on moves the robot away from a goal beside it).
+  //
+  // Latched like the final rotation, for the same reason: the turn drifts
+  // a few centimetres and must not hand the robot back to the optimizer
+  // across approach_dist, where it would stall again.
+  if (
+    approach_dist_ <= 0.0 || walk_vx_min_ <= 0.0 || final_rotation_wz_ <= 0.0 ||
+    goal_checker == nullptr) {
+    return false;
+  }
+  geometry_msgs::msg::Pose pose_tolerance;
+  geometry_msgs::msg::Twist velocity_tolerance;
+  if (!goal_checker->getTolerances(pose_tolerance, velocity_tolerance)) {
+    approaching_goal_ = false;
+    return false;
+  }
+
+  std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
+  // Same goal as the final rotation's: the end of the path MPPI tracks.
+  const nav_msgs::msg::Path plan = path_handler_.transformPath(robot_pose);
+  const geometry_msgs::msg::Pose & goal = plan.poses.back().pose;
+  const double x = robot_pose.pose.position.x;
+  const double y = robot_pose.pose.position.y;
+  const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+  const double dx = goal.position.x - x;
+  const double dy = goal.position.y - y;
+  // At least xy_goal_tolerance: rotateToGoalHeading() ran first and would
+  // have latched inside it.
+  const double dist = std::hypot(dx, dy);
+  if (!approaching_goal_ && dist >= approach_dist_) {
+    return false;
+  }
+  const double bearing = angles::shortest_angular_distance(yaw, std::atan2(dy, dx));
+
+  // The walk ends where the stateful goal checker accepts the position and
+  // the final rotation starts. Checking on to the goal point itself would
+  // test the footprint there at the approach heading, which can cross a wall
+  // that the goal heading runs along.
+  const double walk = std::max(0.0, dist - pose_tolerance.position.x);
+  if (isApproachBlocked(x, y, yaw, walk, bearing)) {
+    if (approaching_goal_) {
+      approaching_goal_ = false;
+      RCLCPP_WARN(
+        logger_, "Direct approach to the goal blocked %.2f m out: handing back to the optimizer",
+        dist);
+    } else {
+      RCLCPP_INFO_THROTTLE(
+        logger_, *clock_, 5000,
+        "Optimizer asks to stand %.2f m from the goal, but the way onto it is blocked", dist);
+    }
+    return false;
+  }
+
+  if (!approaching_goal_) {
+    approaching_goal_ = true;
+    // As for the final rotation: should the robot be handed back, the
+    // optimizer starts from scratch rather than from the sequence that stalled.
+    optimizer_.reset();
+    RCLCPP_INFO(
+      logger_,
+      "Optimizer asks to stand %.2f m from the goal (xy tolerance %.2f m): approaching it "
+      "directly, %+.2f rad off its bearing",
+      dist, pose_tolerance.position.x, bearing);
+  }
+  // As in rotateToGoalHeading(): the optimizer is not running, so keep its
+  // reset_period from zeroing the clamp baseline on a hand-back.
+  last_time_called_ = clock_->now();
+
+  double vx = 0.0;
+  double wz = 0.0;
+  if (std::fabs(bearing) > approach_rotate_min_angle_) {
+    rotateInPlace(bearing, vx, wz);
+  } else {
+    // Out of a turn this ramps up from rest at max_linear_accel, under the
+    // floor for its first ~0.3 s, exactly as RPP's ramp does. The arc is
+    // RPP's curvature to its carrot with the goal point as the carrot:
+    // k = 2 * lateral / dist^2, lateral = dist * sin(bearing). Aimed at the
+    // point itself, its bearing shrinks as the robot closes in, so the walk
+    // does not hunt back into the turn. wz from the clamped vx, as RPP does,
+    // so the arc keeps its curvature through the ramp; capped at the turn
+    // rate (= wz_max), then clamped like every other command.
+    vx = walk_vx_min_;
+    if (max_linear_accel_ > 0.0) {
+      const double dv = max_linear_accel_ * control_duration_;
+      vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+    }
+    wz = std::clamp(vx * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
+    if (max_angular_accel_ > 0.0) {
+      const double dw = max_angular_accel_ * control_duration_;
+      wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+    }
+  }
 
   cmd = utils::toTwistStamped(vx, wz, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
   return true;
+}
+
+bool MPPIController::isApproachBlocked(double x, double y, double yaw, double walk, double bearing)
+{
+  // RPP's inCollision(): the padded footprint's perimeter on LETHAL is a
+  // collision, unknown space is not while the costmap tracks it. The turn is
+  // sampled so that the footprint's farthest corner moves about one cell a
+  // step (RPP's projection step for a rotation), the walk at the costmap's
+  // resolution along a straight line at the end heading -- under
+  // approach_rotate_min_angle the arc stays within a cell or two of that
+  // line over the few decimetres it runs.
+  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  const auto & footprint = costmap_ros_->getRobotFootprint();
+  const bool tracking_unknown = costmap_ros_->getLayeredCostmap()->isTrackingUnknown();
+  const auto in_collision = [&](double px, double py, double ptheta) {
+    const double cost = collision_checker_.footprintCostAtPose(px, py, ptheta, footprint);
+    if (cost == static_cast<double>(syncai_costmap_2d::NO_INFORMATION) && tracking_unknown) {
+      return false;
+    }
+    return cost >= static_cast<double>(syncai_costmap_2d::LETHAL_OBSTACLE);
+  };
+
+  const double resolution = costmap->getResolution();
+  const double radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
+  const double turn_step = radius > resolution ? resolution / radius : 0.1;
+  const int turns = static_cast<int>(std::ceil(std::fabs(bearing) / turn_step));
+  for (int i = 0; i <= turns; ++i) {
+    if (in_collision(x, y, yaw + (turns > 0 ? bearing * i / turns : 0.0))) {
+      return true;
+    }
+  }
+
+  const double heading = yaw + bearing;
+  const int steps = static_cast<int>(std::ceil(walk / resolution));
+  for (int i = 1; i <= steps; ++i) {
+    const double s = std::min(walk, i * resolution);
+    if (in_collision(x + s * std::cos(heading), y + s * std::sin(heading), heading)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
@@ -363,8 +579,10 @@ void MPPIController::setPlan(const nav_msgs::msg::Path & path)
 {
   path_handler_.setPath(path);
   // controller_server resets the goal checker with every path; the final
-  // rotation's latch follows it (see rotateToGoalHeading()).
+  // rotation's latch follows it (see rotateToGoalHeading()), and so does the
+  // direct approach's, whose goal may have moved with the path.
   rotating_to_goal_ = false;
+  approaching_goal_ = false;
 }
 
 void MPPIController::setSpeedLimit(const double & speed_limit, const bool & percentage)
