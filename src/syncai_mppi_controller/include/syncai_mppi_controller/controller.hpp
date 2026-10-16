@@ -15,18 +15,18 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__CONTROLLER_HPP_
 #define SYNCAI_MPPI_CONTROLLER__CONTROLLER_HPP_
 
-#include <string>
 #include <memory>
+#include <string>
 
-#include "syncai_mppi_controller/tools/path_handler.hpp"
-#include "syncai_mppi_controller/optimizer.hpp"
-#include "syncai_mppi_controller/tools/trajectory_visualizer.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "syncai_costmap_2d/footprint_collision_checker.hpp"
 #include "syncai_mppi_controller/models/constraints.hpp"
+#include "syncai_mppi_controller/optimizer.hpp"
+#include "syncai_mppi_controller/tools/path_handler.hpp"
+#include "syncai_mppi_controller/tools/trajectory_visualizer.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
-
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
-#include "rclcpp/rclcpp.hpp"
 
 namespace syncai_mppi_controller
 {
@@ -144,6 +144,38 @@ protected:
     geometry_msgs::msg::TwistStamped & cmd);
 
   /**
+    * @brief Inside approach_dist of the goal, once the optimizer asks to stand,
+    * drive onto the goal point directly instead of running the optimizer
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param goal_checker Goal checker whose xy tolerance ends the phase
+    * @param cmd Filled with the approach command when this returns true, else untouched
+    * @return Whether this cycle is a direct approach (the optimizer's output is discarded)
+    */
+  bool approachGoal(
+    const geometry_msgs::msg::PoseStamped & robot_pose, syncai_nav_core::GoalChecker * goal_checker,
+    geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
+    * @brief Whether the direct approach would put the footprint on a LETHAL cell
+    * @param x Robot x in the costmap's global frame
+    * @param y Robot y
+    * @param yaw Robot yaw
+    * @param walk Distance to walk along the bearing after turning onto it
+    * @param bearing Heading change of the turn onto the goal point
+    * @return Whether any footprint along the turn or the walk is in collision
+    */
+  bool isApproachBlocked(double x, double y, double yaw, double walk, double bearing);
+
+  /**
+    * @brief The in-place turn shared by the final rotation and the direct
+    * approach: wz towards final_rotation_wz, stopping on the angle, floored
+    * @param angle Remaining heading change, signed
+    * @param vx Set to the linear command (ramping down to 0)
+    * @param wz Set to the angular command
+    */
+  void rotateInPlace(double angle, double & vx, double & wz) const;
+
+  /**
     * @brief Publish the optimal trajectory on local_plan as a nav_msgs/Path
     * @param stamp Stamp for the path header
     */
@@ -177,6 +209,15 @@ protected:
   // cleared by setPlan() and reset() -- the same events that clear the
   // stateful goal checker's latch (see rotateToGoalHeading()).
   bool rotating_to_goal_{false};
+  double approach_dist_{0.0};
+  double approach_rotate_min_angle_{0.25};
+  // Set when the optimizer first asks to stand inside approach_dist, cleared
+  // when the final rotation takes over, when the way onto the goal is blocked,
+  // and by setPlan() / reset() (see approachGoal()).
+  bool approaching_goal_{false};
+  // The direct approach's only obstacle test (see isApproachBlocked()).
+  syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> collision_checker_{
+    nullptr};
   double control_duration_{0.05};
   // The last command returned, the clamp's reference; zeroed by reset() and
   // by any throw out of computeVelocityCommands().
