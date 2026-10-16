@@ -180,12 +180,11 @@ CAMERA_NODE_NAME = "vizionsdk_camera"
 # namespaced by ROS, so these are shipped as "<robot_id>/..." from here and win
 # over the fallbacks in the params file.
 #
-# Nothing parents either frame yet. description/G23.urdf has no camera link, so
-# both land in the global tree as roots and anything that tries to transform an
-# image or the camera IMU into <robot_id>/base_link fails its lookup. That is
-# survivable while the camera is only a video source (the WebRTC path does not
-# use TF at all), but it has to be fixed before the camera is used for anything
-# metric. The fix belongs on a URDF joint next to lidar_top_joint, not on a
+# camera_optical_frame is parented by description/G23.urdf's camera_optical_joint
+# (child of lidar_top; a provisional hand-measured pose until the lidar-camera
+# calibration replaces it). camera_imu_link is still parented by nothing, so it
+# lands in the global tree as a root — moot today, since publish_imu has to stay
+# false on this unit. Either fix belongs on a URDF joint, not on a
 # static_transform_publisher here — that is exactly the mistake the lidar mount
 # extrinsic was moved out of this file to undo, because an argument-driven
 # transform could not carry the full pose.

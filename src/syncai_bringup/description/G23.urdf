@@ -461,4 +461,35 @@
         <child link="lidar_top"/>
         <origin xyz="0.195 0.00 0.155" rpy="0 0.25 0"/>
     </joint>
+
+    <!--!!!!!!!!!!!! Camera !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
+    <!--
+      Camera mount extrinsic, PROVISIONAL (2026-10-16): hand-measured on
+      robot01, not calibrated. Replace it with the chessboard lidar-camera
+      calibration result before projecting lidar points onto the image — a
+      tape measure is good to a cm or two and a few degrees, and 2 degrees is
+      already ~30 px at 2 m.
+
+      Measured: camera 7 cm ahead of and 6.5 cm below the lidar along the body
+      axes, facing straight ahead and level (not on the lidar's tilted mount).
+      Parented to lidar_top rather than base_link so the camera stays rigidly
+      tied to the lidar when the lidar mount extrinsic is re-measured; the
+      calibration solves camera <-> lidar, not camera <-> body. Both numbers
+      below are those measurements expressed in lidar_top, which is pitched
+      0.25 rad down:
+        xyz = R_y(0.25)^T * (0.07, 0, -0.065)
+        rpy = the level optical frame (-pi/2, 0, -pi/2), with roll raised by
+              0.25 to cancel the lidar's pitch
+      camera_optical_frame follows the REP 103 optical convention (z forward,
+      x right, y down); it is the frame_id syncai_camera_feeder stamps on
+      image_raw/compressed. The Livox driver stamps raw livox/lidar clouds with
+      lidar_top, so a calibration solved against them is this joint's origin
+      as it stands, with no further composition.
+    -->
+    <link name="camera_optical_frame"/>
+    <joint name="camera_optical_joint" type="fixed">
+        <parent link="lidar_top"/>
+        <child link="camera_optical_frame"/>
+        <origin xyz="0.084 0.0 -0.046" rpy="-1.3208 0 -1.5708"/>
+    </joint>
 </robot>

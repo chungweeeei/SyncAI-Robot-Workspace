@@ -44,7 +44,9 @@ Two nodes, both namespaced by `robot_id`:
 **`robot_state_publisher`** parses `description/G23.urdf` and publishes the body
 TF tree with `frame_prefix: <robot_id>/`. What actually reaches TF:
 
-- The 4 `*_Ankle` fixed joints and **`lidar_top_joint`** go to `/tf_static`
+- The 4 `*_Ankle` fixed joints, **`lidar_top_joint`** and
+  `camera_optical_joint` (`lidar_top → camera_optical_frame`, see "The URDF")
+  go to `/tf_static`
   immediately.
 - The 12 revolute leg joints only appear on `/tf` once something publishes
   `/joint_states`, and **nothing in this workspace does** — so the legs are
@@ -302,10 +304,11 @@ own choice.
 
 Two known rough edges, neither introduced by this launch file:
 
-- **No TF parent.** `description/G23.urdf` has no camera link, so both camera
-  frames are roots in the global tree and no lookup to `<robot_id>/base_link`
-  resolves. Fix it with a joint next to `lidar_top_joint`, the same way the lidar
-  mount extrinsic is carried — not with a `static_transform_publisher` here.
+- **The IMU frame has no TF parent.** `camera_optical_frame` is parented by the
+  URDF's `camera_optical_joint` (provisional, see "The URDF");
+  `camera_imu_link` is not, so it is a root in the global tree. Moot while
+  `publish_imu` has to stay `false`; if it ever comes back, give it a URDF
+  joint too — not a `static_transform_publisher` here.
 - **`camera_info` mislabels its distortion model.** The wrapper emits
   `plumb_bob` for anything that is not `VX_DIST_NONE`
   (`conversions.hpp:341`) and carries only five radtan coefficients. If the
@@ -356,7 +359,19 @@ the same parameter name, and the flat form keeps each key on one commented line.
 
 `description/G23.urdf` is a SolidWorks URDF-exporter output for the G23 quadruped:
 `base_link` root, four legs (`FL`/`FR`/`HL`/`HR` × HIP → THIGH → SHANK → FOOT),
-plus the `lidar_top` frame. Two things about it are deliberate:
+plus the `lidar_top` frame and, under it, `camera_optical_frame`.
+
+`camera_optical_joint` is **provisional** (2026-10-16): robot01's camera
+measured by hand at 7 cm ahead of and 6.5 cm below the lidar along the body
+axes, level and facing forward, expressed in the 0.25 rad-pitched `lidar_top`
+as `xyz="0.084 0 -0.046" rpy="-1.3208 0 -1.5708"`. It is good for TF lookups
+and an rviz sanity check, not for projecting lidar points onto the image —
+replace it with the lidar-camera calibration result. It hangs off `lidar_top`
+rather than `base_link` because that calibration solves camera ↔ lidar, and
+since raw `livox/lidar` clouds are stamped `lidar_top` (see "The lidar network
+config"), a result solved against them goes into the joint as it is.
+
+Two things about the URDF are deliberate:
 
 - **Capsule collisions were swapped to cylinders** so `urdfdom` can parse the
   file. This is a TF-only consumer, so collision fidelity does not matter here.
