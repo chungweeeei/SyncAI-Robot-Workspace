@@ -22,7 +22,9 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include "tf2/utils.h"
 #pragma GCC diagnostic pop
+#include "tf2/exceptions.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_ros/buffer.h"
 
 using rcl_interfaces::msg::ParameterType;
 using syncai_util::declare_parameter_if_not_declared;
@@ -42,6 +44,15 @@ constexpr double kNoSpeedLimit = 0.0;
 // nothing is checked against it, so there is nothing to tune.
 constexpr double kPreviewSeconds = 3.0;
 constexpr double kPreviewStep = 0.1;
+
+// The operator's docking plan (publishDockingPlan()) runs the same
+// integration to the dock instead of for 3 s: the console draws where the
+// approach ends, and at the 0.05 m/s floor 3 s would stop 15 cm out. 60 s is
+// the server's dock_approach_timeout, past which no approach survives anyway.
+constexpr double kDockingPlanSeconds = 60.0;
+// 2 Hz: the plan is a picture for a person, the backend thins it to 512
+// points and the console rebuilds a mesh per message.
+constexpr double kDockingPlanPeriod = 0.5;
 }  // namespace
 
 void DockingController::initialize(
@@ -87,6 +98,10 @@ void DockingController::initialize(
     node, plugin_name_ + ".allow_backward", rclcpp::ParameterValue(false));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".transform_tolerance", rclcpp::ParameterValue(0.2));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".publish_docking_plan", rclcpp::ParameterValue(false));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".docking_plan_frame", rclcpp::ParameterValue(std::string("map")));
 
   node->get_parameter(plugin_name_ + ".k_phi", k_phi_);
   node->get_parameter(plugin_name_ + ".k_delta", k_delta_);
@@ -105,6 +120,8 @@ void DockingController::initialize(
   node->get_parameter(plugin_name_ + ".rotation_scaling_factor", rotation_scaling_factor_);
   node->get_parameter(plugin_name_ + ".allow_backward", allow_backward_);
   node->get_parameter(plugin_name_ + ".transform_tolerance", transform_tolerance_);
+  node->get_parameter(plugin_name_ + ".publish_docking_plan", publish_docking_plan_);
+  node->get_parameter(plugin_name_ + ".docking_plan_frame", docking_plan_frame_);
   node->get_parameter("controller_frequency", control_frequency);
 
   control_duration_ = 1.0 / control_frequency;
@@ -148,6 +165,12 @@ void DockingController::initialize(
 
   preview_pub_ = node->create_publisher<nav_msgs::msg::Path>("local_plan", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("docking_target", 1);
+  if (publish_docking_plan_) {
+    // Same topic and QoS as controller_server's clear (kDockingPlanTopic
+    // there): the server owns the "approach over" message, this plugin the
+    // plan itself.
+    docking_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("docking_plan", 1);
+  }
 
   RCLCPP_INFO(
     logger_,
@@ -199,6 +222,8 @@ void DockingController::setPlan(const nav_msgs::msg::Path & path)
   have_dock_pose_ = true;
   // New target, new decision: the latch belongs to the pose it was taken on.
   final_rotation_latched_ = false;
+  // And a new picture at once rather than up to half a period late.
+  have_last_docking_plan_ = false;
   last_branch_ = Branch::None;
   // last_cmd_vel_ deliberately survives, RPP's rule: setPlan() is also the
   // preempt path (a dock goal re-sent with a corrected pose arrives here
@@ -361,6 +386,7 @@ geometry_msgs::msg::TwistStamped DockingController::computeVelocityCommandsImpl(
   clampAcceleration(cmd_vel.twist, instant_linear_stop);
 
   publishPreview(pose, target, backward);
+  publishDockingPlan(pose, target, backward);
 
   // Remember what we actually commanded: next cycle's clamp baseline.
   last_cmd_vel_ = cmd_vel.twist;
@@ -425,18 +451,27 @@ void DockingController::publishPreview(
     return;
   }
 
-  // Integrate the law from the robot (the origin of the base frame) and map
-  // each pose back into odom by the inverse of the rotation used in
-  // computeVelocityCommandsImpl(). The picture to tune k_phi / k_delta by;
-  // the law never reads it and nothing is checked against it.
+  // The picture to tune k_phi / k_delta by; the law never reads it and
+  // nothing is checked against it.
   nav_msgs::msg::Path path;
   path.header.frame_id = robot_pose.header.frame_id;
   path.header.stamp = clock_->now();
+  integrateApproach(robot_pose, target_in_base, backward, kPreviewSeconds, path);
+  preview_pub_->publish(path);
+}
 
+void DockingController::integrateApproach(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Pose & target_in_base, bool backward, double horizon,
+  nav_msgs::msg::Path & path) const
+{
+  // Integrate the law from the robot (the origin of the base frame) and map
+  // each pose back into the robot pose's frame by the inverse of the rotation
+  // used in computeVelocityCommandsImpl().
   const double yaw_r = tf2::getYaw(robot_pose.pose.orientation);
   const double cos_r = std::cos(yaw_r);
   const double sin_r = std::sin(yaw_r);
-  auto to_odom = [&](const geometry_msgs::msg::Pose & in_base) {
+  auto to_frame = [&](const geometry_msgs::msg::Pose & in_base) {
     geometry_msgs::msg::PoseStamped out;
     out.header = path.header;
     out.pose.position.x =
@@ -449,16 +484,67 @@ void DockingController::publishPreview(
 
   geometry_msgs::msg::Pose next;
   next.orientation.w = 1.0;
-  path.poses.push_back(to_odom(next));
-  const int steps = static_cast<int>(kPreviewSeconds / kPreviewStep);
+  path.poses.push_back(to_frame(next));
+  const int steps = static_cast<int>(horizon / kPreviewStep);
   for (int i = 0; i < steps; ++i) {
     next = control_law_->calculateNextPose(kPreviewStep, target_in_base, next, backward);
-    path.poses.push_back(to_odom(next));
+    path.poses.push_back(to_frame(next));
     if (euclidean_distance(target_in_base, next) < 0.01) {
       break;
     }
   }
-  preview_pub_->publish(path);
+}
+
+void DockingController::publishDockingPlan(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Pose & target_in_base, bool backward)
+{
+  if (!docking_plan_pub_) {
+    return;
+  }
+  const rclcpp::Time now = clock_->now();
+  if (have_last_docking_plan_ && (now - last_docking_plan_time_).seconds() < kDockingPlanPeriod) {
+    return;
+  }
+
+  // Not gated on subscribers, unlike the rviz preview: the backend subscribes
+  // for the whole life of the robot, so the gate would never close, and a
+  // console that connects mid-approach should not wait for it to open.
+  //
+  // The map frame, not odom: the backend forwards map-frame paths only and
+  // the console has no other frame. The plan is integrated in odom (where the
+  // dock is tracked) and moved with ONE map <- odom lookup per message, so a
+  // relocalize shifts the picture, as it shifts the robot on screen, and
+  // never the target the law steers to.
+  geometry_msgs::msg::TransformStamped odom_to_plan;
+  try {
+    odom_to_plan = tf_->lookupTransform(
+      docking_plan_frame_, robot_pose.header.frame_id, tf2::TimePointZero,
+      tf2::durationFromSec(transform_tolerance_));
+  } catch (const tf2::TransformException & e) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 5000, "[DockingController][%s] docking plan not published: %s",
+      plugin_name_.c_str(), e.what());
+    return;
+  }
+
+  nav_msgs::msg::Path in_odom;
+  in_odom.header = robot_pose.header;
+  integrateApproach(robot_pose, target_in_base, backward, kDockingPlanSeconds, in_odom);
+
+  nav_msgs::msg::Path path;
+  path.header.frame_id = docking_plan_frame_;
+  path.header.stamp = now;
+  path.poses.reserve(in_odom.poses.size());
+  for (const auto & pose : in_odom.poses) {
+    geometry_msgs::msg::PoseStamped out;
+    tf2::doTransform(pose, out, odom_to_plan);
+    out.header = path.header;
+    path.poses.push_back(out);
+  }
+  docking_plan_pub_->publish(path);
+  last_docking_plan_time_ = now;
+  have_last_docking_plan_ = true;
 }
 
 void DockingController::setSpeedLimit(const double & speed_limit, const bool & percentage)

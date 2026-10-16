@@ -500,6 +500,15 @@ integrated from the law for 3 s — **the same topic MPPI uses**, on purpose:
 one controller runs at a time, one rviz display shows whichever is active) and
 `docking_target` (the target as the law sees it, in the base frame).
 
+For the operator console, not subscriber-gated: `docking_plan`
+(`nav_msgs/Path`, `map` frame, 2 Hz) — the same integration run all the way
+to the dock rather than for 3 s, moved into `map` with one `map <- odom`
+lookup per message. Only on the instance with `publish_docking_plan: true`
+(`Docking`). `controller_server` publishes an empty Path on it whenever a
+dock goal ends, however it ends, which is how the console's drawing clears.
+A separate topic rather than `local_plan`, because the backend cannot tell
+which controller a `local_plan` message came from, and it is in `odom`.
+
 MPC: the docking trees switch the gait to MPC before sending a dock goal; this
 controller does not check it and would drive the RL gait the same way.
 
@@ -723,6 +732,7 @@ ros2 action send_goal /<robot_id>/dock_to_pose syncai_common/action/DockToPose \
 # Backing out 1 m: controller_id: Undocking, x: -1.0
 ros2 topic echo /<robot_id>/local_plan           # the predicted approach (also MPPI's topic)
 ros2 topic echo /<robot_id>/docking_target       # the target in the base frame
+ros2 topic echo /<robot_id>/docking_plan         # the approach the console draws (map)
 ```
 
 ## Gotchas
