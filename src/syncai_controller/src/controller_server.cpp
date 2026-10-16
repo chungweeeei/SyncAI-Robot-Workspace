@@ -84,6 +84,7 @@ ControllerServer::~ControllerServer()
   goal_checkers_.clear();
   controllers_.clear();
   vel_publisher_.reset();
+  docking_plan_clear_pub_.reset();
   if (costmap_ros_) {
     costmap_ros_->deactivate();
   }
@@ -223,6 +224,7 @@ void ControllerServer::configure()
 
   odom_sub_ = std::make_unique<syncai_util::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
+  docking_plan_clear_pub_ = create_publisher<nav_msgs::msg::Path>("docking_plan", 1);
 
   // Create the action server that we implement with our followPath method.
   // spin_thread=true gives the server its own callback group and executor
@@ -571,6 +573,24 @@ void ControllerServer::dockControl()
 
   RCLCPP_INFO(get_logger(), "Received a dock goal, begin computing control effort.");
   have_last_dock_robot_pose_ = false;
+
+  // Every exit below -- reached, canceled, timed out, refused, thrown -- ends
+  // the approach, and the console's drawing of it with it. A guard rather
+  // than a call per return because there are nine returns. The frame is the
+  // DockingController's default docking_plan_frame: the backend forwards
+  // map-frame paths only. Published for an undock too, where it is a no-op.
+  struct ClearDockingPlan
+  {
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub;
+    rclcpp::Clock::SharedPtr clock;
+    ~ClearDockingPlan()
+    {
+      nav_msgs::msg::Path empty;
+      empty.header.frame_id = "map";
+      empty.header.stamp = clock->now();
+      pub->publish(empty);
+    }
+  } clear_docking_plan{docking_plan_clear_pub_, get_clock()};
 
   try {
     uint16_t error_code = DockAction::Result::NONE;

@@ -149,6 +149,27 @@ protected:
     const geometry_msgs::msg::Pose & target_in_base, bool backward);
 
   /**
+   * @brief Integrate the law forward from `robot_pose` for at most `horizon`
+   * seconds (or until it reaches the target) and append the poses to `path`,
+   * in the robot pose's frame, stamped with `path.header`.
+   */
+  void integrateApproach(
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    const geometry_msgs::msg::Pose & target_in_base, bool backward, double horizon,
+    nav_msgs::msg::Path & path) const;
+
+  /**
+   * @brief For the operator console: the predicted approach all the way to
+   * the dock, in docking_plan_frame (map), on `docking_plan` at 2 Hz. Only
+   * when publish_docking_plan is set (the Docking instance; backing out is
+   * not drawn). controller_server publishes the empty Path that clears it
+   * when the dock goal ends, since this plugin is never told that.
+   */
+  void publishDockingPlan(
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    const geometry_msgs::msg::Pose & target_in_base, bool backward);
+
+  /**
    * @brief Callback executed when a parameter change is detected
    */
   rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
@@ -182,6 +203,9 @@ protected:
   bool allow_backward_;
   double transform_tolerance_;
   double control_duration_;
+  // Read once in initialize(): the publisher exists or it does not.
+  bool publish_docking_plan_{false};
+  std::string docking_plan_frame_{"map"};
 
   // The one pose this controller tracks. ALWAYS in costmap_ros_->getGlobalFrameID()
   // (odom): setPlan() transforms it once if it arrives in another frame, and
@@ -226,6 +250,12 @@ protected:
   // time, and one rviz display then shows whichever is active.
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr preview_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr target_pub_;
+
+  // Not a debug publisher: the console draws it (publishDockingPlan()). Null
+  // unless publish_docking_plan.
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr docking_plan_pub_;
+  rclcpp::Time last_docking_plan_time_;
+  bool have_last_docking_plan_{false};
 
   // Serialises computeVelocityCommands() / setSpeedLimit() against the
   // dynamic-parameter callback, which runs on the node's executor thread.

@@ -484,6 +484,13 @@
       # a frame other than odom (dock_to_pose always hands odom, so it is for
       # driving this plugin through follow_path with a map path).
       transform_tolerance: 0.2
+      # The operator console draws the approach from this: the law integrated
+      # to the dock, in docking_plan_frame (map, un-namespaced like the
+      # planner's), on docking_plan at 2 Hz. Also the TF tolerance of that
+      # one map <- odom lookup per message. controller_server clears it when
+      # the dock goal ends. Off on Undocking: backing out is not drawn.
+      publish_docking_plan: true
+      docking_plan_frame: "map"
 
     # The same plugin, configured to back OUT of the dock to the staging pose
     # (undock.xml). Direction is this configuration, not a goal field: the
