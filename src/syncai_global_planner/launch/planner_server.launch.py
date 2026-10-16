@@ -80,12 +80,7 @@ def launch_setup(context, *args, **kwargs):
                 # yaml defaults with the robot_id prefix here. Later entries
                 # in this list take precedence over the params file.
                 "robot_base_frame": f"{robot_id}/base_link",
-                # The frame a scan is stamped with, as in controller_server's
-                # launch. It was "<robot_id>/laser" until 2026-10, a frame
-                # nothing broadcast (the Livox driver only stamped clouds with
-                # it, and stamps lidar_top now), so a scan, had one ever
-                # arrived, could not have been raytraced.
-                "obstacle_layer.scan.sensor_frame": f"{robot_id}/scan",
+                "obstacle_layer.scan.sensor_frame": f"{robot_id}/laser",
             },
         ],
     )

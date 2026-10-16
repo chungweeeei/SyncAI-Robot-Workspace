@@ -241,8 +241,7 @@
       combination_method: 1            # 0=Overwrite, 1=Maximum
       observation_sources: scan pointcloud
       scan:
-        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan);
-        # absent on the real 3D stack, so this source simply stays silent.
+        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan)
         topic: scan
         # TF frame (overridden by the launch file with <robot_id>/ prefix)
         sensor_frame: scan

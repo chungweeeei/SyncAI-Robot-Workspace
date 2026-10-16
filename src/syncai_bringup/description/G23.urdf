@@ -482,9 +482,7 @@
               0.25 to cancel the lidar's pitch
       camera_optical_frame follows the REP 103 optical convention (z forward,
       x right, y down); it is the frame_id syncai_camera_feeder stamps on
-      image_raw/compressed. The Livox driver stamps raw livox/lidar clouds with
-      lidar_top, so a calibration solved against them is this joint's origin
-      as it stands, with no further composition.
+      image_raw/compressed.
     -->
     <link name="camera_optical_frame"/>
     <joint name="camera_optical_joint" type="fixed">

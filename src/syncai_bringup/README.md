@@ -88,7 +88,7 @@ is byte-identical apart from the config path, so none of these differ by model):
 | `output_data_type` | `0` | YAML | mirrored verbatim from the vendor launch |
 | `lvx_file_path` | `/home/livox/livox_test.lvx` | YAML | only read when `data_src` selects an `.lvx` replay, which this stack never does — kept so the mirror stays complete |
 | `cmdline_input_bd_code` | `livox0000000001` | YAML | same: a vendor placeholder, unread on a live lidar |
-| `frame_id` | `<robot_id>/lidar_top` | launch | prefixed explicitly, since frames aren't namespaced; the YAML carries the unprefixed fallback. The URDF's lidar link, so the raw cloud is in the robot tree (`<robot_id>/laser` until 2026-10) |
+| `frame_id` | `<robot_id>/laser` | launch | prefixed explicitly, since frames aren't namespaced; the YAML carries the unprefixed fallback |
 | `user_config_path` | `/tmp/syncai_bringup/<robot_id>_<model>_config.json` | launch | **generated** — see below |
 
 ### The lidar network config
@@ -154,21 +154,13 @@ Both IP reads **raise** rather than fall back — unlike `robot_id`, a wrong or
 missing IP produces no error from the driver, just silence on the point cloud
 topic, which is much more expensive to debug than a failed launch.
 
-Note the frame naming: the driver stamps its clouds with `<robot_id>/lidar_top`,
-the same link the URDF's mount extrinsic ends in, so a raw `livox/lidar` message
-transforms into the robot tree — which camera ↔ lidar calibration and an rviz
-overlay of the raw cloud on the camera need. That makes `lidar_top` the cloud's
-origin by definition: `lidar_top_joint` has to be measured to the MID360's
-optical centre, not to its housing. Until 2026-10 the driver stamped a separate
-`<robot_id>/laser` that nothing parented; bags recorded before then still carry
-it, and need `lidar_top` substituted for it before TF can place them. Renaming
-the URDF link to `laser` was the alternative and was rejected, because
-`lidar_top` is `syncai_lio_bridge`'s `lidar_frame` in another repository. The
-LIO chain broadcasts its own odom → body branch off to the side (the frame names
-come from the localizer config — `lio_odom`/`lio_body` upstream — which is why
+Note the frame naming: the driver publishes in `<robot_id>/laser`, while the
+mount extrinsic in the URDF is `<robot_id>/lidar_top`. The LIO chain broadcasts
+its own odom → body branch off to the side (the frame names come from the
+localizer config — `lio_odom`/`lio_body` upstream — which is why
 `syncai_lio_bridge` reads them off the message header instead of hardcoding
 them), and the bridge reconciles that branch onto the robot tree through
-`lidar_top`.
+`lidar_top`. `laser` is only the raw sensor frame; nothing parents it.
 
 | Argument | Default | Meaning |
 |---|---|---|
@@ -200,7 +192,7 @@ parameter list, so they take precedence:
 |---|---|
 | `robot_description` | the URDF text, read off disk |
 | `frame_prefix` | needs the resolved `robot_id` |
-| `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/lidar_top` |
+| `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/laser` |
 | `user_config_path` | points at the livox JSON the launch file generates per `robot_id` and lidar model |
 | `imu_frame_id` / `image_frame_id` | camera frames, same reason as `frame_id` — they ship as `<robot_id>/camera_imu_link` and `<robot_id>/camera_optical_frame` |
 | `device_index` | comes from the `camera_device_index` argument, so a second camera does not need a params edit |
@@ -367,9 +359,7 @@ axes, level and facing forward, expressed in the 0.25 rad-pitched `lidar_top`
 as `xyz="0.084 0 -0.046" rpy="-1.3208 0 -1.5708"`. It is good for TF lookups
 and an rviz sanity check, not for projecting lidar points onto the image —
 replace it with the lidar-camera calibration result. It hangs off `lidar_top`
-rather than `base_link` because that calibration solves camera ↔ lidar, and
-since raw `livox/lidar` clouds are stamped `lidar_top` (see "The lidar network
-config"), a result solved against them goes into the joint as it is.
+rather than `base_link` because that calibration solves camera ↔ lidar.
 
 Two things about the URDF are deliberate:
 

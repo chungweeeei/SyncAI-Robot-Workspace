@@ -268,7 +268,7 @@ Three rules follow from namespacing:
   its own container, included) is scoped to exactly one.
 - **TF frame names are NOT namespaced by ROS.** Launch files therefore override
   frame parameters explicitly (`robot_base_frame: <robot_id>/base_link`,
-  `frame_id: <robot_id>/lidar_top` on the Livox driver). The values in the YAML are only fallbacks
+  `sensor_frame: <robot_id>/laser`). The values in the YAML are only fallbacks
   for running a node without its launch file. `global_frame` stays plain `map`.
 - **Params files use `/**/<node_name>:` wildcard keys**, so the same file works
   at any namespace. When a process hosts more than one node (e.g.

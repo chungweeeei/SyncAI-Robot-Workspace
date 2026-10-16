@@ -101,20 +101,10 @@ from launch_ros.actions import Node
 DEFAULT_SYSTEM_INI = os.path.expanduser("~/robot_ws/config/system.ini")
 FALLBACK_ROBOT_ID = "default_robot"
 
-# The frame the driver stamps its clouds with. Kept here rather than in the
-# params file because it is the one livox setting the launch has to rewrite: TF
-# frame names are not namespaced by ROS, so it ships as "<robot_id>/lidar_top".
-#
-# It is the URDF's lidar_top link on purpose (2026-10). It used to be a separate
-# "laser" frame that nothing parented, so a raw livox/lidar message could not be
-# transformed anywhere — harmless while nothing did, but camera <-> lidar
-# calibration and an rviz overlay of the raw cloud on the camera need the
-# header to be a frame in the robot tree. lidar_top is taken to be the cloud's
-# origin, which is exactly what syncai_lio_bridge already assumes when it maps
-# the Point-LIO body pose onto base_link through it. Renaming the URDF link to
-# "laser" instead was rejected: lidar_top is lio_bridge's lidar_frame, in
-# another repository. Bags recorded before this change carry "<robot_id>/laser".
-LIVOX_FRAME_ID = "lidar_top"
+# The lidar's raw sensor frame. Kept here rather than in the params file
+# because it is the one livox setting the launch has to rewrite: TF frame names
+# are not namespaced by ROS, so it ships as "<robot_id>/laser".
+LIVOX_FRAME_ID = "laser"
 
 # The node whose params carry the livox settings, and the params-file key the
 # host IP is read from. The wildcard prefix matches the params YAML, which uses
