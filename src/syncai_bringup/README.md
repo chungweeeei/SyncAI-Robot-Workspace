@@ -6,7 +6,7 @@ only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
-| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window) | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic), the Livox MID360 / MID360s driver, and — only under `use_camera:=true` — the VizionSDK camera |
+| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window) | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic), and the Livox MID360 / MID360s driver |
 
 ```
 share/syncai_bringup/
@@ -167,8 +167,6 @@ them), and the bridge reconciles that branch onto the robot tree through
 | `system_config` | `config/system.ini` | INI providing `[system] robot_id` and `[sensor.lidar]` `ip` / `type` |
 | `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for every node this file starts |
 | `urdf_file` | `G23.urdf` | File name under `description/` |
-| `use_camera` | `false` | Start the VizionSDK camera node — see below for why the default is `false` |
-| `camera_device_index` | `0` | VizionSDK camera index, from `ros2 run vizionsdk_ros2 list_devices` |
 
 To move the lidar, edit `lidar_top_joint` in the URDF. There used to be a
 `lidar_height` argument feeding a `static_transform_publisher` here; it was
@@ -178,15 +176,12 @@ also carry the 0.25 rad pitch that a height-only argument could not.
 ## Parameters
 
 `params/bringup.yaml` uses `/**/<node_name>:` wildcard keys, so the same file
-works at any namespace. It covers the three node names the launch file assigns:
-`robot_state_publisher`, `livox_lidar_publisher` and `vizionsdk_camera`. The
-camera block sits unread on a normal bringup, because its node only exists under
-`use_camera:=true`.
+works at any namespace. It covers the two node names the launch file assigns:
+`robot_state_publisher` and `livox_lidar_publisher`.
 
-Seven parameters, spread over the three nodes, are **not** in the file, because
-they cannot be static (six rows below — the two camera frame ids share one
-reason). The launch file appends them after `params_file` in each `Node`'s
-parameter list, so they take precedence:
+Four parameters, spread over the two nodes, are **not** in the file, because
+they cannot be static. The launch file appends them after `params_file` in each
+`Node`'s parameter list, so they take precedence:
 
 | Parameter | Why it is computed |
 |---|---|
@@ -194,8 +189,6 @@ parameter list, so they take precedence:
 | `frame_prefix` | needs the resolved `robot_id` |
 | `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/laser` |
 | `user_config_path` | points at the livox JSON the launch file generates per `robot_id` and lidar model |
-| `imu_frame_id` / `image_frame_id` | camera frames, same reason as `frame_id` — they ship as `<robot_id>/camera_imu_link` and `<robot_id>/camera_optical_frame` |
-| `device_index` | comes from the `camera_device_index` argument, so a second camera does not need a params edit |
 
 One value in the file is **not** a driver parameter at all: `host_ip`. The livox
 node declares a fixed parameter set and never reads it (the override is simply
@@ -207,145 +200,37 @@ the robot), per the workspace rule: a launch-level override placed after the
 params file would silently win over the YAML value. There is deliberately no
 `use_sim_time` launch argument for that reason.
 
-## The camera (`use_camera`)
+## The camera
 
-The robot carries a **TechNexion VCS-AR0234-C** — an onsemi AR0234 global-shutter
-module on USB, enumerating as a UVC device. `vizionsdk_ros2` drives it through
-TechNexion's closed-source VizionSDK, which has no rosdep key and is installed
-from a `.deb` in the `Dockerfile`; a workspace built outside that image fails at
-configure with `No package 'vizionsdk' found`.
+This package starts **no camera** since 2026-10-17. `bringup.launch.py` used to
+start the TechNexion VCS-AR0234-C through `vizionsdk_ros2` under
+`use_camera:=true` (off by default), with a `/**/vizionsdk_camera` block in
+`params/bringup.yaml`. It was removed because the V4L2 device admits exactly one
+streaming opener and `syncai_camera_feeder` — the nav session's
+`camera_feeder` window, teeing the MJPEG to the WebRTC worker and to
+`image_raw/compressed` — is it; a second opener in window 0 could only ever
+crash-loop the feeder on `Device or resource busy`. git history has the node,
+both arguments and the params block.
 
-Started only under `use_camera:=true`, and the default is a regression guard, not
-timidity. `/dev/video0` admits exactly one *streaming* opener and
-`scripts/publish_camera_crop.sh` already claims it — the host-side GStreamer
-pipeline that pushes the camera over RTSP to the remote MediaMTX the frontend's
-WebRTC view renders (there is no MediaMTX in this compose; the robot is a
-publisher only). Since `bringup.launch.py` is window 0 of both session specs,
-defaulting the camera on would pull that stream out from under every robot in
-the fleet, and it would fail the quiet way: gstreamer dies at `S_FMT` with
-`Device or resource busy`, long after the pane has scrolled past.
+What that work found out about the hardware still holds for whoever opens the
+camera:
 
-The params file pins `publish_image: true` and `publish_imu: false`, and neither
-half is a free choice. **`publish_imu` must stay `false`.** The IMU was the
-original reason to run this node at all — the only way to get the AR0234
-module's ISPU out over ROS — but the unit on this Jetson answers
-`VxEnableIMUMode` with "Reset IMU mode is not supported on this device", and
-`vizionsdk_ros2` turns that into a throw out of the constructor followed by a
-segfault in teardown (exit code -11). A `true` there does not degrade to "camera
-without IMU"; it kills the node, with the useful message scrolled past behind a
-crash. With the IMU unavailable, `publish_image: true` is the only thing the
-node has left to do, so it is an **image-only streaming client** — and as a
-streaming opener it **will** contend with the RTSP publisher for the same V4L2
-device. There is no coexisting mode; that is the whole reason `use_camera`
-defaults off, and turning it on is a decision about which of the two consumers
-owns the camera, not an addition. The RTSP script is not the only rival that has
-shown up, either: a host-side joystick UI outside this repo
-(`~/controller/src/controller/HTML_joy_controller.py`) opens `/dev/video0` with
-OpenCV, and while it runs this node dies with `VxStartStreaming failed` /
-GStreamer EOS. Before blaming the container, check the device on the **host**:
-`v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1` answering
-`VIDIOC_REQBUFS returned -1 (Device or resource busy)` means someone else owns
-it, and `fuser -v /dev/video0` names them.
-
-```bash
-ros2 launch syncai_bringup bringup.launch.py use_camera:=true
-ros2 topic hz /<robot_id>/image_raw/compressed     # ~58 Hz at MJPG 1280x720@60 on index 0
-ros2 topic echo /<robot_id>/camera/status --once   # DiagnosticArray at status_rate_hz
-```
-
-There is no `imu/data` to check: that publisher is only created under
-`publish_imu: true`, which this device cannot run. `camera_info` is not
-published either — neither unit on this Jetson has usable intrinsics
-(`VxGetIntrinsics` answers "Invalid intrinsics calibration data").
-
-### Camera parameters
-
-Everything in the `/**/vizionsdk_camera` block of `params/bringup.yaml` other
-than the ISP controls (next section) and the two computed frame ids:
-
-| Parameter | Value | Note |
-|---|---|---|
-| `publish_imu` | `false` | mandatory on this device — see above |
-| `publish_image` | `true` | makes the node a streaming opener; the `image_*` rows are only read when this is on |
-| `imu_rate_hz` | `100.0` | unread while `publish_imu` is `false`; kept for a module that does support the IMU |
-| `imu_mode` | `"ispu"` | same |
-| `publish_ispu_orientation` | `true` | same |
-| `acceleration_unit` / `gyro_unit` | `"m/s^2"` / `"rad/s"` | **not** the node's defaults (`mg`, `deg/s`). `sensor_msgs/Imu` is defined in SI and nothing on the wire says otherwise, so a consumer trusting the message definition would be off by 9806.65 on acceleration and 57.3 on angular velocity. The node converts, so this costs nothing (`ParseAccelerationUnit` / `ParseGyroUnit` in `conversions.hpp` list the accepted spellings) |
-| `image_format` | `"MJPG"` | see below — not `auto`, not UYVY |
-| `image_width` × `image_height` | `1280` × `720` | |
-| `image_framerate` | `60` | see below — the one rate both cameras accept |
-| `image_rate_hz` | `0.0` | publish at the negotiated format's rate rather than throttling |
-| `image_timeout_ms` | `1000` | per-frame `VxGetImage` timeout |
-| `publish_status` / `status_rate_hz` | `true` / `1.0` | a `diagnostic_msgs/DiagnosticArray` on `camera/status` |
-
-**MJPG, not UYVY and not `auto`.** The node publishes MJPG straight to
-`image_raw/compressed`; UYVY would put 1280×720×2 bytes on the wire per frame
-and still need the separate `yuv422_to_bgr_node` to be viewable. Spelling MJPG
-out also matters for `device_index: 1` — under `image_format: "auto"` that unit
-negotiates its UYVY 1280x800@60 and then never delivers a frame (`VxGetImage`
-times out at -1 forever, though raw `v4l2-ctl` streams the same format fine),
-while MJPG works.
-
-**60 fps is not a stylistic choice.** The AR0234 at index 0 advertises only 60
-and 120 fps at 720p — no 30 (`v4l2-ctl --list-formats-ext`). The AR0144 at
-index 1 is the other way round (30 and 60, no 120). 60 is the one rate both
-units accept, so the block stays valid for either camera. It also matches the
-`FRAMERATE` default in `scripts/publish_camera_crop.sh`, which captures the
-full 1920x1200 at 60 and crops on the host; the 1280x720 here is this node's
-own choice.
-
-Two known rough edges, neither introduced by this launch file:
-
-- **The IMU frame has no TF parent.** `camera_optical_frame` is parented by the
-  URDF's `camera_optical_joint` (provisional, see "The URDF");
-  `camera_imu_link` is not, so it is a root in the global tree. Moot while
-  `publish_imu` has to stay `false`; if it ever comes back, give it a URDF
-  joint too — not a `static_transform_publisher` here.
-- **`camera_info` mislabels its distortion model.** The wrapper emits
-  `plumb_bob` for anything that is not `VX_DIST_NONE`
-  (`conversions.hpp:341`) and carries only five radtan coefficients. If the
-  module turns out to have a wide/fisheye lens, that field is wrong and
-  rectification downstream will be too; judge the lens from `fx` and `D[0]`, not
-  from `distortion_model`.
-
-### ISP controls
-
-The node declares 29 `isp.*` parameters, all defaulting to `-1` — "leave the
-camera's current value alone". Only **white balance** is pinned in
-`params/bringup.yaml`:
-
-| Parameter | Value | Meaning |
-|---|---|---|
-| `isp.whitebalance_mode` | `1` | `VX_AWB_MODE_STATUS`: `0` = `MANUAL_TEMPERATURE_WB`, `1` = `AUTO_WB` |
-| `isp.whitebalance_temperature` | `-1` | left alone — only set this with mode `0` |
-
-It is pinned because these are UVC controls stored *in the camera*: they persist
-across open/close for as long as it stays powered, so with no write here the node
-inherits whatever ran last. This camera has already been found parked at
-auto-WB-off with the temperature frozen, which tints everything and reads as a
-broken camera rather than a latched control. `scripts/publish_camera_crop.sh`
-sets the v4l2 equivalents for the same reason — the two are the same physical
-control reached from two directions, so they can and will fight over it.
-
-**Do not pair mode `1` with a temperature.** Writing a temperature into a camera
-running auto white balance is a write the driver may reject, and a rejected ISP
-write at *construction* is fatal — `ApplyIspControl`'s failure path is a
-`std::runtime_error`, so it takes the node down rather than warning. Use mode `0`
-with a temperature, or mode `1` with `-1`.
-
-That hazard is why nothing else is pinned. The legal range for any `isp.*` key
-comes from `VxGetISPImageProcessingRange` at runtime, so it cannot be known from
-a params file. Probe live, where a bad value costs only a rejected parameter set:
-
-```bash
-# Answers "isp.<name> must be between <min> and <max>".
-ros2 param set /<robot_id>/vizionsdk_camera isp.<name> 999999
-ros2 param set /<robot_id>/vizionsdk_camera isp.whitebalance_mode 0
-```
-
-Then pin what the camera confirmed. Note the params file uses the flat
-`isp.whitebalance_mode:` key rather than a nested `isp:` mapping; both parse to
-the same parameter name, and the flat form keeps each key on one commented line.
+- **No IMU.** The unit answers `VxEnableIMUMode` with "Reset IMU mode is not
+  supported on this device".
+- **No intrinsics.** `VxGetIntrinsics` answers "Invalid intrinsics calibration
+  data" on both units, so there is nothing to publish a `camera_info` from.
+- **60 fps is the only common rate.** The AR0234 advertises only 60 and 120 fps
+  at 720p, the AR0144 only 30 and 60 (`v4l2-ctl --list-formats-ext`). The AR0144
+  delivers no frames under its default UYVY 1280x800@60 through VizionSDK;
+  MJPG works.
+- **White balance is latched in the camera.** UVC controls persist across
+  open/close for as long as the camera stays powered, and this one has been
+  found parked at auto-WB-off with the temperature frozen, which tints
+  everything and reads as a broken camera.
+- **Other host processes have held the device**, e.g. a joystick UI outside this
+  repo (`~/controller/src/controller/HTML_joy_controller.py`) that opens
+  `/dev/video0` with OpenCV. `fuser -v /dev/video*` on the **host** names the
+  holder.
 
 ## The URDF
 
