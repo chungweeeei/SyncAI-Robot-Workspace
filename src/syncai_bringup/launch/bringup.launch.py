@@ -34,29 +34,15 @@
 #     extrinsic moved into the URDF, because a height-only argument could not
 #     carry the pitch.
 #   * The Livox MID360 / MID360s point cloud, via the livox_ros_driver2 node.
-#   * Optionally a TechNexion camera's image via vizionsdk_ros2 — see the
-#     use_camera argument. Image only: NEITHER unit on this Jetson has usable
-#     intrinsics (VxGetIntrinsics answers "Invalid intrinsics calibration
-#     data"), so camera_info is never published and anything needing a
-#     projection matrix has to get it elsewhere. And NOT the IMU: the
-#     VCS-AR0234-C
-#     answers VxEnableIMUMode with "Reset IMU mode is not supported on this
-#     device", which is why params/bringup.yaml pins publish_imu: false. Leave
-#     it false — the node throws out of its constructor on that error and then
-#     segfaults during teardown (exit code -11), so the useful message scrolls
-#     past behind a crash.
 #
-# The camera is the one sensor here that is NOT started by default, and that is
-# a deliberate regression guard rather than an oversight. /dev/video0 is a V4L2
-# capture device that admits exactly one streaming opener, and it already has
-# one: scripts/publish_camera_crop.sh feeds the remote MediaMTX over RTSP from
-# the host, which is what the frontend's WebRTC view consumes. bringup.launch.py
-# is window 0 of BOTH session specs, so defaulting the camera node on would take
-# that stream away from every robot in the fleet the next time it came up, and
-# it would fail the quiet way — gstreamer dies at S_FMT with "Device or resource
-# busy" long after the pane has scrolled. Turn it on per-run with
-# use_camera:=true once you have decided which
-# of the two consumers owns the device.
+# No camera. This file could start the TechNexion camera through vizionsdk_ros2
+# (use_camera:=true, off by default) until 2026-10-17, when that node was
+# removed: the V4L2 device admits exactly one streaming opener, and
+# syncai_camera_feeder — the nav session's camera_feeder window — is it, teeing
+# the MJPEG to the WebRTC worker and to image_raw/compressed. A second opener
+# here could only ever crash-loop the feeder. git history has the node, its
+# arguments and its params block. The camera_optical_frame joint stays in the
+# URDF, because the feeder stamps its images with that frame.
 #
 # robot_id is read from the system config INI at launch time, same convention as
 # every other launch file in the stack. The same INI also supplies the lidar's
@@ -157,29 +143,6 @@ LIVOX_MODELS = {"mid360": "MID360", "mid360s": "Mid360s"}
 # failing the launch — see read_lidar_type for why it is a warning and not a
 # raise.
 FALLBACK_LIDAR_MODEL = "mid360"
-
-# The VizionSDK camera node's name, which doubles as the key its params block is
-# matched on (/**/vizionsdk_camera in params/bringup.yaml). Kept identical to
-# the vendor launch file's node_name default so the upstream README's
-# `ros2 param set /<ns>/vizionsdk_camera isp.<x> <v>` recipes still address the
-# right node — the ISP controls are applied live by an on_set_parameters
-# callback, so that is the normal way to tune this camera.
-CAMERA_NODE_NAME = "vizionsdk_camera"
-
-# The camera's TF frames. Same story as LIVOX_FRAME_ID: frame names are not
-# namespaced by ROS, so these are shipped as "<robot_id>/..." from here and win
-# over the fallbacks in the params file.
-#
-# camera_optical_frame is parented by description/G23.urdf's camera_optical_joint
-# (child of lidar_top; a provisional hand-measured pose until the lidar-camera
-# calibration replaces it). camera_imu_link is still parented by nothing, so it
-# lands in the global tree as a root — moot today, since publish_imu has to stay
-# false on this unit. Either fix belongs on a URDF joint, not on a
-# static_transform_publisher here — that is exactly the mistake the lidar mount
-# extrinsic was moved out of this file to undo, because an argument-driven
-# transform could not carry the full pose.
-CAMERA_OPTICAL_FRAME = "camera_optical_frame"
-CAMERA_IMU_FRAME = "camera_imu_link"
 
 logger = launch_logging.get_logger("bringup.launch")
 
@@ -400,16 +363,6 @@ def write_livox_config(robot_id: str, model: str, lidar_ip: str, host_ip: str) -
     return config_path
 
 
-def camera_enabled(value: str) -> bool:
-    """Resolve the use_camera argument, which arrives as a string.
-
-    LaunchConfiguration.perform always yields text, and Python's truthiness
-    would make the string "false" enable the camera — the exact bug that makes
-    a boolean launch argument look like it is being ignored.
-    """
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-
 def launch_setup(context, *args, **kwargs):
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
@@ -482,44 +435,7 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
-    nodes = [robot_state_publisher, livox_driver]
-
-    # TechNexion VCS-AR0234-C over VizionSDK, opt-in (see the header). A plain
-    # Node rather than an IncludeLaunchDescription of the vendor's
-    # vizionsdk_camera.launch.py, for the same reason the livox driver above is:
-    # that file is a Node wrapped in 50 DeclareLaunchArguments, every one of
-    # which would have to be threaded back through launch_arguments as a string,
-    # and it would put the settings somewhere other than params/bringup.yaml
-    # where the rest of this package's parameters live.
-    if camera_enabled(LaunchConfiguration("use_camera").perform(context)):
-        nodes.append(
-            Node(
-                package="vizionsdk_ros2",
-                executable="vizionsdk_camera_node",
-                name=CAMERA_NODE_NAME,
-                namespace=robot_id,
-                output="screen",
-                parameters=[
-                    params_file,
-                    {
-                        # Appended after the params file so they win over it.
-                        # The frames need the resolved robot_id; device_index is
-                        # an argument because the Jetson carries two cameras of
-                        # different models and both are reachable in-container
-                        # (docker-compose passes all of /dev/video0..3 through).
-                        # See the argument's declaration for which index is
-                        # which, and for why 1 is not a drop-in for 0.
-                        "imu_frame_id": f"{robot_id}/{CAMERA_IMU_FRAME}",
-                        "image_frame_id": f"{robot_id}/{CAMERA_OPTICAL_FRAME}",
-                        "device_index": int(
-                            LaunchConfiguration("camera_device_index").perform(context)
-                        ),
-                    },
-                ],
-            )
-        )
-
-    return nodes
+    return [robot_state_publisher, livox_driver]
 
 
 def generate_launch_description():
@@ -536,8 +452,8 @@ def generate_launch_description():
     declare_params_file = DeclareLaunchArgument(
         "params_file",
         default_value=default_params_file,
-        description="Full path to the parameters YAML for robot_state_publisher, "
-        "the MID360 driver, and the VizionSDK camera",
+        description="Full path to the parameters YAML for robot_state_publisher "
+        "and the MID360 driver",
     )
 
     declare_urdf_file = DeclareLaunchArgument(
@@ -548,38 +464,11 @@ def generate_launch_description():
         "urdfdom can parse it; TF-only, collision fidelity not needed)",
     )
 
-    declare_use_camera = DeclareLaunchArgument(
-        "use_camera",
-        default_value="false",
-        description="Start the VizionSDK camera node. Default false: "
-        "/dev/video0 takes one streaming opener and scripts/publish_camera_crop.sh "
-        "(host-side RTSP -> remote MediaMTX -> the frontend's WebRTC view) already "
-        "holds it. "
-        "Set true only when this node, not that script, owns the camera",
-    )
-
-    declare_camera_device_index = DeclareLaunchArgument(
-        "camera_device_index",
-        default_value="0",
-        description="VizionSDK camera index, as reported by "
-        "`ros2 run vizionsdk_ros2 list_devices`. The Jetson carries two "
-        "TechNexion cameras of DIFFERENT models and compose passes all four "
-        "/dev/video* nodes through, so both indices are reachable: 0 is the "
-        "VCS-AR0234-C (/dev/video0, up to 1920x1200), 1 the VCI-AR0144-C "
-        "(/dev/video2, up to 1280x800). 1 is not a drop-in for 0 — that unit "
-        "delivers no frames at all under image_format: auto, which picks UYVY "
-        "1280x800@60 and then times out in VxGetImage; it needs the MJPG the "
-        "YAML already pins. Index 0 at that MJPG 1280x720@60 measures ~58 Hz "
-        "on image_raw/compressed",
-    )
-
     return LaunchDescription(
         [
             declare_system_config,
             declare_params_file,
             declare_urdf_file,
-            declare_use_camera,
-            declare_camera_device_index,
             OpaqueFunction(function=launch_setup),
         ]
     )
