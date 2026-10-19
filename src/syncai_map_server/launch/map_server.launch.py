@@ -9,6 +9,21 @@
 # The same INI may provide a [map] section with a "map" key (the map YAML
 # path); when present it overrides the params-file yaml_filename so each robot
 # instance loads its own map without editing map_server_params.yaml.
+#
+# A 3D-ONLY MAP STARTS THE NODE IDLE (2026-10-19). A map built for
+# OctomapPlanner3D has map.pcd, poses.txt and octomap.bt but no gridmap.yaml,
+# and map_server throws in its constructor on a missing file -- the pane died
+# at every boot on such a map. When the INI names a gridmap that does not
+# exist, the launch now passes yaml_filename "" instead: the node comes up with
+# no map, publishes nothing on `map`, and keeps `map_server/load_map`, so a
+# switch back to a 2D map is a load_map call, not a pane restart. It must be
+# an explicit "", not "no override": that would fall back to the params file's
+# hard-coded map, which throws on a robot without it or, worse, serves another
+# site's map. What is left of 2D on such a map is the planner's global
+# costmap, whose static layer then never gets a map (noise for Octo3D, which
+# does not wait for it; a GridBased goal there still hangs). A [map] map that
+# names an existing but unreadable file still throws, as before -- that is a
+# broken map, not a 3D one.
 
 import configparser
 import os
@@ -57,6 +72,8 @@ def read_map_yaml(config_path: str):
 
     Returns a dict of map_server parameter overrides, or None when the section
     or key is absent (the params-file yaml_filename then applies unchanged).
+    A key naming a file that does not exist (a 3D-only map) yields an empty
+    yaml_filename, which starts the node idle -- see the header.
     """
     config = configparser.ConfigParser()
     if not config.read(config_path):
@@ -69,6 +86,16 @@ def read_map_yaml(config_path: str):
             "using the yaml_filename from the params file"
         )
         return None
+
+    # Relative to the workspace root, which is every pane's cwd -- the same
+    # resolution map_server itself applies to the path.
+    if not os.path.isfile(yaml_filename):
+        logger.warning(
+            f"Map yaml '{yaml_filename}' (from '{config_path}') does not exist -- "
+            "a 3D-only map has no gridmap. Starting map_server idle: nothing is "
+            "published on `map` until map_server/load_map is called."
+        )
+        return {"yaml_filename": ""}
 
     logger.info(f"Map yaml from '{config_path}': {yaml_filename}")
     return {"yaml_filename": yaml_filename}

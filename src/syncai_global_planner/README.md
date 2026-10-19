@@ -286,8 +286,8 @@ navigation goal plans here; `GridBased` is then reached only with
 tree's 2D ids go back. The 2D costmap is used for its frame id only, and
 since 2026-10-15 the server does not wait for it to be current before an
 `Octo3D` plan (`usesCostmap()` is `false`): a 3D-only map has no
-`gridmap.yaml`, so `map_server` and the `keepout` pane die at boot, the
-static layer never gets a map, and every goal used to hang in
+`gridmap.yaml`, so `map_server` and the `keepout` pane come up idle (until
+2026-10-19 they died at boot), the static layer never gets a map, and every goal used to hang in
 `waitForCostmap()` without reaching this planner — no log line, until the BT
 cancelled it. The global costmap still warns at 1 Hz on such a map (no map,
 robot out of bounds of its 5 × 5 m default); that is noise for `Octo3D`, and
