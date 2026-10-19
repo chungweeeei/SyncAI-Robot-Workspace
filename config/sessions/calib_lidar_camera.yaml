@@ -58,8 +58,8 @@ windows:
   # ---------- Window 1: camera_feeder (sole opener of /dev/syncai/camera0) ----
   # Same launch as start_nav.yaml's window, so the image and the camera_info
   # (config/calibration/<robot_id>/camera0.yaml) are exactly the ones the
-  # calibration result will be used with. The same single-opener rule applies:
-  # the host-side scripts/publish_camera_crop.sh must not be running.
+  # calibration result will be used with. It is the camera's only opener here
+  # as there, which switch_mode's kill-all-then-build is what guarantees.
   - name: camera_feeder
     panes:
       - cmd: ros2 launch syncai_camera_feeder camera_feeder.launch.py

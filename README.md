@@ -63,7 +63,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`; plus `clean_map`, the post-save job that removes people from `map.pcd`. **Not tracked here**, see below |
 | `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction, `relocalize` / `relocalize_check` and `initialpose` |
 | `syncai_lio_bridge` | LIO → planar `odom` / TF bridge (the only odometry source). **Not tracked here**, see below |
-| `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot), optional TechNexion camera node |
+| `syncai_bringup` | `robot_state_publisher` over `description/G23.urdf`, the Livox MID360 / MID360s driver (config JSON generated per robot) |
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock. **Not tracked here**, see below |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState`. **Not tracked here**, see below |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
@@ -86,9 +86,8 @@ All four that moved out after `syncai_common` keep their package name,
 executables and launch file, so the session specs are unchanged. The Rust
 message crates the four Rust ones need come from a ros2-rust underlay baked
 into the robot image (see "Getting started"). `syncai_camera_feeder` also
-links GStreamer, whose `-dev` packages the image installs, and cannot run
-beside the host-side `scripts/publish_camera_crop.sh`: both open
-`/dev/syncai/camera0`, and only one may.
+links GStreamer, whose `-dev` packages the image installs, and is the one
+opener of `/dev/syncai/camera0`: the device takes only one.
 
 The operator half — `SyncAI-Robot-Backend` (FastAPI + rclpy on port **3000**:
 tasks, map catalogue, TTS, WebSockets) and `SyncAI-Robot-Frontend` (the Next.js
@@ -140,8 +139,6 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── scripts/
 │   ├── attach.sh                 # host-side: attach to whichever byobu session is live in the container
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml
-│   ├── publish_camera_crop.sh    # host-side camera → RTSP publisher (GStreamer → remote MediaMTX)
-│   ├── publish_camera_crop.env   # its per-robot settings (crop, stream path, MediaMTX host)
 │   ├── urdf2glb.py               # bakes G23.urdf into the GLB the operator console renders (handed over to its repo)
 │   └── release/                  # offline release bundle for the IPC (currently non-functional, see CLAUDE.md)
 ├── doc/                          # design proposals (agent / MCP integration; not implemented)
@@ -375,19 +372,15 @@ hand-editing it and renaming a map are backend routes too, and all write into
 this repo's `map/` (renaming the map the stack is running on is refused with 409
 `map_active`, since map_server and the localizer loaded its files at launch).
 
-**Camera.** The camera is published from the **host**, not the container:
-
-```bash
-bash scripts/publish_camera_crop.sh            # start (background)
-bash scripts/publish_camera_crop.sh status     # state + viewing URLs
-bash scripts/publish_camera_crop.sh stop
-```
-
-It pushes RTSP to the remote MediaMTX named in `scripts/publish_camera_crop.env`.
-The ROS camera node in `bringup.launch.py` is off by default because the two
-cannot share the V4L2 device — and neither can the nav session's
-`camera_feeder` window (`syncai_camera_feeder`), which opens the same device:
-on a robot that boots into AUTO, stop the host script first.
+**Camera.** The nav session's `camera_feeder` window (`syncai_camera_feeder`)
+owns the camera: it opens `/dev/syncai/camera0` and tees the MJPEG, undecoded,
+to the WebRTC worker (RTP/JPEG on `127.0.0.1:5008`) and to
+`image_raw/compressed`. The mapping session has no camera window. Nothing else
+opens the camera: the V4L2 device takes one streaming opener. Both former
+owners were removed in 2026-10 — the `vizionsdk_ros2` node `bringup.launch.py`
+started under `use_camera:=true`, and the host-side
+`scripts/publish_camera_crop.sh` (RTSP to a remote MediaMTX); git history has
+both.
 
 **Logs.** Every pane is captured by multilog under
 `log/stack/<robot_id>/<window>/` (`mapping/` subtree for the mapping session):
@@ -421,5 +414,3 @@ used to live here went with `syncai_backend`.
   host shell exports `ROS_DOMAIN_ID=69`, so a `ros2` CLI or rviz2 run on the
   host will not see the containers until that export is changed.
 - **Secrets** — `.env` holds local secrets and is gitignored. Do not commit it.
-  The camera script deliberately reads its own `publish_camera_crop.env`, not
-  the compose `.env`.
