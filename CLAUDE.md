@@ -193,14 +193,14 @@ manual dependency `rosdep` does not cover.
 | Package | How it is managed |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`. Unmodified. |
-| `direct_visual_lidar_calibration` | `koide3/direct_visual_lidar_calibration`, pinned to a main SHA (no tags upstream; 2026-10). Targetless camera → lidar extrinsic calibration, run by hand on bags recorded in `CALIBRATION` mode (see "Running the stack"). Has **git submodules**, so it needs `vcs import --recursive`. Needs Ceres ≥ 2.1 and Iridescence, which the image does not carry yet, and builds only against GTSAM 4.2. |
+| `direct_visual_lidar_calibration` | `koide3/direct_visual_lidar_calibration`, pinned to a main SHA (no tags upstream; 2026-10). Targetless camera → lidar extrinsic calibration, run by hand on bags recorded in `CALIBRATION` mode (see "Running the stack"). Has **git submodules**, so `third-party.repos` is imported `--recursive` (CI does; `scripts/build.sh` refuses a checkout without them). Its source-built deps are image stages since 2026-10 — `ceres` (2.2.0; it needs `ceres::Manifold`, jammy ships 2.0), `iridescence` (v1.0.3, its GUI), and `libgtsam_unstable` from the `gtsam` stage, which its own `FindGTSAM` demands — plus `pcl_ros` / `cv_bridge` / `fmt` / glog / glfw from apt in `dev`. Builds only against GTSAM 4.2. |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver |
 | `small_gicp` | Pinned to upstream tag `v1.0.1`. Unmodified. The registration backend (`RegistrationPCL`, a `pcl::Registration` subclass) of `syncai_localizer` and, since 2026-10, of `syncai_mapping`'s loop verification. Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package and both find it with `find_package(small_gicp)`; the ordering comes from `<depend>small_gicp</depend>` in their manifests. |
 | `vizionsdk-ros2` | `TechNexion-Vision/vizionsdk-ros2` (branch `main`). ROS 2 wrapper (`vizionsdk_ros2/vizionsdk_camera_node`) for the TechNexion camera. **Nothing starts it** since `bringup.launch.py` dropped its `use_camera` node on 2026-10-17 (see "Camera"); it is still imported and built. Needs the closed-source VizionSDK `.deb`, which the `Dockerfile` downloads from the TechNexion GitHub release (`VIZIONSDK_VERSION`); there is no rosdep key for it. |
 
 All six are checked out by vcstool from `third-party.repos` — they were git
 submodules until `fca520b`, and `.gitmodules` is gone; bumping one is a
-one-line `version:` edit there plus `vcs import < third-party.repos --force`,
+one-line `version:` edit there plus `vcs import --recursive < third-party.repos --force`,
 not the old two-commit dance. The import target is the workspace root, not
 `src`: the keys already carry `src/`. The last vendored package,
 `ros2_laser_scan_merger`, went away with the 2D/AMCL path (commit `99141a6`).
@@ -313,11 +313,12 @@ must be what robot01 has. It therefore only `rosdep check`s by default
 reaches robot01, so a missing dep is a `Dockerfile` change. The script also
 restores the `livox_ros_driver2` `package.xml` when a `vcs import` has deleted
 it, and refuses to start on an empty vcs checkout — a `dir:repos` table covering
-the five `src/third-party/` dirs plus the six `dependencies.repos` ones
+the six `src/third-party/` dirs plus the six `dependencies.repos` ones
 (`src/syncai_common`, `src/syncai_mapping`, `src/syncai_driver_manager`,
 `src/syncai_robot_state`, `src/syncai_lio_bridge`, `src/syncai_camera_feeder`),
 naming the `.repos`
-file to import per missing directory, because "you forgot to import" is not what
+file to import per missing directory (and, separately, a
+`direct_visual_lidar_calibration` checkout without its submodules), because "you forgot to import" is not what
 colcon's own failure looks like. The first-party checks earn their place
 more than the rest: an absent `src/syncai_common` fails every package at once,
 while an absent `src/syncai_mapping`, `src/syncai_driver_manager`, `src/syncai_robot_state`,
@@ -340,13 +341,17 @@ devices / nvidia runtime / X11 mounts along) — keep the two in sync.
 Recreating a robot container wipes hand-installed build dependencies (the ones
 not in the image). Re-run `rosdep install --from-paths src --ignore-src -r -y`
 plus any manual deps (Sophus / GTSAM are built from source; `syncai_pointlio`
-needs Sophus, `syncai_mapping` GTSAM).
+needs Sophus, `syncai_mapping` GTSAM; `direct_visual_lidar_calibration` also
+needs Ceres, Iridescence and GTSAM's unstable library — all four come from the
+image's builder stages).
 
 The `Dockerfile` is multi-stage, and since 2026-10 every slow build is a stage
 of its own that depends only on `base`, so BuildKit runs them in parallel and
 no `dev` edit invalidates them: `base` (ros-base + cyclonedds + uid-1000 user)
 → `deps-builder` (compiler + Boost / TBB / Eigen, builds nothing) → `livox` /
-`gtsam` / `sophus` (one library each, installed with `DESTDIR=/out`; GTSAM is
+`gtsam` / `sophus` / `ceres` / `iridescence` (one library each, installed with
+`DESTDIR=/out`; the last two and GTSAM's `GTSAM_BUILD_UNSTABLE=ON` are for
+`direct_visual_lidar_calibration` alone, 2026-10; GTSAM is
 the slow one — keep these stages free of anything that changes often so their
 cache survives); `base` → `rust-underlay` (rustup under `/opt/rust`,
 `cargo-ament-build`, and the ros2-rust underlay — rclrs, `rosidl_generator_rs`
@@ -356,9 +361,10 @@ underlay build); `base` → `dev` (colcon, byobu, Node.js, the VizionSDK `.deb`,
 `ros-humble-octomap` for `syncai_mapping`'s `clean_map`, `libclang-dev` +
 `colcon-cargo` / `colcon-ros-cargo` for the workspace's Rust packages, and one
 `COPY --from` per stage above; the workspace is bind-mounted at `~/robot_ws` and
-built by hand). There is **no rviz2**, `pcl_ros` or `pointcloud_to_laserscan`
-in the image since 2026-10 (the robot has no display; nothing here depends on
-the other two), and `syncai_costmap_2d`'s `rviz:=true` test launch is the only
+built by hand). There is **no rviz2** or `pointcloud_to_laserscan` in the
+image since 2026-10 (the robot has no display; nothing here depends on the
+other), and `pcl_ros` is back only as a `<depend>` of
+`direct_visual_lidar_calibration`, and `syncai_costmap_2d`'s `rviz:=true` test launch is the only
 thing here that would start rviz2. `ros-humble-map-msgs` and
 `ros-humble-laser-geometry` are listed explicitly because rviz2 and
 `pointcloud_to_laserscan` were what used to pull them in (`syncai_costmap_2d`

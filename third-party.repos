@@ -1,8 +1,11 @@
 # Third-party sources for src/third-party/, managed with vcstool (not submodules).
 #
-#   vcs import < third-party.repos          # populate a fresh clone
-#   vcs import < third-party.repos --force  # re-checkout after changing a pin below
-#   vcs status src                          # what is actually checked out
+#   vcs import --recursive < third-party.repos          # populate a fresh clone
+#   vcs import --recursive < third-party.repos --force  # re-checkout after changing a pin below
+#   vcs status src                                      # what is actually checked out
+#
+# --recursive for direct_visual_lidar_calibration's git submodules; it is a
+# no-op for the other entries.
 #
 # Paths are relative to the import target, which defaults to the current
 # directory -- and every key below is written from the workspace root
@@ -49,10 +52,12 @@ repositories:
     # 4.3" PR would stop it building against the image's GTSAM 4.2, so do not
     # chase main without checking that.
     #
-    # It has git submodules (Sophus, nlohmann/json, nanoflann), so this one
-    # needs `vcs import --recursive`; without it the build fails on missing
-    # headers. It also needs Ceres >= 2.1 and Iridescence, neither of which the
-    # image has yet.
+    # It has git submodules (Sophus, nlohmann/json, nanoflann), so this file is
+    # imported with `vcs import --recursive` (CI does; scripts/build.sh refuses
+    # a checkout without them). Its other build deps -- Ceres >= 2.1,
+    # Iridescence, libgtsam_unstable, pcl_ros / cv_bridge / fmt -- are in the
+    # Dockerfile (the ceres / iridescence stages, the gtsam stage's
+    # GTSAM_BUILD_UNSTABLE=ON, and dev's calibration layer).
     type: git
     url: https://github.com/koide3/direct_visual_lidar_calibration.git
     version: 02a0dc039f5509708f384be4ff3228e0ae09352d

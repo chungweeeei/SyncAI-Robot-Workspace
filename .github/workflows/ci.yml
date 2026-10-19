@@ -18,13 +18,14 @@
 #          so a build without them would be green and meaningless.
 #
 # The build runs on an arm64 runner because the robot is a Jetson: the
-# Dockerfile's source builds (GTSAM, Sophus, Livox-SDK2), the VizionSDK .deb
+# Dockerfile's source builds (GTSAM, Sophus, Livox-SDK2, Ceres, Iridescence), the VizionSDK .deb
 # and the ros2-rust underlay all have arch-specific paths, and an amd64 build
 # would test the one the fleet never runs. arm64 runners are free for public
 # repositories, which this is.
 #
 # The image layers live in the GitHub Actions cache (mode=max, so the
-# intermediate gtsam / sophus / livox / rust-underlay stages are cached too --
+# intermediate gtsam / sophus / livox / ceres / iridescence / rust-underlay
+# stages are cached too --
 # `dev` only COPYs their output, and without them every run would rebuild
 # GTSAM). The first run, and any run after a change to one of those stages,
 # takes the better part of an hour; later runs only pay for colcon. The image
@@ -118,13 +119,16 @@ jobs:
       # vcstool from the image rather than the runner, so nothing beyond Docker
       # has to exist on it. `export --exact` puts the SHA each `dev` branch
       # resolved to in the log -- dependencies.repos tracks branches, so this is
-      # the only record of what a given run actually built.
+      # the only record of what a given run actually built. third-party.repos
+      # is imported --recursive because direct_visual_lidar_calibration keeps
+      # Sophus / nlohmann-json / nanoflann as git submodules; without it those
+      # directories are empty and its configure fails on missing headers.
       - name: Import vcs checkouts
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/ws" -w /ws syncai-robot-base bash -c '
               set -e
-              vcs import --input third-party.repos
+              vcs import --recursive --input third-party.repos
               vcs import --input dependencies.repos
               vcs export --exact src'
 
