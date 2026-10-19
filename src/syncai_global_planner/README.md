@@ -498,6 +498,7 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --poses … --inspect-misses 3 / --inspect-kf 19 / --inspect x y   # ASCII map of the cells around a point
    … --dump-image out.bmp [--image-z 5.1] [--image-region x0 y0 x1 y1 --image-scale 4] [--image-components]
    … --dump-pcd out.pcd                                          # x y z label reject unknown clearance component
+   … --synthetic two_floors --write-bt out.bt                    # a test scene as a real .bt (the CI smoke's 3D fixture)
    … --plan sx sy sz gx gy gz --out path.csv / --plan-poses i j  # z are height hints
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
    … --poses … --plan-poses 0 2000 [--no-stair-links]           # with --poses, the track's stairs are links

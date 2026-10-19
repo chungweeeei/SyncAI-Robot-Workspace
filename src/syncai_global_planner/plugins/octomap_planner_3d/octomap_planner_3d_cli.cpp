@@ -72,6 +72,8 @@ void usage()
     "  --no-stair-links         do not turn the --poses track's flights into stair links\n"
     "  --dump-html <out.html>   self-contained three.js viewer of the surface map, the planned "
     "paths and (with --poses) the stair links\n"
+    "  --write-bt <out.bt>      write the tree (a --synthetic scene, say) as an OctoMap .bt; "
+    "alone, nothing else is done\n"
     "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors\n");
 }
 
@@ -1053,6 +1055,7 @@ int main(int argc, char ** argv)
   std::vector<PlannedPath> planned;
   std::string html_path;
   std::string out_path;
+  std::string write_bt_path;
   bool shortcut = true;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -1110,6 +1113,8 @@ int main(int argc, char ** argv)
       plans.push_back(r);
     } else if (a == "--out") {
       out_path = next("--out");
+    } else if (a == "--write-bt") {
+      write_bt_path = next("--write-bt");
     } else if (a == "--no-shortcut") {
       shortcut = false;
     } else if (a == "--no-stair-links") {
@@ -1149,9 +1154,10 @@ int main(int argc, char ** argv)
     usage();
     return 2;
   }
-  if (
-    !stats && !self_test && !check_poses && pcd_path.empty() && image_path.empty() && !do_inspect &&
-    debug_fill.empty() && plans.empty() && html_path.empty() && inspect_kf.empty()) {
+  const bool any_action = stats || self_test || check_poses || !pcd_path.empty() ||
+                          !image_path.empty() || do_inspect || !debug_fill.empty() ||
+                          !plans.empty() || !html_path.empty() || !inspect_kf.empty();
+  if (!any_action && write_bt_path.empty()) {
     stats = true;
   }
 
@@ -1174,6 +1180,22 @@ int main(int argc, char ** argv)
   std::printf(
     "tree: %zu nodes, res %.3f, loaded in %.2fs\n", tree->size(), tree->getResolution(),
     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+
+  // A synthetic scene as a real map file: the CI smoke test boots the nav
+  // session on one (a 3D-only map: octomap.bt, no gridmap.yaml), and a scene
+  // can be handed to anything else that reads a .bt. Written before the build
+  // and before anything else touches the tree; writeBinary() converts it to
+  // maximum likelihood, which keeps every voxel's free / occupied state.
+  if (!write_bt_path.empty()) {
+    if (!tree->writeBinary(write_bt_path)) {
+      std::fprintf(stderr, "cannot write '%s'\n", write_bt_path.c_str());
+      return 1;
+    }
+    std::printf("wrote %s\n", write_bt_path.c_str());
+    if (!any_action) {
+      return 0;
+    }
+  }
 
   BuildStats build_stats;
   const auto map = buildSurfaceMap(*tree, params, &build_stats);

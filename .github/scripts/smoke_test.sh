@@ -14,6 +14,16 @@
 # What it does not prove: anything that needs data. There is no lidar, gait
 # controller or camera here, so nothing localizes, plans or moves.
 #
+# The nav session is brought up twice (2026-10-19): on a 2D map (gridmap.yaml
+# + map.pcd, the fixture below) and on a 3D-only map (octomap.bt + map.pcd,
+# no gridmap.yaml), the kind OctomapPlanner3D navigates on. A 3D-only map
+# took map_server down in its constructor and left the keepout pane with
+# nothing to start until 397f264 -- a green build and a green 2D smoke said
+# nothing about it. Besides "nothing died", the 3D pass checks that those
+# two panes came up idle on purpose and that Octo3D built its surface map
+# (EXPECT_3D). The map is switched between passes by rewriting the INI's
+# `name:` line in place, as the backend's map switch does.
+#
 # The panes are read from the specs themselves, not from a list kept here, so
 # a window added to a spec is tested without touching this file. Each pane's
 # `sleep` is honoured the way NodeManager does it (`sleep N && cmd`, every pane
@@ -34,7 +44,15 @@ SETTLE="${SETTLE:-45}"
 # launch respawns it every 2 s, so it would neither stay down nor come up.
 SKIP_LOGS="${SKIP_LOGS:-camera_feeder}"
 MAP_NAME=ci_smoke
+MAP_NAME_3D=ci_smoke_3d
 OUT=log/smoke
+# What the 3D-only pass must also show, as "<log> <TAB> <extended regex>":
+# the idle starts of 397f264 (rather than a pane that merely did not crash)
+# and Octo3D's surface map built from the fixture's octomap.bt.
+EXPECT_3D="$(printf '%s\t%s\n' \
+    map_server 'Starting map_server idle' \
+    keepout    'Starting filter_mask_server idle' \
+    planner    'surface map: [0-9]+ x [0-9]+ columns')"
 
 # A node that dies in ros2 launch is reported as "process has died"; the rest
 # are what a crash in a constructor or a dlopen() looks like before it does.
@@ -45,6 +63,8 @@ die() { printf 'smoke_test.sh: %s\n' "$*" >&2; exit 2; }
 [ "${CI:-}" = "true" ] || die "CI is not true -- this starts the whole stack; it is not for a robot."
 grep -Eq '^robot_id:[[:space:]]*ci_smoke[[:space:]]*$' config/system.ini || \
     die "config/system.ini is not the ci_smoke INI (the workflow mounts it)."
+[ -w config/system.ini ] || \
+    die "config/system.ini is not writable -- the 3D pass switches its [map] name (mount it rw)."
 
 set +u
 source /opt/ros/humble/setup.bash
@@ -53,9 +73,10 @@ source install/setup.bash
 set -u
 
 # --- fixture map -------------------------------------------------------------
-# map_server and syncai_localizer open their map in the constructor and die
-# without one (and the localizer launch starts nothing when the pcd is
-# missing), so the nav session needs a map on disk. A 5 x 5 m walled room:
+# syncai_localizer opens its map in the constructor and dies without one (and
+# its launch starts nothing when the pcd is missing), so the nav session needs
+# a map on disk; map_server only idles without a gridmap since 397f264, which
+# the 3D-only pass below checks. A 5 x 5 m walled room:
 # the gridmap is free inside with a lethal border, the pcd is the same walls
 # 2 m high, with intensity because the localizer loads PointXYZI. Generated
 # rather than committed: map/ is gitignored and these are throwaway.
@@ -87,15 +108,50 @@ with open(f"{d}/poses.txt", "w") as f:
     pass
 EOF
 
+# The 3D-only fixture: the same walls as map.pcd for the localizer, an
+# octomap.bt for Octo3D and no gridmap.yaml / keepout.yaml at all. The tree is
+# the planner CLI's two_floors scene (a 12 x 8 m floor and a second one 5 m
+# above it), written by the CLI that was just built, so the fixture is the
+# same OcTree format clean_map writes. poses.txt is empty: no stair links,
+# which Octo3D logs as a warning and boots without.
+mkdir -p "map/${MAP_NAME_3D}"
+cp "map/${MAP_NAME}/map.pcd" "map/${MAP_NAME_3D}/map.pcd"
+: > "map/${MAP_NAME_3D}/poses.txt"
+rm -f "map/${MAP_NAME_3D}/gridmap.yaml" "map/${MAP_NAME_3D}/keepout.yaml"
+ros2 run syncai_global_planner octomap_planner_3d_cli --synthetic two_floors \
+    --write-bt "map/${MAP_NAME_3D}/octomap.bt" > /dev/null || \
+    die "cannot write the 3D fixture's octomap.bt"
+
+# Point the INI's [map] name at another map, in place: config/system.ini is a
+# single-file bind mount, and a rename (sed -i) cannot replace one.
+set_map_name() {
+    python3 - config/system.ini "$1" <<'PY'
+import re, sys
+path, name = sys.argv[1], sys.argv[2]
+with open(path, "r+") as f:
+    text = f.read()
+    new, n = re.subn(r"(?m)^name:.*$", f"name: {name}", text)
+    if n != 1:
+        sys.exit(f"expected one 'name:' line in {path}, found {n}")
+    f.seek(0)
+    f.write(new)
+    f.truncate()
+PY
+}
+
 # --- one spec ----------------------------------------------------------------
 failures=0
 
+# run_spec <spec> [<label>] [<expectations>]: <label> names the log directory
+# (default: the spec's basename); <expectations> are "<log>\t<regex>" lines,
+# each of which that pane's log must match.
 run_spec() {
     local spec="$1"
-    local name; name="$(basename "${spec}" .yaml)"
+    local name="${2:-$(basename "${spec}" .yaml)}"
+    local expect="${3:-}"
     local dir="${OUT}/${name}"
     rm -rf "${dir}"; mkdir -p "${dir}"
-    printf '\n==> %s\n' "${spec}"
+    printf '\n==> %s (%s)\n' "${spec}" "${name}"
 
     # sleep <TAB> log <TAB> cmd, one line per pane.
     local panes
@@ -148,6 +204,19 @@ EOF
         fi
     done
 
+    local elog eregex
+    while IFS=$'\t' read -r elog eregex; do
+        [ -n "${elog}" ] || continue
+        if grep -Eq "${eregex}" "${dir}/${elog}.log" 2>/dev/null; then
+            echo "  ok    ${elog}: /${eregex}/"
+        else
+            ok=0
+            echo "::error title=smoke ${name}::${elog}: log does not show /${eregex}/"
+            echo "  ---- ${dir}/${elog}.log (last 40 lines) ----"
+            tail -n 40 "${dir}/${elog}.log" 2>/dev/null | sed 's/^/     /'
+        fi
+    done <<< "${expect}"
+
     # SIGINT first, as byobu's kill does, then make sure.
     for i in "${pids[@]}"; do kill -INT -- "-${i}" 2>/dev/null; done
     sleep 5
@@ -158,14 +227,18 @@ EOF
     [ "${ok}" = 1 ] || failures=$((failures + 1))
 }
 
+set_map_name "${MAP_NAME}" || die "cannot set the INI's [map] name"
 run_spec config/sessions/start_nav.yaml
 run_spec config/sessions/start_mapping.yaml
+set_map_name "${MAP_NAME_3D}" || die "cannot set the INI's [map] name"
+run_spec config/sessions/start_nav.yaml start_nav_3d "${EXPECT_3D}"
+set_map_name "${MAP_NAME}"
 # Only bringup is left of it once camera_feeder is skipped, but that is the
 # pane its livox_xfer_format:=0 argument goes to.
 run_spec config/sessions/calib_lidar_camera.yaml
 
 if [ "${failures}" -gt 0 ]; then
-    echo "smoke test: ${failures} session(s) had a node that did not come up."
+    echo "smoke test: ${failures} session pass(es) had a node that did not come up."
     exit 1
 fi
-echo "smoke test: every node came up in every session."
+echo "smoke test: every node came up in all four passes (nav 2D, mapping, nav 3D-only, calibration)."

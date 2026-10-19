@@ -894,6 +894,13 @@ a developer uses), then `test_wifi_manager.py`, then a **smoke test**
 against a generated 5 × 5 m fixture map with `robot_id: ci_smoke`, and failed if
 any launch has exited or logged a crash after 45 s — the check for a
 Release-only undefined symbol at plugin load (PR #32) that a green build misses.
+Since 2026-10-19 the nav spec runs a second time on a **3D-only fixture**
+(`map/ci_smoke_3d/`: `map.pcd` + an `octomap.bt` written by
+`octomap_planner_3d_cli --synthetic two_floors --write-bt`, no `gridmap.yaml`),
+switched to by rewriting the INI's `name:` line in place (so the workflow
+mounts it read-write), and that pass must also show `map_server` and the
+`keepout` pane starting idle and `Octo3D` building its surface map — a
+3D-only map crashed `map_server` until `397f264`, which the 2D pass never saw.
 `camera_feeder` is skipped (no camera); nothing else needs hardware to stay up.
 It refuses to run outside CI or against another INI, because it starts
 `driver_manager` too. The ament linter tests are not run — they were never

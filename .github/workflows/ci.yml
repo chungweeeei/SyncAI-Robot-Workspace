@@ -226,7 +226,9 @@ jobs:
       # lo -- nothing answers on it, which is the no-hardware case the test is
       # about. The INI is mounted over config/system.ini the way compose mounts
       # robotNN.ini, and robot_id ci_smoke is what the script insists on before
-      # starting anything.
+      # starting anything. Read-write since 2026-10-19: the script rewrites its
+      # `name:` line in place between the 2D and the 3D-only nav pass, as the
+      # backend's map switch does on a robot.
       - name: smoke test (every node comes up)
         run: |
           sudo ip addr add 192.168.1.103/32 dev lo
@@ -255,7 +257,7 @@ jobs:
             -e CYCLONEDDS_URI=/home/syncrobotic/robot_ws/config/cyclonedds.xml \
             -e ROS_LOG_DIR=/tmp/ros_log -e RCUTILS_COLORIZED_OUTPUT=0 -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE:/home/syncrobotic/robot_ws" \
-            -v "$RUNNER_TEMP/system.ini:/home/syncrobotic/robot_ws/config/system.ini:ro" \
+            -v "$RUNNER_TEMP/system.ini:/home/syncrobotic/robot_ws/config/system.ini" \
             -w /home/syncrobotic/robot_ws syncai-robot-base \
             .github/scripts/smoke_test.sh
 
