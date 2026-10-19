@@ -4,8 +4,8 @@
 # comes up and stays up. Run by the `smoke` job of .github/workflows/ci.yml,
 # inside the robot image, after `build` has produced install/.
 #
-# What it proves: every launch in config/sessions/start_nav.yaml and
-# start_mapping.yaml starts, its plugins load, its parameters pass their own
+# What it proves: every launch in config/sessions/start_nav.yaml,
+# start_mapping.yaml and calib_lidar_camera.yaml starts, its plugins load, its parameters pass their own
 # checks, and nothing dies in the first SETTLE seconds. That is the class of
 # bug a green colcon build does not catch -- an undefined symbol that only
 # surfaces when pluginlib dlopen()s a Release .so (PR #32), a stale plugin
@@ -160,9 +160,12 @@ EOF
 
 run_spec config/sessions/start_nav.yaml
 run_spec config/sessions/start_mapping.yaml
+# Only bringup is left of it once camera_feeder is skipped, but that is the
+# pane its livox_xfer_format:=0 argument goes to.
+run_spec config/sessions/calib_lidar_camera.yaml
 
 if [ "${failures}" -gt 0 ]; then
     echo "smoke test: ${failures} session(s) had a node that did not come up."
     exit 1
 fi
-echo "smoke test: every node came up in both sessions."
+echo "smoke test: every node came up in every session."

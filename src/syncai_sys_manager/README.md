@@ -161,14 +161,23 @@ whole robot up on its own. An operating mode **is** a byobu session:
 |---|---|---|---|
 | `AUTO` = 2 (default) | `config/sessions/start_nav.yaml` | `syncai-dev` | `log/stack/<robot_id>/<name>/` |
 | `MANUAL` = 1 | `config/sessions/start_mapping.yaml` | `syncai-mapping` | `log/stack/<robot_id>/mapping/<name>/` |
+| `CALIBRATION` = 3 | `config/sessions/calib_lidar_camera.yaml` | `syncai-calib` | `log/stack/<robot_id>/calib/<name>/` |
 | `MAINTENANCE` = 0 | — | none | — |
 
 `MAINTENANCE` is not a mode you switch *into*; it is what `get_mode` reports when
-neither session exists. **The live mode is never stored** — it is derived on
+no session exists. **The live mode is never stored** — it is derived on
 demand from which sessions byobu actually has (`byobu has-session`), so it stays
 correct across a `sys_manager` restart and does not drift when someone builds or
-kills a session by hand. If both sessions somehow exist, `get_mode` answers
-`success: false` with an "ambiguous" message and reports the lower mode.
+kills a session by hand. If more than one session somehow exists, `get_mode`
+answers `success: false` with an "ambiguous" message and reports the lower mode.
+
+`CALIBRATION` (2026-10) is bringup with the livox driver on `PointCloud2`
+(`livox_xfer_format:=0`) plus the camera feeder, for recording lidar-camera
+calibration bags — no LIO, no `driver_manager`, no `robot_state`. It is a mode
+rather than a session built by hand because it holds the same lidar UDP ports
+and camera the other two do, and the kill-every-session-then-build of
+`switch_mode` is what keeps them exclusive. The backend's mode route accepts
+`MANUAL` / `AUTO` only, so it is reached with `ros2 service call` for now.
 
 **Services:**
 

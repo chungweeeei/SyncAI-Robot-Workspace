@@ -1,8 +1,11 @@
 # Third-party sources for src/third-party/, managed with vcstool (not submodules).
 #
-#   vcs import < third-party.repos          # populate a fresh clone
-#   vcs import < third-party.repos --force  # re-checkout after changing a pin below
-#   vcs status src                          # what is actually checked out
+#   vcs import --recursive < third-party.repos          # populate a fresh clone
+#   vcs import --recursive < third-party.repos --force  # re-checkout after changing a pin below
+#   vcs status src                                      # what is actually checked out
+#
+# --recursive for direct_visual_lidar_calibration's git submodules; it is a
+# no-op for the other entries.
 #
 # Paths are relative to the import target, which defaults to the current
 # directory -- and every key below is written from the workspace root
@@ -42,6 +45,22 @@ repositories:
     type: git
     url: https://github.com/BehaviorTree/BehaviorTree.CPP.git
     version: "3.8.8"
+  src/third-party/direct_visual_lidar_calibration:
+    # Targetless camera <-> lidar extrinsic calibration (koide3), run against
+    # bags recorded in config/sessions/calib_lidar_camera.yaml. No tags
+    # upstream, so pinned to main's HEAD as of 2026-01-02; its open "gtsam
+    # 4.3" PR would stop it building against the image's GTSAM 4.2, so do not
+    # chase main without checking that.
+    #
+    # It has git submodules (Sophus, nlohmann/json, nanoflann), so this file is
+    # imported with `vcs import --recursive` (CI does; scripts/build.sh refuses
+    # a checkout without them). Its other build deps -- Ceres >= 2.1,
+    # Iridescence, libgtsam_unstable, pcl_ros / cv_bridge / fmt -- are in the
+    # Dockerfile (the ceres / iridescence stages, the gtsam stage's
+    # GTSAM_BUILD_UNSTABLE=ON, and dev's calibration layer).
+    type: git
+    url: https://github.com/koide3/direct_visual_lidar_calibration.git
+    version: 02a0dc039f5509708f384be4ff3228e0ae09352d
   src/third-party/Livox-SDK2:
     # One commit past upstream v1.3.1, so there is no tag to name.
     # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into

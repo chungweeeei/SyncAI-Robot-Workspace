@@ -346,8 +346,10 @@ def write_livox_config(robot_id: str, model: str, lidar_ip: str, host_ip: str) -
         "lidar_configs": [
             {
                 "ip": lidar_ip,
-                # 1 = the 6-byte-per-point "extend" format the driver turns into
-                # CustomMsg; pairs with the xfer_format: 1 in the params file.
+                # 1 = high-precision cartesian points on the wire. This is the
+                # lidar-side format only: the driver decodes it into the same
+                # point queue whichever ROS message xfer_format then builds,
+                # so livox_xfer_format:=0 needs no change here.
                 "pcl_data_type": 1,
                 # 0 = non-repetitive scanning, the MID360's normal mode.
                 "pattern_mode": 0,
@@ -376,6 +378,25 @@ def write_livox_config(robot_id: str, model: str, lidar_ip: str, host_ip: str) -
         f"{host_ip} (rendered to {config_path})"
     )
     return config_path
+
+
+def resolve_xfer_format(value: str):
+    """Resolve the livox_xfer_format argument: None (keep the YAML's) or 0 / 1.
+
+    Only the two formats the driver supports on ROS 2 are accepted (2, PCL
+    PointXYZI, is ROS 1 only), and anything else fails the launch: a typo here
+    would otherwise reach the driver as a format it silently does not publish.
+    """
+    value = value.strip()
+    if not value:
+        return None
+
+    if value not in ("0", "1"):
+        raise RuntimeError(
+            f"livox_xfer_format must be 0 (PointCloud2) or 1 (CustomMsg), got '{value}'"
+        )
+
+    return int(value)
 
 
 def launch_setup(context, *args, **kwargs):
@@ -433,21 +454,32 @@ def launch_setup(context, *args, **kwargs):
         read_lidar_ip(config_path),
         read_host_ip(params_path),
     )
+    livox_overrides = {
+        # Both are derived from the resolved robot_id, so they are appended
+        # after the params file and take precedence over it.
+        "frame_id": f"{robot_id}/{LIVOX_FRAME_ID}",
+        "user_config_path": livox_config_path,
+    }
+
+    # Unset (the default) keeps the YAML's xfer_format: 1, the CustomMsg that
+    # Point-LIO consumes. 0 switches livox/lidar to PointCloud2 for a session
+    # with no LIO in it at all -- config/sessions/calib_lidar_camera.yaml,
+    # whose calibration tool reads PointCloud2 only. The topic name stays the
+    # same and only its type changes, so this must never be set in a session
+    # that also runs pointlio.
+    xfer_format = resolve_xfer_format(
+        LaunchConfiguration("livox_xfer_format").perform(context)
+    )
+    if xfer_format is not None:
+        livox_overrides["xfer_format"] = xfer_format
+
     livox_driver = Node(
         package="livox_ros_driver2",
         executable="livox_ros_driver2_node",
         name=LIVOX_NODE_NAME,
         namespace=robot_id,
         output="screen",
-        parameters=[
-            params_file,
-            {
-                # Both are derived from the resolved robot_id, so they are
-                # appended after the params file and take precedence over it.
-                "frame_id": f"{robot_id}/{LIVOX_FRAME_ID}",
-                "user_config_path": livox_config_path,
-            },
-        ],
+        parameters=[params_file, livox_overrides],
     )
 
     return [robot_state_publisher, livox_driver]
@@ -479,11 +511,20 @@ def generate_launch_description():
         "urdfdom can parse it; TF-only, collision fidelity not needed)",
     )
 
+    declare_livox_xfer_format = DeclareLaunchArgument(
+        "livox_xfer_format",
+        default_value="",
+        description="Override the livox driver's xfer_format: 0 = PointCloud2, "
+        "1 = CustomMsg. Empty (default) keeps params/bringup.yaml's 1, which "
+        "Point-LIO needs; 0 is for config/sessions/calib_lidar_camera.yaml only",
+    )
+
     return LaunchDescription(
         [
             declare_system_config,
             declare_params_file,
             declare_urdf_file,
+            declare_livox_xfer_format,
             OpaqueFunction(function=launch_setup),
         ]
     )

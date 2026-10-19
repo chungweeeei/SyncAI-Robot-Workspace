@@ -37,7 +37,9 @@
     # config JSON it points at, so nothing below is model-specific).
     # 0 = PointCloud2 (PointXYZRTL), 1 = Livox CustomMsg. Must stay 1: the
     # FAST-LIO2 chain consumes CustomMsg, and switching to 0 for some tool that
-    # wants standard messages breaks LIO silently.
+    # wants standard messages breaks LIO silently. A session with no LIO in it
+    # overrides it at launch instead (bringup.launch.py livox_xfer_format:=0,
+    # used by config/sessions/calib_lidar_camera.yaml) -- never edit it here.
     xfer_format: 1
     # 0 = all lidars share one topic, 1 = one topic per lidar.
     multi_topic: 0
