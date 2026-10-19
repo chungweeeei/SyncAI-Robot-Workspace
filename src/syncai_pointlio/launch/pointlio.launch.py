@@ -99,9 +99,11 @@ def launch_setup(context, *args, **kwargs):
     # at the message stamp, went through the full 6DOF chain — a ~15 deg pitch
     # disagreement between rviz2 and the operator UI.
     #
-    # The rename also stops body_frame from lying: Point-LIO's body frame is
-    # physically the lidar, not base_link (syncai_lio_bridge relies on exactly
-    # that — see the lidar->base correction in its timer_cb).
+    # The rename also stops body_frame from lying: Point-LIO's body frame is the
+    # lidar's built-in IMU, not base_link (and not the lidar either, which is
+    # t_il away). Its static counterpart in the robot tree is the URDF's
+    # lidar_top_imu, which is what syncai_lio_bridge's lidar->base correction
+    # should go through.
     frame_overrides = {
         "world_frame": f"{robot_id}/pointlio_odom",
         "body_frame": f"{robot_id}/pointlio_body",

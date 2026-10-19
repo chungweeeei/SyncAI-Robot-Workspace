@@ -24,11 +24,16 @@
     odom_topic: /pointlio/lio_odom
 
     # TF frame names are not prefixed by the ROS namespace; the value is the
-    # actual frame name. local_frame is only a fallback: once the first odom
-    # message arrives, the node switches to that message's header.frame_id
-    # (<robot_id>/pointlio_odom on the robot).
+    # actual frame name. local_frame is only a fallback: the launch file
+    # overrides it with <robot_id>/pointlio_odom, and once the first odom
+    # message arrives the node switches to that message's header.frame_id
+    # anyway. It still matters until then, because the 10 ms timer broadcasts
+    # map -> local_frame from startup. It said "laser" until 2026-10, which was
+    # never this frame (that was the name the Livox driver stamped raw clouds
+    # with); pointlio_odom is what syncai_pointlio's world_frame and
+    # syncai_mapping's local_frame resolve to in a bare (un-namespaced) run.
     map_frame: map
-    local_frame: laser
+    local_frame: pointlio_odom
 
     # map_path: the PCD the node loadMap()s during construction. Left empty
     # here — the launch file overrides it with the absolute path from

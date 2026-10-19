@@ -44,9 +44,9 @@ Two nodes, both namespaced by `robot_id`:
 **`robot_state_publisher`** parses `description/G23.urdf` and publishes the body
 TF tree with `frame_prefix: <robot_id>/`. What actually reaches TF:
 
-- The 4 `*_Ankle` fixed joints, **`lidar_top_joint`** and
-  `camera_optical_joint` (`lidar_top → camera_optical_frame`, see "The URDF")
-  go to `/tf_static`
+- The 4 `*_Ankle` fixed joints, **`lidar_top_joint`**, `lidar_top_imu_joint`
+  (`lidar_top → lidar_top_imu`) and `camera_optical_joint`
+  (`lidar_top → camera_optical_frame`, see "The URDF") go to `/tf_static`
   immediately.
 - The 12 revolute leg joints only appear on `/tf` once something publishes
   `/joint_states`, and **nothing in this workspace does** — so the legs are
@@ -56,9 +56,9 @@ TF tree with `frame_prefix: <robot_id>/`. What actually reaches TF:
   frontend's 3D robot model — subscribes to that directly rather than going
   through TF. Bridging `motor_states` into `/joint_states` would only duplicate
   the same data into a tree nothing reads: the planar nav stack only needs
-  `base_link`, and LIO only needs `lidar_top`.
+  `base_link`, and LIO only needs `lidar_top` / `lidar_top_imu`.
 
-The `lidar_top` link is the reason this node matters to the 3D path:
+The two lidar links are the reason this node matters to the 3D path:
 
 ```xml
 <joint name="lidar_top_joint" type="fixed">
@@ -66,12 +66,24 @@ The `lidar_top` link is the reason this node matters to the 3D path:
     <child  link="lidar_top"/>
     <origin xyz="0.195 0.00 0.155" rpy="0 0.25 0"/>   <!-- 0.25 rad = physical tilt -->
 </joint>
+<joint name="lidar_top_imu_joint" type="fixed">
+    <parent link="lidar_top"/>
+    <child  link="lidar_top_imu"/>
+    <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0"/> <!-- -t_il -->
+</joint>
 ```
 
-`syncai_lio_bridge` looks up `<robot_id>/base_link → <robot_id>/lidar_top` and
-uses it to map the Point-LIO body pose onto `base_link`. Without this TF the LIO
-bridge produces no odometry and the whole 3D stack is dead — so `bringup`
-must be running before the bridge.
+`lidar_top` is the lidar — the origin its points are reported in, and the
+frame the driver stamps them with. `lidar_top_imu` is the lidar's built-in IMU,
+which is what Point-LIO's body frame (`<robot_id>/pointlio_body`) is, so it is
+the frame that maps the Point-LIO body pose onto `base_link`. Its offset is the
+inverse of `t_il` in `syncai_pointlio`'s `params/pointlio_params.yaml` and has
+to stay that: change the two together. `syncai_lio_bridge` and
+`syncai_robot_state` still look up `<robot_id>/base_link → <robot_id>/lidar_top`
+today (their `lidar_frame`, set in their own repositories); that treats the
+lidar as the IMU and is ~5 cm off, as it always was, until they move to
+`lidar_top_imu`. Without this TF the LIO bridge produces no odometry and the
+whole 3D stack is dead — so `bringup` must be running before the bridge.
 
 **`livox_ros_driver2_node`** drives the lidar — the fleet has both MID360 and
 MID360s units, and the same node handles either. Its settings live in
@@ -88,7 +100,7 @@ is byte-identical apart from the config path, so none of these differ by model):
 | `output_data_type` | `0` | YAML | mirrored verbatim from the vendor launch |
 | `lvx_file_path` | `/home/livox/livox_test.lvx` | YAML | only read when `data_src` selects an `.lvx` replay, which this stack never does — kept so the mirror stays complete |
 | `cmdline_input_bd_code` | `livox0000000001` | YAML | same: a vendor placeholder, unread on a live lidar |
-| `frame_id` | `<robot_id>/laser` | launch | prefixed explicitly, since frames aren't namespaced; the YAML carries the unprefixed fallback |
+| `frame_id` | `<robot_id>/lidar_top` | launch | prefixed explicitly, since frames aren't namespaced; the YAML carries the unprefixed fallback. The URDF's lidar link, so the raw cloud is in the robot tree (`<robot_id>/laser`, which nothing parented, until 2026-10) |
 | `user_config_path` | `/tmp/syncai_bringup/<robot_id>_<model>_config.json` | launch | **generated** — see below |
 
 ### The lidar network config
@@ -154,13 +166,18 @@ Both IP reads **raise** rather than fall back — unlike `robot_id`, a wrong or
 missing IP produces no error from the driver, just silence on the point cloud
 topic, which is much more expensive to debug than a failed launch.
 
-Note the frame naming: the driver publishes in `<robot_id>/laser`, while the
-mount extrinsic in the URDF is `<robot_id>/lidar_top`. The LIO chain broadcasts
-its own odom → body branch off to the side (the frame names come from the
-localizer config — `lio_odom`/`lio_body` upstream — which is why
-`syncai_lio_bridge` reads them off the message header instead of hardcoding
-them), and the bridge reconciles that branch onto the robot tree through
-`lidar_top`. `laser` is only the raw sensor frame; nothing parents it.
+Note the frame naming: the driver stamps its clouds with `<robot_id>/lidar_top`,
+the link the URDF's mount extrinsic ends in, so a raw `livox/lidar` message
+transforms into the robot tree — which camera ↔ lidar calibration and an
+overlay of the raw cloud on the image need. Until 2026-10 it stamped a separate
+`<robot_id>/laser` that nothing parented; bags recorded before then still carry
+it. The first attempt at this (`06721b7`) was reverted because `lidar_top` then
+meant two points ~5 cm apart — the cloud's origin, and to `syncai_lio_bridge`
+the Point-LIO body, which is the IMU — so the IMU got a link of its own,
+`lidar_top_imu`. The LIO chain broadcasts its own `pointlio_odom →
+pointlio_body` branch off to the side (`syncai_lio_bridge` reads the odom frame
+off the message header instead of hardcoding it), and the bridge reconciles
+that branch onto the robot tree through its `lidar_frame` — see above.
 
 | Argument | Default | Meaning |
 |---|---|---|
@@ -169,7 +186,10 @@ them), and the bridge reconciles that branch onto the robot tree through
 | `urdf_file` | `G23.urdf` | File name under `description/` |
 | `livox_xfer_format` | empty | Override the driver's `xfer_format`: `0` = `PointCloud2`, `1` = `CustomMsg`, empty = keep the YAML's `1`. Only the calibration session sets it (`0`), because it runs no LIO; anything else fails the launch |
 
-To move the lidar, edit `lidar_top_joint` in the URDF. There used to be a
+To move the lidar, edit `lidar_top_joint` in the URDF, measured to the
+lidar's optical centre (the origin of its points), not to its housing or its
+IMU; `lidar_top_imu` and `camera_optical_frame` hang off it and move with it.
+There used to be a
 `lidar_height` argument feeding a `static_transform_publisher` here; it was
 removed along with that node when the extrinsic moved into the URDF, which can
 also carry the 0.25 rad pitch that a height-only argument could not.
@@ -188,7 +208,7 @@ they cannot be static. The launch file appends them after `params_file` in each
 |---|---|
 | `robot_description` | the URDF text, read off disk |
 | `frame_prefix` | needs the resolved `robot_id` |
-| `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/laser` |
+| `frame_id` | same — TF frame names are not namespaced, so it ships as `<robot_id>/lidar_top` |
 | `user_config_path` | points at the livox JSON the launch file generates per `robot_id` and lidar model |
 
 One value in the file is **not** a driver parameter at all: `host_ip`. The livox
@@ -237,7 +257,8 @@ camera:
 
 `description/G23.urdf` is a SolidWorks URDF-exporter output for the G23 quadruped:
 `base_link` root, four legs (`FL`/`FR`/`HL`/`HR` × HIP → THIGH → SHANK → FOOT),
-plus the `lidar_top` frame and, under it, `camera_optical_frame`.
+plus the `lidar_top` frame (the lidar) and, under it, `lidar_top_imu` (its IMU)
+and `camera_optical_frame`.
 
 `camera_optical_joint` is **provisional** (2026-10-16): robot01's camera
 measured by hand at 7 cm ahead of and 6.5 cm below the lidar along the body
@@ -245,7 +266,9 @@ axes, level and facing forward, expressed in the 0.25 rad-pitched `lidar_top`
 as `xyz="0.084 0 -0.046" rpy="-1.3208 0 -1.5708"`. It is good for TF lookups
 and an rviz sanity check, not for projecting lidar points onto the image —
 replace it with the lidar-camera calibration result. It hangs off `lidar_top`
-rather than `base_link` because that calibration solves camera ↔ lidar.
+rather than `base_link` because that calibration solves camera ↔ lidar, and
+`lidar_top` is the frame the raw cloud is stamped with, so the result goes into
+the joint as it is — under `lidar_top`, not `lidar_top_imu`.
 
 Two things about the URDF are deliberate:
 
@@ -275,6 +298,7 @@ Check the result:
 ```bash
 ros2 run tf2_tools view_frames                       # or:
 ros2 run tf2_ros tf2_echo <robot_id>/base_link <robot_id>/lidar_top
+ros2 run tf2_ros tf2_echo <robot_id>/lidar_top <robot_id>/lidar_top_imu
 ros2 topic hz /<robot_id>/livox/lidar
 ```
 

@@ -11,13 +11,12 @@
 # and uses it as the node namespace.
 #
 # What is NOT here, and why — these four are computed at launch time and are
-# appended AFTER this file in the Node's parameters list, so they win (the
-# camera block has three more of its own — imu_frame_id, image_frame_id and
-# device_index — noted above that block):
+# appended AFTER this file in the Node's parameters list, so they win:
 #   * robot_description  - the URDF text, read off disk from description/
 #   * frame_prefix       - needs the resolved robot_id
 #   * frame_id           - same; TF frame names are NOT namespaced by ROS, so
-#                          the fallback below is overridden with <robot_id>/laser
+#                          the fallback below is overridden with
+#                          <robot_id>/lidar_top
 #   * user_config_path   - the livox network JSON, generated per robot_id and
 #                          lidar model at launch time from host_ip below + the
 #                          [sensor.lidar] ip / type in the system INI. type is
@@ -64,10 +63,11 @@
     host_ip: "192.168.1.103"
 
     # Fallback only. TF frame names are not namespaced by ROS, so the launch
-    # file overrides this with "<robot_id>/laser". This is the raw sensor frame
-    # and nothing parents it — the mount extrinsic lives on the URDF's
-    # lidar_top_joint, which is what syncai_lio_bridge actually looks up.
-    frame_id: laser
+    # file overrides this with "<robot_id>/lidar_top": the URDF's lidar link,
+    # parented by lidar_top_joint, so a raw cloud can be transformed into the
+    # robot tree. Until 2026-10 it was a separate "laser" frame nothing
+    # parented; LIVOX_FRAME_ID in the launch file has why it changed.
+    frame_id: lidar_top
 
     # Only read when data_src selects an .lvx replay, which we never do.
     lvx_file_path: "/home/livox/livox_test.lvx"

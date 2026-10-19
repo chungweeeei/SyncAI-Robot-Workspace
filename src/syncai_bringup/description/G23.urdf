@@ -449,17 +449,51 @@
 
     <!--!!!!!!!!!!!! Lidar !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
     <!--
-      Livox MID360 mount extrinsic, consumed by lio_bridge (lidar_frame
-      <robot_id>/lidar_top) to map the Point-LIO body pose onto base_link.
-      Safe to publish statically now that pointlio broadcasts its own
-      pointlio_odom -> pointlio_body branch and no longer parents any frame
-      of the robot tree. The 0.25 rad pitch is the physical lidar tilt.
+      lidar_top is the Livox MID360 / MID360s itself: the origin its points are
+      reported in, and the frame livox_ros_driver2 stamps livox/lidar with. So
+      lidar_top_joint is the mount extrinsic measured to that point (by hand
+      today, good to a cm or two); the 0.25 rad pitch is the physical lidar
+      tilt. Safe to publish statically now that pointlio broadcasts its own
+      pointlio_odom -> pointlio_body branch and no longer parents any frame of
+      the robot tree.
+
+      Until 2026-10 lidar_top stood for two points at once: syncai_lio_bridge
+      mapped the Point-LIO body pose through it as if it were the IMU, while
+      the raw cloud was stamped with a separate <robot_id>/laser that nothing
+      parented. The lidar and its IMU are t_il (~5 cm) apart, so they are two
+      links now: lidar_top for the lidar, lidar_top_imu below for the IMU.
     -->
     <link name="lidar_top"/>
     <joint name="lidar_top_joint" type="fixed">
         <parent link="base_link"/>
         <child link="lidar_top"/>
         <origin xyz="0.195 0.00 0.155" rpy="0 0.25 0"/>
+    </joint>
+
+    <!--
+      The lidar's built-in IMU: the static counterpart of
+      <robot_id>/pointlio_body, because Point-LIO's body frame is the IMU, not
+      the lidar (it broadcasts the IMU pose, and puts every point into the IMU
+      frame through r_il / t_il). It is the frame to map the Point-LIO body pose
+      onto base_link through, i.e. what syncai_lio_bridge's and
+      syncai_robot_state's lidar_frame should name; both still name lidar_top
+      until their own repositories move to this one, which keeps the ~5 cm
+      error of before but nothing worse.
+
+      The offset mirrors syncai_pointlio's params/pointlio_params.yaml rather
+      than the Livox datasheet on its own: this joint has to be the exact
+      inverse of the extrinsic Point-LIO runs with, or mapping pointlio_body
+      back through it misses lidar_top by the difference. With r_il = identity
+      the inverse is xyz = -t_il, rpy = 0. Change the two together. t_il is the
+      MID360's published IMU offset; whether the MID360s shares it has not been
+      checked, and if it does not, pointlio_params.yaml is what is wrong and
+      this joint follows it.
+    -->
+    <link name="lidar_top_imu"/>
+    <joint name="lidar_top_imu_joint" type="fixed">
+        <parent link="lidar_top"/>
+        <child link="lidar_top_imu"/>
+        <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0"/>
     </joint>
 
     <!--!!!!!!!!!!!! Camera !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
@@ -474,9 +508,11 @@
       axes, facing straight ahead and level (not on the lidar's tilted mount).
       Parented to lidar_top rather than base_link so the camera stays rigidly
       tied to the lidar when the lidar mount extrinsic is re-measured; the
-      calibration solves camera <-> lidar, not camera <-> body. Both numbers
-      below are those measurements expressed in lidar_top, which is pitched
-      0.25 rad down:
+      calibration solves camera <-> lidar, not camera <-> body. lidar_top is the
+      frame the raw cloud is stamped with, i.e. the "lidar" of that calibration,
+      so its T_lidar_camera goes into this joint as it is, and not under
+      lidar_top_imu. Both numbers below are those measurements expressed in
+      lidar_top, which is pitched 0.25 rad down:
         xyz = R_y(0.25)^T * (0.07, 0, -0.065)
         rpy = the level optical frame (-pi/2, 0, -pi/2), with roll raised by
               0.25 to cancel the lidar's pitch

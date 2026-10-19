@@ -79,10 +79,16 @@ silence right after launch is normal.
 
 ### The frames
 
-`body_frame` is **physically the lidar**, not the robot base: the extrinsic the
-filter estimates (`r_il` / `t_il`) is lidar → IMU, and the IMU sits in the
-lidar housing. `syncai_lio_bridge` relies on exactly that when it applies the
-`base_link → lidar_top` mount transform from the URDF.
+`body_frame` is **the lidar's built-in IMU**, not the robot base and not the
+lidar itself: the filter's state is the IMU pose (`r_wi` / `t_wi`, which is
+what the TF broadcasts), and every point is moved from the lidar into the IMU
+frame through the fixed lidar → IMU extrinsic (`r_il` / `t_il`, ~5 cm on the
+MID360) before it is published. Its static counterpart in the robot tree is
+the URDF's `lidar_top_imu`, one `-t_il` from `lidar_top` (the lidar);
+`syncai_lio_bridge` maps the body pose onto `base_link` through its
+`lidar_frame`, which is still `lidar_top` until that repository moves to
+`lidar_top_imu`. This README said "physically the lidar" until 2026-10, and the
+bridge was built on that reading.
 
 The frame names are deliberately not `base_link` / `laser`, which they once
 were. `base_link` already has a parent from `syncai_lio_bridge`
@@ -94,8 +100,8 @@ silently sent the backend's `body_cloud` transform through the bridge's
 2D-projected chain (z = 0, roll = pitch = 0) while rviz2, which looks up at the
 message stamp, went through the full 6-DOF chain — a ~15° pitch disagreement
 between rviz2 and the operator UI. The launch file's frame overrides are where
-this is enforced; the YAML values (`lidar` / `body`) are only fallbacks for
-running the node bare.
+this is enforced; the YAML values (`pointlio_odom` / `pointlio_body`, the same
+names unprefixed) are only fallbacks for running the node bare.
 
 ### Deskew
 
@@ -162,8 +168,8 @@ The launch layers the two frame names on top.
 
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
-| `world_frame` | `lidar` | `<robot_id>/pointlio_odom` | |
-| `body_frame` | `body` | `<robot_id>/pointlio_body` | |
+| `world_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | The YAML said `lidar` until 2026-10, and the code default still does; `pointlio_odom` is what `syncai_mapping`'s `pgo_node` derives in a bare run |
+| `body_frame` | `pointlio_body` | `<robot_id>/pointlio_body` | The lidar's IMU (see "The frames"); `body` until 2026-10, and still the code default |
 | `lidar_type` | `0` | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
 | `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is fixed at 9.81. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |

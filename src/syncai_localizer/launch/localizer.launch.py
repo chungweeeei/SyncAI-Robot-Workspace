@@ -35,8 +35,10 @@
 # The robot_id-dependent values are parameter overrides, not remappings: the
 # node builds its message_filters subscribers from parameter values (absolute
 # names into pointlio's namespace, which a relative name from /<robot_id> could
-# not reach). local_frame needs no override — the node adopts the frame_id of
-# the first odom message.
+# not reach). local_frame is overridden too, with the frame pointlio.launch.py
+# names: the node adopts the frame_id of the first odom message, but its 10 ms
+# timer broadcasts map -> local_frame from startup, so until then the value is
+# what lands on TF.
 #
 # The [map] pcd from the same INI is mandatory: the localizer loads it during
 # construction, so a missing file means the node is not started at all. The
@@ -144,14 +146,17 @@ def localizer_overrides(robot_id: str, map_pcd: str, initial_pose: dict) -> dict
     """The instance-dependent localizer parameters, layered on top of the params
     file. cloud_topic / odom_topic live under pointlio's namespace, not the
     localizer's, so relative names cannot reach them; they are the contract with
-    syncai_pointlio/launch/pointlio.launch.py. local_frame needs no override —
-    the node adopts the frame_id of the first odom message. map_pcd is already
-    absolute and verified to exist (see launch_setup); initial_pose is
+    syncai_pointlio/launch/pointlio.launch.py, and so is local_frame (its
+    world_frame). The node adopts the frame_id of the first odom message, but
+    broadcasts map -> local_frame from startup; without the override that was
+    the YAML's unprefixed placeholder until pointlio's first message. map_pcd is
+    already absolute and verified to exist (see launch_setup); initial_pose is
     read_initial_pose()'s dict, or None to leave set_initial_pose at the
     params-file default (false)."""
     overrides = {
         "cloud_topic": f"/{robot_id}/pointlio/body_cloud",
         "odom_topic": f"/{robot_id}/pointlio/lio_odom",
+        "local_frame": f"{robot_id}/pointlio_odom",
         "map_path": map_pcd,
     }
     if initial_pose:
