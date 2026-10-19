@@ -593,46 +593,53 @@ void debugFill(const octomap::OcTree & tree, const SurfaceMap & m, double x, dou
   }
   std::sort(gathered.begin(), gathered.end());
   const int step = m.step_cells;
-  size_t best_lo = 0, best_hi = 0;
-  for (size_t i = 0, lo = 0, hi = 0; i < gathered.size(); ++i) {
-    const int v = gathered[i].first;
-    while (gathered[lo].first < v - step) {
-      ++lo;
-    }
-    while (hi < gathered.size() && gathered[hi].first <= v + step) {
-      ++hi;
-    }
-    if (hi - lo > best_hi - best_lo) {
-      best_lo = lo;
-      best_hi = hi;
-    }
-  }
-  bool quad[4] = {false, false, false, false};
-  for (size_t i = best_lo; i < best_hi; ++i) {
-    quad[gathered[i].second] = true;
-  }
-  const int v = gathered.empty() ? 0 : gathered[(best_lo + best_hi) / 2].first;
   std::printf(
     "debug-fill (%.2f, %.2f) column (%d, %d), reference z %.2f (kz %d): %s\n", x, y, ix, iy, z,
     static_cast<int>(std::floor((z - m.z0) / m.res)) - 1, m.describeColumn(c).c_str());
-  std::printf(
-    "  gathered %zu layers from %d neighbours; best cluster %zu at kz %d (z top %.2f), "
-    "support %.2f (need %.2f), quadrants %d%d%d%d\n",
-    gathered.size(), disc_n, best_hi - best_lo, v, m.z0 + (v + 1) * m.res,
-    disc_n ? static_cast<double>(best_hi - best_lo) / disc_n : 0.0, m.params.hole_fill_min_support,
-    quad[0], quad[1], quad[2], quad[3]);
-  std::printf(
-    "  existing layer within +-%d of kz %d: %s\n", step + 1, v,
-    m.layerNear(c, v, step + 1) == kNoCell ? "none" : "yes");
+  std::printf("  gathered %zu layers from %d neighbours\n", gathered.size(), disc_n);
+  // Every height group the neighbours know about, judged as holeFillPass
+  // judges it (one group per floor; the largest alone is the wrong one to
+  // look at on a multi-storey map -- under the robot's own track it is the
+  // complete floor, and the hole is in the other).
   const int C = static_cast<int>(std::ceil(m.params.body_clearance / m.res - 1e-9));
-  std::string occ;
-  for (int kz = v - 3; kz < v + 1 + C + 2; ++kz) {
-    const auto * n = tree.search(octomap::point3d(m.cx(ix), m.cy(iy), m.z0 + (kz + 0.5) * m.res));
-    occ += n == nullptr ? '?' : (tree.isNodeOccupied(n) ? '#' : '.');
+  for (size_t lo = 0; lo < gathered.size();) {
+    size_t hi = lo + 1;
+    while (hi < gathered.size() && gathered[hi].first - gathered[hi - 1].first <= step) {
+      ++hi;
+    }
+    bool quad[4] = {false, false, false, false};
+    for (size_t i = lo; i < hi; ++i) {
+      quad[gathered[i].second] = true;
+    }
+    const int v = gathered[(lo + hi) / 2].first;
+    const double support = disc_n ? static_cast<double>(hi - lo) / disc_n : 0.0;
+    const bool has_layer = m.layerNear(c, v, step + 1) != kNoCell;
+    std::string occ;
+    bool occupied_near = false;
+    for (int kz = v - 3; kz < v + 1 + C + 2; ++kz) {
+      const auto * n = tree.search(octomap::point3d(m.cx(ix), m.cy(iy), m.z0 + (kz + 0.5) * m.res));
+      const bool o = n != nullptr && tree.isNodeOccupied(n);
+      occ += n == nullptr ? '?' : (o ? '#' : '.');
+      if (o && kz >= v - 1 && kz < v + 1 + C) {
+        occupied_near = true;
+      }
+    }
+    const char * verdict =
+      support < m.params.hole_fill_min_support    ? "no: support too low"
+      : quad[0] + quad[1] + quad[2] + quad[3] < 3 ? "no: one-sided (a floor edge)"
+      : has_layer                                 ? "no: the column already has a layer there"
+      : occupied_near ? "no: an occupied voxel near that height (something was seen here)"
+                      : "FILL";
+    std::printf(
+      "  group at kz %d (z top %.2f): %zu layers, support %.2f (need %.2f), quadrants %d%d%d%d, "
+      "existing layer within +-%d: %s -> %s\n",
+      v, m.z0 + (v + 1) * m.res, hi - lo, support, m.params.hole_fill_min_support, quad[0], quad[1],
+      quad[2], quad[3], step + 1, has_layer ? "yes" : "none", verdict);
+    std::printf(
+      "    column voxels kz %d..%d (? unknown, . free, # occupied): %s\n", v - 3, v + C + 2,
+      occ.c_str());
+    lo = hi;
   }
-  std::printf(
-    "  column voxels kz %d..%d (? unknown, . free, # occupied): %s\n", v - 3, v + C + 2,
-    occ.c_str());
 }
 
 bool dumpPcd(const SurfaceMap & m, const std::string & path)
