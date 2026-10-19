@@ -486,9 +486,11 @@
     # below -- a copy of the 2D plugin, not a subclass, so FollowPathRPP is
     # exactly dev's. Every value down to max_robot_pose_search_dist is
     # FollowPathRPP's and is one calibration with it (and with
-    # driver_manager's scales): change them together. A path without
-    # heights (all z = 0, any 2D planner) is followed exactly as
-    # FollowPathRPP follows it, stair mode never engaging.
+    # driver_manager's scales): change them together -- except
+    # desired_linear_vel, 0.8 here against 0.60 there since 2026-10-19 (see
+    # its note). A path without heights (all z = 0, any 2D planner) is
+    # followed as FollowPathRPP follows it, at that speed, stair mode never
+    # engaging.
     FollowPathRPP3D:
       plugin: "syncai_controller::RegulatedPurePursuitController3D"
       # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
@@ -498,7 +500,15 @@
       # grows and nobody has swept it properly yet, so keep the command in the
       # range that has been measured. Raise this only together with a fresh
       # scale_fwd measurement at the new speed — the two are one calibration.
-      desired_linear_vel: 0.60
+      # RPP 3D only: raised 0.60 -> 0.8 on 2026-10-19, asked for after the
+      # stair tests (1.0 was asked first and taken back the same day) --
+      # FollowPathRPP above keeps dev's 0.60. NOT yet measured on the robot:
+      # with scale_fwd 1.40 the gait is commanded 1.12 m/s, past anything
+      # swept, so check the real speed against cmd_vel (and the weaving the
+      # regulated_linear_scaling_min_speed note warns about) on the first
+      # run. At 0.8 m/s the velocity-scaled lookahead (lookahead_time 1.5)
+      # just reaches max_lookahead_dist 1.2.
+      desired_linear_vel: 0.8
       lookahead_dist: 0.6
       # Raised from 0.3: pure pursuit steering gain scales with 1/lookahead^2,
       # so the short low-speed lookahead made startup oscillate (weaving until
@@ -572,11 +582,17 @@
       stair_enter_dist: 1.0
       stair_exit_behind_dist: 0.8
       stair_exit_ahead_dist: 2.5
-      # 0.2 m/s and a 0.4 m carrot keep RPP's collision projection (carrot +
-      # 0.36 m of footprint) within ~0.76 m, where a 0.17 / 0.28 m stair has
-      # risen ~0.46 m -- under the local costmap's 0.58 m obstacle floor, so
-      # the treads ahead do not read as a wall while the stairwell's walls do.
-      stair_linear_vel: 0.2
+      # The 0.4 m carrot keeps RPP's collision projection (carrot + 0.36 m of
+      # footprint) within ~0.76 m, where a 0.17 / 0.28 m stair has risen
+      # ~0.46 m -- under the local costmap's 0.58 m obstacle floor, so the
+      # treads ahead do not read as a wall while the stairwell's walls do.
+      # The projection runs min(v x max_allowed_time_to_collision_up_to_carrot
+      # (1 s), carrot), so from 0.4 m/s up the carrot is the bound and the
+      # speed does not move it. Raised 0.2 -> 0.5 on 2026-10-19: the stair
+      # tests found the climb far too slow. NOT yet measured on the robot --
+      # whether HIMLOCO tracks 0.5 (x scale_fwd 1.40 = 0.7 m/s commanded) on
+      # a spiral stair is open.
+      stair_linear_vel: 0.5
       stair_lookahead_dist: 0.4
       # 3 s standing after each policy switch, in and out (asked for on
       # 2026-10-14; nothing measured yet). Two stops per flight, so ~6 s plus

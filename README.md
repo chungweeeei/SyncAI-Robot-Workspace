@@ -368,7 +368,7 @@ walked while mapping. Which one is the planner's call: the task_runner reads
   pose's height.
 - Where the path rises 0.3 m within 1 m, RPP 3D enters **stair mode**: it stops,
   calls `set_policy_mode` with `stair_policy_mode` (1, HIMLOCO), stands
-  `stair_policy_settle_time` (3 s), climbs at 0.2 m/s with a 0.4 m carrot, and
+  `stair_policy_settle_time` (3 s), climbs at 0.5 m/s with a 0.4 m carrot (0.2 until 2026-10-19; the flat speed of RPP 3D is 0.8 m/s, both unmeasured on the robot), and
   past the flight stops again to switch back to the policy the controller
   reported on `<robot_id>/mode`. Without `set_policy_mode` it does not climb.
   The short 2F ramp of dp1f_1012 is taken in stair mode too. The state is on

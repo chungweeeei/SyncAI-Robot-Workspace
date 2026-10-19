@@ -21,8 +21,10 @@ Three path followers are loaded on this branch (two on `dev`, 2026-10):
   `dev`'s was the point of the split (2026-10-19; until then both lived in
   `FollowPathRPP`). A fix to the shared pursuit / regulation / collision code
   has to be made in both files, and its params block repeats `FollowPathRPP`'s
-  values (one calibration — change them together). On a path without heights
-  it behaves as `FollowPathRPP`.
+  values (one calibration — change them together), except `desired_linear_vel`:
+  **0.8 m/s** against `FollowPathRPP`'s 0.60 since 2026-10-19, unmeasured on the
+  robot (× `scale_fwd` 1.40 = 1.12 m/s to the gait). On a path without heights
+  it behaves as `FollowPathRPP`, at that speed.
 
 The FollowPath goal's `controller_id` picks between them, so
 `controller_id` in `move.xml` is the whole A/B. `move.xml` (the 2D tree,
@@ -234,7 +236,8 @@ mode* (2026-10):
    fails instead (the robot does not climb on the level-ground policy). If
    `<robot_id>/mode` already reports the stair policy, nothing is sent and the
    robot does not stop.
-2. **Climb** at **`stair_linear_vel`** (0.2 m/s) with a **`stair_lookahead_dist`**
+2. **Climb** at **`stair_linear_vel`** (0.5 m/s since 2026-10-19 — 0.2 made the
+   stair tests crawl; 0.5 is unmeasured on HIMLOCO) with a **`stair_lookahead_dist`**
    (0.4 m) carrot. The short carrot keeps RPP off the inside of a spiral's turns
    (its narrowest treads) and keeps the collision projection (carrot + 0.36 m of
    footprint, ~0.76 m) short of the treads that rise past the local costmap's
