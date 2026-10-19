@@ -34,10 +34,11 @@ So the stack has two planning layers, not three:
   With MPPI it can bend around a blocker standing beside the path; with RPP it
   can only stop.
 
-This describes the 2D tree on `dev`. On `feature/octomap-planner-3d`,
-`move.xml` names `Octo3D` and `FollowPathRPP3D` and leaves `is_path_valid` out,
-so MPPI is loaded but unused there, and a blocker gets neither a local bend
-nor a global replan: RPP 3D stops, and the FollowPath retries are the wait.
+This describes the 2D tree (`move.xml`, as on `dev`). On
+`feature/octomap-planner-3d` a 3D map runs `move_3d.xml` instead, which names
+`Octo3D` and `FollowPathRPP3D` and leaves `is_path_valid` out, so MPPI is
+unused on such a map, and a blocker gets neither a local bend nor a global
+replan: RPP 3D stops, and the FollowPath retries are the wait.
 
 The re-route machinery in the 2D `move.xml` (`is_path_valid`, FollowPath
 retries) is unchanged and works alongside MPPI:

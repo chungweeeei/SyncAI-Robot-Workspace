@@ -53,11 +53,11 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
 | `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter); an obstacle source can measure its height band from the ground under the robot (`height_reference: sensor`) instead of the global frame's `z = 0` |
-| `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine, SmacPlanner2D and OctomapPlanner3D plugins (Smac is configured as `GridBased`; OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`, is loaded beside it as `Octo3D`, which `move.xml` asks for on this branch) |
+| `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine, SmacPlanner2D and OctomapPlanner3D plugins (Smac is configured as `GridBased`; OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`, is loaded beside it as `Octo3D`, which a 3D map's trees ask for on this branch (`move_3d.xml` / `dock_3d.xml`, picked per goal)) |
 | `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath`, its own Regulated Pure Pursuit as `FollowPathRPP` and, on this branch, RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap. RPP 3D (`RegulatedPurePursuitController3D`, a separate plugin so `FollowPathRPP` stays `dev`'s 2D RPP) and the goal check follow paths with heights (`Octo3D`) in 3D, and RPP 3D climbs stairs in a *stair mode* that switches the gait controller's RL policy |
 | `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan` |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`), plus the docking nodes `DockToPose`, `SetMotionKey`, `ComputeStagingPose`, `Wait` (2026-10) |
-| `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` — or `dock.xml` / `undock.xml` when the goal names them |
+| `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` — or `dock.xml` / `undock.xml` when the goal names them; on a 3D map (this branch) `move_3d.xml` / `dock_3d.xml` in their place |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
 | `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud (deskewed to the end of the scan; plus `body_cloud_dense` for mapping), the `pointlio_odom → pointlio_body` TF, and `reset` |
 | `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`; plus `clean_map`, the post-save job that removes people from `map.pcd`. **Not tracked here**, see below |
@@ -348,14 +348,16 @@ which also says why a failed goal failed) works as well, and is the route that
 needs nothing outside this repo.
 
 **3D navigation and stairs (prototype).** On this branch
-(`feature/octomap-planner-3d`) the configured path is 3D: `move.xml` asks for
-`planner_id="Octo3D"` (OctomapPlanner3D on the map's `octomap.bt`) and
-`controller_id="FollowPathRPP3D"` (RPP 3D), so every MOVE goal plans on the octree
-and can climb the stairs the robot walked while mapping. A map without
-`octomap.bt` fails every goal with `PLAN_FAILED`. The 2D tree on `dev` asks for
-`GridBased` (SmacPlanner2D) and `FollowPath` (MPPI) and checks the path with
-`IsPathValid`; putting those back (the line is in a comment in `move.xml`) and
-restarting the `task_runner` pane is the way back. On this branch:
+(`feature/octomap-planner-3d`) a map is either 2D (`gridmap.yaml`) or 3D
+(`octomap.bt`), never both, and each goal runs the trees for the map it is on
+(2026-10-19): on a 2D map `move.xml` / `dock.xml`, exactly `dev`'s —
+`GridBased` (SmacPlanner2D), `FollowPath` (MPPI), `IsPathValid`; on a 3D map
+`move_3d.xml` / `dock_3d.xml`, which ask for `planner_id="Octo3D"`
+(OctomapPlanner3D on the map's `octomap.bt`) and `controller_id="FollowPathRPP3D"`
+(RPP 3D), so a MOVE plans on the octree and can climb the stairs the robot
+walked while mapping. Which one is the planner's call: the task_runner reads
+`planner_server/Octo3D/map_available` per goal (`syncai_task_runner/README.md`,
+"2D or 3D: which tree a goal runs"). On a 3D map:
 
 - `Octo3D` plans across floors over *stair links* taken from `poses.txt`; a
   goal's z picks the floor (z = 0 lands on 1F).
@@ -371,10 +373,10 @@ restarting the `task_runner` pane is the way back. On this branch:
   reported on `<robot_id>/mode`. Without `set_policy_mode` it does not climb.
   The short 2F ramp of dp1f_1012 is taken in stair mode too. The state is on
   `<robot_id>/stair_mode`.
-- **Forbidden zones (keepout) are not applied.** `Octo3D` does not read the
-  2D costmap the keepout mask is drawn into, and nothing else keeps the robot
-  out of a zone, so a mask has no effect on this branch — silently. Not
-  supported in 3D for now (decided 2026-10-19).
+- **No forbidden zones (keepout).** `Octo3D` does not read the 2D costmap
+  a keepout mask is drawn into, nothing else keeps the robot out of a zone,
+  and a 3D map has no mask at all. Not supported in 3D for now (decided
+  2026-10-19); on a 2D map the keepout works as on `dev`.
 
 Climbing has **not** been run on the robot: whether HIMLOCO takes the spiral
 stair, and whether a switch standing still is enough, are open. Test it

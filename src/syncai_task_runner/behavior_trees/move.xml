@@ -142,36 +142,6 @@
   only overwrites its own retry sentence, so "replanning" stands while the
   robot keeps driving the old path, until the new one lands.
 
-  3D navigation (2026-10-14, feature/octomap-planner-3d). This tree asks for
-  planner_id="Octo3D" (OctomapPlanner3D on octomap.bt, the only planner that
-  routes between floors over a stair link) and controller_id="FollowPathRPP3D",
-  not GridBased / FollowPath (MPPI): RPP 3D (syncai_controller's
-  RegulatedPurePursuitController3D, a plugin of its own since 2026-10-19 so
-  FollowPathRPP stays dev's 2D RPP) is the controller that tracks a path with
-  heights in 3D and switches the gait policy for stairs, while MPPI and
-  FollowPathRPP match the path on x / y only. The price is MPPI's local
-  detours: RPP stops at a blocker instead of bending round it. Put both ids
-  back to go back to the 2D stack.
-
-  IsPathValid is out of the tree for the same branch: it judges the path on
-  the 2D global costmap, which is wrong once the path leaves the floor that
-  costmap was made from, so upstairs it would read a good path as blocked and
-  replan every second. A replan is also worse than useless here: Octo3D's map
-  is the static octomap, so it can only return the same route, and a start
-  snapped mid-stair can land on the floor under the spiral. The tree now
-  plans once per goal (number_plans == 0) and again only when the goal
-  changes. What is lost is the replan round a blocker that the global costmap
-  sees; RPP stops in front of it, and the FollowPath retries below are the
-  whole wait. Put IsPathValid back with the 2D ids.
-
-  What that leaves of the 2D paragraphs above (merged from dev 2026-10-15):
-  the new-goal clear of the global costmap stays, and is a no-op for Octo3D,
-  which uses that costmap for its frame id only; it is kept so that putting
-  the 2D ids back is the whole switch. blocked_time and everything said about
-  IsPathValid describe the 2D tree. The four FollowPath retries stay too, for
-  a different reason than the one given there: with RPP 3D and no replan, the
-  retries are the only wait for a blocker in front of the robot (~16 s).
-
   Costmap clear services live on the costmap nodes owned by the planner
   (global_costmap) and controller (local_costmap). Relative service names
   resolve under the robot namespace because every node in the stack shares it.
@@ -190,25 +160,15 @@
                 <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
-                <!-- Plan once per goal: number_plans is reset to 0 by the
-                     navigator on every goal (preempts included) and counted by
-                     ComputePathToPose on success, so this reads "a path exists
-                     for this goal". It replaced IsPathValid; see the header.
-                     The 2D tree here was
-                     <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/> -->
-                <Inverter>
-                  <BlackboardCheckInt value_A="{number_plans}" value_B="0" return_on_mismatch="FAILURE">
-                    <AlwaysSuccess/>
-                  </BlackboardCheckInt>
-                </Inverter>
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
               </ReactiveSequence>
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
             </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPathRPP3D"/>
+          <FollowPath path="{path}" controller_id="FollowPath"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>

@@ -13,6 +13,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
@@ -64,6 +65,11 @@ namespace syncai_global_planner
  * new one and answers when it is in -- success is a result, not a receipt. A
  * failed build leaves no map at all, not the old one. A missing file is
  * refused before anything is dropped. See loadMapCallback().
+ *
+ * `<planner_server>/<id>/map_available` (std_msgs/Bool, latched) says
+ * whether this planner has a map, built or being built: the task_runner
+ * reads it per goal to run the 3D trees (move_3d.xml, dock_3d.xml) on a 3D
+ * map and the 2D ones otherwise (2026-10-19). See publishMapAvailable().
  */
 class OctomapPlanner3D : public syncai_nav_core::GlobalPlanner
 {
@@ -101,6 +107,14 @@ protected:
 
   // poses.txt next to the tree: map/<name>/ holds both.
   static std::string posesFileBeside(const std::string & octomap_file);
+
+  // Latch `available` on map_available: true from the moment a build starts
+  // (boot or load_map) until one fails, false with no octomap_file or after a
+  // failed build. "Being built" counts as available because the map's type is
+  // what the reader wants: a goal sent mid-build belongs to the 3D tree, whose
+  // plan then fails with map_loading, not to the 2D one, whose GridBased has
+  // no map on a 3D-only map.
+  void publishMapAvailable(bool available);
 
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
   bool startHeightHint(double & z) const;
@@ -150,6 +164,7 @@ protected:
   std::unique_ptr<syncai_util::NodeThread> load_map_thread_;
 
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raw_plan_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr map_available_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 };
 

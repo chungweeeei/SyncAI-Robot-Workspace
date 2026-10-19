@@ -47,12 +47,15 @@ MAP_NAME=ci_smoke
 MAP_NAME_3D=ci_smoke_3d
 OUT=log/smoke
 # What the 3D-only pass must also show, as "<log> <TAB> <extended regex>":
-# the idle starts of 397f264 (rather than a pane that merely did not crash)
-# and Octo3D's surface map built from the fixture's octomap.bt.
+# the idle starts of 397f264 (rather than a pane that merely did not crash),
+# Octo3D's surface map built from the fixture's octomap.bt, and the
+# task_runner having heard Octo3D's map_available and switched its goals to
+# the *_3d.xml trees (the per-goal tree choice, wired end to end).
 EXPECT_3D="$(printf '%s\t%s\n' \
-    map_server 'Starting map_server idle' \
-    keepout    'Starting filter_mask_server idle' \
-    planner    'surface map: [0-9]+ x [0-9]+ columns')"
+    map_server  'Starting map_server idle' \
+    keepout     'Starting filter_mask_server idle' \
+    planner     'surface map: [0-9]+ x [0-9]+ columns' \
+    task_runner '3D map \(.*map_available\) -- goals run the \*_3d\.xml trees')"
 
 # A node that dies in ros2 launch is reported as "process has died"; the rest
 # are what a crash in a constructor or a dlopen() looks like before it does.

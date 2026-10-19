@@ -25,10 +25,11 @@ Three path followers are loaded on this branch (two on `dev`, 2026-10):
   it behaves as `FollowPathRPP`.
 
 The FollowPath goal's `controller_id` picks between them, so
-`controller_id` in `move.xml` is the whole A/B. On this branch it is
-**`FollowPathRPP3D`**, with `planner_id="Octo3D"`: it is the only one that
-follows a path with heights in 3D and climbs stairs; MPPI and `FollowPathRPP`
-do neither. The 2D tree on `dev` names `FollowPath` (MPPI) with `GridBased`.
+`controller_id` in `move.xml` is the whole A/B. `move.xml` (the 2D tree,
+`dev`'s) names `FollowPath` (MPPI) with `GridBased`; on this branch a 3D map
+runs `move_3d.xml` instead, which names **`FollowPathRPP3D`** with
+`planner_id="Octo3D"`: it is the only one that follows a path with heights in
+3D and climbs stairs; MPPI and `FollowPathRPP` do neither.
 
 Since 2026-10 the same node also serves a **second action, `DockToPose`**
 (`syncai_common`, on `dock_to_pose`): drive to ONE pose and stop there, the
@@ -368,7 +369,7 @@ cycles that never reach RPP, while these throws happen inside RPP mid-goal.
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
 cost us once: `setPlan()` is also the mid-navigation replan path. Every replan
 in `move.xml` (once a second until 2026-10, only when `IsPathValid` reports the
-path blocked since; on this branch's Octo3D tree only when the goal changes)
+path blocked since; in `move_3d.xml` only when the goal changes)
 hands `FollowPath` a fresh path, which reaches the server
 as an action preempt and lands in
 `updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
@@ -634,7 +635,7 @@ five entries on this branch (four on `dev`):
 |---|---|---|
 | `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, dock.xml's staging leg) |
 | `FollowPathRPP` | `syncai_controller::RegulatedPurePursuitController` | `follow_path`, the A/B |
-| `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, move.xml on this branch (Octo3D paths, stairs) |
+| `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, move_3d.xml / dock_3d.xml's staging leg (Octo3D paths, stairs) |
 | `Docking` | `syncai_controller::DockingController` (forward) | `dock_to_pose`, dock.xml |
 | `Undocking` | `syncai_controller::DockingController` (`allow_backward`) | `dock_to_pose`, undock.xml |
 

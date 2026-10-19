@@ -35,6 +35,15 @@ OctomapPlanner3D::~OctomapPlanner3D()
   }
 }
 
+void OctomapPlanner3D::publishMapAvailable(bool available)
+{
+  if (map_available_pub_) {
+    std_msgs::msg::Bool msg;
+    msg.data = available;
+    map_available_pub_->publish(msg);
+  }
+}
+
 std::string OctomapPlanner3D::posesFileBeside(const std::string & octomap_file)
 {
   const auto slash = octomap_file.find_last_of('/');
@@ -181,6 +190,10 @@ void OctomapPlanner3D::initialize(
     rmw_qos_profile_services_default, load_map_group_);
   clear_plan_client_ =
     node->create_client<std_srvs::srv::Empty>("clear_plan", rmw_qos_profile_services_default);
+  // Latched: the task_runner reads the last value whenever it subscribes.
+  map_available_pub_ = node->create_publisher<std_msgs::msg::Bool>(
+    std::string(node->get_name()) + "/" + name_ + "/map_available",
+    rclcpp::QoS(1).reliable().transient_local());
   load_map_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   load_map_executor_->add_callback_group(load_map_group_, node->get_node_base_interface());
   load_map_thread_ = std::make_unique<syncai_util::NodeThread>(load_map_executor_);
@@ -192,6 +205,7 @@ void OctomapPlanner3D::initialize(
       "every plan with planner_id %s will fail with map_not_loaded until %s/load_map gives one",
       __func__, name_.c_str(), name_.c_str());
     build_error_ = "no octomap_file was given";
+    publishMapAvailable(false);
     return;
   }
   // The build takes seconds on a site map (the tree alone is 200-300 MB to
@@ -199,6 +213,7 @@ void OctomapPlanner3D::initialize(
   // it the other planner ids' action servers. Plans arriving meanwhile fail
   // with map_loading.
   building_ = true;
+  publishMapAvailable(true);
   build_thread_ = std::thread([this, octomap_file = octomap_file_, poses_file = poses_file_]() {
     std::string error;
     buildMap(octomap_file, poses_file, error);
@@ -254,6 +269,7 @@ void OctomapPlanner3D::loadMapCallback(
     build_error_.clear();
     building_ = true;
   }
+  publishMapAvailable(true);
 
   std::string error;
   const bool ok = buildMap(octomap_file, poses_file, error);
@@ -314,9 +330,12 @@ bool OctomapPlanner3D::buildMap(
       logger_,
       "[OctomapPlanner3D][%s] %s; every plan with planner_id %s will fail with map_not_loaded",
       __func__, error.c_str(), name_.c_str());
-    std::lock_guard<std::mutex> lock(mutex_);
-    build_error_ = error;
-    building_ = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      build_error_ = error;
+      building_ = false;
+    }
+    publishMapAvailable(false);
     return false;
   }
   const auto rej = [&](o3d::Reject r) { return stats.rejected[static_cast<size_t>(r)]; };

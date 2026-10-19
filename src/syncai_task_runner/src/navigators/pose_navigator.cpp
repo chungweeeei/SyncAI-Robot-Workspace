@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -140,6 +141,29 @@ bool PoseNavigator<ActionT>::configure(
   // the reply is consumed there and goalCompleted() never waits on it.
   clear_plan_client_ = node->create_client<std_srvs::srv::Empty>("clear_plan");
 
+  // Which trees a goal runs (selectBtFilename): a map is 2D or 3D, never
+  // both (2026-10-19), and the planner's Octo3D says which -- it has a map
+  // (built or being built) exactly when the map has an octomap.bt it could
+  // load. Asked of the planner rather than read off map/<name>/: what is on
+  // disk is not what was loaded (an unreadable tree, a map switch whose
+  // load_map has not been called), and the planner is what the trees use.
+  // Per goal, not once at boot, because a map switch reloads the planner
+  // without restarting this node. Relative: /<robot_id>/planner_server/...
+  if (!node->has_parameter("map_3d_topic")) {
+    node->declare_parameter("map_3d_topic", std::string("planner_server/Octo3D/map_available"));
+  }
+  const std::string map_3d_topic = node->get_parameter("map_3d_topic").as_string();
+  map_3d_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    map_3d_topic, rclcpp::QoS(1).reliable().transient_local(),
+    [this, map_3d_topic](const std_msgs::msg::Bool::SharedPtr msg) {
+      if (map_3d_.exchange(msg->data) != msg->data) {
+        RCLCPP_INFO(
+          this->logger_, "[PoseNavigator] %s: %s map (%s) -- goals run the %s trees",
+          this->getName().c_str(), msg->data ? "3D" : "2D", map_3d_topic.c_str(),
+          msg->data ? "*_3d.xml" : "2D");
+      }
+    });
+
   if constexpr (Traits::kDrivesRvizGoalPose) {
     // register action client
     self_client_ = rclcpp_action::create_client<ActionT>(node, this->getName());
@@ -176,13 +200,38 @@ bool PoseNavigator<ActionT>::cleanup()
   goal_sub_.reset();
   self_client_.reset();
   clear_plan_client_.reset();
+  map_3d_sub_.reset();
   return true;
+}
+
+template <class ActionT>
+std::string PoseNavigator<ActionT>::selectBtFilename(const std::string & requested) const
+{
+  std::string filename = resolveBtFilename(requested);
+  if (filename.empty()) {
+    filename = this->bt_action_server_->getDefaultBTFilename();
+  }
+  if (!map_3d_.load()) {
+    return filename;
+  }
+  // A sibling, so a tree given by absolute path (the backend may send one)
+  // gets its 3D variant too, and a tree with none runs unchanged.
+  constexpr const char * kXml = ".xml";
+  const size_t ext = filename.size() >= 4 ? filename.size() - 4 : std::string::npos;
+  if (ext == std::string::npos || filename.compare(ext, 4, kXml) != 0) {
+    return filename;
+  }
+  const std::string variant = filename.substr(0, ext) + "_3d.xml";
+  return std::ifstream(variant).good() ? variant : filename;
 }
 
 template <class ActionT>
 bool PoseNavigator<ActionT>::goalReceived(typename ActionT::Goal::ConstSharedPtr goal)
 {
-  const std::string bt_xml_filename = resolveBtFilename(goal->behavior_tree);
+  const std::string bt_xml_filename = selectBtFilename(goal->behavior_tree);
+  RCLCPP_INFO(
+    this->logger_, "[PoseNavigator][%s] %s: %s map, running %s", __func__, this->getName().c_str(),
+    map_3d_.load() ? "3D" : "2D", bt_xml_filename.c_str());
 
   if (!this->bt_action_server_->loadBehaviorTree(bt_xml_filename)) {
     // Two causes, one return value: the file is missing, or a node in it
@@ -327,9 +376,9 @@ void PoseNavigator<ActionT>::onLoop()
 
   if constexpr (Traits::kReportsFailure) {
     // Plans beyond the first = detours, since the 2D move.xml plans only when
-    // the path is blocked or the goal changed. The Octo3D tree of
-    // feature/octomap-planner-3d plans once per goal, and a goal change resets
-    // the count, so there this reads 0 throughout.
+    // the path is blocked or the goal changed. move_3d.xml (a 3D map) plans
+    // once per goal, and a goal change resets the count, so there this reads
+    // 0 throughout.
     int plans = 0;
     blackboard->get<int>(keys::kNumberPlans, plans);
     feedback_msg->number_of_replans = static_cast<uint16_t>(std::max(plans - 1, 0));
@@ -347,14 +396,12 @@ void PoseNavigator<ActionT>::onPreempt(typename ActionT::Goal::ConstSharedPtr go
     this->logger_, "[PoseNavigator][%s] %s: received goal preemption request", __func__,
     this->getName().c_str());
 
-  const std::string requested = resolveBtFilename(goal->behavior_tree);
-  if (
-    requested == this->bt_action_server_->getCurrentBTFilename() ||
-    (requested.empty() && this->bt_action_server_->getCurrentBTFilename() ==
-                            this->bt_action_server_->getDefaultBTFilename())) {
+  // The tree the pending goal would run as a new goal (an empty name is the
+  // default, and on a 3D map either resolves to its _3d variant), so the
+  // comparison is like for like.
+  const std::string requested = selectBtFilename(goal->behavior_tree);
+  if (requested == this->bt_action_server_->getCurrentBTFilename()) {
     // if pending goal requests the same BT as the current goal, accept the pending goal
-    // if pending goal has an empty behavior_tree field, it requests the default BT file
-    // accept the pending goal if the current goal is running the default BT file
     initializeGoalPose(this->bt_action_server_->acceptPendingGoal());
   } else {
     RCLCPP_WARN(

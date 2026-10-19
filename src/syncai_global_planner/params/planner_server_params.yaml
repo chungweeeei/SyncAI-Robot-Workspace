@@ -16,7 +16,7 @@
     # This is a warning threshold only — nothing throttles or aborts on it.
     # 20 Hz (50 ms) is a generous ceiling: the BT's RateController only asks
     # for a plan at most once a second (in the 2D tree only when is_path_valid
-    # says the current one is blocked; in this branch's Octo3D tree once per
+    # says the current one is blocked; in the 3D tree, move_3d.xml, once per
     # goal), so the warning is a canary for a pathological search (a huge
     # unknown region, a goal buried in lethal cost), not a cadence anyone is
     # trying to hit. A Smac plan on a 0.05 m hall map, and an Octo3D plan
@@ -24,8 +24,8 @@
     expected_planner_frequency: 20.0
 
     # Re-send the last plan on `plan` this often (Hz), restamped; 0 = publish
-    # only when a plan is made. move.xml plans once per goal (this branch's
-    # Octo3D tree) or only when the path is blocked (the 2D tree), so without
+    # only when a plan is made. The BT plans once per goal (move_3d.xml, a 3D
+    # map) or only when the path is blocked (move.xml, a 2D map), so without
     # this a viewer that subscribes mid-drive never sees the route.
     plan_republish_rate: 1.0
 
@@ -42,7 +42,7 @@
     costmap_wait_timeout: 5.0
 
     # is_path_valid (the 2D tree's once-a-second check of the path still
-    # ahead; this branch's Octo3D tree does not call it, because the check is
+    # ahead; the 3D tree, move_3d.xml, does not call it, because the check is
     # 2D and reads a path upstairs as blocked) tests each pose twice: the
     # centre cell against INSCRIBED, which is Smac's own expansion test
     # (unknown, off-map, the keepout band, anything within the inscribed
@@ -79,11 +79,12 @@
     # Two ids on purpose (2026-10). GridBased stays Smac2D on the 2D costmap
     # and is what move.xml asks for on dev. Octo3D is the OctoMap surface
     # planner for the quadruped (OctomapPlanner3D, below), and on
-    # feature/octomap-planner-3d move.xml asks for it (with FollowPathRPP3D, the
-    # controller that follows a path with heights and climbs stairs), so every
-    # task-runner goal plans on the octree there; GridBased is then reached
-    # only with planner_id "GridBased" on compute_path_to_pose, until the
-    # tree's 2D ids go back. Loading Octo3D costs a background build of a few
+    # feature/octomap-planner-3d a 3D map's trees ask for it (move_3d.xml /
+    # dock_3d.xml, with FollowPathRPP3D, the controller that follows a path
+    # with heights and climbs stairs). Which trees a goal runs is read off
+    # Octo3D's latched map_available (2026-10-19): a map is 2D or 3D, never
+    # both, so on a 2D map Octo3D has no tree, says false, and the goal runs
+    # move.xml on GridBased. Loading Octo3D costs a background build of a few
     # seconds at startup and ~30 MB. A map without octomap.bt logs one error
     # and leaves GridBased untouched -- but with move.xml on Octo3D, every
     # navigation goal on that map then fails (PLAN_FAILED). With two ids

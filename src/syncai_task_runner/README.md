@@ -42,7 +42,8 @@ The package is split into a **host node** and **navigators**:
 | `TaskRunner` (`syncai_task_runner.cpp`) | The `rclcpp::Node`. Owns the shared TF buffer, the odom smoother, the navigator mutex, and the parameters. Hosts navigators; contains no navigation logic. |
 | `Navigator<ActionT>` (`navigator.hpp`) | Header-only template base. Wraps a `syncai_behavior_tree::BtActionServer<ActionT>` and implements the goal-muxing that keeps two navigators from driving the robot at once. |
 | `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml`, computes feedback, fills the result. One template, two explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`) and `NavigateToGoalNavigator` (`syncai_common`). The three places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The two actions share field names on purpose; that is what lets one body compile for both. |
-| `behavior_trees/move.xml` | The default tree |
+| `behavior_trees/move.xml` | The default tree (2D map; exactly `dev`'s) |
+| `behavior_trees/move_3d.xml`, `dock_3d.xml` | What a goal naming `move.xml` (or none) / `dock.xml` runs on a 3D map — see "2D or 3D: which tree a goal runs" |
 
 `Navigator` is templated on the action type because each navigator binds a
 different one. With two of them the `NavigatorMutex` is load-bearing: the two
@@ -169,9 +170,36 @@ it, by flipping two flags in `PoseNavigatorTraits`.
 
 ## The behavior tree
 
-`behavior_trees/move.xml`. On this branch (`feature/octomap-planner-3d`,
-2026-10-14) it navigates in 3D and plans once per goal (or again when the goal
-changes), with contextual recovery:
+### 2D or 3D: which tree a goal runs
+
+A map is 2D (`gridmap.yaml`) or 3D (`octomap.bt`), never both (2026-10-19).
+Until then this branch's `move.xml` was the 3D tree, so a 2D map failed every
+goal with `PLAN_FAILED`, and `dock.xml`'s `GridBased` staging leg failed every
+dock on a 3D one. Now the navigator picks, **per goal**:
+
+1. The goal's `behavior_tree` is resolved as before (a bare name against
+   `behavior_trees/`, empty = `default_bt_xml`, i.e. `move.xml`).
+2. On a **3D map**, a `<stem>_3d.xml` beside it replaces it when it exists:
+   `move.xml` → `move_3d.xml`, `dock.xml` → `dock_3d.xml`. `undock.xml` has
+   no variant (it plans nothing) and runs as is; so does any tree without
+   one, absolute paths included.
+
+"3D map" is what the planner says: `planner_server/Octo3D/map_available`
+(`std_msgs/Bool`, latched; the `map_3d_topic` parameter), true while `Octo3D`
+has a map, built or being built. Asked of the planner, not read off
+`map/<name>/`, because what is on disk is not what was loaded; per goal, not
+at boot, because `planner_server/Octo3D/load_map` switches maps without
+restarting this node. Until the first message arrives a goal runs the 2D tree.
+Each goal logs which map type and file it runs. A preempt is compared against
+the running tree after the same selection, so a preempt that arrives after
+the map changed type is a different tree and is refused, as a different
+`behavior_tree` always was. `dock_3d.xml` differs from `dock.xml` only in the
+staging leg, exactly as `move_3d.xml` differs from `move.xml`.
+
+`behavior_trees/move.xml` on a 2D map, **`behavior_trees/move_3d.xml` on a 3D
+one** — picked per goal (2026-10-19, `feature/octomap-planner-3d`; see "2D or
+3D: which tree a goal runs" below). `move_3d.xml` navigates in 3D and plans
+once per goal (or again when the goal changes), with contextual recovery:
 
 ```xml
 <Sequence name="NavigateFromFreshGlobalCostmap">
@@ -219,11 +247,10 @@ reads "no path yet for this goal". The BT.CPP built-ins it uses need no
 `plugin_lib_names` entry. The price: nothing replans round a blocker the global
 costmap sees, and RPP stops in front of one instead of bending round it, so
 the four `FollowPath` retries (~16 s) are the whole wait before the goal fails
-with `FOLLOW_PATH_FAILED`. A map without `octomap.bt` fails every goal with
-`PLAN_FAILED`. The feedback's `number_of_replans` (plans after the first)
-therefore reads 0 throughout.
+with `FOLLOW_PATH_FAILED`. The feedback's `number_of_replans` (plans after
+the first) therefore reads 0 throughout.
 
-**The 2D tree** (`dev`, and this branch's way back): the same tree with
+**The 2D tree** (`move.xml`, exactly `dev`'s): the same tree with
 `<IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>` in
 place of the second `Inverter`, `planner_id="GridBased"` (SmacPlanner2D) and
 `controller_id="FollowPath"` (MPPI). The paragraphs below on `IsPathValid`,
@@ -327,7 +354,8 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
 | `plugin_lib_names` | thirteen BT node libraries | Must list every library whose tags `move.xml`, `dock.xml` and `undock.xml` use. `syncai_behavior_tree` builds a fourteenth, `syncai_initial_pose_received_condition_bt_node`, that is deliberately not listed — no tree has an `InitialPoseReceived` tag, and loading a library whose tag nothing uses only costs startup time. The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
-| `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`dock.xml`), resolved against the same `behavior_trees/` directory, or an absolute path |
+| `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`dock.xml`), resolved against the same `behavior_trees/` directory, or an absolute path. On a 3D map any of them is swapped for its `_3d.xml` sibling when one exists |
+| `map_3d_topic` | `planner_server/Octo3D/map_available` | Latched `std_msgs/Bool` that says the map is 3D (2026-10-19, declared lazily by the navigator). Relative, so `/<robot_id>/…`; read per goal |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 
 Plus the `BtActionServer` parameters, declared by that class and documented in
@@ -402,7 +430,9 @@ pose** (2026-10-15; the field is ignored): the robot is already on the dock,
 so it backs out 1 m from where it stands.
 
 `dock.xml`: the `move.xml` structure navigates to the staging pose (MPPI,
-local costmap — this is where obstacle avoidance happens), then
+local costmap — this is where obstacle avoidance happens; on a 3D map
+`dock_3d.xml` runs instead, whose staging leg is `move_3d.xml`'s: `Octo3D` +
+`FollowPathRPP3D`, planned once), then
 `SetMotionKey key="5"` switches the gait to MPC, `WaitForMotionState
 state="5"` waits (up to 5 s) for the controller to report it on `mode`
 data[1], `Wait msec="3000"` lets the gait settle (2000 until 2026-10-15), `DockToPose controller_id="Docking"` drives the last metre

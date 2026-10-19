@@ -1,0 +1,228 @@
+<!--
+  move_3d.xml: move.xml for a 3D map (feature/octomap-planner-3d, 2026-10-19).
+  The task_runner picks it instead of move.xml, per goal, while the planner's
+  Octo3D has a map (it says so on the latched planner_server/Octo3D/
+  map_available): a goal with no behavior_tree, or one naming move.xml, runs
+  this file on a 3D map and move.xml -- dev's 2D tree, unchanged -- on a 2D
+  one. A map is one or the other, never both (2026-10-19), so the planner's
+  state is the map's type. Until then this file WAS move.xml on this branch,
+  and every goal planned on the octree, so a 2D map failed them all. The
+  section "3D navigation" below is what differs from move.xml; the rest of
+  this header is move.xml's, kept with the tree it describes.
+
+  Navigate-to-pose, replanning only when the current path becomes invalid, with
+  contextual recovery. Based on nav2's
+  navigate_w_replanning_only_if_path_becomes_invalid.xml but without its outer
+  system-level RecoveryNode: a planner / controller failure clears its own
+  costmap and retries once, since stale obstacles in the costmap are the most
+  common cause. nav2's system-level branch (clear both costmaps,
+  Spin/Wait/BackUp via RoundRobin, abort on GoalUpdated) is left out for now;
+  most of its BT nodes and the behavior server are not ported yet.
+
+  Why not replan every tick (this tree did, at 1 Hz, until 2026-10): a fresh
+  plan always wins, so the route is only as stable as the costmap's memory of
+  what it has seen. The global costmap's obstacle layer raytraces the 3D cloud
+  in 2D, so a ray to a wall point above a low blocker clears the blocker's cell
+  as soon as the robot can see past it. Half-way round a detour the original
+  route then read free and shortest again, and the robot turned back into the
+  blocker. Now a path is kept until IsPathValid sees, on the part still ahead,
+  a centre cell at >= INSCRIBED cost (the planner's own rejection test) or a
+  LETHAL cell under the padded footprint's perimeter at the path heading
+  +-0.35 rad (the test RPP applies before it drives, run on the global costmap
+  while the blocker is still 2.5 m out -- without it a blocker 0.25-0.45 m
+  beside the route passed the centre test, RPP refused the path, and the goal
+  aborted with no detour), or the goal changes. The price: a blocker that
+  leaves does not shorten the route back; the detour is finished. That is the
+  recoverable side, and no "switch when the new path is X% shorter" threshold
+  had to be invented to get it.
+
+  Every new goal starts by clearing the global costmap (2026-10-14). The
+  obstacle layer only clears a mark by raytracing through it, out to
+  raytrace_max_range (3 m), so a mark the robot drives away from is kept for
+  good, and the next goal planned round it. On robot01 the return leg of an
+  A <-> B shuttle came out 60 m instead of 17.5 m: 509 LETHAL cells, absent
+  from the static map, closed the corridor the previous leg had just driven
+  (most likely people beside or behind the robot, whose bodies hid their own
+  trail from the rays). Re-solving that costmap offline gave the same 60 m,
+  so the planner was right and the memory was stale. The clear is cheap and
+  safe: the planner waits for the costmap to be current again (<= 1 s at
+  1 Hz) before it plans; that update re-copies the static map and marks the
+  latest cloud, so a blocker within the 2.5 m obstacle range is back before
+  the first plan; one further out is marked on approach and IsPathValid
+  replans round it, the same as a blocker that appears mid-drive; and the
+  keepout mask survives (the filter re-subscribes, logging "New filter mask
+  arrived", but swaps masks under its lock and never runs without one). Only
+  at tree start, so a preempt (the tree keeps running) does not clear: the
+  memory that makes a detour stick is the point mid-goal. ForceSuccess,
+  because a clear that times out (1 s; it waits on the costmap lock, which
+  an update can hold well past the 20 ms default) must not fail the goal --
+  the stale-memory route is still a route. Side effect: ClearEntireCostmap
+  counts itself into number_recoveries, so the feedback's
+  number_of_recoveries now starts at 1 on every goal (nothing reads it today).
+
+  The 1 Hz RateController now paces validity checks; a plan only runs when the
+  check fails, so a blocked path is still noticed within ~1 s of the global
+  costmap (also 1 Hz) marking it. IsPathValid gets 100 ms instead of the 20 ms
+  default_server_timeout: it answers after taking the costmap lock, which a
+  costmap update can hold for longer than 20 ms. A timeout keeps the path (a
+  replan nobody can justify is the thing this tree exists to avoid; the next
+  check is a second away and the controller holds the robot meanwhile). A timeout WARN in
+  the task_runner log on every tick means the costmap update and the check
+  have phase-locked: raise server_timeout here.
+
+  A blocked path is replanned only once it has stayed blocked for 10 s
+  (blocked_time, 2026-10-14): the same spot of the same path (within 0.5 m,
+  blocked_match_distance) answered blocked by every check for that long,
+  with no clear answer in between. Until then the path is kept, the
+  task_runner log says "blocked at (x, y) for n of 10 s; keeping it" and the
+  status sentence says the robot reroutes if it is still blocked after 10 s;
+  one clear answer ends the wait without a replan. Before that day one answer
+  was a replan, and the global costmap marks anything crossing the route within
+  2.5 m, so a person walking across bought a detour that stuck for the rest
+  of the goal (see above): on robot01 (2026-10-14) a ~11 m leg flipped to a
+  ~35 m detour and back, one blocked answer per switch. Three checks in a
+  row (~2 s) was tried first that day; 10 s also waits out a person who
+  stops in the way, which is when a detour is least wanted. Meanwhile MPPI
+  bends round the blocker or stands in front of it. "0" is the old
+  behaviour. The wait restarts on any new path, so it also spaces out a
+  replan whose own result reads blocked. blocked_time is bounded by
+  FollowPath's retries below: lengthen one, re-check the other.
+
+  FollowPath gets four retries, and they refill (retry_refill_time, 2026-10).
+  The count is how long the robot waits for a blocker that stands in front of
+  it. FollowPath is MPPI since 2026-10 (controller_server_params.yaml), which
+  bends round a blocker beside the path inside the local costmap; one that
+  closes the way leaves it no feasible trajectory ("Optimizer fail to compute
+  path"), and there is no Wait recovery, so from then on the wait is
+  failure_tolerance (3 s) times retries + 1, with a local costmap clear
+  between attempts (re-marked in 0.2 s; both controllers zero their accel
+  baseline on every refusal, so no lurch). Until then RPP was FollowPath, a
+  tracker that refused at any blocker in its projection; it is still loaded
+  as FollowPathRPP, and controller_id="FollowPathRPP" below is the whole A/B. One
+  retry (~6 s) was enough for a person walking across and not for one
+  standing and talking; three (~12 s) covered that, at the price of a task
+  failure taking ~12 s instead of ~6 s to declare. Four (~16 s, 2026-10-14)
+  because the wait now has to outlast IsPathValid's blocked_time (10 s): a
+  person who steps in close makes MPPI refuse at once, while the 1 Hz global
+  costmap and the 1 Hz check can take ~2 s more to report the path blocked,
+  so the replan lands ~13 s into the refusals, and three retries run out at
+  ~12-13 s, just before it (estimated, not measured). Keep (retries + 1) x 3 s at
+  least blocked_time + 4 s (15 s would need six). The progress checker's
+  30 s movement_time_allowance remains the outer bound. The refill: the
+  RecoveryNode only resets when it returns, and FollowPath is RUNNING for the
+  whole goal, so the retries used to be per goal -- a blocker met early used
+  them up and the next one, however much later, failed the goal outright. An
+  attempt that ran at least 60 s before failing now earns them back. 60 s is
+  twice movement_time_allowance: an attempt that never gets going fails
+  sooner than that (3 s of failure_tolerance, or ~30 s without progress), so
+  a dead end still runs out of retries; it must not drop to 30 or below. The
+  planner branch's RecoveryNode keeps one retry and needs no refill:
+  ComputePathToPose returns each tick, which resets that node.
+
+  Failure attribution (2026-10). The navigator fills NavigateToGoal's
+  error_code from the blackboard keys failed_node / failure_msg, which
+  ComputePathToPose and FollowPath write when their goal is aborted (last
+  writer wins; blackboard_keys.hpp). The tree's shape is what makes that
+  correct, so it is load-bearing: PipelineSequence ticks the planner branch
+  (child 0) before FollowPath (child 1) and returns at the first FAILURE. If
+  the planner branch fails the tree, child 1 is not ticked in that tick, so
+  ComputePathToPose's second abort is the last write. If FollowPath fails the
+  tree in a tick where ComputePathToPose also aborted (its retry pending
+  inside a RecoveryNode that returns RUNNING), child 1 is ticked after child
+  0, so FollowPath wrote last. Either way the key names the branch that
+  actually failed the tree, and a node that aborted and was retried
+  successfully is overwritten by whichever node fails later. The
+  ClearEntireCostmap nodes stay silent on purpose: a recovery one only runs
+  because an action node just failed, so the last action-node write already
+  names the right branch, and a service timeout there would otherwise
+  overwrite it with something that maps to UNKNOWN. (The new-goal clear runs
+  before either branch and, under ForceSuccess, never fails the tree, so it
+  has nothing to name either.) Accepted limitation: a successfully retried
+  abort leaves its entry behind, so a tree that later fails through a path
+  that writes nothing (an exception) reports the stale one.
+
+  Status sentence (2026-10). NavigateToGoal's feedback status_msg is the
+  blackboard key nav_status_msg, written at each turn of this tree so the
+  console can say more than "running": IsPathValid ("Path blocked;
+  replanning") and GlobalUpdatedGoal ("Goal changed; replanning") when the
+  planner branch is about to replan, ComputePathToPose when a path lands
+  ("Following the path") or the planner gives up, FollowPath when the
+  controller gives up and when its retry goes out. Same last-writer-wins
+  channel as above, and the same child order makes it read right: a replan
+  started by child 0 is written before FollowPath is ticked, and FollowPath
+  only overwrites its own retry sentence, so "replanning" stands while the
+  robot keeps driving the old path, until the new one lands.
+
+  3D navigation (2026-10-14, feature/octomap-planner-3d). This tree asks for
+  planner_id="Octo3D" (OctomapPlanner3D on octomap.bt, the only planner that
+  routes between floors over a stair link) and controller_id="FollowPathRPP3D",
+  not GridBased / FollowPath (MPPI): RPP 3D (syncai_controller's
+  RegulatedPurePursuitController3D, a plugin of its own since 2026-10-19 so
+  FollowPathRPP stays dev's 2D RPP) is the controller that tracks a path with
+  heights in 3D and switches the gait policy for stairs, while MPPI and
+  FollowPathRPP match the path on x / y only. The price is MPPI's local
+  detours: RPP stops at a blocker instead of bending round it. move.xml is
+  the 2D stack; nobody edits ids to switch any more.
+
+  IsPathValid is out of the tree for the same branch: it judges the path on
+  the 2D global costmap, which is wrong once the path leaves the floor that
+  costmap was made from, so upstairs it would read a good path as blocked and
+  replan every second. A replan is also worse than useless here: Octo3D's map
+  is the static octomap, so it can only return the same route, and a start
+  snapped mid-stair can land on the floor under the spiral. The tree now
+  plans once per goal (number_plans == 0) and again only when the goal
+  changes. What is lost is the replan round a blocker that the global costmap
+  sees; RPP stops in front of it, and the FollowPath retries below are the
+  whole wait. move.xml keeps IsPathValid.
+
+  What that leaves of the 2D paragraphs above (merged from dev 2026-10-15):
+  the new-goal clear of the global costmap stays, and is a no-op for Octo3D,
+  which uses that costmap for its frame id only; it is kept so the two trees
+  differ only where they have to. blocked_time and everything said about
+  IsPathValid describe the 2D tree. The four FollowPath retries stay too, for
+  a different reason than the one given there: with RPP 3D and no replan, the
+  retries are the only wait for a blocker in front of the robot (~16 s).
+
+  Costmap clear services live on the costmap nodes owned by the planner
+  (global_costmap) and controller (local_costmap). Relative service names
+  resolve under the robot namespace because every node in the stack shares it.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="NavigateFromFreshGlobalCostmap">
+      <ForceSuccess>
+        <ClearEntireCostmap name="ClearGlobalCostmap-NewGoal" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="1000"/>
+      </ForceSuccess>
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <Fallback name="FallbackComputePathToPose">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <!-- Plan once per goal: number_plans is reset to 0 by the
+                     navigator on every goal (preempts included) and counted by
+                     ComputePathToPose on success, so this reads "a path exists
+                     for this goal". It replaced IsPathValid; see the header.
+                     The 2D tree here was
+                     <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/> -->
+                <Inverter>
+                  <BlackboardCheckInt value_A="{number_plans}" value_B="0" return_on_mismatch="FAILURE">
+                    <AlwaysSuccess/>
+                  </BlackboardCheckInt>
+                </Inverter>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
+            </Fallback>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPathRPP3D"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+    </Sequence>
+  </BehaviorTree>
+</root>

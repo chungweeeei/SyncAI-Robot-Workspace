@@ -52,7 +52,7 @@
     # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
     # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
-    # The detour above is the 2D tree's. This branch's move.xml (Octo3D +
+    # The detour above is the 2D tree's. A 3D map's move_3d.xml (Octo3D +
     # FollowPathRPP3D) has no IsPathValid and plans once per goal, so there is
     # no detour at all: RPP stops at a blocker, and those retries (~16 s) are
     # the whole wait before the goal fails.
@@ -124,8 +124,9 @@
     # the others cost memory, not CPU. FollowPathRPP3D is
     # feature/octomap-planner-3d's: the RPP above plus 3D matching of a path
     # with heights and the stair mode, as a plugin of its own so FollowPathRPP
-    # stays dev's 2D RPP. move.xml on this branch names it (with planner
-    # Octo3D); MPPI and FollowPathRPP match in 2D and have no stair mode.
+    # stays dev's 2D RPP. A 3D map's trees (move_3d.xml, dock_3d.xml's
+    # staging leg) name it, with planner Octo3D; MPPI and FollowPathRPP match
+    # in 2D and have no stair mode.
     controller_plugins: ["FollowPath", "FollowPathRPP", "FollowPathRPP3D", "Docking", "Undocking"]
 
     progress_checker:

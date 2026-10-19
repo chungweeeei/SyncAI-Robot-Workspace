@@ -20,8 +20,8 @@ syncai_task_runner ──ComputePathToPose (nav2_msgs)──►  planner_server
 
 Two planners are loaded: `SmacPlanner2D` as `GridBased`, and
 `OctomapPlanner3D` (not drawn above; its own section below) as `Octo3D`. On
-this branch (`feature/octomap-planner-3d`) `move.xml` asks for `Octo3D`; the
-2D tree on `dev` asks for `GridBased`. NavFn and StraightLine are built and
+this branch (`feature/octomap-planner-3d`) a 3D map's tree (`move_3d.xml`)
+asks for `Octo3D`, and a 2D map's (`move.xml`, as on `dev`) for `GridBased`. NavFn and StraightLine are built and
 registered but not loaded.
 
 Two structural notes carry over from the rest of the stack:
@@ -108,8 +108,8 @@ does not throttle or abort anything.
 
 **`getPlan()` selects the plugin by `planner_id`.** An unknown id logs an error
 and returns an empty path; an *empty* id with exactly one plugin loaded picks
-that one and warns once. The BT always names one explicitly: `Octo3D` on this
-branch (`feature/octomap-planner-3d`), `GridBased` in the 2D tree on `dev`.
+that one and warns once. The BT always names one explicitly: `Octo3D` in
+`move_3d.xml` / `dock_3d.xml` (a 3D map), `GridBased` in `move.xml` / `dock.xml`.
 
 ### ComputePathThroughPoses
 
@@ -281,12 +281,15 @@ The quadruped's ground-constrained 3D planner, on `map/<name>/octomap.bt` —
 the `octomap::OcTree` that `syncai_mapping`'s `clean_map --octomap 1` writes
 beside `map.pcd` (0.1 m; free **and** occupied, so never-seen space is
 unknown; hit floor-band voxels kept occupied). It is loaded beside
-`GridBased` as a second id, and on this branch `move.xml` asks for it (with
-`controller_id="FollowPathRPP3D"`, the controller that follows a path with
-heights and climbs stairs — `syncai_controller/README.md`), so every
-navigation goal plans here; `GridBased` is then reached only with
-`planner_id: GridBased` on `compute_path_to_pose` (see Running), until the
-tree's 2D ids go back. The 2D costmap is used for its frame id only, and
+`GridBased` as a second id, and on this branch a 3D map's trees ask for it
+(`move_3d.xml` / `dock_3d.xml`, with `controller_id="FollowPathRPP3D"`, the
+controller that follows a path with heights and climbs stairs —
+`syncai_controller/README.md`), so every navigation goal on a 3D map plans
+here. Which trees a goal runs is read off this planner: it latches
+**`planner_server/Octo3D/map_available`** (`std_msgs/Bool`), true while it has
+a map, built or being built (a goal mid-build belongs to the 3D tree and
+fails `map_loading`), false with no `octomap_file` or after a failed build;
+the task_runner reads it per goal (2026-10-19). The 2D costmap is used for its frame id only, and
 since 2026-10-15 the server does not wait for it to be current before an
 `Octo3D` plan (`usesCostmap()` is `false`): a 3D-only map has no
 `gridmap.yaml`, so `map_server` and the `keepout` pane come up idle (until
@@ -536,15 +539,16 @@ headers include nothing of ROS on purpose.
 - **`Octo3D` ignores the keepout (forbidden zones)** — by decision
   (2026-10-19), not yet built. The zones live only in the 2D global costmap
   (`KeepoutFilter`), whose cells `Octo3D` never reads, and the controllers'
-  local costmap has no filter either — so on this branch's tree **nothing
-  keeps the robot out of a zone**, silently: a mask drawn on a map navigated
-  with `Octo3D` has no effect and nothing logs that. A 3D-only map has no
-  mask at all (no gridmap to size one from; the mask server runs idle).
+  local costmap has no filter either — so on a 3D map **nothing keeps the
+  robot out of a zone**. A map is 2D or 3D, never both (2026-10-19), and a
+  3D map has no mask at all (no gridmap to size one from; the mask server
+  runs idle), so the zone editor has no canvas there; a 2D map runs
+  `move.xml` with `GridBased`, where the keepout works as on `dev`.
   Doing it needs a decision on floors first: a mask is one 2D image, a
   3D map has several storeys.
 - `is_path_valid` and the republish trim run on the 2D costmap: fine on the
   ground floor, meaningless for a path upstairs or on the stairs (checked
-  against the ground-floor gridmap). That is why this branch's `move.xml`
+  against the ground-floor gridmap). That is why `move_3d.xml`
   does not call `is_path_valid` and plans once per goal instead.
 - A route over a stair link is only a route: climbing it is RPP 3D's stair mode
   (`FollowPathRPP3D`; `syncai_controller/README.md`, "Stairs"), which stops and
@@ -656,8 +660,8 @@ margin; a zone then closes any gap narrower than the robot exactly as a wall
 does), and only the global costmap has the filter — the controller's local
 costmap does not, so the planner alone keeps the robot out and RPP cannot
 reject a path for grazing a zone edge. That planner is `GridBased`:
-**`Octo3D` does not read the keepout** (see its "Known limits"), so with
-this branch's tree a zone keeps nothing out. Running the mask source
+**`Octo3D` does not read the keepout** (see its "Known limits"), so on a 3D
+map, whose trees plan with `Octo3D`, there are no zones. Running the mask source
 by hand, outside the session:
 
 ```bash
@@ -720,7 +724,7 @@ ros2 launch syncai_global_planner planner_server.launch.py \
 ```
 
 A plan from the OctoMap surface planner without the task runner (the same
-planner the BT asks for on this branch), and the same core offline on the
+planner the BT asks for on a 3D map), and the same core offline on the
 map's own tree (see OctomapPlanner3D above):
 
 ```bash
@@ -782,7 +786,7 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
   ground floor that is the same check `GridBased` paths get; upstairs the
   path is compared with the ground-floor gridmap and reads blocked, so a 2D
   tree with `Octo3D` swapped in would replan into the same path once a
-  second. This branch's `move.xml` therefore leaves `IsPathValid` out and
+  second. `move_3d.xml` therefore leaves `IsPathValid` out and
   plans once per goal — which also means no replan round a blocker. There
   is no 3D-aware validity check yet.
 - **`Octo3D` does not follow a map switch by itself.** Nothing watches the
