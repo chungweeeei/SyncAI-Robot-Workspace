@@ -295,8 +295,12 @@ since 2026-10-15 the server does not wait for it to be current before an
 `gridmap.yaml`, so `map_server` and the `keepout` pane come up idle (until
 2026-10-19 they died at boot), the static layer never gets a map, and every goal used to hang in
 `waitForCostmap()` without reaching this planner — no log line, until the BT
-cancelled it. The global costmap still warns at 1 Hz on such a map (no map,
-robot out of bounds of its 5 × 5 m default); that is noise for `Octo3D`. A
+cancelled it. The global costmap stays at its 5 × 5 m default on such a map (no
+map), which is noise for `Octo3D`; its four warnings about that — no static
+map, robot out of bounds, sensor origin out of bounds, no keepout mask — are
+logged **once each** on entering the state and an info on leaving it
+(2026-10-19; until then they repeated every 1–10 s and buried the planner
+log), each saying it is expected on a 3D-only map. A
 `planner_id: GridBased` goal there hung the server's action thread for good
 until 2026-10-19; it now fails at once ("static layer … has no map"), which
 `NavigateToGoal` reports as `PLAN_FAILED` — see "The plan cycle".

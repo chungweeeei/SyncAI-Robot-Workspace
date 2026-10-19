@@ -407,6 +407,19 @@ correctly); renaming it means touching its two includes.
 
 ## Gotchas
 
+- **Four "missing" warnings are logged once per state change, not
+  repeatedly** (2026-10-19): `StaticLayer`'s "no map received",
+  `LayeredCostmap`'s "Robot … is out of bounds of the costmap",
+  `ObstacleLayer`'s "Sensor origin … is out of map bounds" and
+  `KeepoutFilter`'s "Filter mask was not received" each warn once on
+  entering the state and log an info on leaving it. Until then they
+  repeated every 1–10 s (the static layer's counter was a function-local
+  `static`, shared by every `StaticLayer` in the process), and on a 3D-only
+  map — no `gridmap.yaml`, so the global costmap never gets a map and stays
+  at its 5 × 5 m default for good — they were most of the planner log. So
+  read the log from the top: a warning that appeared once still holds until
+  its info says otherwise.
+
 - **Params need `/**/` wildcard keys.** The costmap node's fully-qualified name is
   `/<robot_id>/<costmap_name>`, and the hosting process must declare its `Node`
   with **no `name=`** — a launch-level name remaps both the server and its

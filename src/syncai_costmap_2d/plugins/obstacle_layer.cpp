@@ -572,13 +572,22 @@ void ObstacleLayer::raytraceFreespace(
   // get the map coordinates of the origin of the sensor
   unsigned int x0, y0;
   if (!worldToMap(ox, oy, x0, y0)) {
-    RCLCPP_WARN(
-      logger_,
-      "Sensor origin at (%.2f, %.2f) is out of map bounds (%.2f, %.2f) to (%.2f, %.2f). "
-      "The costmap cannot raytrace for it.",
-      ox, oy, origin_x_, origin_y_, origin_x_ + getSizeInMetersX(),
-      origin_y_ + getSizeInMetersY());
+    if (!sensor_out_of_bounds_) {
+      sensor_out_of_bounds_ = true;
+      RCLCPP_WARN(
+        logger_,
+        "Sensor origin at (%.2f, %.2f) is out of map bounds (%.2f, %.2f) to (%.2f, %.2f). "
+        "The costmap cannot raytrace for it; said once until it is back. Expected for a "
+        "global costmap whose static layer has no map, as on a 3D-only map (no gridmap.yaml)",
+        ox, oy, origin_x_, origin_y_, origin_x_ + getSizeInMetersX(),
+        origin_y_ + getSizeInMetersY());
+    }
     return;
+  }
+  if (sensor_out_of_bounds_) {
+    sensor_out_of_bounds_ = false;
+    RCLCPP_INFO(
+      logger_, "Sensor origin at (%.2f, %.2f) is back inside the map; raytracing again", ox, oy);
   }
 
   // we can pre-compute the enpoints of the map outside of the inner loop... we'll need these later

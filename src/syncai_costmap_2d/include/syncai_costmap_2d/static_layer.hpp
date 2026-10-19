@@ -173,6 +173,11 @@ protected:
   // action thread.
   std::atomic<bool> map_received_{false};
   bool map_received_in_update_bounds_{false};
+  // Whether updateCosts() last ran without a map: warned on entering that
+  // state, an info when a map arrives (2026-10-19). Until then a function-
+  // local static counter warned every 10th update -- shared by every
+  // StaticLayer in the process -- and for good on a 3D-only map.
+  bool no_map_warned_{false};
   tf2::Duration transform_tolerance_;
   nav_msgs::msg::OccupancyGrid::SharedPtr map_buffer_;
   // Dynamic parameters handler

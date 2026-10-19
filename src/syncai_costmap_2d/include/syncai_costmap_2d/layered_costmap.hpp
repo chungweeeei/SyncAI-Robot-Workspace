@@ -153,6 +153,13 @@ private:
 
   bool rolling_window_;
 
+  // Whether the last updateMap() found the robot outside the costmap. The
+  // warning is logged on entering that state and an info on leaving it, not
+  // every update (2026-10-19): a global costmap with no static map stays at
+  // its 5 x 5 m default -- every update of a 3D-only map, where nothing
+  // reads its cells -- and the per-update warning buried the planner log.
+  bool robot_out_of_bounds_{false};
+
   bool current_;
   double minx_, miny_, maxx_, maxy_;
   unsigned int bx0_, bxn_, by0_, byn_;

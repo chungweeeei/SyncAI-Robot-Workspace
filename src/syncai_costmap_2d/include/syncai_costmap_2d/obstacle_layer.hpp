@@ -211,6 +211,13 @@ protected:
   bool rolling_window_;
   bool was_reset_;
   int combination_method_;
+
+  // Whether the last raytrace found a sensor origin outside the costmap:
+  // warned on entering that state, an info on leaving it, instead of once
+  // per source per update (2026-10-19; see LayeredCostmap's
+  // robot_out_of_bounds_ for the 3D-only map that flooded the log with it).
+  // One flag for every source: they sit on the same robot.
+  bool sensor_out_of_bounds_{false};
 };
 
 }  // namespace syncai_costmap_2d

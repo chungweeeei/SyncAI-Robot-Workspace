@@ -509,7 +509,8 @@ keepout) → `localization` (pointlio + localizer) → `lio_bridge` → `plan_ct
 (`costmap_filter_info.launch.py`) writes a blank `map/<name>/keepout.yaml` +
 `.pgm` of the gridmap's geometry when the map has none, then serves it — so
 every pane of a normal boot stays up, and "Filter mask was not received" in the
-planner log means the pane is actually down (until 2026-09-30 it exited on
+planner log (logged once since 2026-10-19, with an info when a mask arrives;
+expected on a 3D-only map, where the pane runs idle) means the pane is actually down (until 2026-09-30 it exited on
 purpose on a map without a mask, and that warning was the expected noise).
 `pointlio` got its own pane
 in 2026-09, when `syncai_pointlio` moved in-tree; it used to come up inside the
