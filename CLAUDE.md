@@ -194,11 +194,12 @@ manual dependency `rosdep` does not cover.
 | Package | How it is managed |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`. Unmodified. |
+| `direct_visual_lidar_calibration` | `koide3/direct_visual_lidar_calibration`, pinned to a main SHA (no tags upstream; 2026-10). Targetless camera → lidar extrinsic calibration, run by hand on bags recorded in `CALIBRATION` mode (see "Running the stack"). Has **git submodules**, so it needs `vcs import --recursive`. Needs Ceres ≥ 2.1 and Iridescence, which the image does not carry yet, and builds only against GTSAM 4.2. |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver |
 | `small_gicp` | Pinned to upstream tag `v1.0.1`. Unmodified. The registration backend (`RegistrationPCL`, a `pcl::Registration` subclass) of `syncai_localizer` and, since 2026-10, of `syncai_mapping`'s loop verification. Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package and both find it with `find_package(small_gicp)`; the ordering comes from `<depend>small_gicp</depend>` in their manifests. |
 | `vizionsdk-ros2` | `TechNexion-Vision/vizionsdk-ros2` (branch `main`). ROS 2 wrapper (`vizionsdk_ros2/vizionsdk_camera_node`) for the TechNexion camera, started only by `bringup.launch.py use_camera:=true`. Needs the closed-source VizionSDK `.deb`, which the `Dockerfile` downloads from the TechNexion GitHub release (`VIZIONSDK_VERSION`); there is no rosdep key for it. |
 
-All five are checked out by vcstool from `third-party.repos` — they were git
+All six are checked out by vcstool from `third-party.repos` — they were git
 submodules until `fca520b`, and `.gitmodules` is gone; bumping one is a
 one-line `version:` edit there plus `vcs import < third-party.repos --force`,
 not the old two-commit dance. The import target is the workspace root, not

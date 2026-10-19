@@ -42,6 +42,20 @@ repositories:
     type: git
     url: https://github.com/BehaviorTree/BehaviorTree.CPP.git
     version: "3.8.8"
+  src/third-party/direct_visual_lidar_calibration:
+    # Targetless camera <-> lidar extrinsic calibration (koide3), run against
+    # bags recorded in config/sessions/calib_lidar_camera.yaml. No tags
+    # upstream, so pinned to main's HEAD as of 2026-01-02; its open "gtsam
+    # 4.3" PR would stop it building against the image's GTSAM 4.2, so do not
+    # chase main without checking that.
+    #
+    # It has git submodules (Sophus, nlohmann/json, nanoflann), so this one
+    # needs `vcs import --recursive`; without it the build fails on missing
+    # headers. It also needs Ceres >= 2.1 and Iridescence, neither of which the
+    # image has yet.
+    type: git
+    url: https://github.com/koide3/direct_visual_lidar_calibration.git
+    version: 02a0dc039f5509708f384be4ff3228e0ae09352d
   src/third-party/Livox-SDK2:
     # One commit past upstream v1.3.1, so there is no tag to name.
     # NOTE: this SHA is duplicated in .devcontainer/Dockerfile (source-built into
