@@ -18,7 +18,7 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>
-  <!-- The dock_to_pose action type, and SetPolicyMode: RPP switches the gait
+  <!-- The dock_to_pose action type, and SetPolicyMode: RPP 3D switches the gait
        controller's RL policy for stairs. syncai_common is vcs-imported from
        SyncAI-Robot-Interface (dependencies.repos, branch dev); its
        DockToPose.action must be merged there before this package builds. -->

@@ -11,7 +11,9 @@ path and refuses to move when the path is blocked.
 ```
 controller_server (syncai_controller)          one process, one local_costmap
   ├─ FollowPath     → syncai_mppi_controller::MPPIController   ← this package
-  └─ FollowPathRPP  → syncai_controller::RegulatedPurePursuitController
+  ├─ FollowPathRPP  → syncai_controller::RegulatedPurePursuitController
+  └─ FollowPathRPP3D → syncai_controller::RegulatedPurePursuitController3D
+                       (feature/octomap-planner-3d only)
 ```
 
 ## Why this is a controller and not a "local planner"
@@ -33,9 +35,9 @@ So the stack has two planning layers, not three:
   can only stop.
 
 This describes the 2D tree on `dev`. On `feature/octomap-planner-3d`,
-`move.xml` names `Octo3D` and `FollowPathRPP` and leaves `is_path_valid` out,
+`move.xml` names `Octo3D` and `FollowPathRPP3D` and leaves `is_path_valid` out,
 so MPPI is loaded but unused there, and a blocker gets neither a local bend
-nor a global replan: RPP stops, and the FollowPath retries are the wait.
+nor a global replan: RPP 3D stops, and the FollowPath retries are the wait.
 
 The re-route machinery in the 2D `move.xml` (`is_path_valid`, FollowPath
 retries) is unchanged and works alongside MPPI:

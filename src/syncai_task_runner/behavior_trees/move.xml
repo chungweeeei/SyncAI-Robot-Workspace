@@ -144,10 +144,12 @@
 
   3D navigation (2026-10-14, feature/octomap-planner-3d). This tree asks for
   planner_id="Octo3D" (OctomapPlanner3D on octomap.bt, the only planner that
-  routes between floors over a stair link) and controller_id="FollowPathRPP",
-  not GridBased / FollowPath (MPPI): RPP is the controller that tracks a path
-  with heights in 3D and switches the gait policy for stairs, while MPPI scores
-  its rollouts on the planar local costmap only. The price is MPPI's local
+  routes between floors over a stair link) and controller_id="FollowPathRPP3D",
+  not GridBased / FollowPath (MPPI): RPP 3D (syncai_controller's
+  RegulatedPurePursuitController3D, a plugin of its own since 2026-10-19 so
+  FollowPathRPP stays dev's 2D RPP) is the controller that tracks a path with
+  heights in 3D and switches the gait policy for stairs, while MPPI and
+  FollowPathRPP match the path on x / y only. The price is MPPI's local
   detours: RPP stops at a blocker instead of bending round it. Put both ids
   back to go back to the 2D stack.
 
@@ -167,7 +169,7 @@
   which uses that costmap for its frame id only; it is kept so that putting
   the 2D ids back is the whole switch. blocked_time and everything said about
   IsPathValid describe the 2D tree. The four FollowPath retries stay too, for
-  a different reason than the one given there: with RPP and no replan, the
+  a different reason than the one given there: with RPP 3D and no replan, the
   retries are the only wait for a blocker in front of the robot (~16 s).
 
   Costmap clear services live on the costmap nodes owned by the planner
@@ -206,7 +208,7 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPathRPP"/>
+          <FollowPath path="{path}" controller_id="FollowPathRPP3D"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>

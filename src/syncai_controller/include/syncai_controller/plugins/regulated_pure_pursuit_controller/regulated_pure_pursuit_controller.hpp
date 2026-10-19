@@ -4,7 +4,6 @@
 #define SYNCAI_CONTROLLER__PLUGINS__REGULATED_PURE_PURSUIT_CONTROLLER__REGULATED_PURE_PURSUIT_CONTROLLER_HPP_
 
 #include <algorithm>
-#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,9 +13,6 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/bool.hpp"
-#include "std_msgs/msg/int32_multi_array.hpp"
-#include "syncai_common/srv/set_policy_mode.hpp"
 #include "syncai_costmap_2d/footprint_collision_checker.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_util/geometry_utils.hpp"
@@ -297,64 +293,6 @@ protected:
   geometry_msgs::msg::Twist last_cmd_vel_;
   double max_robot_pose_search_dist_;
   bool use_interpolation_;
-
-  // Height-aware tracking (syncai_controller/path_height.hpp). Set by setPlan():
-  // true when the plan's poses do not all share one z (OctomapPlanner3D), and
-  // transformGlobalPlan() then matches the robot to the plan in 3D, with the
-  // robot's ground height from body_frame_ (the controller_server's
-  // `body_frame` / `lidar_height`, shared with its goal check).
-  bool plan_has_height_{false};
-  std::string body_frame_;
-  double body_height_{0.0};
-
-  // ---- Stairs (2026-10) ------------------------------------------------------
-  // A stretch of a plan with heights that rises stair_min_rise within reach is
-  // climbed in "stair mode": the gait controller's RL policy is switched to
-  // stair_policy_mode over set_policy_mode, standing still, and the robot then
-  // follows at stair_linear_vel with a stair_lookahead_dist carrot; past the top
-  // (or bottom) it stops again and the policy goes back. The README's "Stairs"
-  // section has the numbers and what is still untested.
-
-  /// Height span (max z - min z) of full_plan_ from `behind` metres before pose
-  /// `idx` to `ahead` metres after it, along the path on x / y.
-  double stairRise(size_t idx, double behind, double ahead) const;
-  /// Whether the robot should be in stair mode at this point of the plan.
-  bool wantStairs() const;
-  /// Ask the gait controller for `mode` (fire and forget: the driver's UDP has
-  /// no acknowledgement to wait for).
-  void sendPolicy(int mode);
-  void publishStairMode();
-
-  enum class StairTransition { None, Entering, Leaving };
-
-  bool use_stair_mode_;
-  double stair_min_rise_;
-  double stair_enter_dist_;
-  double stair_exit_behind_dist_;
-  double stair_exit_ahead_dist_;
-  double stair_linear_vel_;
-  double stair_lookahead_dist_;
-  double stair_policy_settle_time_;
-  int stair_policy_mode_;
-  int flat_policy_mode_;
-
-  // The plan as setPlan() received it; global_plan_ is pruned from the front,
-  // so the robot's index in here is full_plan_.size() - global_plan_.size().
-  nav_msgs::msg::Path full_plan_;
-  // What the robot is set up for: true once the stair policy was commanded and
-  // has settled. Survives reset(): the policy outlives the goal that set it.
-  bool on_stairs_{false};
-  StairTransition stair_transition_{StairTransition::None};
-  bool policy_sent_{false};
-  rclcpp::Time settle_until_;
-  // The policy to go back to after the stairs (-1: none known).
-  int restore_policy_{-1};
-  // The controller's live policy index, from <robot_id>/mode data[0]; -1 until
-  // the first sample. Written from the executor, read in the control loop.
-  std::atomic<int> reported_policy_{-1};
-  rclcpp::Client<syncai_common::srv::SetPolicyMode>::SharedPtr policy_client_;
-  rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr mode_sub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr stair_mode_pub_;
 
   nav_msgs::msg::Path global_plan_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;

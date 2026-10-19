@@ -67,7 +67,7 @@
     # Two ids on purpose (2026-10). GridBased stays Smac2D on the 2D costmap
     # and is what move.xml asks for on dev. Octo3D is the OctoMap surface
     # planner for the quadruped (OctomapPlanner3D, below), and on
-    # feature/octomap-planner-3d move.xml asks for it (with FollowPathRPP, the
+    # feature/octomap-planner-3d move.xml asks for it (with FollowPathRPP3D, the
     # controller that follows a path with heights and climbs stairs), so every
     # task-runner goal plans on the octree there; GridBased is then reached
     # only with planner_id "GridBased" on compute_path_to_pose, until the

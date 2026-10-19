@@ -5,20 +5,30 @@ a rolling local costmap and drives a pluggable controller at a fixed rate. Porte
 from `nav2_controller`, with `nav2_regulated_pure_pursuit_controller` merged in
 as a plugin of this package.
 
-Two controllers are loaded (2026-10):
+Three path followers are loaded on this branch (two on `dev`, 2026-10):
 
 - **`FollowPath` is MPPI**, from `syncai_mppi_controller` (its README has the
   port). It does local obstacle avoidance: it samples (v, ω) sequences on the
   local costmap and bends round a blocker beside the path.
 - **`FollowPathRPP` is RPP**, which this README mostly describes. RPP tracks
   the path and stops when the path is blocked. It was `FollowPath` until then.
+  It is `dev`'s plugin, unchanged: it matches a path on x / y only.
+- **`FollowPathRPP3D` is RPP 3D** (`RegulatedPurePursuitController3D`,
+  `feature/octomap-planner-3d`): the same RPP plus 3D matching of a path with
+  heights and the stair mode (both below). It is a **copy** of the 2D plugin,
+  not a subclass — the stair logic runs through `computeVelocityCommands()`,
+  which the 2D class has no hooks for, and keeping `FollowPathRPP` exactly
+  `dev`'s was the point of the split (2026-10-19; until then both lived in
+  `FollowPathRPP`). A fix to the shared pursuit / regulation / collision code
+  has to be made in both files, and its params block repeats `FollowPathRPP`'s
+  values (one calibration — change them together). On a path without heights
+  it behaves as `FollowPathRPP`.
 
 The FollowPath goal's `controller_id` picks between them, so
-`controller_id` in `move.xml` is the whole A/B. On this branch
-(`feature/octomap-planner-3d`) it is **`FollowPathRPP`**, with
-`planner_id="Octo3D"`: RPP is the one of the two that follows a path with
-heights in 3D and climbs stairs (both below); MPPI does neither. The 2D tree on
-`dev` names `FollowPath` (MPPI) with `GridBased`.
+`controller_id` in `move.xml` is the whole A/B. On this branch it is
+**`FollowPathRPP3D`**, with `planner_id="Octo3D"`: it is the only one that
+follows a path with heights in 3D and climbs stairs; MPPI and `FollowPathRPP`
+do neither. The 2D tree on `dev` names `FollowPath` (MPPI) with `GridBased`.
 
 Since 2026-10 the same node also serves a **second action, `DockToPose`**
 (`syncai_common`, on `dock_to_pose`): drive to ONE pose and stop there, the
@@ -35,6 +45,7 @@ syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server  ◄
                   progress checker           goal checkers           Controller plugins
               "still moving?"           goal_checker        FollowPath    = MPPI
                                         dock_goal_checker   FollowPathRPP = RPP
+                                                            FollowPathRPP3D = RPP 3D
                                                             Docking       = DockingController (forward)
                                                             Undocking     = DockingController (reverse)
                           └────────────────────────┼────────────────────────┘
@@ -64,6 +75,8 @@ src/controller_server.cpp        the action server + control loop
 src/main.cpp                     node construction + configure() + spin
 plugins/
   regulated_pure_pursuit_controller/   the controller (911 lines)
+  regulated_pure_pursuit_controller_3d/  RPP 3D: a copy of it plus 3D matching and
+                                         the stair mode (feature/octomap-planner-3d)
   docking_controller/                  the docking controller (2026-10):
     docking_controller.cpp               the syncai_nav_core::Controller plugin
     smooth_control_law.cpp               Park & Kuipers' law, ported from nav2_graceful_controller
@@ -187,8 +200,8 @@ back over the same x / y every **8.1 m, 2.5 m higher**:
   1F corridor under it, on the way to the stairs.
 
 So a path whose poses do not all share one z (`pathHasHeight()`, in
-`include/syncai_controller/path_height.hpp`) is matched in **3D**: RPP's nearest
-pose and window end, the patrol gate's nearest pose here, and the goal is only
+`include/syncai_controller/path_height.hpp`) is matched in **3D**: RPP 3D's
+(`FollowPathRPP3D`) nearest pose and window end, the patrol gate's nearest pose here, and the goal is only
 reached within **`goal_z_tolerance`** (0.5 m) of the end pose's height. A path of
 all-equal z — every 2D planner — takes the old planar code paths unchanged; a 3D
 distance to a `z = 0` path on 2F would otherwise put every pose 5 m away. The
@@ -196,16 +209,18 @@ robot's height is **not in its pose**: lio_bridge projects `odom -> base_link`
 (and `map -> odom`) onto the plane. It is `body_frame`'s z in the path's frame
 minus `lidar_height` — Point-LIO's body, the one frame that still climbs, and the
 planner's own start-height lookup with the same two values. Without that TF, a
-path with heights fails RPP's cycle (the server holds the robot for
+path with heights fails RPP 3D's cycle (the server holds the robot for
 `failure_tolerance`) and never reaches its goal, rather than being followed on
-x / y. MPPI (`FollowPath`) is **not** height-aware: it matches the path in 2D,
-so a path with a stair link is RPP-only for now.
+x / y. MPPI (`FollowPath`) and the 2D RPP (`FollowPathRPP`) are **not**
+height-aware: they match the path in 2D, so a path with a stair link is
+`FollowPathRPP3D`-only. The server's goal check is shared, so it applies to a
+path with heights whichever controller follows it.
 
-Climbing itself is RPP's stair mode, next.
+Climbing itself is RPP 3D's stair mode, next.
 
-### Stairs (RPP stair mode)
+### Stairs (RPP 3D stair mode)
 
-On a path with heights, RPP (`FollowPathRPP` only) climbs a stretch that rises
+On a path with heights, RPP 3D (`FollowPathRPP3D` only) climbs a stretch that rises
 **`stair_min_rise`** (0.3 m) within **`stair_enter_dist`** (1 m) ahead in *stair
 mode* (2026-10):
 
@@ -243,7 +258,7 @@ back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
 
 **Untested on the robot**: whether HIMLOCO climbs this stair, whether a policy
 switch standing still is enough (or the controller wants `Stand` first), and the
-settle time. MPPI has no stair mode and no 3D matching.
+settle time. MPPI and `FollowPathRPP` have no stair mode and no 3D matching.
 
 ## Regulated Pure Pursuit
 
@@ -613,12 +628,13 @@ interfaces. Selection is by ID: the parameter names an ID, and `<id>.plugin`
 names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
-four entries since 2026-10:
+five entries on this branch (four on `dev`):
 
 | ID | Plugin | Used by |
 |---|---|---|
 | `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, dock.xml's staging leg) |
 | `FollowPathRPP` | `syncai_controller::RegulatedPurePursuitController` | `follow_path`, the A/B |
+| `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, move.xml on this branch (Octo3D paths, stairs) |
 | `Docking` | `syncai_controller::DockingController` (forward) | `dock_to_pose`, dock.xml |
 | `Undocking` | `syncai_controller::DockingController` (`allow_backward`) | `dock_to_pose`, undock.xml |
 

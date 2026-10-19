@@ -198,18 +198,19 @@ changes), with contextual recovery:
       </RecoveryNode>
     </RateController>
     <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
-      <FollowPath path="{path}" controller_id="FollowPathRPP"/>
+      <FollowPath path="{path}" controller_id="FollowPathRPP3D"/>
       <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
     </RecoveryNode>
   </PipelineSequence>
 </Sequence>
 ```
 
-**Octo3D + RPP, planned once.** `Octo3D` (OctomapPlanner3D on the map's
+**Octo3D + RPP 3D, planned once.** `Octo3D` (OctomapPlanner3D on the map's
 `octomap.bt`) is the only planner that routes between floors, over a stair
-link; `FollowPathRPP` is the controller that matches a path with heights in 3D
-and switches the gait policy for stairs, while MPPI scores its rollouts on the
-planar local costmap only. `IsPathValid` is out because it judges the path on
+link; `FollowPathRPP3D` (`syncai_controller`'s `RegulatedPurePursuitController3D`,
+split out of `FollowPathRPP` on 2026-10-19 so that one stays `dev`'s 2D RPP) is
+the controller that matches a path with heights in 3D and switches the gait
+policy for stairs, while MPPI and `FollowPathRPP` match the path on x / y only. `IsPathValid` is out because it judges the path on
 the 2D global costmap, which upstairs reads a good path as blocked, and a
 replan on the static octomap can only return the same route. In its place, the
 `number_plans == 0` check (`number_plans` is reset to 0 by the navigator on

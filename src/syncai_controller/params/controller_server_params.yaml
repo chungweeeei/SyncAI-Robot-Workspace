@@ -53,7 +53,7 @@
     # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
     # The detour above is the 2D tree's. This branch's move.xml (Octo3D +
-    # FollowPathRPP) has no IsPathValid and plans once per goal, so there is
+    # FollowPathRPP3D) has no IsPathValid and plans once per goal, so there is
     # no detour at all: RPP stops at a blocker, and those retries (~16 s) are
     # the whole wait before the goal fails.
     # MPPI's "Optimizer fail to compute path" reaches this window only since
@@ -86,7 +86,7 @@
     # planar match puts the robot on the wrong turn -- RPP's nearest-pose
     # search spans 10 m -- and a 2F goal can be "reached" from the 1F
     # corridor under it. A path whose poses do not all share one z is
-    # therefore matched in 3D, by RPP (nearest pose, local window) and by the
+    # therefore matched in 3D, by RPP 3D (nearest pose, local window) and by the
     # goal check here; a 2D planner's path (all z = 0) is untouched. The
     # robot's height is not in its pose -- lio_bridge projects base_link onto
     # the plane -- so it is body_frame's z in the path's frame minus
@@ -121,11 +121,12 @@
     # Undocking (2026-10) are two instances of the pose-to-pose docking
     # controller that the dock_to_pose action drives, differing only in
     # direction (see their blocks). Only the controller a goal names runs;
-    # the others cost memory, not CPU. On feature/octomap-planner-3d move.xml
-    # names FollowPathRPP (with planner Octo3D): RPP is the one of the two path
-    # followers that matches a path with heights in 3D and has the stair mode
-    # below; MPPI matches in 2D and has neither.
-    controller_plugins: ["FollowPath", "FollowPathRPP", "Docking", "Undocking"]
+    # the others cost memory, not CPU. FollowPathRPP3D is
+    # feature/octomap-planner-3d's: the RPP above plus 3D matching of a path
+    # with heights and the stair mode, as a plugin of its own so FollowPathRPP
+    # stays dev's 2D RPP. move.xml on this branch names it (with planner
+    # Octo3D); MPPI and FollowPathRPP match in 2D and have no stair mode.
+    controller_plugins: ["FollowPath", "FollowPathRPP", "FollowPathRPP3D", "Docking", "Undocking"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -479,7 +480,81 @@
       inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
 
-      # Stair mode (2026-10, RPP only; README "Stairs"). On a path with heights
+    # RPP 3D (2026-10, feature/octomap-planner-3d): FollowPathRPP plus 3D
+    # matching of a path with heights (OctomapPlanner3D) and the stair mode
+    # below -- a copy of the 2D plugin, not a subclass, so FollowPathRPP is
+    # exactly dev's. Every value down to max_robot_pose_search_dist is
+    # FollowPathRPP's and is one calibration with it (and with
+    # driver_manager's scales): change them together. A path without
+    # heights (all z = 0, any 2D planner) is followed exactly as
+    # FollowPathRPP follows it, stair mode never engaging.
+    FollowPathRPP3D:
+      plugin: "syncai_controller::RegulatedPurePursuitController3D"
+      # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
+      # so pure pursuit was computing its arcs (w = v * curvature) for a speed
+      # a quarter higher than reality. driver_manager's scale_fwd now corrects
+      # the gain, but the gait controller's response falls off as the command
+      # grows and nobody has swept it properly yet, so keep the command in the
+      # range that has been measured. Raise this only together with a fresh
+      # scale_fwd measurement at the new speed — the two are one calibration.
+      desired_linear_vel: 0.60
+      lookahead_dist: 0.6
+      # Raised from 0.3: pure pursuit steering gain scales with 1/lookahead^2,
+      # so the short low-speed lookahead made startup oscillate (weaving until
+      # the velocity-scaled lookahead grew with speed).
+      min_lookahead_dist: 0.5
+      max_lookahead_dist: 1.2
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
+      transform_tolerance: 0.2
+      min_approach_linear_velocity: 0.3
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: 0.9
+      # Raised to 0.3 to keep the robot from crawling while tracking a path.
+      # Caveat (this floor was previously lowered to 0.1 for this reason): a
+      # value this high overrides curvature regulation right after
+      # rotate-to-heading exits, where the arc is sharpest, so watch for
+      # corner-cutting / weaving on tight turns. Now that desired_linear_vel is
+      # 0.60 this floor is half the top speed, so curvature regulation has only
+      # a 0.30-0.60 band to work in — lower it before raising it if corner
+      # cutting persists.
+      regulated_linear_scaling_min_speed: 0.3
+      use_rotate_to_heading: true
+      # Lowered from 0.785 (45 deg): exiting rotation that far off-heading made
+      # the robot drive away from the path and trigger another rotation.
+      # 0.25 rad (~14 deg) hands over to path tracking nearly aligned.
+      rotate_to_heading_min_angle: 0.25
+      # Lowered from 1.3, where the robot only delivered 0.695 rad/s (ratio
+      # 0.53). The controller therefore believed every in-place turn was
+      # finishing about twice as fast as it was, exited rotate-to-heading still
+      # off-heading, and had to re-enter — the weave. At 0.65 with
+      # scale_turn_* the measured rate lands within ~20% of the command, which
+      # is the whole point: rotate-to-heading's exit test only means something
+      # if the commanded rate is the real one.
+      rotate_to_heading_angular_vel: 0.65
+      # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
+      # in_place_wz_min for the rotate-to-heading branch -- same value, pre-scale
+      # (0.21 for a day, see there); change them together. Lifts
+      # the acceleration ramp's first cycle (0.16) and the last hundredths of
+      # a radian of the stop cap, the two places a rotation dips under it.
+      # 0 disables it.
+      rotate_to_heading_min_angular_vel: 0.3
+      max_angular_accel: 3.2
+      # No velocity smoother in this stack: the controller clamps linear
+      # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
+      max_linear_accel: 1.0
+      allow_reversing: false
+      use_interpolation: true
+      cost_scaling_dist: 0.6
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      max_robot_pose_search_dist: 10.0
+
+      # Stair mode (2026-10, RPP 3D only; README "Stairs"). On a path with heights
       # (OctomapPlanner3D) a stretch rising stair_min_rise within
       # stair_enter_dist ahead is a stair: the robot stops, set_policy_mode
       # switches the gait controller to stair_policy_mode, it stands

@@ -279,7 +279,7 @@ the `octomap::OcTree` that `syncai_mapping`'s `clean_map --octomap 1` writes
 beside `map.pcd` (0.1 m; free **and** occupied, so never-seen space is
 unknown; hit floor-band voxels kept occupied). It is loaded beside
 `GridBased` as a second id, and on this branch `move.xml` asks for it (with
-`controller_id="FollowPathRPP"`, the controller that follows a path with
+`controller_id="FollowPathRPP3D"`, the controller that follows a path with
 heights and climbs stairs — `syncai_controller/README.md`), so every
 navigation goal plans here; `GridBased` is then reached only with
 `planner_id: GridBased` on `compute_path_to_pose` (see Running), until the
@@ -423,11 +423,11 @@ corner cell a wall foot sits in), step-continuous along the segment, and
 never closer to the boundary than the cells it replaces (Smac's "never above
 252" rule); then a resample at `interpolation_resolution` with z read back
 from the surface. Poses carry z = the floor's top face (+ `path_z_offset`),
-yaw toward the next pose, the goal's orientation last. MPPI ignores z; RPP
-(`FollowPathRPP`) and the controller_server's goal check do not since 2026-10
+yaw toward the next pose, the goal's orientation last. MPPI and the 2D RPP
+ignore z; RPP 3D (`FollowPathRPP3D`) and the controller_server's goal check do not since 2026-10
 — a path whose poses do not all share one z is matched to the robot in 3D
 (a stair link's spiral is back over the same x / y every 8.1 m on
-dp1f_1012), and RPP climbs a stretch rising 0.3 m within 1 m in a stair mode
+dp1f_1012), and RPP 3D climbs a stretch rising 0.3 m within 1 m in a stair mode
 that switches the gait policy (`syncai_controller/README.md`, "Paths with
 heights" and "Stairs").
 
@@ -500,10 +500,10 @@ headers include nothing of ROS on purpose.
   ground floor, meaningless for a path upstairs or on the stairs (checked
   against the ground-floor gridmap). That is why this branch's `move.xml`
   does not call `is_path_valid` and plans once per goal instead.
-- A route over a stair link is only a route: climbing it is RPP's stair mode
-  (`FollowPathRPP`; `syncai_controller/README.md`, "Stairs"), which stops and
-  switches the gait controller's RL policy over `set_policy_mode`. MPPI
-  follows only its x / y. Climbing is untested on the robot.
+- A route over a stair link is only a route: climbing it is RPP 3D's stair mode
+  (`FollowPathRPP3D`; `syncai_controller/README.md`, "Stairs"), which stops and
+  switches the gait controller's RL policy over `set_policy_mode`. MPPI and
+  the 2D RPP (`FollowPathRPP`) follow only its x / y. Climbing is untested on the robot.
 - A stair link is the mapping run's track, drift and all, and it exists only
   where the robot walked; a stair blocked since (or walked only one way by a
   robot that cannot descend) is still linked both ways.
@@ -649,7 +649,7 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
-| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by the 2D `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10); the 3D tree (`Octo3D` + `FollowPathRPP`) plans once per goal and does not call it, since it judges on the 2D costmap. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by the 2D `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10); the 3D tree (`Octo3D` + `FollowPathRPP3D`) plans once per goal and does not call it, since it judges on the 2D costmap. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled**, which until then left the cancelled route on `plan` until the next goal. A new plan stops the repeats. Main executor, the republish timer's thread |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` |
 | Publisher | `Octo3D/raw_plan` | `nav_msgs/Path`, only with `Octo3D.publish_raw_plan`: the A* cell chain before the shortcut, for comparing against `plan` |
