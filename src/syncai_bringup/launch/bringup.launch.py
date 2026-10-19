@@ -21,19 +21,23 @@
 #   * The G23 body TF tree via robot_state_publisher (reads the URDF under
 #     description/). The URDF root link is base_link, so with frame_prefix the
 #     legs hang directly off <robot_id>/base_link (odom->base_link comes from
-#     LIO). The fixed joints (the 4 *_Ankle plus lidar_top_joint) go to
-#     /tf_static; the 12 revolute leg joints would only appear on /tf once
-#     /joint_states is published, and nothing does that on purpose — live joint
-#     angles reach their only consumer (the frontend 3D model) over
-#     syncai_driver_manager's motor_states instead.
+#     LIO). The fixed joints (the 4 *_Ankle, lidar_top_joint,
+#     lidar_top_imu_joint and camera_optical_joint) go to /tf_static; the 12
+#     revolute leg joints would only appear on /tf once /joint_states is
+#     published, and nothing does that on purpose — live joint angles reach
+#     their only consumer (the frontend 3D model) over syncai_driver_manager's
+#     motor_states instead.
 #   * lidar_top_joint carries the MID360 mount extrinsic (including the 0.25 rad
-#     physical tilt), which syncai_lio_bridge looks up as
-#     <robot_id>/base_link -> <robot_id>/lidar_top to map the LIO body pose onto
-#     the odom TF chain. It used to be a separate static_transform_publisher
-#     here, driven by a lidar_height launch argument; both were dropped when the
-#     extrinsic moved into the URDF, because a height-only argument could not
-#     carry the pitch.
-#   * The Livox MID360 / MID360s point cloud, via the livox_ros_driver2 node.
+#     physical tilt) to <robot_id>/lidar_top, the lidar itself and the frame its
+#     cloud is stamped with; lidar_top_imu_joint hangs the lidar's IMU off it,
+#     which is what Point-LIO's body frame is. syncai_lio_bridge maps the LIO
+#     body pose onto the odom TF chain through one of the two (lidar_top until
+#     its own repository moves to lidar_top_imu). The mount used to be a
+#     separate static_transform_publisher here, driven by a lidar_height launch
+#     argument; both were dropped when the extrinsic moved into the URDF,
+#     because a height-only argument could not carry the pitch.
+#   * The Livox MID360 / MID360s point cloud, via the livox_ros_driver2 node,
+#     stamped <robot_id>/lidar_top.
 #
 # No camera. This file could start the TechNexion camera through vizionsdk_ros2
 # (use_camera:=true, off by default) until 2026-10-17, when that node was
@@ -87,10 +91,21 @@ from launch_ros.actions import Node
 DEFAULT_SYSTEM_INI = os.path.expanduser("~/robot_ws/config/system.ini")
 FALLBACK_ROBOT_ID = "default_robot"
 
-# The lidar's raw sensor frame. Kept here rather than in the params file
-# because it is the one livox setting the launch has to rewrite: TF frame names
-# are not namespaced by ROS, so it ships as "<robot_id>/laser".
-LIVOX_FRAME_ID = "laser"
+# The frame the driver stamps its clouds with. Kept here rather than in the
+# params file because it is the one livox setting the launch has to rewrite: TF
+# frame names are not namespaced by ROS, so it ships as "<robot_id>/lidar_top".
+#
+# It is the URDF's lidar_top link on purpose (2026-10). It used to be a separate
+# "laser" frame that nothing parented, so a raw livox/lidar message could not be
+# transformed anywhere — harmless while nothing did, but camera <-> lidar
+# calibration and an overlay of the raw cloud on the image need the header to
+# be a frame in the robot tree. A first attempt at this was reverted because
+# lidar_top then meant both the cloud's origin and, to syncai_lio_bridge, the
+# Point-LIO body (the lidar's IMU), which are t_il (~5 cm) apart; the IMU has
+# its own link under lidar_top now (lidar_top_imu), so lidar_top is the lidar
+# alone. Point-LIO ignores the header, so LIO is unaffected. Bags recorded
+# before this change carry "<robot_id>/laser".
+LIVOX_FRAME_ID = "lidar_top"
 
 # The node whose params carry the livox settings, and the params-file key the
 # host IP is read from. The wildcard prefix matches the params YAML, which uses
@@ -314,7 +329,7 @@ def write_livox_config(robot_id: str, model: str, lidar_ip: str, host_ip: str) -
     Only the two IPs and the model vary; everything else mirrors the vendor
     MID360_config.json / MID360s_config.json. extrinsic_parameter stays all-zero
     on purpose — the mount extrinsic (the 0.25 rad tilt included) lives on the
-    URDF's lidar_top_joint, which is what syncai_lio_bridge looks up. Setting it
+    URDF's lidar_top_joint, the frame the clouds are stamped with. Setting it
     here as well would apply the rotation twice.
 
     lidar_net_info and lidar_configs are shared across models rather than

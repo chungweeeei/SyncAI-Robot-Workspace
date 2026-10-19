@@ -20,8 +20,12 @@
 #     The values below are only the fallbacks for running the node bare.
 /**/pointlio_node:
   ros__parameters:
-    world_frame: "lidar"
-    body_frame: "body"
+    # The launch's names without the robot_id prefix, so a bare run broadcasts
+    # what syncai_mapping's pgo_node expects in one (it derives pointlio_odom
+    # rather than reading it). The fork's "lidar" / "body" until 2026-10, and
+    # the code defaults still are.
+    world_frame: "pointlio_odom"
+    body_frame: "pointlio_body"
     print_time_cost: false
 
     # 0: livox CustomMsg (per-point time -> full point-by-point update),
@@ -79,5 +83,12 @@
 
     # IMU <- lidar extrinsic. r_il is the row-major 3x3 rotation flattened into a
     # 9-element list (ROS parameters have no matrix type); t_il is xyz in metres.
+    #
+    # The body frame is the IMU, so this is also what places pointlio_body
+    # relative to the lidar. syncai_bringup's G23.urdf carries the inverse as
+    # lidar_top_imu_joint (lidar_top -> lidar_top_imu, xyz = -t_il with r_il =
+    # identity), the static counterpart of pointlio_body in the robot tree:
+    # change the two together. t_il is the MID360's published IMU offset; it is
+    # not checked against the MID360s, which part of the fleet runs.
     r_il: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     t_il: [-0.011, -0.02329, 0.04412]
