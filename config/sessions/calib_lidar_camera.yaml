@@ -10,7 +10,10 @@
 #   bringup        robot_state_publisher + the livox driver, with
 #                  livox_xfer_format:=0 -- livox/lidar is a PointCloud2 here,
 #                  because the calibration tool reads PointCloud2 only (x / y /
-#                  z / intensity, in the raw <robot_id>/laser frame)
+#                  z / intensity, stamped <robot_id>/lidar_top -- the lidar
+#                  itself, which camera_optical_joint hangs off, so the solved
+#                  extrinsic goes into that joint as it is; bags recorded
+#                  before 2026-10-19 carry <robot_id>/laser)
 #   camera_feeder  image_raw/compressed + camera_info, same as the nav session
 #
 # The spec for RobotMode.CALIBRATION (3), built by switch_mode like the other
