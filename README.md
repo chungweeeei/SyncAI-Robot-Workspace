@@ -118,7 +118,7 @@ To bump one, edit its `version:` in `third-party.repos`, commit that one-line
 diff, and re-import:
 
 ```bash
-vcs import < third-party.repos --force
+vcs import --recursive < third-party.repos --force
 ```
 
 `third-party.repos` has the rest of the rules in its header (no `--shallow`,
@@ -162,7 +162,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 
 ```bash
 sudo apt update && sudo apt install python3-vcstool -y
-vcs import < third-party.repos     # src/third-party/ — upstream code, pinned
+vcs import --recursive < third-party.repos     # src/third-party/ — upstream code, pinned
 vcs import < dependencies.repos    # src/syncai_{common,mapping,driver_manager,robot_state,lio_bridge,camera_feeder} — our own, in their own repos
 ```
 

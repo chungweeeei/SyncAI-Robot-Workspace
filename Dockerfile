@@ -2,10 +2,12 @@
 # SyncAI robot workspace — multi-stage build (development).
 #
 #   base              shared runtime floor (ros-base + cyclonedds + uid-1000 user)
-#     ├─ deps-builder   compiler + Boost / TBB / Eigen, shared by the three below
-#     │    ├─ livox     Livox-SDK2 ─┐
-#     │    ├─ gtsam     GTSAM       ├→ each staged under /out/usr/local (slow, cached)
-#     │    └─ sophus    Sophus     ─┘
+#     ├─ deps-builder   compiler + Boost / TBB / Eigen, shared by the five below
+#     │    ├─ livox       Livox-SDK2  ─┐
+#     │    ├─ gtsam       GTSAM        │
+#     │    ├─ sophus      Sophus       ├→ each staged under /out/usr/local (slow, cached)
+#     │    ├─ ceres       Ceres        │
+#     │    └─ iridescence Iridescence ─┘
 #     ├─ rust-underlay  Rust toolchain (/opt/rust) + ros2-rust underlay for rclrs
 #     │                 (/opt/ros2_rust_underlay)
 #     └─ dev            the interactive dev image: colcon, byobu, Node.js, -dev
@@ -136,6 +138,13 @@ RUN git clone https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
 # No apt/PPA GTSAM on arm64, so build from source into /usr/local. Flags follow
 # the LIO-SAM recipe: system Eigen + no march-native to avoid Eigen-alignment
 # crashes when mixed with PCL; TBB on; shared libs.
+#
+# GTSAM_BUILD_UNSTABLE=ON (2026-10) for direct_visual_lidar_calibration
+# (src/third-party/): its own FindGTSAM.cmake reports GTSAM found only when
+# libgtsam_unstable is there too, and fails configure otherwise -- it links the
+# library whether or not it uses it. libgtsam_unstable is a separate .so, so
+# libgtsam itself and syncai_mapping's pgo_node are unchanged. Flipping it
+# invalidated this stage's cache once: the next image build rebuilt GTSAM.
 FROM deps-builder AS gtsam
 RUN git clone --branch 4.2.0 --depth 1 https://github.com/borglab/gtsam.git /tmp/gtsam && \
     cd /tmp/gtsam && \
@@ -144,7 +153,7 @@ RUN git clone --branch 4.2.0 --depth 1 https://github.com/borglab/gtsam.git /tmp
     -DGTSAM_USE_SYSTEM_EIGEN=ON \
     -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
     -DGTSAM_BUILD_TESTS=OFF \
-    -DGTSAM_BUILD_UNSTABLE=OFF \
+    -DGTSAM_BUILD_UNSTABLE=ON \
     -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
     -DGTSAM_WITH_TBB=ON \
     -DBUILD_SHARED_LIBS=ON && \
@@ -161,6 +170,68 @@ RUN git clone --branch 1.22.10 --depth 1 https://github.com/strasdat/Sophus.git 
     -DSOPHUS_USE_BASIC_LOGGING=ON \
     -DBUILD_SOPHUS_TESTS=OFF \
     -DBUILD_SOPHUS_EXAMPLES=OFF && \
+    make -j"$(nproc)" && make install DESTDIR=/out
+
+# Ceres 2.2.0: direct_visual_lidar_calibration (src/third-party/) parameterises
+# its SE(3) pose with ceres::Manifold, which Ceres added in 2.1. Jammy's
+# libceres-dev is 2.0.0 and has only the LocalParameterization it replaces, so
+# it is built here. 2.2.0 rather than master because master requires Abseil,
+# which jammy does not ship at the version it wants.
+#
+# Flags: SUITESPARSE / LAPACK / CUDA off -- the calibration's problems are a
+# single 7-parameter pose, solved densely, so none of them would be used, and
+# leaving them out keeps libceres' runtime dependencies to glog (and gflags,
+# which glog pulls in). dev therefore needs libgoogle-glog-dev and nothing
+# else for it: CeresConfig.cmake re-finds glog for every consumer.
+FROM deps-builder AS ceres
+RUN apt-get update && apt-get install -y \
+    libgoogle-glog-dev \
+    && rm -rf /var/lib/apt/lists/* && \
+    git clone --branch 2.2.0 --depth 1 https://github.com/ceres-solver/ceres-solver.git /tmp/ceres && \
+    cd /tmp/ceres && \
+    mkdir build && cd build && \
+    cmake .. \
+    -DBUILD_SHARED_LIBS=ON \
+    -DBUILD_TESTING=OFF \
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_BENCHMARKS=OFF \
+    -DSUITESPARSE=OFF \
+    -DLAPACK=OFF \
+    -DUSE_CUDA=OFF && \
+    make -j"$(nproc)" && make install DESTDIR=/out
+
+# Iridescence v1.0.3: koide3's OpenGL visualizer, which
+# direct_visual_lidar_calibration (src/third-party/) links unconditionally --
+# its initial_guess_manual / calibrate / viewer tools are GUIs on it. Not in
+# any apt repo. Cloned --recursive because imgui / implot / ImGuizmo /
+# portable-file-dialogs are submodules it compiles in.
+#
+# glm and glfw3 come from apt so its CMake does not FetchContent them from
+# GitHub at configure time (it silently downloads whichever is missing). Only
+# glfw3, PNG, JPEG and OpenGL are needed again by a consumer
+# (iridescence-config.cmake re-finds OpenGL / PNG / JPEG), which is why dev
+# installs those and not glm.
+#
+# The robot has no display, so the GUI tools need the X11 passthrough
+# docker-compose.robots.yml already carries, or a workstation.
+FROM deps-builder AS iridescence
+RUN apt-get update && apt-get install -y \
+    libglm-dev \
+    libglfw3-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libgl-dev \
+    libopengl-dev \
+    && rm -rf /var/lib/apt/lists/* && \
+    git clone --branch v1.0.3 --depth 1 --recursive --shallow-submodules \
+        https://github.com/koide3/iridescence.git /tmp/iridescence && \
+    cd /tmp/iridescence && \
+    mkdir build && cd build && \
+    cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_WITH_MARCH_NATIVE=OFF \
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_PYTHON_BINDINGS=OFF && \
     make -j"$(nproc)" && make install DESTDIR=/out
 
 # ---------------------------------------------------------------------------
@@ -352,10 +423,12 @@ FROM base AS dev
 # find_package(PCL) here need, so apt cannot leave them out.
 #
 # ros-humble-pcl-ros and ros-humble-pointcloud-to-laserscan were removed at
-# the same time. Nothing depends on pcl_ros (the PCL users -- pointlio,
-# mapping, localizer, small_gicp, livox_ros_driver2's ROS 2 branch -- all go
-# through pcl_conversions), and pointcloud_to_laserscan was the 2D/AMCL
+# the same time. None of our packages depends on pcl_ros (the PCL users --
+# pointlio, mapping, localizer, small_gicp, livox_ros_driver2's ROS 2 branch --
+# all go through pcl_conversions), and pointcloud_to_laserscan was the 2D/AMCL
 # path's, in no launch or session spec since bringup_2d.launch.py went.
+# pcl_ros came back later in the month, in the calibration layer below, for
+# direct_visual_lidar_calibration alone.
 #
 # ros-humble-compressed-image-transport is not optional for the camera: the
 # camera node publishes *only* sensor_msgs/CompressedImage on
@@ -538,11 +611,41 @@ RUN case "$(dpkg --print-architecture)" in \
     ldconfig && \
     rm -rf /var/lib/apt/lists/*
 
-# Prebuilt Livox-SDK2 / GTSAM / Sophus, one COPY per builder stage (each
-# stage holds only its own library under /out/usr/local).
+# direct_visual_lidar_calibration (src/third-party/, 2026-10): the apt half of
+# what it needs, beside the ceres / iridescence stages and GTSAM's unstable
+# library. Every <depend> in its package.xml goes through
+# ament_auto_find_build_dependencies(), so each one has to be present or its
+# configure fails:
+#   - ros-humble-cv-bridge: its preprocess decodes bag images (and brings
+#     OpenCV, which its CMake also finds directly)
+#   - ros-humble-pcl-ros  : listed as a <depend>; nothing else here uses it
+#   - libfmt-dev          : rosdep key `fmt`; it links `fmt` by name
+# and the headers / .so links the two source-built libraries' CMake configs
+# re-find for a consumer:
+#   - libgoogle-glog-dev  : Ceres (pulls libgflags-dev)
+#   - libglfw3-dev, libpng-dev, libjpeg-dev, libgl-dev, libopengl-dev:
+#     Iridescence (its config find_dependency()s OpenGL / PNG / JPEG, and the
+#     library links glfw)
+# rosbag2_cpp, its last <depend>, is already in ros-base.
+RUN apt-get update && apt-get install -y \
+    ros-humble-cv-bridge \
+    ros-humble-pcl-ros \
+    libfmt-dev \
+    libgoogle-glog-dev \
+    libglfw3-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libgl-dev \
+    libopengl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Prebuilt Livox-SDK2 / GTSAM / Sophus / Ceres / Iridescence, one COPY per
+# builder stage (each stage holds only its own library under /out/usr/local).
 COPY --from=livox /out/usr/local /usr/local
 COPY --from=gtsam /out/usr/local /usr/local
 COPY --from=sophus /out/usr/local /usr/local
+COPY --from=ceres /out/usr/local /usr/local
+COPY --from=iridescence /out/usr/local /usr/local
 RUN ldconfig
 
 # NOTE: there is no pip install of a web stack here any more. This image used to

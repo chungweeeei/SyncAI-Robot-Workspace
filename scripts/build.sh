@@ -113,6 +113,7 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
              third-party/livox_ros_driver2:third-party.repos \
              third-party/small_gicp:third-party.repos \
              third-party/vizionsdk-ros2:third-party.repos \
+             third-party/direct_visual_lidar_calibration:third-party.repos \
              syncai_common:dependencies.repos \
              syncai_mapping:dependencies.repos \
              syncai_driver_manager:dependencies.repos \
@@ -131,7 +132,17 @@ if [ -n "${missing}" ]; then
     # so are six empty first-party ones.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
     die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
-        "$(for l in ${lists}; do printf '\n  vcs import < %s' "$l"; done)"
+        "$(for l in ${lists}; do printf '\n  vcs import --recursive < %s' "$l"; done)"
+fi
+
+# direct_visual_lidar_calibration keeps Sophus, nlohmann-json and nanoflann as
+# git submodules, and a plain `vcs import` leaves their directories empty. Its
+# configure then fails on a missing header deep in the compile, which does not
+# say "import with --recursive"; this does. One submodule stands for all three.
+calib=src/third-party/direct_visual_lidar_calibration
+if [ -z "$(ls -A "${calib}/thirdparty/json" 2>/dev/null)" ]; then
+    die "${calib} has no submodules — on the HOST run, from the workspace root:" \
+        "$(printf '\n  vcs import --recursive < third-party.repos')"
 fi
 
 # livox_ros_driver2 ships package_ROS2.xml and gitignores package.xml (its
