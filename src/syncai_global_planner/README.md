@@ -477,8 +477,12 @@ ros2 service call /<robot_id>/planner_server/Octo3D/load_map nav2_msgs/srv/LoadM
   and its stair links are in (~1 s on dp1f_1012, a few s on a large site),
   so `RESULT_SUCCESS` means `Octo3D` plans on the new map. A caller's
   timeout must cover the build.
-- `RESULT_MAP_DOES_NOT_EXIST` (or `RESULT_INVALID_MAP_METADATA` for an
-  empty `map_url`) is answered **before anything changes**: the current map
+- **An empty `map_url` unloads** (2026-10-19): the switch to a 2D map. The
+  surface map is dropped, `map_available` goes false (so goals run the 2D
+  trees), the file parameters are emptied and `RESULT_SUCCESS` is answered.
+  Without it a 3D → 2D switch left the old octree loaded and the task_runner
+  running the 3D trees on it.
+- `RESULT_MAP_DOES_NOT_EXIST` is answered **before anything changes**: the current map
   stays.
 - Otherwise the current surface map is **dropped first** — plans fail with
   `map_loading` during the build, never on the old site's map, and only one

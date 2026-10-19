@@ -64,7 +64,8 @@ namespace syncai_global_planner
  * once (plans fail with map_loading, never on the old site's map), builds the
  * new one and answers when it is in -- success is a result, not a receipt. A
  * failed build leaves no map at all, not the old one. A missing file is
- * refused before anything is dropped. See loadMapCallback().
+ * refused before anything is dropped. An empty map_url unloads the map --
+ * the switch to a 2D map. See loadMapCallback().
  *
  * `<planner_server>/<id>/map_available` (std_msgs/Bool, latched) says
  * whether this planner has a map, built or being built: the task_runner

@@ -229,14 +229,46 @@ void OctomapPlanner3D::loadMapCallback(
   RCLCPP_INFO(
     logger_, "[OctomapPlanner3D][%s] load_map request for '%s'", __func__, octomap_file.c_str());
 
+  // An empty map_url unloads (2026-10-19): the switch to a 2D map. Without
+  // it the 3D map stayed loaded across that switch, map_available stayed
+  // true, and the task_runner kept running the 3D trees on the previous
+  // site's octree -- a route through the wrong building, not a failure.
+  // Waits for a boot build still running, as a load does.
+  if (octomap_file.empty()) {
+    if (build_thread_.joinable()) {
+      build_thread_.join();
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      map_.reset();
+      links_.reset();
+      astar_.reset();
+      octomap_file_.clear();
+      poses_file_.clear();
+      build_error_ = "no 3D map loaded (unloaded by load_map for a 2D map)";
+      building_ = false;
+    }
+    publishMapAvailable(false);
+    if (auto node = node_.lock()) {
+      updating_file_params_ = true;
+      node->set_parameters(
+        {rclcpp::Parameter(name_ + ".octomap_file", std::string()),
+         rclcpp::Parameter(name_ + ".poses_file", std::string())});
+      updating_file_params_ = false;
+    }
+    if (clear_plan_client_->service_is_ready()) {
+      clear_plan_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
+    }
+    RCLCPP_INFO(
+      logger_, "[OctomapPlanner3D][%s] empty map_url: 3D map unloaded (the map is 2D now)",
+      __func__);
+    response->result = LoadMap::Response::RESULT_SUCCESS;
+    return;
+  }
+
   // Refused before anything is dropped: a typo in the request must not cost
   // the robot the map it has. Relative paths resolve against the workspace
   // root, every pane's cwd, as at boot.
-  if (octomap_file.empty()) {
-    RCLCPP_WARN(logger_, "[OctomapPlanner3D][%s] empty map_url; keeping the current map", __func__);
-    response->result = LoadMap::Response::RESULT_INVALID_MAP_METADATA;
-    return;
-  }
   std::error_code ec;
   if (!std::filesystem::is_regular_file(octomap_file, ec)) {
     RCLCPP_WARN(
