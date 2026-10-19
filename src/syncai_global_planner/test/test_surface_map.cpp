@@ -281,13 +281,26 @@ TEST(StairLinks, AWalkedStairConnectsTheFloorsBothWays)
     return x < 4.0 ? 0.0 : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
   };
   const auto links = buildStairLinks(*m, walk(2.0, 10.0, stairs), StairLinkParams{});
-  ASSERT_EQ(links->links.size(), 1u);
+  // One walked flight, laid as a row of straight links across the stair's
+  // whole 8 m width (the walk was along y = 4, the entries reach 2 m either
+  // side of it): the track found the stair, the surfaces gave its direction.
+  ASSERT_EQ(links->flights.size(), 1u);
+  const StairFlight & f = links->flights[0];
+  EXPECT_EQ(f.count, links->links.size());
+  EXPECT_GE(f.count, 20u);
+  EXPECT_NEAR(f.heading_deg, 0.0, 10.0);  // the scene's stair climbs along +x
+  EXPECT_GE(f.width, 3.5);
+  for (const StairLink & l : links->links) {
+    EXPECT_TRUE(l.straight);
+    ASSERT_EQ(l.pts.size(), 2u);
+    // The first riser is one step from the floor and belongs to it, so a
+    // link may start on it, and the top step is where the upper floor begins.
+    EXPECT_LE(m->zTop(l.a), 0.2 + 1e-9);
+    EXPECT_GE(m->zTop(l.b), 0.8);
+    EXPECT_NEAR(l.pts.front().y, l.pts.back().y, 0.15);  // along the uphill direction
+    EXPECT_EQ(links->groupOf(m->cells[l.a].component), links->groupOf(m->cells[l.b].component));
+  }
   const StairLink & l = links->links[0];
-  // The first riser is one step from the floor and belongs to it, so the
-  // link may start on it.
-  EXPECT_LE(m->zTop(l.a), 0.2 + 1e-9);
-  EXPECT_NEAR(m->zTop(l.b), 1.02, 0.05);  // the top step, quantised to the 0.1 m grid
-  EXPECT_EQ(links->groupOf(m->cells[l.a].component), links->groupOf(m->cells[l.b].component));
 
   SurfaceAStar astar(m, links);
   SearchParams p;
@@ -311,6 +324,59 @@ TEST(StairLinks, AWalkedStairConnectsTheFloorsBothWays)
       // the height only ever moves one way.
       EXPECT_LE(std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y), 0.1 + 1e-6);
       EXPECT_GE((up ? 1 : -1) * (path[i].z - path[i - 1].z), -1e-9);
+    }
+  }
+}
+
+TEST(StairLinks, AStraightFlightIsEnteredWhereTheRouteMeetsIt)
+{
+  // The robot walked the stair along y = 4; a route along y = 5.5 climbs it
+  // there, straight, instead of detouring to the walked line and back (which
+  // is what the walked link alone makes it do -- the 2026-10-14 behaviour,
+  // kept under stair_straight: false, and what dp showed as a 27 deg turn at
+  // the stair head).
+  const auto m = build("stairs");
+  const auto stairs = [](double x) {
+    return x < 4.0 ? 0.0 : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
+  };
+  const auto track = walk(2.0, 10.0, stairs);
+  for (const bool straight : {true, false}) {
+    StairLinkParams sp;
+    sp.straight = straight;
+    const auto links = buildStairLinks(*m, track, sp);
+    SurfaceAStar astar(m, links);
+    SearchParams p;
+    const SnapResult lo = astar.snap(2.0, 5.5, 0.0, p);
+    const SnapResult hi = astar.snap(10.0, 5.5, 1.02, p, m->cells[lo.cell].component);
+    ASSERT_NE(lo.cell, kNoCell);
+    ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+    const PlanResult r = astar.plan(lo.cell, hi.cell, p);
+    ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+    ASSERT_EQ(r.links.size(), 1u);
+    const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
+    double ymin = 1e9, worst_turn = 0.0, prev_h = 0.0;
+    bool have_h = false;
+    for (size_t i = 0; i < path.size(); ++i) {
+      ymin = std::min(ymin, path[i].y);
+      if (i == 0 || std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y) < 0.02) {
+        continue;
+      }
+      const double h = std::atan2(path[i].y - path[i - 1].y, path[i].x - path[i - 1].x);
+      if (have_h) {
+        worst_turn = std::max(worst_turn, std::fabs(std::remainder(h - prev_h, 2 * M_PI)));
+      }
+      prev_h = h;
+      have_h = true;
+    }
+    if (straight) {
+      EXPECT_GE(ymin, 5.3) << "the route left y = 5.5 to reach the stair";
+      EXPECT_FALSE(links->links[r.links[0].link].pts.size() > 2);
+      // The shortcut spans the link (stairCrossing): one line from floor to
+      // floor, no bend where the link's cell-centre ends used to be.
+      EXPECT_LT(worst_turn * 180.0 / M_PI, 5.0);
+      EXPECT_GE(path.back().z - path.front().z, 0.8);
+    } else {
+      EXPECT_LE(ymin, 4.2) << "the walked link alone should have forced the detour to y = 4";
     }
   }
 }

@@ -151,6 +151,16 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.loop_dz = v;
   } else if (k == "stair_smooth_passes") {
     st.smooth_passes = static_cast<int>(v);
+  } else if (k == "stair_straight") {
+    st.straight = v != 0.0;
+  } else if (k == "stair_straight_max_flight") {
+    st.straight_max_flight = v;
+  } else if (k == "stair_straight_fit_radius") {
+    st.straight_fit_radius = v;
+  } else if (k == "stair_straight_half_width") {
+    st.straight_half_width = v;
+  } else if (k == "stair_straight_exit_reach") {
+    st.straight_exit_reach = v;
   } else if (k == "robot_radius") {
     p.robot_radius = v;
   } else if (k == "body_clearance") {
@@ -872,8 +882,7 @@ bool dumpHtml(
       std::snprintf(
         label, sizeof label, "stairs kf %zu - %zu: z %.2f - %.2f, %.1f m", l.kf_a, l.kf_b,
         m.zTop(l.a), m.zTop(l.b), l.length);
-      data << (i ? "," : "") << "{\"label\":\"" << label << "\",\"zmin\":" << f(lz)
-           << ",\"pts\":[";
+      data << (i ? "," : "") << "{\"label\":\"" << label << "\",\"zmin\":" << f(lz) << ",\"pts\":[";
       for (size_t k = 0; k < l.pts.size(); ++k) {
         data << (k ? "," : "") << "[" << f(l.pts[k].x) << "," << f(l.pts[k].y) << ","
              << f(l.pts[k].z) << "]";
@@ -1262,11 +1271,24 @@ int main(int argc, char ** argv)
       track.push_back({p.x, p.y, p.z - lidar_height});
     }
     links = buildStairLinks(*map, track, stair_params);
-    std::printf("stair links: %zu (min_rise %.2f m)\n", links->links.size(), stair_params.min_rise);
-    for (const StairLink & l : links->links) {
+    std::printf(
+      "stair links: %zu (min_rise %.2f m, %zu straight flights)\n", links->links.size(),
+      stair_params.min_rise, links->flights.size());
+    for (const StairFlight & f : links->flights) {
+      const StairLink & l = links->links[f.first];
       std::printf(
-        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points\n", l.kf_a,
-        l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %u straight links, uphill %.0f "
+        "deg, %.1f m wide, %.1f m long\n",
+        f.kf_a, f.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+        map->cells[l.b].component, f.count, f.heading_deg, f.width, l.length);
+    }
+    for (const StairLink & l : links->links) {
+      if (l.straight) {
+        continue;
+      }
+      std::printf(
+        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points (walked track)\n",
+        l.kf_a, l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
         map->cells[l.b].component, l.length, l.pts.size());
     }
     for (const std::string & note : links->notes) {

@@ -15,8 +15,18 @@
 // into the clearance band (the same rule as Smac's "never above cost 252").
 //
 // A route that takes a stair link (stair_links.hpp) is assembled by
-// buildPath: the shortcut and the floor-height lookup apply to the floor
-// stretches only, and the flight follows the keyframes the robot walked.
+// buildPath. Over a walked link the shortcut and the floor-height lookup
+// apply to the floor stretches only, and the flight follows the keyframes
+// the robot walked. Over a straight link (2026-10-19) the shortcut may also
+// span the stair: the last vertex before the link and the first after it
+// are joined by one segment when that segment runs within
+// kStairCrossingToleranceDeg of the flight's uphill direction, over
+// lower-floor cells, then surfaces within one step of each other (the
+// flight), then upper-floor cells, keeping the clearance the vertices it
+// replaces had. Without this the link's two ends sit on cell centres, so a
+// 0.5 m link can only point in ~11 deg steps and the path bent ~15 deg at
+// the stair head on dp; with it the route is one line through the stair,
+// facing the risers to within the tolerance.
 //
 // ROS-free (see surface_map.hpp).
 
@@ -27,6 +37,13 @@
 
 namespace syncai_global_planner::octomap_planner_3d
 {
+
+// How far a segment straightened across a straight stair link may point
+// away from the flight's uphill direction. A quadruped should meet the
+// risers square; 15 deg is what a hand-driven robot does anyway, and below
+// RPP's rotate-to-heading threshold (0.25 rad), so it never pivots on the
+// stairs for it.
+constexpr double kStairCrossingToleranceDeg = 15.0;
 
 // True if the straight segment between the centres of a and b runs over
 // traversable cells only (step-continuous from a) with clearance_d >=

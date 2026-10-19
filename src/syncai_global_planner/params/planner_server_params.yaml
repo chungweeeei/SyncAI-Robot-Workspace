@@ -286,10 +286,35 @@
       # m2. The two storeys of dp1f_1012 are 1200 and 330, the stairwell's
       # islands at most ~11.
       stair_anchor_min_area: 10.0
-      # Three-point moving-average passes over a link's points after the loop
-      # cut: a hand-driven track weaves by centimetres and the body pitches
-      # on a flight. 0 = the raw keyframes.
+      # Three-point moving-average passes over a walked link's points after
+      # the loop cut: a hand-driven track weaves by centimetres and the body
+      # pitches on a flight. 0 = the raw keyframes.
       stair_smooth_passes: 2
+      # The track says where a stair is, not how to climb it (2026-10-19): a
+      # single flight becomes a row of straight links across its width -- the
+      # surfaces beside the walked stretch are fitted with a plane, whose
+      # gradient is the uphill direction, and a line is marched up it from
+      # every lower-floor cell near the walked foot that reaches the upper
+      # floor. The search picks the entry, so a route meets the stair where
+      # its own line crosses it and climbs facing the risers. dp's 2F flight:
+      # one walked link 9 deg off the stair's axis became 24 straight ones,
+      # and a 27 deg turn at the stair head went away. false = one link along
+      # the walk (the 2026-10-14 behaviour).
+      stair_straight: true
+      # Longest stretch of track (m, xy) taken as one straight flight; a
+      # switchback stairwell (dp: 30 m, dp1f_1012: 32 m) keeps its walked link,
+      # and a startup note says so.
+      stair_straight_max_flight: 8.0
+      # Surfaces within this of the walked stretch, at heights between the two
+      # floors, fit the plane.
+      stair_straight_fit_radius: 1.0
+      # How far either side of the walked foot entries are tried: the stair's
+      # width the planner may use. dp's 2F flight is 2.6 m wide.
+      stair_straight_half_width: 2.0
+      # Longest level run a line may make between two rises: the ~robot_radius
+      # of blocked floor the footprint rule leaves before the first riser and
+      # after the last. A landing longer than this ends the flight.
+      stair_straight_exit_reach: 0.6
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the

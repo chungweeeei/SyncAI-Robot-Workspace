@@ -222,6 +222,22 @@ public:
   // layerNear restricted to traversable cells and the step rule: the cell
   // the search / connectivity / clearance passes may move to from (c, kz).
   CellId traversableNeighbour(int ix, int iy, int kz) const;
+  // The surface of column c whose top face is nearest z, if within tol of
+  // it, traversable or not -- how the stair links read a flight, whose cells
+  // the rules all rejected. kNoCell for an empty column or nothing near.
+  CellId surfaceNear(uint32_t c, double z, double tol) const
+  {
+    CellId best = kNoCell;
+    double best_dz = tol;
+    for (uint32_t i = col_begin[c], e = col_begin[c + 1]; i < e; ++i) {
+      const double dz = std::fabs(zTop(i) - z);
+      if (dz <= best_dz) {
+        best = i;
+        best_dz = dz;
+      }
+    }
+    return best;
+  }
 
   // The move rule shared by the search, the component labelling, the
   // clearance field and the line-of-sight check: 8 neighbours, each resolved

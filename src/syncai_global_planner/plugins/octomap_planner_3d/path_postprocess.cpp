@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
+#include <vector>
 
 namespace syncai_global_planner::octomap_planner_3d
 {
@@ -234,6 +236,159 @@ void append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b)
   a.insert(a.end(), b.begin() + static_cast<std::ptrdiff_t>(from), b.end());
 }
 
+// The segment from cell p (one floor) to cell n (the other), straight across
+// the straight stair link `link`: valid when it points within
+// kStairCrossingToleranceDeg of the flight's uphill direction (either way)
+// and its columns are, in order, traversable cells of p's component with at
+// least clear_p clearance, then the flight -- surfaces within one step of
+// each other, traversable or not, never p's floor again, no longer than the
+// link plus a metre -- then traversable cells of n's component with at
+// least clear_n clearance, ending on n. With out set, the points every
+// `spacing` along it: z from the surface on the floors, one ramp over the
+// flight.
+bool stairCrossing(
+  const SurfaceMap & m, CellId p, CellId n, const StairLink & link, float clear_p, float clear_n,
+  double spacing, std::vector<Waypoint> * out)
+{
+  double px, py, nx, ny;
+  m.cellXY(p, px, py);
+  m.cellXY(n, nx, ny);
+  const double dx = nx - px, dy = ny - py, len = std::hypot(dx, dy);
+  if (len < m.res) {
+    return false;
+  }
+  const double along_up = (dx * link.up_x + dy * link.up_y) / len;
+  if (std::fabs(along_up) < std::cos(kStairCrossingToleranceDeg * M_PI / 180.0)) {
+    return false;
+  }
+  const uint32_t comp_p = m.cells[p].component, comp_n = m.cells[n].component;
+  const double step_tol = (m.step_cells + 1) * m.res + 1e-6;
+  const double flight_max = link.length + 1.0;
+  // Phase 0: p's floor; 1: the flight; 2: n's floor. The floors' edges are
+  // ragged where the footprint rule cut them, so a line may step floor ->
+  // flight -> floor before it has climbed anything, and flight -> floor ->
+  // flight at the top: the phase goes back as long as the height says the
+  // line is still on that floor. Clearance is checked on the floors, but a
+  // cell at a floor's edge is only as clear as its distance to the flight
+  // itself, which the line has to cross; a shortfall within edge_band of
+  // where it leaves one floor or lands on the other is therefore allowed,
+  // and one anywhere else (a wall) is not.
+  int phase = 0;
+  int kz = m.cells[p].kz;
+  double z = m.zTop(p), flight_len = 0.0;
+  double z_lo = z, s_lo = 0.0, z_hi = 0.0, s_hi = 0.0;  // the ramp's two ends, by distance
+  const double edge_band = 3 * m.res;
+  const auto s_of = [&](int ix, int iy) {
+    return ((m.cx(ix) - px) * dx + (m.cy(iy) - py) * dy) / len;
+  };
+  std::vector<std::pair<uint32_t, int>> phases;  // column -> phase, for the samples
+  std::vector<double> short_at;                  // s of the clearance shortfalls
+  CellId last = kNoCell;
+  const auto onFloor = [&](int ix, int iy, uint32_t comp, float clear, int ph) {
+    const uint32_t c = m.col(ix, iy);
+    const CellId f = m.layerNear(c, kz, m.step_cells);
+    if (f == kNoCell || !m.traversable(f) || m.cells[f].component != comp) {
+      return false;
+    }
+    if (m.cells[f].clearance_d < clear) {
+      short_at.push_back(s_of(ix, iy));
+    }
+    kz = m.cells[f].kz;
+    z = m.zTop(f);
+    last = f;
+    phase = ph;
+    phases.emplace_back(c, ph);
+    return true;
+  };
+  const bool ok = supercover(m.ixOf(px), m.iyOf(py), m.ixOf(nx), m.iyOf(ny), [&](int ix, int iy) {
+    if (!m.inGrid(ix, iy)) {
+      return false;
+    }
+    const uint32_t c = m.col(ix, iy);
+    if (phase == 0 && onFloor(ix, iy, comp_p, clear_p, 0)) {
+      z_lo = z;
+      s_lo = s_of(ix, iy);
+      return true;
+    }
+    if (phase == 2 && onFloor(ix, iy, comp_n, clear_n, 2)) {
+      return true;
+    }
+    // On the flight, or at a ragged edge of either floor.
+    const CellId s = m.surfaceNear(c, z, step_tol);
+    if (s == kNoCell) {
+      return false;
+    }
+    const double zs = m.zTop(s);
+    if (m.traversable(s) && m.cells[s].component == comp_p) {
+      if (std::fabs(zs - z_lo) > step_tol || phase == 2) {
+        return false;  // back on the lower floor after climbing: not a crossing
+      }
+      kz = m.cells[s].kz;
+      return onFloor(ix, iy, comp_p, clear_p, 0) && ((z_lo = z), (s_lo = s_of(ix, iy)), true);
+    }
+    if (m.traversable(s) && m.cells[s].component == comp_n) {
+      kz = m.cells[s].kz;
+      if (!onFloor(ix, iy, comp_n, clear_n, 2)) {
+        return false;
+      }
+      if (phase == 2 && s_hi == 0.0) {
+        z_hi = z;
+        s_hi = s_of(ix, iy);
+      }
+      return true;
+    }
+    phase = 1;
+    flight_len += m.res;
+    if (flight_len > flight_max) {
+      return false;
+    }
+    z = zs;
+    phases.emplace_back(c, 1);
+    return true;
+  });
+  if (!ok || phase != 2 || last != n || s_hi <= s_lo) {
+    return false;
+  }
+  for (const double s : short_at) {
+    if (std::fabs(s - s_lo) > edge_band && std::fabs(s - s_hi) > edge_band) {
+      return false;
+    }
+  }
+  if (!out) {
+    return true;
+  }
+  out->clear();
+  const auto phaseOf = [&](uint32_t c) {
+    for (const auto & pc : phases) {
+      if (pc.first == c) {
+        return pc.second;
+      }
+    }
+    return 1;
+  };
+  const auto sample = [&](double s) {
+    Waypoint w{px + dx * s / len, py + dy * s / len, 0.0};
+    const int ix = m.ixOf(w.x), iy = m.iyOf(w.y);
+    const int ph = m.inGrid(ix, iy) ? phaseOf(m.col(ix, iy)) : 1;
+    if (ph == 1) {
+      const double t = s_hi > s_lo ? std::clamp((s - s_lo) / (s_hi - s_lo), 0.0, 1.0) : 1.0;
+      w.z = z_lo + t * (z_hi - z_lo);
+    } else {
+      const double guess = ph == 0 ? z_lo : z_hi;
+      const int gk = static_cast<int>(std::floor((guess - m.z0) / m.res)) - 1;
+      const CellId c = m.layerNear(m.col(ix, iy), gk, 3);
+      w.z = c == kNoCell ? guess : m.zTop(c);
+    }
+    return w;
+  };
+  for (double s = 0.0; s < len - 1e-9; s += spacing) {
+    out->push_back(sample(s));
+  }
+  out->push_back({nx, ny, m.zTop(n)});
+  out->front().z = m.zTop(p);
+  return true;
+}
+
 }  // namespace
 
 std::vector<Waypoint> buildPath(
@@ -241,31 +396,82 @@ std::vector<Waypoint> buildPath(
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices)
 {
   std::vector<Waypoint> out;
-  size_t nvert = 0;
+  if (cells.empty()) {
+    if (vertices) {
+      *vertices = 0;
+    }
+    return out;
+  }
   spacing = std::max(spacing, m.res * 0.25);
-  size_t from = 0;  // first cell of the current floor stretch
-  auto floorStretch = [&](size_t to) {
+  // The floor stretches between the links, each its own (shortcut) chain.
+  std::vector<std::vector<CellId>> chains;
+  size_t from = 0;
+  const auto stretch = [&](size_t to) {
     const std::vector<CellId> seg(
       cells.begin() + static_cast<std::ptrdiff_t>(from),
       cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
-    const std::vector<CellId> chain = shortcut ? shortcutPath(m, seg) : seg;
-    nvert += chain.size();
-    append(out, resamplePath(m, chain, spacing));
+    chains.push_back(shortcut ? shortcutPath(m, seg) : seg);
+    from = to + 1;
   };
   for (const LinkUse & u : uses) {
-    floorStretch(u.index);
-    std::vector<Waypoint> pts = links->links[u.link].pts;
-    if (u.reversed) {
+    stretch(u.index);
+  }
+  stretch(cells.size() - 1);
+
+  // Over a straight link, try to join the vertex before it to the vertex
+  // after it with one segment through the stair (stairCrossing): the
+  // longest span first, then the two that keep one of the link's ends.
+  std::vector<std::vector<Waypoint>> crossings(uses.size());
+  if (shortcut) {
+    for (size_t i = 0; i < uses.size(); ++i) {
+      const StairLink & link = links->links[uses[i].link];
+      if (!link.straight) {
+        continue;
+      }
+      std::vector<CellId> & A = chains[i];
+      std::vector<CellId> & B = chains[i + 1];
+      const size_t na = A.size(), nb = B.size();
+      // (how many vertices to drop at A's end, at B's start)
+      const std::pair<size_t, size_t> tries[3] = {{1, 1}, {1, 0}, {0, 1}};
+      for (const auto & t : tries) {
+        if (t.first >= na || t.second >= nb || (t.first == 0 && t.second == 0)) {
+          continue;
+        }
+        const CellId p = A[na - 1 - t.first], n = B[t.second];
+        const float clear_p =
+          std::min(m.cells[p].clearance_d, m.cells[A[na - 1]].clearance_d) - 1e-4f;
+        const float clear_n = std::min(m.cells[n].clearance_d, m.cells[B[0]].clearance_d) - 1e-4f;
+        std::vector<Waypoint> pts;
+        if (stairCrossing(m, p, n, link, clear_p, clear_n, spacing, &pts)) {
+          crossings[i] = std::move(pts);
+          A.resize(na - t.first);
+          B.erase(B.begin(), B.begin() + static_cast<std::ptrdiff_t>(t.second));
+          break;
+        }
+      }
+    }
+  }
+
+  size_t nvert = 0;
+  for (size_t i = 0; i < chains.size(); ++i) {
+    nvert += chains[i].size();
+    append(out, resamplePath(m, chains[i], spacing));
+    if (i >= uses.size()) {
+      break;
+    }
+    if (!crossings[i].empty()) {
+      nvert += 2;
+      append(out, crossings[i]);
+      continue;
+    }
+    std::vector<Waypoint> pts = links->links[uses[i].link].pts;
+    if (uses[i].reversed) {
       std::reverse(pts.begin(), pts.end());
     }
     nvert += pts.size();
     std::vector<Waypoint> flight;
     resamplePolyline(pts, spacing, flight);
     append(out, flight);
-    from = u.index + 1;
-  }
-  if (!cells.empty()) {
-    floorStretch(cells.size() - 1);
   }
   if (vertices) {
     *vertices = nvert;

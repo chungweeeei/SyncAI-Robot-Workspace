@@ -411,17 +411,48 @@ too. So stairs come from the map's own track instead: `poses.txt` (next to
 stretch of it that leaves one large component (≥ `stair_anchor_min_area`,
 10 m²) and arrives in another at least `stair_min_rise` (0.3 m) higher or
 lower, within `stair_max_length` (60 m) of track, is a stair the legs have
-taken. It becomes a **stair link** between the traversable cells at its ends,
-carrying the keyframes' ground points with every loop cut out (turns and
-waits on a landing) and smoothed (`stair_smooth_passes`; a hand-driven track
-weaves, and the ground estimate inherits the body's pitch on a flight).
+taken. The track says *where* the stair is; since 2026-10-19 it no longer
+says how to climb it. A single flight (≤ `stair_straight_max_flight`, 8 m of
+track) becomes a **row of straight stair links** across the stair's width:
+the surfaces beside the walked stretch (within `stair_straight_fit_radius`,
+1 m) whose height lies between the two floors — the risers and treads the
+rules rejected — are fitted with a plane, its gradient is the uphill
+direction, and from every lower-floor cell within `stair_straight_half_width`
+(2 m) of the walked foot a line is marched uphill along it, column by column
+over surfaces within one step of each other, until it steps onto a cell of
+the upper floor; each line that gets there is a link (two points, z as one
+ramp). The search then picks the entry, so a route meets the stair where its
+own line crosses it, climbs facing the risers and leaves toward the goal —
+and the line-of-sight shortcut may span a straight link (`stairCrossing` in
+`path_postprocess.cpp`): the vertex before it and the vertex after are
+joined by one segment when that segment lies within 15° of the flight's
+uphill direction and its columns are lower floor, then step-continuous
+surfaces, then upper floor (the clearance rule relaxed only within 0.3 m of
+the two edges, which are only as clear as the flight they border). Without
+it a link's cell-centre ends quantise its direction to ~11° steps over
+0.5 m, and the path still bent 15° at the stair head. On dp (2F, the 2.6 m
+wide flight between z 4.5 and 5.1) this replaced one walked link, 9° off
+the stair's axis, with 24 straight ones, and a 6.4 m route across it that
+turned 27° at the stair head became one straight line (heading constant to
+0.1°). A line
+may run level for `stair_straight_exit_reach` (0.6 m) — the blocked floor
+the footprint rule leaves before the first riser and after the last — and a
+landing longer than that ends the flight. A stretch that is not one straight
+flight (longer than 8 m — a switchback stairwell; a plane fit too thin or
+more than 60° off the walk; no line reaching the upper floor) keeps the
+**walked link**: the keyframes' ground points with every loop cut out (turns
+and waits on a landing) and smoothed (`stair_smooth_passes`; a hand-driven
+track weaves, and the ground estimate inherits the body's pitch on a
+flight), and a startup note says which and why (dp's 1F → 2F stairwell, 30 m
+of track, is one). `stair_straight: false` is the 2026-10-14 behaviour.
 What could not be linked is logged at startup: a climb on the track longer
 than `stair_max_length`, and large components at different heights no link
 joins — the floors this map cannot get between. The search may take a link in either direction at its 3D
 length × `stair_cost_multiplier` (2.0; ≥ 1 keeps the heuristic admissible),
 components joined by links count as one for the snap and the
-disconnected-check, and the path follows the link's points through the
-flight; the line-of-sight shortcut is applied to the floor stretches only.
+disconnected-check, and the path follows a walked link's points through the
+flight; the line-of-sight shortcut is applied to the floor stretches and,
+since 2026-10-19, across straight links.
 Only large components end a link because a stairwell's own floor rarely
 survives the rules: on dp1f_1012 the three landings of the switchback stair
 came out as a few square metres of islands or not at all (small, walled, the
@@ -562,9 +593,12 @@ headers include nothing of ROS on purpose.
   (`FollowPathRPP3D`; `syncai_controller/README.md`, "Stairs"), which stops and
   switches the gait controller's RL policy over `set_policy_mode`. MPPI and
   the 2D RPP (`FollowPathRPP`) follow only its x / y. Climbing is untested on the robot.
-- A stair link is the mapping run's track, drift and all, and it exists only
-  where the robot walked; a stair blocked since (or walked only one way by a
-  robot that cannot descend) is still linked both ways.
+- A stair link exists only where the robot walked; a stair blocked since (or
+  walked only one way by a robot that cannot descend) is still linked both
+  ways. A straight link's direction comes from the stair's surfaces, not the
+  walk, but its width is only tried `stair_straight_half_width` either side
+  of the walked foot, and a flight that is not one plane (a switchback, a
+  turning landing) still follows the walked track, drift and all.
 - A 2D backend's z = 0 goal is only right on the ground floor; upstairs it
   needs a real z or `goal_z_mode: start`.
 - A map switch needs its own call: `map_server/load_map` reloads the gridmap
@@ -692,6 +726,7 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | `hole_fill_radius`, `hole_fill_min_support`, `hole_fill_passes` | `0.3`, `0.5`, `2` | See the build, step 3. Build-time |
 | `clearance_cost_radius` | `0.55` | Reach of the clearance field from the traversable boundary. Build-time |
 | `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area`, `stair_smooth_passes` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m², `2` | Stair links from the track (see **Stairs**). Build-time |
+| `stair_straight`, `stair_straight_max_flight`, `stair_straight_fit_radius`, `stair_straight_half_width`, `stair_straight_exit_reach` | `true`, `8.0`, `1.0`, `2.0`, `0.6` | Straight links across a single flight's width instead of one along the walk (see **Stairs**); `false` = the walked link only. Build-time |
 | `stair_cost_multiplier` | `2.0` | Factor on a link's 3D length (≥ 1). Dynamic |
 | `clearance_cost_weight`, `clearance_cost_scaling` | `1.0`, `1.5` | Edge cost multiplier inside the band. Dynamic |
 | `inferred_cost_multiplier` | `1.2` | Prefer observed floor. Dynamic |

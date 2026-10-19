@@ -33,3 +33,21 @@ target_include_directories(octomap_planner_3d_cli PRIVATE ${include_dir})
 target_include_directories(octomap_planner_3d_cli SYSTEM PRIVATE ${OCTOMAP_INCLUDE_DIRS})
 target_link_libraries(octomap_planner_3d_cli ${OCTOMAP_LIBRARIES})
 target_compile_options(octomap_planner_3d_cli PRIVATE -O3 -Wall -Wextra -Wpedantic)
+
+# The package's gtest, when GoogleTest is installed (brew install googletest /
+# apt libgtest-dev): the same test the ROS build runs with colcon test, so a
+# change to the core can be checked on the workstation before the robot.
+#   cmake --build /tmp/octo3d --target test_surface_map && /tmp/octo3d/test_surface_map
+find_package(GTest QUIET)
+if(GTest_FOUND)
+  add_executable(test_surface_map
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../test/test_surface_map.cpp
+    ${core_dir}/surface_map.cpp
+    ${core_dir}/surface_astar.cpp
+    ${core_dir}/path_postprocess.cpp
+    ${core_dir}/stair_links.cpp
+  )
+  target_include_directories(test_surface_map PRIVATE ${include_dir})
+  target_include_directories(test_surface_map SYSTEM PRIVATE ${OCTOMAP_INCLUDE_DIRS})
+  target_link_libraries(test_surface_map ${OCTOMAP_LIBRARIES} GTest::gtest_main)
+endif()

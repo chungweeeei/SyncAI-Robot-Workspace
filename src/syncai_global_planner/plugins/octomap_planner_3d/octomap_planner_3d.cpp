@@ -99,6 +99,11 @@ void OctomapPlanner3D::initialize(
   dp("stair_anchor_z_window", rclcpp::ParameterValue(stair_params_.anchor_z_window));
   dp("stair_anchor_min_area", rclcpp::ParameterValue(stair_params_.anchor_min_area));
   dp("stair_smooth_passes", rclcpp::ParameterValue(stair_params_.smooth_passes));
+  dp("stair_straight", rclcpp::ParameterValue(stair_params_.straight));
+  dp("stair_straight_max_flight", rclcpp::ParameterValue(stair_params_.straight_max_flight));
+  dp("stair_straight_fit_radius", rclcpp::ParameterValue(stair_params_.straight_fit_radius));
+  dp("stair_straight_half_width", rclcpp::ParameterValue(stair_params_.straight_half_width));
+  dp("stair_straight_exit_reach", rclcpp::ParameterValue(stair_params_.straight_exit_reach));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -136,6 +141,11 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".stair_anchor_z_window", stair_params_.anchor_z_window);
   node->get_parameter(name + ".stair_anchor_min_area", stair_params_.anchor_min_area);
   node->get_parameter(name + ".stair_smooth_passes", stair_params_.smooth_passes);
+  node->get_parameter(name + ".stair_straight", stair_params_.straight);
+  node->get_parameter(name + ".stair_straight_max_flight", stair_params_.straight_max_flight);
+  node->get_parameter(name + ".stair_straight_fit_radius", stair_params_.straight_fit_radius);
+  node->get_parameter(name + ".stair_straight_half_width", stair_params_.straight_half_width);
+  node->get_parameter(name + ".stair_straight_exit_reach", stair_params_.straight_exit_reach);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -394,10 +404,23 @@ bool OctomapPlanner3D::buildMap(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links from %zu keyframes of %s (min_rise %.2f m)",
         __func__, links->links.size(), track.size(), poses_file.c_str(), stair_params_.min_rise);
-      for (const auto & l : links->links) {
+      for (const auto & f : links->flights) {
+        const auto & l = links->links[f.first];
         RCLCPP_INFO(
           logger_,
-          "[OctomapPlanner3D][%s]   stair link kf %zu -> %zu: z %.2f -> %.2f, %.1f m, %zu points",
+          "[OctomapPlanner3D][%s]   stair kf %zu -> %zu: z %.2f -> %.2f, %u straight links, "
+          "uphill %.0f deg, %.1f m wide, %.1f m long",
+          __func__, f.kf_a, f.kf_b, map->zTop(l.a), map->zTop(l.b), f.count, f.heading_deg, f.width,
+          l.length);
+      }
+      for (const auto & l : links->links) {
+        if (l.straight) {
+          continue;
+        }
+        RCLCPP_INFO(
+          logger_,
+          "[OctomapPlanner3D][%s]   stair link kf %zu -> %zu: z %.2f -> %.2f, %.1f m, %zu points "
+          "(walked track)",
           __func__, l.kf_a, l.kf_b, map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size());
       }
       for (const std::string & note : links->notes) {

@@ -140,6 +140,289 @@ uint32_t findRoot(std::vector<uint32_t> & parent, uint32_t i)
   return i;
 }
 
+double length3d(const std::vector<Waypoint> & pts)
+{
+  double len = 0.0;
+  for (size_t i = 1; i < pts.size(); ++i) {
+    const Waypoint & p = pts[i - 1];
+    const Waypoint & q = pts[i];
+    len +=
+      std::sqrt((q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y) + (q.z - p.z) * (q.z - p.z));
+  }
+  return len;
+}
+
+// The stair's uphill direction: the gradient of a plane fitted through the
+// surfaces within radius of the walked stretch track[ka..kb] that lie
+// strictly between the two floors' heights -- the risers and treads, which
+// the geometry rules rejected but the column pass still recorded. The walk
+// itself is not used for the direction on purpose: it is what this replaces.
+// False, with why, when the fit is too thin, too flat to have a direction,
+// or points more than 60 deg away from the way the robot climbed.
+bool fitUphill(
+  const SurfaceMap & m, const std::vector<Waypoint> & track, size_t ka, size_t kb, double z_lo,
+  double z_hi, double radius, double walk_x, double walk_y, double & ux, double & uy,
+  std::string & why)
+{
+  double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
+  for (size_t k = ka; k <= kb; ++k) {
+    xmin = std::min(xmin, track[k].x - radius);
+    xmax = std::max(xmax, track[k].x + radius);
+    ymin = std::min(ymin, track[k].y - radius);
+    ymax = std::max(ymax, track[k].y + radius);
+  }
+  const double band_lo = z_lo + m.res / 2, band_hi = z_hi - m.res / 2;
+  std::vector<double> xs, ys, zs;
+  for (int iy = std::max(0, m.iyOf(ymin)); iy <= std::min(m.ny - 1, m.iyOf(ymax)); ++iy) {
+    for (int ix = std::max(0, m.ixOf(xmin)); ix <= std::min(m.nx - 1, m.ixOf(xmax)); ++ix) {
+      const double x = m.cx(ix), y = m.cy(iy);
+      bool near = false;
+      for (size_t k = ka; k <= kb && !near; ++k) {
+        near = std::hypot(track[k].x - x, track[k].y - y) <= radius;
+      }
+      if (!near) {
+        continue;
+      }
+      const uint32_t c = m.col(ix, iy);
+      for (uint32_t i = m.col_begin[c], e = m.col_begin[c + 1]; i < e; ++i) {
+        const double z = m.zTop(i);
+        if (z > band_lo && z < band_hi) {
+          xs.push_back(x);
+          ys.push_back(y);
+          zs.push_back(z);
+        }
+      }
+    }
+  }
+  const size_t n = xs.size();
+  if (n < 12) {
+    why = "only " + std::to_string(n) + " surface cells between the floors to fit a plane to";
+    return false;
+  }
+  double mx = 0, my = 0, mz = 0;
+  for (size_t i = 0; i < n; ++i) {
+    mx += xs[i];
+    my += ys[i];
+    mz += zs[i];
+  }
+  mx /= n;
+  my /= n;
+  mz /= n;
+  double sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const double dx = xs[i] - mx, dy = ys[i] - my, dz = zs[i] - mz;
+    sxx += dx * dx;
+    syy += dy * dy;
+    sxy += dx * dy;
+    sxz += dx * dz;
+    syz += dy * dz;
+  }
+  const double det = sxx * syy - sxy * sxy;
+  if (det < 1e-9) {
+    why = "the surfaces between the floors lie on a line, no plane fits";
+    return false;
+  }
+  const double gx = (sxz * syy - syz * sxy) / det, gy = (syz * sxx - sxz * sxy) / det;
+  const double g = std::hypot(gx, gy);
+  if (g < std::tan(5.0 * M_PI / 180.0)) {
+    why = "the fitted plane is flatter than 5 deg, no uphill direction";
+    return false;
+  }
+  ux = gx / g;
+  uy = gy / g;
+  const double w = std::hypot(walk_x, walk_y);
+  if (w > 1e-9 && (ux * walk_x + uy * walk_y) / w < std::cos(60.0 * M_PI / 180.0)) {
+    char buf[120];
+    std::snprintf(
+      buf, sizeof buf, "the fitted uphill direction (%.0f deg) is more than 60 deg off the walk",
+      std::atan2(uy, ux) * 180.0 / M_PI);
+    why = buf;
+    return false;
+  }
+  return true;
+}
+
+// From the lower-floor cell `entry`, march uphill along (ux, uy) one cell at
+// a time over surfaces within one step of each other until a traversable
+// cell of component `hi` is stepped on. The result's points are the column
+// centres passed, z interpolated from the entry's height to the exit's.
+// Empty when the line runs off the flight (no surface within a step), drops
+// back (more than a cell downhill), wanders back onto the lower floor (the
+// entry was not on the stair's edge, or the direction is skew), or runs
+// level for longer than exit_reach before the next rise -- a landing, or no
+// upper floor within reach of the top step.
+std::vector<Waypoint> marchStraight(
+  const SurfaceMap & m, CellId entry, uint32_t lo, uint32_t hi, double ux, double uy,
+  double max_len, double exit_reach, CellId & exit)
+{
+  std::vector<Waypoint> pts;
+  double ex, ey;
+  m.cellXY(entry, ex, ey);
+  const double z_entry = m.zTop(entry);
+  const double step_tol = (m.step_cells + 1) * m.res + 1e-6;
+  pts.push_back({ex, ey, z_entry});
+  uint32_t last_col = m.cell_col[entry];
+  double z = z_entry, level = 0.0;
+  exit = kNoCell;
+  for (int i = 1; i * m.res <= max_len + 2.0; ++i) {
+    const double x = ex + i * m.res * ux, y = ey + i * m.res * uy;
+    const int ix = m.ixOf(x), iy = m.iyOf(y);
+    if (!m.inGrid(ix, iy)) {
+      return {};
+    }
+    const uint32_t c = m.col(ix, iy);
+    if (c == last_col) {
+      continue;
+    }
+    last_col = c;
+    const CellId s = m.surfaceNear(c, z, step_tol);
+    if (s == kNoCell) {
+      return {};
+    }
+    const double zs = m.zTop(s);
+    if (zs < z - m.res - 1e-6) {
+      return {};
+    }
+    level = zs > z + m.res / 2 ? 0.0 : level + m.res;
+    z = zs;
+    pts.push_back({m.cx(ix), m.cy(iy), z});
+    if (m.traversable(s)) {
+      if (m.cells[s].component == hi) {
+        exit = s;
+        break;
+      }
+      if (m.cells[s].component == lo) {
+        return {};
+      }
+    }
+    if (level > exit_reach + 1e-6) {
+      return {};
+    }
+  }
+  if (exit == kNoCell) {
+    return {};
+  }
+  // The link is the segment between the two cell centres, not the column
+  // centres the march passed: those zigzag by a cell where the line crosses
+  // a row, and the path would turn 45 deg twice over 0.14 m there. The
+  // segment runs within half a cell of the columns the march checked, and
+  // buildPath resamples it at the path's spacing with z as one ramp.
+  return {pts.front(), pts.back()};
+}
+
+// Registers a finished link: its length, the cells it touches and the two
+// components it joins.
+void addLink(const SurfaceMap & m, StairLink link, StairLinks & out)
+{
+  link.length = length3d(link.pts);
+  const uint32_t id = static_cast<uint32_t>(out.links.size());
+  out.at[link.a].push_back(id);
+  out.at[link.b].push_back(id);
+  const uint32_t ra = findRoot(out.group, m.cells[link.a].component);
+  const uint32_t rb = findRoot(out.group, m.cells[link.b].component);
+  if (ra != rb) {
+    out.group[std::max(ra, rb)] = std::min(ra, rb);
+  }
+  out.links.push_back(std::move(link));
+}
+
+// The row of straight links across the flight the robot walked between
+// keyframes ka and kb, from cell a (walked first) to cell b. Returns how many
+// it laid; 0, with `why`, when the stretch is not one straight flight -- the
+// caller then keeps the walked link.
+size_t straightLinks(
+  const SurfaceMap & m, const std::vector<Waypoint> & track, size_t ka, size_t kb, CellId a,
+  CellId b, const StairLinkParams & p, StairLinks & out, std::string & why)
+{
+  double walked = 0.0;
+  for (size_t k = ka + 1; k <= kb; ++k) {
+    walked += std::hypot(track[k].x - track[k - 1].x, track[k].y - track[k - 1].y);
+  }
+  if (walked > p.straight_max_flight) {
+    char buf[120];
+    std::snprintf(
+      buf, sizeof buf, "%.1f m of track is more than straight_max_flight %.1f m", walked,
+      p.straight_max_flight);
+    why = buf;
+    return 0;
+  }
+  const bool a_is_lower = m.zTop(a) < m.zTop(b);
+  const CellId lo_cell = a_is_lower ? a : b, hi_cell = a_is_lower ? b : a;
+  const uint32_t lo = m.cells[lo_cell].component, hi = m.cells[hi_cell].component;
+  const double z_lo = m.zTop(lo_cell), z_hi = m.zTop(hi_cell);
+  double lx, ly, hx, hy;
+  m.cellXY(lo_cell, lx, ly);
+  m.cellXY(hi_cell, hx, hy);
+  double ux, uy;
+  if (!fitUphill(
+        m, track, ka, kb, z_lo, z_hi, p.straight_fit_radius, hx - lx, hy - ly, ux, uy, why)) {
+    return 0;
+  }
+  // Every lower-floor cell near the walked foot is tried as an entry; the
+  // march itself sorts the stair's edge from the floor behind it (a line
+  // from further back runs onto lower-floor cells and is dropped).
+  const double reach = p.straight_half_width + 1.0;
+  const uint32_t first = static_cast<uint32_t>(out.links.size());
+  double perp_min = 1e300, perp_max = -1e300;
+  for (int iy = std::max(0, m.iyOf(ly - reach)); iy <= std::min(m.ny - 1, m.iyOf(ly + reach));
+       ++iy) {
+    for (int ix = std::max(0, m.ixOf(lx - reach)); ix <= std::min(m.nx - 1, m.ixOf(lx + reach));
+         ++ix) {
+      const double dx = m.cx(ix) - lx, dy = m.cy(iy) - ly;
+      const double along = dx * ux + dy * uy, perp = dy * ux - dx * uy;
+      if (std::fabs(perp) > p.straight_half_width || std::fabs(along) > 1.0) {
+        continue;
+      }
+      const uint32_t col = m.col(ix, iy);
+      for (uint32_t e = m.col_begin[col], end = m.col_begin[col + 1]; e < end; ++e) {
+        if (!m.traversable(e) || m.cells[e].component != lo) {
+          continue;
+        }
+        CellId exit = kNoCell;
+        std::vector<Waypoint> pts =
+          marchStraight(m, e, lo, hi, ux, uy, p.straight_max_flight, p.straight_exit_reach, exit);
+        if (pts.empty()) {
+          continue;
+        }
+        StairLink link;
+        link.kf_a = ka;
+        link.kf_b = kb;
+        link.straight = true;
+        link.up_x = ux;
+        link.up_y = uy;
+        if (a_is_lower) {
+          link.a = e;
+          link.b = exit;
+        } else {
+          link.a = exit;
+          link.b = e;
+          std::reverse(pts.begin(), pts.end());
+        }
+        link.pts = std::move(pts);
+        addLink(m, std::move(link), out);
+        perp_min = std::min(perp_min, perp);
+        perp_max = std::max(perp_max, perp);
+      }
+    }
+  }
+  const size_t laid = out.links.size() - first;
+  if (laid == 0) {
+    why = "no straight line from the lower floor reached the upper one";
+    return 0;
+  }
+  StairFlight f;
+  f.kf_a = ka;
+  f.kf_b = kb;
+  f.first = first;
+  f.count = static_cast<uint32_t>(laid);
+  f.heading_deg = std::atan2(uy, ux) * 180.0 / M_PI;
+  f.width = perp_max - perp_min + m.res;
+  f.z_lo = z_lo;
+  f.z_hi = z_hi;
+  out.flights.push_back(f);
+  return laid;
+}
+
 }  // namespace
 
 std::shared_ptr<const StairLinks> buildStairLinks(
@@ -205,36 +488,38 @@ std::shared_ptr<const StairLinks> buildStairLinks(
       walked = 0.0;
       continue;
     }
-    StairLink link;
-    link.a = anchor;
-    link.b = c;
-    link.kf_a = anchor_kf;
-    link.kf_b = k;
-    double ax, ay, bx, by;
-    m.cellXY(anchor, ax, ay);
-    m.cellXY(c, bx, by);
-    link.pts.push_back({ax, ay, m.zTop(anchor)});
-    for (size_t i = anchor_kf + 1; i < k; ++i) {
-      link.pts.push_back(track[i]);
+    std::string why;
+    size_t laid = 0;
+    if (params.straight) {
+      laid = straightLinks(m, track, anchor_kf, k, anchor, c, params, *out, why);
+      if (laid == 0) {
+        char buf[240];
+        std::snprintf(
+          buf, sizeof buf,
+          "keyframes %zu..%zu (z %.2f -> %.2f): %s; the link follows the walked track", anchor_kf,
+          k, m.zTop(anchor), m.zTop(c), why.c_str());
+        out->notes.push_back(buf);
+      }
     }
-    link.pts.push_back({bx, by, m.zTop(c)});
-    link.pts = cutLoops(link.pts, params.loop_radius, params.loop_dz);
-    smoothPolyline(link.pts, params.smooth_passes);
-    for (size_t i = 1; i < link.pts.size(); ++i) {
-      const Waypoint & p = link.pts[i - 1];
-      const Waypoint & q = link.pts[i];
-      link.length += std::sqrt(
-        (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y) + (q.z - p.z) * (q.z - p.z));
+    if (laid == 0) {
+      // The walk itself.
+      StairLink link;
+      link.a = anchor;
+      link.b = c;
+      link.kf_a = anchor_kf;
+      link.kf_b = k;
+      double ax, ay, bx, by;
+      m.cellXY(anchor, ax, ay);
+      m.cellXY(c, bx, by);
+      link.pts.push_back({ax, ay, m.zTop(anchor)});
+      for (size_t i = anchor_kf + 1; i < k; ++i) {
+        link.pts.push_back(track[i]);
+      }
+      link.pts.push_back({bx, by, m.zTop(c)});
+      link.pts = cutLoops(link.pts, params.loop_radius, params.loop_dz);
+      smoothPolyline(link.pts, params.smooth_passes);
+      addLink(m, std::move(link), *out);
     }
-    const uint32_t id = static_cast<uint32_t>(out->links.size());
-    out->at[link.a].push_back(id);
-    out->at[link.b].push_back(id);
-    const uint32_t ra = findRoot(out->group, m.cells[link.a].component);
-    const uint32_t rb = findRoot(out->group, m.cells[link.b].component);
-    if (ra != rb) {
-      out->group[std::max(ra, rb)] = std::min(ra, rb);
-    }
-    out->links.push_back(std::move(link));
     anchor = c;
     anchor_kf = k;
     walked = 0.0;
