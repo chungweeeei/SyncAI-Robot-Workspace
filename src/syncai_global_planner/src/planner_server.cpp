@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
@@ -11,6 +12,7 @@
 #include "builtin_interfaces/msg/duration.hpp"
 #include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_costmap_2d/footprint.hpp"
+#include "syncai_costmap_2d/static_layer.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "tf2/utils.h"
@@ -89,6 +91,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   this->declare_parameter("plan_republish_rate", 1.0);
   this->declare_parameter("is_path_valid.footprint_check", true);
   this->declare_parameter("is_path_valid.heading_margin", 0.35);
+  this->declare_parameter("costmap_wait_timeout", 5.0);
   path_check_footprint_ = this->get_parameter("is_path_valid.footprint_check").as_bool();
   path_check_heading_margin_ = this->get_parameter("is_path_valid.heading_margin").as_double();
 
@@ -178,6 +181,7 @@ void PlannerServer::configure()
       __func__, expected_planner_frequency);
     max_planner_duration_ = 0.0;
   }
+  get_parameter("costmap_wait_timeout", costmap_wait_timeout_);
 
   // Initialize pubs & subs
   plan_publisher_ = this->create_publisher<nav_msgs::msg::Path>("plan", 1);
@@ -247,13 +251,76 @@ bool PlannerServer::isServerInactive()
   return false;
 }
 
-void PlannerServer::waitForCostmap()
+template <typename ServerT, typename GoalT>
+PlannerServer::CostmapWait PlannerServer::waitForCostmap(
+  ServerT & server, std::shared_ptr<const GoalT> & goal, std::string & reason)
 {
-  // Don't compute a plan until costmap is valid (after clear costmap)
+  // Don't compute a plan until costmap is valid (after clear costmap). Every
+  // way out but Ready is the caller's to report and terminate.
+  const auto started = std::chrono::steady_clock::now();
   rclcpp::Rate r(100);
-  while (!costmap_ros_->isCurrent()) {
+  while (rclcpp::ok()) {
+    if (server.is_cancel_requested()) {
+      return CostmapWait::Cancelled;
+    }
+    // A preempt is taken during the wait, not only after it (upstream): the new
+    // goal may name a planner that does not read the costmap (Octo3D), and then
+    // there is nothing to wait for.
+    if (server.is_preempt_requested()) {
+      goal = server.accept_pending_goal();
+    }
+    if (!plannerUsesCostmap(goal->planner_id)) {
+      return CostmapWait::Ready;
+    }
+    // Before isCurrent(): a static layer without a map is never current, and
+    // on a 3D-only map (map_server idle, no gridmap.yaml) no map is coming, so
+    // the timeout would only delay the same failure. A map_server that is
+    // merely slow at boot is not this case in practice: its latched map
+    // reaches the static layer within a second of the planner coming up,
+    // long before a goal. A clear (reset()) keeps the layer's map.
+    const std::string layer = staticLayerWithoutMap();
+    if (!layer.empty()) {
+      reason = "static layer '" + layer +
+               "' has no map (none published on its map topic; a 3D-only map has no "
+               "gridmap.yaml, so map_server runs idle) -- planner '" +
+               goal->planner_id + "' plans on that costmap";
+      return CostmapWait::NoStaticMap;
+    }
+    if (costmap_ros_->isCurrent()) {
+      return CostmapWait::Ready;
+    }
+    const double waited =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (costmap_wait_timeout_ > 0.0 && waited > costmap_wait_timeout_) {
+      // The global costmap updates at 1 Hz, so a clear repopulates within
+      // ~1 s; staying stale past the timeout means a layer is not getting its
+      // data (a sensor source past its expected_update_rate, a TF gap).
+      char buf[160];
+      std::snprintf(
+        buf, sizeof(buf),
+        "global costmap not current after %.1f s (costmap_wait_timeout); a layer is not "
+        "receiving its data",
+        costmap_wait_timeout_);
+      reason = buf;
+      return CostmapWait::TimedOut;
+    }
     r.sleep();
   }
+  reason = "shutting down";
+  return CostmapWait::Cancelled;
+}
+
+std::string PlannerServer::staticLayerWithoutMap() const
+{
+  // Read without the costmap mutex: the layer list is fixed after init(), and
+  // isMapReceived() is atomic.
+  for (const auto & layer : *costmap_ros_->getLayeredCostmap()->getPlugins()) {
+    auto static_layer = std::dynamic_pointer_cast<syncai_costmap_2d::StaticLayer>(layer);
+    if (static_layer && static_layer->isEnabled() && !static_layer->isMapReceived()) {
+      return static_layer->getName();
+    }
+  }
+  return "";
 }
 
 bool PlannerServer::plannerUsesCostmap(const std::string & planner_id) const
@@ -555,11 +622,28 @@ void PlannerServer::computePlan()
     // Only a planner that reads the cells waits for them (upstream waits for
     // every one, before taking a preempt). Octo3D does not: on a 3D-only map
     // with no gridmap.yaml this wait never ends, and every goal hung here
-    // without reaching the planner. A goal preempting during the wait is
-    // taken after it, as upstream does.
-    if (plannerUsesCostmap(goal->planner_id)) {
-      waitForCostmap();
-      getPreemptedGoalIfRequested(goal);
+    // without reaching the planner. Since 2026-10-19 the wait itself can end
+    // without the costmap: a cancel, a static layer with no map (a GridBased
+    // goal on a 3D-only map, which hung the action thread for good until
+    // then) or costmap_wait_timeout. An aborted ComputePathToPose is what the
+    // task_runner reports as PLAN_FAILED.
+    std::string wait_reason;
+    switch (waitForCostmap(*action_server_pose_, goal, wait_reason)) {
+      case CostmapWait::Ready:
+        break;
+      case CostmapWait::Cancelled:
+        RCLCPP_INFO(
+          get_logger(), "[PlannerServer][%s] Goal was canceled while waiting for the costmap.",
+          __func__);
+        action_server_pose_->terminate_all();
+        return;
+      case CostmapWait::NoStaticMap:
+      case CostmapWait::TimedOut:
+        RCLCPP_WARN(
+          get_logger(), "[PlannerServer][%s] Cannot plan to (%.2f, %.2f): %s", __func__,
+          goal->goal.pose.position.x, goal->goal.pose.position.y, wait_reason.c_str());
+        action_server_pose_->terminate_current();
+        return;
     }
 
     // Use start pose if provided otherwise use current robot pose
@@ -633,15 +717,25 @@ void PlannerServer::computePlanThroughPoses()
       return;
     }
 
-    // Same rule as computePlan(): only a planner that reads the cells waits.
-    if (action_server_poses_->is_preempt_requested()) {
-      goal = action_server_poses_->accept_pending_goal();
-    }
-    if (plannerUsesCostmap(goal->planner_id)) {
-      waitForCostmap();
-      if (action_server_poses_->is_preempt_requested()) {
-        goal = action_server_poses_->accept_pending_goal();
-      }
+    // Same rule as computePlan(): only a planner that reads the cells waits,
+    // and the wait ends on a cancel, a missing static map or the timeout.
+    std::string wait_reason;
+    switch (waitForCostmap(*action_server_poses_, goal, wait_reason)) {
+      case CostmapWait::Ready:
+        break;
+      case CostmapWait::Cancelled:
+        RCLCPP_INFO(
+          get_logger(), "[PlannerServer][%s] Goal was canceled while waiting for the costmap.",
+          __func__);
+        action_server_poses_->terminate_all();
+        return;
+      case CostmapWait::NoStaticMap:
+      case CostmapWait::TimedOut:
+        RCLCPP_WARN(
+          get_logger(), "[PlannerServer][%s] Cannot plan through poses: %s", __func__,
+          wait_reason.c_str());
+        action_server_poses_->terminate_current();
+        return;
     }
 
     if (goal->goals.empty()) {
@@ -870,6 +964,8 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
             __func__, parameter.as_double());
           max_planner_duration_ = 0.0;
         }
+      } else if (name == "costmap_wait_timeout") {
+        costmap_wait_timeout_ = parameter.as_double();
       } else if (name == "is_path_valid.heading_margin") {
         // Dynamic so the on-robot A/B (footprint_check on / off, margin up /
         // down) needs no rebuild. Beyond a right angle the "margin" would test

@@ -21,7 +21,7 @@
 # hard-coded map, which throws on a robot without it or, worse, serves another
 # site's map. What is left of 2D on such a map is the planner's global
 # costmap, whose static layer then never gets a map (noise for Octo3D, which
-# does not wait for it; a GridBased goal there still hangs). A [map] map that
+# does not wait for it; a GridBased goal there fails at once). A [map] map that
 # names an existing but unreadable file still throws, as before -- that is a
 # broken map, not a 3D one.
 

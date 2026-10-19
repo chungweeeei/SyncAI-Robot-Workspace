@@ -29,6 +29,18 @@
     # this a viewer that subscribes mid-drive never sees the route.
     plan_republish_rate: 1.0
 
+    # How long a goal for a planner that reads the costmap (GridBased) waits
+    # for it to be current before the goal is aborted (s; <= 0 = forever, as
+    # upstream did). The global costmap updates at 1 Hz, so a clear
+    # repopulates within ~1 s and 5 s is only ever hit by a layer that is not
+    # getting its data. Until 2026-10-19 the wait had no way out at all: a
+    # GridBased goal on a 3D-only map (no gridmap.yaml, the static layer never
+    # gets a map) hung the action thread for good. That case no longer waits
+    # for this timeout -- a static layer without a map fails the goal at once
+    # -- and a cancel ends the wait too. An aborted ComputePathToPose reaches
+    # NavigateToGoal as PLAN_FAILED. Dynamic.
+    costmap_wait_timeout: 5.0
+
     # is_path_valid (the 2D tree's once-a-second check of the path still
     # ahead; this branch's Octo3D tree does not call it, because the check is
     # 2D and reads a path upstairs as blocked) tests each pose twice: the

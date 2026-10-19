@@ -87,8 +87,11 @@ executor as well.
 server inactive / cancel requested?   → bail
 accept a preempting goal if pending
 planner reads the costmap?            (GlobalPlanner::usesCostmap(); Octo3D does not)
-  waitForCostmap()                    ← blocks at 100 Hz until isCurrent(), no timeout
-  accept a preempting goal if pending
+  waitForCostmap()                    ← polls at 100 Hz; takes a preempt (and re-checks the line above)
+    cancel requested?                 → terminate_all()
+    a static layer has no map?        → terminate_current()  (3D-only map: no gridmap.yaml)
+    isCurrent()?                      → go on
+    costmap_wait_timeout passed?      → terminate_current()
 start = goal.use_start ? goal.start : costmap.getRobotPose()
 transform start and goal into the costmap global frame
 path = getPlan(start, goal, goal.planner_id)
@@ -290,8 +293,10 @@ since 2026-10-15 the server does not wait for it to be current before an
 2026-10-19 they died at boot), the static layer never gets a map, and every goal used to hang in
 `waitForCostmap()` without reaching this planner — no log line, until the BT
 cancelled it. The global costmap still warns at 1 Hz on such a map (no map,
-robot out of bounds of its 5 × 5 m default); that is noise for `Octo3D`, and
-a `planner_id: GridBased` goal there still hangs the server.
+robot out of bounds of its 5 × 5 m default); that is noise for `Octo3D`. A
+`planner_id: GridBased` goal there hung the server's action thread for good
+until 2026-10-19; it now fails at once ("static layer … has no map"), which
+`NavigateToGoal` reports as `PLAN_FAILED` — see "The plan cycle".
 
 **Why a surface map and not a free-space search.** The first attempt (the
 device workspace's `octo_planner_3d`) ran a 26-neighbour A* over the free
@@ -524,11 +529,12 @@ headers include nothing of ROS on purpose.
 |---|---|---|
 | `planner_plugins` | `["GridBased"]` (config: `["GridBased", "Octo3D"]`) | IDs; each needs `<id>.plugin` naming the type. With more than one loaded, an empty `planner_id` in a goal is an error rather than "the only plugin" |
 | `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan at most once a second, and only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
+| `costmap_wait_timeout` | `5.0` (config: `5.0`) | Seconds a goal for a planner that reads the costmap (`usesCostmap()`; `GridBased`, not `Octo3D`) waits for it to be current before the goal is aborted; `<= 0` waits forever (upstream). Not the guard for a 3D-only map: an enabled static layer that has never received a map fails the goal at once (2026-10-19; until then such a goal hung the action thread with no way out), and a cancel ends the wait too. Dynamic |
 | `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the pose nearest the robot (the same nearest-pose search `is_path_valid` uses, so what is shown is what is checked; the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. It keeps showing the last route after a goal succeeds or fails, since the planner cannot tell when the navigation finished; a **cancelled** goal is the exception, reported by the task_runner through `clear_plan`. Read once at startup |
 | `is_path_valid.footprint_check` | `true` | Also test the padded footprint's perimeter against LETHAL at each pose ahead of the robot — RPP's own collision test, run on the global costmap. `false` restores the centre-cell test alone (what the service did until 2026-10). Dynamic |
 | `is_path_valid.heading_margin` | `0.35` | Radians either side of the path heading the perimeter is also tested at. RPP tracks with up to `rotate_to_heading_min_angle` (0.25) of heading error before it rotates in place, and the gait adds yaw sway; at 0.35 the rectangle reaches 0.365 m sideways, which is what catches a person 0.3 m beside the route — and what rejects a straight passage narrower than 0.73 m (doors pass). `0` tests the path heading only. Dynamic, clamped to [0, π/2] |
 
-`expected_planner_frequency` and the two `is_path_valid.*` parameters are what
+`expected_planner_frequency`, `costmap_wait_timeout` and the two `is_path_valid.*` parameters are what
 the *server's* dynamic callback handles, and it takes the same mutex the plan
 cycle holds (the `is_path_valid.*` values are atomics the service reads
 without that mutex, so a check never waits behind a plan).

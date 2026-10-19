@@ -47,12 +47,12 @@ public:
   /**
    * @brief Whether createPlan() reads the costmap's cells.
    *
-   * The planner server waits, with no timeout, for the costmap to be current
-   * before calling a planner that does, and skips the wait for one that does
-   * not. A planner that takes only the frame id from the costmap must say so:
-   * on a map with no gridmap.yaml, map_server dies, the static layer never
-   * gets a map, the costmap never turns current, and every goal hung in that
-   * wait before reaching the planner. A default body rather than pure
+   * The planner server waits for the costmap to be current before calling a
+   * planner that does, and skips the wait for one that does not. A planner
+   * that takes only the frame id from the costmap must say so: on a map with
+   * no gridmap.yaml the static layer never gets a map and the costmap never
+   * turns current, so every goal hung in that wait (no timeout until
+   * 2026-10-19) and, since then, fails at once for want of a static map. A default body rather than pure
    * virtual, for the same reason as Controller::reset().
    */
   virtual bool usesCostmap() const { return true; }

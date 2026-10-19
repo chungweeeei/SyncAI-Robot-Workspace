@@ -33,8 +33,10 @@ there is no separate error channel. `usesCostmap()` (not in nav2_core,
 2026-10-15) tells the planner server whether to wait for the costmap to be
 current before `createPlan()`; it defaults to `true`, and a planner that takes
 only the frame id from the costmap (`OctomapPlanner3D`) returns `false`, so a
-map with no `gridmap.yaml` — whose costmap never turns current — does not hang
-its goals in that wait.
+map with no `gridmap.yaml` — whose costmap never turns current — does not fail
+its goals in that wait. (A planner that does read it now fails there at once
+on such a map, rather than hanging the action thread as it did until
+2026-10-19.)
 
 **`Controller`** — `initialize(node, name, tf, costmap_ros)`, `setPlan(path)`,
 `reset()`, `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`,
