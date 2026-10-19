@@ -1,5 +1,5 @@
-#ifndef SYNCAI_CONTROLLER__PATH_HEIGHT_HPP_
-#define SYNCAI_CONTROLLER__PATH_HEIGHT_HPP_
+#ifndef SYNCAI_UTIL__PATH_HEIGHT_HPP_
+#define SYNCAI_UTIL__PATH_HEIGHT_HPP_
 
 // Height awareness for paths that leave the floor (2026-10).
 //
@@ -29,7 +29,7 @@
 #include "tf2/exceptions.h"
 #include "tf2_ros/buffer.h"
 
-namespace syncai_controller
+namespace syncai_util
 {
 
 // A path "has height" when its poses do not all share one z. A flat path from
@@ -72,6 +72,6 @@ inline bool lookupGroundZ(
   }
 }
 
-}  // namespace syncai_controller
+}  // namespace syncai_util
 
-#endif  // SYNCAI_CONTROLLER__PATH_HEIGHT_HPP_
+#endif  // SYNCAI_UTIL__PATH_HEIGHT_HPP_

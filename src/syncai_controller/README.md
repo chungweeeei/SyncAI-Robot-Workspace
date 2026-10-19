@@ -24,14 +24,20 @@ Three path followers are loaded on this branch (two on `dev`, 2026-10):
   values (one calibration — change them together), except `desired_linear_vel`:
   **0.8 m/s** against `FollowPathRPP`'s 0.60 since 2026-10-19, unmeasured on the
   robot (× `scale_fwd` 1.40 = 1.12 m/s to the gait). On a path without heights
-  it behaves as `FollowPathRPP`, at that speed.
+  it behaves as `FollowPathRPP`, at that speed. Since 2026-10-20 its stair
+  state machine is `syncai_util::StairMode`, shared with MPPI (below).
 
 The FollowPath goal's `controller_id` picks between them, so
 `controller_id` in `move.xml` is the whole A/B. `move.xml` (the 2D tree,
 `dev`'s) names `FollowPath` (MPPI) with `GridBased`; on this branch a 3D map
-runs `move_3d.xml` instead, which names **`FollowPathRPP3D`** with
-`planner_id="Octo3D"`: it is the only one that follows a path with heights in
-3D and climbs stairs; MPPI and `FollowPathRPP` do neither.
+runs `move_3d.xml` instead, which names **`FollowPath` too** with
+`planner_id="Octo3D"` (since 2026-10-20; `FollowPathRPP3D` for the day
+before): MPPI matches a path with heights in 3D and climbs stairs with the
+same `StairMode`, with its optimizer skipped on the flight and running
+everywhere else, so the local detours it gives the 2D tree are the 3D tree's
+too — one controller for both map types, a path without heights taking its
+planar code path unchanged. `FollowPathRPP3D` is the A/B on a 3D map, as
+`FollowPathRPP` is on a 2D one; only `FollowPathRPP` matches on x / y alone.
 
 Since 2026-10 the same node also serves a **second action, `DockToPose`**
 (`syncai_common`, on `dock_to_pose`): drive to ONE pose and stop there, the
@@ -203,7 +209,8 @@ back over the same x / y every **8.1 m, 2.5 m higher**:
   1F corridor under it, on the way to the stairs.
 
 So a path whose poses do not all share one z (`pathHasHeight()`, in
-`include/syncai_controller/path_height.hpp`) is matched in **3D**: RPP 3D's
+`syncai_util/include/syncai_util/path_height.hpp`, moved there in 2026-10 so
+`syncai_mppi_controller` can share it) is matched in **3D**: RPP 3D's
 (`FollowPathRPP3D`) nearest pose and window end, the patrol gate's nearest pose here, and the goal is only
 reached within **`goal_z_tolerance`** (0.5 m) of the end pose's height. A path of
 all-equal z — every 2D planner — takes the old planar code paths unchanged; a 3D
@@ -214,18 +221,25 @@ minus `lidar_height` — Point-LIO's body, the one frame that still climbs, and 
 planner's own start-height lookup with the same two values. Without that TF, a
 path with heights fails RPP 3D's cycle (the server holds the robot for
 `failure_tolerance`) and never reaches its goal, rather than being followed on
-x / y. MPPI (`FollowPath`) and the 2D RPP (`FollowPathRPP`) are **not**
-height-aware: they match the path in 2D, so a path with a stair link is
-`FollowPathRPP3D`-only. The server's goal check is shared, so it applies to a
-path with heights whichever controller follows it.
+x / y. MPPI (`FollowPath`) matches the same way since 2026-10-20 (its
+`PathHandler`, with the same `lookupGroundZ` and the same failure); the 2D RPP
+(`FollowPathRPP`) is **not** height-aware and matches the path in 2D. The
+server's goal check is shared, so it applies to a path with heights whichever
+controller follows it.
 
-Climbing itself is RPP 3D's stair mode, next.
+Climbing itself is the stair mode, next.
 
-### Stairs (RPP 3D stair mode)
+### Stairs (stair mode)
 
-On a path with heights, RPP 3D (`FollowPathRPP3D` only) climbs a stretch that rises
+On a path with heights, RPP 3D and MPPI climb a stretch that rises
 **`stair_min_rise`** (0.3 m) within **`stair_enter_dist`** (1 m) ahead in *stair
-mode* (2026-10):
+mode* (2026-10). The detection, the policy switch and the latched report are
+one state machine, **`syncai_util::StairMode`** (`stair_mode.hpp`; lifted out
+of RPP 3D on 2026-10-20 when MPPI needed the same behaviour, so there is one
+calibration of the gait's stair policy, not two), declared under each plugin's
+name with the same values; the climb itself — the carrot and the speed cap
+here, the optimizer bypass in `syncai_mppi_controller` — is each controller's,
+and so is the braking, done with each one's own acceleration clamp:
 
 1. **Stop and switch the gait policy.** The robot brakes at the clamps' rates; once
    commanded to a stop it calls the driver's **`set_policy_mode`** with
@@ -240,10 +254,12 @@ mode* (2026-10):
    stair tests crawl; 0.5 is unmeasured on HIMLOCO) with a **`stair_lookahead_dist`**
    (0.4 m) carrot. The short carrot keeps RPP off the inside of a spiral's turns
    (its narrowest treads) and keeps the collision projection (carrot + 0.36 m of
-   footprint, ~0.76 m) short of the treads that rise past the local costmap's
-   obstacle floor (0.58 m above the robot's ground, `height_reference: sensor`):
-   a 0.17 / 0.28 m stair has risen ~0.46 m there. The collision check stays on —
-   the stairwell's walls are still lethal.
+   footprint, ~0.76 m) short. Until 2026-10-20 that length also mattered
+   against the local costmap's obstacle floor (0.58 m above the robot's
+   ground), which the treads rose past after ~0.76 m; the local costmap's
+   `TerrainLayer` (`syncai_costmap_2d`) now opens a corridor over the stair
+   the path climbs, so the treads are free and the collision check — still on —
+   sees the stairwell's walls and anything standing on the stairs.
 3. **Leave** once the path from **`stair_exit_behind_dist`** (0.8 m) behind to
    **`stair_exit_ahead_dist`** (2.5 m) ahead rises less than `stair_min_rise`:
    stop, switch back, settle. Back to **`flat_policy_mode`**, or with -1 (default)
@@ -262,7 +278,10 @@ back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
 
 **Untested on the robot**: whether HIMLOCO climbs this stair, whether a policy
 switch standing still is enough (or the controller wants `Stand` first), and the
-settle time. MPPI and `FollowPathRPP` have no stair mode and no 3D matching.
+settle time. `FollowPathRPP` has no stair mode and no 3D matching. The state
+machine is unit-tested in `syncai_util/test/test_stair_mode.cpp` on a
+synthetic flight (enter, hold, send, settle, leave, the replan-before-send
+cancel, the reset-after-send completion, a missing service, a level path).
 
 ## Regulated Pure Pursuit
 

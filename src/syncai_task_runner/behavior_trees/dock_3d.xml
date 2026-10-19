@@ -3,9 +3,10 @@
   2026-10-19). A goal naming dock.xml runs this file instead while the
   planner's Octo3D has a map (the same per-goal choice as move.xml /
   move_3d.xml; move_3d.xml's header has it). Only the staging leg differs,
-  and only as move_3d.xml differs from move.xml: planner_id="Octo3D",
-  controller_id="FollowPathRPP3D", and a plan once per goal (number_plans ==
-  0) in place of IsPathValid, which judges on the 2D costmap. On a 3D-only
+  and only as move_3d.xml differs from move.xml: planner_id="Octo3D" and a
+  plan once per goal (number_plans == 0) in place of IsPathValid, which
+  judges on the 2D costmap; the controller is move.xml's FollowPath (MPPI,
+  3D-aware since 2026-10-20; it was FollowPathRPP3D for a day). On a 3D-only
   map dock.xml's GridBased has no map and every dock failed PLAN_FAILED
   until this file. The MPC half and the last metre are dock.xml's,
   unchanged: the docking controller tracks the dock pose in the planar odom
@@ -155,7 +156,7 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPathRPP3D"/>
+          <FollowPath path="{path}" controller_id="FollowPath"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>

@@ -27,6 +27,7 @@
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
+#include "syncai_util/stair_mode.hpp"
 
 namespace syncai_mppi_controller
 {
@@ -156,6 +157,33 @@ protected:
     geometry_msgs::msg::TwistStamped & cmd);
 
   /**
+    * @brief On a path with heights, brake for the policy switch and climb a
+    * stair link with a short pure-pursuit carrot instead of running the optimizer
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param cmd Filled with the stair command when this returns true, else untouched
+    * @return Whether this cycle is stair mode's (the optimizer is skipped)
+    */
+  bool climbStairs(
+    const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
+    * @brief The straight walk onto a point shared by the direct approach and
+    * the stair carrot: vx towards `speed`, wz on the pure-pursuit arc through
+    * the point, both acceleration-clamped
+    * @param bearing Bearing of the point from the robot's heading, signed
+    * @param dist Distance to the point
+    * @param speed The linear speed to walk at
+    * @param vx Set to the linear command
+    * @param wz Set to the angular command
+    */
+  void trackPoint(double bearing, double dist, double speed, double & vx, double & wz) const;
+
+  /**
+    * @brief Ramp both commands to zero at the clamps' own rates
+    */
+  void brake(double & vx, double & wz) const;
+
+  /**
     * @brief Whether the direct approach would put the footprint on a LETHAL cell
     * @param x Robot x in the costmap's global frame
     * @param y Robot y
@@ -215,7 +243,16 @@ protected:
   // when the final rotation takes over, when the way onto the goal is blocked,
   // and by setPlan() / reset() (see approachGoal()).
   bool approaching_goal_{false};
-  // The direct approach's only obstacle test (see isApproachBlocked()).
+  // Stairs (2026-10-20): the detection, policy switch and latched report are
+  // syncai_util::StairMode's, shared with RPP 3D; the climb is climbStairs()'s.
+  syncai_util::StairMode stair_mode_;
+  double stair_linear_vel_{0.5};
+  double stair_lookahead_dist_{0.4};
+  // Set while climbStairs() owns the robot (hold or climb), so the optimizer
+  // is reset once on the way in and once on the way out.
+  bool climbing_stairs_{false};
+  // The direct approach's and the stair carrot's only obstacle test (see
+  // isApproachBlocked()).
   syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> collision_checker_{
     nullptr};
   double control_duration_{0.05};

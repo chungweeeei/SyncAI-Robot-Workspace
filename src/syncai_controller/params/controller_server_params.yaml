@@ -52,9 +52,10 @@
     # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
     # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
-    # The detour above is the 2D tree's. A 3D map's move_3d.xml (Octo3D +
-    # FollowPathRPP3D) has no IsPathValid and plans once per goal, so there is
-    # no detour at all: RPP stops at a blocker, and those retries (~16 s) are
+    # The replanned detour above is the 2D tree's. A 3D map's move_3d.xml
+    # (Octo3D + FollowPath) has no IsPathValid and plans once per goal, so
+    # the only detour there is MPPI's own, inside the local costmap; at a
+    # blocker that closes the way it stops, and those retries (~16 s) are
     # the whole wait before the goal fails.
     # MPPI's "Optimizer fail to compute path" reaches this window only since
     # 2026-10-21: until then the optimizer threw Humble's std::runtime_error,
@@ -124,9 +125,14 @@
     # the others cost memory, not CPU. FollowPathRPP3D is
     # feature/octomap-planner-3d's: the RPP above plus 3D matching of a path
     # with heights and the stair mode, as a plugin of its own so FollowPathRPP
-    # stays dev's 2D RPP. A 3D map's trees (move_3d.xml, dock_3d.xml's
-    # staging leg) name it, with planner Octo3D; MPPI and FollowPathRPP match
-    # in 2D and have no stair mode.
+    # stays dev's 2D RPP. Since 2026-10-20 FollowPath (MPPI) matches a path
+    # with heights in 3D and climbs stairs the same way (one state machine,
+    # syncai_util::StairMode, for both), so a 3D map's trees (move_3d.xml,
+    # dock_3d.xml's staging leg) name FollowPath as the 2D trees do, and
+    # FollowPathRPP3D is the A/B on a 3D map as FollowPathRPP is on a 2D
+    # one. One controller for both map types: a path without heights (every
+    # 2D planner) takes MPPI's planar code path unchanged. Only FollowPathRPP
+    # matches on x / y alone.
     controller_plugins: ["FollowPath", "FollowPathRPP", "FollowPathRPP3D", "Docking", "Undocking"]
 
     progress_checker:
@@ -299,6 +305,32 @@
       # bearing runs a wider arc than the one through the goal point (a few
       # mm wide at 0.25 rad and 0.2 m, well inside xy_goal_tolerance).
       approach_rotate_min_angle: 0.25
+      # Stair mode (2026-10-20): RPP 3D's, in MPPI, so one controller serves
+      # a 2D map and a 3D one. Detection and the policy switch are
+      # syncai_util::StairMode's (shared with FollowPathRPP3D), with the
+      # SAME values as that block's -- one calibration of one gait; change
+      # them together, and the notes there are the record. On a path with
+      # heights a stretch rising stair_min_rise within stair_enter_dist is a
+      # stair: the robot brakes, set_policy_mode switches the gait to
+      # stair_policy_mode, it stands stair_policy_settle_time, then climbs
+      # on a stair_lookahead_dist carrot at stair_linear_vel with the
+      # optimizer skipped -- a stair is a corridor one footprint wide in the
+      # terrain layer, nothing to sample round -- using final_rotation_wz
+      # for the turn onto the carrot (so that must stay > 0). Leaves when the
+      # window from stair_exit_behind_dist back to stair_exit_ahead_dist
+      # ahead has gone level, with a second stop and the policy restored.
+      # A path without heights never enters it. Untested on the robot, as
+      # RPP 3D's is.
+      use_stair_mode: true
+      stair_min_rise: 0.3
+      stair_enter_dist: 1.0
+      stair_exit_behind_dist: 0.8
+      stair_exit_ahead_dist: 2.5
+      stair_policy_settle_time: 3.0
+      stair_policy_mode: 1
+      flat_policy_mode: -1
+      stair_linear_vel: 0.5
+      stair_lookahead_dist: 0.4
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
       # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
       # 2 m half-width. With consider_footprint, a rolled-out point off the
@@ -490,7 +522,8 @@
     # desired_linear_vel, 0.8 here against 0.60 there since 2026-10-19 (see
     # its note). A path without heights (all z = 0, any 2D planner) is
     # followed as FollowPathRPP follows it, at that speed, stair mode never
-    # engaging.
+    # engaging. Not named by any tree since 2026-10-20 (FollowPath climbs
+    # stairs too); kept loaded as the A/B on a 3D map.
     FollowPathRPP3D:
       plugin: "syncai_controller::RegulatedPurePursuitController3D"
       # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
@@ -565,7 +598,8 @@
       inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
 
-      # Stair mode (2026-10, RPP 3D only; README "Stairs"). On a path with heights
+      # Stair mode (2026-10; README "Stairs"; the same block under FollowPath
+      # since 2026-10-20, where the climb is MPPI's bypass). On a path with heights
       # (OctomapPlanner3D) a stretch rising stair_min_rise within
       # stair_enter_dist ahead is a stair: the robot stops, set_policy_mode
       # switches the gait controller to stair_policy_mode, it stands
@@ -789,9 +823,100 @@
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 
-    # Layer stack — order matters: obstacle(mark/clear) -> inflation
-    plugins: ["obstacle_layer", "inflation_layer"]
+    # Layer stack -- order matters: terrain (mark) -> inflation. The
+    # obstacle_layer block below is kept, not loaded (2026-10-20): the
+    # terrain layer replaced it as this costmap's one sensor source, on 2D
+    # and 3D maps alike. Put "obstacle_layer" back in this list, in place of
+    # "terrain_layer", to run the old height band again -- never both: they
+    # disagree on a ramp (free here, a wall there) and the max of the two is
+    # the wall.
+    plugins: ["terrain_layer", "inflation_layer"]
 
+    # TerrainLayer (2026-10-20; syncai_costmap_2d/terrain_grid.hpp has the
+    # design): the lidar cloud judged against the ground under each cell with
+    # OctomapPlanner3D's own rules -- the four geometry values below are
+    # SurfaceMapParams' (planner_server_params.yaml, Octo3D), one calibration
+    # of the robot's legs; change them together. What it fixes: the obstacle
+    # layer's band started 0.58 m above the robot's ground, so a box, a cart's
+    # base, a kerb's wall, a drop-off and a stair tread were all invisible to
+    # it, and a ramp or a stair was a wall after a metre. Here a return is an
+    # obstacle only from min_obstacle_height above the floor *at its own
+    # cell*; a floor that changes height is judged by the step rule (a riser
+    # is fine, a ledge or a drop is not) and the slope rule (a ramp is fine, a
+    # flight is not); and the stair the path climbs is opened as a corridor.
+    terrain_layer:
+      plugin: "syncai_costmap_2d::TerrainLayer"
+      enabled: true
+      footprint_clearing_enabled: true
+      # Relative name: /<robot_id>/pointlio/body_cloud. The cloud's own frame
+      # (pointlio_body, the lidar) is the robot's height reference: its z
+      # minus sensor_height is the ground under the robot (lidar_height
+      # elsewhere; same 0.481).
+      topic: pointlio/body_cloud
+      sensor_height: 0.481
+      # Returns kept: within max_range of the lidar in the plane (the window
+      # is 2.83 m to its corner) and within [min_rel_z, max_rel_z] of the
+      # robot's ground -- a drop one floor down is in, the ceiling is out.
+      max_range: 3.0
+      min_rel_z: -1.5
+      max_rel_z: 1.5
+      # Relative name: /<robot_id>/plan, the planner's last path (republished
+      # at plan_republish_rate, 1 Hz, with Octo3D's heights; emptied on a
+      # cancel). A level path -- every 2D planner -- opens no corridor.
+      plan_topic: plan
+      # Memory. The MID360's -7 deg lower FOV never sees the floor within
+      # ~3.9 m of the robot: the floor under and ahead of it was seen 5-13 s
+      # ago at walking speed, from further off, so a cell's ground comes from
+      # the newest 24 returns of 10 s; an obstacle is a return of the last 2 s
+      # (CMU terrain_analysis's decayTime), which is how a person who walks
+      # on is gone without raytracing. A cell with under 6 returns in its 3x3
+      # neighbourhood borrows the robot's own ground height: right on a level
+      # floor, and what keeps a low box on never-seen floor an obstacle (its
+      # own returns are then in the band). Ground = the 0.25 quantile of the
+      # neighbourhood, capped at its lowest return + 0.15 (CMU's quantileZ /
+      # maxGroundLift), so a wall's or a box's returns cannot lift the ground
+      # off the floor they stand on once the floor has been seen.
+      max_samples_per_cell: 24
+      ground_memory: 10.0
+      obstacle_memory: 2.0
+      min_ground_samples: 6
+      ground_quantile: 0.25
+      max_ground_lift: 0.15
+      # The geometry rules (= Octo3D's SurfaceMapParams). robot_radius is the
+      # disc the slope is fitted under (the inscribed radius); a return
+      # between min_obstacle_height and body_clearance above its cell's
+      # ground is an obstacle (0.1: a kerb's riser, a doormat and the
+      # quantile's noise pass, the step rule judges kerbs); 8-neighbours
+      # whose ground differs by more than max_step_height make a cell lethal
+      # (a wall foot, a ledge, a drop-off); the plane under the disc steeper
+      # than max_slope_deg does too, judged only when the disc spans more
+      # than a step (a level floor with a kerb is not fitted) and when at
+      # least slope_min_known of it has a ground estimate. A surface the
+      # robot cannot reach from its own cell over such steps (an island: a
+      # box top, a table, a platform seen without the floor under it) is
+      # lethal too; the path's heights seed that reach, so a ramp the
+      # lidar has not looked at the foot of is still floor on a 3D map.
+      robot_radius: 0.25
+      min_obstacle_height: 0.1
+      body_clearance: 0.6
+      max_step_height: 0.17
+      max_slope_deg: 20.0
+      slope_min_known: 0.5
+      # Stairs: where the path's height spans stair_min_rise within
+      # stair_window (the controllers' stair-mode test: 0.3 m within 1 m),
+      # cells within stair_corridor_half_width of it take the path's own
+      # height as their ground, skip the step and slope rules, and start
+      # their obstacle band stair_obstacle_height up -- above the next tread
+      # (0.17 + the quantisation under it), under a box. 0.6 m is a stair's
+      # half-width and leaves the stairwell's walls outside the corridor. On
+      # a 2D map nothing here ever applies, and every stair is lethal.
+      stair_min_rise: 0.3
+      stair_window: 1.0
+      stair_corridor_half_width: 0.6
+      stair_obstacle_height: 0.3
+
+    # NOT LOADED since 2026-10-20 (see `plugins` above); dev's local obstacle
+    # source, kept as the fallback.
     obstacle_layer:
       plugin: "syncai_costmap_2d::ObstacleLayer"
       enabled: true

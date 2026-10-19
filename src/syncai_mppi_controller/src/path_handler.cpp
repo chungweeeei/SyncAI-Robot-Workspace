@@ -17,6 +17,8 @@
 #include "syncai_mppi_controller/tools/path_handler.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_nav_core/exceptions.hpp"
+#include "syncai_util/path_height.hpp"
 
 namespace mppi
 {
@@ -43,6 +45,13 @@ void PathHandler::initialize(
     getParam(inversion_yaw_tolerance, "inversion_yaw_tolerance", 0.4);
     inversion_locale_ = 0u;
   }
+  // Server-level, not per plugin: the controller_server's goal check and RPP
+  // 3D read the same two, and two copies of a frame name drift. Static: a
+  // frame does not change at runtime. The server declares them; the empty
+  // prefix reads them the way the Optimizer reads controller_frequency.
+  auto getParentParam = parameters_handler_->getParamGetter("");
+  getParentParam(body_frame_, "body_frame", std::string("pointlio_body"), ParameterType::Static);
+  getParentParam(body_height_, "lidar_height", 0.481, ParameterType::Static);
 }
 
 std::pair<nav_msgs::msg::Path, PathIterator>
@@ -59,11 +68,14 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
     global_plan_up_to_inversion_.poses.begin(), global_plan_up_to_inversion_.poses.end(),
     max_robot_pose_search_dist_);
 
-  // Find closest point to the robot
+  // Find closest point to the robot. In 3D when the plan has heights: on a
+  // spiral stair the turn 2.5 m above the robot is as close on x / y as the
+  // one it stands on, and the 10 m search window holds both (path_height.hpp).
+  const bool is_3d = plan_has_height_;
   auto closest_point = syncai_util::geometry_utils::min_by(
     begin, closest_pose_upper_bound,
-    [&global_pose](const geometry_msgs::msg::PoseStamped & ps) {
-      return euclidean_distance(global_pose, ps);
+    [&global_pose, is_3d](const geometry_msgs::msg::PoseStamped & ps) {
+      return euclidean_distance(global_pose, ps, is_3d);
     });
 
   nav_msgs::msg::Path transformed_plan;
@@ -94,7 +106,13 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
       return {transformed_plan, closest_point};
     }
 
-    // Filling the transformed plan to return with the transformed pose
+    // Filling the transformed plan to return with the transformed pose. The
+    // optimizer and the critics read x / y / yaw only; a height on the local
+    // path would only reach local_plan's and the visualizer's consumers, which
+    // draw it on the planar costmap.
+    if (is_3d) {
+      costmap_plan_pose.pose.position.z = 0.0;
+    }
     transformed_plan.poses.push_back(costmap_plan_pose);
   }
 
@@ -112,6 +130,28 @@ geometry_msgs::msg::PoseStamped PathHandler::transformToGlobalPlanFrame(
   if (!transformPose(global_plan_up_to_inversion_.header.frame_id, pose, robot_pose)) {
     throw std::runtime_error(
             "Unable to transform robot pose into global plan's frame");
+  }
+
+  // A plan with heights (OctomapPlanner3D) is matched in 3D: the robot's pose
+  // comes from the planar base_link (z = 0), so its z is replaced by the
+  // ground height under the robot in the plan's frame, exactly as RPP 3D
+  // does. No height, no matching -- on a stair that would mean steering by
+  // whichever turn is nearest in x / y -- so this cycle fails, with the
+  // exception the server tolerates for failure_tolerance (the file's other
+  // throws are std::runtime_error, which ends the goal at once; a TF that is
+  // a scan late is not that kind of failure).
+  if (plan_has_height_) {
+    std::string error;
+    double ground_z = 0.0;
+    if (!syncai_util::lookupGroundZ(
+        *tf_buffer_, global_plan_up_to_inversion_.header.frame_id, body_frame_, body_height_,
+        ground_z, &error))
+    {
+      throw syncai_nav_core::PlannerException(
+              "Plan has heights but the robot's (" + body_frame_ + " in " +
+              global_plan_up_to_inversion_.header.frame_id + ") is unknown: " + error);
+    }
+    robot_pose.pose.position.z = ground_z;
   }
 
   return robot_pose;
@@ -174,6 +214,7 @@ void PathHandler::setPath(const nav_msgs::msg::Path & plan)
 {
   global_plan_ = plan;
   global_plan_up_to_inversion_ = global_plan_;
+  plan_has_height_ = syncai_util::pathHasHeight(plan);
   if (enforce_path_inversion_) {
     inversion_locale_ = utils::removePosesAfterFirstInversion(global_plan_up_to_inversion_);
   }

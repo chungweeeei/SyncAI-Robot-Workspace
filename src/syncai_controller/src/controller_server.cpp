@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "angles/angles.h"
-#include "syncai_controller/path_height.hpp"
+#include "syncai_util/path_height.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
@@ -26,6 +26,8 @@
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
+using syncai_util::lookupGroundZ;
+using syncai_util::pathHasHeight;
 
 namespace syncai_controller
 {

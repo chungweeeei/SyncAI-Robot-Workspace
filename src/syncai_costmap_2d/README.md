@@ -25,9 +25,11 @@ src/costmap_2d_ros.cpp          the ROS wrapper node — most of the local compl
 src/costmap_2d_publisher.cpp    OccupancyGrid / Costmap / update publishing
 src/clear_costmap_service.cpp   the three clear_* services
 src/observation_buffer.cpp      TF-transformed, time-windowed sensor readings
+src/terrain_grid.cpp            the ROS-free 2.5D grid behind TerrainLayer (gtest: test/test_terrain_grid.cpp)
 src/footprint.cpp, footprint_collision_checker.cpp, costmap_math.cpp, array_parser.cpp
 plugins/static_layer.cpp        ┐
-plugins/obstacle_layer.cpp      ├ pluginlib layers
+plugins/obstacle_layer.cpp      │
+plugins/terrain_layer.cpp       ├ pluginlib layers
 plugins/inflation_layer.cpp     ┘
 plugins/costmap_filters/{costmap_filter,keepout_filter}.cpp
 src/costmap_2d_node.cpp         standalone runner
@@ -209,6 +211,82 @@ Two things worth internalising:
 publishing eventually marks the layer not-current, and both the planner and the
 controller wait on `isCurrent()` before using the costmap.
 
+Since 2026-10-20 the **local** costmap does not load this layer: `TerrainLayer`
+(next) replaced it there. The global costmap keeps it.
+
+### TerrainLayer
+
+The local costmap's sensor source for a legged robot (2026-10-20), in place of
+the obstacle layer's height band. The band — every return between 0.58 and
+1.98 m above the robot's own ground — could not see a box, a cart's base, a
+kerb's wall, a drop-off or a stair tread, and read a ramp or a stair as a wall
+after a metre, so MPPI had nothing to avoid low and nothing to climb. Every
+quadruped stack on this kind of hardware (CMU's `terrain_analysis` on the Go2,
+SCAN-Planner, RAEM) keeps a rolling 2.5D grid with a ground height per cell and
+judges returns against *that* ground; this layer is that grid with
+OctomapPlanner3D's rules on top, so the local costmap sees what the global
+planner sees. The grid itself, `TerrainGrid` (`terrain_grid.hpp`, ROS-free,
+unit-tested on synthetic scenes in `test/test_terrain_grid.cpp`), holds per
+cell a ring of the newest returns with their times, in the costmap's frame,
+and judges every cell on each update:
+
+1. **Ground** = the 0.25 quantile of the 3×3 neighbourhood's returns younger
+   than `ground_memory` (10 s), capped at the lowest + `max_ground_lift`
+   (0.15; CMU's `quantileZ` / `maxGroundLift`). Long memory on purpose: the
+   MID360's −7° lower FOV never sees the floor within ~3.9 m of the robot, so
+   the floor under and ahead of it was seen 5–13 s earlier, from further off.
+   A cell with fewer than `min_ground_samples` returns borrows the robot's own
+   ground (the lidar frame's z minus `sensor_height`, the obstacle layer's
+   `height_reference: sensor`).
+2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
+   (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
+   that ground → LETHAL. Short memory is how a person who walks on is gone
+   without raytracing.
+3. **Reach**: cells are flooded from the robot's own over 8-neighbours within
+   `max_step_height`; a cell with a ground estimate the flood does not reach
+   is an island — a box top, a table, a platform seen without the floor under
+   it, which the lower FOV makes the normal view of anything low and near —
+   and LETHAL. Octo3D's connected components, locally. The path's heights
+   seed the flood too (below).
+4. **Step**: an 8-neighbour whose ground differs by more than
+   `max_step_height` (0.17, a riser) → LETHAL: a wall foot, a ledge, a
+   drop-off — the negative obstacle the band could never see.
+5. **Slope**: the plane fitted under the `robot_radius` disc steeper than
+   `max_slope_deg` (20) → LETHAL, judged only when the disc spans more than a
+   step (a level floor with a kerb is not fitted) and at least
+   `slope_min_known` of it has a ground.
+6. Nothing seen → NO_INFORMATION; the rest FREE. Then `updateWithMax`, the
+   footprint cleared as the obstacle layer clears it, and the
+   `InflationLayer` inflates it all as before.
+
+The four geometry values are `SurfaceMapParams`' (Octo3D), one calibration of
+the legs; change them together.
+
+**Stairs.** The step and slope rules refuse a flight, as Octo3D's do, and the
+global planner climbs one only over a stair link in its path — so the path is
+the layer's second input (`plan_topic`, the planner's `plan`, republished at
+1 Hz with Octo3D's heights). Where the path's height spans `stair_min_rise`
+(0.3) within `stair_window` (1 m) — the controllers' stair-mode test — cells
+within `stair_corridor_half_width` (0.6 m) take the path's own height as their
+ground, skip the reach, step and slope rules, and start their obstacle band at
+`stair_obstacle_height` (0.3: above the next tread, under a box). A level path
+(every 2D planner; the empty one a cancel leaves) relaxes nothing, so a 2D map
+keeps every stair lethal, and one layer serves both map types.
+
+**What a costmap clear does here**: drops the costs, keeps the returns. The
+floor the lidar can no longer see is in them, and a stale obstacle mark leaves
+by itself after `obstacle_memory`.
+
+**Limits.** A raised surface whose connection to the robot's floor was never
+observed is an island even when it is a ramp — at start-up facing a ramp whose
+foot is inside the blind 3.9 m, the ramp is lethal on a 2D map until the robot
+has seen its foot (on a 3D map the path's heights connect it). Unknown cells
+are free to MPPI unless the costmap tracks unknown space, so the far side of a
+drop the lidar has not looked over is not yet a wall; the drop's edge is.
+Returns are not raytraced, so a wall seen through a doorway and a person in it
+age out at the same rate. Dynamic parameters are not handled: a change needs a
+restart.
+
 ### InflationLayer
 
 Grows a cost gradient outward from every lethal cell so the planner keeps
@@ -385,6 +463,12 @@ ros2 launch syncai_costmap_2d three_layer_test.launch.py use_fake_scan:=true rvi
 ros2 launch syncai_costmap_2d keepout_filter_test.launch.py \
     map_yaml:=map/testmap.yaml mask_yaml:=map/keepout_mask_test.yaml
 ```
+
+`test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
+syncai_costmap_2d`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
+step, drop-off, ramp, slope, box, person, wall foot, a stair with and without a
+climbing path, the window moving — with no ROS; it also builds on a workstation
+with plain `clang++` against `include/` and googletest.
 
 `scripts/fake_scan.py` publishes a 50-beam forward scan at 2 m. Its timestamps
 are deliberately current: `tf2_ros::MessageFilter` drops messages older than the

@@ -19,9 +19,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 
 #include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
+#include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 
 // #define BENCHMARK_TESTING
@@ -64,6 +66,12 @@ void MPPIController::initialize(
   // over to the other.
   getParam(approach_dist_, "approach_dist", 0.0);
   getParam(approach_rotate_min_angle_, "approach_rotate_min_angle", 0.25);
+  // Not upstream; see climbStairs(). The detection and switch parameters
+  // (use_stair_mode, stair_min_rise, ...) are StairMode's, declared under this
+  // plugin's name; these two are the climb's.
+  stair_mode_.initialize(node, name_);
+  getParam(stair_linear_vel_, "stair_linear_vel", 0.5);
+  getParam(stair_lookahead_dist_, "stair_lookahead_dist", 0.4);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;
@@ -99,6 +107,10 @@ void MPPIController::reset()
   last_cmd_vel_ = geometry_msgs::msg::Twist();
   rotating_to_goal_ = false;
   approaching_goal_ = false;
+  // Stair mode's on_stairs survives (it is the policy the gait controller is
+  // on); a half-done switch is settled or dropped (StairMode::reset()).
+  stair_mode_.reset();
+  climbing_stairs_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
@@ -108,6 +120,14 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
 {
   try {
     geometry_msgs::msg::TwistStamped cmd;
+    // Stairs first, before the final rotation: a goal on the landing at the
+    // top of a flight has the robot stop and switch its policy back before it
+    // turns onto the goal heading, as RPP 3D does. A plan without heights
+    // never enters this branch.
+    if (climbStairs(robot_pose, cmd)) {
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
     // Before the optimizer, and instead of it: this branch does its own
     // clamping and flooring, which the three steps below would undo.
     if (rotateToGoalHeading(robot_pose, goal_checker, cmd)) {
@@ -439,23 +459,153 @@ bool MPPIController::approachGoal(
   if (std::fabs(bearing) > approach_rotate_min_angle_) {
     rotateInPlace(bearing, vx, wz);
   } else {
-    // Out of a turn this ramps up from rest at max_linear_accel, under the
-    // floor for its first ~0.3 s, exactly as RPP's ramp does. The arc is
-    // RPP's curvature to its carrot with the goal point as the carrot:
-    // k = 2 * lateral / dist^2, lateral = dist * sin(bearing). Aimed at the
-    // point itself, its bearing shrinks as the robot closes in, so the walk
-    // does not hunt back into the turn. wz from the clamped vx, as RPP does,
-    // so the arc keeps its curvature through the ramp; capped at the turn
-    // rate (= wz_max), then clamped like every other command.
-    vx = walk_vx_min_;
-    if (max_linear_accel_ > 0.0) {
-      const double dv = max_linear_accel_ * control_duration_;
-      vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+    trackPoint(bearing, dist, walk_vx_min_, vx, wz);
+  }
+
+  cmd = utils::toTwistStamped(vx, wz, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
+  return true;
+}
+
+void MPPIController::trackPoint(
+  double bearing, double dist, double speed, double & vx, double & wz) const
+{
+  // Out of a turn this ramps up from rest at max_linear_accel, under the
+  // floor for its first ~0.3 s, exactly as RPP's ramp does. The arc is
+  // RPP's curvature to its carrot with the point as the carrot:
+  // k = 2 * lateral / dist^2, lateral = dist * sin(bearing). Aimed at the
+  // point itself, its bearing shrinks as the robot closes in, so the walk
+  // does not hunt back into the turn. wz from the clamped vx, as RPP does,
+  // so the arc keeps its curvature through the ramp; capped at the turn
+  // rate (= wz_max), then clamped like every other command.
+  vx = speed;
+  if (max_linear_accel_ > 0.0) {
+    const double dv = max_linear_accel_ * control_duration_;
+    vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+  }
+  wz = std::clamp(vx * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
+  if (max_angular_accel_ > 0.0) {
+    const double dw = max_angular_accel_ * control_duration_;
+    wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+  }
+}
+
+void MPPIController::brake(double & vx, double & wz) const
+{
+  // RPP 3D's stair hold: to a stop at the clamps' own rates, so the policy
+  // switch is made standing still and the stop is as smooth as any other.
+  vx = 0.0;
+  wz = 0.0;
+  if (max_linear_accel_ > 0.0) {
+    const double dv = max_linear_accel_ * control_duration_;
+    vx = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+  }
+  if (max_angular_accel_ > 0.0) {
+    const double dw = max_angular_accel_ * control_duration_;
+    wz = std::clamp(0.0, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+  }
+}
+
+bool MPPIController::climbStairs(
+  const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd)
+{
+  // Not upstream (2026-10-20): RPP 3D's stair mode, so that one controller
+  // serves a 2D map and a 3D one. A stretch of a path with heights
+  // (OctomapPlanner3D's stair links) that rises stair_min_rise within reach
+  // is climbed standing still for the policy switch and then on a short
+  // pure-pursuit carrot at stair_linear_vel -- not by the optimizer. The
+  // optimizer samples on the planar local costmap, whose terrain layer
+  // relaxes its step rule along the climbing path only, so a stair is a
+  // corridor one footprint wide in it: nothing to sample round, and MPPI's
+  // slow, wavering output under that is what the gait's floors fight. A
+  // stair is climbed straight, facing the risers, which is what the global
+  // planner's straight stair links already give the path.
+  //
+  // The decision (enter, hold for the switch, climb, leave) is StairMode's,
+  // the same object RPP 3D runs; what this method adds is the command: the
+  // brake while holding, and the carrot once climbing -- the first pose of
+  // the pruned path stair_lookahead_dist away, tracked like the direct
+  // approach's goal point (turn in place onto it past
+  // approach_rotate_min_angle, else trackPoint()). The carrot's walk is
+  // checked against LETHAL footprints like the approach's; blocked, the
+  // cycle fails and the server holds the robot (failure_tolerance, then the
+  // BT's retries) rather than handing a stair to the optimizer. The
+  // projection reaches carrot + footprint, ~0.76 m, as RPP 3D's does.
+  //
+  // A plan without heights never asks for stairs (StairMode::setPlan() reads
+  // pathHasHeight()), and is not even transformed here, so a 2D map's cycle
+  // is what it was before this existed; the one exception is a robot left in
+  // stair mode by a cancelled goal, which the next level plan takes back out.
+  if (!stair_mode_.enabled()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
+  // StairMode reads the robot's place in the plan off what the path handler
+  // has pruned; prune first so the index is this cycle's, as RPP 3D's
+  // transformGlobalPlan() runs before its stair block.
+  nav_msgs::msg::Path plan;
+  size_t remaining = path_handler_.getPath().poses.size();
+  if (path_handler_.planHasHeight()) {
+    plan = path_handler_.transformPath(robot_pose);
+    remaining = path_handler_.remainingPoses();
+  }
+  const auto stair = stair_mode_.update(clock_->now(), remaining);
+  if (!stair.refuse.empty()) {
+    throw syncai_nav_core::PlannerException(stair.refuse);
+  }
+  if (!stair.hold && !stair.on_stairs) {
+    if (climbing_stairs_) {
+      climbing_stairs_ = false;
+      // The warm-started sequence predates the stairs; start from scratch.
+      optimizer_.reset();
+      RCLCPP_INFO(logger_, "Off the stairs: handing back to the optimizer");
     }
-    wz = std::clamp(vx * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
-    if (max_angular_accel_ > 0.0) {
-      const double dw = max_angular_accel_ * control_duration_;
-      wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+    return false;
+  }
+  if (!climbing_stairs_) {
+    climbing_stairs_ = true;
+    approaching_goal_ = false;
+    optimizer_.reset();
+    RCLCPP_INFO(logger_, "Stairs: the optimizer is skipped until the path is level again");
+  }
+  // As in rotateToGoalHeading(): the optimizer is not running, so keep its
+  // reset_period from zeroing the clamp baseline on the hand-back.
+  last_time_called_ = clock_->now();
+
+  double vx = 0.0;
+  double wz = 0.0;
+  if (stair.hold) {
+    brake(vx, wz);
+    if (vx == 0.0 && wz == 0.0) {
+      // Standing: the policy goes out, or the settle time runs down.
+      stair_mode_.standing(clock_->now());
+    }
+  } else {
+    if (plan.poses.empty()) {
+      plan = path_handler_.transformPath(robot_pose);
+    }
+    const double x = robot_pose.pose.position.x;
+    const double y = robot_pose.pose.position.y;
+    const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+    // The carrot: the first pose stair_lookahead_dist out, else the path's
+    // end (the goal, inside that distance).
+    auto carrot = std::find_if(
+      plan.poses.begin(), plan.poses.end(), [&](const geometry_msgs::msg::PoseStamped & ps) {
+        return std::hypot(ps.pose.position.x - x, ps.pose.position.y - y) >= stair_lookahead_dist_;
+      });
+    if (carrot == plan.poses.end()) {
+      carrot = std::prev(plan.poses.end());
+    }
+    const double dx = carrot->pose.position.x - x;
+    const double dy = carrot->pose.position.y - y;
+    const double dist = std::hypot(dx, dy);
+    const double bearing = angles::shortest_angular_distance(yaw, std::atan2(dy, dx));
+    if (isApproachBlocked(x, y, yaw, std::min(dist, stair_lookahead_dist_), bearing)) {
+      throw syncai_nav_core::PlannerException("Stair carrot blocked; not climbing into it");
+    }
+    if (std::fabs(bearing) > approach_rotate_min_angle_) {
+      rotateInPlace(bearing, vx, wz);
+    } else if (dist > 1e-3) {
+      trackPoint(bearing, dist, stair_linear_vel_, vx, wz);
     }
   }
 
@@ -578,6 +728,7 @@ void MPPIController::publishLocalPlan(const rclcpp::Time & stamp)
 void MPPIController::setPlan(const nav_msgs::msg::Path & path)
 {
   path_handler_.setPath(path);
+  stair_mode_.setPlan(path);
   // controller_server resets the goal checker with every path; the final
   // rotation's latch follows it (see rotateToGoalHeading()), and so does the
   // direct approach's, whose goal may have moved with the path.

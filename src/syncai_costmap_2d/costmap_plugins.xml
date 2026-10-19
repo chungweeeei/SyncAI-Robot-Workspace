@@ -16,6 +16,13 @@
         Marks and clears obstacles in the costmap from laser scan / point cloud sensor sources.
       </description>
     </class>
+    <class type="syncai_costmap_2d::TerrainLayer" base_class_type="syncai_costmap_2d::Layer">
+      <description>
+        Marks a legged robot's local costmap from a lidar cloud judged against the
+        ground under each cell (steps, drops, slopes, low obstacles), with the
+        global path opening a corridor over the stairs it climbs.
+      </description>
+    </class>
     <class type="syncai_costmap_2d::KeepoutFilter" base_class_type="syncai_costmap_2d::Layer">
       <description>
         Costmap filter that marks keepout zones from an OccupancyGrid filter mask
