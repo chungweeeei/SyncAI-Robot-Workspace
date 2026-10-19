@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -26,9 +27,19 @@ namespace o3d = octomap_planner_3d;
 
 OctomapPlanner3D::~OctomapPlanner3D()
 {
+  // The service thread first: a reload in progress joins build_thread_ too,
+  // and waits for its build to end before the thread stops.
+  load_map_thread_.reset();
   if (build_thread_.joinable()) {
     build_thread_.join();
   }
+}
+
+std::string OctomapPlanner3D::posesFileBeside(const std::string & octomap_file)
+{
+  const auto slash = octomap_file.find_last_of('/');
+  return (slash == std::string::npos ? std::string() : octomap_file.substr(0, slash + 1)) +
+         "poses.txt";
 }
 
 void OctomapPlanner3D::initialize(
@@ -130,10 +141,7 @@ void OctomapPlanner3D::initialize(
   // poses.txt sits next to octomap.bt in map/<name>/, so it is derived the
   // way the launch derives the tree from [map] pcd.
   if (poses_file_.empty() && !octomap_file_.empty()) {
-    const auto slash = octomap_file_.find_last_of('/');
-    poses_file_ =
-      (slash == std::string::npos ? std::string() : octomap_file_.substr(0, slash + 1)) +
-      "poses.txt";
+    poses_file_ = posesFileBeside(octomap_file_);
   }
 
   if (goal_z_mode_ != "request" && goal_z_mode_ != "start") {
@@ -159,12 +167,30 @@ void OctomapPlanner3D::initialize(
   dyn_params_handler_ = node->add_on_set_parameters_callback(
     std::bind(&OctomapPlanner3D::dynamicParametersCallback, this, std::placeholders::_1));
 
+  // The map-switch reload (see the class comment). Named like map_server's
+  // `<node>/load_map`, with the plugin id between, so the backend calls
+  // /<robot_id>/planner_server/Octo3D/load_map with the same request type.
+  // Created before the boot build starts, so a reload that arrives during it
+  // waits for it (loadMapCallback joins build_thread_) instead of racing it.
+  load_map_group_ =
+    node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  load_map_service_ = node->create_service<nav2_msgs::srv::LoadMap>(
+    std::string(node->get_name()) + "/" + name_ + "/load_map",
+    std::bind(
+      &OctomapPlanner3D::loadMapCallback, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default, load_map_group_);
+  clear_plan_client_ =
+    node->create_client<std_srvs::srv::Empty>("clear_plan", rmw_qos_profile_services_default);
+  load_map_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+  load_map_executor_->add_callback_group(load_map_group_, node->get_node_base_interface());
+  load_map_thread_ = std::make_unique<syncai_util::NodeThread>(load_map_executor_);
+
   if (octomap_file_.empty()) {
     RCLCPP_ERROR(
       logger_,
       "[OctomapPlanner3D][%s] no octomap_file set (the launch file derives it from [map] pcd); "
-      "every plan with planner_id %s will fail with map_not_loaded",
-      __func__, name_.c_str());
+      "every plan with planner_id %s will fail with map_not_loaded until %s/load_map gives one",
+      __func__, name_.c_str(), name_.c_str());
     build_error_ = "no octomap_file was given";
     return;
   }
@@ -173,24 +199,109 @@ void OctomapPlanner3D::initialize(
   // it the other planner ids' action servers. Plans arriving meanwhile fail
   // with map_loading.
   building_ = true;
-  build_thread_ = std::thread(&OctomapPlanner3D::buildMap, this);
+  build_thread_ = std::thread([this, octomap_file = octomap_file_, poses_file = poses_file_]() {
+    std::string error;
+    buildMap(octomap_file, poses_file, error);
+  });
 }
 
-void OctomapPlanner3D::buildMap()
+void OctomapPlanner3D::loadMapCallback(
+  const std::shared_ptr<nav2_msgs::srv::LoadMap::Request> request,
+  std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response)
+{
+  using LoadMap = nav2_msgs::srv::LoadMap;
+  const std::string octomap_file = request->map_url;
+  RCLCPP_INFO(
+    logger_, "[OctomapPlanner3D][%s] load_map request for '%s'", __func__, octomap_file.c_str());
+
+  // Refused before anything is dropped: a typo in the request must not cost
+  // the robot the map it has. Relative paths resolve against the workspace
+  // root, every pane's cwd, as at boot.
+  if (octomap_file.empty()) {
+    RCLCPP_WARN(logger_, "[OctomapPlanner3D][%s] empty map_url; keeping the current map", __func__);
+    response->result = LoadMap::Response::RESULT_INVALID_MAP_METADATA;
+    return;
+  }
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(octomap_file, ec)) {
+    RCLCPP_WARN(
+      logger_, "[OctomapPlanner3D][%s] '%s' does not exist; keeping the current map", __func__,
+      octomap_file.c_str());
+    response->result = LoadMap::Response::RESULT_MAP_DOES_NOT_EXIST;
+    return;
+  }
+
+  // The boot build may still be running; it would swap its map in after ours.
+  if (build_thread_.joinable()) {
+    build_thread_.join();
+  }
+
+  // On a reload poses.txt always comes from beside the new tree: an explicit
+  // poses_file parameter named the boot map's track, not this one's.
+  const std::string poses_file = posesFileBeside(octomap_file);
+
+  // Drop the old site's map first. It must not plan once the robot is on
+  // another map (a route through the wrong building), and freeing it before
+  // the build keeps the peak to one tree. Waits for a plan in progress, which
+  // holds mutex_ for its whole search.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    map_.reset();
+    links_.reset();
+    astar_.reset();
+    octomap_file_ = octomap_file;
+    poses_file_ = poses_file;
+    build_error_.clear();
+    building_ = true;
+  }
+
+  std::string error;
+  const bool ok = buildMap(octomap_file, poses_file, error);
+
+  // Keep `ros2 param get` telling the truth about what is loaded. Outside
+  // mutex_: the parameter callback takes it.
+  if (auto node = node_.lock()) {
+    updating_file_params_ = true;
+    node->set_parameters(
+      {rclcpp::Parameter(name_ + ".octomap_file", octomap_file),
+       rclcpp::Parameter(name_ + ".poses_file", poses_file)});
+    updating_file_params_ = false;
+  }
+
+  // planner_server re-sends its last plan at 1 Hz; after a map switch that is
+  // a route on the old map. Fire and forget: the server's main executor
+  // answers it, and a missing service only leaves a stale drawing.
+  if (clear_plan_client_->service_is_ready()) {
+    clear_plan_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
+  }
+
+  if (ok) {
+    response->result = LoadMap::Response::RESULT_SUCCESS;
+  } else {
+    // No fallback to the old map, for the reason above: it is gone already.
+    response->result = LoadMap::Response::RESULT_INVALID_MAP_DATA;
+    RCLCPP_ERROR(
+      logger_, "[OctomapPlanner3D][%s] reload from '%s' failed: %s", __func__, octomap_file.c_str(),
+      error.c_str());
+  }
+}
+
+bool OctomapPlanner3D::buildMap(
+  const std::string & octomap_file, const std::string & poses_file, std::string & error)
 {
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
   std::shared_ptr<const o3d::SurfaceMap> map;
   o3d::BuildStats stats;
-  std::string error;
+  error.clear();
   try {
     // Scoped so the tree is freed before the map is handed over: a 7 M node
     // tree is ~300 MB resident, the surface map ~30 MB.
     octomap::OcTree tree(0.1);
-    if (o3d::loadOctomapBt(octomap_file_, tree, error)) {
+    if (o3d::loadOctomapBt(octomap_file, tree, error)) {
       RCLCPP_INFO(
         logger_, "[OctomapPlanner3D][%s] loaded %s: %zu nodes at %.3f m in %.2f s", __func__,
-        octomap_file_.c_str(), tree.size(), tree.getResolution(),
+        octomap_file.c_str(), tree.size(), tree.getResolution(),
         std::chrono::duration<double>(Clock::now() - t0).count());
       map = o3d::buildSurfaceMap(tree, map_params_, &stats);
     }
@@ -206,7 +317,7 @@ void OctomapPlanner3D::buildMap()
     std::lock_guard<std::mutex> lock(mutex_);
     build_error_ = error;
     building_ = false;
-    return;
+    return false;
   }
   const auto rej = [&](o3d::Reject r) { return stats.rejected[static_cast<size_t>(r)]; };
   RCLCPP_INFO(
@@ -226,12 +337,12 @@ void OctomapPlanner3D::buildMap()
   if (stair_links_) {
     std::vector<o3d::Waypoint> track;
     std::string track_error;
-    if (o3d::readTrack(poses_file_, lidar_height_, track, track_error)) {
+    if (o3d::readTrack(poses_file, lidar_height_, track, track_error)) {
       links = o3d::buildStairLinks(*map, track, stair_params_);
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links from %zu keyframes of %s (min_rise %.2f m)",
-        __func__, links->links.size(), track.size(), poses_file_.c_str(), stair_params_.min_rise);
+        __func__, links->links.size(), track.size(), poses_file.c_str(), stair_params_.min_rise);
       for (const auto & l : links->links) {
         RCLCPP_INFO(
           logger_,
@@ -260,6 +371,7 @@ void OctomapPlanner3D::buildMap()
   links_ = links;
   astar_ = std::make_unique<o3d::SurfaceAStar>(map_, links_);
   building_ = false;
+  return true;
 }
 
 bool OctomapPlanner3D::startHeightHint(double & z) const
@@ -455,6 +567,11 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         }
       } else if (key == "body_frame") {
         body_frame_ = p.as_string();
+      } else if ((key == "octomap_file" || key == "poses_file") && updating_file_params_) {
+        // loadMapCallback() writing back what it loaded; the members are set.
+      } else if (key == "octomap_file" || key == "poses_file") {
+        result.successful = false;
+        result.reason = "call " + name_ + "/load_map with the new octomap.bt to switch maps";
       } else {
         result.successful = false;
         result.reason = key + " cannot be changed at runtime";

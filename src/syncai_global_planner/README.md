@@ -457,6 +457,37 @@ step on 2F. 1F → 2F plans (kf 0 → 2000: 85.6 m; kf 22 → 1913: 42 m, of
 which the link is 39) take 15–30 ms and climb the four flights and three
 landings in order; 2F → 1F takes the same link backwards.
 
+**Map switch** (2026-10-19). The tree is read at startup, and nothing
+watches the INI — the INI changing says nothing about when the rest of a
+switch is done. Whoever switches maps calls, beside `map_server/load_map`:
+
+```bash
+ros2 service call /<robot_id>/planner_server/Octo3D/load_map nav2_msgs/srv/LoadMap \
+    "{map_url: 'map/<name>/octomap.bt'}"
+```
+
+- **A result, not a receipt**: the call returns once the new surface map
+  and its stair links are in (~1 s on dp1f_1012, a few s on a large site),
+  so `RESULT_SUCCESS` means `Octo3D` plans on the new map. A caller's
+  timeout must cover the build.
+- `RESULT_MAP_DOES_NOT_EXIST` (or `RESULT_INVALID_MAP_METADATA` for an
+  empty `map_url`) is answered **before anything changes**: the current map
+  stays.
+- Otherwise the current surface map is **dropped first** — plans fail with
+  `map_loading` during the build, never on the old site's map, and only one
+  tree is ever in memory — and a failed build (`RESULT_INVALID_MAP_DATA`)
+  leaves **no map**, not the old one: every `Octo3D` plan then fails with
+  `map_not_loaded` and the reason.
+- `poses.txt` is always taken from beside the new tree (an explicit
+  `poses_file` applies at boot only), and both paths are written back to
+  `Octo3D.octomap_file` / `poses_file`, which `ros2 param set` otherwise
+  refuses.
+- The planner's own `clear_plan` is called, so `plan` stops re-sending the
+  old map's route.
+- One reload at a time on its own thread: a second call waits for the
+  first, and the last one wins; a call during the boot build waits for it.
+  Build-time parameters are not re-read — they still need a restart.
+
 **The CLI.** `ros2 run syncai_global_planner octomap_planner_3d_cli` runs the
 same core without the stack, and is the first thing to run on a new map:
 
@@ -514,8 +545,10 @@ headers include nothing of ROS on purpose.
   robot that cannot descend) is still linked both ways.
 - A 2D backend's z = 0 goal is only right on the ground floor; upstairs it
   needs a real z or `goal_z_mode: start`.
-- `map_server/load_map` does not reload `octomap.bt`; a map switch needs a
-  planner_server restart for `Octo3D` (the build-time parameters likewise).
+- A map switch needs its own call: `map_server/load_map` reloads the gridmap
+  only, and `Octo3D` reloads on **`planner_server/Octo3D/load_map`** (see
+  "Map switch" below). The build-time parameters still need a
+  planner_server restart.
 - Shallow stairs with 0.1 m risers are a 19° ramp at this resolution; the
   tilt limit is the only guard, and a quadruped walks them anyway.
 - The failure reason reaches `NavigateToGoal.error_msg` only as
@@ -656,6 +689,7 @@ With the node at `/<robot_id>`:
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
 | Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by the 2D `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10); the 3D tree (`Octo3D` + `FollowPathRPP3D`) plans once per goal and does not call it, since it judges on the 2D costmap. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
+| Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled**, which until then left the cancelled route on `plan` until the next goal. A new plan stops the repeats. Main executor, the republish timer's thread |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` |
 | Publisher | `Octo3D/raw_plan` | `nav_msgs/Path`, only with `Octo3D.publish_raw_plan`: the A* cell chain before the shortcut, for comparing against `plan` |
@@ -739,10 +773,13 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
   second. This branch's `move.xml` therefore leaves `IsPathValid` out and
   plans once per goal — which also means no replan round a blocker. There
   is no 3D-aware validity check yet.
-- **`Octo3D` does not follow a map switch.** `map_server/load_map` reloads
-  the gridmap; the octree is read once at startup, so a map switch (or a
-  change of a build-time parameter) needs a planner_server restart — the
-  session's `plan_ctrl` pane, or `restart_mode`.
+- **`Octo3D` does not follow a map switch by itself.** Nothing watches the
+  INI: the caller of the switch (the backend) must call
+  `planner_server/Octo3D/load_map` with the new `octomap.bt`, as it calls
+  `map_server/load_map` for the gridmap (2026-10-19; until then a switch
+  needed a planner_server restart, and without one `Octo3D` went on planning
+  on the old site's map). A build-time parameter change still needs the
+  restart — the session's `plan_ctrl` pane, or `restart_mode`.
 - **`Octo3D` trips the `expected_planner_frequency` warning** on a long
   plan only in theory (a 50 m search is a few ms); if it does, it is the
   canary described under Parameters, not a fault.

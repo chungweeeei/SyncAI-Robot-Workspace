@@ -9,13 +9,16 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav2_msgs/srv/load_map.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_srvs/srv/empty.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 #include "syncai_nav_core/global_planner.hpp"
+#include "syncai_util/node_thread.hpp"
 #include "tf2_ros/buffer.h"
 
 namespace syncai_global_planner
@@ -53,6 +56,14 @@ namespace syncai_global_planner
  * A missing or unreadable octomap_file is logged once and makes every plan
  * fail with map_not_loaded; it never throws, so a map without a tree still
  * boots the planner server with the other planner ids intact.
+ *
+ * A map switch reloads the tree without a restart (2026-10-19):
+ * `<planner_server>/<id>/load_map` (nav2_msgs/srv/LoadMap, map_server's own
+ * type) takes the new octomap.bt as map_url, drops the current surface map at
+ * once (plans fail with map_loading, never on the old site's map), builds the
+ * new one and answers when it is in -- success is a result, not a receipt. A
+ * failed build leaves no map at all, not the old one. A missing file is
+ * refused before anything is dropped. See loadMapCallback().
  */
 class OctomapPlanner3D : public syncai_nav_core::GlobalPlanner
 {
@@ -74,8 +85,22 @@ public:
   bool usesCostmap() const override { return false; }
 
 protected:
-  // The background thread: load the .bt, build the surface map, swap it in.
-  void buildMap();
+  // Load the .bt, build the surface map and the stair links, swap them in and
+  // clear building_. Runs on the boot thread, or on the load_map service's
+  // thread for a reload. On failure sets build_error_ (= error) and leaves no
+  // map. The files are passed in rather than read from the members, which a
+  // reload changes.
+  bool buildMap(
+    const std::string & octomap_file, const std::string & poses_file, std::string & error);
+
+  // `<planner_server>/<id>/load_map`: reload from request->map_url (see the
+  // class comment). Blocks for the build, on its own executor thread.
+  void loadMapCallback(
+    const std::shared_ptr<nav2_msgs::srv::LoadMap::Request> request,
+    std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response);
+
+  // poses.txt next to the tree: map/<name>/ holds both.
+  static std::string posesFileBeside(const std::string & octomap_file);
 
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
   bool startHeightHint(double & z) const;
@@ -107,6 +132,22 @@ protected:
   std::thread build_thread_;
   std::atomic<bool> building_{false};
   std::string build_error_;
+
+  // load_map: its own callback group on its own executor thread, because a
+  // reload blocks for seconds and planner_server's main executor also serves
+  // is_path_valid, clear_plan and the plan republish timer. One thread, so two
+  // reloads never build at once: the second waits, and the last one wins.
+  rclcpp::CallbackGroup::SharedPtr load_map_group_;
+  rclcpp::executors::SingleThreadedExecutor::SharedPtr load_map_executor_;
+  rclcpp::Service<nav2_msgs::srv::LoadMap>::SharedPtr load_map_service_;
+  // planner_server's clear_plan, so `plan` stops re-sending the old map's route.
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr clear_plan_client_;
+  // True only while loadMapCallback() writes octomap_file / poses_file back
+  // into the parameters, which the parameter callback otherwise refuses.
+  std::atomic<bool> updating_file_params_{false};
+  // Declared last: destroyed first, so the service thread stops before the
+  // members it uses go.
+  std::unique_ptr<syncai_util::NodeThread> load_map_thread_;
 
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raw_plan_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;

@@ -169,11 +169,17 @@
       # Set by the launch file to map/<name>/octomap.bt, derived from the
       # directory of [map] pcd (no INI key: the backend's map switch writes
       # [map] name alone). Empty or missing file = every Octo3D plan fails
-      # with map_not_loaded, nothing else is affected.
+      # with map_not_loaded, nothing else is affected. A map switch replaces
+      # it through /<robot_id>/planner_server/Octo3D/load_map
+      # (nav2_msgs/srv/LoadMap, map_url = the new octomap.bt; 2026-10-19),
+      # which also writes the new path back here; `ros2 param set` on it is
+      # refused, pointing at that service.
       octomap_file: ""
       # The map's track, for the stair links. Empty = poses.txt next to
       # octomap_file (map/<name>/poses.txt, written by every save_maps with
       # patches). Missing = a warning and no links: the floors stay apart.
+      # Boot only: a load_map reload always takes poses.txt from beside the
+      # new tree.
       poses_file: ""
 
       # The server hands the planner the planar map -> base_link pose, whose
