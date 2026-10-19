@@ -439,14 +439,25 @@ An operating mode **is** a session:
 |---|---|---|---|
 | `AUTO` = 2 (default) | `config/sessions/start_nav.yaml` | `syncai-dev` | `log/stack/<robot_id>/<name>/` |
 | `MANUAL` = 1 | `config/sessions/start_mapping.yaml` | `syncai-mapping` | `log/stack/<robot_id>/mapping/<name>/` |
+| `CALIBRATION` = 3 | `config/sessions/calib_lidar_camera.yaml` | `syncai-calib` | `log/stack/<robot_id>/calib/<name>/` |
 | `MAINTENANCE` = 0 | — | none | — |
 
 `MAINTENANCE` is not a mode you switch *into*; it is what `get_mode` reports when
-neither session exists. The live mode is never stored — it is derived on demand
+no session exists. The live mode is never stored — it is derived on demand
 from which session byobu actually has, so it stays correct across a `sys_manager`
 restart and does not drift when someone builds or kills a session by hand.
 `setup_session()` adopts a running session rather than rebuilding it, which is
 what makes restarting `sys_manager` mid-mapping-run harmless.
+
+`CALIBRATION` = 3 (2026-10, `config/sessions/calib_lidar_camera.yaml`, session
+`syncai-calib`, logs under `calib/`) is bringup with the livox driver on
+`PointCloud2` (`livox_xfer_format:=0`) plus the camera feeder, for recording
+lidar-camera calibration bags — nothing else, not even `driver_manager` or
+`robot_state`, so lie the robot down before switching to it. It is a mode
+because it holds the same lidar UDP ports and camera the other two do, and
+`switch_mode`'s kill-all-then-build is what keeps them exclusive. The value is
+new in `SyncAI-Robot-Interface`'s `RobotMode`; the backend's mode route accepts
+`MANUAL` / `AUTO` only, so it is a `ros2 service call` for now.
 
 Three services, namespaced under `robot_id`:
 
@@ -864,8 +875,8 @@ check can widen. `build` (an **arm64** runner, because the robot is a Jetson):
 the `dev` image with its layers in the Actions cache, both `.repos` files
 imported, `scripts/build.sh` through `docker-compose.build.yml` (the same path
 a developer uses), then `test_wifi_manager.py`, then a **smoke test**
-(`.github/scripts/smoke_test.sh`): every pane of `start_nav.yaml` and
-`start_mapping.yaml`, read from the specs with their `sleep` offsets, started
+(`.github/scripts/smoke_test.sh`): every pane of `start_nav.yaml`,
+`start_mapping.yaml` and `calib_lidar_camera.yaml`, read from the specs with their `sleep` offsets, started
 against a generated 5 × 5 m fixture map with `robot_id: ci_smoke`, and failed if
 any launch has exited or logged a crash after 45 s — the check for a
 Release-only undefined symbol at plugin load (PR #32) that a green build misses.

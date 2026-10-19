@@ -20,10 +20,19 @@ from syncai_sys_manager.managers.conf_manager import ConfManager
 # MAINTENANCE is deliberately absent: there is no session for "nothing running".
 # It is what get_mode *reports* when neither session exists, not a mode you can
 # switch into — see _detect_mode.
+#
+# CALIBRATION (2026-10) is the lidar-camera calibration session: bringup with
+# the livox driver on PointCloud2 plus the camera feeder, and nothing else. It
+# is a mode rather than a session built by hand because it holds the same
+# lidar UDP ports and camera the other two do, so it must be mutually exclusive
+# with them -- which is exactly what switch_mode's kill-all-then-build gives.
 SESSION_SPECS = {
     RobotMode.AUTO: os.path.expanduser("~/robot_ws/config/sessions/start_nav.yaml"),
     RobotMode.MANUAL: os.path.expanduser(
         "~/robot_ws/config/sessions/start_mapping.yaml"
+    ),
+    RobotMode.CALIBRATION: os.path.expanduser(
+        "~/robot_ws/config/sessions/calib_lidar_camera.yaml"
     ),
 }
 
@@ -39,6 +48,7 @@ MODE_NAMES = {
     RobotMode.MAINTENANCE: "MAINTENANCE",
     RobotMode.MANUAL: "MANUAL",
     RobotMode.AUTO: "AUTO",
+    RobotMode.CALIBRATION: "CALIBRATION",
 }
 
 # Same log tree the deleted scripts/byobu_session*.sh wrote, so the multilog
@@ -62,12 +72,14 @@ class NodeManager:
     """Brings the robot stack up and down as a byobu session, one per mode.
 
     An operating mode *is* a byobu session here: AUTO is the navigation session
-    from start_nav.yaml, MANUAL is the mapping session from start_mapping.yaml.
+    from start_nav.yaml, MANUAL is the mapping session from start_mapping.yaml,
+    CALIBRATION the lidar-camera calibration session from calib_lidar_camera.yaml.
     Switching mode therefore means killing every known session and building the
     target one — there is no shared subset kept alive across the switch, because
-    the two specs disagree about which nodes may run at all (map_server and the
+    the specs disagree about which nodes may run at all (map_server and the
     localizer die without a finished map, so they cannot be up while one is
-    being built).
+    being built; the calibration session's livox driver publishes PointCloud2
+    on the topic pointlio reads as CustomMsg).
 
     The current mode is never stored. It is derived on demand from which session
     byobu actually has, which keeps it correct across a sys_manager restart and
@@ -294,8 +306,9 @@ class NodeManager:
         """Every known mode whose byobu session currently exists.
 
         Ordered by mode value, so callers that want a single answer can take the
-        first. Normally holds 0 or 1 entries; 2 means someone built both by hand,
-        which is the ambiguity _get_mode reports and _switch_mode cleans up.
+        first. Normally holds 0 or 1 entries; more means someone built several
+        by hand, which is the ambiguity _get_mode reports and _switch_mode
+        cleans up.
         """
         live = []
         for mode in sorted(SESSION_SPECS):

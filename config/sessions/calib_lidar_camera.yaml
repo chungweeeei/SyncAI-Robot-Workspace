@@ -1,0 +1,66 @@
+# =============================================================================
+# SyncAI Robot stack — lidar-camera calibration session (CALIBRATION mode)
+# Schema: see the docstring of NodeManager in
+#         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
+#
+# The two sensors and nothing else, for recording the bags that
+# direct_visual_lidar_calibration (src/third-party/) solves the camera ->
+# lidar extrinsic from:
+#
+#   bringup        robot_state_publisher + the livox driver, with
+#                  livox_xfer_format:=0 -- livox/lidar is a PointCloud2 here,
+#                  because the calibration tool reads PointCloud2 only (x / y /
+#                  z / intensity, in the raw <robot_id>/laser frame)
+#   camera_feeder  image_raw/compressed + camera_info, same as the nav session
+#
+# The spec for RobotMode.CALIBRATION (3), built by switch_mode like the other
+# two -- and a mode for that reason: the livox driver binds fixed UDP ports and
+# the camera takes one opener, so this session must never run beside the nav
+# or the mapping one, and switch_mode's kill-every-session-then-build is what
+# guarantees it.
+#
+#   ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode "{mode: 3}"
+#   ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode "{mode: 2}"  # back
+#
+# Leaving MANUAL for it drops an unsaved map exactly as leaving MANUAL for AUTO
+# does. The backend's POST /api/v1/robot/mode accepts MANUAL / AUTO only, so
+# the console cannot switch here yet, and with no robot_state in this session
+# it receives no RobotState at all meanwhile (the backend would name a 3
+# UNKNOWN if it did).
+#
+# Why PointCloud2 is safe here and nowhere else: the topic keeps its name and
+# only changes type, and there is no pointlio in this session to subscribe to
+# it. Do not add one -- and do not copy livox_xfer_format:=0 into either mode
+# session.
+#
+# The robot must be STILL for every recording, and nothing in this session can
+# move or lie it down: driver_manager is not here, on purpose, so a recording
+# can never race a motion command. Lie it down (set_motion_key key '2') in AUTO
+# before switching here, and switch back to AUTO to reposition it. robot_state
+# is not here either, so nothing publishes RobotState in this mode.
+#
+# Logs go to log/stack/<robot_id>/calib/, a subtree of its own like mapping/.
+# =============================================================================
+
+# Distinct from syncai-dev / syncai-mapping: launch_session() opens with
+# `byobu kill-session` on this name, so sharing one would tear a mode down.
+session: syncai-calib
+
+select: bringup
+
+windows:
+  # ---------- Window 0: bringup (TF + MID360 as PointCloud2) -----------------
+  - name: bringup
+    panes:
+      - cmd: ros2 launch syncai_bringup bringup.launch.py livox_xfer_format:=0
+        log: calib/bringup
+
+  # ---------- Window 1: camera_feeder (sole opener of /dev/syncai/camera0) ----
+  # Same launch as start_nav.yaml's window, so the image and the camera_info
+  # (config/calibration/<robot_id>/camera0.yaml) are exactly the ones the
+  # calibration result will be used with. The same single-opener rule applies:
+  # the host-side scripts/publish_camera_crop.sh must not be running.
+  - name: camera_feeder
+    panes:
+      - cmd: ros2 launch syncai_camera_feeder camera_feeder.launch.py
+        log: calib/camera_feeder

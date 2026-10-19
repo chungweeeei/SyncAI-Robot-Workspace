@@ -6,7 +6,7 @@ only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
-| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window) | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic), the Livox MID360 / MID360s driver, and — only under `use_camera:=true` — the VizionSDK camera |
+| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window), and `config/sessions/calib_lidar_camera.yaml` with `livox_xfer_format:=0` | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic), the Livox MID360 / MID360s driver, and — only under `use_camera:=true` — the VizionSDK camera |
 
 ```
 share/syncai_bringup/
@@ -81,7 +81,7 @@ is byte-identical apart from the config path, so none of these differ by model):
 
 | Setting | Value | Set in | Note |
 |---|---|---|---|
-| `xfer_format` | `1` | YAML | Livox **CustomMsg**, not `PointCloud2` — this is what the FAST-LIO2 chain expects |
+| `xfer_format` | `1` | YAML (`livox_xfer_format` overrides) | Livox **CustomMsg**, not `PointCloud2` — this is what the FAST-LIO2 chain expects |
 | `multi_topic` | `0` | YAML | all lidars share one topic |
 | `data_src` | `0` | YAML | live lidar |
 | `publish_freq` | `10.0` Hz | YAML | |
@@ -169,6 +169,7 @@ them), and the bridge reconciles that branch onto the robot tree through
 | `urdf_file` | `G23.urdf` | File name under `description/` |
 | `use_camera` | `false` | Start the VizionSDK camera node — see below for why the default is `false` |
 | `camera_device_index` | `0` | VizionSDK camera index, from `ros2 run vizionsdk_ros2 list_devices` |
+| `livox_xfer_format` | empty | Override the driver's `xfer_format`: `0` = `PointCloud2`, `1` = `CustomMsg`, empty = keep the YAML's `1`. Only the calibration session sets it (`0`), because it runs no LIO; anything else fails the launch |
 
 To move the lidar, edit `lidar_top_joint` in the URDF. There used to be a
 `lidar_height` argument feeding a `static_transform_publisher` here; it was
@@ -421,7 +422,10 @@ are symlinked, and edits take effect on the next launch with no rebuild at all.
   **no effect** — it is not read.
 - **`xfer_format: 1` is required** by the FAST-LIO2 chain, which consumes Livox
   `CustomMsg`. Switching to `0` (`PointCloud2`) for a tool that wants standard
-  messages will silently break LIO.
+  messages will silently break LIO. A session with no LIO in it uses the
+  `livox_xfer_format:=0` argument instead of a YAML edit — today only
+  `config/sessions/calib_lidar_camera.yaml`. `livox/lidar` keeps its name and
+  only changes type there, so never set it in a session that runs pointlio.
 - **Nothing publishes `<robot_id>/scan` any more.** The 3D planner/controller
   params still list `scan` as an obstacle observation source; it was already
   inert on the real robot (the obstacle layers run off `pointlio/body_cloud`),
