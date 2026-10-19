@@ -371,6 +371,10 @@ restarting the `task_runner` pane is the way back. On this branch:
   reported on `<robot_id>/mode`. Without `set_policy_mode` it does not climb.
   The short 2F ramp of dp1f_1012 is taken in stair mode too. The state is on
   `<robot_id>/stair_mode`.
+- **Forbidden zones (keepout) are not applied.** `Octo3D` does not read the
+  2D costmap the keepout mask is drawn into, and nothing else keeps the robot
+  out of a zone, so a mask has no effect on this branch — silently. Not
+  supported in 3D for now (decided 2026-10-19).
 
 Climbing has **not** been run on the robot: whether HIMLOCO takes the spiral
 stair, and whether a switch standing still is enough, are open. Test it

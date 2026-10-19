@@ -532,6 +532,15 @@ headers include nothing of ROS on purpose.
 
 **Known limits** (prototype):
 
+- **`Octo3D` ignores the keepout (forbidden zones)** — by decision
+  (2026-10-19), not yet built. The zones live only in the 2D global costmap
+  (`KeepoutFilter`), whose cells `Octo3D` never reads, and the controllers'
+  local costmap has no filter either — so on this branch's tree **nothing
+  keeps the robot out of a zone**, silently: a mask drawn on a map navigated
+  with `Octo3D` has no effect and nothing logs that. A 3D-only map has no
+  mask at all (no gridmap to size one from; the mask server runs idle).
+  Doing it needs a decision on floors first: a mask is one 2D image, a
+  3D map has several storeys.
 - `is_path_valid` and the republish trim run on the 2D costmap: fine on the
   ground floor, meaningless for a path upstairs or on the stairs (checked
   against the ground-floor gridmap). That is why this branch's `move.xml`
@@ -645,7 +654,9 @@ and `inflation_layer` values (2026-10 — draw the forbidden area only, no
 margin; a zone then closes any gap narrower than the robot exactly as a wall
 does), and only the global costmap has the filter — the controller's local
 costmap does not, so the planner alone keeps the robot out and RPP cannot
-reject a path for grazing a zone edge. Running the mask source
+reject a path for grazing a zone edge. That planner is `GridBased`:
+**`Octo3D` does not read the keepout** (see its "Known limits"), so with
+this branch's tree a zone keeps nothing out. Running the mask source
 by hand, outside the session:
 
 ```bash
