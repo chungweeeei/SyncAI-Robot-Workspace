@@ -214,7 +214,15 @@
       # them together. vx_min 0.0 disables reversing, as RPP's
       # allow_reversing: false does; PathAngleCritic then forces
       # forward_preference on by itself.
-      vx_max: 0.60
+      # vx_max 0.60 -> 0.80 (2026-10-20), FollowPathRPP3D's speed since
+      # 2026-10-19, with time_steps cut to keep the horizon inside the local
+      # costmap (see there). NOT measured: with scale_fwd 1.40 the gait is
+      # commanded 1.12 m/s, past the 0.80 run A swept, and the rollouts assume
+      # the commanded speed is the real one -- check cmd_vel against odom on
+      # the first run. The optimizer does not model max_linear_accel either,
+      # so it plans as if it could stop at once; the clamp needs 0.32 m to
+      # stop from 0.80 (0.18 from 0.60).
+      vx_max: 0.80
       vx_min: 0.0
       wz_max: 0.65
       # DiffDrive although the quadruped can strafe: driver_manager's
@@ -347,16 +355,20 @@
       # and ~0.28 rad/s; a switchback's landing turn (walked link) is cut by
       # ~0.15-0.2 m. FollowPathRPP3D keeps its own 0.4. Unmeasured.
       stair_lookahead_dist: 0.6
-      # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
-      # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
-      # 2 m half-width. With consider_footprint, a rolled-out point off the
-      # costmap is checked as a footprint, and footprintCost() reads an
-      # off-map vertex as LETHAL, so a horizon longer than the window makes
-      # every fast candidate "collide" at its far end and MPPI slows down for
-      # no obstacle. model_dt must stay 1 / controller_frequency:
+      # Horizon 32 x 0.05 = 1.6 s (upstream 56 = 2.8 s). At vx_max 0.80 that is
+      # 1.28 m, which with the footprint's 0.36 m nose and the window's lag
+      # (it re-centres at update_frequency 5 Hz, 0.16 m at 0.80) fits in the
+      # 4 x 4 m local costmap's 2 m half-width. With consider_footprint, a
+      # rolled-out point off the costmap is checked as a footprint, and
+      # footprintCost() reads an off-map vertex as LETHAL, so a horizon
+      # longer than the window makes every fast candidate "collide" at its
+      # far end and MPPI slows down for no obstacle. It was 40 (2.0 s, 1.2 m
+      # at 0.60) until vx_max went to 0.80 (2026-10-20), where 40 would reach
+      # 1.6 + 0.36 + 0.16 = 2.12 m; a 5 x 5 m costmap is the way to keep 2.0 s.
+      # model_dt must stay 1 / controller_frequency:
       # equal turns on the warm-start shift, a longer controller period throws
       # out of initialize() and takes controller_server down.
-      time_steps: 40
+      time_steps: 32
       model_dt: 0.05
       # Upstream's default 1000 (the README example uses 2000). Measure the
       # controller process's CPU on the Orin before raising it or time_steps:
@@ -445,7 +457,21 @@
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 3
         threshold_to_consider: 0.5
-        offset_from_furthest: 20
+        # Counted in path POINTS, not metres: the critic scores nothing until
+        # some candidate's end point projects this many points along the
+        # pruned path. Upstream's 20 assumes a 0.05 m path (Smac at costmap
+        # resolution) and a 2.8 s horizon. Here the horizon was 2.0 s (1.2 m at
+        # 0.60; 1.6 s since vx_max 0.80) and Octo3D resamples at 0.1 m (its
+        # interpolation_resolution), so the furthest candidate reached ~12
+        # points -- at 20 this critic never ran on a 3D map, and on a 2D
+        # map only at cruise on straight segments (a diagonal's 0.07 m spacing
+        # puts 20 points at 1.41 m, past the horizon). Tracking was left to
+        # PathFollowCritic's end-point carrot, which pays a cut corner as well
+        # as a tracked one. 5 (2026-10-20): 0.5 m on a 3D map, which a
+        # candidate averaging walk_vx_min over the 1.6 s horizon (0.48 m) all
+        # but reaches -- the furthest of 1000 noisy candidates gets there;
+        # 0.25 m on a 2D map. Unmeasured.
+        offset_from_furthest: 5
         use_path_orientations: false
       PathFollowCritic:
         enabled: true
