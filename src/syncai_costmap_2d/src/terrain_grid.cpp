@@ -29,7 +29,6 @@ void TerrainGrid::resize(int nx, int ny, double res, double ox, double oy)
   }
   ground_.assign(cells_.size(), kNaN);
   ground_known_.assign(cells_.size(), 0);
-  corridor_z_.assign(cells_.size(), kNaN);
 }
 
 void TerrainGrid::clear()
@@ -102,60 +101,20 @@ void TerrainGrid::addSample(double x, double y, double z, double t)
   c.count = std::min(c.count + 1, static_cast<int>(c.ring.size()));
 }
 
-void TerrainGrid::setPath(const std::vector<TerrainPathPose> & poses) { path_ = poses; }
+void TerrainGrid::setPath(const std::vector<TerrainPathPose> & poses)
+{
+  path_ = poses;
+}
 
 void TerrainGrid::estimateGround(double now, double robot_ground_z) const
 {
   ground_.assign(cells_.size(), kNaN);
   ground_known_.assign(cells_.size(), 0);
-  corridor_z_.assign(cells_.size(), kNaN);
-
-  // The stair corridor first: a cell near a climbing pose takes that pose's
-  // height for its ground (the nearest pose's, so a flight's heights
-  // interpolate along it), whatever its samples say -- a stair's own treads
-  // are what the quantile would mix.
-  if (!path_.empty()) {
-    const int r = static_cast<int>(std::ceil(params.stair_corridor_half_width / res_));
-    const double r2 = params.stair_corridor_half_width * params.stair_corridor_half_width;
-    std::vector<float> best_d2(cells_.size(), std::numeric_limits<float>::infinity());
-    for (const auto & p : path_) {
-      if (!p.climbing) {
-        continue;
-      }
-      int cx, cy;
-      const bool inside = worldToCell(p.x, p.y, cx, cy);
-      if (!inside) {
-        // A pose just outside the window still owns cells inside it.
-        cx = static_cast<int>(std::floor((p.x - ox_) / res_));
-        cy = static_cast<int>(std::floor((p.y - oy_) / res_));
-      }
-      for (int iy = std::max(0, cy - r); iy <= std::min(ny_ - 1, cy + r); ++iy) {
-        for (int ix = std::max(0, cx - r); ix <= std::min(nx_ - 1, cx + r); ++ix) {
-          const double ddx = ox_ + (ix + 0.5) * res_ - p.x;
-          const double ddy = oy_ + (iy + 0.5) * res_ - p.y;
-          const double d2 = ddx * ddx + ddy * ddy;
-          if (d2 > r2) {
-            continue;
-          }
-          const size_t i = index(ix, iy);
-          if (d2 < best_d2[i]) {
-            best_d2[i] = static_cast<float>(d2);
-            corridor_z_[i] = static_cast<float>(p.z);
-          }
-        }
-      }
-    }
-  }
 
   const float oldest = rel(now) - static_cast<float>(params.ground_memory);
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
       const size_t i = index(ix, iy);
-      if (!std::isnan(corridor_z_[i])) {
-        ground_[i] = corridor_z_[i];
-        ground_known_[i] = 1;
-        continue;
-      }
       // The 3x3 neighbourhood's samples within ground_memory (CMU splats
       // each point into its neighbours; gathering is the same thing).
       scratch_.clear();
@@ -192,11 +151,11 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
   }
 }
 
-bool TerrainGrid::cellHasObstacle(size_t i, double now, double ground, double band_from) const
+bool TerrainGrid::cellHasObstacle(size_t i, double now, double ground) const
 {
   const Cell & c = cells_[i];
   const float oldest = rel(now) - static_cast<float>(params.obstacle_memory);
-  const float lo = static_cast<float>(ground + band_from);
+  const float lo = static_cast<float>(ground + params.min_obstacle_height);
   const float hi = static_cast<float>(ground + params.body_clearance);
   for (int k = 0; k < c.count; ++k) {
     const Sample & s = c.ring[k];
@@ -318,21 +277,15 @@ void TerrainGrid::classify(
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
       const size_t i = index(ix, iy);
-      const bool corridor = !std::isnan(corridor_z_[i]);
       const bool known = ground_known_[i] != 0;
-      if (corridor) {
-        ++st.corridor;
-      }
       if (known) {
         ++st.known;
       }
       const double ground = ground_[i];
 
       // 1. A return in the band above the ground: a wall foot, a box, a
-      // person, a tread two risers up. On the corridor the band starts
-      // higher, over the next tread.
-      const double band_from = corridor ? params.stair_obstacle_height : params.min_obstacle_height;
-      if (cellHasObstacle(i, now, ground, band_from)) {
+      // person, a tread two risers up.
+      if (cellHasObstacle(i, now, ground)) {
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_obstacle;
         continue;
@@ -343,44 +296,44 @@ void TerrainGrid::classify(
         cost[i] = NO_INFORMATION;
         continue;
       }
-      if (!corridor) {
-        // 2. The reach rule (see the header): a surface the robot cannot get
-        // onto over steps it takes is not floor.
-        if (!reached_[i]) {
-          cost[i] = LETHAL_OBSTACLE;
-          ++st.lethal_island;
+      // 2. The reach rule (see the header): a surface the robot cannot get
+      // onto over steps it takes is not floor.
+      if (!reached_[i]) {
+        cost[i] = LETHAL_OBSTACLE;
+        ++st.lethal_island;
+        continue;
+      }
+      // 3. The step rule: a neighbour's ground out of the legs' reach -- up
+      // (a wall foot, a ledge, a stair's riser above a step) or down (a
+      // drop-off, the negative obstacle the obstacle layer could never see).
+      // Only known neighbours: the unknown floor under the robot is not a
+      // cliff.
+      bool step = false;
+      for (int k = 0; k < 8 && !step; ++k) {
+        const int nx = ix + kDx8[k], ny = iy + kDy8[k];
+        if (nx < 0 || ny < 0 || nx >= nx_ || ny >= ny_) {
           continue;
         }
-        // 3. The step rule: a neighbour's ground out of the legs' reach --
-        // up (a wall foot, a ledge) or down (a drop-off, the negative
-        // obstacle the obstacle layer could never see). Only known
-        // neighbours: the unknown floor under the robot is not a cliff.
-        bool step = false;
-        for (int k = 0; k < 8 && !step; ++k) {
-          const int nx = ix + kDx8[k], ny = iy + kDy8[k];
-          if (nx < 0 || ny < 0 || nx >= nx_ || ny >= ny_) {
-            continue;
-          }
-          const size_t j = index(nx, ny);
-          if (!ground_known_[j] || !std::isnan(corridor_z_[j])) {
-            continue;
-          }
-          if (std::fabs(ground_[j] - ground) > params.max_step_height) {
-            step = true;
-          }
-        }
-        if (step) {
-          cost[i] = LETHAL_OBSTACLE;
-          ++st.lethal_step;
+        const size_t j = index(nx, ny);
+        if (!ground_known_[j]) {
           continue;
         }
-        // 4. The slope rule under the footprint disc.
-        double tilt = 0.0;
-        if (fitSlope(ix, iy, tilt) && tilt > params.max_slope_deg) {
-          cost[i] = LETHAL_OBSTACLE;
-          ++st.lethal_slope;
-          continue;
+        if (std::fabs(ground_[j] - ground) > params.max_step_height) {
+          step = true;
         }
+      }
+      if (step) {
+        cost[i] = LETHAL_OBSTACLE;
+        ++st.lethal_step;
+        continue;
+      }
+      // 4. The slope rule under the footprint disc: a ramp passes, a flight
+      // does not.
+      double tilt = 0.0;
+      if (fitSlope(ix, iy, tilt) && tilt > params.max_slope_deg) {
+        cost[i] = LETHAL_OBSTACLE;
+        ++st.lethal_slope;
+        continue;
       }
       cost[i] = FREE_SPACE;
     }

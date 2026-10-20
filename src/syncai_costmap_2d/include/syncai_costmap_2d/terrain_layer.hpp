@@ -1,23 +1,26 @@
 #ifndef SYNCAI_COSTMAP_2D__TERRAIN_LAYER_HPP_
 #define SYNCAI_COSTMAP_2D__TERRAIN_LAYER_HPP_
 
-// TerrainLayer (2026-10-20): the local costmap's obstacle source for a
-// legged robot, in place of ObstacleLayer's height band. It feeds the lidar
-// cloud and the global path into a TerrainGrid (terrain_grid.hpp has the
-// design and the rules) and writes the grid's verdict -- LETHAL for a wall
-// foot, a box, a person, a step the legs cannot take, a drop-off or a slope
-// too steep; FREE for the floor, a kerb, a ramp and the stair the path
-// climbs; NO_INFORMATION where nothing has been seen -- into its costmap,
-// which the InflationLayer then inflates as it did the obstacle layer's.
-// One layer for both map types: on a 2D map the path has no heights and
-// every stair stays lethal; on a 3D map (OctomapPlanner3D) the path's stair
-// links open a corridor through it.
+// TerrainLayer (2026-10-20): the local costmap's obstacle source on a 3D
+// map. It feeds the lidar cloud and the global path into a TerrainGrid
+// (terrain_grid.hpp has the design and the rules) and writes the grid's
+// verdict -- LETHAL for a wall foot, a box, a person, a step the legs cannot
+// take, a drop-off, a slope too steep or a stair; FREE for the floor, a kerb
+// and a ramp; NO_INFORMATION where nothing has been seen -- into its
+// costmap, which the InflationLayer then inflates as it does the obstacle
+// layer's.
 //
-// Not a second observation source beside the obstacle layer but its
-// replacement in the local costmap: the two would disagree on a ramp (free
-// here, a wall there), and the max of the two is the wall. The global
-// costmap keeps the obstacle layer: its planner judges 2D maps on it with
-// the static map underneath, and Octo3D reads no cells at all.
+// The local costmap loads it beside ObstacleLayer, with `map_type: "3d"`
+// against the obstacle layer's "2d" (MapTypeGate): exactly one runs, picked
+// by the planner's Octo3D map_available as the task_runner picks its trees,
+// so a 2D map keeps dev's obstacle layer unchanged. Never both at once: they
+// disagree on a ramp (free here, a wall there), and the max of the two is
+// the wall. The global costmap keeps the obstacle layer alone: its planner
+// judges 2D maps on it, and Octo3D reads no cells at all.
+//
+// A stair is lethal here and stays so: the controllers' stair mode climbs a
+// flight without reading the costmap (no obstacle avoidance on stairs, by
+// decision, 2026-10-20).
 
 #include <memory>
 #include <mutex>
@@ -35,6 +38,7 @@
 #include "syncai_costmap_2d/costmap_layer.hpp"
 #include "syncai_costmap_2d/footprint.hpp"
 #include "syncai_costmap_2d/layered_costmap.hpp"
+#include "syncai_costmap_2d/map_type_gate.hpp"
 #include "syncai_costmap_2d/terrain_grid.hpp"
 
 namespace syncai_costmap_2d
@@ -60,8 +64,8 @@ public:
 protected:
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
   void planCallback(nav_msgs::msg::Path::ConstSharedPtr message);
-  // The climbing stretches of the latest path, in the costmap's frame.
-  std::vector<TerrainPathPose> climbingPoses();
+  // The latest path in the costmap's frame when it has heights, else empty.
+  std::vector<TerrainPathPose> pathPoses();
   void updateFootprint(
     double robot_x, double robot_y, double robot_yaw, double * min_x, double * min_y,
     double * max_x, double * max_y);
@@ -87,7 +91,7 @@ protected:
   std::shared_ptr<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>> cloud_filter_;
 
   // The path: the planner's `plan` (republished at plan_republish_rate with
-  // the heights OctomapPlanner3D wrote), read for its climbing stretches.
+  // the heights OctomapPlanner3D wrote), whose poses seed the reach flood.
   std::string plan_topic_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
   std::mutex plan_mutex_;
@@ -101,6 +105,10 @@ protected:
   double robot_ground_z_{0.0};
   TerrainStats last_stats_;
   rclcpp::Time last_stats_log_;
+
+  // Which map type this layer runs on (`map_type`, "3d" in the local
+  // costmap). Gated off, it takes no samples and writes nothing.
+  MapTypeGate map_gate_;
 };
 
 }  // namespace syncai_costmap_2d

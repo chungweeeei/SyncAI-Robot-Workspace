@@ -280,48 +280,30 @@ std::vector<TerrainPathPose> stairPath()
   for (double x = -1.9; x < 1.9; x += 0.1) {
     // A straight stair link: the planner's path climbs the flight on a line.
     const double z = x <= 0.0 ? 0.0 : (x >= 1.4 ? 0.85 : 0.85 * x / 1.4);
-    out.push_back({x, 0.0, z, false});
+    out.push_back({x, 0.0, z});
   }
   return out;
 }
 }  // namespace
 
-TEST(TerrainGrid, StairIsLethalWithoutAPathAndACorridorWithOne)
+TEST(TerrainGrid, StairIsLethalWithOrWithoutAPathClimbingIt)
 {
+  // The grid opens no stair (2026-10-20): the controllers' stair mode climbs
+  // a flight without reading the costmap. Lethal is what keeps MPPI from
+  // walking onto one on its own, outside the stair mode.
   Scene s;
   s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); });
-  // 2D map, or a path that does not climb here: every riser is a step.
   s.classify();
   EXPECT_GT(s.share(0.0, 1.4, -1.0, 1.0, LETHAL_OBSTACLE), 0.5);
   EXPECT_GT(s.share(-1.9, -0.3, -1.9, 1.9, FREE_SPACE), 0.98);
 
-  // The path climbs it: the corridor (|y| < 0.6) is free along the flight,
-  // the stair outside the corridor stays lethal.
-  auto path = stairPath();
-  size_t climbing = 0;
-  for (size_t i = 0; i < path.size(); ++i) {
-    // The layer's own test: the window's rise around the pose.
-    double lo = path[i].z, hi = path[i].z;
-    for (size_t k = 0; k < path.size(); ++k) {
-      if (std::fabs(path[k].x - path[i].x) <= 0.5) {
-        lo = std::min(lo, path[k].z);
-        hi = std::max(hi, path[k].z);
-      }
-    }
-    path[i].climbing = hi - lo >= 0.3;
-    climbing += path[i].climbing;
-  }
-  ASSERT_GT(climbing, 0u);
-  s.grid.setPath(path);
-  const auto st = s.classify();
-  EXPECT_GT(st.corridor, 0u);
-  EXPECT_GT(s.share(0.1, 1.3, -0.4, 0.4, FREE_SPACE), 0.95);
-  EXPECT_GT(s.share(0.1, 1.3, 1.0, 1.9, LETHAL_OBSTACLE), 0.5);
-
-  // A box on the stairs is still an obstacle on the corridor.
-  s.surface(0.6, 0.9, -0.15, 0.15, [](double x, double) { return stairZ(x) + 0.35; });
+  // A path climbing it (Octo3D's stair link) seeds the reach flood and
+  // relaxes nothing: the flight stays as lethal as without it.
+  s.grid.setPath(stairPath());
   s.classify();
-  EXPECT_GT(s.share(0.6, 0.9, -0.15, 0.15, LETHAL_OBSTACLE), 0.9);
+  EXPECT_GT(s.share(0.0, 1.4, -1.0, 1.0, LETHAL_OBSTACLE), 0.5);
+  EXPECT_GT(s.share(0.1, 1.3, -0.4, 0.4, LETHAL_OBSTACLE), 0.5);
+  EXPECT_GT(s.share(-1.9, -0.3, -1.9, 1.9, FREE_SPACE), 0.98);
 }
 
 TEST(TerrainGrid, PathHeightsConnectAnUnseenRampAndIsolateABoxOnIt)
@@ -339,7 +321,7 @@ TEST(TerrainGrid, PathHeightsConnectAnUnseenRampAndIsolateABoxOnIt)
 
   std::vector<TerrainPathPose> path;
   for (double x = -1.9; x < 1.9; x += 0.1) {
-    path.push_back({x, 0.0, ramp(x, 0.0), false});
+    path.push_back({x, 0.0, ramp(x, 0.0)});
   }
   s.grid.setPath(path);
   s.classify();

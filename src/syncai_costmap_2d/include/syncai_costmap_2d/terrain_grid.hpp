@@ -7,7 +7,7 @@
 // SurfaceMapParams -- same names, same values), so that the local costmap
 // sees what the global planner sees: a step higher than the legs take, a
 // drop-off, a slope too steep, a thing lower than the old obstacle layer's
-// 0.58 m floor -- and nothing on a ramp or a stair the path climbs.
+// 0.58 m floor -- and nothing on a ramp or a kerb.
 //
 // Why this and not the obstacle layer's height band: every point above a
 // fixed height over the robot's own ground was an obstacle there, so a ramp
@@ -41,15 +41,13 @@
 // path's heights seed the flood too, so a ramp whose foot the lidar never
 // looked at is still the floor the planner says it is.
 //
-// Stairs: the step and slope rules refuse a flight, as Octo3D's do, and the
-// global planner climbs one only over a stair link in its path. So the path
-// is this grid's second input: along a stretch of it that rises
-// stair_min_rise within stair_window (the controllers' stair-mode test),
-// cells within stair_corridor_half_width take the path's own height as
-// their ground, skip the step and slope rules, and start their obstacle
-// band at stair_obstacle_height -- high enough for the tread above, low
-// enough for a box on the stairs. A level path (every 2D planner) relaxes
-// nothing, so a 2D map keeps every stair lethal.
+// Stairs are not this grid's business: the step and slope rules refuse a
+// flight, as Octo3D's do, and nothing here opens one. A stair is crossed
+// only over the global planner's stair link, by the controllers' stair mode,
+// which climbs blind -- no obstacle avoidance on a flight, by decision
+// (2026-10-20). An earlier draft of this layer opened a corridor along a
+// climbing path (the path's height as the ground, the band starting higher);
+// it was taken out with that decision, and git history has it.
 
 #include <cstddef>
 #include <cstdint>
@@ -101,34 +99,18 @@ struct TerrainParams
   // Share of the disc's cells that must have a ground estimate for the
   // slope to be judged at all.
   double slope_min_known = 0.5;
-
-  // ---- stairs -----------------------------------------------------------
-  // A stretch of the path whose height spans stair_min_rise within
-  // stair_window (half before, half after a pose) is a climb: the
-  // controllers' stair-mode test (stair_min_rise 0.3 within 1 m ahead).
-  double stair_min_rise = 0.3;
-  double stair_window = 1.0;
-  // Cells within this of a climbing pose are the stair corridor: 0.6 m is a
-  // typical stair's half-width and leaves the stairwell's walls outside it.
-  double stair_corridor_half_width = 0.6;
-  // The obstacle band starts here above the path's height on the corridor:
-  // above one riser (0.17) and the quantisation under it, under a box.
-  double stair_obstacle_height = 0.3;
 };
 
-// A pose of the global path in the grid's frame, with whether the path is
-// climbing there (the stretch's height spans stair_min_rise within
-// stair_window).
+// A pose of the global path in the grid's frame. Only its place is used (as
+// a seed of the reach flood); the height is kept for debugging.
 struct TerrainPathPose
 {
   double x, y, z;
-  bool climbing;
 };
 
 struct TerrainStats
 {
-  size_t known = 0, lethal_obstacle = 0, lethal_step = 0, lethal_slope = 0, lethal_island = 0,
-         corridor = 0;
+  size_t known = 0, lethal_obstacle = 0, lethal_step = 0, lethal_slope = 0, lethal_island = 0;
 };
 
 class TerrainGrid
@@ -154,10 +136,10 @@ public:
   // any epoch, the same for every call). Outside the window: ignored.
   void addSample(double x, double y, double z, double t);
 
-  // The current path in the grid's frame, with its heights -- only when it
-  // has them (OctomapPlanner3D's; a 2D planner's z = 0 is not a height) --
-  // or an empty list. Replaces the previous call's. Its climbing poses open
-  // the stair corridor; every pose seeds the reach rule (see classify()).
+  // The current path in the grid's frame -- only when it has heights
+  // (OctomapPlanner3D's; a 2D planner's z = 0 says nothing about where the
+  // floor goes) -- or an empty list. Replaces the previous call's. Every
+  // pose seeds the reach rule (see classify()).
   void setPath(const std::vector<TerrainPathPose> & poses);
 
   // Judge every cell at time `now`, with the robot at (robot_x, robot_y) on
@@ -202,11 +184,11 @@ private:
     int head = 0;   // next slot to overwrite
   };
 
-  // Ground estimate per cell from the samples alone (NaN where there are too
-  // few), then the corridor's and the robot's fallbacks.
+  // Ground estimate per cell from the samples, the robot's ground where
+  // there are too few.
   void estimateGround(double now, double robot_ground_z) const;
   bool fitSlope(int ix, int iy, double & tilt_deg) const;
-  bool cellHasObstacle(size_t i, double now, double ground, double band_from) const;
+  bool cellHasObstacle(size_t i, double now, double ground) const;
   void floodReach(double robot_x, double robot_y) const;
   float rel(double t) const;
 
@@ -216,11 +198,9 @@ private:
   std::vector<Cell> cells_;
   std::vector<TerrainPathPose> path_;
   // Scratch of classify(): the ground per cell (NaN = none), whether it came
-  // from samples, the corridor's height per cell (NaN off the corridor), and
-  // the disc's offsets.
+  // from samples, the reach flood, and the neighbourhood's samples.
   mutable std::vector<float> ground_;
   mutable std::vector<uint8_t> ground_known_;
-  mutable std::vector<float> corridor_z_;
   mutable std::vector<uint8_t> reached_;
   mutable std::vector<float> scratch_;
   mutable std::vector<int> queue_;

@@ -11,7 +11,6 @@
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_util/path_height.hpp"
-#include "syncai_util/stair_mode.hpp"
 #include "tf2/exceptions.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -25,8 +24,14 @@ void TerrainLayer::onInitialize()
     throw std::runtime_error{"Failed to get node in TerrainLayer"};
   }
   bool track_unknown_space = false;
+  std::string map_type, map_3d_topic;
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("footprint_clearing_enabled", rclcpp::ParameterValue(true));
+  // MapTypeGate: "any" would run it on a 2D map too; the local costmap says
+  // "3d", with the obstacle layer as "2d".
+  declareParameter("map_type", rclcpp::ParameterValue(std::string("3d")));
+  declareParameter(
+    "map_3d_topic", rclcpp::ParameterValue(std::string("planner_server/Octo3D/map_available")));
   declareParameter("topic", rclcpp::ParameterValue(std::string("pointlio/body_cloud")));
   declareParameter("sensor_height", rclcpp::ParameterValue(sensor_height_));
   declareParameter("max_range", rclcpp::ParameterValue(max_range_));
@@ -46,14 +51,11 @@ void TerrainLayer::onInitialize()
   declareParameter("max_step_height", rclcpp::ParameterValue(p.max_step_height));
   declareParameter("max_slope_deg", rclcpp::ParameterValue(p.max_slope_deg));
   declareParameter("slope_min_known", rclcpp::ParameterValue(p.slope_min_known));
-  declareParameter("stair_min_rise", rclcpp::ParameterValue(p.stair_min_rise));
-  declareParameter("stair_window", rclcpp::ParameterValue(p.stair_window));
-  declareParameter(
-    "stair_corridor_half_width", rclcpp::ParameterValue(p.stair_corridor_half_width));
-  declareParameter("stair_obstacle_height", rclcpp::ParameterValue(p.stair_obstacle_height));
 
   node_->get_parameter(name_ + ".enabled", enabled_);
   node_->get_parameter(name_ + ".footprint_clearing_enabled", footprint_clearing_enabled_);
+  node_->get_parameter(name_ + ".map_type", map_type);
+  node_->get_parameter(name_ + ".map_3d_topic", map_3d_topic);
   node_->get_parameter(name_ + ".topic", cloud_topic_);
   node_->get_parameter(name_ + ".sensor_height", sensor_height_);
   node_->get_parameter(name_ + ".max_range", max_range_);
@@ -72,17 +74,16 @@ void TerrainLayer::onInitialize()
   node_->get_parameter(name_ + ".max_step_height", p.max_step_height);
   node_->get_parameter(name_ + ".max_slope_deg", p.max_slope_deg);
   node_->get_parameter(name_ + ".slope_min_known", p.slope_min_known);
-  node_->get_parameter(name_ + ".stair_min_rise", p.stair_min_rise);
-  node_->get_parameter(name_ + ".stair_window", p.stair_window);
-  node_->get_parameter(name_ + ".stair_corridor_half_width", p.stair_corridor_half_width);
-  node_->get_parameter(name_ + ".stair_obstacle_height", p.stair_obstacle_height);
   node_->get_parameter("track_unknown_space", track_unknown_space);
   node_->get_parameter("transform_tolerance", transform_tolerance_);
 
-  // The costmap node lives in its own sub-namespace; both inputs are the
-  // robot's (/<robot_id>/pointlio/body_cloud, /<robot_id>/plan).
+  // The costmap node lives in its own sub-namespace; every input is the
+  // robot's (/<robot_id>/pointlio/body_cloud, /<robot_id>/plan,
+  // /<robot_id>/planner_server/Octo3D/map_available).
   cloud_topic_ = joinWithParentNamespace(cloud_topic_);
   plan_topic_ = joinWithParentNamespace(plan_topic_);
+  map_gate_.initialize(
+    node_, name_, map_type, joinWithParentNamespace(map_3d_topic), callback_group_);
 
   rolling_window_ = layered_costmap_->isRolling();
   default_value_ = track_unknown_space ? NO_INFORMATION : FREE_SPACE;
@@ -96,10 +97,10 @@ void TerrainLayer::onInitialize()
     logger_,
     "TerrainLayer %s: cloud %s (ground = lidar z - %.3f, returns within %.1f m and "
     "[%.1f, %.1f] m of the ground), path %s; step %.2f m, slope %.0f deg, obstacles %.2f-%.2f m "
-    "above the ground (%.2f m on a climbing path), ground memory %.0f s, obstacle memory %.1f s",
+    "above the ground, ground memory %.0f s, obstacle memory %.1f s",
     name_.c_str(), cloud_topic_.c_str(), sensor_height_, max_range_, min_rel_z_, max_rel_z_,
     plan_topic_.c_str(), p.max_step_height, p.max_slope_deg, p.min_obstacle_height,
-    p.body_clearance, p.stair_obstacle_height, p.ground_memory, p.obstacle_memory);
+    p.body_clearance, p.ground_memory, p.obstacle_memory);
 
   auto sub_opt = rclcpp::SubscriptionOptions();
   sub_opt.callback_group = callback_group_;
@@ -158,6 +159,12 @@ void TerrainLayer::reset()
 
 void TerrainLayer::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
 {
+  // On a 2D map the obstacle layer runs instead; keep no samples (a cloud is
+  // tens of thousands of points, ten times a second). The grid starts empty
+  // on the switch to a 3D map and fills within ground_memory.
+  if (!map_gate_.active()) {
+    return;
+  }
   geometry_msgs::msg::TransformStamped tf;
   try {
     tf = tf_->lookupTransform(
@@ -207,7 +214,7 @@ void TerrainLayer::planCallback(nav_msgs::msg::Path::ConstSharedPtr message)
   plan_ = *message;
 }
 
-std::vector<TerrainPathPose> TerrainLayer::climbingPoses()
+std::vector<TerrainPathPose> TerrainLayer::pathPoses()
 {
   nav_msgs::msg::Path plan;
   {
@@ -215,8 +222,8 @@ std::vector<TerrainPathPose> TerrainLayer::climbingPoses()
     plan = plan_;
   }
   std::vector<TerrainPathPose> out;
-  // A level path (every 2D planner, and the empty one a cancel leaves)
-  // climbs nothing, so a 2D map keeps every stair lethal.
+  // A level path (a 2D planner's, and the empty one a cancel leaves) says
+  // nothing about where the floor goes: no seeds.
   if (!syncai_util::pathHasHeight(plan)) {
     return out;
   }
@@ -229,13 +236,9 @@ std::vector<TerrainPathPose> TerrainLayer::climbingPoses()
       plan.header.frame_id.c_str(), global_frame_.c_str(), ex.what());
     return out;
   }
-  const TerrainParams & p = terrain_.params;
-  const double half = 0.5 * p.stair_window;
-  for (size_t i = 0; i < plan.poses.size(); ++i) {
-    if (syncai_util::StairMode::stairRise(plan, i, half, half) < p.stair_min_rise) {
-      continue;
-    }
-    geometry_msgs::msg::PoseStamped in = plan.poses[i], pose;
+  out.reserve(plan.poses.size());
+  for (const auto & ps : plan.poses) {
+    geometry_msgs::msg::PoseStamped in = ps, pose;
     in.header = plan.header;
     tf2::doTransform(in, pose, tf);
     out.push_back({pose.pose.position.x, pose.pose.position.y, pose.pose.position.z});
@@ -247,6 +250,14 @@ void TerrainLayer::updateBounds(
   double robot_x, double robot_y, double robot_yaw, double * min_x, double * min_y, double * max_x,
   double * max_y)
 {
+  // Before the costmap's own mutex: pathPoses() takes TF and the plan's
+  // mutex, neither of which needs the costmap.
+  const bool active = map_gate_.active();
+  std::vector<TerrainPathPose> path;
+  if (enabled_ && active) {
+    path = pathPoses();
+  }
+
   std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
   std::lock_guard<std::mutex> lock(terrain_mutex_);
   if (rolling_window_) {
@@ -254,13 +265,32 @@ void TerrainLayer::updateBounds(
     // After the costmap's own whole-cell rounding, so the two stay aligned.
     terrain_.updateOrigin(getOriginX(), getOriginY());
   }
-  if (!enabled_) {
+  // MapTypeGate: on a switch either way, start from an empty layer and
+  // grid, and put the whole window in the update bounds once so the master
+  // grid is reset there (ObstacleLayer::updateBounds() does the same).
+  const bool switched = map_gate_.changed();
+  if (switched) {
+    resetMaps();
+    terrain_.clear();
+    has_cloud_ = false;
+  }
+  if (!enabled_ || !active) {
+    if (switched) {
+      *min_x = std::min(*min_x, getOriginX());
+      *min_y = std::min(*min_y, getOriginY());
+      *max_x = std::max(*max_x, getOriginX() + getSizeInMetersX());
+      *max_y = std::max(*max_y, getOriginY() + getSizeInMetersY());
+    }
+    // Off counts as current (see ObstacleLayer::updateBounds()).
+    current_ = true;
+    was_reset_ = false;
     return;
   }
   useExtraBounds(min_x, min_y, max_x, max_y);
 
-  terrain_.setClimbingPoses(climbingPoses());
-  terrain_.classify(clock_->now().seconds(), robot_ground_z_, costmap_, &last_stats_);
+  terrain_.setPath(path);
+  terrain_.classify(
+    clock_->now().seconds(), robot_x, robot_y, robot_ground_z_, costmap_, &last_stats_);
 
   // Every cell may have changed (a sample ages out, the window moves): the
   // whole layer is the update window, as the rolling static layer's is.
@@ -275,11 +305,12 @@ void TerrainLayer::updateBounds(
     RCLCPP_DEBUG(
       logger_,
       "TerrainLayer: %zu cells with a ground estimate, %zu lethal (%zu obstacle, %zu step, "
-      "%zu slope), %zu on a stair corridor%s",
+      "%zu slope, %zu island)%s",
       last_stats_.known,
-      last_stats_.lethal_obstacle + last_stats_.lethal_step + last_stats_.lethal_slope,
+      last_stats_.lethal_obstacle + last_stats_.lethal_step + last_stats_.lethal_slope +
+        last_stats_.lethal_island,
       last_stats_.lethal_obstacle, last_stats_.lethal_step, last_stats_.lethal_slope,
-      last_stats_.corridor, has_cloud_ ? "" : " (no cloud yet)");
+      last_stats_.lethal_island, has_cloud_ ? "" : " (no cloud yet)");
   }
 
   updateFootprint(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y);
@@ -301,7 +332,7 @@ void TerrainLayer::updateFootprint(
 void TerrainLayer::updateCosts(Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
-  if (!enabled_) {
+  if (!enabled_ || !map_gate_.active()) {
     return;
   }
   if (!current_ && was_reset_) {

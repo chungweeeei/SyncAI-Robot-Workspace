@@ -486,8 +486,17 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   // driving along that arc on the costmap and check whether the footprint would touch an
   // obstacle anywhere along the way. This tells us, after regulation, whether the predicted
   // path collides with an obstacle -- a safety check.
+  //
+  // Not on a stair (2026-10-20): from the hold at its foot to the hold past its top the
+  // robot climbs blind, by decision -- no obstacle avoidance on a flight. The local
+  // costmap's terrain layer judges the flight itself lethal (a riser over
+  // max_step_height, a slope over max_slope_deg) and opens nothing along the path, so
+  // this check would refuse every stair; MPPI's stair climb skips the costmap the same
+  // way.
   const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
-  if (use_collision_detection_ && isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
+  if (
+    use_collision_detection_ && !stair_hold && !on_stairs &&
+    isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
     // The (v, w) computed above is never commanded: the wrapper in
     // computeVelocityCommands() zeroes the accel-clamp baseline on the way out, which is
     // what keeps the cycle after the all-clear from lurching off the stale pre-collision

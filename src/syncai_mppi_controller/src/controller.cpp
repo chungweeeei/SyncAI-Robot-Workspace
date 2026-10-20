@@ -512,24 +512,27 @@ bool MPPIController::climbStairs(
   // serves a 2D map and a 3D one. A stretch of a path with heights
   // (OctomapPlanner3D's stair links) that rises stair_min_rise within reach
   // is climbed standing still for the policy switch and then on a short
-  // pure-pursuit carrot at stair_linear_vel -- not by the optimizer. The
-  // optimizer samples on the planar local costmap, whose terrain layer
-  // relaxes its step rule along the climbing path only, so a stair is a
-  // corridor one footprint wide in it: nothing to sample round, and MPPI's
-  // slow, wavering output under that is what the gait's floors fight. A
-  // stair is climbed straight, facing the risers, which is what the global
-  // planner's straight stair links already give the path.
+  // pure-pursuit carrot at stair_linear_vel -- not by the optimizer, and
+  // without reading the costmap: no obstacle avoidance on a flight, by
+  // decision (2026-10-20). The local costmap's terrain layer judges a stair
+  // lethal (a riser over max_step_height, a flight over max_slope_deg) and
+  // opens nothing along the path, so neither the optimizer nor a footprint
+  // check could take a step onto it; what keeps the robot off a stair it
+  // was not routed over is exactly that lethal. A stair is climbed
+  // straight, facing the risers, which is what the global planner's
+  // straight stair links already give the path. (A draft of the same day
+  // opened a corridor one footprint wide along a climbing path and checked
+  // the carrot's walk against it; it went with that decision.)
   //
   // The decision (enter, hold for the switch, climb, leave) is StairMode's,
   // the same object RPP 3D runs; what this method adds is the command: the
   // brake while holding, and the carrot once climbing -- the first pose of
   // the pruned path stair_lookahead_dist away, tracked like the direct
   // approach's goal point (turn in place onto it past
-  // approach_rotate_min_angle, else trackPoint()). The carrot's walk is
-  // checked against LETHAL footprints like the approach's; blocked, the
-  // cycle fails and the server holds the robot (failure_tolerance, then the
-  // BT's retries) rather than handing a stair to the optimizer. The
-  // projection reaches carrot + footprint, ~0.76 m, as RPP 3D's does.
+  // approach_rotate_min_angle, else trackPoint()). Blind from the moment
+  // StairMode holds (stair_enter_dist before the rise) until it leaves
+  // (stair_exit_behind_dist past the top), which also keeps the robot clear
+  // of the flight's lethal cells when the optimizer takes over again.
   //
   // A plan without heights never asks for stairs (StairMode::setPlan() reads
   // pathHasHeight()), and is not even transformed here, so a 2D map's cycle
@@ -599,9 +602,7 @@ bool MPPIController::climbStairs(
     const double dy = carrot->pose.position.y - y;
     const double dist = std::hypot(dx, dy);
     const double bearing = angles::shortest_angular_distance(yaw, std::atan2(dy, dx));
-    if (isApproachBlocked(x, y, yaw, std::min(dist, stair_lookahead_dist_), bearing)) {
-      throw syncai_nav_core::PlannerException("Stair carrot blocked; not climbing into it");
-    }
+    // No isApproachBlocked() here: the flight is lethal in the costmap.
     if (std::fabs(bearing) > approach_rotate_min_angle_) {
       rotateInPlace(bearing, vx, wz);
     } else if (dist > 1e-3) {

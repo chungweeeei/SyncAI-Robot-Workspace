@@ -43,6 +43,10 @@ void ObstacleLayer::onInitialize()
   declareParameter("max_obstacle_height", rclcpp::ParameterValue(2.0));
   declareParameter("combination_method", rclcpp::ParameterValue(1));
   declareParameter("observation_sources", rclcpp::ParameterValue(std::string("")));
+  // Not upstream (2026-10-20): MapTypeGate. "any" keeps upstream's behaviour.
+  declareParameter("map_type", rclcpp::ParameterValue(std::string("any")));
+  declareParameter(
+    "map_3d_topic", rclcpp::ParameterValue(std::string("planner_server/Octo3D/map_available")));
 
   if (!node_) {
     throw std::runtime_error{"Failed to get node in ObstacleLayer"};
@@ -56,6 +60,13 @@ void ObstacleLayer::onInitialize()
   node_->get_parameter("track_unknown_space", track_unknown_space);
   node_->get_parameter("transform_tolerance", transform_tolerance);
   node_->get_parameter(name_ + "." + "observation_sources", topics_string);
+  {
+    std::string map_type, map_3d_topic;
+    node_->get_parameter(name_ + "." + "map_type", map_type);
+    node_->get_parameter(name_ + "." + "map_3d_topic", map_3d_topic);
+    map_gate_.initialize(
+      node_, name_, map_type, joinWithParentNamespace(map_3d_topic), callback_group_);
+  }
 
   dyn_params_handler_ = node_->add_on_set_parameters_callback(
     std::bind(&ObstacleLayer::dynamicParametersCallback, this, std::placeholders::_1));
@@ -370,6 +381,26 @@ void ObstacleLayer::updateBounds(
   if (rolling_window_) {
     updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
   }
+  // MapTypeGate (not upstream): on a switch either way, start from an empty
+  // layer and put the whole window in the update bounds once, so the master
+  // grid is reset there -- otherwise what the other sensor layer marked
+  // outside this layer's next bounds would stay in it.
+  if (map_gate_.gated() && map_gate_.changed()) {
+    resetMaps();
+    *min_x = std::min(*min_x, getOriginX());
+    *min_y = std::min(*min_y, getOriginY());
+    *max_x = std::max(*max_x, getOriginX() + getSizeInMetersX());
+    *max_y = std::max(*max_y, getOriginY() + getSizeInMetersY());
+  }
+  if (!map_gate_.active()) {
+    // Gated off counts as current, as a disabled layer does in
+    // LayeredCostmap::isCurrent(): the controller must not wait on a sensor
+    // layer the map does not use (a clear's reset() would otherwise leave it
+    // not-current for good).
+    current_ = true;
+    was_reset_ = false;
+    return;
+  }
   if (!enabled_) {
     return;
   }
@@ -482,7 +513,7 @@ void ObstacleLayer::updateCosts(
   syncai_costmap_2d::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
-  if (!enabled_) {
+  if (!enabled_ || !map_gate_.active()) {
     return;
   }
 

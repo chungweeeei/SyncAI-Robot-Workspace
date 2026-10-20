@@ -161,8 +161,10 @@
   (syncai_util::StairMode) that RPP 3D introduced, with the optimizer skipped
   on the flight and running everywhere else, so the local detours MPPI gives
   the 2D tree are the 3D tree's too -- on the local costmap's terrain layer,
-  which judges steps, slopes, drops and low obstacles against the ground
-  under the robot. From 2026-10-19 until then this line named
+  which runs on a 3D map in place of the obstacle layer and judges steps,
+  slopes, drops, stairs and low obstacles against the ground under the
+  robot. A flight itself is climbed blind: no obstacle avoidance on stairs,
+  by decision (2026-10-20). From 2026-10-19 until then this line named
   FollowPathRPP3D (syncai_controller's RegulatedPurePursuitController3D),
   the first controller to track heights and switch the gait policy, at the
   price of every detour: it is still loaded, and controller_id="FollowPathRPP3D"

@@ -23,6 +23,7 @@ find_package(laser_geometry REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 set(dependencies
   rclcpp
@@ -41,6 +42,7 @@ set(dependencies
   message_filters
   tf2_sensor_msgs
   std_srvs
+  std_msgs
 )
 
 add_library(${PROJECT_NAME} SHARED
@@ -57,6 +59,7 @@ add_library(${PROJECT_NAME} SHARED
   src/footprint_subscriber.cpp
   src/layer.cpp
   src/layered_costmap.cpp
+  src/map_type_gate.cpp
   src/observation_buffer.cpp
   src/terrain_grid.cpp
   plugins/static_layer.cpp
@@ -122,7 +125,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   # ROS-free: TerrainGrid on synthetic scenes (floor, kerb, step, drop, ramp,
-  # box, person, a stair with and without a climbing path).
+  # box, person, a stair lethal with and without a climbing path).
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_terrain_grid test/test_terrain_grid.cpp)
   target_link_libraries(test_terrain_grid ${PROJECT_NAME})

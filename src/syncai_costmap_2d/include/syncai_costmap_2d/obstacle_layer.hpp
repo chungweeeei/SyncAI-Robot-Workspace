@@ -18,6 +18,7 @@
 #include "syncai_costmap_2d/costmap_layer.hpp"
 #include "syncai_costmap_2d/footprint.hpp"
 #include "syncai_costmap_2d/layered_costmap.hpp"
+#include "syncai_costmap_2d/map_type_gate.hpp"
 #include "syncai_costmap_2d/observation_buffer.hpp"
 
 namespace syncai_costmap_2d
@@ -218,6 +219,11 @@ protected:
   // robot_out_of_bounds_ for the 3D-only map that flooded the log with it).
   // One flag for every source: they sit on the same robot.
   bool sensor_out_of_bounds_{false};
+
+  // Not upstream (2026-10-20): the map type this layer runs on, its
+  // `map_type` parameter ("any" by default; "2d" in the local costmap, where
+  // TerrainLayer runs on a 3D map instead). See map_type_gate.hpp.
+  MapTypeGate map_gate_;
 };
 
 }  // namespace syncai_costmap_2d

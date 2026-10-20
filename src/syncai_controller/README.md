@@ -256,10 +256,12 @@ and so is the braking, done with each one's own acceleration clamp:
    (its narrowest treads) and keeps the collision projection (carrot + 0.36 m of
    footprint, ~0.76 m) short. Until 2026-10-20 that length also mattered
    against the local costmap's obstacle floor (0.58 m above the robot's
-   ground), which the treads rose past after ~0.76 m; the local costmap's
-   `TerrainLayer` (`syncai_costmap_2d`) now opens a corridor over the stair
-   the path climbs, so the treads are free and the collision check — still on —
-   sees the stairwell's walls and anything standing on the stairs.
+   ground), which the treads rose past after ~0.76 m. Since 2026-10-20 the
+   collision check is **off** from the hold at the stair's foot to the hold
+   past its top — the climb is blind, by decision, in both controllers: on a
+   3D map the local costmap runs `TerrainLayer` (`syncai_costmap_2d`), which
+   judges the flight itself lethal and opens nothing along the path, so the
+   check would refuse every stair. Nothing on the stairs is avoided.
 3. **Leave** once the path from **`stair_exit_behind_dist`** (0.8 m) behind to
    **`stair_exit_ahead_dist`** (2.5 m) ahead rises less than `stair_min_rise`:
    stop, switch back, settle. Back to **`flat_policy_mode`**, or with -1 (default)
@@ -801,7 +803,7 @@ real-robot ones:
 | `use_sim_time` | `false` | No `/clock` on the real robot |
 | `xy_goal_tolerance` | `0.15` | The robot's floor speed is ~0.3 m/s, so it cannot creep into a 5 cm window (the old sim value). Raised from `0.15` to `0.3` on 2026-10-14 after MPPI's decelerating approach stalled the robot 0.23 m and 0.29 m short, and lowered back the same day because 0.3 ended an ordinary MOVE too far from its goal — nothing has fixed those stalls, so they can return. Equal to MPPI `GoalAngleCritic.threshold_to_consider` so the final turn starts only once the position is accepted; change the two together |
 | `yaw_goal_tolerance` | `0.2` | The gait controller does not turn below ~0.3 rad/s, so the final rotation cannot slow into a narrow window. Raised from `0.1` (2026-10-14): ±0.2 rad takes ~1.3 s to cross at that floor, enough for the command latency and the stop of a heavy body. Estimated, not measured |
-| Local costmap sources | `scan` **and** `pointlio/body_cloud` | The 3D stack has no laser scan |
+| Local costmap sources | 2D map: `obstacle_layer` (`scan` **and** `pointlio/body_cloud`); 3D map: `terrain_layer` (`pointlio/body_cloud`) | The 3D stack has no laser scan. Both layers are loaded and exactly one runs, by `map_type` against the planner's latched `planner_server/Octo3D/map_available` (2026-10-20; `syncai_costmap_2d`'s README, "Which sensor layer runs") — the signal the task_runner picks its trees by, so a map switch switches the layer with no restart. Never both: they disagree on a ramp |
 
 On the real 3D robot the `scan` source receives nothing (no scan merger runs
 there); it is kept for setups that do publish one. The pointcloud source
