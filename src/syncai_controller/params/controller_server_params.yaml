@@ -366,7 +366,23 @@
       # a cycle past 50 ms shows up as "Control loop missed its desired rate".
       batch_size: 1000
       iteration_count: 1
-      vx_std: 0.2
+      # 0.2 (upstream's) -> 0.3 (2026-10-20): MPPI never reached vx_max on a
+      # straight. There the only critic that pays for speed is
+      # PathFollowCritic (cost_weight x end point to carrot: w * N * dt per
+      # m/s of the whole horizon), and the optimizer's control cost charges
+      # gamma / vx_std^2 * u * N for the same (faster than the current
+      # sequence u is "energy"). They balance at u = w * dt * vx_std^2 /
+      # gamma, whatever the horizon: 5 * 0.05 * 0.04 / 0.015 = 0.67 m/s, and
+      # a model of this update (1000 samples, warm start, ConstraintCritic)
+      # settles lower still, at 0.59 -- 0.50 back when vx_max was 0.60, so
+      # MPPI never commanded RPP's 0.60 either. At 0.3 the balance is 1.5
+      # m/s, and the same model holds vx_max, 0.80. vx_std rather than gamma
+      # (0.008 -> 0.78 in the model) because gamma scales the yaw control
+      # cost as well, or PathFollowCritic (7.5 -> 0.77) because that weighs
+      # against PathAlignCritic and cuts corners. Unmeasured on the robot:
+      # compare cmd_vel's plateau with odom's, which also shows how the gait
+      # tracks 0.80 x scale_fwd.
+      vx_std: 0.3
       wz_std: 0.4
       temperature: 0.3
       gamma: 0.015
