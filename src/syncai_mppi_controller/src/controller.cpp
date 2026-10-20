@@ -71,7 +71,6 @@ void MPPIController::initialize(
   // plugin's name; these two are the climb's.
   stair_mode_.initialize(node, name_);
   getParam(stair_linear_vel_, "stair_linear_vel", 0.5);
-  getParam(stair_min_linear_vel_, "stair_min_linear_vel", 0.5);
   getParam(stair_lookahead_dist_, "stair_lookahead_dist", 0.4);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
@@ -112,6 +111,7 @@ void MPPIController::reset()
   // on); a half-done switch is settled or dropped (StairMode::reset()).
   stair_mode_.reset();
   climbing_stairs_ = false;
+  stair_ramp_valid_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
@@ -468,7 +468,7 @@ bool MPPIController::approachGoal(
 }
 
 void MPPIController::trackPoint(
-  double bearing, double dist, double speed, double & vx, double & wz, double min_speed) const
+  double bearing, double dist, double speed, double & vx, double & wz) const
 {
   // Out of a turn this ramps up from rest at max_linear_accel, under the
   // floor for its first ~0.3 s, exactly as RPP's ramp does. The arc is
@@ -483,17 +483,50 @@ void MPPIController::trackPoint(
     const double dv = max_linear_accel_ * control_duration_;
     vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
   }
-  // A floor, when asked for, after the clamp it overrides: the walk then
-  // starts at it in one step (the stair climb's; see climbStairs()). Never
-  // above `speed`, which stays the cap.
-  if (min_speed > 0.0) {
-    vx = std::max(vx, std::min(min_speed, speed));
-  }
   wz = std::clamp(vx * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
   if (max_angular_accel_ > 0.0) {
     const double dw = max_angular_accel_ * control_duration_;
     wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
   }
+}
+
+double MPPIController::stairSpeed(double target, const rclcpp::Time & now)
+{
+  // Not upstream (2026-10-20). Stair mode's linear speed goes from one value
+  // to the next on an S-curve: up to stair_linear_vel when a walk on the
+  // flight starts (after the policy switch, after a turn onto the carrot),
+  // down to 0 for an in-place turn and for the brakes before each policy
+  // switch, at the stair's foot and past its top. The clamp's own ramp is a
+  // constant acceleration that starts and ends in a step, and the gait under
+  // it is a stair policy on a stair; this is a smoothstep, s^2 (3 - 2 s) over
+  // time, so the acceleration rises from 0, peaks halfway and falls back to 0
+  // as the speed arrives. Its peak is 1.5 * |dv| / T, so T = 1.5 * |dv| /
+  // max_linear_accel holds that peak at the clamp's limit: 0 <-> 0.5 m/s in
+  // 0.75 s (the linear ramp took 0.5 s), and trackPoint()'s clamp never
+  // bites. A new curve starts from the speed last commanded whenever the
+  // target changes, so a turn that interrupts a start decelerates from where
+  // the start had got to. A step to the walking speed (a floor, for a day)
+  // was dropped for this. Like the linear ramp, a start spends its first
+  // ~0.3 s under the RL gait's ~0.3 m/s floor; whether HIMLOCO's is the same
+  // is unmeasured.
+  if (!stair_ramp_valid_ || target != stair_ramp_to_) {
+    stair_ramp_valid_ = true;
+    stair_ramp_to_ = target;
+    stair_ramp_from_ = last_cmd_vel_.linear.x;
+    stair_ramp_start_ = now;
+  }
+  const double dv = target - stair_ramp_from_;
+  if (max_linear_accel_ <= 0.0 || std::fabs(dv) < 1e-6) {
+    return target;
+  }
+  const double duration = 1.5 * std::fabs(dv) / max_linear_accel_;
+  const double s = (now - stair_ramp_start_).seconds() / duration;
+  if (s >= 1.0) {
+    // Exactly the target: the brake's "standing" test compares with 0.
+    return target;
+  }
+  const double c = std::max(s, 0.0);
+  return stair_ramp_from_ + dv * c * c * (3.0 - 2.0 * c);
 }
 
 void MPPIController::brake(double & vx, double & wz) const
@@ -563,6 +596,7 @@ bool MPPIController::climbStairs(
     throw syncai_nav_core::PlannerException(stair.refuse);
   }
   if (!stair.hold && !stair.on_stairs) {
+    stair_ramp_valid_ = false;
     if (climbing_stairs_) {
       climbing_stairs_ = false;
       // The warm-started sequence predates the stairs; start from scratch.
@@ -583,8 +617,11 @@ bool MPPIController::climbStairs(
 
   double vx = 0.0;
   double wz = 0.0;
+  const rclcpp::Time now = clock_->now();
   if (stair.hold) {
+    // The turn brakes at the clamp's rate; the speed on the S-curve.
     brake(vx, wz);
+    vx = stairSpeed(0.0, now);
     if (vx == 0.0 && wz == 0.0) {
       // Standing: the policy goes out, or the settle time runs down.
       stair_mode_.standing(clock_->now());
@@ -612,14 +649,11 @@ bool MPPIController::climbStairs(
     // No isApproachBlocked() here: the flight is lethal in the costmap.
     if (std::fabs(bearing) > approach_rotate_min_angle_) {
       rotateInPlace(bearing, vx, wz);
+      // Slowing to the turn on the S-curve rather than rotateInPlace()'s ramp.
+      vx = stairSpeed(0.0, now);
     } else if (dist > 1e-3) {
-      // Floored at stair_min_linear_vel (2026-10-20): the walk on a flight
-      // starts at that speed rather than ramping up from rest through the
-      // acceleration clamp after every stop (the policy switch, a turn onto
-      // the carrot), ~0.5 s under it each time. The in-place turn and the
-      // brakes for the switches keep their clamped ramps: stopping for a
-      // policy switch is the point of them.
-      trackPoint(bearing, dist, stair_linear_vel_, vx, wz, stair_min_linear_vel_);
+      // On an S-curve up to stair_linear_vel, then at it (stairSpeed()).
+      trackPoint(bearing, dist, stairSpeed(stair_linear_vel_, now), vx, wz);
     }
   }
 

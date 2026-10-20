@@ -175,12 +175,17 @@ protected:
     * @param speed The linear speed to walk at
     * @param vx Set to the linear command
     * @param wz Set to the angular command
-    * @param min_speed The least vx, applied after the acceleration clamp (so
-    * a walk starts at it instead of ramping up through it); 0 keeps the ramp
     */
-  void trackPoint(
-    double bearing, double dist, double speed, double & vx, double & wz,
-    double min_speed = 0.0) const;
+  void trackPoint(double bearing, double dist, double speed, double & vx, double & wz) const;
+
+  /**
+    * @brief The linear speed stair mode commands this cycle: an S-curve from
+    * the speed the robot had when `target` was first asked for to `target`,
+    * whose peak acceleration (or deceleration) is max_linear_accel
+    * @param target stair_linear_vel to walk, 0 to stop (a turn, a brake)
+    * @param now The cycle's time
+    */
+  double stairSpeed(double target, const rclcpp::Time & now);
 
   /**
     * @brief Ramp both commands to zero at the clamps' own rates
@@ -251,9 +256,14 @@ protected:
   // syncai_util::StairMode's, shared with RPP 3D; the climb is climbStairs()'s.
   syncai_util::StairMode stair_mode_;
   double stair_linear_vel_{0.5};
-  // The least vx of the walk on a flight (see climbStairs()).
-  double stair_min_linear_vel_{0.5};
   double stair_lookahead_dist_{0.4};
+  // Stair mode's speed S-curve (stairSpeed()): its target, where it started
+  // and when. A new curve starts whenever the target changes; leaving the
+  // stairs and reset() drop it.
+  bool stair_ramp_valid_{false};
+  double stair_ramp_to_{0.0};
+  double stair_ramp_from_{0.0};
+  rclcpp::Time stair_ramp_start_;
   // Set while climbStairs() owns the robot (hold or climb), so the optimizer
   // is reset once on the way in and once on the way out.
   bool climbing_stairs_{false};

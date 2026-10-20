@@ -329,15 +329,15 @@
       stair_policy_settle_time: 3.0
       stair_policy_mode: 1
       flat_policy_mode: -1
+      # Every change of speed in stair mode is an S-curve (2026-10-20): up to
+      # this after every stop on a flight (the policy switch, a turn onto the
+      # carrot), and down to 0 for an in-place turn and for the brakes before
+      # each policy switch. The acceleration rises from 0, peaks at
+      # max_linear_accel halfway, and falls back to 0 as the speed arrives --
+      # 0 <-> 0.5 in 0.75 s -- instead of the clamp's constant-acceleration
+      # ramp, which starts and ends in a step. A floor that started the walk
+      # at this speed in one step was tried the same day and dropped for it.
       stair_linear_vel: 0.5
-      # The least vx of the walk on a flight (2026-10-20), so it starts at
-      # this instead of ramping up from rest at max_linear_accel after every
-      # stop -- the policy switch, a turn onto the carrot -- ~0.5 s under it
-      # each time. Equal to stair_linear_vel: the climb is one speed. Never
-      # above it (that stays the cap). Not the in-place turn's vx (0) nor the
-      # brakes for the switches, which must stop. 0 restores the ramp.
-      # Unmeasured on HIMLOCO, as stair_linear_vel is.
-      stair_min_linear_vel: 0.5
       # 0.4 -> 0.6 (2026-10-20). 0.4 was RPP 3D's, for the inside treads of
       # dp1f_1012's spiral (radius ~1.3 m), but a single flight is a straight
       # stair link now (Octo3D, 2026-10-19), with no turn to cut. At 0.4 the
