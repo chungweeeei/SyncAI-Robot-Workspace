@@ -275,15 +275,25 @@ bool MPPIController::rotateToGoalHeading(
   // Latched like the stateful goal checker: a quadruped turning in place
   // drifts a few centimetres, and handing a robot that drifted out of the
   // tolerance back to the optimizer would restart the tug of war. The goal is
-  // the end of the path MPPI is tracking (the pruned path's last pose, as for
-  // its own goal critics), which is also the goal checker's end pose.
+  // the critics' (PathHandler::transformedGoal(), 2026-10-20): the end of the
+  // path MPPI tracks, and only while the pruned path reaches it -- it was the
+  // pruned path's last pose, which a hairpin can bring within the tolerance
+  // mid-path. It is also the goal checker's end pose.
   if (final_rotation_wz_ <= 0.0 || goal_checker == nullptr) {
     return false;
   }
 
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
-  const nav_msgs::msg::Path plan = path_handler_.transformPath(robot_pose);
-  const geometry_msgs::msg::Pose & goal = plan.poses.back().pose;
+  path_handler_.transformPath(robot_pose);
+  const std::optional<geometry_msgs::msg::Pose> & goal_in_view = path_handler_.transformedGoal();
+  if (!goal_in_view) {
+    // Out of view is not near. A latched turn cannot get here -- the robot
+    // stands on the goal, inside the costmap -- short of a new path, and
+    // setPlan() drops the latch for that.
+    rotating_to_goal_ = false;
+    return false;
+  }
+  const geometry_msgs::msg::Pose & goal = *goal_in_view;
 
   if (!rotating_to_goal_) {
     geometry_msgs::msg::Pose pose_tolerance;
@@ -405,9 +415,15 @@ bool MPPIController::approachGoal(
   }
 
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
-  // Same goal as the final rotation's: the end of the path MPPI tracks.
-  const nav_msgs::msg::Path plan = path_handler_.transformPath(robot_pose);
-  const geometry_msgs::msg::Pose & goal = plan.poses.back().pose;
+  // Same goal as the final rotation's and the critics': the end of the path
+  // MPPI tracks, while the pruned path reaches it.
+  path_handler_.transformPath(robot_pose);
+  const std::optional<geometry_msgs::msg::Pose> & goal_in_view = path_handler_.transformedGoal();
+  if (!goal_in_view) {
+    approaching_goal_ = false;
+    return false;
+  }
+  const geometry_msgs::msg::Pose & goal = *goal_in_view;
   const double x = robot_pose.pose.position.x;
   const double y = robot_pose.pose.position.y;
   const double yaw = tf2::getYaw(robot_pose.pose.orientation);
@@ -723,8 +739,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
   syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
 
-  geometry_msgs::msg::TwistStamped cmd =
-    optimizer_.evalControl(robot_pose, robot_speed, transformed_plan, goal_checker);
+  geometry_msgs::msg::TwistStamped cmd = optimizer_.evalControl(
+    robot_pose, robot_speed, transformed_plan, path_handler_.transformedGoal(), goal_checker);
 
 #ifdef BENCHMARK_TESTING
   auto end = std::chrono::system_clock::now();

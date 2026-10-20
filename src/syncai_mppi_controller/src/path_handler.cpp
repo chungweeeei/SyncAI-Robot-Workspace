@@ -165,6 +165,17 @@ nav_msgs::msg::Path PathHandler::transformPath(
     transformToGlobalPlanFrame(robot_pose);
   auto [transformed_plan, lower_bound] = getGlobalPlanConsideringBoundsInCostmapFrame(global_pose);
 
+  // The goal is in view when the transformed plan holds every pose from the
+  // robot's to the last one, i.e. neither prune_distance nor the costmap's
+  // edge cut it short (transformedGoal()). Read before prunePlan(), which
+  // invalidates lower_bound.
+  const auto poses_to_goal =
+    static_cast<size_t>(std::distance(lower_bound, global_plan_up_to_inversion_.poses.end()));
+  transformed_goal_.reset();
+  if (!transformed_plan.poses.empty() && transformed_plan.poses.size() == poses_to_goal) {
+    transformed_goal_ = transformed_plan.poses.back().pose;
+  }
+
   prunePlan(global_plan_up_to_inversion_, lower_bound);
 
   if (enforce_path_inversion_ && inversion_locale_ != 0u) {
@@ -214,6 +225,7 @@ void PathHandler::setPath(const nav_msgs::msg::Path & plan)
 {
   global_plan_ = plan;
   global_plan_up_to_inversion_ = global_plan_;
+  transformed_goal_.reset();
   plan_has_height_ = syncai_util::pathHasHeight(plan);
   if (enforce_path_inversion_) {
     inversion_locale_ = utils::removePosesAfterFirstInversion(global_plan_up_to_inversion_);

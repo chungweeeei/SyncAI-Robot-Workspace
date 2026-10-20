@@ -379,8 +379,20 @@
       wz_std: 0.4
       temperature: 0.3
       gamma: 0.015
-      # Path kept ahead of the robot; must stay inside the local costmap too.
-      prune_distance: 1.5
+      # Path kept ahead of the robot, measured along it; the path handler
+      # also cuts it where it leaves the local costmap, so the window's 2 m
+      # half-width caps it on a straight run. This is MPPI's lookahead.
+      # 1.5 -> 2.0 (2026-10-20): it has to hold the horizon (1.28 m at
+      # vx_max) plus PathFollowCritic's carrot (5 points, 0.5 m on Octo3D's
+      # path), which 1.5 clamped to the path's end at cruise. It also has to
+      # reach past the largest threshold_to_consider (1.4 m), because the
+      # critics see the goal only once this path reaches it
+      # (CriticData::goal): shorter, and GoalCritic would start later than
+      # its threshold says. Until the same day the critics took this path's
+      # last pose for the goal, as Humble does, and at 1.5 a 90 deg corner
+      # brought it within 1.4 m mid-path (GoalCritic on, PathFollowCritic
+      # off, the corner cut toward it); 2.0 was first raised for that.
+      prune_distance: 2.0
       transform_tolerance: 0.2
       # Same reach as RPP's max_robot_pose_search_dist: a path that loops back
       # near itself must not snap to its later leg.

@@ -36,14 +36,16 @@ void GoalAngleCritic::initialize()
 
 void GoalAngleCritic::score(CriticData & data)
 {
-  if (!enabled_ || !utils::withinPositionGoalTolerance(
-      threshold_to_consider_, data.state.pose.pose, data.path))
-  {
+  if (
+    !enabled_ ||
+    !utils::withinPositionGoalTolerance(threshold_to_consider_, data.state.pose.pose, data.goal)) {
     return;
   }
 
-  const auto goal_idx = data.path.x.shape(0) - 1;
-  const float goal_yaw = data.path.yaws(goal_idx);
+  // The navigation goal's heading (CriticData::goal), not the pruned path's
+  // last pose's -- the two are one pose whenever the tolerance test above
+  // passes, which needs the goal in view.
+  const float goal_yaw = tf2::getYaw(data.goal->orientation);
 
   auto angular_distances =
     xt::eval(xt::fabs(utils::shortest_angular_distance(data.trajectories.yaws, goal_yaw)));

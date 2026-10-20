@@ -98,6 +98,23 @@ public:
   size_t remainingPoses() const { return global_plan_up_to_inversion_.poses.size(); }
 
   /**
+    * @brief The goal -- the last pose of the path being tracked (the
+    * inversion point while enforce_path_inversion cuts it there) -- in the
+    * costmap frame, as of the last transformPath(), or nullopt when the path
+    * that call returned stops short of it: pruned at prune_distance, or cut at
+    * the local costmap's edge. Not the pruned path's last pose, which Humble
+    * took for the goal (see CriticData::goal); and not the goal at any
+    * distance either, as later nav2 passes it, because the critics' and the
+    * controller's tests are planar and straight-line: the goal on the floor
+    * above, or behind a wall, can be 1 m away in x / y and 30 m along the
+    * route, while one in view is at most prune_distance along it.
+    */
+  const std::optional<geometry_msgs::msg::Pose> & transformedGoal() const
+  {
+    return transformed_goal_;
+  }
+
+  /**
    * @brief transform global plan to local applying constraints,
    * then prune global plan
    * @param robot_pose Pose of robot
@@ -161,6 +178,7 @@ protected:
 
   nav_msgs::msg::Path global_plan_;
   nav_msgs::msg::Path global_plan_up_to_inversion_;
+  std::optional<geometry_msgs::msg::Pose> transformed_goal_;
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 
   // Height-aware matching (syncai_util/path_height.hpp, 2026-10-20): a path
