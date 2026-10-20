@@ -96,6 +96,13 @@ src/third-party/*
 # and would silently swallow a future src/**/record/ package directory.
 /record/
 
+# Per-robot camera calibration: config/calibration/<robot_id>/camera0.yaml, the
+# intrinsics syncai_camera_feeder publishes as camera_info, plus the older
+# copies the procedure keeps beside it as backups. Every physical camera has its
+# own, so it is made on the robot (docs/lidar-camera-calibration.md) and never
+# committed.
+/config/calibration/
+
 # Materialised by `vcs import < dependencies.repos`, not committed -- the same
 # arrangement src/third-party/ has, for our own packages that live in their own
 # repositories. Each was tracked here until it moved out: syncai_common (28

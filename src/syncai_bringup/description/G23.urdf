@@ -498,32 +498,43 @@
 
     <!--!!!!!!!!!!!! Camera !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!-->
     <!--
-      Camera mount extrinsic, PROVISIONAL (2026-10-16): hand-measured on
-      robot01, not calibrated. Replace it with the chessboard lidar-camera
-      calibration result before projecting lidar points onto the image — a
-      tape measure is good to a cm or two and a few degrees, and 2 degrees is
-      already ~30 px at 2 m.
+      Camera mount extrinsic, robot01's (2026-10-20): translation hand-measured,
+      rotation calibrated. docs/lidar-camera-calibration.md has the procedure
+      and the evidence; this file is one URDF for the whole fleet, so a second
+      robot with a camera needs a per-robot override, which does not exist yet.
 
-      Measured: camera 7 cm ahead of and 6.5 cm below the lidar along the body
-      axes, facing straight ahead and level (not on the lidar's tilted mount).
+      xyz is the tape measure: camera 7 cm ahead of and 6.5 cm below the lidar
+      along the body axes, expressed in lidar_top, which is pitched 0.25 rad
+      down: R_y(0.25)^T * (0.07, 0, -0.065). Good to 1-2 cm. It was NOT taken
+      from the calibration on purpose: on these scenes (mostly 2-6 m away) the
+      camera height trades against its tilt, and the 6-DoF fits moved it 4-27
+      cm in directions that disagreed between bags, with the robot lying 1.2 m
+      in front of the camera mis-projected by ~100 px under the worst of them.
+
+      rpy is a rotation-only NID fit of the lidar intensity to the image
+      (scripts/calibration/nid_fit.py) on two static bags at different headings,
+      pos01 + pos02, with camera0.yaml's equidistant intrinsics of 2026-10-20.
+      Against the tape measure's level optical frame (-pi/2 + 0.25, 0, -pi/2) it
+      is pan right 0.81 deg (each bag alone 0.73 / 0.89), tilt down 0.18 deg,
+      roll -0.56 deg (tilt and roll are coupled and good to ~0.3 deg, ~3 px at
+      the image edge). It cut the image-edge vs lidar-edge residual from
+      9-11 px to 4-5 px horizontally on each bag with the other bag's rotation.
+      Refit it whenever camera0.yaml changes: the principal point and the pan
+      trade against each other.
+
       Parented to lidar_top rather than base_link so the camera stays rigidly
       tied to the lidar when the lidar mount extrinsic is re-measured; the
       calibration solves camera <-> lidar, not camera <-> body. lidar_top is the
       frame the raw cloud is stamped with, i.e. the "lidar" of that calibration,
       so its T_lidar_camera goes into this joint as it is, and not under
-      lidar_top_imu. Both numbers below are those measurements expressed in
-      lidar_top, which is pitched 0.25 rad down:
-        xyz = R_y(0.25)^T * (0.07, 0, -0.065)
-        rpy = the level optical frame (-pi/2, 0, -pi/2), with roll raised by
-              0.25 to cancel the lidar's pitch
-      camera_optical_frame follows the REP 103 optical convention (z forward,
-      x right, y down); it is the frame_id syncai_camera_feeder stamps on
-      image_raw/compressed.
+      lidar_top_imu. camera_optical_frame follows the REP 103 optical
+      convention (z forward, x right, y down); it is the frame_id
+      syncai_camera_feeder stamps on image_raw/compressed.
     -->
     <link name="camera_optical_frame"/>
     <joint name="camera_optical_joint" type="fixed">
         <parent link="lidar_top"/>
         <child link="camera_optical_frame"/>
-        <origin xyz="0.084 0.0 -0.046" rpy="-1.3208 0 -1.5708"/>
+        <origin xyz="0.084 0.0 -0.046" rpy="-1.3240 -0.0060 -1.5868"/>
     </joint>
 </robot>

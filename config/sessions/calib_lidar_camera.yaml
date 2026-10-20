@@ -16,6 +16,10 @@
 #                  before 2026-10-19 carry <robot_id>/laser)
 #   camera_feeder  image_raw/compressed + camera_info, same as the nav session
 #
+# What to record and how the bags are solved is docs/lidar-camera-calibration.md
+# (tools in scripts/calibration/): the extrinsic that goes into the URDF is a
+# rotation-only fit there, not the tool's own 6-DoF calibrate.
+#
 # The spec for RobotMode.CALIBRATION (3), built by switch_mode like the other
 # two -- and a mode for that reason: the livox driver binds fixed UDP ports and
 # the camera takes one opener, so this session must never run beside the nav
