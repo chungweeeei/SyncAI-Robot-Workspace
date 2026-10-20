@@ -879,7 +879,9 @@ the map catalogue, TF and the telemetry / point-cloud streams — went with
 not whole files, because ~90 of the tracked C++ files predate `.clang-format`
 and do not pass it; a wholesale reformat is its own commit, after which the
 check can widen. `build` (an **arm64** runner, because the robot is a Jetson):
-the `dev` image with its layers in the Actions cache, both `.repos` files
+the `dev` image, pulled from `ghcr.io/<repo>:dev-<Dockerfile sha256>` and
+built (Actions layer cache, then pushed) only when no run has built that
+Dockerfile yet (2026-10-20; fork PRs build without pushing), both `.repos` files
 imported, `scripts/build.sh` through `docker-compose.build.yml` (the same path
 a developer uses), then `test_wifi_manager.py`, then a **smoke test**
 (`.github/scripts/smoke_test.sh`): every pane of `start_nav.yaml`,
