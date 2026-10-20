@@ -299,6 +299,21 @@
       # bearing runs a wider arc than the one through the goal point (a few
       # mm wide at 0.25 rad and 0.2 m, well inside xy_goal_tolerance).
       approach_rotate_min_angle: 0.25
+      # Not upstream: the turn onto a new path (2026-10-20). From a stand
+      # (commanded |vx| under in_place_vx_max), once per path, a robot more
+      # than rotate_to_path_min_angle off the bearing of the first pose
+      # rotate_to_path_sampling_dist away turns in place at final_rotation_wz
+      # until within approach_rotate_min_angle, then the optimizer takes over
+      # -- RPP's rotate-to-heading, and nav2's rotation shim (whose defaults,
+      # 45 deg and 0.5 m, these are). The optimizer starts a goal from a zero
+      # control sequence and builds a turn up over ~0.5-1 s, under the gait's
+      # floor at first; on robot01 the turn onto the path started slow. The
+      # turn is checked against LETHAL footprints; blocked, or under 45 deg
+      # (where the optimizer turns while it walks off), it is the
+      # optimizer's. 0 disables it. Unmeasured on the robot: the controller
+      # log says "rotating in place onto it" when it opens.
+      rotate_to_path_min_angle: 0.785
+      rotate_to_path_sampling_dist: 0.5
       # Stair mode (2026-10-20): RPP 3D's, in MPPI, so one controller serves
       # a 2D map and a 3D one. Detection and the policy switch are
       # syncai_util::StairMode's (shared with FollowPathRPP3D), with the

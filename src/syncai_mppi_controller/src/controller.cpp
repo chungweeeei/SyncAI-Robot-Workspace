@@ -66,6 +66,10 @@ void MPPIController::initialize(
   // over to the other.
   getParam(approach_dist_, "approach_dist", 0.0);
   getParam(approach_rotate_min_angle_, "approach_rotate_min_angle", 0.25);
+  // Not upstream; see rotateToPath(). rotate_to_path_min_angle <= 0 disables
+  // it, and so does final_rotation_wz <= 0: it turns at that rate.
+  getParam(rotate_to_path_min_angle_, "rotate_to_path_min_angle", 0.0);
+  getParam(rotate_to_path_sampling_dist_, "rotate_to_path_sampling_dist", 0.5);
   // Not upstream; see climbStairs(). The detection and switch parameters
   // (use_stair_mode, stair_min_rise, ...) are StairMode's, declared under this
   // plugin's name; these two are the climb's.
@@ -107,6 +111,9 @@ void MPPIController::reset()
   last_cmd_vel_ = geometry_msgs::msg::Twist();
   rotating_to_goal_ = false;
   approaching_goal_ = false;
+  // A turn onto the path is dropped, not the check: after a cycle without a
+  // robot pose the next one looks again. A new goal's setPlan() follows.
+  rotating_to_path_ = false;
   // Stair mode's on_stairs survives (it is the policy the gait controller is
   // on); a half-done switch is settled or dropped (StairMode::reset()).
   stair_mode_.reset();
@@ -139,6 +146,11 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
     // whose way has become blocked drops its latch and falls through to the
     // optimizer.
     if (approaching_goal_ && approachGoal(robot_pose, goal_checker, cmd)) {
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
+    // A new path's start, from a stand: onto the path first, as RPP does.
+    if (rotateToPath(robot_pose, cmd)) {
       last_cmd_vel_ = cmd.twist;
       return cmd;
     }
@@ -355,6 +367,88 @@ void MPPIController::rotateInPlace(double angle, double & vx, double & wz) const
     const double dv = max_linear_accel_ * control_duration_;
     vx = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
   }
+}
+
+bool MPPIController::rotateToPath(
+  const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd)
+{
+  // Not upstream (2026-10-20): a new path's start is not left to the
+  // optimizer when the robot faces away from it. The optimizer starts each
+  // goal from a zero control sequence and moves it once per cycle, so a turn
+  // from a stand builds up over ~0.5-1 s, under the gait's floor at first
+  // (applyTurnFloor() holds it at in_place_wz_min): in a model of this
+  // update and the shipped critics, |wz| was 0.31-0.48 rad/s 0.25 s in, and
+  // a start 150 deg off was still not aligned after 4 s. This is RPP's
+  // rotate-to-heading (nav2's rotation shim does the same for MPPI): over
+  // rotate_to_path_min_angle off the bearing of the first pose
+  // rotate_to_path_sampling_dist away, turn in place at final_rotation_wz
+  // (rotateInPlace(), ramped at max_angular_accel) until within
+  // approach_rotate_min_angle -- RPP's rotate_to_heading_min_angle -- and
+  // hand over to the optimizer, which is reset for it.
+  //
+  // Once per path (setPlan()), and only from a stand (commanded |vx| under
+  // in_place_vx_max): a replan reaching a robot at speed is the optimizer's,
+  // as before, because the turn's ramp-down of vx is not collision-checked.
+  // The turn itself is checked against LETHAL footprints, as the direct
+  // approach's is, and a blocked turn is left to the optimizer.
+  if (!rotate_to_path_pending_) {
+    return false;
+  }
+  if (
+    rotate_to_path_min_angle_ <= 0.0 || final_rotation_wz_ <= 0.0 ||
+    (!rotating_to_path_ && std::fabs(last_cmd_vel_.linear.x) >= in_place_vx_max_)) {
+    rotate_to_path_pending_ = false;
+    return false;
+  }
+
+  std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
+  const nav_msgs::msg::Path plan = path_handler_.transformPath(robot_pose);
+  const double x = robot_pose.pose.position.x;
+  const double y = robot_pose.pose.position.y;
+  const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+  const auto target = std::find_if(
+    plan.poses.begin(), plan.poses.end(), [&](const geometry_msgs::msg::PoseStamped & ps) {
+      return std::hypot(ps.pose.position.x - x, ps.pose.position.y - y) >=
+             rotate_to_path_sampling_dist_;
+    });
+  // No pose that far in view: the goal is close, which is the final rotation's
+  // and the direct approach's.
+  double bearing = 0.0;
+  if (target != plan.poses.end()) {
+    bearing = angles::shortest_angular_distance(
+      yaw, std::atan2(target->pose.position.y - y, target->pose.position.x - x));
+  }
+  const double limit = rotating_to_path_ ? approach_rotate_min_angle_ : rotate_to_path_min_angle_;
+  if (target == plan.poses.end() || std::fabs(bearing) <= limit) {
+    if (rotating_to_path_) {
+      RCLCPP_INFO(logger_, "Onto the path (%+.2f rad off): handing over to the optimizer", bearing);
+    }
+    rotate_to_path_pending_ = false;
+    rotating_to_path_ = false;
+    return false;
+  }
+  if (isApproachBlocked(x, y, yaw, 0.0, bearing)) {
+    RCLCPP_INFO(
+      logger_, "Turning onto the path (%+.2f rad) is blocked: leaving it to the optimizer",
+      bearing);
+    rotate_to_path_pending_ = false;
+    rotating_to_path_ = false;
+    return false;
+  }
+  if (!rotating_to_path_) {
+    rotating_to_path_ = true;
+    optimizer_.reset();
+    RCLCPP_INFO(logger_, "New path %+.2f rad off the heading: rotating in place onto it", bearing);
+  }
+  // As in rotateToGoalHeading(): the optimizer is not running, so keep its
+  // reset_period from zeroing the clamp baseline on the hand-back.
+  last_time_called_ = clock_->now();
+
+  double vx = 0.0;
+  double wz = 0.0;
+  rotateInPlace(bearing, vx, wz);
+  cmd = utils::toTwistStamped(vx, wz, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
+  return true;
 }
 
 bool MPPIController::approachGoal(
@@ -807,6 +901,9 @@ void MPPIController::setPlan(const nav_msgs::msg::Path & path)
   // direct approach's, whose goal may have moved with the path.
   rotating_to_goal_ = false;
   approaching_goal_ = false;
+  // Every new path is checked once at its start (rotateToPath()).
+  rotate_to_path_pending_ = true;
+  rotating_to_path_ = false;
 }
 
 void MPPIController::setSpeedLimit(const double & speed_limit, const bool & percentage)

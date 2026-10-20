@@ -157,6 +157,16 @@ protected:
     geometry_msgs::msg::TwistStamped & cmd);
 
   /**
+    * @brief From a stand at a new path's start, turn in place onto the path
+    * before the optimizer runs (RPP's rotate-to-heading)
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param cmd Filled with the turn when this returns true, else untouched
+    * @return Whether this cycle is the turn (the optimizer is skipped)
+    */
+  bool rotateToPath(
+    const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
     * @brief On a path with heights, brake for the policy switch and climb a
     * stair link with a short pure-pursuit carrot instead of running the optimizer
     * @param robot_pose Robot pose in the costmap's global frame
@@ -252,6 +262,13 @@ protected:
   // when the final rotation takes over, when the way onto the goal is blocked,
   // and by setPlan() / reset() (see approachGoal()).
   bool approaching_goal_{false};
+  double rotate_to_path_min_angle_{0.0};
+  double rotate_to_path_sampling_dist_{0.5};
+  // Set by setPlan(): the new path's start is still to be checked. Cleared
+  // once it has been -- aligned, moving, blocked, or turned onto -- with
+  // rotating_to_path_ latching the turn in between (see rotateToPath()).
+  bool rotate_to_path_pending_{false};
+  bool rotating_to_path_{false};
   // Stairs (2026-10-20): the detection, policy switch and latched report are
   // syncai_util::StairMode's, shared with RPP 3D; the climb is climbStairs()'s.
   syncai_util::StairMode stair_mode_;
