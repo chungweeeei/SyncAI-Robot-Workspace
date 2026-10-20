@@ -315,6 +315,39 @@
       # of blocked floor the footprint rule leaves before the first riser and
       # after the last. A landing longer than this ends the flight.
       stair_straight_exit_reach: 0.6
+      # A multi-flight stretch (dp's switchback stairwell) is laid as flights
+      # and landing corners read off the map (2026-10-21), not as the walk:
+      # the walk's height profile gives the landings, each flight's direction
+      # comes from the well's wall (the straighter side of the cross-sections;
+      # all flights of one well share one orientation), its axis from the
+      # cross-sections' middle, and consecutive flights are joined on the
+      # landing with explicit corners -- one at the axes' crossing for an L,
+      # two (0.5-1 m out, across, in) for a U -- plus a 0.5 m lead-in and
+      # lead-out. Nothing on it is smoothed. dp: 4 flights 1.3-1.6 m wide,
+      # three U landings, 6 turns, every flight within 0.01 m of its axis.
+      # false = the walked link, centred below when stair_centre is on.
+      stair_flights: true
+      # A level run of the walk at least this long (m) is a landing.
+      stair_flights_landing_min_len: 0.5
+      # A segment of the walk flatter than this is level (dp's flights ~30
+      # deg, its landings under 5).
+      stair_flights_landing_slope_deg: 15.0
+      # The straight run before the first foot and past the last head (m).
+      stair_flights_lead: 0.5
+      # A walked link (a switchback stairwell) is centred in the well
+      # (2026-10-20): at every point the cross-section square to the walk is
+      # measured on the surface map -- columns holding a surface within
+      # stair_centre_dz of the point's tread, until a wall or the drop to the
+      # neighbouring flight -- and the point moves to its middle, the shifts
+      # median-filtered and smoothed along the link. A side longer than
+      # stair_centre_max_half_width is open floor, and the point stays. dp's
+      # stairwell: 58 of 66 points moved, mean 0.09 m, at most 0.30 m (the
+      # second flight, walked along its inner rail). false = the operator's
+      # own line.
+      stair_centre: true
+      stair_centre_dz: 0.25
+      stair_centre_max_half_width: 1.5
+      stair_centre_max_shift: 0.6
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the

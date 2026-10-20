@@ -131,6 +131,146 @@ void smoothPolyline(std::vector<Waypoint> & p, int passes)
   }
 }
 
+// How far the stairwell's cross-section reaches from (x, y) along (nx, ny),
+// at the tread height z (see the header): the distance to the last column
+// that still holds a usable surface within dz of z. Columns with no surface
+// at all are gaps -- treads the lidar never saw, common on a flight -- and
+// up to two in a row are crossed when a usable column follows. Returns
+// max_reach (or more) when the side never ends.
+double sideReach(
+  const SurfaceMap & m, double x, double y, double z, double nx, double ny, double dz,
+  double max_reach, bool * wall = nullptr)
+{
+  constexpr int kMaxGap = 2;
+  double reach = 0.0;
+  int gap = 0;
+  if (wall) {
+    *wall = false;
+  }
+  for (double s = m.res; s <= max_reach + 1e-9; s += m.res) {
+    const int ix = m.ixOf(x + s * nx), iy = m.iyOf(y + s * ny);
+    if (!m.inGrid(ix, iy)) {
+      break;
+    }
+    const uint32_t c = m.col(ix, iy);
+    if (m.col_begin[c] == m.col_begin[c + 1]) {
+      if (++gap > kMaxGap) {
+        break;
+      }
+      continue;
+    }
+    if (m.surfaceNear(c, z, dz) == kNoCell) {
+      if (wall) {
+        *wall = true;  // something observed here, and no floor at this height
+      }
+      break;  // a wall, a rail or the drop to the next flight
+    }
+    gap = 0;
+    reach = s;
+  }
+  return gap > kMaxGap || reach + m.res > max_reach ? std::max(reach, max_reach) : reach;
+}
+
+// Moves the interior points of a walked link to the middle of the
+// stairwell's cross-section (see the header) and records what it did.
+void centreWalk(const SurfaceMap & m, const StairLinkParams & p, StairLink & link)
+{
+  // A cross-section narrower than the robot is a misread (a side ending on
+  // the next tread at once), not a stair the robot walked up.
+  constexpr double kMinWidth = 0.5;
+  constexpr size_t kMedianHalf = 3;
+  std::vector<Waypoint> & pts = link.pts;
+  const size_t n = pts.size();
+  if (n < 3) {
+    return;
+  }
+  // Signed shift along the left normal per point, 0 where not confined.
+  std::vector<double> shift(n, 0.0), nxs(n, 0.0), nys(n, 0.0);
+  std::vector<bool> confined(n, false);
+  double min_width = 0.0;
+  for (size_t i = 1; i + 1 < n; ++i) {
+    double tx = pts[i + 1].x - pts[i - 1].x, ty = pts[i + 1].y - pts[i - 1].y;
+    const double t = std::hypot(tx, ty);
+    if (t < 1e-6) {
+      continue;
+    }
+    tx /= t;
+    ty /= t;
+    nxs[i] = -ty;
+    nys[i] = tx;
+    // The tread under the point: the walk's ground estimate (pose z -
+    // lidar_height) pitches with the body on a flight, the surface does not.
+    double z = pts[i].z;
+    const int ix = m.ixOf(pts[i].x), iy = m.iyOf(pts[i].y);
+    if (m.inGrid(ix, iy)) {
+      const CellId c = m.surfaceNear(m.col(ix, iy), z, p.anchor_z_window);
+      if (c != kNoCell) {
+        z = m.zTop(c);
+      }
+    }
+    const double left =
+      sideReach(m, pts[i].x, pts[i].y, z, nxs[i], nys[i], p.centre_dz, p.centre_max_half_width);
+    const double right =
+      sideReach(m, pts[i].x, pts[i].y, z, -nxs[i], -nys[i], p.centre_dz, p.centre_max_half_width);
+    const double width = left + right + m.res;
+    if (left >= p.centre_max_half_width || right >= p.centre_max_half_width || width < kMinWidth) {
+      continue;
+    }
+    confined[i] = true;
+    shift[i] = (left - right) / 2.0;
+    if (min_width == 0.0 || width < min_width) {
+      min_width = width;
+    }
+  }
+  // One cross-section is noisy -- the walk crosses the risers at an angle,
+  // so a side may end on the next tread up, and the ground estimate the
+  // tread is looked up from pitches with the body -- so each confined
+  // point takes the median of the confined points within kMedianHalf of it,
+  // then the shifts are smoothed along the link (an unconfined point counts
+  // as 0, so a shift fades out towards the floors instead of stopping dead).
+  {
+    std::vector<double> med(n, 0.0), win;
+    for (size_t i = 1; i + 1 < n; ++i) {
+      if (!confined[i]) {
+        continue;
+      }
+      win.clear();
+      const size_t lo = i > kMedianHalf ? i - kMedianHalf : 0;
+      for (size_t j = lo; j <= std::min(n - 1, i + kMedianHalf); ++j) {
+        if (confined[j]) {
+          win.push_back(shift[j]);
+        }
+      }
+      std::nth_element(win.begin(), win.begin() + win.size() / 2, win.end());
+      med[i] = std::clamp(win[win.size() / 2], -p.centre_max_shift, p.centre_max_shift);
+    }
+    shift.swap(med);
+  }
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<double> q(shift);
+    for (size_t i = 1; i + 1 < n; ++i) {
+      q[i] = (shift[i - 1] + shift[i] + shift[i + 1]) / 3.0;
+    }
+    shift.swap(q);
+  }
+  double sum = 0.0, max_abs = 0.0;
+  size_t moved = 0;
+  for (size_t i = 1; i + 1 < n; ++i) {
+    if (!confined[i] && std::fabs(shift[i]) < 1e-3) {
+      continue;
+    }
+    pts[i].x += shift[i] * nxs[i];
+    pts[i].y += shift[i] * nys[i];
+    ++moved;
+    sum += std::fabs(shift[i]);
+    max_abs = std::max(max_abs, std::fabs(shift[i]));
+  }
+  link.centred = moved;
+  link.centre_mean_shift = moved ? sum / moved : 0.0;
+  link.centre_max_shift = max_abs;
+  link.centre_min_width = min_width;
+}
+
 uint32_t findRoot(std::vector<uint32_t> & parent, uint32_t i)
 {
   while (parent[i] != i) {
@@ -326,6 +466,558 @@ void addLink(const SurfaceMap & m, StairLink link, StairLinks & out)
   out.links.push_back(std::move(link));
 }
 
+// ---- Flights and landing corners (2026-10-21; see the header) ----
+
+// The traversable cell of component comp nearest (x, y) within radius, at
+// about z. kNoCell when there is none.
+CellId nearestTraversable(
+  const SurfaceMap & m, double x, double y, double z, uint32_t comp, double radius)
+{
+  CellId best = kNoCell;
+  double bd = 1e300;
+  for (int iy = std::max(0, m.iyOf(y - radius)); iy <= std::min(m.ny - 1, m.iyOf(y + radius));
+       ++iy) {
+    for (int ix = std::max(0, m.ixOf(x - radius)); ix <= std::min(m.nx - 1, m.ixOf(x + radius));
+         ++ix) {
+      const double d = std::hypot(m.cx(ix) - x, m.cy(iy) - y);
+      if (d > radius || d >= bd) {
+        continue;
+      }
+      const uint32_t c = m.col(ix, iy);
+      for (uint32_t i = m.col_begin[c], e = m.col_begin[c + 1]; i < e; ++i) {
+        if (m.traversable(i) && m.cells[i].component == comp && std::fabs(m.zTop(i) - z) <= 0.5) {
+          best = i;
+          bd = d;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+// Follows the surface from (x, y, z) along (dx, dy), column by column within
+// one step of the last height (up to two unseen columns in a row crossed),
+// until it has run level for kLevelRun at about z_target: the landing at a
+// flight's foot or head. `reached` is where that level run began -- the
+// landing's edge. A tread is 0.25-0.3 m deep, so a 0.45 m run is a landing;
+// the height guard keeps a deep tread mid-flight from passing. False when
+// the surface is lost or max_len runs out first.
+bool marchToHeight(
+  const SurfaceMap & m, double x, double y, double z, double dx, double dy, double z_target,
+  double max_len, Waypoint & reached)
+{
+  constexpr double kLevelRun = 0.45;
+  const double step_tol = (m.step_cells + 1) * m.res + 1e-6;
+  uint32_t last_col = ~uint32_t(0);
+  int gap = 0;
+  double level = 0.0;
+  Waypoint level_start = {x, y, z};
+  for (double s = 0.0; s <= max_len + 1e-9; s += m.res) {
+    const double px = x + s * dx, py = y + s * dy;
+    const int ix = m.ixOf(px), iy = m.iyOf(py);
+    if (!m.inGrid(ix, iy)) {
+      return false;
+    }
+    const uint32_t c = m.col(ix, iy);
+    if (c == last_col) {
+      continue;
+    }
+    last_col = c;
+    if (m.col_begin[c] == m.col_begin[c + 1]) {
+      if (++gap > 2) {
+        return false;
+      }
+      continue;
+    }
+    const CellId i = m.surfaceNear(c, z, step_tol);
+    if (i == kNoCell) {
+      return false;
+    }
+    gap = 0;
+    const double zs = m.zTop(i);
+    if (std::fabs(zs - z) > m.res / 2) {
+      level = 0.0;
+      level_start = {px, py, zs};
+    } else {
+      level += m.res;
+    }
+    z = zs;
+    if (level >= kLevelRun - 1e-9 && std::fabs(z - z_target) <= 0.25) {
+      reached = level_start;
+      return true;
+    }
+  }
+  return false;
+}
+
+double median(std::vector<double> v)
+{
+  std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+  return v[v.size() / 2];
+}
+
+struct Landing
+{
+  size_t first, last;  // walk points
+  double z, cx, cy;    // median height, centroid
+};
+
+struct Flight
+{
+  size_t first, last;   // walk points (the landings' edge points included)
+  double ux, uy;        // uphill (fitted)
+  double dx, dy;        // travel direction along the walk (+-u)
+  Waypoint foot, head;  // in travel order: on the landing left, on the landing reached
+  double width = 0.0;   // median cross-section
+};
+
+// The walk's level runs and rises, as landings: the floors first and last.
+std::vector<Landing> landings(
+  const std::vector<Waypoint> & w, double min_len, double slope_deg, double min_rise)
+{
+  const size_t n = w.size();
+  const double tan_lvl = std::tan(slope_deg * M_PI / 180.0);
+  // level[i]: segment i -> i + 1 is level
+  std::vector<bool> level(n - 1);
+  for (size_t i = 0; i + 1 < n; ++i) {
+    const double ds = std::hypot(w[i + 1].x - w[i].x, w[i + 1].y - w[i].y);
+    level[i] = std::fabs(w[i + 1].z - w[i].z) <= tan_lvl * std::max(ds, 0.05);
+  }
+  std::vector<Landing> out;
+  size_t i = 0;
+  while (i < n) {
+    size_t j = i;
+    double len = 0.0;
+    while (j + 1 < n && level[j]) {
+      len += std::hypot(w[j + 1].x - w[j].x, w[j + 1].y - w[j].y);
+      ++j;
+    }
+    const bool floor = i == 0 || j == n - 1;
+    if (floor || len >= min_len) {
+      std::vector<double> zs;
+      double cx = 0, cy = 0;
+      for (size_t k = i; k <= j; ++k) {
+        zs.push_back(w[k].z);
+        cx += w[k].x;
+        cy += w[k].y;
+      }
+      const double cnt = static_cast<double>(j - i + 1);
+      out.push_back({i, j, median(zs), cx / cnt, cy / cnt});
+    }
+    i = j + 1;
+  }
+  // Two landings less than a flight apart are one landing (a wide tread, a
+  // pause on the stair).
+  for (size_t k = 1; k < out.size();) {
+    if (std::fabs(out[k].z - out[k - 1].z) < min_rise) {
+      Landing & a = out[k - 1];
+      const Landing & b = out[k];
+      std::vector<double> zs;
+      double cx = 0, cy = 0;
+      for (size_t q = a.first; q <= b.last; ++q) {
+        zs.push_back(w[q].z);
+        cx += w[q].x;
+        cy += w[q].y;
+      }
+      const double cnt = static_cast<double>(b.last - a.first + 1);
+      a = {a.first, b.last, median(zs), cx / cnt, cy / cnt};
+      out.erase(out.begin() + static_cast<std::ptrdiff_t>(k));
+    } else {
+      ++k;
+    }
+  }
+  return out;
+}
+
+// Lays the walked stretch (walk: a's centre, the keyframes, b's centre,
+// loops cut) as flights and landing corners. Returns false, with why, when
+// the geometry cannot be read; the caller keeps the walked link then.
+bool flightLinks(
+  const SurfaceMap & m, const std::vector<Waypoint> & walk, CellId a, CellId b, size_t ka,
+  size_t kb, const StairLinkParams & p, StairLinks & out, std::string & why)
+{
+  if (walk.size() < 4) {
+    why = "too few points to read a profile from";
+    return false;
+  }
+  const std::vector<Landing> L =
+    landings(walk, p.flights_landing_min_len, p.flights_landing_slope_deg, p.min_rise);
+  if (L.size() < 2) {
+    why = "no rise between two level runs of the walk";
+    return false;
+  }
+  const double half_w = p.centre_max_half_width;
+  // The surface under a walk point, else its own ground estimate.
+  const auto surface_z = [&](const Waypoint & w) {
+    const int ix = m.ixOf(w.x), iy = m.iyOf(w.y);
+    if (m.inGrid(ix, iy)) {
+      const CellId c = m.surfaceNear(m.col(ix, iy), w.z, p.anchor_z_window);
+      if (c != kNoCell) {
+        return m.zTop(c);
+      }
+    }
+    return w.z;
+  };
+  // The line through a set of points (total least squares), robust to a few
+  // strays: fitted, the points more than 0.15 m off dropped, fitted again.
+  // Returns the RMS residual, or a negative number with fewer than three
+  // points left. (ux, uy) is oriented along the direction given.
+  const auto fitLine =
+    [](std::vector<Waypoint> pts, double & ux, double & uy, double & cx, double & cy) {
+      double rms = -1.0;
+      for (int pass = 0; pass < 2; ++pass) {
+        if (pts.size() < 3) {
+          return -1.0;
+        }
+        double mx = 0, my = 0;
+        for (const Waypoint & q : pts) {
+          mx += q.x;
+          my += q.y;
+        }
+        mx /= pts.size();
+        my /= pts.size();
+        double sxx = 0, syy = 0, sxy = 0;
+        for (const Waypoint & q : pts) {
+          sxx += (q.x - mx) * (q.x - mx);
+          syy += (q.y - my) * (q.y - my);
+          sxy += (q.x - mx) * (q.y - my);
+        }
+        const double theta = 0.5 * std::atan2(2 * sxy, sxx - syy);
+        double vx = std::cos(theta), vy = std::sin(theta);
+        if (vx * ux + vy * uy < 0) {
+          vx = -vx;
+          vy = -vy;
+        }
+        std::vector<Waypoint> kept;
+        double sq = 0;
+        for (const Waypoint & q : pts) {
+          const double off = (q.x - mx) * -vy + (q.y - my) * vx;
+          sq += off * off;
+          if (std::fabs(off) <= 0.15) {
+            kept.push_back(q);
+          }
+        }
+        rms = std::sqrt(sq / pts.size());
+        ux = vx;
+        uy = vy;
+        cx = mx;
+        cy = my;
+        if (kept.size() == pts.size()) {
+          break;
+        }
+        pts.swap(kept);
+      }
+      return rms;
+    };
+
+  // Pass 1: each flight's own direction. The walk's over the flight (held
+  // straight by the treads, unlike a walk across a landing), refined to the
+  // line through the points where the cross-sections square to it end on
+  // the straighter side: one side of a flight is the well's wall and its
+  // hits line up to a few centimetres, the other is the open well, the
+  // rail or the parallel flight at a near height, and its hits scatter
+  // (dp, flight 2: the wall side within 0.1 m of a line over 2 m, the well
+  // side spread 0.9 m). The plane fit a straight flight uses was tried
+  // first: on that flight it came out 17 deg off the walk and the wall,
+  // pulled by the parallel flight's surfaces inside its radius.
+  std::vector<Flight> F;
+  std::vector<double> dir_weight;
+  for (size_t j = 0; j + 1 < L.size(); ++j) {
+    Flight f;
+    f.first = L[j].last;
+    f.last = L[j + 1].first;
+    if (f.last <= f.first) {
+      why = "landings " + std::to_string(j) + " and " + std::to_string(j + 1) + " touch";
+      return false;
+    }
+    double dx = walk[f.last].x - walk[f.first].x, dy = walk[f.last].y - walk[f.first].y;
+    const double dlen = std::hypot(dx, dy);
+    if (dlen < 0.5) {
+      why = "flight " + std::to_string(j + 1) + ": shorter than 0.5 m of walk";
+      return false;
+    }
+    dx /= dlen;
+    dy /= dlen;
+    std::vector<Waypoint> left_hits, right_hits;
+    {
+      const double nx = -dy, ny = dx;
+      for (size_t i = f.first; i <= f.last; ++i) {
+        const double z = surface_z(walk[i]);
+        const double l = sideReach(m, walk[i].x, walk[i].y, z, nx, ny, p.centre_dz, half_w);
+        const double r = sideReach(m, walk[i].x, walk[i].y, z, -nx, -ny, p.centre_dz, half_w);
+        if (l < half_w) {
+          left_hits.push_back({walk[i].x + l * nx, walk[i].y + l * ny, z});
+        }
+        if (r < half_w) {
+          right_hits.push_back({walk[i].x - r * nx, walk[i].y - r * ny, z});
+        }
+      }
+    }
+    double lux = dx, luy = dy, lcx = 0, lcy = 0, rux = dx, ruy = dy, rcx = 0, rcy = 0;
+    const double lrms = fitLine(left_hits, lux, luy, lcx, lcy);
+    const double rrms = fitLine(right_hits, rux, ruy, rcx, rcy);
+    const double cos25 = std::cos(25.0 * M_PI / 180.0);
+    double weight = 1.0;  // the walk alone
+    if (lrms >= 0 && (rrms < 0 || lrms <= rrms) && lrms < 0.12 && lux * dx + luy * dy >= cos25) {
+      dx = lux;
+      dy = luy;
+      weight = 0.02 / std::max(lrms, 0.02) * left_hits.size();
+    } else if (rrms >= 0 && rrms < 0.12 && rux * dx + ruy * dy >= cos25) {
+      dx = rux;
+      dy = ruy;
+      weight = 0.02 / std::max(rrms, 0.02) * right_hits.size();
+    }
+    f.dx = dx;
+    f.dy = dy;
+    F.push_back(f);
+    dir_weight.push_back(weight);
+  }
+  // The flights of one stairwell are parallel or square to each other, so
+  // their directions are one orientation: the weighted circular mean of
+  // the estimates folded to a quarter turn. Each flight then takes the
+  // quarter-turn multiple nearest its own estimate -- on dp the four
+  // estimates ran 5-13 deg off the map's y axis and settle on one 9 deg.
+  {
+    double sx = 0, sy = 0;
+    for (size_t j = 0; j < F.size(); ++j) {
+      const double a4 = 4.0 * std::atan2(F[j].dy, F[j].dx);
+      sx += dir_weight[j] * std::cos(a4);
+      sy += dir_weight[j] * std::sin(a4);
+    }
+    const double grid = std::atan2(sy, sx) / 4.0;
+    for (Flight & f : F) {
+      const double own = std::atan2(f.dy, f.dx);
+      const double a = grid + std::round((own - grid) / (M_PI / 2)) * (M_PI / 2);
+      f.dx = std::cos(a);
+      f.dy = std::sin(a);
+    }
+  }
+
+  // Pass 2: each flight's centre axis, width, foot and head.
+  for (size_t j = 0; j < F.size(); ++j) {
+    Flight & f = F[j];
+    const double dx = f.dx, dy = f.dy;
+    const bool rising = L[j + 1].z > L[j].z;
+    f.ux = rising ? dx : -dx;
+    f.uy = rising ? dy : -dy;
+    // The axis: the walk's first point moved square to the direction by the
+    // median of the cross-sections' centring shifts, measured square to it.
+    const double nx = -dy, ny = dx;
+    const Waypoint & o = walk[f.first];
+    std::vector<double> perps, widths;
+    for (size_t i = f.first; i <= f.last; ++i) {
+      const double z = surface_z(walk[i]);
+      const double l = sideReach(m, walk[i].x, walk[i].y, z, nx, ny, p.centre_dz, half_w);
+      const double r = sideReach(m, walk[i].x, walk[i].y, z, -nx, -ny, p.centre_dz, half_w);
+      if (l >= half_w || r >= half_w || l + r + m.res < 0.5) {
+        continue;
+      }
+      perps.push_back((walk[i].x - o.x) * nx + (walk[i].y - o.y) * ny + (l - r) / 2.0);
+      widths.push_back(l + r + m.res);
+    }
+    if (perps.size() < 2) {
+      why = "flight " + std::to_string(j + 1) + ": fewer than two cross-sections of the well";
+      return false;
+    }
+    const double cx = o.x + median(perps) * nx, cy = o.y + median(perps) * ny;
+    f.width = median(widths);
+    // The flight's extent along the axis, from its walk points.
+    double s_min = 1e300, s_max = -1e300;
+    for (size_t i = f.first; i <= f.last; ++i) {
+      const double along = (walk[i].x - cx) * dx + (walk[i].y - cy) * dy;
+      s_min = std::min(s_min, along);
+      s_max = std::max(s_max, along);
+    }
+    const double s_mid = (s_min + s_max) / 2.0;
+    // The foot and head: where a march along the axis from the flight's
+    // middle, down and up, finds the surface level for a landing's worth
+    // at about the landings' heights -- an inner landing's median, a
+    // floor's local surface under the walk's edge point (the lower floor's
+    // median is taken over a corridor's length).
+    const double z_foot = j == 0 ? surface_z(walk[f.first]) : L[j].z;
+    const double z_head = j + 2 == L.size() ? surface_z(walk[f.last]) : L[j + 1].z;
+    const double mx = cx + s_mid * dx, my = cy + s_mid * dy;
+    double z_mid = (z_foot + z_head) / 2.0;
+    {
+      const int ix = m.ixOf(mx), iy = m.iyOf(my);
+      if (m.inGrid(ix, iy)) {
+        const CellId c = m.surfaceNear(m.col(ix, iy), z_mid, std::fabs(z_head - z_foot) / 2.0);
+        if (c != kNoCell) {
+          z_mid = m.zTop(c);
+        }
+      }
+    }
+    const double reach = (s_max - s_min) / 2.0 + 2.0;
+    if (!marchToHeight(m, mx, my, z_mid, -dx, -dy, z_foot, reach, f.foot)) {
+      f.foot = {cx + s_min * dx, cy + s_min * dy, z_foot};
+      out.notes.push_back(
+        "flight " + std::to_string(j + 1) +
+        ": its foot was not found on the map, the walk's first point on the axis stands in");
+    }
+    if (!marchToHeight(m, mx, my, z_mid, dx, dy, z_head, reach, f.head)) {
+      f.head = {cx + s_max * dx, cy + s_max * dy, z_head};
+      out.notes.push_back(
+        "flight " + std::to_string(j + 1) +
+        ": its head was not found on the map, the walk's last point on the axis stands in");
+    }
+  }
+
+  // The polyline: lead-in, flights, corners on the landings, lead-out.
+  StairLink link;
+  link.kf_a = ka;
+  link.kf_b = kb;
+  link.flights = true;
+  link.n_flights = F.size();
+  std::vector<Waypoint> & pts = link.pts;
+  char buf[400];
+  std::string shapes;
+  const Waypoint lead_in = {
+    F.front().foot.x - p.flights_lead * F.front().dx,
+    F.front().foot.y - p.flights_lead * F.front().dy, L.front().z};
+  const Waypoint lead_out = {
+    F.back().head.x + p.flights_lead * F.back().dx, F.back().head.y + p.flights_lead * F.back().dy,
+    L.back().z};
+  // The link's ends are re-anchored to the floor cells nearest the lead
+  // points, so the A* arrives in line with the first flight.
+  const uint32_t comp_a = m.cells[a].component, comp_b = m.cells[b].component;
+  CellId a2 = nearestTraversable(m, lead_in.x, lead_in.y, lead_in.z, comp_a, 1.0);
+  CellId b2 = nearestTraversable(m, lead_out.x, lead_out.y, lead_out.z, comp_b, 1.0);
+  link.a = a2 != kNoCell ? a2 : a;
+  link.b = b2 != kNoCell ? b2 : b;
+  double ex, ey;
+  m.cellXY(link.a, ex, ey);
+  pts.push_back({ex, ey, m.zTop(link.a)});
+  if (a2 == kNoCell) {
+    // No floor cell near the lead-in (the approach to dp's stair is a
+    // corridor the rules reject): keep the walk's floor points up to it,
+    // smoothed as a walked link is -- curves are fine on the floor.
+    std::vector<Waypoint> prefix;
+    for (size_t q = 0; q <= L.front().last; ++q) {
+      const double along = (walk[q].x - F.front().foot.x) * F.front().dx +
+                           (walk[q].y - F.front().foot.y) * F.front().dy;
+      if (along < -p.flights_lead - 0.2) {
+        prefix.push_back(walk[q]);
+      }
+    }
+    prefix.push_back(lead_in);
+    smoothPolyline(prefix, p.smooth_passes);
+    pts.insert(pts.end(), prefix.begin() + 1, prefix.end());
+  } else if (std::hypot(ex - lead_in.x, ey - lead_in.y) > 0.05) {
+    pts.push_back(lead_in);
+  }
+  for (size_t j = 0; j < F.size(); ++j) {
+    const Flight & f = F[j];
+    pts.push_back(f.foot);
+    pts.push_back(f.head);
+    if (j + 1 == F.size()) {
+      break;
+    }
+    const Flight & g = F[j + 1];
+    const double cosang = f.dx * g.dx + f.dy * g.dy;
+    const double z = L[j + 1].z;
+    if (cosang > std::cos(30.0 * M_PI / 180.0)) {
+      shapes += shapes.empty() ? "straight on" : ", straight on";
+      continue;  // head -> next foot, no turn
+    }
+    if (std::fabs(cosang) < std::cos(60.0 * M_PI / 180.0)) {
+      // An L: the corner is where the two axes meet.
+      const double den = f.dx * (-g.dy) - f.dy * (-g.dx);
+      const double rx = g.foot.x - f.head.x, ry = g.foot.y - f.head.y;
+      const double t = (rx * (-g.dy) - ry * (-g.dx)) / den;
+      const double u = (f.dx * ry - f.dy * rx) / den;
+      if (t < 0.0 || u > 0.0) {
+        why = "landing " + std::to_string(j + 1) +
+              ": the flights' axes meet behind the head or "
+              "past the next foot";
+        return false;
+      }
+      const Waypoint c = {f.head.x + t * f.dx, f.head.y + t * f.dy, z};
+      link.turns.push_back(pts.size());
+      pts.push_back(c);
+      std::snprintf(
+        buf, sizeof buf, "%sL (%.0f deg)", shapes.empty() ? "" : ", ",
+        std::acos(std::clamp(cosang, -1.0, 1.0)) * 180.0 / M_PI);
+      shapes += buf;
+      continue;
+    }
+    if (cosang < -std::cos(30.0 * M_PI / 180.0)) {
+      // A U: out to the landing's middle, across, and in. The depth comes
+      // from the walk -- where the operator turned, which is about the
+      // landing's middle -- because a landing is often not in the surface
+      // map at all (dp's first and third: seen only edge-on from the flights,
+      // never from above, so their columns are empty); the map's own depth
+      // is measured beside it for the logs when it is there.
+      const Landing & ld = L[j + 1];
+      std::vector<double> t1, t2;
+      for (size_t q = ld.first; q <= ld.last; ++q) {
+        t1.push_back((walk[q].x - f.head.x) * f.dx + (walk[q].y - f.head.y) * f.dy);
+        t2.push_back((g.foot.x - walk[q].x) * g.dx + (g.foot.y - walk[q].y) * g.dy);
+      }
+      bool w1 = false, w2 = false;
+      const double d1 = sideReach(m, f.head.x, f.head.y, z, f.dx, f.dy, p.centre_dz, 3.0, &w1);
+      const double d2 = sideReach(m, g.foot.x, g.foot.y, z, -g.dx, -g.dy, p.centre_dz, 3.0, &w2);
+      const double depth = w1 && w2 ? std::min(d1, d2) : w1 ? d1 : w2 ? d2 : -1.0;
+      // At least half a body out from the riser (the hind legs are 0.3 m
+      // behind the centre), at most a metre, and never past the middle of
+      // a landing the map does hold.
+      double c = std::clamp((median(t1) + median(t2)) / 2.0, 0.5, 1.0);
+      if (depth >= 0.6) {
+        c = std::min(c, std::max(depth / 2.0, 0.5));
+      }
+      link.turns.push_back(pts.size());
+      pts.push_back({f.head.x + c * f.dx, f.head.y + c * f.dy, z});
+      link.turns.push_back(pts.size());
+      pts.push_back({g.foot.x - c * g.dx, g.foot.y - c * g.dy, z});
+      if (depth < 0.6) {
+        std::snprintf(
+          buf, sizeof buf, "%sU (turns %.1f m out, from the walk; the landing is not in the map)",
+          shapes.empty() ? "" : ", ", c);
+      } else {
+        std::snprintf(
+          buf, sizeof buf, "%sU (turns %.1f m out; the map's landing is %.1f m deep)",
+          shapes.empty() ? "" : ", ", c, depth);
+      }
+      shapes += buf;
+      continue;
+    }
+    std::snprintf(
+      buf, sizeof buf, "landing %zu: the flights are %.0f deg apart, neither an L nor a U", j + 1,
+      std::acos(std::clamp(cosang, -1.0, 1.0)) * 180.0 / M_PI);
+    why = buf;
+    return false;
+  }
+  m.cellXY(link.b, ex, ey);
+  if (b2 == kNoCell) {
+    std::vector<Waypoint> suffix = {lead_out};
+    for (size_t q = L.back().first; q < walk.size() - 1; ++q) {
+      const double along =
+        (walk[q].x - F.back().head.x) * F.back().dx + (walk[q].y - F.back().head.y) * F.back().dy;
+      if (along > p.flights_lead + 0.2) {
+        suffix.push_back(walk[q]);
+      }
+    }
+    suffix.push_back({ex, ey, m.zTop(link.b)});
+    smoothPolyline(suffix, p.smooth_passes);
+    pts.insert(pts.end(), suffix.begin(), suffix.end());
+  } else {
+    if (std::hypot(ex - lead_out.x, ey - lead_out.y) > 0.05) {
+      pts.push_back(lead_out);
+    }
+    pts.push_back({ex, ey, m.zTop(link.b)});
+  }
+  std::string widths;
+  for (const Flight & f : F) {
+    std::snprintf(buf, sizeof buf, "%s%.1f", widths.empty() ? "" : "/", f.width);
+    widths += buf;
+  }
+  std::snprintf(
+    buf, sizeof buf, "%zu flights %s m wide, landings: %s, %zu turns", F.size(), widths.c_str(),
+    shapes.c_str(), link.turns.size());
+  link.geometry = buf;
+  addLink(m, std::move(link), out);
+  return true;
+}
+
 // The row of straight links across the flight the robot walked between
 // keyframes ka and kb, from cell a (walked first) to cell b. Returns how many
 // it laid; 0, with `why`, when the stretch is not one straight flight -- the
@@ -492,17 +1184,9 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     size_t laid = 0;
     if (params.straight) {
       laid = straightLinks(m, track, anchor_kf, k, anchor, c, params, *out, why);
-      if (laid == 0) {
-        char buf[240];
-        std::snprintf(
-          buf, sizeof buf,
-          "keyframes %zu..%zu (z %.2f -> %.2f): %s; the link follows the walked track", anchor_kf,
-          k, m.zTop(anchor), m.zTop(c), why.c_str());
-        out->notes.push_back(buf);
-      }
     }
     if (laid == 0) {
-      // The walk itself.
+      // The walk itself, loops cut.
       StairLink link;
       link.a = anchor;
       link.b = c;
@@ -517,7 +1201,32 @@ std::shared_ptr<const StairLinks> buildStairLinks(
       }
       link.pts.push_back({bx, by, m.zTop(c)});
       link.pts = cutLoops(link.pts, params.loop_radius, params.loop_dz);
+      std::string fwhy;
+      if (params.flights) {
+        // Flights and landing corners read off the map (see the header).
+        if (flightLinks(m, link.pts, anchor, c, anchor_kf, k, params, *out, fwhy)) {
+          anchor = c;
+          anchor_kf = k;
+          walked = 0.0;
+          continue;
+        }
+      }
+      char buf[320];
+      std::snprintf(
+        buf, sizeof buf,
+        "keyframes %zu..%zu (z %.2f -> %.2f): %s%s%s; the link follows the walked "
+        "track",
+        anchor_kf, k, m.zTop(anchor), m.zTop(c),
+        params.straight ? why.c_str() : "not laid straight", params.flights ? "; " : "",
+        params.flights ? fwhy.c_str() : "");
+      out->notes.push_back(buf);
       smoothPolyline(link.pts, params.smooth_passes);
+      if (params.centre) {
+        // Measured square to the smoothed walk, then smoothed again: the
+        // shifts are per point, and the walk's weave is gone by then.
+        centreWalk(m, params, link);
+        smoothPolyline(link.pts, params.smooth_passes);
+      }
       addLink(m, std::move(link), *out);
     }
     anchor = c;

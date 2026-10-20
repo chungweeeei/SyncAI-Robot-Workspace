@@ -52,6 +52,26 @@
 // disagrees with the walk -- keeps the walked link below, and the notes say
 // so.
 //
+// A stretch that is not one straight flight -- dp's switchback stairwell --
+// is since 2026-10-21 laid as **flights and landings** read off the surface
+// map, not as the walk: the walk's height profile is cut into level runs
+// (landings, and the two floors) and rises (flights); every flight gets the
+// uphill direction of a plane fitted to its treads (fitUphill, as a straight
+// flight does) and a centre axis, the median of the cross-sections square
+// to that direction (sideReach); its foot and head are where a march along
+// the axis reaches the landings' heights. Consecutive flights are joined on
+// the landing with explicit corners: one at the axes' intersection when the
+// flights are ~90 deg apart (an L), two -- out to half the landing's depth,
+// across, and in -- when they are ~180 deg apart (a U), so the path climbs
+// each flight straight along its centre, stops, turns in place and climbs
+// the next, as the legs want to; a 0.5 m lead-in before the first foot and
+// lead-out past the last head line the robot up before the first riser and
+// take it clear of the last. Nothing on that polyline is smoothed: the
+// corners are the point. The turn vertices are recorded in StairLink::turns
+// for the controllers' stair mode. A stretch the profile cannot be read from
+// (a flight whose plane does not fit, a landing whose shape is neither L nor
+// U) falls back to the walked link below, and the notes say why.
+//
 // The points of a walked link are the keyframes' ground points with every
 // loop cut out (the track coming back within loop_radius and loop_dz of an
 // earlier point): a robot driven by hand turns and waits on landings, and
@@ -62,6 +82,23 @@
 // inherits. A straight link's points lie on its line, z interpolated
 // between its two ends: the flight as one ramp, which is what the
 // controller's stair mode reads it as anyway.
+//
+// A walked link is then **centred** in the stairwell (2026-10-20): the
+// operator walks a stair wherever they like -- close to the rail, cutting
+// the landing's inside corner -- and the path copied that line. At every
+// interior point the cross-section square to the walk is read off the
+// surface map: from the point, column by column to either side, as long as
+// the column holds a surface within centre_dz of the point's own tread, in
+// any state: every tread of a flight is rejected by the step and slope rules,
+// and on dp most of them and every landing also by the clearance rules (the
+// rail and the flight overhead in the band, the landing's floor never seen
+// from above), so the state says nothing about where the well ends. A wall,
+// or the drop to the neighbouring flight of a switchback, ends a side. Where
+// both sides end within centre_max_half_width the point moves to the middle,
+// at most centre_max_shift; where either side runs out (a floor, a landing
+// open to a corridor) it stays, so the link's ends on the two floors are
+// untouched. The shifts are smoothed along the link before they are applied,
+// so one odd column does not kink the path.
 //
 // What could not be linked is reported in StairLinks::notes, for the plugin
 // to log and the CLI to print: a height change on the track that stayed
@@ -125,6 +162,31 @@ struct StairLinkParams
   // riser and after the last, and that is what this crosses; a landing
   // longer than it ends the flight (the walked link stands in).
   double straight_exit_reach = 0.6;
+  // Lay a multi-flight stretch as flights and landing corners (see the
+  // header). false = the walked link (centred below, when enabled).
+  bool flights = true;
+  // A level run of the walk at least this long (m, xy) is a landing; the
+  // first and last runs are the floors whatever their length.
+  double flights_landing_min_len = 0.5;
+  // A segment of the walk flatter than this is level. dp's flights are
+  // ~30 deg, its landings under 5 deg.
+  double flights_landing_slope_deg = 15.0;
+  // The straight lead-in before the first foot and lead-out past the last
+  // head (m), along the flight's axis.
+  double flights_lead = 0.5;
+  // Centre a walked link in the stairwell (see the header). false = the
+  // operator's line, the 2026-10-19 behaviour.
+  bool centre = true;
+  // A side of the cross-section ends at the first column whose nearest
+  // surface is more than this above or below the point's tread: more than a
+  // riser's worth (a tread is level across, but the walk is not square to
+  // the risers), less than the half-storey to the neighbouring flight.
+  double centre_dz = 0.25;
+  // A side longer than this is open (a floor or a landing that opens onto a
+  // corridor), and the point is not moved.
+  double centre_max_half_width = 1.5;
+  // Largest shift of one point (m).
+  double centre_max_shift = 0.6;
 };
 
 struct StairLink
@@ -134,7 +196,15 @@ struct StairLink
   double length = 0.0;              // 3D length of pts
   size_t kf_a = 0, kf_b = 0;        // the keyframes that found the stair (poses.txt line index)
   bool straight = false;            // a line across the fitted flight, not the walked track
+  bool flights = false;             // flights + landing corners read off the map (see the header)
+  std::vector<size_t> turns;        // indices into pts where the robot turns in place (flights)
+  size_t n_flights = 0;             // flights only
+  std::string geometry;             // flights only: one line for the logs (widths, landings, turns)
   double up_x = 0.0, up_y = 0.0;    // the flight's uphill unit direction (straight links only)
+  // Centring of a walked link (see the header): how many points moved, the
+  // mean and largest shift, and the narrowest cross-section measured.
+  size_t centred = 0;
+  double centre_mean_shift = 0.0, centre_max_shift = 0.0, centre_min_width = 0.0;
 };
 
 // One walked flight that became a row of straight links, for the logs.

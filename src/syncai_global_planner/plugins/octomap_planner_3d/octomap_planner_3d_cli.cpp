@@ -159,6 +159,22 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.straight_fit_radius = v;
   } else if (k == "stair_straight_half_width") {
     st.straight_half_width = v;
+  } else if (k == "stair_flights") {
+    st.flights = v != 0.0;
+  } else if (k == "stair_flights_landing_min_len") {
+    st.flights_landing_min_len = v;
+  } else if (k == "stair_flights_landing_slope_deg") {
+    st.flights_landing_slope_deg = v;
+  } else if (k == "stair_flights_lead") {
+    st.flights_lead = v;
+  } else if (k == "stair_centre") {
+    st.centre = v != 0.0;
+  } else if (k == "stair_centre_dz") {
+    st.centre_dz = v;
+  } else if (k == "stair_centre_max_half_width") {
+    st.centre_max_half_width = v;
+  } else if (k == "stair_centre_max_shift") {
+    st.centre_max_shift = v;
   } else if (k == "stair_straight_exit_reach") {
     st.straight_exit_reach = v;
   } else if (k == "robot_radius") {
@@ -1294,9 +1310,16 @@ int main(int argc, char ** argv)
         continue;
       }
       std::printf(
-        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points (walked track)\n",
-        l.kf_a, l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
-        map->cells[l.b].component, l.length, l.pts.size());
+        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points (%s)\n", l.kf_a,
+        l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+        map->cells[l.b].component, l.length, l.pts.size(),
+        l.flights ? l.geometry.c_str() : "walked track");
+      if (l.centred > 0) {
+        std::printf(
+          "    centred: %zu points moved, mean %.2f m, max %.2f m; narrowest cross-section %.2f "
+          "m\n",
+          l.centred, l.centre_mean_shift, l.centre_max_shift, l.centre_min_width);
+      }
     }
     for (const std::string & note : links->notes) {
       std::printf("  note: %s\n", note.c_str());

@@ -460,6 +460,60 @@ air above them never observed), so the link runs floor to floor over the
 whole well. Stairs the robot never walked stay refused; a kerb walked over
 (< 0.3 m) makes no link. `stair_links: false` restores separate floors.
 
+A stretch that is not one straight flight is laid as **flights and landing
+corners** since 2026-10-21 (`stair_flights`), because the legs climb a
+flight straight and turn on the landing, and a path copied from the walk
+curves through both. The walk's height profile (loops cut, raw) is split
+into level runs of at least `stair_flights_landing_min_len` (0.5 m; the
+first and last are the floors) and the rises between them. For each flight:
+its direction is the walk's over the flight, refined to the line through
+the points where the cross-sections square to it end on the straighter
+side — one side of a flight is the well's wall and its hits line up to a
+few centimetres, the other is the open well or the rail and scatters (the
+plane fit a straight flight uses was 17° off on dp's second flight, pulled
+by the parallel flight inside its radius); the flights of one well are then
+held to one orientation, the weighted circular mean of theirs folded to a
+quarter turn (dp's four ran 5–13° off the map's y axis and settle on 5.7°).
+Its axis is the walk moved by the median centring shift measured square to
+that direction; its foot and head are where a march along the axis, down
+and up from the middle, finds the surface level for 0.45 m (a tread is
+0.3) at about the landings' heights. Consecutive flights are joined with
+corners on the landing: ~90° apart, one corner at the axes' crossing (an
+L); ~180°, two corners — out from the head by 0.5–1 m (the median of where
+the walk went onto the landing, capped at half the map's landing depth when
+a wall was found), across, and in to the next foot (a U); any other angle,
+or a flight whose well cannot be read, falls back to the walked link with a
+note. A `stair_flights_lead` (0.5 m) straight run before the first foot and
+past the last head lines the robot up, re-anchoring the link's ends to the
+floor cells nearest those points (or keeping the walk's floor points, lightly
+smoothed, when no floor cell is within a metre — dp's approach corridor).
+Nothing on the stair itself is smoothed, and `StairLink::turns` lists the
+corner vertices for the controllers' stair mode. On dp: 4 flights 1.6 / 1.5
+/ 1.4 / 1.3 m wide, three U landings with the turns 0.5 m out, 6 turns; the
+walked route ran 0.08–0.29 m off the axes, the new one under 0.01 m. Two of
+dp's three landings are not in the surface map at all (seen only edge-on
+from the flights), which is why the corners come from the walk and not the
+map.
+
+A walked link that stays walked is **centred in the stairwell** since 2026-10-20
+(`stair_centre`), because the operator walks a stair where they like —
+along the inner rail, across a landing's inside corner — and the path copied
+that line. At each point of the link the cross-section square to the walk is
+read off the surface map: column by column to either side, as long as the
+column holds a surface within `stair_centre_dz` (0.25 m) of the point's
+tread, in any state (on dp the treads and landings are rejected by the
+clearance rules as well as the step and slope ones, so the state says
+nothing about where the well ends); a wall or the drop to the neighbouring
+flight ends a side. Where both sides end within `stair_centre_max_half_width`
+(1.5 m) the point moves to the middle, at most `stair_centre_max_shift`
+(0.6 m), and the shifts are median-filtered over ±3 points and smoothed,
+because one cross-section is noisy (the walk crosses the risers at an angle);
+a side that runs out is open floor and the point stays, so the link's ends
+are untouched. On dp, 58 of the stairwell link's 66 points moved, mean
+0.09 m, at most 0.30 m (the second flight, walked along its inner rail; its
+two sides now measure 0.7–0.8 m each). Straight links are not touched — the
+search already picks their entry across the flight's width.
+
 **Output** (`path_postprocess.cpp`): a line-of-sight shortcut checked with a
 supercover traversal (every cell the segment touches; Bresenham skips the
 corner cell a wall foot sits in), step-continuous along the segment, and
