@@ -15,6 +15,7 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__CONTROLLER_HPP_
 #define SYNCAI_MPPI_CONTROLLER__CONTROLLER_HPP_
 
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -274,6 +275,15 @@ protected:
   syncai_util::StairMode stair_mode_;
   double stair_linear_vel_{0.5};
   double stair_lookahead_dist_{0.4};
+  // The landing corners (climbStairs()): a heading change past
+  // stair_turn_angle is one; the robot stops stair_turn_dist before it and
+  // turns in place until the carrot's bearing is under stair_turn_done_angle.
+  double stair_turn_angle_{M_PI / 4};
+  double stair_turn_dist_{0.15};
+  double stair_turn_done_angle_{0.087};
+  // The in-place turn on the stairs is latched: in past
+  // approach_rotate_min_angle, out under stair_turn_done_angle.
+  bool stair_turning_{false};
   // Stair mode's speed S-curve (stairSpeed()): its target, where it started
   // and when. A new curve starts whenever the target changes; leaving the
   // stairs and reset() drop it.

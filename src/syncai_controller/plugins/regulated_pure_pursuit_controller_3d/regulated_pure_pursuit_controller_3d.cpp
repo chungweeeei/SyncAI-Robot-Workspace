@@ -200,8 +200,17 @@ void RegulatedPurePursuitController3D::initialize(
     node, plugin_name_ + ".stair_linear_vel", rclcpp::ParameterValue(0.2));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".stair_lookahead_dist", rclcpp::ParameterValue(0.4));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_turn_angle", rclcpp::ParameterValue(M_PI / 4));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_turn_dist", rclcpp::ParameterValue(0.15));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_turn_done_angle", rclcpp::ParameterValue(0.087));
   node->get_parameter(plugin_name_ + ".stair_linear_vel", stair_linear_vel_);
   node->get_parameter(plugin_name_ + ".stair_lookahead_dist", stair_lookahead_dist_);
+  node->get_parameter(plugin_name_ + ".stair_turn_angle", stair_turn_angle_);
+  node->get_parameter(plugin_name_ + ".stair_turn_dist", stair_turn_dist_);
+  node->get_parameter(plugin_name_ + ".stair_turn_done_angle", stair_turn_done_angle_);
   {
     const auto & sp = stair_mode_.params();
     RCLCPP_INFO(
@@ -370,6 +379,43 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   }
 
   auto carrot_pose = getLookAheadPoint(lookahead_dist, transformed_plan);
+  // On the stairs the carrot never passes a landing corner (2026-10-21;
+  // StairMode::findCorner() has the design): OctomapPlanner3D lays a
+  // switchback stairwell as straight flights joined by 90 deg corners, to be
+  // climbed straight, stopped at, turned on the spot and climbed on. The
+  // carrot is held at the corner, the speed is taken to zero so the clamp's
+  // ramp stops the robot stair_turn_dist before it (v^2 / 2a from the stair
+  // speed), and from the stop the carrot is let past it, so its bearing
+  // (~90 deg) goes through rotateToHeading(); the turn is latched until the
+  // bearing is under stair_turn_done_angle (5 deg; rotate_to_heading_min_angle
+  // alone, 14 deg, would start the walk skew on a flight). The same rule
+  // lines the robot up on the planner's lead-in before the first riser. The
+  // landings stay on the stair policy (stair_exit_ahead_dist reaches over
+  // one): HIMLOCO turns in place, decided 2026-10-21.
+  bool stair_stop = false;
+  if (on_stairs) {
+    size_t corner_idx = 0;
+    double corner_heading = 0.0;
+    if (syncai_util::StairMode::findCorner(
+          transformed_plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+      const auto & cp = transformed_plan.poses[corner_idx].pose.position;
+      const double corner_dist = std::hypot(cp.x, cp.y);  // the plan is in the base frame
+      const double brake = max_linear_accel_ > 0.0
+                             ? stair_linear_vel_ * stair_linear_vel_ / (2.0 * max_linear_accel_)
+                             : 0.0;
+      const bool stopping = corner_dist <= stair_turn_dist_ + brake;
+      const bool at_corner =
+        corner_dist <= stair_turn_dist_ || (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      stair_stop = stopping && !at_corner;
+      if (
+        !at_corner &&
+        std::hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y) > corner_dist) {
+        carrot_pose = transformed_plan.poses[corner_idx];
+      }
+    }
+  } else {
+    stair_turning_ = false;
+  }
   carrot_pub_->publish(createCarrotMsg(carrot_pose));
 
   double linear_vel, angular_vel;
@@ -403,9 +449,20 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
     double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
     rotateToHeading(linear_vel, angular_vel, angle_to_goal);
     is_rotating_to_heading = true;
-  } else if (shouldRotateToPath(carrot_pose, angle_to_heading)) {
-    rotateToHeading(linear_vel, angular_vel, angle_to_heading);
-    is_rotating_to_heading = true;
+  } else if (shouldRotateToPath(carrot_pose, angle_to_heading) || stair_turning_) {
+    // On the stairs the turn is latched (see the corner block above): in
+    // past rotate_to_heading_min_angle, out under stair_turn_done_angle.
+    if (on_stairs) {
+      stair_turning_ = std::fabs(angle_to_heading) >= stair_turn_done_angle_;
+    }
+    if (on_stairs && !stair_turning_) {
+      applyConstraints(
+        curvature, speed, costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
+        linear_vel, sign);
+    } else {
+      rotateToHeading(linear_vel, angular_vel, angle_to_heading);
+      is_rotating_to_heading = true;
+    }
   } else {
     applyConstraints(
       curvature, speed, costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
@@ -463,6 +520,13 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   }
 
   if (on_stairs) {
+    // Stopping before a landing corner: the clamp above has already ramped
+    // linear_vel down by one step from the last command; take it to the
+    // floor of that step so the ramp continues to zero.
+    if (stair_stop && !is_rotating_to_heading) {
+      linear_vel = std::clamp(0.0, min_feasible_linear_speed, max_feasible_linear_speed);
+      angular_vel = linear_vel * curvature;
+    }
     // Stair speed. A cap only lowers |v|, so it cannot break the clamp above, and the
     // curvature is the path's either way: w scales with v.
     if (std::fabs(linear_vel) > stair_linear_vel_) {
@@ -1105,6 +1169,12 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         stair_linear_vel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".stair_lookahead_dist") {
         stair_lookahead_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_turn_angle") {
+        stair_turn_angle_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_turn_dist") {
+        stair_turn_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_turn_done_angle") {
+        stair_turn_done_angle_ = parameter.as_double();
       } else if (name == plugin_name_ + ".stair_policy_settle_time") {
         stair_mode_.params().settle_time = parameter.as_double();
       }

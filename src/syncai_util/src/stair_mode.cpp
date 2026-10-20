@@ -1,6 +1,7 @@
 #include "syncai_util/stair_mode.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -274,6 +275,58 @@ void StairMode::publish()
   if (publish_) {
     publish_(on_stairs_);
   }
+}
+
+bool StairMode::findCorner(
+  const nav_msgs::msg::Path & path, double min_turn, double window, size_t & index,
+  double & heading_after)
+{
+  const auto & P = path.poses;
+  const size_t n = P.size();
+  if (n < 3) {
+    return false;
+  }
+  // The heading from pose i over `window` metres of path, forward (dir > 0)
+  // or back; false when there is less than half a window of path that way.
+  const auto heading = [&](size_t i, int dir, double & h) {
+    double d = 0.0;
+    size_t k = i;
+    while ((dir > 0 && k + 1 < n) || (dir < 0 && k > 0)) {
+      const size_t nk = dir > 0 ? k + 1 : k - 1;
+      d += euclidean_distance(P[k].pose, P[nk].pose);
+      k = nk;
+      if (d >= window) {
+        break;
+      }
+    }
+    if (k == i || d < window / 2) {
+      return false;
+    }
+    const auto & a = dir > 0 ? P[i].pose.position : P[k].pose.position;
+    const auto & b = dir > 0 ? P[k].pose.position : P[i].pose.position;
+    h = std::atan2(b.y - a.y, b.x - a.x);
+    return true;
+  };
+  bool in_bend = false;
+  double sharpest = 0.0;
+  for (size_t i = 1; i + 1 < n; ++i) {
+    double hb, ha;
+    if (!heading(i, -1, hb) || !heading(i, 1, ha)) {
+      continue;
+    }
+    const double turn = std::fabs(std::remainder(ha - hb, 2.0 * M_PI));
+    if (turn > min_turn) {
+      if (!in_bend || turn > sharpest) {
+        sharpest = turn;
+        index = i;
+        heading_after = ha;
+      }
+      in_bend = true;
+    } else if (in_bend) {
+      break;  // the first bend only
+    }
+  }
+  return in_bend;
 }
 
 }  // namespace syncai_util

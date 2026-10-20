@@ -326,6 +326,14 @@ protected:
   syncai_util::StairMode stair_mode_;
   double stair_linear_vel_;
   double stair_lookahead_dist_;
+  // The landing corners (StairMode::findCorner()): the carrot is held at
+  // one, the robot stops stair_turn_dist before it and turns in place until
+  // the carrot's bearing is under stair_turn_done_angle (latched from
+  // rotate_to_heading_min_angle down to it).
+  double stair_turn_angle_{M_PI / 4};
+  double stair_turn_dist_{0.15};
+  double stair_turn_done_angle_{0.087};
+  bool stair_turning_{false};
 
   nav_msgs::msg::Path global_plan_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;

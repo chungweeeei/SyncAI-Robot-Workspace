@@ -269,12 +269,31 @@ and so is the braking, done with each one's own acceleration clamp:
    3D map the local costmap runs `TerrainLayer` (`syncai_costmap_2d`), which
    judges the flight itself lethal and opens nothing along the path, so the
    check would refuse every stair. Nothing on the stairs is avoided.
+   **Corners** (2026-10-21): OctomapPlanner3D lays a switchback stairwell as
+   straight flights joined by 90° corners on the landings (`syncai_global_planner`'s
+   README, "Stairs"), and both controllers take them as the planner meant —
+   straight up, stop, turn in place, straight on. `StairMode::findCorner()` finds
+   the first pose of the pruned plan whose heading over 0.2 m behind and 0.2 m
+   ahead differs by more than **`stair_turn_angle`** (45°); the carrot is held at
+   that pose, the speed goes to zero (MPPI's S-curve, RPP 3D's clamp ramp) so the
+   robot stops **`stair_turn_dist`** (0.15 m) before it, and from the stop the
+   carrot is let past the corner, so its bearing (~90°) turns the robot in place.
+   That turn is latched: in past `approach_rotate_min_angle` /
+   `rotate_to_heading_min_angle` (14°), out only under **`stair_turn_done_angle`**
+   (5°), because a flight is climbed straight or not at all. The same rule lines
+   the robot up on the planner's 0.5 m lead-in when the floor route meets it at
+   an angle. Without it a 0.6 m carrot rounded a 90° corner from ~0.5 m out,
+   which on a landing a metre deep is the whole landing.
 3. **Leave** once the path from **`stair_exit_behind_dist`** (0.8 m) behind to
-   **`stair_exit_ahead_dist`** (2.5 m) ahead rises less than `stair_min_rise`:
+   **`stair_exit_ahead_dist`** (3.5 m; 2.5 until 2026-10-21, when a U landing's
+   ~2.8 m of level path — out, across, in — read level from its first corner and
+   switched the policy on the landing) ahead rises less than `stair_min_rise`:
    stop, switch back, settle. Back to **`flat_policy_mode`**, or with -1 (default)
    to whatever the controller reported on `<robot_id>/mode` (data[0]) when stair
    mode began; with no report heard, it stays on the stair policy rather than
-   guess an index. The long ahead window is what keeps a landing in stair mode.
+   guess an index. The long ahead window is what keeps a landing in stair mode:
+   HIMLOCO turns in place and climbs the whole stairwell, and the policy goes
+   back only on the top floor (decided 2026-10-21).
 
 The windows come from dp1f_1012's Octo3D paths: level paths on 1F and 2F rise at
 most 0.10–0.20 m within 1 m, the spiral stair 0.68 m, the short 2F ramp 0.47 m —

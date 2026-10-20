@@ -76,6 +76,9 @@ void MPPIController::initialize(
   stair_mode_.initialize(node, name_);
   getParam(stair_linear_vel_, "stair_linear_vel", 0.5);
   getParam(stair_lookahead_dist_, "stair_lookahead_dist", 0.4);
+  getParam(stair_turn_angle_, "stair_turn_angle", M_PI / 4);
+  getParam(stair_turn_dist_, "stair_turn_dist", 0.15);
+  getParam(stair_turn_done_angle_, "stair_turn_done_angle", 0.087);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;
@@ -718,6 +721,7 @@ bool MPPIController::climbStairs(
     stair_ramp_valid_ = false;
     if (climbing_stairs_) {
       climbing_stairs_ = false;
+      stair_turning_ = false;
       // The warm-started sequence predates the stairs; start from scratch.
       optimizer_.reset();
       RCLCPP_INFO(logger_, "Off the stairs: handing back to the optimizer");
@@ -749,30 +753,81 @@ bool MPPIController::climbStairs(
     if (plan.poses.empty()) {
       plan = path_handler_.transformPath(robot_pose);
     }
+    if (plan.poses.empty()) {
+      throw syncai_nav_core::PlannerException("Stairs: no path left to climb");
+    }
     const double x = robot_pose.pose.position.x;
     const double y = robot_pose.pose.position.y;
     const double yaw = tf2::getYaw(robot_pose.pose.orientation);
     // The carrot: the first pose stair_lookahead_dist out, else the path's
-    // end (the goal, inside that distance).
-    auto carrot = std::find_if(
-      plan.poses.begin(), plan.poses.end(), [&](const geometry_msgs::msg::PoseStamped & ps) {
-        return std::hypot(ps.pose.position.x - x, ps.pose.position.y - y) >= stair_lookahead_dist_;
-      });
-    if (carrot == plan.poses.end()) {
-      carrot = std::prev(plan.poses.end());
+    // end (the goal, inside that distance) -- and never past the next
+    // corner (2026-10-21). OctomapPlanner3D lays a switchback stairwell as
+    // straight flights joined by 90 deg corners on the landings, meant to
+    // be climbed straight, stopped at, turned on the spot and climbed on; a
+    // carrot that passes the corner rounds it from half a metre out, which
+    // on a landing a metre deep is the whole landing. So the carrot is held
+    // at the corner, the speed comes down on the S-curve to stop
+    // stair_turn_dist before it, and from the stop the carrot is let past
+    // it, so its bearing (~90 deg) turns the robot in place; the turn is
+    // latched until that bearing is under stair_turn_done_angle (5 deg,
+    // against approach_rotate_min_angle's 14 deg: a flight is climbed
+    // straight or not at all), and the walk starts again from a stand. The
+    // same rule lines the robot up on the planner's lead-in before the
+    // first riser when the floor route meets it at an angle. Every flight
+    // of the stairwell is climbed on the stair policy, landings included
+    // (stair_exit_ahead_dist reaches over a landing); HIMLOCO turns in
+    // place, so the landing needs no policy switch (decided 2026-10-21).
+    const auto far_enough = [&](const geometry_msgs::msg::PoseStamped & ps) {
+      return std::hypot(ps.pose.position.x - x, ps.pose.position.y - y) >= stair_lookahead_dist_;
+    };
+    size_t carrot_idx = static_cast<size_t>(
+      std::find_if(plan.poses.begin(), plan.poses.end(), far_enough) - plan.poses.begin());
+    if (carrot_idx >= plan.poses.size()) {
+      carrot_idx = plan.poses.size() - 1;
     }
-    const double dx = carrot->pose.position.x - x;
-    const double dy = carrot->pose.position.y - y;
+    double target = stair_linear_vel_;
+    size_t corner_idx = 0;
+    double corner_heading = 0.0;
+    if (syncai_util::StairMode::findCorner(
+          plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+      const auto & cp = plan.poses[corner_idx].pose.position;
+      const double corner_dist = std::hypot(cp.x - x, cp.y - y);
+      // The S-curve from the stair speed stops in 0.75 v^2 / a (0.19 m at
+      // 0.5 m/s), so the stop begins that much before stair_turn_dist.
+      const double brake = max_linear_accel_ > 0.0
+                             ? 0.75 * stair_linear_vel_ * stair_linear_vel_ / max_linear_accel_
+                             : 0.0;
+      const bool stopping = corner_dist <= stair_turn_dist_ + brake;
+      const bool at_corner =
+        corner_dist <= stair_turn_dist_ || (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      if (stopping && !at_corner) {
+        target = 0.0;
+      }
+      if (!at_corner && corner_idx < carrot_idx) {
+        carrot_idx = corner_idx;
+      }
+    }
+    const auto & carrot = plan.poses[carrot_idx];
+    const double dx = carrot.pose.position.x - x;
+    const double dy = carrot.pose.position.y - y;
     const double dist = std::hypot(dx, dy);
     const double bearing = angles::shortest_angular_distance(yaw, std::atan2(dy, dx));
     // No isApproachBlocked() here: the flight is lethal in the costmap.
-    if (std::fabs(bearing) > approach_rotate_min_angle_) {
+    if (!stair_turning_ && std::fabs(bearing) > approach_rotate_min_angle_) {
+      stair_turning_ = true;
+      RCLCPP_INFO(
+        logger_, "Stairs: turning in place %.0f deg onto the path", bearing * 180.0 / M_PI);
+    } else if (stair_turning_ && std::fabs(bearing) < stair_turn_done_angle_) {
+      stair_turning_ = false;
+    }
+    if (stair_turning_) {
       rotateInPlace(bearing, vx, wz);
       // Slowing to the turn on the S-curve rather than rotateInPlace()'s ramp.
       vx = stairSpeed(0.0, now);
     } else if (dist > 1e-3) {
-      // On an S-curve up to stair_linear_vel, then at it (stairSpeed()).
-      trackPoint(bearing, dist, stairSpeed(stair_linear_vel_, now), vx, wz);
+      // On an S-curve up to stair_linear_vel, then at it (stairSpeed()); down
+      // to a stop before a corner.
+      trackPoint(bearing, dist, stairSpeed(target, now), vx, wz);
     }
   }
 

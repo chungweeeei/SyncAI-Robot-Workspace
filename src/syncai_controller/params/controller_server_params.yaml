@@ -339,7 +339,13 @@
       stair_min_rise: 0.3
       stair_enter_dist: 1.0
       stair_exit_behind_dist: 0.8
-      stair_exit_ahead_dist: 2.5
+      # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
+      # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to
+      # ~2.8 m of level path between two flights, and at 2.5 the window from
+      # the first corner read level (0.29 m of rise) and left stair mode on
+      # the landing. HIMLOCO turns in place and climbs the whole well; the
+      # policy goes back only on the top floor.
+      stair_exit_ahead_dist: 3.5
       stair_policy_settle_time: 3.0
       stair_policy_mode: 1
       flat_policy_mode: -1
@@ -361,6 +367,17 @@
       # and ~0.28 rad/s; a switchback's landing turn (walked link) is cut by
       # ~0.15-0.2 m. FollowPathRPP3D keeps its own 0.4. Unmeasured.
       stair_lookahead_dist: 0.6
+      # The landing corners (2026-10-21; StairMode::findCorner()): a heading
+      # change over stair_turn_angle within 0.2 m either side is a corner.
+      # The carrot is held at it, the robot stops stair_turn_dist before it
+      # on the S-curve, then turns in place onto the next flight until the
+      # carrot's bearing is under stair_turn_done_angle (5 deg, against
+      # approach_rotate_min_angle's 14 deg to start the turn: a flight is
+      # climbed straight or not at all). 0.15 m puts the body's centre at
+      # the corner the planner set 0.5-1 m out on the landing. Unmeasured.
+      stair_turn_angle: 0.785
+      stair_turn_dist: 0.15
+      stair_turn_done_angle: 0.087
       # Horizon 32 x 0.05 = 1.6 s (upstream 56 = 2.8 s). At vx_max 0.80 that is
       # 1.28 m, which with the footprint's 0.36 m nose and the window's lag
       # (it re-centres at update_frequency 5 Hz, 0.16 m at 0.80) fits in the
@@ -708,7 +725,13 @@
       stair_min_rise: 0.3
       stair_enter_dist: 1.0
       stair_exit_behind_dist: 0.8
-      stair_exit_ahead_dist: 2.5
+      # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
+      # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to
+      # ~2.8 m of level path between two flights, and at 2.5 the window from
+      # the first corner read level (0.29 m of rise) and left stair mode on
+      # the landing. HIMLOCO turns in place and climbs the whole well; the
+      # policy goes back only on the top floor.
+      stair_exit_ahead_dist: 3.5
       # The 0.4 m carrot keeps RPP's collision projection (carrot + 0.36 m of
       # footprint) within ~0.76 m, where a 0.17 / 0.28 m stair has risen
       # ~0.46 m -- under the local costmap's 0.58 m obstacle floor, so the
@@ -721,6 +744,12 @@
       # a spiral stair is open.
       stair_linear_vel: 0.5
       stair_lookahead_dist: 0.4
+      # The landing corners (2026-10-21): the same rule as FollowPath's, with
+      # rotate_to_heading_min_angle to start the turn and the clamp's ramp
+      # (v^2 / 2a) for the stop before the corner.
+      stair_turn_angle: 0.785
+      stair_turn_dist: 0.15
+      stair_turn_done_angle: 0.087
       # 3 s standing after each policy switch, in and out (asked for on
       # 2026-10-14; nothing measured yet). Two stops per flight, so ~6 s plus
       # braking added to a stair path -- far inside the progress checker's 30 s.

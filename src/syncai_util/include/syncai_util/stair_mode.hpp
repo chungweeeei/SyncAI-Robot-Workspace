@@ -176,6 +176,32 @@ public:
   static double stairRiseAhead(
     const nav_msgs::msg::Path & path, size_t idx, double lead, double ahead);
 
+  /**
+   * @brief The first corner of `path`: the pose where the heading over
+   * `window` metres behind it and over `window` metres ahead differ by more
+   * than `min_turn` (the sharpest pose of that bend)
+   * @param path The plan from the robot on (the controller's pruned plan)
+   * @param min_turn Smallest heading change that is a corner (rad)
+   * @param window How far either side the two headings are taken over (m); a
+   * planner's 0.1 m resample never lands a pose on the vertex, so the change
+   * is read over a window, and the pose nearest the vertex shows the most
+   * @param index Set to the corner's pose index
+   * @param heading_after Set to the heading of the path past the corner
+   * @return Whether there is one
+   *
+   * For the climb (2026-10-21): OctomapPlanner3D lays a switchback stairwell
+   * as straight flights joined by 90 deg corners on the landings, and the
+   * legs take those as the planner meant them -- straight up, stop, turn in
+   * place, straight on -- only if the controller's carrot never passes a
+   * corner. A pure-pursuit carrot 0.6 m out rounds a 90 deg corner from
+   * ~0.5 m before it, which on a landing a metre deep is the whole landing.
+   * Each controller caps its stair carrot at this corner, stops at it and
+   * turns onto the next flight.
+   */
+  static bool findCorner(
+    const nav_msgs::msg::Path & path, double min_turn, double window, size_t & index,
+    double & heading_after);
+
 private:
   enum class Transition { None, Entering, Leaving };
 

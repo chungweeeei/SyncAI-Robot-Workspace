@@ -402,3 +402,41 @@ int main(int argc, char ** argv)
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// A path with a 90 deg corner between two 1 m legs, 0.1 m between poses and
+// no pose on the vertex (as the planner's resample leaves it): the corner is
+// found at the pose nearest the vertex, with the second leg's heading, and
+// a straight path has none.
+TEST(StairModeCorner, FindsTheFirstCornerAndItsHeading)
+{
+  nav_msgs::msg::Path p;
+  auto add = [&](double x, double y) {
+    geometry_msgs::msg::PoseStamped ps;
+    ps.pose.position.x = x;
+    ps.pose.position.y = y;
+    ps.pose.orientation.w = 1.0;
+    p.poses.push_back(ps);
+  };
+  // Along +x to (0.95, 0): the vertex (1, 0) is between poses 9 and 10.
+  for (int i = 0; i < 10; ++i) {
+    add(0.05 + i * 0.1, 0.0);
+  }
+  // Then along +y from (1, 0.05).
+  for (int i = 0; i < 10; ++i) {
+    add(1.0, 0.05 + i * 0.1);
+  }
+  size_t index = 0;
+  double heading = 0.0;
+  ASSERT_TRUE(StairMode::findCorner(p, M_PI / 4, 0.2, index, heading));
+  EXPECT_TRUE(index == 9 || index == 10) << index;
+  EXPECT_NEAR(heading, M_PI / 2, 0.3);
+
+  nav_msgs::msg::Path straight;
+  for (int i = 0; i < 20; ++i) {
+    geometry_msgs::msg::PoseStamped ps;
+    ps.pose.position.x = i * 0.1;
+    ps.pose.orientation.w = 1.0;
+    straight.poses.push_back(ps);
+  }
+  EXPECT_FALSE(StairMode::findCorner(straight, M_PI / 4, 0.2, index, heading));
+}
