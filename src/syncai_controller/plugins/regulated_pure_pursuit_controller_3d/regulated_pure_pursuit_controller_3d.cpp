@@ -211,6 +211,9 @@ void RegulatedPurePursuitController3D::initialize(
   node->get_parameter(plugin_name_ + ".stair_turn_angle", stair_turn_angle_);
   node->get_parameter(plugin_name_ + ".stair_turn_dist", stair_turn_dist_);
   node->get_parameter(plugin_name_ + ".stair_turn_done_angle", stair_turn_done_angle_);
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_descend_backwards", rclcpp::ParameterValue(true));
+  node->get_parameter(plugin_name_ + ".stair_descend_backwards", stair_descend_backwards_);
   {
     const auto & sp = stair_mode_.params();
     RCLCPP_INFO(
@@ -356,6 +359,21 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   }
   const bool stair_hold = stair.hold;
   const bool on_stairs = stair.on_stairs;
+  // Which way the stair ahead goes, read every cycle (2026-10-21): down is
+  // taken backwards, because HIMLOCO descends a flight facing the risers as
+  // it climbs one. A level stretch keeps the last reading, so a descent
+  // stays backwards across its landings and through the hold at the
+  // bottom, where the robot turns round before the policy goes back.
+  if (stair_descend_backwards_ && (stair_hold || on_stairs) && !transformed_plan.poses.empty()) {
+    const int slope =
+      syncai_util::StairMode::slopeAhead(transformed_plan, 0, stair_mode_.params().min_rise, 10.0);
+    if (slope != 0 && (slope < 0) != stair_reverse_) {
+      stair_reverse_ = slope < 0;
+      RCLCPP_INFO(
+        logger_, "[RegulatedPurePursuitController3D] Stairs: the path %s ahead; going %s",
+        slope < 0 ? "descends" : "climbs", stair_reverse_ ? "down backwards" : "up forwards");
+    }
+  }
 
   // Find look ahead distance and point on path and publish
   double lookahead_dist = getLookAheadDistance(speed);
@@ -413,8 +431,11 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
         carrot_pose = transformed_plan.poses[corner_idx];
       }
     }
-  } else {
+  } else if (!stair_hold) {
+    // Off the stairs (not in the hold before them, where the direction has
+    // just been read for the climb to come).
     stair_turning_ = false;
+    stair_reverse_ = false;
   }
   carrot_pub_->publish(createCarrotMsg(carrot_pose));
 
@@ -435,6 +456,12 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   if (allow_reversing_) {
     sign = carrot_pose.pose.position.x >= 0.0 ? 1.0 : -1.0;
   }
+  if (on_stairs && stair_reverse_) {
+    // Backwards down a descent: the carrot is behind the robot, the arc
+    // through it is the same, and shouldRotateToPath() measures from the
+    // tail.
+    sign = -1.0;
+  }
 
   linear_vel = desired_linear_vel_;
 
@@ -449,9 +476,11 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
     double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
     rotateToHeading(linear_vel, angular_vel, angle_to_goal);
     is_rotating_to_heading = true;
-  } else if (shouldRotateToPath(carrot_pose, angle_to_heading) || stair_turning_) {
+  } else if (!stair_hold && (shouldRotateToPath(carrot_pose, angle_to_heading) || stair_turning_)) {
     // On the stairs the turn is latched (see the corner block above): in
     // past rotate_to_heading_min_angle, out under stair_turn_done_angle.
+    // Not during a stair hold, whose block below owns the latch (the turn
+    // round at the bottom of a descent).
     if (on_stairs) {
       stair_turning_ = std::fabs(angle_to_heading) >= stair_turn_done_angle_;
     }
@@ -545,6 +574,26 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
     linear_vel = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
     angular_vel = std::clamp(0.0, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
 
+    if (stair.leaving && stair_reverse_ && linear_vel == 0.0) {
+      // Off a descent the robot faces back up the stairs: turn round to the
+      // path, standing, before the policy goes back and the level-ground
+      // tracking takes over facing the right way. The latch is this
+      // block's while a hold is on (see the rotate branch above).
+      const double fwd = std::atan2(carrot_pose.pose.position.y, carrot_pose.pose.position.x);
+      if (!stair_turning_ && std::fabs(fwd) > rotate_to_heading_min_angle_) {
+        stair_turning_ = true;
+        RCLCPP_INFO(
+          logger_,
+          "[RegulatedPurePursuitController3D] Stairs: at the bottom of the descent, turning "
+          "%.0f deg round to the path",
+          fwd * 180.0 / M_PI);
+      } else if (stair_turning_ && std::fabs(fwd) < stair_turn_done_angle_) {
+        stair_turning_ = false;
+      }
+      if (stair_turning_) {
+        rotateToHeading(linear_vel, angular_vel, fwd);
+      }
+    }
     if (linear_vel == 0.0 && angular_vel == 0.0) {
       // Standing: the policy goes out, or the settle time runs down.
       stair_mode_.standing(clock_->now());
@@ -591,6 +640,10 @@ bool RegulatedPurePursuitController3D::shouldRotateToPath(
 {
   // Whether we should rotate robot to rough path heading
   angle_to_path = atan2(carrot_pose.pose.position.y, carrot_pose.pose.position.x);
+  if (stair_reverse_ && stair_mode_.onStairs()) {
+    // Backwards down a descent: the tail, not the nose, is held on the path.
+    angle_to_path = std::remainder(angle_to_path - M_PI, 2.0 * M_PI);
+  }
   return use_rotate_to_heading_ && fabs(angle_to_path) > rotate_to_heading_min_angle_;
 }
 
@@ -1179,7 +1232,9 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         stair_mode_.params().settle_time = parameter.as_double();
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
-      if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
+      if (name == plugin_name_ + ".stair_descend_backwards") {
+        stair_descend_backwards_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
         use_velocity_scaled_lookahead_dist_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".use_regulated_linear_velocity_scaling") {
         use_regulated_linear_velocity_scaling_ = parameter.as_bool();

@@ -378,6 +378,17 @@
       stair_turn_angle: 0.785
       stair_turn_dist: 0.15
       stair_turn_done_angle: 0.087
+      # Down backwards (2026-10-21): HIMLOCO descends a flight facing the
+      # risers as it climbs one, so on a path that goes down the robot turns
+      # round at the top (its tail onto the path, past approach_rotate_min_angle
+      # and latched to stair_turn_done_angle like every stair turn), walks the
+      # flights and the landing corners in reverse at -stair_linear_vel, and
+      # turns back to the path standing at the bottom, before the policy goes
+      # back. The direction is read from the path ahead every cycle
+      # (StairMode::slopeAhead(), the first stair_min_rise of height change
+      # within 10 m); a level stretch keeps the last reading. false = down
+      # forwards. Unmeasured.
+      stair_descend_backwards: true
       # Horizon 32 x 0.05 = 1.6 s (upstream 56 = 2.8 s). At vx_max 0.80 that is
       # 1.28 m, which with the footprint's 0.36 m nose and the window's lag
       # (it re-centres at update_frequency 5 Hz, 0.16 m at 0.80) fits in the
@@ -750,6 +761,11 @@
       stair_turn_angle: 0.785
       stair_turn_dist: 0.15
       stair_turn_done_angle: 0.087
+      # Down backwards (2026-10-21): the same rule as FollowPath's -- the
+      # tail is held on the path (shouldRotateToPath() measures from it), the
+      # speed's sign is reversed, and the robot turns round to the path in
+      # the hold at the bottom before the policy goes back.
+      stair_descend_backwards: true
       # 3 s standing after each policy switch, in and out (asked for on
       # 2026-10-14; nothing measured yet). Two stops per flight, so ~6 s plus
       # braking added to a stair path -- far inside the progress checker's 30 s.

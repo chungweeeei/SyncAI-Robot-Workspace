@@ -88,6 +88,10 @@ public:
     bool hold{false};
     // The robot is set up for stairs: climb with the stair carrot and speed.
     bool on_stairs{false};
+    // With hold: the stop is the one past the stairs (the policy goes back),
+    // not the one before them. A controller that descended backwards turns
+    // round to the path during this hold, before the policy switch.
+    bool leaving{false};
     // Non-empty: this cycle must fail (the controller throws a
     // PlannerException with it, and the server holds the robot). Only raised
     // on the way in, when set_policy_mode is not there to switch the policy.
@@ -201,6 +205,22 @@ public:
   static bool findCorner(
     const nav_msgs::msg::Path & path, double min_turn, double window, size_t & index,
     double & heading_after);
+
+  /**
+   * @brief Which way the next stair goes: +1 when the first pose within
+   * `max_look` metres of path after `idx` whose height differs from
+   * `idx`'s by `min_rise` or more is higher, -1 when it is lower, 0 when
+   * there is none (a level stretch: the controller keeps what it had)
+   *
+   * For the descent (2026-10-21): HIMLOCO climbs a flight facing the risers
+   * and descends one facing them too -- backwards -- so a controller going
+   * down turns round and walks in reverse, landings included, and turns
+   * back to the path at the bottom before the policy goes back. The
+   * direction is read from the path ahead every cycle so a stairwell that
+   * goes down to a landing and up again is taken each flight its own way.
+   */
+  static int slopeAhead(
+    const nav_msgs::msg::Path & path, size_t idx, double min_rise, double max_look);
 
 private:
   enum class Transition { None, Entering, Leaving };

@@ -334,6 +334,11 @@ protected:
   double stair_turn_dist_{0.15};
   double stair_turn_done_angle_{0.087};
   bool stair_turning_{false};
+  // Descend backwards: on a path going down the robot turns round and walks
+  // in reverse, facing the risers, and turns back to the path at the bottom
+  // before the policy goes back (the stair hold block).
+  bool stair_descend_backwards_{true};
+  bool stair_reverse_{false};
 
   nav_msgs::msg::Path global_plan_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;

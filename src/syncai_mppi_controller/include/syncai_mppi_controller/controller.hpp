@@ -284,6 +284,11 @@ protected:
   // The in-place turn on the stairs is latched: in past
   // approach_rotate_min_angle, out under stair_turn_done_angle.
   bool stair_turning_{false};
+  // Descend backwards (climbStairs()): on a path going down the robot turns
+  // round and walks in reverse, facing the risers, landings included, and
+  // turns back to the path at the bottom before the policy goes back.
+  bool stair_descend_backwards_{true};
+  bool stair_reverse_{false};
   // Stair mode's speed S-curve (stairSpeed()): its target, where it started
   // and when. A new curve starts whenever the target changes; leaving the
   // stairs and reset() drop it.

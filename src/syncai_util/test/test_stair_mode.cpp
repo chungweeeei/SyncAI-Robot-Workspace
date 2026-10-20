@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -439,4 +440,19 @@ TEST(StairModeCorner, FindsTheFirstCornerAndItsHeading)
     straight.poses.push_back(ps);
   }
   EXPECT_FALSE(StairMode::findCorner(straight, M_PI / 4, 0.2, index, heading));
+}
+
+// The stair path climbs from its foot, descends when walked the other way,
+// and a level path (or the floor past the top, within the look) says
+// nothing.
+TEST(StairModeSlope, UpDownOrLevel)
+{
+  const auto up = stairPath();
+  EXPECT_EQ(StairMode::slopeAhead(up, 0, 0.3, 10.0), 1);
+  // From the landing past the top, 10 m of level path: no reading.
+  EXPECT_EQ(StairMode::slopeAhead(up, kLevelIn + kFlight + 5, 0.3, 10.0), 0);
+  auto down = up;
+  std::reverse(down.poses.begin(), down.poses.end());
+  EXPECT_EQ(StairMode::slopeAhead(down, 0, 0.3, 10.0), -1);
+  EXPECT_EQ(StairMode::slopeAhead(levelPath(), 0, 0.3, 10.0), 0);
 }

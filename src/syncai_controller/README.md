@@ -295,6 +295,23 @@ and so is the braking, done with each one's own acceleration clamp:
    HIMLOCO turns in place and climbs the whole stairwell, and the policy goes
    back only on the top floor (decided 2026-10-21).
 
+   **Down backwards** (`stair_descend_backwards`, 2026-10-21): HIMLOCO descends
+   a flight facing the risers as it climbs one, so a path that goes down is
+   walked in reverse. Each cycle `StairMode::slopeAhead()` reads which way the
+   stair ahead goes — the first `stair_min_rise` of height change within 10 m
+   of path — and a level stretch (a landing, the floor past the bottom) keeps
+   the last reading, so a descent stays backwards across its landings and a
+   well that goes down to a landing and up again is taken each flight its own
+   way. In reverse the bearing is measured from the robot's tail (MPPI: the
+   carrot's bearing from `yaw + π`; RPP 3D: `shouldRotateToPath()` from the
+   tail and `sign = -1`), the speed is `-stair_linear_vel` on the same S-curve
+   / clamp, and the pursuit arc is the same one (`wz` from |v|). At the top the
+   first stair turn is the 180° that puts the tail on the lead-in; the landing
+   corners are stopped at and turned on exactly as climbing; and in the hold
+   at the bottom, once stopped and before the policy goes back, the robot
+   turns round to the path (latched the same way), so the level-ground
+   tracking takes over facing it. Unmeasured.
+
 The windows come from dp1f_1012's Octo3D paths: level paths on 1F and 2F rise at
 most 0.10–0.20 m within 1 m, the spiral stair 0.68 m, the short 2F ramp 0.47 m —
 so the ramp is taken in stair mode too (1.9 m of it), and each stair path enters

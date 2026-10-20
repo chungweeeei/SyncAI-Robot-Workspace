@@ -157,10 +157,30 @@ StairMode::Decision StairMode::update(
       transition_ = Transition::None;
     } else {
       d.hold = true;
+      d.leaving = !entering;
     }
   }
   d.on_stairs = on_stairs_;
   return d;
+}
+
+int StairMode::slopeAhead(
+  const nav_msgs::msg::Path & path, size_t idx, double min_rise, double max_look)
+{
+  const auto & P = path.poses;
+  if (idx >= P.size()) {
+    return 0;
+  }
+  const double z0 = P[idx].pose.position.z;
+  double d = 0.0;
+  for (size_t k = idx; k + 1 < P.size() && d <= max_look; ++k) {
+    d += euclidean_distance(P[k].pose, P[k + 1].pose);
+    const double dz = P[k + 1].pose.position.z - z0;
+    if (std::fabs(dz) >= min_rise) {
+      return dz > 0.0 ? 1 : -1;
+    }
+  }
+  return 0;
 }
 
 void StairMode::standing(const rclcpp::Time & now)

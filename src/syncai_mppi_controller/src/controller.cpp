@@ -79,6 +79,7 @@ void MPPIController::initialize(
   getParam(stair_turn_angle_, "stair_turn_angle", M_PI / 4);
   getParam(stair_turn_dist_, "stair_turn_dist", 0.15);
   getParam(stair_turn_done_angle_, "stair_turn_done_angle", 0.087);
+  getParam(stair_descend_backwards_, "stair_descend_backwards", true);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;
@@ -596,7 +597,10 @@ void MPPIController::trackPoint(
     const double dv = max_linear_accel_ * control_duration_;
     vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
   }
-  wz = std::clamp(vx * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
+  // |vx|: backwards down a stair the speed is negative and the bearing is
+  // taken from the tail, and the arc through the point is the same one.
+  wz = std::clamp(
+    std::fabs(vx) * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
   if (max_angular_accel_ > 0.0) {
     const double dw = max_angular_accel_ * control_duration_;
     wz = std::clamp(wz, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
@@ -722,6 +726,7 @@ bool MPPIController::climbStairs(
     if (climbing_stairs_) {
       climbing_stairs_ = false;
       stair_turning_ = false;
+      stair_reverse_ = false;
       // The warm-started sequence predates the stairs; start from scratch.
       optimizer_.reset();
       RCLCPP_INFO(logger_, "Off the stairs: handing back to the optimizer");
@@ -738,6 +743,23 @@ bool MPPIController::climbStairs(
   // reset_period from zeroing the clamp baseline on the hand-back.
   last_time_called_ = clock_->now();
 
+  // Which way the stair ahead goes, read every cycle (2026-10-21): down is
+  // taken backwards, because HIMLOCO descends a flight facing the risers as
+  // it climbs one. A level stretch -- a landing, the floor past the bottom
+  // -- keeps the last reading, so a descent stays backwards across its
+  // landings and through the hold at the bottom, where the robot turns
+  // round before the policy goes back.
+  if (stair_descend_backwards_ && !plan.poses.empty()) {
+    const int slope =
+      syncai_util::StairMode::slopeAhead(plan, 0, stair_mode_.params().min_rise, 10.0);
+    if (slope != 0 && (slope < 0) != stair_reverse_) {
+      stair_reverse_ = slope < 0;
+      RCLCPP_INFO(
+        logger_, "Stairs: the path %s ahead; going %s", slope < 0 ? "descends" : "climbs",
+        stair_reverse_ ? "down backwards" : "up forwards");
+    }
+  }
+
   double vx = 0.0;
   double wz = 0.0;
   const rclcpp::Time now = clock_->now();
@@ -745,6 +767,36 @@ bool MPPIController::climbStairs(
     // The turn brakes at the clamp's rate; the speed on the S-curve.
     brake(vx, wz);
     vx = stairSpeed(0.0, now);
+    if (stair.leaving && stair_reverse_ && vx == 0.0 && !plan.poses.empty()) {
+      // Off a descent the robot faces back up the stairs: turn round to the
+      // path, standing, before the policy goes back and the optimizer takes
+      // over, which would otherwise be handed a path behind the robot.
+      const double x = robot_pose.pose.position.x;
+      const double y = robot_pose.pose.position.y;
+      auto ahead = std::find_if(
+        plan.poses.begin(), plan.poses.end(), [&](const geometry_msgs::msg::PoseStamped & ps) {
+          return std::hypot(ps.pose.position.x - x, ps.pose.position.y - y) >=
+                 stair_lookahead_dist_;
+        });
+      if (ahead == plan.poses.end()) {
+        ahead = std::prev(plan.poses.end());
+      }
+      const double bearing = angles::shortest_angular_distance(
+        tf2::getYaw(robot_pose.pose.orientation),
+        std::atan2(ahead->pose.position.y - y, ahead->pose.position.x - x));
+      if (!stair_turning_ && std::fabs(bearing) > approach_rotate_min_angle_) {
+        stair_turning_ = true;
+        RCLCPP_INFO(
+          logger_, "Stairs: at the bottom of the descent, turning %.0f deg round to the path",
+          bearing * 180.0 / M_PI);
+      } else if (stair_turning_ && std::fabs(bearing) < stair_turn_done_angle_) {
+        stair_turning_ = false;
+      }
+      if (stair_turning_) {
+        rotateInPlace(bearing, vx, wz);
+        vx = 0.0;
+      }
+    }
     if (vx == 0.0 && wz == 0.0) {
       // Standing: the policy goes out, or the settle time runs down.
       stair_mode_.standing(clock_->now());
@@ -758,7 +810,10 @@ bool MPPIController::climbStairs(
     }
     const double x = robot_pose.pose.position.x;
     const double y = robot_pose.pose.position.y;
-    const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+    // Backwards down a descent (stair_reverse_): the bearing is taken from
+    // the robot's tail and the speed is negative; the pursuit law is the
+    // same, with wz from |vx| (trackPoint()).
+    const double yaw = tf2::getYaw(robot_pose.pose.orientation) + (stair_reverse_ ? M_PI : 0.0);
     // The carrot: the first pose stair_lookahead_dist out, else the path's
     // end (the goal, inside that distance) -- and never past the next
     // corner (2026-10-21). OctomapPlanner3D lays a switchback stairwell as
@@ -785,7 +840,7 @@ bool MPPIController::climbStairs(
     if (carrot_idx >= plan.poses.size()) {
       carrot_idx = plan.poses.size() - 1;
     }
-    double target = stair_linear_vel_;
+    double target = stair_reverse_ ? -stair_linear_vel_ : stair_linear_vel_;
     size_t corner_idx = 0;
     double corner_heading = 0.0;
     if (syncai_util::StairMode::findCorner(
@@ -816,7 +871,8 @@ bool MPPIController::climbStairs(
     if (!stair_turning_ && std::fabs(bearing) > approach_rotate_min_angle_) {
       stair_turning_ = true;
       RCLCPP_INFO(
-        logger_, "Stairs: turning in place %.0f deg onto the path", bearing * 180.0 / M_PI);
+        logger_, "Stairs: turning in place %.0f deg onto the path%s", bearing * 180.0 / M_PI,
+        stair_reverse_ ? " (tail first)" : "");
     } else if (stair_turning_ && std::fabs(bearing) < stair_turn_done_angle_) {
       stair_turning_ = false;
     }
