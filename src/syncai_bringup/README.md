@@ -260,12 +260,15 @@ camera:
 plus the `lidar_top` frame (the lidar) and, under it, `lidar_top_imu` (its IMU)
 and `camera_optical_frame`.
 
-`camera_optical_joint` is **provisional** (2026-10-16): robot01's camera
-measured by hand at 7 cm ahead of and 6.5 cm below the lidar along the body
-axes, level and facing forward, expressed in the 0.25 rad-pitched `lidar_top`
-as `xyz="0.084 0 -0.046" rpy="-1.3208 0 -1.5708"`. It is good for TF lookups
-and an rviz sanity check, not for projecting lidar points onto the image —
-replace it with the lidar-camera calibration result. It hangs off `lidar_top`
+`camera_optical_joint` is robot01's camera (2026-10-20,
+`xyz="0.084 0.0 -0.046" rpy="-1.3240 -0.0060 -1.5868"`): the translation is
+the tape measure (7 cm ahead of and 6.5 cm below the lidar along the body axes,
+expressed in the 0.25 rad-pitched `lidar_top`), the rotation a calibration —
+about 0.8° of pan away from the level, straight-ahead mount the tape assumed.
+`docs/lidar-camera-calibration.md` has how, why the translation was not
+calibrated, and when to redo it (after any change of
+`config/calibration/<robot_id>/camera0.yaml`). The file is one URDF for every
+robot, so this joint is robot01's until a per-robot override exists. It hangs off `lidar_top`
 rather than `base_link` because that calibration solves camera ↔ lidar, and
 `lidar_top` is the frame the raw cloud is stamped with, so the result goes into
 the joint as it is — under `lidar_top`, not `lidar_top_imu`.
