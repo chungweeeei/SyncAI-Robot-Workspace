@@ -23,15 +23,29 @@
 # would test the one the fleet never runs. arm64 runners are free for public
 # repositories, which this is.
 #
-# The image layers live in the GitHub Actions cache (mode=max, so the
+# The image is built only when the Dockerfile changes. It is pushed to
+# ghcr.io/<repo>:dev-<sha256 of the Dockerfile, 16 hex>, and every run first
+# tries to pull that tag; a hit skips the build entirely. Until 2026-10 every
+# run went through build-push-action against the Actions cache, and even a
+# full cache hit paid for downloading the layers and exporting a ~4.5 GB
+# tarball into `docker load`, on every push. The tag is content-addressed
+# rather than "the Dockerfile changed in this push" (a paths filter), so a
+# branch, a re-run or a revert that lands on a Dockerfile some run already
+# built pulls it, whichever branch built it.
+#
+# The hash covers the Dockerfile alone because that is the image's only input
+# from the context: every COPY is `--from=` a stage (see .dockerignore for
+# what the context would hold). A COPY of a context file added later must add
+# that file to the hash, or the image goes stale without anyone noticing.
+#
+# On a miss the build still uses the Actions cache (mode=max, so the
 # intermediate gtsam / sophus / livox / ceres / iridescence / rust-underlay
-# stages are cached too --
-# `dev` only COPYs their output, and without them every run would rebuild
-# GTSAM). The first run, and any run after a change to one of those stages,
-# takes the better part of an hour; later runs only pay for colcon. The image
-# is ~4.5 GB, so a second big cache entry (a long-lived branch with a different
-# Dockerfile) can push the repository past the 10 GB cache limit and evict the
-# first -- that shows up as a slow run, not a failure.
+# stages are cached too -- a `dev`-only edit must not rebuild GTSAM). A run
+# that changes one of those stages takes the better part of an hour. The
+# cache is ~4.5 GB, so a second big entry can push the repository past the
+# 10 GB limit and evict the first -- that shows up as a slow build, not a
+# failure. A PR from a fork gets a read-only token, so it builds and loads
+# the image without pushing it.
 #
 # Nothing here talks to a robot: there is no DDS traffic in a build, and the
 # one pytest file mocks nmcli.
@@ -99,22 +113,65 @@ jobs:
     name: colcon build + smoke (arm64, robot image)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
+      # ghcr.io names must be lowercase; the repository's is not.
+      - name: Resolve the image tag
+        id: image
+        run: |
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:dev-$(sha256sum Dockerfile | cut -c1-16)" \
+            >> "$GITHUB_OUTPUT"
 
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Any pull failure falls through to the build, not only "manifest
+      # unknown": a transient registry error then costs a build, never a red run.
       # Tagged with the name docker-compose.build.yml expects, so its `run`
       # finds the image already loaded and does not try to build it again.
+      - name: Pull the robot image
+        id: pull
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+        run: |
+          if docker pull "$REF"; then
+            docker tag "$REF" syncai-robot-base
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No $REF yet -- building it."
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.pull.outputs.hit != 'true'
+
+      # The source label links the package to this repository, so it inherits
+      # the repository's access and the next run's GITHUB_TOKEN can pull it.
       - name: Build the robot image (dev target)
+        if: steps.pull.outputs.hit != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           target: dev
-          tags: syncai-robot-base
+          # The ghcr ref only: a second, bare `syncai-robot-base` tag would be
+          # pushed too, to docker.io/library, and fail the step.
+          tags: ${{ steps.image.outputs.ref }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           load: true
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           cache-from: type=gha,scope=robot-dev
           cache-to: type=gha,scope=robot-dev,mode=max
+
+      - name: Tag the built image for docker-compose.build.yml
+        if: steps.pull.outputs.hit != 'true'
+        run: docker tag "${{ steps.image.outputs.ref }}" syncai-robot-base
 
       # vcstool from the image rather than the runner, so nothing beyond Docker
       # has to exist on it. `export --exact` puts the SHA each `dev` branch
