@@ -175,8 +175,12 @@ protected:
     * @param speed The linear speed to walk at
     * @param vx Set to the linear command
     * @param wz Set to the angular command
+    * @param min_speed The least vx, applied after the acceleration clamp (so
+    * a walk starts at it instead of ramping up through it); 0 keeps the ramp
     */
-  void trackPoint(double bearing, double dist, double speed, double & vx, double & wz) const;
+  void trackPoint(
+    double bearing, double dist, double speed, double & vx, double & wz,
+    double min_speed = 0.0) const;
 
   /**
     * @brief Ramp both commands to zero at the clamps' own rates
@@ -247,6 +251,8 @@ protected:
   // syncai_util::StairMode's, shared with RPP 3D; the climb is climbStairs()'s.
   syncai_util::StairMode stair_mode_;
   double stair_linear_vel_{0.5};
+  // The least vx of the walk on a flight (see climbStairs()).
+  double stair_min_linear_vel_{0.5};
   double stair_lookahead_dist_{0.4};
   // Set while climbStairs() owns the robot (hold or climb), so the optimizer
   // is reset once on the way in and once on the way out.

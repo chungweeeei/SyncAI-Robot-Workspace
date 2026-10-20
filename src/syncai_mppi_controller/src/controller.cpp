@@ -71,6 +71,7 @@ void MPPIController::initialize(
   // plugin's name; these two are the climb's.
   stair_mode_.initialize(node, name_);
   getParam(stair_linear_vel_, "stair_linear_vel", 0.5);
+  getParam(stair_min_linear_vel_, "stair_min_linear_vel", 0.5);
   getParam(stair_lookahead_dist_, "stair_lookahead_dist", 0.4);
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
@@ -467,7 +468,7 @@ bool MPPIController::approachGoal(
 }
 
 void MPPIController::trackPoint(
-  double bearing, double dist, double speed, double & vx, double & wz) const
+  double bearing, double dist, double speed, double & vx, double & wz, double min_speed) const
 {
   // Out of a turn this ramps up from rest at max_linear_accel, under the
   // floor for its first ~0.3 s, exactly as RPP's ramp does. The arc is
@@ -481,6 +482,12 @@ void MPPIController::trackPoint(
   if (max_linear_accel_ > 0.0) {
     const double dv = max_linear_accel_ * control_duration_;
     vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+  }
+  // A floor, when asked for, after the clamp it overrides: the walk then
+  // starts at it in one step (the stair climb's; see climbStairs()). Never
+  // above `speed`, which stays the cap.
+  if (min_speed > 0.0) {
+    vx = std::max(vx, std::min(min_speed, speed));
   }
   wz = std::clamp(vx * 2.0 * std::sin(bearing) / dist, -final_rotation_wz_, final_rotation_wz_);
   if (max_angular_accel_ > 0.0) {
@@ -606,7 +613,13 @@ bool MPPIController::climbStairs(
     if (std::fabs(bearing) > approach_rotate_min_angle_) {
       rotateInPlace(bearing, vx, wz);
     } else if (dist > 1e-3) {
-      trackPoint(bearing, dist, stair_linear_vel_, vx, wz);
+      // Floored at stair_min_linear_vel (2026-10-20): the walk on a flight
+      // starts at that speed rather than ramping up from rest through the
+      // acceleration clamp after every stop (the policy switch, a turn onto
+      // the carrot), ~0.5 s under it each time. The in-place turn and the
+      // brakes for the switches keep their clamped ramps: stopping for a
+      // policy switch is the point of them.
+      trackPoint(bearing, dist, stair_linear_vel_, vx, wz, stair_min_linear_vel_);
     }
   }
 

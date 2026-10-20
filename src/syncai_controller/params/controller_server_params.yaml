@@ -330,7 +330,23 @@
       stair_policy_mode: 1
       flat_policy_mode: -1
       stair_linear_vel: 0.5
-      stair_lookahead_dist: 0.4
+      # The least vx of the walk on a flight (2026-10-20), so it starts at
+      # this instead of ramping up from rest at max_linear_accel after every
+      # stop -- the policy switch, a turn onto the carrot -- ~0.5 s under it
+      # each time. Equal to stair_linear_vel: the climb is one speed. Never
+      # above it (that stays the cap). Not the in-place turn's vx (0) nor the
+      # brakes for the switches, which must stop. 0 restores the ramp.
+      # Unmeasured on HIMLOCO, as stair_linear_vel is.
+      stair_min_linear_vel: 0.5
+      # 0.4 -> 0.6 (2026-10-20). 0.4 was RPP 3D's, for the inside treads of
+      # dp1f_1012's spiral (radius ~1.3 m), but a single flight is a straight
+      # stair link now (Octo3D, 2026-10-19), with no turn to cut. At 0.4 the
+      # carrot's bearing passed approach_rotate_min_angle (0.25 rad) at ~10 cm
+      # of sideways sway -- a stop and an in-place turn on the stairs -- and at
+      # 0.5 m/s 10 cm asked ~0.63 rad/s, the turn cap. At 0.6 those are ~15 cm
+      # and ~0.28 rad/s; a switchback's landing turn (walked link) is cut by
+      # ~0.15-0.2 m. FollowPathRPP3D keeps its own 0.4. Unmeasured.
+      stair_lookahead_dist: 0.6
       # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
       # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
       # 2 m half-width. With consider_footprint, a rolled-out point off the
