@@ -56,7 +56,11 @@ public:
     // its stair link 0.68 m and its 2F ramp 0.47 m, so 0.3 takes the stairs
     // and the ramp and nothing else, once each.
     double min_rise{0.3};
-    // stair_enter_dist: how far ahead the rise is looked for off the stairs.
+    // stair_enter_dist: the window the rise is looked for in, off the stairs:
+    // min_rise within enter_dist is a stair (a slope of ~17 deg or more). The
+    // window starts anywhere from the robot to the stopping distance the
+    // controller passes to update() (2026-10-20), so the hold begins that much
+    // earlier and the robot stands about where it used to start braking.
     double enter_dist{1.0};
     // stair_exit_behind_dist / stair_exit_ahead_dist: the window that must
     // have gone level before leaving. 2.5 m ahead keeps a landing (rarely
@@ -127,8 +131,13 @@ public:
    * @param remaining_poses How many poses of the plan the controller still
    * tracks: it prunes from the front, so the robot's index in the full plan is
    * `full_plan.size() - remaining_poses`
+   * @param stop_dist How far the robot would travel if the hold's brake began
+   * now (the controller's own brake from its commanded speed). The stair is
+   * looked for that much further ahead (stairRiseAhead()); 0 = from the robot.
+   * An entry under way keeps the figure it started with, because the brake
+   * shrinks the controller's figure while the stair stays where it is.
    */
-  Decision update(const rclcpp::Time & now, size_t remaining_poses);
+  Decision update(const rclcpp::Time & now, size_t remaining_poses, double stop_dist = 0.0);
 
   /**
    * @brief The controller has commanded a stop while hold is set: send the
@@ -159,10 +168,18 @@ public:
   static double stairRise(
     const nav_msgs::msg::Path & path, size_t idx, double behind, double ahead);
 
+  /**
+   * @brief The largest stairRise(path, k, 0, ahead) over every pose k from
+   * `idx` to `lead` metres after it: the same window, looked for further off,
+   * so a slope gentler than the window's threshold stays so at any lead
+   */
+  static double stairRiseAhead(
+    const nav_msgs::msg::Path & path, size_t idx, double lead, double ahead);
+
 private:
   enum class Transition { None, Entering, Leaving };
 
-  bool wantStairs(size_t remaining_poses) const;
+  bool wantStairs(size_t remaining_poses, double lead) const;
   // Ask the gait controller for `policy` (fire and forget: the driver's UDP has
   // no acknowledgement to wait for).
   void sendPolicy(int policy);
@@ -185,6 +202,8 @@ private:
   bool on_stairs_{false};
   Transition transition_{Transition::None};
   bool policy_sent_{false};
+  // The stop_dist an entry started with (update()).
+  double entry_lead_{0.0};
   rclcpp::Time settle_until_;
   // The policy to go back to after the stairs (-1: none known).
   int restore_policy_{-1};

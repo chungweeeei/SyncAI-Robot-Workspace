@@ -586,7 +586,8 @@ bool MPPIController::climbStairs(
   // the pruned path stair_lookahead_dist away, tracked like the direct
   // approach's goal point (turn in place onto it past
   // approach_rotate_min_angle, else trackPoint()). Blind from the moment
-  // StairMode holds (stair_enter_dist before the rise) until it leaves
+  // StairMode holds (up to stair_enter_dist plus the brake before the rise)
+  // until it leaves
   // (stair_exit_behind_dist past the top), which also keeps the robot clear
   // of the flight's lethal cells when the optimizer takes over again.
   //
@@ -607,7 +608,15 @@ bool MPPIController::climbStairs(
     plan = path_handler_.transformPath(robot_pose);
     remaining = path_handler_.remainingPoses();
   }
-  const auto stair = stair_mode_.update(clock_->now(), remaining);
+  // The stair is looked for past where the hold's brake would stop the robot
+  // (2026-10-20): stairSpeed()'s S-curve from the commanded speed takes
+  // 1.5 v / a at an average of v / 2, i.e. 0.75 v^2 / a -- 0.48 m from
+  // 0.8 m/s, as much as a 30 deg ramp's whole margin, so the robot stood at
+  // its foot or on it. Commanded, not measured, speed: the gait under-tracks,
+  // so this errs long.
+  const double v = std::fabs(last_cmd_vel_.linear.x);
+  const double stop_dist = max_linear_accel_ > 0.0 ? 0.75 * v * v / max_linear_accel_ : 0.0;
+  const auto stair = stair_mode_.update(clock_->now(), remaining, stop_dist);
   if (!stair.refuse.empty()) {
     throw syncai_nav_core::PlannerException(stair.refuse);
   }

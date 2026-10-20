@@ -233,7 +233,14 @@ Climbing itself is the stair mode, next.
 
 On a path with heights, RPP 3D and MPPI climb a stretch that rises
 **`stair_min_rise`** (0.3 m) within **`stair_enter_dist`** (1 m) ahead in *stair
-mode* (2026-10). The detection, the policy switch and the latched report are
+mode* (2026-10). Since 2026-10-20 that 1 m window is looked for anywhere from
+the robot out to the controller's stopping distance from its commanded speed
+(`StairMode::update()`'s `stop_dist`: MPPI's S-curve brake 0.75 v² / a, RPP
+3D's constant deceleration v² / 2a — 0.48 / 0.32 m from 0.8 m/s), so the hold
+begins that much earlier. The threshold slope (~17°) does not change; only how
+far off it is seen. With the window alone, the brake from 0.8 m/s took all of
+the 0.48 m a 30° ramp left (0.18 m at 20°), and the robot stood at the foot or
+on the rise. The detection, the policy switch and the latched report are
 one state machine, **`syncai_util::StairMode`** (`stair_mode.hpp`; lifted out
 of RPP 3D on 2026-10-20 when MPPI needed the same behaviour, so there is one
 calibration of the gait's stair policy, not two), declared under each plugin's

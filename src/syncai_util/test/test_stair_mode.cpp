@@ -93,6 +93,59 @@ TEST(StairRise, LevelIsZeroAndFlightRises)
   EXPECT_DOUBLE_EQ(StairMode::stairRise(path, path.poses.size() + 3, 0.0, 1.0), 0.0);
 }
 
+// A steady slope of `per_metre` over 3 m, between 3 m of level either side.
+nav_msgs::msg::Path rampPath(double per_metre)
+{
+  auto p = levelPath();
+  double z = 0.0;
+  for (size_t i = 0; i < p.poses.size(); ++i) {
+    if (i > kLevelIn && i <= kLevelIn + 30) {
+      z += per_metre * kStep;
+    }
+    p.poses[i].pose.position.z = z;
+  }
+  return p;
+}
+
+TEST(StairRise, AheadSlidesTheSameWindowFurtherOut)
+{
+  const auto path = stairPath();
+  // No lead: stairRise() itself.
+  EXPECT_DOUBLE_EQ(
+    StairMode::stairRiseAhead(path, 20, 0.0, 1.0), StairMode::stairRise(path, 20, 0.0, 1.0));
+  // 0.9 m before the flight the 1 m window holds its first step only; one
+  // that may start 0.4 m further on holds five (0.34 m).
+  EXPECT_NEAR(StairMode::stairRise(path, kLevelIn - 9, 0.0, 1.0), kRise / kFlight, 1e-9);
+  EXPECT_NEAR(StairMode::stairRiseAhead(path, kLevelIn - 9, 0.45, 1.0), 5 * kRise / kFlight, 1e-9);
+  // A slope under min_rise per window stays under it at any lead: the
+  // threshold is the window's, not the lead's.
+  const auto ramp = rampPath(0.2);
+  EXPECT_NEAR(StairMode::stairRiseAhead(ramp, 0, 3.0, 1.0), 0.2, 1e-9);
+}
+
+TEST(StairMode, StopDistanceEntersEarlierAndKeepsItsLeadWhileBraking)
+{
+  Harness h;
+  h.sm.setReportedPolicy(0);
+  const auto path = stairPath();
+  h.sm.setPlan(path);
+  const size_t n = path.poses.size();
+  // 0.48 m of brake (MPPI's S-curve from 0.8 m/s): the hold starts 4 poses
+  // before the no-lead entry at kLevelIn - 5.
+  auto d = h.sm.update(at(0.0), n - (kLevelIn - 10), 0.48);
+  EXPECT_FALSE(d.hold);
+  d = h.sm.update(at(0.05), n - (kLevelIn - 9), 0.48);
+  EXPECT_TRUE(d.hold);
+  // Braking: the controller's figure falls with the speed, and with no lead
+  // this pose does not ask for stairs; the entry keeps the lead it started
+  // with, so it is not dropped.
+  d = h.sm.update(at(0.1), n - (kLevelIn - 9), 0.0);
+  EXPECT_TRUE(d.hold);
+  h.sm.standing(at(0.2));
+  ASSERT_EQ(h.sent.size(), 1u);
+  EXPECT_EQ(h.sent[0], 1);
+}
+
 TEST(StairMode, DisabledNeverHolds)
 {
   StairMode::Params p;

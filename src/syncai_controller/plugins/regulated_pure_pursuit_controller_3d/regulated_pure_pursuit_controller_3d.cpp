@@ -335,8 +335,13 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   // (hold) or climbs (on_stairs); transformGlobalPlan() has just pruned
   // global_plan_, so its size is the robot's place in the full plan. A refusal
   // (set_policy_mode missing on the way in) fails the cycle; the server stops
-  // the robot.
-  const auto stair = stair_mode_.update(clock_->now(), global_plan_.poses.size());
+  // the robot. The stair is looked for past where the hold's brake below
+  // (constant deceleration at max_linear_accel) would stop the robot from the
+  // commanded speed, v^2 / 2a -- 0.32 m from 0.8 m/s (2026-10-20).
+  const double stop_v = std::fabs(last_cmd_vel_.linear.x);
+  const double stop_dist =
+    max_linear_accel_ > 0.0 ? stop_v * stop_v / (2.0 * max_linear_accel_) : 0.0;
+  const auto stair = stair_mode_.update(clock_->now(), global_plan_.poses.size(), stop_dist);
   if (!stair.refuse.empty()) {
     throw syncai_nav_core::PlannerException(stair.refuse);
   }

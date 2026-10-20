@@ -314,7 +314,12 @@
       # stay > 0). Leaves when the window from stair_exit_behind_dist back to
       # stair_exit_ahead_dist ahead has gone level, with a second stop and
       # the policy restored. A path without heights never enters it.
-      # Untested on the robot, as RPP 3D's is.
+      # Untested on the robot, as RPP 3D's is. The stair_enter_dist window is
+      # looked for from the robot out to the stair brake's own stopping
+      # distance (2026-10-20; 0.75 v^2 / max_linear_accel, 0.48 m from 0.80),
+      # so at vx_max the hold starts up to ~1.5 m before the rise and the
+      # robot stands about where a slow approach would start braking: the
+      # 1.0 m window alone left 0.48 m before a 30 deg ramp, all of it brake.
       use_stair_mode: true
       stair_min_rise: 0.3
       stair_enter_dist: 1.0
@@ -660,8 +665,11 @@
       # stair_policy_settle_time, and climbs at stair_linear_vel with a
       # stair_lookahead_dist carrot. It leaves once the path from
       # stair_exit_behind_dist back to stair_exit_ahead_dist ahead rises less
-      # than stair_min_rise, stopping again to switch the policy back.
-      # Windows from dp1f_1012's Octo3D paths: level paths rise at most
+      # than stair_min_rise, stopping again to switch the policy back. The
+      # stair_enter_dist window is looked for out to the hold's own stopping
+      # distance (v^2 / 2 max_linear_accel, 0.32 m from 0.8; 2026-10-20), so
+      # the hold starts that much earlier and the 1 m window's margin before
+      # the rise is not spent braking. Windows from dp1f_1012's Octo3D paths: level paths rise at most
       # 0.10-0.20 m within 1 m, the 2F ramp 0.47 m (so it is climbed in stair
       # mode too, 1.9 m of it), the spiral stair 0.68 m; with these values
       # each stair path enters stair mode once, and its landings keep it.

@@ -89,7 +89,8 @@ void StairMode::setPlan(const nav_msgs::msg::Path & full_plan)
   plan_has_height_ = pathHasHeight(full_plan);
 }
 
-StairMode::Decision StairMode::update(const rclcpp::Time & now, size_t remaining_poses)
+StairMode::Decision StairMode::update(
+  const rclcpp::Time & now, size_t remaining_poses, double stop_dist)
 {
   (void)now;
   Decision d;
@@ -103,7 +104,15 @@ StairMode::Decision StairMode::update(const rclcpp::Time & now, size_t remaining
   // moving off under the new one. A transition whose policy has not gone out
   // yet is dropped if the plan stops asking for it (a replan round the
   // stairs); once sent, it completes.
-  const bool want = wantStairs(remaining_poses);
+  // Off the stairs the window is looked for past the controller's stopping
+  // distance. While an entry brakes, that figure falls with the speed, and
+  // near the end of the brake faster than the distance still to go; with the
+  // window sliding back off the stair the entry would be dropped (its policy
+  // is not sent before the robot stands) and the robot drive on. So an entry
+  // keeps the lead it started with.
+  const double lead =
+    std::max(std::max(stop_dist, 0.0), transition_ == Transition::Entering ? entry_lead_ : 0.0);
+  const bool want = wantStairs(remaining_poses, lead);
   if (transition_ == Transition::None && want != on_stairs_) {
     int target = -1;
     if (want) {
@@ -135,6 +144,7 @@ StairMode::Decision StairMode::update(const rclcpp::Time & now, size_t remaining
       }
       transition_ = want ? Transition::Entering : Transition::Leaving;
       policy_sent_ = false;
+      entry_lead_ = lead;
       RCLCPP_INFO(
         logger_, "%s stair mode: stopping to switch the policy to %d",
         want ? "Entering" : "Leaving", target);
@@ -208,7 +218,22 @@ double StairMode::stairRise(
   return hi - lo;
 }
 
-bool StairMode::wantStairs(size_t remaining_poses) const
+double StairMode::stairRiseAhead(
+  const nav_msgs::msg::Path & path, size_t idx, double lead, double ahead)
+{
+  double rise = stairRise(path, idx, 0.0, ahead);
+  double d = 0.0;
+  for (size_t k = idx; k + 1 < path.poses.size(); ++k) {
+    d += euclidean_distance(path.poses[k].pose, path.poses[k + 1].pose);
+    if (d > lead) {
+      break;
+    }
+    rise = std::max(rise, stairRise(path, k + 1, 0.0, ahead));
+  }
+  return rise;
+}
+
+bool StairMode::wantStairs(size_t remaining_poses, double lead) const
 {
   // A level path (every 2D planner) never asks for stairs, which also takes a
   // robot left in stair mode by a cancelled goal back out on the next one.
@@ -218,7 +243,7 @@ bool StairMode::wantStairs(size_t remaining_poses) const
   // The controller pruned everything before the pose nearest the robot.
   const size_t idx = full_plan_.poses.size() - remaining_poses;
   if (!on_stairs_) {
-    return stairRise(full_plan_, idx, 0.0, params_.enter_dist) >= params_.min_rise;
+    return stairRiseAhead(full_plan_, idx, lead, params_.enter_dist) >= params_.min_rise;
   }
   return stairRise(full_plan_, idx, params_.exit_behind_dist, params_.exit_ahead_dist) >=
          params_.min_rise;
