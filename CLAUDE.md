@@ -463,7 +463,11 @@ lidar-camera calibration bags — nothing else, not even `driver_manager` or
 because it holds the same lidar UDP ports and camera the other two do, and
 `switch_mode`'s kill-all-then-build is what keeps them exclusive. The value is
 new in `SyncAI-Robot-Interface`'s `RobotMode`; the backend's mode route accepts
-`MANUAL` / `AUTO` only, so it is a `ros2 service call` for now.
+`MANUAL` / `AUTO` only, so it is a `ros2 service call` for now. The procedure
+it serves — board views for the intrinsics (AUTO is enough for those), bags
+and a rotation-only fit for the extrinsic — is
+`docs/lidar-camera-calibration.md`, with its tools in `scripts/calibration/`
+and the `lidar-camera-calibration` skill under `.claude/skills/`.
 
 Three services, namespaced under `robot_id`:
 
@@ -827,8 +831,9 @@ something to verify or edit here.
   delete the translation.
 - `build/`, `install/`, `log/`, `data/`, `.env`, `record/` (hand-recorded
   rosbags), the whole of `/map/` (LIO output: `map.pcd`, `poses.txt`,
-  `patches/`, generated `gridmap.*`) and `/models/` (TTS weights, which nothing
-  here downloads any more) are gitignored, as are `src/syncai_common/`,
+  `patches/`, generated `gridmap.*`), `/models/` (TTS weights, which nothing
+  here downloads any more) and `/config/calibration/` (each robot's own camera
+  intrinsics, made on the robot — see `docs/lidar-camera-calibration.md`) are gitignored, as are `src/syncai_common/`,
   `src/syncai_mapping/`, `src/syncai_driver_manager/`, `src/syncai_robot_state/`,
   `src/syncai_lio_bridge/`, `src/syncai_camera_feeder/` and `src/syncai_backend/` — the first six because
   they are materialised by `vcs import < dependencies.repos`, the last so a clone of the backend kept there for development
@@ -837,26 +842,26 @@ something to verify or edit here.
   live in the container — the session name follows the mode, so a hardcoded
   alias is wrong half the time), `build.sh` (in-image: the build
   steps behind `docker-compose.build.yml`, see Build), `urdf2glb.py` (robot mesh for the
-  console's 3D view, see "Out of tree"), and `release/` (`build_images.sh` / `save_images.sh` /
+  console's 3D view, see "Out of tree"), `calibration/` (camera intrinsics and
+  lidar-camera extrinsic, 2026-10: see `docs/lidar-camera-calibration.md`;
+  `collect_board.py` / `snapshot.py` need rclpy, the rest only numpy + OpenCV +
+  PyYAML and also run on the host), and `release/` (`build_images.sh` / `save_images.sh` /
   `load_and_up.sh` / `.env.example` — an offline release bundle for the
   customer IPC that is currently **non-functional**: it needs the removed
   production Dockerfile stages and a `docker-compose.prod.yml` that is not in
   the tree, and its `.env.example` says `ROS_DOMAIN_ID=0` while the stack pins
   domain 1). `skills-lock.json` at the root is Claude Code tooling metadata,
   not stack config.
-- `doc/` holds five design **proposals**, none implemented, and all five are on
-  agent / MCP integration: deep-agent wiring, a gridmap-tuning agent, MCP server
-  design, RoboNeuron mechanisms, and a task-recovery loop. Read them as history,
-  not as plans — three target `src/syncai_device_agent/`, removed in `99141a6`,
-  and four assume `src/syncai_ros_mcp/`, removed later; both are in git history.
-  Two things that used to be in this directory are not:
-  `webrtc-worker-proposal.md` and its zh-TW translation (a self-built Go + pion
-  WHEP worker owning the capture/crop/encode pipeline, deliberately ignoring the
-  host-side `publish_camera_crop.sh` path, itself removed in 2026-10) were deleted in `3dd5f7c`, and that
-  work now lives in its own repository, `chungweeeei/SyncAI-WebRTC-Worker`; and
-  the FAST-LIO2 design notes (`fastlio2-pgo-pipeline.md`, which
+- `docs/` holds operating procedures — one today, `lidar-camera-calibration.md`
+  (2026-10: camera intrinsics and the camera → lidar extrinsic, the robot01
+  results, and why each step is there). Plans have passed through it and been
+  deleted once done (`mapping-dynamic-removal.md`, `planner-params-exposure.md`,
+  in `807861a`). There is no `doc/` any more: its five agent / MCP design
+  proposals went in `0adf8da`, the WebRTC-worker proposal in `3dd5f7c` (that
+  work lives in `chungweeeei/SyncAI-WebRTC-Worker`), and with them the FAST-LIO2
+  design notes (`fastlio2-pgo-pipeline.md`, which
   `config/sessions/start_mapping.yaml` still cites by section number, noting the
-  file is gone). Check git history for either.
+  file is gone). Check git history for any of them.
 
 ## Tests
 
