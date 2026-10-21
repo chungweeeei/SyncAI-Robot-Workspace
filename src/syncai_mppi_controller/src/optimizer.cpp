@@ -14,17 +14,19 @@
 
 #include "syncai_mppi_controller/optimizer.hpp"
 
+#include <xtensor/xmath.hpp>
+#include <xtensor/xnoalias.hpp>
+#include <xtensor/xrandom.hpp>
+
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <cmath>
-#include <xtensor/xmath.hpp>
-#include <xtensor/xrandom.hpp>
-#include <xtensor/xnoalias.hpp>
 
 #include "syncai_costmap_2d/costmap_filters/filter_values.hpp"
+#include "syncai_nav_core/exceptions.hpp"
 
 namespace mppi
 {
@@ -174,7 +176,17 @@ bool Optimizer::fallback(bool fail)
 
   if (++counter > settings_.retry_attempt_limit) {
     counter = 0;
-    throw std::runtime_error("Optimizer fail to compute path");
+    // Not upstream (2026-10-21): PlannerException instead of Humble's
+    // std::runtime_error. controller_server applies failure_tolerance to
+    // PlannerException only and ends the goal on anything else, so the first
+    // cycle in which every candidate collided aborted FollowPath outright --
+    // on robot01 three aborts in 4.4 s beside one blocker, each spending one
+    // of move.xml's FollowPath retries and clearing the local costmap --
+    // while the params file, both READMEs and move.xml already counted on the
+    // 3 s window. Now each such cycle is a zero cmd_vel and a fresh optimizer
+    // (reset() above), and the goal ends only if no cycle succeeds for the
+    // whole window.
+    throw syncai_nav_core::PlannerException("Optimizer fail to compute path");
   }
 
   return true;
