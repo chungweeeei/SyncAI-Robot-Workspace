@@ -16,38 +16,33 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__TOOLS__UTILS_HPP_
 #define SYNCAI_MPPI_CONTROLLER__TOOLS__UTILS_HPP_
 
-#include <algorithm>
-#include <chrono>
-#include <string>
-#include <limits>
-#include <memory>
-#include <vector>
-
 #include <xtensor/xarray.hpp>
-#include <xtensor/xnorm.hpp>
 #include <xtensor/xmath.hpp>
+#include <xtensor/xnorm.hpp>
 #include <xtensor/xview.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <limits>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "angles/angles.h"
-
-#include "tf2/utils.h"
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
-
+#include "builtin_interfaces/msg/time.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
-#include "visualization_msgs/msg/marker_array.hpp"
-
 #include "rclcpp/rclcpp.hpp"
-#include "rclcpp/rclcpp.hpp"
-
-#include "syncai_util/node_utils.hpp"
-#include "syncai_nav_core/goal_checker.hpp"
-
-#include "syncai_mppi_controller/models/optimizer_settings.hpp"
-#include "syncai_mppi_controller/models/control_sequence.hpp"
-#include "syncai_mppi_controller/models/path.hpp"
-#include "builtin_interfaces/msg/time.hpp"
+#include "syncai_costmap_2d/footprint_collision_checker.hpp"
 #include "syncai_mppi_controller/critic_data.hpp"
+#include "syncai_mppi_controller/models/control_sequence.hpp"
+#include "syncai_mppi_controller/models/optimizer_settings.hpp"
+#include "syncai_mppi_controller/models/path.hpp"
+#include "syncai_nav_core/goal_checker.hpp"
+#include "syncai_util/node_utils.hpp"
+#include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace mppi::utils
 {
@@ -375,9 +370,49 @@ inline void findPathCosts(
   unsigned int map_x, map_y;
   const size_t path_segments_count = data.path.x.shape(0) - 1;
   data.path_pts_valid = std::vector<bool>(path_segments_count, false);
+  const bool is_tracking_unknown = costmap_ros->getLayeredCostmap()->isTrackingUnknown();
+
+  // Not upstream (2026-10-21): a path point is also invalid when the
+  // footprint, standing on it along the path, touches LETHAL -- CostCritic's
+  // consider_footprint test, i.e. "a candidate that tracks the path collides
+  // here". Upstream judges the centre cell alone (INSCRIBED or worse), which
+  // flags a point only with an obstacle within the inscribed radius (0.23 m)
+  // of the path's centre line. A blocker 0.25-0.45 m beside it -- what the
+  // planner's is_path_valid logs as "footprint perimeter on LETHAL (centre
+  // cost ~185)" -- left every point valid, so PathAlignCritic never stood
+  // down (max_path_occupancy_ratio counts these flags) and kept pulling every
+  // candidate, at weight 14, onto a line the footprint cannot drive, while
+  // PathFollowCritic kept its carrot short of the blocker: on robot01 the
+  // robot walked up to three such blockers and stopped beside each until
+  // IsPathValid's 10 s replan or a FollowPath abort moved it on. Flagged,
+  // PathAlignCritic stands down while the blocked stretch is in reach and
+  // PathFollowCritic aims past it, which leaves the way round to CostCritic.
+  //
+  // The heading is the path's own direction (the bearing to the next point;
+  // a planner may leave pose orientations at identity), with no margin: a
+  // door the robot fits through straight must stay valid, or PathAlignCritic
+  // would stand down in every narrow door. A point within the circumscribed
+  // radius of the window's edge keeps the centre test alone, because
+  // footprintCost() reads an off-map vertex as LETHAL.
+  const bool check_footprint = !costmap_ros->getUseRadius();
+  const auto & footprint = costmap_ros->getRobotFootprint();
+  syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> checker(costmap);
+  const double edge = costmap_ros->getLayeredCostmap()->getCircumscribedRadius();
+  const double min_x = costmap->getOriginX() + edge;
+  const double min_y = costmap->getOriginY() + edge;
+  const double max_x = costmap->getOriginX() + costmap->getSizeInMetersX() - edge;
+  const double max_y = costmap->getOriginY() + costmap->getSizeInMetersY() - edge;
+  float heading = data.path.yaws(0);
+
   for (unsigned int idx = 0; idx < path_segments_count; idx++) {
     const auto path_x = data.path.x(idx);
     const auto path_y = data.path.y(idx);
+    // A repeated point keeps the previous segment's bearing.
+    const float dx = data.path.x(idx + 1) - path_x;
+    const float dy = data.path.y(idx + 1) - path_y;
+    if (dx * dx + dy * dy > 1e-8f) {
+      heading = atan2f(dy, dx);
+    }
     if (!costmap->worldToMap(path_x, path_y, map_x, map_y)) {
       (*data.path_pts_valid)[idx] = false;
       continue;
@@ -392,10 +427,18 @@ inline void findPathCosts(
         (*data.path_pts_valid)[idx] = false;
         continue;
       case (NO_INFORMATION):
-        const bool is_tracking_unknown =
-          costmap_ros->getLayeredCostmap()->isTrackingUnknown();
         (*data.path_pts_valid)[idx] = is_tracking_unknown ? true : false;
         continue;
+    }
+
+    if (check_footprint && path_x > min_x && path_x < max_x && path_y > min_y && path_y < max_y) {
+      using namespace syncai_costmap_2d;  // NOLINT
+      const auto cost =
+        static_cast<unsigned char>(checker.footprintCostAtPose(path_x, path_y, heading, footprint));
+      if (cost == LETHAL_OBSTACLE || (cost == NO_INFORMATION && !is_tracking_unknown)) {
+        (*data.path_pts_valid)[idx] = false;
+        continue;
+      }
     }
 
     (*data.path_pts_valid)[idx] = true;

@@ -346,6 +346,11 @@
         enabled: true
         cost_power: 1
         cost_weight: 14.0
+        # The share of invalid path points in reach above which this critic
+        # stands down. Since 2026-10-21 a point is invalid when the footprint
+        # standing on it along the path touches LETHAL (utils.hpp's
+        # findPathCosts), not only when its centre cell is INSCRIBED, so a
+        # blocker beside the path stands it down as one on the path does.
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 3
         threshold_to_consider: 0.5
