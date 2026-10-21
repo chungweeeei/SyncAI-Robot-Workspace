@@ -683,8 +683,21 @@
         raytrace_max_range: 3.0
         raytrace_min_range: 0.0
 
+    # Read by MPPI's CostCritic (and nothing else here: RPP checks LETHAL
+    # only, its cost-regulated scaling is off, docking reads no costmap).
+    # inflation_radius 0.45 (0.4 until 2026-10-21): at least the footprint's
+    # circumscribed radius (0.427 with the padding). CostCritic checks the
+    # footprint only where the centre's cell has a cost, so at 0.4 a centre
+    # 0.40-0.43 m from an obstacle read 0 and a corner could clip it
+    # unchecked. The price is 5 cm more band: a door's centre line now sits
+    # in it up to ~1.0 m wide rather than ~0.9 m, and CostCritic, which
+    # charges the band's mean cost over the horizon, stops MPPI in front of
+    # such a door (feature/octomap-planner-3d's d4875c5 has that model; this
+    # is extrapolated, not rerun). Obstacle avoidance over narrow doors was
+    # decided 2026-10-21. cost_scaling_factor 3.0: cost 204 at 0.30 m from
+    # the robot's centre, 176 at 0.35, 151 at 0.40, 130 at 0.45.
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true
-      inflation_radius: 0.4
+      inflation_radius: 0.45
       cost_scaling_factor: 3.0

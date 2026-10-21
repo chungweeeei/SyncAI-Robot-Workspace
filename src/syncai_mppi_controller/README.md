@@ -104,7 +104,13 @@ how it differs from upstream's default.
 
 `CostCritic` reads `cost_scaling_factor` / `inflation_radius` from the local
 costmap's `InflationLayer` (`inflation_layer_name` empty = the first one), so
-those two stay in the costmap block and are not repeated here.
+those two stay in the costmap block and are not repeated here. The radius must
+be at least the footprint's circumscribed radius (0.427 m): the critic checks
+the footprint only where the centre's cell has a cost, so a smaller band lets
+a corner clip an obstacle the centre is just outside of. 0.45 since 2026-10-21
+(0.4 before, which had that hole); the price is that MPPI stops in front of
+doors narrower than ~1.0 m rather than ~0.9 m, accepted as obstacle avoidance
+over narrow doors.
 
 ## Gotchas
 
