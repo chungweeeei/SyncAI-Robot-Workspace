@@ -408,7 +408,8 @@ before that) and went to 0.45 on 2026-10-21, because 0.3 is not above the
 gait's floor: on robot01 MPPI's ±0.30 rad/s in front of a blocker turned the
 robot at 0–0.16 rad/s for ~9 s, while 0.65 rad/s turns ran at 0.5–0.9. The
 floor itself lies somewhere in 0.3–0.65 and is unmeasured. MPPI's
-`in_place_wz_min` is the same floor, so change the two together. 0 disables it.
+`in_place_wz_min` and `FollowPathRPP3D`'s copy of this parameter are the same
+floor, so change all three together. 0 disables it.
 
 It is also zeroed on **any throw out of the compute cycle**, which is the only
 thing `computeVelocityCommands()` does: it takes `mutex_`, calls
