@@ -57,6 +57,10 @@
     # the only detour there is MPPI's own, inside the local costmap; at a
     # blocker that closes the way it stops, and those retries (~16 s) are
     # the whole wait before the goal fails.
+    # MPPI's "Optimizer fail to compute path" reaches this window only since
+    # 2026-10-21: until then the optimizer threw Humble's std::runtime_error,
+    # which the server does not tolerate, so FollowPath aborted on the first
+    # such cycle (three aborts in 4.4 s beside one blocker on robot01).
     failure_tolerance: 3.0
     speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
