@@ -176,8 +176,8 @@ void append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b)
 // each other, traversable or not, never p's floor again, no longer than the
 // link plus a metre -- then traversable cells of n's component with at
 // least clear_n clearance, ending on n. With out set, the points every
-// `spacing` along it: z from the surface on the floors, one ramp over the
-// flight.
+// `spacing` along it: z on the floors from the cell this walk took in that
+// column, one ramp over the flight.
 bool stairCrossing(
   const SurfaceMap & m, CellId p, CellId n, const StairLink & link, float clear_p, float clear_n,
   double spacing, std::vector<Waypoint> * out, const BlockedView * blocked)
@@ -213,8 +213,16 @@ bool stairCrossing(
   const auto s_of = [&](int ix, int iy) {
     return ((m.cx(ix) - px) * dx + (m.cy(iy) - py) * dy) / len;
   };
-  std::vector<std::pair<uint32_t, int>> phases;  // column -> phase, for the samples
-  std::vector<double> short_at;                  // s of the clearance shortfalls
+  // Column -> phase and, on a floor, the height of the cell taken there, for
+  // the samples.
+  struct ColumnPhase
+  {
+    uint32_t col;
+    int phase;
+    double z;
+  };
+  std::vector<ColumnPhase> phases;
+  std::vector<double> short_at;  // s of the clearance shortfalls
   CellId last = kNoCell;
   const auto onFloor = [&](int ix, int iy, uint32_t comp, float clear, int ph) {
     const uint32_t c = m.col(ix, iy);
@@ -231,7 +239,7 @@ bool stairCrossing(
     z = m.zTop(f);
     last = f;
     phase = ph;
-    phases.emplace_back(c, ph);
+    phases.push_back({c, ph, z});
     return true;
   };
   const bool ok = supercover(m.ixOf(px), m.iyOf(py), m.ixOf(nx), m.iyOf(ny), [&](int ix, int iy) {
@@ -277,7 +285,7 @@ bool stairCrossing(
       return false;
     }
     z = zs;
-    phases.emplace_back(c, 1);
+    phases.push_back({c, 1, zs});
     return true;
   });
   if (!ok || phase != 2 || last != n || s_hi <= s_lo) {
@@ -292,27 +300,39 @@ bool stairCrossing(
     return true;
   }
   out->clear();
-  const auto phaseOf = [&](uint32_t c) {
+  const auto phaseOf = [&](uint32_t c) -> const ColumnPhase * {
     for (const auto & pc : phases) {
-      if (pc.first == c) {
-        return pc.second;
+      if (pc.col == c) {
+        return &pc;
       }
     }
-    return 1;
+    return nullptr;
   };
+  // A floor sample takes the cell the walk above took in its column
+  // (2026-10-22). It used to take the surface nearest the height at which
+  // the line left or reached the flight, within 0.3 m. Past dp's 2F step the
+  // floor rises 0.3 m in 4 m, and that found a rejected layer under the
+  // floor in one column -- a pose 0.6 m low, which MPPI read as a stair going
+  // down and walked the rest of the way backwards -- and, where the floor
+  // had risen further, nothing, which left the flight's top height (0.3 m
+  // low). The walk tracked the floor column by column, as lineOfSight()
+  // does, so its cell is the floor's own. A column it did not record (not
+  // expected: the samples lie on its line) ramps on the flight and keeps the
+  // previous sample's height off it, so it cannot dip either.
+  double last_z = z_lo;
   const auto sample = [&](double s) {
     Waypoint w{px + dx * s / len, py + dy * s / len, 0.0};
     const int ix = m.ixOf(w.x), iy = m.iyOf(w.y);
-    const int ph = m.inGrid(ix, iy) ? phaseOf(m.col(ix, iy)) : 1;
-    if (ph == 1) {
+    const ColumnPhase * pc = m.inGrid(ix, iy) ? phaseOf(m.col(ix, iy)) : nullptr;
+    if (pc != nullptr && pc->phase != 1) {
+      w.z = pc->z;
+    } else if (pc != nullptr || (s > s_lo && s < s_hi)) {
       const double t = s_hi > s_lo ? std::clamp((s - s_lo) / (s_hi - s_lo), 0.0, 1.0) : 1.0;
       w.z = z_lo + t * (z_hi - z_lo);
     } else {
-      const double guess = ph == 0 ? z_lo : z_hi;
-      const int gk = static_cast<int>(std::floor((guess - m.z0) / m.res)) - 1;
-      const CellId c = m.layerNear(m.col(ix, iy), gk, 3);
-      w.z = c == kNoCell ? guess : m.zTop(c);
+      w.z = last_z;
     }
+    last_z = w.z;
     return w;
   };
   for (double s = 0.0; s < len - 1e-9; s += spacing) {

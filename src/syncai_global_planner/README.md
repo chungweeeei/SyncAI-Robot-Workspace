@@ -431,7 +431,13 @@ and the line-of-sight shortcut may span a straight link (`stairCrossing` in
 joined by one segment when that segment lies within 15° of the flight's
 uphill direction and its columns are lower floor, then step-continuous
 surfaces, then upper floor (the clearance rule relaxed only within 0.3 m of
-the two edges, which are only as clear as the flight they border). Without
+the two edges, which are only as clear as the flight they border). The
+segment's floor poses take their height from the cell that walk took in
+each column, and the flight's from one ramp between the edges. Until
+2026-10-22 they took the surface nearest the height at the flight's edge,
+within 0.3 m, which past dp's 2F step (the floor rises 0.3 m in 4 m) found a
+rejected layer under the floor in one column — a pose 0.6 m low, which MPPI
+read as a stair going down and walked the rest of the route backwards. Without
 it a link's cell-centre ends quantise its direction to ~11° steps over
 0.5 m, and the path still bent 15° at the stair head. On dp (2F, the 2.6 m
 wide flight between z 4.5 and 5.1) this replaced one walked link, 9° off

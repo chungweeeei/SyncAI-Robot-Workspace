@@ -382,6 +382,63 @@ TEST(StairLinks, AStraightFlightIsEnteredWhereTheRouteMeetsIt)
   }
 }
 
+TEST(StairLinks, AStraightCrossingKeepsTheFarFloorsOwnHeight)
+{
+  // dp, 2026-10-22: a route up 2F's step, shortcut across it in one line
+  // (stairCrossing), had one pose 0.6 m under the floor 3.7 m past the top.
+  // The floor there had risen 0.3 m above the step's top, and the samples
+  // took the surface nearest the top's height -- in a column with a rejected
+  // layer under the floor, that layer. MPPI read the dip as a stair going
+  // down and walked the rest of the way backwards. Here: the stairs scene's
+  // flight, an upper floor that rises 0.3 m more in 0.1 m steps (one piece of
+  // ground) over the next 3 m, and one occupied voxel 0.5 m under it on the
+  // route.
+  const auto ground = [](double x) {
+    if (x < 4.0) {
+      return 0.0;
+    }
+    if (x < 5.74) {
+      return 0.17 * (std::floor((x - 4.0) / 0.29) + 1);
+    }
+    return 1.02 + 0.1 * std::min(3.0, std::floor((x - 5.74) / 1.0));
+  };
+  synthetic::SceneBuilder b;
+  b.floor(0, 12.0, 0, 8.0, [&](double x, double) { return ground(x); });
+  b.box(9.5, 9.6, 5.5, 5.6, 0.7, 0.8);
+  const auto m = buildSurfaceMap(*b.finish(), SurfaceMapParams{});
+  const auto links = buildStairLinks(*m, walk(2.0, 10.0, ground), StairLinkParams{});
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult lo = astar.snap(2.0, 5.55, 0.0, p);
+  ASSERT_NE(lo.cell, kNoCell);
+  const SnapResult hi = astar.snap(11.0, 5.55, 1.32, p, m->cells[lo.cell].component);
+  ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+  const PlanResult r = astar.plan(lo.cell, hi.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  ASSERT_EQ(r.links.size(), 1u);
+  const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
+  ASSERT_GE(path.size(), 2u);
+  // The crossing is what is under test: one line, floor to floor.
+  double worst_turn = 0.0, prev_h = 0.0;
+  bool have_h = false, past_ghost = false;
+  for (size_t i = 1; i < path.size(); ++i) {
+    EXPECT_GE(path[i].z - path[i - 1].z, -1e-9) << "a dip at x " << path[i].x;
+    past_ghost = past_ghost || path[i].x > 9.6;
+    if (std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y) < 0.02) {
+      continue;
+    }
+    const double h = std::atan2(path[i].y - path[i - 1].y, path[i].x - path[i - 1].x);
+    if (have_h) {
+      worst_turn = std::max(worst_turn, std::fabs(std::remainder(h - prev_h, 2 * M_PI)));
+    }
+    prev_h = h;
+    have_h = true;
+  }
+  EXPECT_LT(worst_turn * 180.0 / M_PI, 5.0);
+  EXPECT_TRUE(past_ghost);
+  EXPECT_NEAR(path.back().z, 1.32, 0.15);
+}
+
 TEST(StairLinks, AWalkedKerbMakesNoLinkAndAnUnwalkedDropIsReported)
 {
   // The kerb is one piece of ground already: walking it makes no link, and
