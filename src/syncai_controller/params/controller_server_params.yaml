@@ -349,6 +349,10 @@
       # so at vx_max the hold starts up to ~1.5 m before the rise and the
       # robot stands about where a slow approach would start braking: the
       # 1.0 m window alone left 0.48 m before a 30 deg ramp, all of it brake.
+      # Never from short of the padded footprint's front edge (0.38 m;
+      # 2026-10-22): the optimizer brakes into a stair's lethal cells on its
+      # own, which takes the stopping distance to 0, and robot01 stood 8 s at
+      # dp's stair foot with the window from its centre 2 cm short of the rise.
       use_stair_mode: true
       stair_min_rise: 0.3
       stair_enter_dist: 1.0
@@ -770,7 +774,10 @@
       # stair_enter_dist window is looked for out to the hold's own stopping
       # distance (v^2 / 2 max_linear_accel, 0.32 m from 0.8; 2026-10-20), so
       # the hold starts that much earlier and the 1 m window's margin before
-      # the rise is not spent braking. Windows from dp1f_1012's Octo3D paths: level paths rise at most
+      # the rise is not spent braking -- and never from short of the padded
+      # footprint's front edge (2026-10-22), where the collision test stops a
+      # robot that reaches the stair's lethal cells at a crawl, its stopping
+      # distance 0. Windows from dp1f_1012's Octo3D paths: level paths rise at most
       # 0.10-0.20 m within 1 m, the 2F ramp 0.47 m (so it is climbed in stair
       # mode too, 1.9 m of it), the spiral stair 0.68 m; with these values
       # each stair path enters stair mode once, and its landings keep it.

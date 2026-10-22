@@ -349,11 +349,18 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   // (set_policy_mode missing on the way in) fails the cycle; the server stops
   // the robot. The stair is looked for past where the hold's brake below
   // (constant deceleration at max_linear_accel) would stop the robot from the
-  // commanded speed, v^2 / 2a -- 0.32 m from 0.8 m/s (2026-10-20).
+  // commanded speed, v^2 / 2a -- 0.32 m from 0.8 m/s (2026-10-20) -- and
+  // never from short of the footprint's front edge (2026-10-22): a robot
+  // that has stopped on its own at the stair's lethal cells (the collision
+  // test on the local costmap's terrain layer) has a stopping distance of 0,
+  // and its centre is too far back for the 1 m window to see the rise;
+  // StairMode::update() has robot01's stall on MPPI, which shares the case.
   const double stop_v = std::fabs(last_cmd_vel_.linear.x);
   const double stop_dist =
     max_linear_accel_ > 0.0 ? stop_v * stop_v / (2.0 * max_linear_accel_) : 0.0;
-  const auto stair = stair_mode_.update(clock_->now(), global_plan_.poses.size(), stop_dist);
+  const auto stair = stair_mode_.update(
+    clock_->now(), global_plan_.poses.size(), stop_dist,
+    syncai_util::StairMode::bodyReach(costmap_ros_->getRobotFootprint()));
   if (!stair.refuse.empty()) {
     throw syncai_nav_core::PlannerException(stair.refuse);
   }

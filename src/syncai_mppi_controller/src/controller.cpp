@@ -714,10 +714,16 @@ bool MPPIController::climbStairs(
   // 1.5 v / a at an average of v / 2, i.e. 0.75 v^2 / a -- 0.48 m from
   // 0.8 m/s, as much as a 30 deg ramp's whole margin, so the robot stood at
   // its foot or on it. Commanded, not measured, speed: the gait under-tracks,
-  // so this errs long.
+  // so this errs long. And never from short of the footprint's front edge
+  // (2026-10-22): the optimizer brakes into the stair's lethal cells on its
+  // own, the commanded speed and with it this figure go to 0, and robot01
+  // stood 8 s at dp's stair foot with the 1 m window 2 cm short of the rise
+  // (StairMode::update() has the numbers).
   const double v = std::fabs(last_cmd_vel_.linear.x);
   const double stop_dist = max_linear_accel_ > 0.0 ? 0.75 * v * v / max_linear_accel_ : 0.0;
-  const auto stair = stair_mode_.update(clock_->now(), remaining, stop_dist);
+  const auto stair = stair_mode_.update(
+    clock_->now(), remaining, stop_dist,
+    syncai_util::StairMode::bodyReach(costmap_ros_->getRobotFootprint()));
   if (!stair.refuse.empty()) {
     throw syncai_nav_core::PlannerException(stair.refuse);
   }

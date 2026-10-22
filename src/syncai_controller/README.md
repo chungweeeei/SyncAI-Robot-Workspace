@@ -240,7 +240,15 @@ the robot out to the controller's stopping distance from its commanded speed
 begins that much earlier. The threshold slope (~17°) does not change; only how
 far off it is seen. With the window alone, the brake from 0.8 m/s took all of
 the 0.48 m a 30° ramp left (0.18 m at 20°), and the robot stood at the foot or
-on the rise. The detection, the policy switch and the latched report are
+on the rise. Since 2026-10-22 it is never looked for from closer than the
+padded footprint's reach along the body axis (`StairMode::bodyReach()`, 0.38 m
+on the G23; `update()`'s `body_reach`): the local costmap's terrain layer
+judges a flight lethal, so a controller reaching a stair at a crawl stops on its
+own with the footprint's front edge at the first riser and its stopping
+distance at 0, and the 1 m window from the centre ~0.6 m back may miss the
+rise — robot01 on MPPI stood 8 s at the foot of dp's stairwell, in no stair
+mode, with the window 0.28 m of rise against 0.3, until the optimizer crept on.
+The detection, the policy switch and the latched report are
 one state machine, **`syncai_util::StairMode`** (`stair_mode.hpp`; lifted out
 of RPP 3D on 2026-10-20 when MPPI needed the same behaviour, so there is one
 calibration of the gait's stair policy, not two), declared under each plugin's

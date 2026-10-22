@@ -91,7 +91,7 @@ void StairMode::setPlan(const nav_msgs::msg::Path & full_plan)
 }
 
 StairMode::Decision StairMode::update(
-  const rclcpp::Time & now, size_t remaining_poses, double stop_dist)
+  const rclcpp::Time & now, size_t remaining_poses, double stop_dist, double body_reach)
 {
   (void)now;
   Decision d;
@@ -110,9 +110,13 @@ StairMode::Decision StairMode::update(
   // near the end of the brake faster than the distance still to go; with the
   // window sliding back off the stair the entry would be dropped (its policy
   // is not sent before the robot stands) and the robot drive on. So an entry
-  // keeps the lead it started with.
-  const double lead =
-    std::max(std::max(stop_dist, 0.0), transition_ == Transition::Entering ? entry_lead_ : 0.0);
+  // keeps the lead it started with. And the lead is never shorter than the
+  // footprint's reach (2026-10-22; the header has the robot01 stall): a
+  // controller that stops on its own at a stair's lethal cells takes its
+  // stopping distance to 0 with it, and the window must still reach the
+  // flight from the body's front edge.
+  const double lead = std::max(
+    {stop_dist, body_reach, transition_ == Transition::Entering ? entry_lead_ : 0.0, 0.0});
   const bool want = wantStairs(remaining_poses, lead);
   if (transition_ == Transition::None && want != on_stairs_) {
     int target = -1;
@@ -261,6 +265,15 @@ double StairMode::stairRiseAhead(
     rise = std::max(rise, stairRise(path, k + 1, 0.0, ahead));
   }
   return rise;
+}
+
+double StairMode::bodyReach(const std::vector<geometry_msgs::msg::Point> & footprint)
+{
+  double reach = 0.0;
+  for (const auto & p : footprint) {
+    reach = std::max(reach, std::fabs(p.x));
+  }
+  return reach;
 }
 
 bool StairMode::wantStairs(size_t remaining_poses, double lead) const

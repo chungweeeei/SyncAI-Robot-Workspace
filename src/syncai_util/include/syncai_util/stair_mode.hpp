@@ -32,7 +32,9 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "geometry_msgs/msg/point.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -60,7 +62,9 @@ public:
     // min_rise within enter_dist is a stair (a slope of ~17 deg or more). The
     // window starts anywhere from the robot to the stopping distance the
     // controller passes to update() (2026-10-20), so the hold begins that much
-    // earlier and the robot stands about where it used to start braking.
+    // earlier and the robot stands about where it used to start braking --
+    // and never short of the footprint's reach (2026-10-22), where the
+    // controller's own collision test stops it at the stair's lethal cells.
     double enter_dist{1.0};
     // stair_exit_behind_dist / stair_exit_ahead_dist: the window that must
     // have gone level before leaving. 2.5 m ahead keeps a landing (rarely
@@ -140,8 +144,24 @@ public:
    * looked for that much further ahead (stairRiseAhead()); 0 = from the robot.
    * An entry under way keeps the figure it started with, because the brake
    * shrinks the controller's figure while the stair stays where it is.
+   * @param body_reach The footprint's reach from the robot's centre
+   * (bodyReach()); the stair is looked for at least that far ahead, whatever
+   * the speed. 0 = no floor.
+   *
+   * Why the floor (2026-10-22): the controller reaches the stair braking on
+   * its own, not on this class's hold -- the local costmap's terrain layer
+   * judges a flight lethal, so the optimizer slows into it and stops with the
+   * footprint's front edge at the first riser, the centre ~0.6 m short. Its
+   * own brake takes stop_dist to 0 on the way, the window falls back to the
+   * centre, and the 1 m from there held 0.28 m of dp's stairwell against a
+   * min_rise of 0.3: robot01 stood 8 s at the foot of the stair, in no stair
+   * mode, until the optimizer happened to creep 0.24 m on. Looked for from the
+   * front edge, the window reaches into the flight by as much as the robot is
+   * allowed near it, there ~0.9 m against the ~0.6 m min_rise needs.
    */
-  Decision update(const rclcpp::Time & now, size_t remaining_poses, double stop_dist = 0.0);
+  Decision update(
+    const rclcpp::Time & now, size_t remaining_poses, double stop_dist = 0.0,
+    double body_reach = 0.0);
 
   /**
    * @brief The controller has commanded a stop while hold is set: send the
@@ -179,6 +199,16 @@ public:
    */
   static double stairRiseAhead(
     const nav_msgs::msg::Path & path, size_t idx, double lead, double ahead);
+
+  /**
+   * @brief The footprint's farthest point from the robot's centre along its
+   * x axis, either way (update()'s body_reach)
+   * @param footprint The costmap's padded footprint, in the robot's frame
+   *
+   * Either way rather than forward only because the optimizer may back up to
+   * a stair as well as drive at one; for the G23's box the two are equal.
+   */
+  static double bodyReach(const std::vector<geometry_msgs::msg::Point> & footprint);
 
   /**
    * @brief The first corner of `path`: the pose where the heading over
@@ -260,7 +290,7 @@ private:
   bool on_stairs_{false};
   Transition transition_{Transition::None};
   bool policy_sent_{false};
-  // The stop_dist an entry started with (update()).
+  // The lead an entry started with (update()).
   double entry_lead_{0.0};
   rclcpp::Time settle_until_;
   // The policy to go back to after the stairs (-1: none known).
