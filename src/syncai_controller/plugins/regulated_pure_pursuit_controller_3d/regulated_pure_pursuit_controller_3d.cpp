@@ -363,10 +363,12 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   // taken backwards, because HIMLOCO descends a flight facing the risers as
   // it climbs one. A level stretch keeps the last reading, so a descent
   // stays backwards across its landings and through the hold at the
-  // bottom, where the robot turns round before the policy goes back.
-  if (stair_descend_backwards_ && (stair_hold || on_stairs) && !transformed_plan.poses.empty()) {
-    const int slope =
-      syncai_util::StairMode::slopeAhead(transformed_plan, 0, stair_mode_.params().min_rise, 10.0);
+  // bottom, where the robot turns round before the policy goes back. Read off
+  // the global plan through StairMode, not transformed_plan, whose heights
+  // transformGlobalPlan() zeroes -- on it this always read level and a
+  // descent went forwards (fixed 2026-10-22).
+  if (stair_descend_backwards_ && (stair_hold || on_stairs)) {
+    const int slope = stair_mode_.slopeAhead(global_plan_.poses.size(), 10.0);
     if (slope != 0 && (slope < 0) != stair_reverse_) {
       stair_reverse_ = slope < 0;
       RCLCPP_INFO(

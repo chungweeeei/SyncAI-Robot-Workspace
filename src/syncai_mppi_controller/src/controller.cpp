@@ -748,10 +748,12 @@ bool MPPIController::climbStairs(
   // it climbs one. A level stretch -- a landing, the floor past the bottom
   // -- keeps the last reading, so a descent stays backwards across its
   // landings and through the hold at the bottom, where the robot turns
-  // round before the policy goes back.
-  if (stair_descend_backwards_ && !plan.poses.empty()) {
-    const int slope =
-      syncai_util::StairMode::slopeAhead(plan, 0, stair_mode_.params().min_rise, 10.0);
+  // round before the policy goes back. Read off StairMode's own copy of the
+  // global plan, not `plan`: the path handler zeroes the local path's
+  // heights, on which this always read level and a descent went forwards
+  // (fixed 2026-10-22).
+  if (stair_descend_backwards_ && path_handler_.planHasHeight()) {
+    const int slope = stair_mode_.slopeAhead(remaining, 10.0);
     if (slope != 0 && (slope < 0) != stair_reverse_) {
       stair_reverse_ = slope < 0;
       RCLCPP_INFO(

@@ -456,3 +456,19 @@ TEST(StairModeSlope, UpDownOrLevel)
   EXPECT_EQ(StairMode::slopeAhead(down, 0, 0.3, 10.0), -1);
   EXPECT_EQ(StairMode::slopeAhead(levelPath(), 0, 0.3, 10.0), 0);
 }
+
+// The member form reads the plan setPlan() was given at the robot's place in
+// it -- what the controllers must ask, since their local paths have no
+// heights (on which every descent read level and went forwards).
+TEST(StairModeSlope, FromThePlanAtTheRobot)
+{
+  auto down = stairPath();
+  std::reverse(down.poses.begin(), down.poses.end());
+  Harness h;
+  h.sm.setPlan(down);
+  EXPECT_EQ(h.sm.slopeAhead(down.poses.size(), 10.0), -1);
+  // Past the bottom: level ahead.
+  EXPECT_EQ(h.sm.slopeAhead(10, 10.0), 0);
+  h.sm.setPlan(levelPath());
+  EXPECT_EQ(h.sm.slopeAhead(levelPath().poses.size(), 10.0), 0);
+}

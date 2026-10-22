@@ -222,6 +222,18 @@ public:
   static int slopeAhead(
     const nav_msgs::msg::Path & path, size_t idx, double min_rise, double max_look);
 
+  /**
+   * @brief slopeAhead() on the plan setPlan() was given, from the robot's
+   * place in it (`remaining_poses`, as update() takes it) and with min_rise
+   *
+   * The controllers must ask this, not the static form on their own local
+   * path (2026-10-22): both transform the plan into a planar frame and zero
+   * every height on the way (the optimizer, the critics and RPP's pursuit
+   * read x / y / yaw only), so the local path's slope always read 0, the
+   * last reading stayed "up", and every descent was walked forwards.
+   */
+  int slopeAhead(size_t remaining_poses, double max_look) const;
+
 private:
   enum class Transition { None, Entering, Leaving };
 

@@ -183,6 +183,15 @@ int StairMode::slopeAhead(
   return 0;
 }
 
+int StairMode::slopeAhead(size_t remaining_poses, double max_look) const
+{
+  if (!plan_has_height_ || full_plan_.poses.size() < remaining_poses) {
+    return 0;
+  }
+  return slopeAhead(
+    full_plan_, full_plan_.poses.size() - remaining_poses, params_.min_rise, max_look);
+}
+
 void StairMode::standing(const rclcpp::Time & now)
 {
   if (transition_ == Transition::None) {
