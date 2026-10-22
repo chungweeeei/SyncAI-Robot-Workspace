@@ -51,6 +51,37 @@
 // under the overhang longer than that -- still takes the underside for its
 // ground, and the robot is boxed in by islands.
 //
+// Clearing (2026-10-23): obstacle_memory alone is how long a person who has
+// walked on stays an obstacle -- 2 s, plus a costmap cycle, plus MPPI's
+// start from a stop, was the 2-3 s robot01 stood after a blocker left. And
+// a person who stood for longer than the floor memory round them lasted (the
+// floor within 3.9 m is never seen while the robot stands) left a ghost for
+// ground_memory: their legs' returns, the lowest ~0.3 m up (the lower FOV
+// edge at 1.5 m), were the only ground evidence in the cell, an island 0.45
+// m up that no flood reached. So a return's ray is traced through the cells
+// between the lidar and it (clearRay(); the obstacle layer's and Octo3D's
+// dynamic overlay's raytracing, in 2.5D), and a sample within
+// ray_clear_tolerance of the ray's height in its cell, older than the ray, is
+// removed from the ring: the ray proves there was nothing at that height
+// when it passed. Removed, not only ignored as an obstacle, so the ghost's
+// ground evidence goes with it. Two things a ray does not clear. A sample
+// at the cell's ground -- within min_obstacle_height over the last
+// classify()'s estimate -- is cleared only by a ray passing *under* it: a
+// floor is only ever passed over (by a ray to the same floor further on, to
+// a lower floor across a drop-off, along a ramp, just over a box top), and
+// a ray over a surface proves nothing against it, while a leg's lowest
+// returns, ~0.3 m up with the ground taken from them once the floor memory
+// is gone, are passed under at the lower FOV edge. And nothing within
+// ray_clear_end_margin of the ray's end: the ray grazes the surface it ends
+// on for its last stretch (a floor return at the -7 deg edge is within
+// 0.05 m of the floor for its last 0.41 m, tolerance / tan 7 deg), and the
+// ground rule alone needs a ground estimate the cell may not have yet. A
+// box top is re-seen by the returns that end on it in the same scan either
+// way; the cell stays an obstacle as long as one return a scan lands in its
+// band. What no ray crosses (the cells behind an occluder, a person standing
+// closer than the margin to a wall) still leaves after obstacle_memory, the
+// fallback.
+//
 // Reach: a surface is floor only if the robot can get onto it over steps
 // the legs take (classify() has the rule). The lidar's lower FOV makes a
 // box, a table or a platform look like a patch of floor 0.3 m up with
@@ -84,9 +115,21 @@ struct TerrainParams
   // is only ever seen from >= 3.9 m away (MID360 lower FOV), i.e. 5-13 s
   // before the robot arrives at walking speed, so this is long.
   double ground_memory = 10.0;
-  // How long a sample counts as an obstacle. CMU terrain_analysis's
-  // decayTime; the old obstacle layer cleared by raytracing within a cycle.
+  // How long a sample counts as an obstacle when no ray clears it (CMU
+  // terrain_analysis's decayTime). With clearRay() it is the fallback for
+  // cells no ray crosses; until 2026-10-23 it was the only way out.
   double obstacle_memory = 2.0;
+  // Ray clearing (the header has the design). A sample this close in height
+  // to a later ray through its cell is removed; 0 disables clearing. The
+  // lidar's range noise (~0.02) plus the ray's drop across a cell: tight,
+  // so a ray just over a box top or a floor's noise clears little.
+  double ray_clear_tolerance = 0.05;
+  // Nothing is cleared within this of the ray's end: the ray is grazing the
+  // surface it ends on there. At the MID360's -7 deg lower edge a floor
+  // return's ray is within 0.05 m of the floor for the last 0.41 m
+  // (0.05 / tan 7 deg); 0.6 leaves room for noise. A person standing closer
+  // than this to the wall behind them is left to obstacle_memory.
+  double ray_clear_end_margin = 0.6;
   // Fewest samples (3x3 neighbourhood, within ground_memory) for a cell to
   // have a ground estimate of its own; under it the robot's ground is used.
   int min_ground_samples = 6;
@@ -156,6 +199,17 @@ public:
   // cell holds from the last ground_memory): ignored.
   void addSample(double x, double y, double z, double t);
 
+  // The ray of a return at (x, y, z), seen at time t from the lidar at
+  // (ox, oy, oz), both in the grid's frame: every cell it crosses up to
+  // ray_clear_end_margin before its end loses the samples older than t that
+  // lie within ray_clear_tolerance of the ray's height there (the header has
+  // why). The return itself is not added -- call addSample() for that; a
+  // return outside the window or the layer's height band still clears along
+  // its ray, which is what a wall at 6 m is good for.
+  void clearRay(double ox, double oy, double oz, double x, double y, double z, double t);
+  // Samples clearRay() has removed since construction, for the debug log.
+  uint64_t clearedSamples() const { return cleared_; }
+
   // The current path in the grid's frame -- only when it has heights
   // (OctomapPlanner3D's; a 2D planner's z = 0 says nothing about where the
   // floor goes) -- or an empty list. Replaces the previous call's. Every
@@ -216,10 +270,16 @@ private:
   // The cell's lowest z among samples no older than `oldest` (grid time);
   // +infinity when there is none.
   static float lowestSince(const Cell & c, float oldest);
+  // clearRay()'s work on cell `i`: drop the samples older than `ts` within
+  // `tol` of height `h` -- except those at the cell's ground that the ray
+  // passes over (the header has why) -- keeping the rest in their order.
+  void clearCell(size_t i, float h, float ts, float tol);
 
   int nx_ = 0, ny_ = 0;
   double res_ = 0.05, ox_ = 0.0, oy_ = 0.0;
   mutable double epoch_ = std::numeric_limits<double>::quiet_NaN();
+  uint64_t cleared_ = 0;
+  std::vector<Sample> ring_scratch_;
   std::vector<Cell> cells_;
   std::vector<TerrainPathPose> path_;
   // Scratch of classify(): the ground per cell (NaN = none), whether it came

@@ -37,6 +37,10 @@ void TerrainGrid::clear()
     c.count = 0;
     c.head = 0;
   }
+  // The ground estimates with them: clearCell() reads them, and a stale one
+  // would protect the new samples of a cell that has moved.
+  ground_.assign(cells_.size(), kNaN);
+  ground_known_.assign(cells_.size(), 0);
 }
 
 void TerrainGrid::updateOrigin(double ox, double oy)
@@ -69,6 +73,10 @@ void TerrainGrid::updateOrigin(double ox, double oy)
   cells_ = std::move(moved);
   ox_ += dx * res_;
   oy_ += dy * res_;
+  // The ground estimates are per old cell; until the next classify() (the
+  // caller's next step) clearCell() treats every sample as ground.
+  ground_.assign(cells_.size(), kNaN);
+  ground_known_.assign(cells_.size(), 0);
 }
 
 bool TerrainGrid::worldToCell(double x, double y, int & ix, int & iy) const
@@ -137,6 +145,126 @@ void TerrainGrid::addSample(double x, double y, double z, double t)
   c.ring[c.head] = Sample{static_cast<float>(z), ts};
   c.head = (c.head + 1) % static_cast<int>(c.ring.size());
   c.count = std::min(c.count + 1, static_cast<int>(c.ring.size()));
+}
+
+void TerrainGrid::clearCell(size_t i, float h, float ts, float tol)
+{
+  Cell & c = cells_[i];
+  if (c.count == 0) {
+    return;
+  }
+  // The ground rule (the header): a sample within min_obstacle_height over
+  // the cell's last ground estimate is cleared only by a ray under it. A cell
+  // never classified yet (NaN) has every sample at its ground.
+  const float g = ground_[i];
+  const float ground_top = std::isnan(g) ? std::numeric_limits<float>::infinity()
+                                         : g + static_cast<float>(params.min_obstacle_height);
+  auto disproved = [&](const Sample & s) {
+    return s.t < ts && std::fabs(s.z - h) <= tol && !(s.z <= ground_top && h >= s.z);
+  };
+  // Samples occupy ring[(head - count + k) % size], k = 0 .. count - 1,
+  // oldest first. A sample of the same scan (t == ts) is kept: this scan's
+  // returns on a box prove the box, whatever its other rays pass over.
+  const int size = static_cast<int>(c.ring.size());
+  const int start = ((c.head - c.count) % size + size) % size;
+  int drop = 0;
+  for (int k = 0; k < c.count; ++k) {
+    if (disproved(c.ring[(start + k) % size])) {
+      ++drop;
+    }
+  }
+  if (drop == 0) {
+    return;
+  }
+  // Compact the survivors to the front, in order; the ring goes on from
+  // there, so the next overwrite is still the oldest.
+  ring_scratch_.clear();
+  for (int k = 0; k < c.count; ++k) {
+    const Sample & s = c.ring[(start + k) % size];
+    if (!disproved(s)) {
+      ring_scratch_.push_back(s);
+    }
+  }
+  std::copy(ring_scratch_.begin(), ring_scratch_.end(), c.ring.begin());
+  c.count = static_cast<int>(ring_scratch_.size());
+  c.head = c.count % size;
+  cleared_ += static_cast<uint64_t>(drop);
+}
+
+void TerrainGrid::clearRay(double ox, double oy, double oz, double x, double y, double z, double t)
+{
+  const float tol = static_cast<float>(params.ray_clear_tolerance);
+  if (tol <= 0.0f || cells_.empty()) {
+    return;
+  }
+  const double dx = x - ox, dy = y - oy;
+  const double len = std::hypot(dx, dy);
+  // The part of the ray that clears: up to the end margin before the return.
+  // A return closer than the margin (the robot's own legs, the floor right
+  // under a lidar held low) clears nothing; a near-vertical ray crosses no
+  // cell but the lidar's own.
+  const double reach = len - params.ray_clear_end_margin;
+  if (reach <= 0.0 || len < 1e-6) {
+    return;
+  }
+  int ix, iy;
+  if (!worldToCell(ox, oy, ix, iy)) {
+    // The lidar outside the window: the rolling window is centred on the
+    // robot, so only before the first updateOrigin(). Nothing to do.
+    return;
+  }
+  const float ts = rel(t);
+  const double dz_ds = (z - oz) / len;
+
+  // Amanatides-Woo through the cells, parameterised by the distance s along
+  // the ray's projection: s_x / s_y are where it next crosses a vertical /
+  // horizontal grid line, step_* the cell step then, d_* the s per cell.
+  const int step_x = dx > 0.0 ? 1 : (dx < 0.0 ? -1 : 0);
+  const int step_y = dy > 0.0 ? 1 : (dy < 0.0 ? -1 : 0);
+  const double inf = std::numeric_limits<double>::infinity();
+  const double d_x = step_x != 0 ? res_ * len / std::fabs(dx) : inf;
+  const double d_y = step_y != 0 ? res_ * len / std::fabs(dy) : inf;
+  // Clamped to [0, d]: the lidar on a cell boundary within rounding, with a
+  // ray almost along it, otherwise gives a crossing metres *behind* the
+  // lidar (-4e-16 / 2e-16), and the first cell's height is read there.
+  double s_x = inf, s_y = inf;
+  if (step_x > 0) {
+    s_x = std::clamp((ox_ + (ix + 1) * res_ - ox) * len / dx, 0.0, d_x);
+  } else if (step_x < 0) {
+    s_x = std::clamp((ox - (ox_ + ix * res_)) * len / -dx, 0.0, d_x);
+  }
+  if (step_y > 0) {
+    s_y = std::clamp((oy_ + (iy + 1) * res_ - oy) * len / dy, 0.0, d_y);
+  } else if (step_y < 0) {
+    s_y = std::clamp((oy - (oy_ + iy * res_)) * len / -dy, 0.0, d_y);
+  }
+
+  double s_in = 0.0;
+  bool first = true;
+  while (s_in < reach) {
+    const double s_out = std::min(std::min(s_x, s_y), reach);
+    // The lidar's own cell holds the robot's legs; the footprint is cleared
+    // anyway. Every other cell: the ray's height at the middle of its
+    // crossing (it drops at most a centimetre across a cell at the angles
+    // the lidar sees the floor at, inside the tolerance).
+    if (!first) {
+      const float h = static_cast<float>(oz + dz_ds * 0.5 * (s_in + s_out));
+      clearCell(index(ix, iy), h, ts, tol);
+    }
+    first = false;
+    if (s_x < s_y) {
+      ix += step_x;
+      s_in = s_x;
+      s_x += d_x;
+    } else {
+      iy += step_y;
+      s_in = s_y;
+      s_y += d_y;
+    }
+    if (ix < 0 || iy < 0 || ix >= nx_ || iy >= ny_) {
+      break;
+    }
+  }
 }
 
 void TerrainGrid::setPath(const std::vector<TerrainPathPose> & poses)

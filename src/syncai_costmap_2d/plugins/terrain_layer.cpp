@@ -42,6 +42,8 @@ void TerrainLayer::onInitialize()
   declareParameter("max_samples_per_cell", rclcpp::ParameterValue(p.max_samples_per_cell));
   declareParameter("ground_memory", rclcpp::ParameterValue(p.ground_memory));
   declareParameter("obstacle_memory", rclcpp::ParameterValue(p.obstacle_memory));
+  declareParameter("ray_clear_tolerance", rclcpp::ParameterValue(p.ray_clear_tolerance));
+  declareParameter("ray_clear_end_margin", rclcpp::ParameterValue(p.ray_clear_end_margin));
   declareParameter("min_ground_samples", rclcpp::ParameterValue(p.min_ground_samples));
   declareParameter("ground_quantile", rclcpp::ParameterValue(p.ground_quantile));
   declareParameter("max_ground_lift", rclcpp::ParameterValue(p.max_ground_lift));
@@ -65,6 +67,8 @@ void TerrainLayer::onInitialize()
   node_->get_parameter(name_ + ".max_samples_per_cell", p.max_samples_per_cell);
   node_->get_parameter(name_ + ".ground_memory", p.ground_memory);
   node_->get_parameter(name_ + ".obstacle_memory", p.obstacle_memory);
+  node_->get_parameter(name_ + ".ray_clear_tolerance", p.ray_clear_tolerance);
+  node_->get_parameter(name_ + ".ray_clear_end_margin", p.ray_clear_end_margin);
   node_->get_parameter(name_ + ".min_ground_samples", p.min_ground_samples);
   node_->get_parameter(name_ + ".ground_quantile", p.ground_quantile);
   node_->get_parameter(name_ + ".max_ground_lift", p.max_ground_lift);
@@ -97,10 +101,12 @@ void TerrainLayer::onInitialize()
     logger_,
     "TerrainLayer %s: cloud %s (ground = lidar z - %.3f, returns within %.1f m and "
     "[%.1f, %.1f] m of the ground), path %s; step %.2f m, slope %.0f deg, obstacles %.2f-%.2f m "
-    "above the ground, ground memory %.0f s, obstacle memory %.1f s",
+    "above the ground, ground memory %.0f s, obstacle memory %.1f s, ray clearing %s "
+    "(tolerance %.2f m, end margin %.2f m)",
     name_.c_str(), cloud_topic_.c_str(), sensor_height_, max_range_, min_rel_z_, max_rel_z_,
     plan_topic_.c_str(), p.max_step_height, p.max_slope_deg, p.min_obstacle_height,
-    p.body_clearance, p.ground_memory, p.obstacle_memory);
+    p.body_clearance, p.ground_memory, p.obstacle_memory,
+    p.ray_clear_tolerance > 0.0 ? "on" : "off", p.ray_clear_tolerance, p.ray_clear_end_margin);
 
   auto sub_opt = rclcpp::SubscriptionOptions();
   sub_opt.callback_group = callback_group_;
@@ -179,11 +185,14 @@ void TerrainLayer::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr m
   sensor_msgs::msg::PointCloud2 cloud;
   tf2::doTransform(*message, cloud, tf);
 
+  // The lidar's origin: the ray origin, and sensor_height under it the
+  // ground under the robot (the obstacle layer's height_reference: sensor,
+  // same number). One origin for the whole cloud is right because pointlio
+  // deskews every cloud into the body frame at the end-of-scan stamp.
   const double ox = tf.transform.translation.x;
   const double oy = tf.transform.translation.y;
-  // The ground under the robot: the lidar's origin minus its height above
-  // the feet (the obstacle layer's height_reference: sensor, same number).
-  const double ground_z = tf.transform.translation.z - sensor_height_;
+  const double oz = tf.transform.translation.z;
+  const double ground_z = oz - sensor_height_;
   const double t = rclcpp::Time(message->header.stamp).seconds();
 
   sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud, "x");
@@ -195,6 +204,10 @@ void TerrainLayer::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr m
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
       continue;
     }
+    // Every return clears along its ray, the far ones (a wall at 6 m, the
+    // ceiling) most usefully: the range and height filters below are for
+    // what is stored, not for what was seen through.
+    terrain_.clearRay(ox, oy, oz, x, y, z, t);
     if (std::hypot(x - ox, y - oy) > max_range_) {
       continue;
     }
@@ -305,12 +318,13 @@ void TerrainLayer::updateBounds(
     RCLCPP_DEBUG(
       logger_,
       "TerrainLayer: %zu cells with a ground estimate, %zu lethal (%zu obstacle, %zu step, "
-      "%zu slope, %zu island)%s",
+      "%zu slope, %zu island), %llu samples ray-cleared in all%s",
       last_stats_.known,
       last_stats_.lethal_obstacle + last_stats_.lethal_step + last_stats_.lethal_slope +
         last_stats_.lethal_island,
       last_stats_.lethal_obstacle, last_stats_.lethal_step, last_stats_.lethal_slope,
-      last_stats_.lethal_island, has_cloud_ ? "" : " (no cloud yet)");
+      last_stats_.lethal_island, static_cast<unsigned long long>(terrain_.clearedSamples()),
+      has_cloud_ ? "" : " (no cloud yet)");
   }
 
   updateFootprint(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y);

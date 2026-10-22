@@ -1091,8 +1091,8 @@
       # ~3.9 m of the robot: the floor under and ahead of it was seen 5-13 s
       # ago at walking speed, from further off, so a cell's ground comes from
       # the newest 24 returns of 10 s; an obstacle is a return of the last 2 s
-      # (CMU terrain_analysis's decayTime), which is how a person who walks
-      # on is gone without raytracing. A cell with under 6 returns in its 3x3
+      # (CMU terrain_analysis's decayTime) that no later ray has cleared (ray
+      # clearing, below). A cell with under 6 returns in its 3x3
       # neighbourhood borrows the robot's own ground height: right on a level
       # floor, and what keeps a low box on never-seen floor an obstacle (its
       # own returns are then in the band). Ground = the 0.25 quantile of the
@@ -1105,6 +1105,30 @@
       min_ground_samples: 6
       ground_quantile: 0.25
       max_ground_lift: 0.15
+      # Ray clearing (2026-10-23; terrain_grid.hpp has the design). Until
+      # then obstacle_memory was the only way a person who walked on left
+      # the costmap: 2 s, plus a costmap cycle (0.2 s at 5 Hz), plus MPPI's
+      # start from a stop, was the 2-3 s robot01 stood after a blocker left
+      # -- and a person who had stood long enough for the floor memory round
+      # them to age out (the floor within 3.9 m is never re-seen while the
+      # robot stands) left an island of their legs' returns for the 10 s of
+      # ground_memory. Now every return's ray is traced through the cells
+      # between the lidar and it, and a sample within ray_clear_tolerance of
+      # the ray's height in its cell, older than the ray, is removed from the
+      # cell (not only ignored as an obstacle, so the ghost's ground evidence
+      # goes with it): a person who walks on is gone with the next scan that
+      # sees through where they stood. A ray proves nothing about the surface
+      # it ends on and grazes it for its last stretch -- a floor return at the
+      # MID360's -7 deg edge is within 0.05 m of the floor for the last 0.41
+      # m (tolerance / tan 7 deg) -- so nothing within ray_clear_end_margin of
+      # the end is cleared; the margin must stay above that figure plus
+      # noise, or the floor ahead (seen once, from further off, and relied on
+      # for 10 s) is eroded as the robot approaches it. obstacle_memory is the
+      # fallback for cells no ray crosses: behind an occluder, or a person
+      # standing closer than the margin to the wall behind them. 0.0
+      # tolerance restores the memory-only behaviour.
+      ray_clear_tolerance: 0.05
+      ray_clear_end_margin: 0.6
       # The geometry rules (= Octo3D's SurfaceMapParams). robot_radius is the
       # disc the slope is fitted under (the inscribed radius); a return
       # between min_obstacle_height and body_clearance above its cell's

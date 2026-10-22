@@ -286,8 +286,26 @@ and judges every cell on each update:
    MPPI failing half its cycles for 18 s, the robot standing and twitching.
 2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
    (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
-   that ground → LETHAL. Short memory is how a person who walks on is gone
-   without raytracing.
+   that ground → LETHAL. **Ray clearing** (2026-10-23) is what takes a person
+   who walks on out: every return's ray is traced through the cells between
+   the lidar and it (`TerrainGrid::clearRay()`, Amanatides–Woo in the plane,
+   the ray's height interpolated per cell), and a sample within
+   `ray_clear_tolerance` (0.05) of the ray's height in its cell, older than
+   the ray, is **removed from the cell** — the ray proves there was nothing at
+   that height when it passed. Removed, not only ignored as an obstacle, so
+   a departed person's legs leave the ground estimate too (see the ghost
+   under "Limits"). A ray proves nothing about the surface it ends on and
+   grazes it for its last stretch — a floor return at the −7° edge is within
+   0.05 m of the floor for its last 0.41 m — so nothing within
+   `ray_clear_end_margin` (0.6) of the end is cleared, which is what keeps
+   the floor ahead (seen once, from further off, relied on for 10 s) from
+   being eroded as the robot approaches it. Returns outside `max_range` or
+   the height band still clear along their rays; a wall at 6 m is the most
+   useful ray there is. `obstacle_memory` is the fallback for cells no ray
+   crosses: behind an occluder, or a person closer than the margin to the
+   wall behind them. Until 2026-10-23 the memory was the only way out: 2 s,
+   a costmap cycle and MPPI's start from a stop were the 2–3 s robot01 stood
+   after a blocker had left. A tolerance of 0 is that behaviour.
 3. **Reach**: cells are flooded from the robot's own over 8-neighbours within
    `max_step_height`; a cell with a ground estimate the flood does not reach
    is an island — a box top, a table, a platform seen without the floor under
@@ -323,7 +341,7 @@ it was taken out with that decision, and git history has it.
 
 **What a costmap clear does here**: drops the costs, keeps the returns. The
 floor the lidar can no longer see is in them, and a stale obstacle mark leaves
-by itself after `obstacle_memory`.
+with the next ray through it, or after `obstacle_memory` where no ray comes.
 
 **Limits.** A raised surface whose connection to the robot's floor was never
 observed is an island even when it is a ramp — at start-up facing a ramp whose
@@ -337,9 +355,17 @@ and reads as an obstacle (conservative, for a few centimetres of clearance).
 Unknown cells
 are free to MPPI unless the costmap tracks unknown space, so the far side of a
 drop the lidar has not looked over is not yet a wall; the drop's edge is.
-Returns are not raytraced, so a wall seen through a doorway and a person in it
-age out at the same rate. Dynamic parameters are not handled: a change needs a
-restart.
+A person's **ghost**: the floor within 3.9 m is never re-seen while the robot
+stands, so a person who blocks it for longer than the floor memory round them
+lasts leaves their legs' returns (the lowest ~0.3 m up, the lower FOV edge at
+1.5 m) as the cell's only ground evidence — an island 0.45 m up, lethal for
+the 10 s of `ground_memory` — unless a ray clears them, which needs a view
+through where they stood (open floor or a wall further than the end margin
+behind). Ray clearing within a cell is by height, so a ray just over a box top
+clears the top returns it passes within the tolerance of; the returns that
+end on the box in the same scan are kept, and the cell is an obstacle while
+one return a scan lands in its band. Dynamic parameters are not handled: a
+change needs a restart.
 
 ### InflationLayer
 

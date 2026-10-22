@@ -423,6 +423,201 @@ TEST(TerrainGrid, WindowMovesWithTheSamples)
   EXPECT_GT(s.share(-0.9, 0.5, -1.9, 1.9, FREE_SPACE), 0.98);
 }
 
+// Ray clearing (2026-10-23). The lidar is at the robot's centre, 0.481 m up
+// (TerrainLayer's sensor_height); a "scan" is a fan of rays from it to the
+// given returns, each clearing along its way, at kNow.
+namespace
+{
+constexpr double kLidarZ = 0.481;
+// Cell centres: the legs stand on them, and the rays aimed through them
+// cross those cells and no other.
+constexpr double kLegX = 1.025;
+constexpr double kLegY = 0.125;
+
+void ray(Scene & s, double x, double y, double z, double age = 0.0)
+{
+  s.grid.clearRay(0.0, 0.0, kLidarZ, x, y, z, kNow - age);
+}
+// A person's two legs at (kLegX, +-kLegY), returns from z0 up, `n` of them
+// per leg, `age` seconds old.
+void legs(Scene & s, double age, double z0 = 0.30, int n = 20)
+{
+  for (int k = 0; k < n; ++k) {
+    const double z = z0 + 0.03 * k;
+    s.grid.addSample(kLegX, kLegY, z, kNow - age);
+    s.grid.addSample(kLegX, -kLegY, z, kNow - age);
+  }
+}
+// Rays through both leg cells to a wall at x = 1.9 (0.875 m past them, more
+// than the end margin), at every height from the floor to 1.4 m: what the
+// lidar sees once the person has walked on.
+void seeThroughLegs(Scene & s)
+{
+  for (double ze = 0.0; ze < 1.4; ze += 0.02) {
+    ray(s, 1.9, kLegY * 1.9 / kLegX, ze);
+    ray(s, 1.9, -kLegY * 1.9 / kLegX, ze);
+  }
+}
+}  // namespace
+
+TEST(TerrainGrid, RayClearingForgetsAPersonWhoWalkedOnAtTheNextScan)
+{
+  // The floor seen 6 s ago; the person stood here half a second ago, well
+  // inside obstacle_memory.
+  Scene s;
+  s.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  legs(s, 0.5);
+  s.classify();
+  EXPECT_EQ(s.at(kLegX, kLegY), LETHAL_OBSTACLE);
+  EXPECT_EQ(s.at(kLegX, -kLegY), LETHAL_OBSTACLE);
+  const int before = s.grid.sampleCount(
+    static_cast<int>((kLegX - kOrigin) / kRes), static_cast<int>((kLegY - kOrigin) / kRes));
+  // The floor's returns are in the ring too, and the leg's above 0.75 m
+  // over them are overhead, not stored.
+  EXPECT_GE(before, 16);
+
+  // The next scan sees through to the wall behind: free at once, the floor
+  // round them untouched.
+  seeThroughLegs(s);
+  s.classify();
+  EXPECT_EQ(s.at(kLegX, kLegY), FREE_SPACE);
+  EXPECT_EQ(s.at(kLegX, -kLegY), FREE_SPACE);
+  EXPECT_GT(s.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
+  const int after = s.grid.sampleCount(
+    static_cast<int>((kLegX - kOrigin) / kRes), static_cast<int>((kLegY - kOrigin) / kRes));
+  EXPECT_LE(after, 4);
+  EXPECT_GE(s.grid.clearedSamples(), 30u);
+
+  // Clearing off (tolerance 0): the memory alone, as before.
+  Scene off;
+  off.grid.params.ray_clear_tolerance = 0.0;
+  off.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  legs(off, 0.5);
+  seeThroughLegs(off);
+  off.classify();
+  EXPECT_EQ(off.at(kLegX, kLegY), LETHAL_OBSTACLE);
+  EXPECT_EQ(off.grid.clearedSamples(), 0u);
+}
+
+TEST(TerrainGrid, RayClearingRemovesAPersonsGhostFromTheGround)
+{
+  // The robot stood in front of the person for longer than the floor memory
+  // round them lasted: no floor within reach of the window any more, their
+  // legs' returns -- the lowest 0.30 m up, the lidar's lower FOV edge at
+  // 1.5 m -- the only ground evidence there, 3 s old (past obstacle_memory).
+  // Without clearing that is an island 0.45 m up, lethal for ground_memory.
+  Scene s;
+  legs(s, 3.0);
+  const auto st = s.classify();
+  EXPECT_EQ(s.at(kLegX, kLegY), LETHAL_OBSTACLE);
+  EXPECT_GT(st.lethal_island, 0u);
+
+  // The scan that sees through where they stood takes the ghost with it:
+  // the cells are unseen floor again.
+  seeThroughLegs(s);
+  s.classify();
+  EXPECT_EQ(s.at(kLegX, kLegY), NO_INFORMATION);
+  EXPECT_EQ(s.at(kLegX, -kLegY), NO_INFORMATION);
+}
+
+TEST(TerrainGrid, RayClearingSparesTheSurfacesARayPassesOver)
+{
+  // Rays to the floor itself, from the lidar's height, at every endpoint
+  // the window holds: every one grazes the floor before it ends on it, and
+  // none of them is evidence against it.
+  {
+    Scene s;
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+    s.classify();
+    for (double ye = -1.9; ye < 1.9; ye += 0.05) {
+      for (double xe = 0.5; xe < 1.95; xe += 0.05) {
+        ray(s, xe, ye, 0.0);
+      }
+    }
+    EXPECT_EQ(s.grid.clearedSamples(), 0u);
+    s.classify();
+    EXPECT_GT(s.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
+  }
+  {
+    // A 0.2 m drop-off at x = 1: the rays to the lower floor pass just over
+    // the upper floor's edge (from 0.481 m up, the lower floor is in view
+    // from 1.42 m on). The edge keeps its floor and stays lethal.
+    Scene s;
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return x >= 1.0 ? -0.2 : 0.0; },
+      4, 6.0);
+    s.classify();
+    EXPECT_GT(s.share(0.9, 1.0, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
+    for (double ye = -1.9; ye < 1.9; ye += 0.05) {
+      for (double xe = 1.45; xe < 1.95; xe += 0.05) {
+        ray(s, xe, ye, -0.2);
+      }
+    }
+    // The rays that just clear the edge pass under the edge's returns with
+    // positive noise and take those: a couple per row of 76, never a cell's
+    // worth. The edge keeps a ground estimate, and the step with it.
+    EXPECT_LT(s.grid.clearedSamples(), 4u * 76u);
+    s.classify();
+    EXPECT_GT(s.share(0.9, 1.0, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
+    EXPECT_GT(s.share(-1.9, 0.8, -1.9, 1.9, FREE_SPACE), 0.98);
+    EXPECT_GT(s.share(1.0, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
+  }
+  {
+    // A ramp from x = 0.5 up to 0.4 m at x = 1.9, seen along it: the rays to
+    // its upper part run just over its lower part. Still free, still a ramp.
+    auto ramp = [](double x, double) { return x > 0.5 ? (x - 0.5) * 0.4 / 1.4 : 0.0; };
+    Scene s;
+    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, ramp, 4, 6.0);
+    s.classify();
+    for (double ye = -0.5; ye < 0.5; ye += 0.05) {
+      for (double xe = 0.6; xe < 1.95; xe += 0.05) {
+        ray(s, xe, ye, ramp(xe, ye));
+      }
+    }
+    EXPECT_EQ(s.grid.clearedSamples(), 0u);
+    s.classify();
+    EXPECT_GT(s.share(0.6, 1.9, -0.5, 0.5, FREE_SPACE), 0.95);
+  }
+  {
+    // A box top at 0.30 m with rays passing over it to the wall behind:
+    // the top is its ground, passed over, kept; the box stays lethal.
+    Scene s;
+    s.floor();
+    s.surface(
+      0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
+    s.classify();
+    EXPECT_EQ(s.at(1.0, 0.0), LETHAL_OBSTACLE);
+    for (double ye = -0.2; ye < 0.2; ye += 0.025) {
+      for (double ze = 0.35; ze < 1.4; ze += 0.02) {
+        ray(s, 1.9, ye * 1.9, ze);
+      }
+    }
+    EXPECT_EQ(s.grid.clearedSamples(), 0u);
+    s.classify();
+    EXPECT_EQ(s.at(1.0, 0.0), LETHAL_OBSTACLE);
+  }
+}
+
+TEST(TerrainGrid, RayClearingStopsShortOfTheRaysEnd)
+{
+  // A person 0.3 m in front of the wall they walked away from: the rays
+  // through where they stood end inside the margin, and clear nothing --
+  // obstacle_memory is what forgets them.
+  Scene s;
+  s.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  legs(s, 0.5);
+  for (double ze = 0.0; ze < 1.4; ze += 0.02) {
+    ray(s, 1.325, kLegY * 1.325 / kLegX, ze);
+  }
+  EXPECT_EQ(s.grid.clearedSamples(), 0u);
+  s.classify();
+  EXPECT_EQ(s.at(kLegX, kLegY), LETHAL_OBSTACLE);
+}
+
 int main(int argc, char ** argv)
 {
   testing::InitGoogleTest(&argc, argv);
