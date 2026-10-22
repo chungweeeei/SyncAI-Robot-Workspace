@@ -222,8 +222,9 @@ void LocalizerNode::loadParameters()
 
   // The tracking round's source window, inlier gate and guess timeout; see
   // NodeConfig for what each one buys.
-  m_config.track_accum_scans =
-    std::max(1, declare_parameter<int>("track_accum_scans", m_config.track_accum_scans));
+  // declare_parameter<int> hands back the int64 the parameter server holds.
+  m_config.track_accum_scans = std::max(
+    1, static_cast<int>(declare_parameter<int>("track_accum_scans", m_config.track_accum_scans)));
   m_config.min_inlier_ratio =
     declare_parameter<double>("min_inlier_ratio", m_config.min_inlier_ratio);
   m_config.guess_timeout_sec =
