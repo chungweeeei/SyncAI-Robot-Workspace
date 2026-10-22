@@ -262,11 +262,10 @@ void PoseNavigator<ActionT>::goalCompleted(
   // aborts it with an empty result from accept_pending_goal()), nor does one
   // rejected in goalReceived(); both read as ABORTED + NONE on the client,
   // which the .action file documents as "superseded or not started".
-  if (final_bt_status == syncai_behavior_tree::BtStatus::CANCELED) {
+  if (
+    final_bt_status == syncai_behavior_tree::BtStatus::SUCCEEDED ||
+    final_bt_status == syncai_behavior_tree::BtStatus::CANCELED) {
     clearPlannerPlan();
-    return;
-  }
-  if (final_bt_status != syncai_behavior_tree::BtStatus::FAILED) {
     return;
   }
 
@@ -291,23 +290,33 @@ template <class ActionT>
 void PoseNavigator<ActionT>::clearPlannerPlan()
 {
   // The planner re-sends its last plan on `plan` once a second and cannot
-  // tell when the navigation that asked for it ended, so after a cancel the
-  // console kept drawing the abandoned route. Only on cancel: after a success
-  // the re-send trims the plan to a stub no longer than xy_goal_tolerance, and
-  // after a failure the route is what the operator wants to see to understand
-  // it. A preempt never comes here -- the tree keeps running and the next plan
-  // replaces the route anyway.
+  // tell when the navigation that asked for it ended, so the console went on
+  // drawing a finished route until the next goal replaced it. Cleared on a
+  // cancel (2026-10-14) and on a success (2026-10-22). Success was left out at
+  // first on the reasoning that the re-send trims a reached route to a stub
+  // no longer than xy_goal_tolerance, but the trim starts at the pose nearest
+  // the robot anywhere on the whole plan: the stub stayed drawn, and grew
+  // back along the route as soon as the robot moved off the goal (a joystick
+  // drive, a task's next step that does not plan). Not on a failure: there
+  // the route is what the operator wants to see to understand it. A preempt
+  // never comes here -- the tree keeps running and the next plan replaces the
+  // route anyway.
   //
   // Fire and forget: goalCompleted() runs on the action server's thread
-  // before the cancel is acknowledged, and an unreachable planner must not
-  // delay that. The next goal's first plan cannot race this request in
-  // practice: that tree first clears the global costmap and the planner waits
-  // for it to be current again (up to ~1 s) before it plans.
+  // before the result is sent, and an unreachable planner must not delay
+  // that. The next goal's first plan cannot race this request in practice:
+  // the request is out before the client hears that this goal ended, and a
+  // task's next step reaches the planner only after a round trip through the
+  // backend and its workflow, then the new tree's costmap clear (and, for
+  // GridBased, the wait for the costmap to be current again). A clear that
+  // did land after the next plan would empty that plan's route on the
+  // console, and send is_path_valid back to the costmap test for an Octo3D
+  // path, until the next replan.
   if (!clear_plan_client_->service_is_ready()) {
     RCLCPP_WARN(
       this->logger_,
       "[PoseNavigator][%s] %s: planner's clear_plan is not available; `plan` keeps showing the "
-      "cancelled route",
+      "finished route",
       __func__, this->getName().c_str());
     return;
   }

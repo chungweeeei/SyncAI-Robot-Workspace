@@ -131,8 +131,8 @@ protected:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   typename rclcpp_action::Client<ActionT>::SharedPtr self_client_;
 
-  // The planner's clear_plan: called on cancel, so the console stops showing
-  // the route of a navigation that no longer exists
+  // The planner's clear_plan: called on a success or a cancel, so the console
+  // stops showing the route of a navigation that no longer exists
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr clear_plan_client_;
 
   // Whether the map is a 3D one: the planner's Octo3D map_available

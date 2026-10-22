@@ -277,12 +277,13 @@ protected:
 
   // Empty plans the timer still owes `plan` after a clear_plan, under
   // last_plan_mutex_. The backend reads `plan` BEST_EFFORT, so one empty
-  // message can be dropped and leave the console showing the cancelled route
+  // message can be dropped and leave the console showing the finished route
   // for good; a few repeats make that unlikely without sending an empty path
   // every second for as long as the robot is idle. A new plan zeroes it.
   int clear_resends_left_{0};
 
-  // Called by the task_runner when a navigation is cancelled
+  // Called by the task_runner when a navigation succeeds or is cancelled, and
+  // by Octo3D on a map switch
   rclcpp::Service<std_srvs::srv::Empty>::SharedPtr clear_plan_service_;
 
   // Lets the BT keep its current path until the costmap blocks it, instead of

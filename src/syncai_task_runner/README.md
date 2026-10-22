@@ -84,7 +84,7 @@ subclass goalReceived(goal):
         write goal.pose to the blackboard under goal_blackboard_id ("goal"); clear "path"
   ⋯ BtActionServer runs the engine loop, calling onLoop() each tick ⋯
 onCompletion: release the mutex, then goalCompleted(result, status) fills the result
-               (CANCELED: also calls the planner's clear_plan, fire and forget)
+               (SUCCEEDED / CANCELED: also calls the planner's clear_plan, fire and forget)
 ```
 
 The tree reads the goal from the blackboard, not from the action goal — that
@@ -382,7 +382,7 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 | Service client | `global_costmap/clear_entirely_global_costmap` | via the BT node (the 2D trees) |
 | Service client | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap`, via the same BT node — the 3D trees' two global clears, dropping `Octo3D`'s dynamic-obstacle marks (2026-10-21) |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
-| Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** only, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Not on success (the re-send is trimmed to a stub inside `xy_goal_tolerance`) nor on failure (the route explains the failure). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
+| Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** and, since 2026-10-22, **SUCCEEDED**, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Success was left out at first because the re-send is trimmed to the robot, but the trim starts at the nearest pose anywhere on the plan, so the stub grew back along the route once the robot moved off the goal. Not on failure (the route explains the failure). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
 | Service client | `set_motion_key` | `syncai_common/SetMotionKey` (`syncai_driver_manager`), via the `SetMotionKey` BT node — the docking trees' gait switch |
 
 Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);

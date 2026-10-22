@@ -191,11 +191,10 @@ void PlannerServer::configure()
   // that subscribes mid-drive (rviz opened late, a reconnect) saw nothing until
   // the next replan, which may never come. Re-sending the last plan keeps
   // `plan` showing the route being driven (the part still ahead; see
-  // republishPlan()). It goes on showing the last route after the goal ends
-  // too, as rviz would have kept displaying it anyway: nothing here knows when
-  // the navigation that asked for it finished -- except a cancel, which the
-  // task_runner reports through clear_plan below. 0 disables, leaving the
-  // plan-time publish only.
+  // republishPlan()). Nothing here knows when the navigation that asked for it
+  // finished, so the task_runner reports a success or a cancel through
+  // clear_plan below; after a failure the route stays up, as rviz would have
+  // kept displaying it anyway. 0 disables, leaving the plan-time publish only.
   double plan_republish_rate;
   get_parameter("plan_republish_rate", plan_republish_rate);
   if (plan_republish_rate > 0.0) {
@@ -953,7 +952,7 @@ void PlannerServer::clearPlan(
   const std::shared_ptr<std_srvs::srv::Empty::Request> /*request*/,
   std::shared_ptr<std_srvs::srv::Empty::Response> /*response*/)
 {
-  // The republish would otherwise keep a cancelled route on `plan` for good:
+  // The republish would otherwise keep a finished route on `plan` for good:
   // the backend forwards it to the console, which drew the last route until
   // the next goal replaced it. An empty path is the clear both rviz and the
   // backend's path subscriber already understand. Its frame is the global
@@ -968,7 +967,7 @@ void PlannerServer::clearPlan(
     // the rest, one per plan_republish_rate tick (none when it is 0).
     clear_resends_left_ = kClearResends - 1;
   }
-  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared (navigation cancelled)", __func__);
+  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared", __func__);
 
   if (plan_publisher_->get_subscription_count() > 0) {
     auto msg = std::make_unique<nav_msgs::msg::Path>();
