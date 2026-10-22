@@ -124,6 +124,86 @@
     # (POST /api/v1/maps/{name}/activate), whose first step is relocalize.
     post_reloc_settle: 3.0
 
+    # Source window of the tracking round (2026-10): the newest this many body
+    # clouds, composed through their odom poses into the newest scan's body
+    # frame, are registered as one cloud -- what auto_localize has always done
+    # over auto_loc.accum_scans, only shorter. A single filter_num-6 MID360
+    # scan is ~3k points on a non-repetitive pattern: sparse enough that the
+    # rough stage dithers (the 5.9% of lost rounds under rough_rotation_eps
+    # below) and that a parked robot's solution resamples GICP's noise floor
+    # every round (the motion gate above). Three scans is ~0.3 s; Point-LIO's
+    # drift over that is well under a centimetre, and each scan is already
+    # de-skewed to its end. 1 is the single-scan behaviour until 2026-10. The
+    # cost is in the refine stage's source size: the `refine:` log line
+    # carries the round's ms since 2026-10, and rough + refine must stay under
+    # half the update_hz period (100 ms). Not measured on the robot yet.
+    track_accum_scans: 3
+    # Refine-stage inlier ratio (inliers / voxelised source points) below
+    # which a converged round is dropped anyway. 0 = off, and it ships off for
+    # the reason the fitness thresholds reject nothing: a value needs data
+    # from a site this was NOT mapped from. Every accepted round logs the
+    # ratio (`loc: ... inl=`); set it from that.
+    min_inlier_ratio: 0.0
+    # A guess from relocalize / initialpose / [initial_pose] that the timer
+    # has not converged on within this many seconds is withdrawn and the timer
+    # goes back to its previous offset + odometry (`guess withdrawn` in the
+    # log; relocalize_check keeps answering false). Until 2026-10 such a guess
+    # was retried every round forever with the TF frozen on the old offset
+    # meanwhile -- a flat guess on the tilted mount being the classic case
+    # (applyPlanarGuess). auto_localize / reset_odometry keep their own
+    # deadlines (auto_loc.converge_timeout_sec, reset_odom.converge_timeout_sec)
+    # and are not affected. <= 0 restores the old behaviour. Longer than
+    # post_reloc_settle on purpose: a guess that is going to converge does so
+    # within the settle window.
+    guess_timeout_sec: 10.0
+
+    # Localizability (2026-10; localizers/localizability.h has the whole
+    # argument). GICP's final 6x6 Hessian says which directions the scan
+    # constrained: its eigenvalues, per inlier and in the map frame, are
+    # classified direction by direction as FULL / PARTIAL / NONE by their
+    # ratio to the largest one, and GICP's correction (the solution minus the
+    # odometry prediction) is taken x1 / x partial_gain / x0 along them. In a
+    # corridor the along-axis correction, which was GICP's noise, now stays
+    # with Point-LIO; in the west-end corner (rough_registration_type below)
+    # the weakly constrained y stops jumping between the two basins. Not
+    # applied to a service guess or inside its settle window, nor to the first
+    # registration after start. The thresholds are FIRST GUESSES: every
+    # accepted round logs `loc: t-eig=(...) r-eig=(...) lvl=FFN/FFF ...`, and
+    # ratio_none / ratio_partial are to be set from the dp1f replay (the
+    # weakest ratio on its corridor stretches against the open-space rounds)
+    # before being trusted. enabled: false keeps the analysis and the log but
+    # projects nothing -- the behaviour before 2026-10, for an A/B on one bag.
+    localizability:
+      enabled: true
+      ratio_none: 0.02
+      ratio_partial: 0.1
+      # Absolute floor on the per-inlier eigenvalue (0 = off), for the case
+      # where every direction is weak at once and the ratio alone would still
+      # call the least-weak one FULL. Units are H's own (m^-2 per inlier for
+      # translation); read them off the log before setting it.
+      min_eig_per_inlier: 0.0
+      partial_gain: 0.3
+
+    # Jump gate (2026-10). A registration whose map-frame body pose is further
+    # from the last ACCEPTED one than the robot could have moved meanwhile is
+    # dropped and the TF coasts on odometry for that round. The reference is
+    # the last accepted body pose, NOT the odometry prediction: when Point-LIO
+    # diverges the prediction is garbage and GICP's answer is right (robot01
+    # 2026-10-13), and the offset absorbing that jump is what kept the TF
+    # correct -- a gate against the prediction would have thrown those rounds
+    # away. What this catches is a solution in the wrong basin. The robot
+    # tops out at 0.6 m/s; 1.5 leaves room for the gait's lurch and the 0.2 s
+    # floor on dt. After max_reject_streak consecutive rejections the next
+    # round is accepted regardless (logged), because by then it is the
+    # reference that is suspect: the gate must never freeze the TF on a wrong
+    # pose for good -- the failure direction chosen under the motion gate
+    # above, "jitter partly suppressed, never frozen", applies here too.
+    jump_gate:
+      enabled: true
+      max_speed: 1.5
+      max_rot_speed: 1.5
+      max_reject_streak: 5
+
     # The registration backend is small_gicp's GICP (it used to be
     # pcl::IterativeClosestPoint's point-to-point). num_threads is used for the
     # covariance estimation, the KD-tree build and the reduction; the localizer

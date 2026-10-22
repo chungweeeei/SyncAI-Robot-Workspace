@@ -51,6 +51,7 @@ add_executable(localizer_node
   src/localizer_node.cpp
   src/localizers/icp_localizer.cpp
   src/localizers/global_localizer.cpp
+  src/localizers/localizability.cpp
 )
 target_include_directories(localizer_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -100,6 +101,22 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # The localizability analysis (localizers/localizability.*) is pure Eigen
+  # with no ROS in it, so it gets the package's one real unit test: synthetic
+  # Hessians for the corridor, the yaw / lateral coupling and the disabled
+  # path. No map, no bag, runs in seconds; `colcon test --packages-select
+  # syncai_localizer`. The node itself is only exercised by the replay
+  # (docs/localizer-offline-replay.md) and CI's smoke test.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_localizability
+    test/test_localizability.cpp
+    src/localizers/localizability.cpp
+  )
+  target_include_directories(test_localizability PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+    ${PCL_INCLUDE_DIRS})
 endif()
 
 ament_package()
