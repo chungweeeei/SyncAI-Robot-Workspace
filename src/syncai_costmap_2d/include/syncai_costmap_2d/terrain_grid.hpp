@@ -33,6 +33,24 @@
 // what keeps a low obstacle on never-seen floor an obstacle: its own
 // points, 0.2-0.5 m up, are then in the band.
 //
+// Overhead (2026-10-22): a return more than body_clearance + max_ground_lift
+// above the lowest one its cell holds is clearance the robot walks under --
+// a stair's underside, a table top, a beam. Whatever ground the estimate
+// returns (at most the lowest + max_ground_lift) it lies above the obstacle
+// band, so it is neither an obstacle nor the ground, and addSample() does
+// not store it. On robot01 the underside of dp's lobby stair, 1.0-1.4 m over
+// the floor and so inside TerrainLayer's max_rel_z, filled the rings with
+// returns from right overhead, pushed out the floor seen from further off,
+// and became the ground of the cells under it: islands and steps, lethal
+// round the robot, MPPI with every candidate colliding in half its cycles
+// for 18 s, the robot standing and twitching under a stair the global
+// planner had rightly routed it under. The ground estimate drops the same
+// returns against the 3x3 neighbourhood's lowest, for cells whose own ring
+// took them before any floor. What this cannot fix: a neighbourhood with no
+// floor return younger than ground_memory -- never seen, or the robot stood
+// under the overhang longer than that -- still takes the underside for its
+// ground, and the robot is boxed in by islands.
+//
 // Reach: a surface is floor only if the robot can get onto it over steps
 // the legs take (classify() has the rule). The lidar's lower FOV makes a
 // box, a table or a platform look like a patch of floor 0.3 m up with
@@ -133,7 +151,9 @@ public:
   void clear();
 
   // A return at (x, y, z) in the grid's frame, seen at time t (seconds;
-  // any epoch, the same for every call). Outside the window: ignored.
+  // any epoch, the same for every call). Outside the window, or overhead
+  // (more than body_clearance + max_ground_lift above the lowest return the
+  // cell holds from the last ground_memory): ignored.
   void addSample(double x, double y, double z, double t);
 
   // The current path in the grid's frame -- only when it has heights
@@ -191,6 +211,11 @@ private:
   bool cellHasObstacle(size_t i, double now, double ground) const;
   void floodReach(double robot_x, double robot_y) const;
   float rel(double t) const;
+  // How far above the lowest return a return is overhead (see the header).
+  float overheadMargin() const;
+  // The cell's lowest z among samples no older than `oldest` (grid time);
+  // +infinity when there is none.
+  static float lowestSince(const Cell & c, float oldest);
 
   int nx_ = 0, ny_ = 0;
   double res_ = 0.05, ox_ = 0.0, oy_ = 0.0;

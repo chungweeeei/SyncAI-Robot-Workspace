@@ -261,6 +261,79 @@ TEST(TerrainGrid, WallFootIsLethalWhetherOrNotTheFloorUnderItWasSeen)
   EXPECT_GT(hidden.share(0.95, 1.05, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
 }
 
+TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
+{
+  // dp's lobby stair on robot01, 2026-10-22: the robot walked under its
+  // underside, 1.0-1.4 m over the floor. The floor was seen seconds before,
+  // from further off, a few returns a cell; the underside from right below,
+  // more returns a cell than a ring holds. They pushed the floor out of the
+  // rings and became the ground there: islands and steps round the robot,
+  // and MPPI with every candidate colliding.
+  auto underside = [](double x, double) { return 1.0 + 0.4 * (x + 1.0) / 2.9; };
+  {
+    Scene s;
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
+    s.surface(-1.0, -kOrigin, kOrigin, -kOrigin, underside, 40, 0.5);
+    auto st = s.classify();
+    EXPECT_EQ(st.lethal_island + st.lethal_step + st.lethal_slope + st.lethal_obstacle, 0u);
+    EXPECT_GT(s.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
+    int ix, iy;
+    ASSERT_TRUE(s.grid.worldToCell(1.0, 0.0, ix, iy));
+    EXPECT_NEAR(s.grid.lastGround()[s.grid.index(ix, iy)], 0.0, 0.05);
+
+    // Under it, a box is still a box.
+    s.surface(
+      0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
+    s.wall(0.8, -0.2, 0.2, 0.0, 0.30, 0.5);
+    st = s.classify();
+    EXPECT_GT(s.share(0.8, 1.2, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
+    EXPECT_GT(s.share(-1.9, 0.5, -1.9, 1.9, FREE_SPACE), 0.98);
+  }
+  {
+    // Seen the other way round -- the underside first, so it went into the
+    // rings, then the floor: the estimate leaves it out, and the ground is
+    // the floor's, not lifted by max_ground_lift.
+    Scene s;
+    s.surface(-1.0, -kOrigin, kOrigin, -kOrigin, underside, 40, 3.0);
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 1.0);
+    s.classify();
+    EXPECT_GT(s.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
+    int ix, iy;
+    ASSERT_TRUE(s.grid.worldToCell(1.0, 0.0, ix, iy));
+    EXPECT_NEAR(s.grid.lastGround()[s.grid.index(ix, iy)], 0.0, 0.05);
+  }
+  {
+    // An underside lower than body_clearance -- a stair's foot, 0.5 m up --
+    // is not overhead: the robot does not fit under it.
+    Scene s;
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
+    s.surface(
+      1.0, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.5; }, 40, 0.5);
+    s.classify();
+    EXPECT_GT(s.share(1.05, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
+    EXPECT_GT(s.share(-1.9, 0.5, -1.9, 1.9, FREE_SPACE), 0.98);
+  }
+}
+
+TEST(TerrainGrid, OverheadWithNoFloorSeenUnderItIsStillASurface)
+{
+  // The limit: overhead is judged against a floor return of the same
+  // neighbourhood younger than ground_memory. With none, the underside is
+  // the lowest thing there, a surface 1.2 m up and an island; the robot's
+  // own floor beside it stays free.
+  Scene s;
+  s.floor(kOrigin, -1.0, kOrigin, -kOrigin);
+  s.surface(
+    -0.5, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 1.2; }, 40, 0.5);
+  const auto st = s.classify(0.0, -1.5, 0.0);
+  EXPECT_GT(st.lethal_island, 0u);
+  EXPECT_GT(s.share(-0.4, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.98);
+  EXPECT_GT(s.share(-1.9, -1.2, -1.9, 1.9, FREE_SPACE), 0.98);
+}
+
 namespace
 {
 // A stair across the window: level floor to x = 0, then risers of 0.17 m

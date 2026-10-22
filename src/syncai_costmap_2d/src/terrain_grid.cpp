@@ -89,6 +89,29 @@ float TerrainGrid::rel(double t) const
   return static_cast<float>(t - epoch_);
 }
 
+float TerrainGrid::overheadMargin() const
+{
+  // The ground estimate is at most the lowest return + max_ground_lift, and
+  // the obstacle band ends body_clearance above the ground: a return further
+  // than this over the lowest is above the band whatever the ground comes
+  // out as. The cost of the lift in the sum: an underside between
+  // body_clearance and this above the floor is kept, can lift the ground,
+  // and reads as an obstacle -- conservative, for a clearance of a few
+  // centimetres over the body's.
+  return static_cast<float>(params.body_clearance + params.max_ground_lift);
+}
+
+float TerrainGrid::lowestSince(const Cell & c, float oldest)
+{
+  float low = std::numeric_limits<float>::infinity();
+  for (int k = 0; k < c.count; ++k) {
+    if (c.ring[k].t >= oldest) {
+      low = std::min(low, c.ring[k].z);
+    }
+  }
+  return low;
+}
+
 void TerrainGrid::addSample(double x, double y, double z, double t)
 {
   int ix, iy;
@@ -96,7 +119,22 @@ void TerrainGrid::addSample(double x, double y, double z, double t)
     return;
   }
   Cell & c = cells_[index(ix, iy)];
-  c.ring[c.head] = Sample{static_cast<float>(z), rel(t)};
+  const float ts = rel(t);
+  // Overhead returns are not stored (2026-10-22; the header has the case).
+  // Rejected here, not only left out of the estimate, because the ring keeps
+  // the newest max_samples_per_cell: under a stair's underside the returns
+  // from right overhead arrive many times faster than the floor's, seen
+  // seconds earlier from further off, and stored they push it out of the
+  // ring. Against the cell's own lowest return (an empty cell takes
+  // anything): the 3x3 lowest would also drop the upper floor's returns next
+  // to a drop-off, and estimateGround() repeats the test over the 3x3 for
+  // the cells whose own ring got overhead returns before any floor.
+  if (
+    static_cast<float>(z) >
+    lowestSince(c, ts - static_cast<float>(params.ground_memory)) + overheadMargin()) {
+    return;
+  }
+  c.ring[c.head] = Sample{static_cast<float>(z), ts};
   c.head = (c.head + 1) % static_cast<int>(c.ring.size());
   c.count = std::min(c.count + 1, static_cast<int>(c.ring.size()));
 }
@@ -133,6 +171,20 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
           }
         }
       }
+      // Overhead returns out, against the neighbourhood's lowest (2026-10-22;
+      // addSample() keeps them out of a ring that already holds a floor, this
+      // catches those a ring took before it had one). They are not ground
+      // evidence either, so min_ground_samples counts what is left: a few
+      // floor returns under a lot of underside borrow the robot's ground.
+      float zmin = std::numeric_limits<float>::infinity();
+      for (const float z : scratch_) {
+        zmin = std::min(zmin, z);
+      }
+      const float ceiling = zmin + overheadMargin();
+      scratch_.erase(
+        std::remove_if(
+          scratch_.begin(), scratch_.end(), [ceiling](float z) { return z > ceiling; }),
+        scratch_.end());
       if (static_cast<int>(scratch_.size()) < params.min_ground_samples) {
         // Too few: the robot's own ground. Right on a level floor; and the
         // best there is on the floor the lidar has never seen.
@@ -144,7 +196,6 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
         static_cast<size_t>(std::clamp(params.ground_quantile, 0.0, 1.0) * (scratch_.size() - 1));
       std::nth_element(scratch_.begin(), scratch_.begin() + q, scratch_.end());
       const float zq = scratch_[q];
-      const float zmin = *std::min_element(scratch_.begin(), scratch_.begin() + q + 1);
       ground_[i] = std::min(zq, zmin + static_cast<float>(params.max_ground_lift));
       ground_known_[i] = 1;
     }

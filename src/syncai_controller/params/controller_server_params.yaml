@@ -1031,6 +1031,12 @@
       # Returns kept: within max_range of the lidar in the plane (the window
       # is 2.83 m to its corner) and within [min_rel_z, max_rel_z] of the
       # robot's ground -- a drop one floor down is in, the ceiling is out.
+      # An overhang lower than max_rel_z (a stair's underside, a table top) is
+      # in, and is dropped by the grid as overhead instead: more than
+      # body_clearance + max_ground_lift over the lowest return of its cell
+      # (2026-10-22; terrain_grid.hpp). Lowering max_rel_z is not the fix --
+      # dp's lobby stair, where the robot stood twitching under an underside
+      # 1.0-1.4 m up, would need it under 1.0, and a ramp up ahead with it.
       max_range: 3.0
       min_rel_z: -1.5
       max_rel_z: 1.5

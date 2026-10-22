@@ -274,7 +274,16 @@ and judges every cell on each update:
    the floor under and ahead of it was seen 5–13 s earlier, from further off.
    A cell with fewer than `min_ground_samples` returns borrows the robot's own
    ground (the lidar frame's z minus `sensor_height`, the obstacle layer's
-   `height_reference: sensor`).
+   `height_reference: sensor`). **Overhead** returns — more than
+   `body_clearance` + `max_ground_lift` (0.75 m) above the lowest return of
+   the cell (on intake) or of the 3×3 neighbourhood (in the estimate) — are
+   clearance the robot walks under: above the obstacle band for any ground
+   the estimate can return, so neither ground nor obstacle. They are not
+   stored at all (2026-10-22), because the ring keeps the newest returns: on
+   robot01 the underside of dp's lobby stair, 1.0–1.4 m over the floor and
+   inside `max_rel_z`, pushed the floor seen from further off out of the
+   rings and became the ground under it — islands and steps round the robot,
+   MPPI failing half its cycles for 18 s, the robot standing and twitching.
 2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
    (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
    that ground → LETHAL. Short memory is how a person who walks on is gone
@@ -320,6 +329,11 @@ by itself after `obstacle_memory`.
 observed is an island even when it is a ramp — at start-up facing a ramp whose
 foot is inside the blind 3.9 m and with no path through it, the ramp is lethal
 until the robot has seen its foot (a path with heights over it connects it).
+Overhead is judged against a floor return younger than `ground_memory`: where
+the neighbourhood has none — never seen, or the robot stood under the
+overhang longer than that — the underside is taken for a surface and is an
+island. An underside between `body_clearance` and 0.75 m up lifts the ground
+and reads as an obstacle (conservative, for a few centimetres of clearance).
 Unknown cells
 are free to MPPI unless the costmap tracks unknown space, so the far side of a
 drop the lidar has not looked over is not yet a wall; the drop's edge is.
@@ -506,7 +520,8 @@ ros2 launch syncai_costmap_2d keepout_filter_test.launch.py \
 
 `test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
 syncai_costmap_2d`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
-step, drop-off, ramp, slope, box, person, wall foot, a stair lethal with and
+step, drop-off, ramp, slope, box, person, wall foot, a stair's underside
+overhead (and with no floor seen under it), a stair lethal with and
 without a climbing path, the window moving — with no ROS; it also builds on a workstation
 with plain `clang++` against `include/` and googletest.
 
