@@ -159,9 +159,23 @@ bounding box into free space. When drawing: black = keepout (lethal), grey = no
 opinion, white = force free — the last one is almost never what you want. An
 existing `keepout.yaml` is never touched, whatever its geometry; both files are
 written tmp + rename, image first, and neither holds a path (`image:
-keepout.pgm`), so a map rename stays one `os.rename`. The only case that still
-starts nothing is a map whose `gridmap.yaml` is missing or unreadable — nothing
-to size a mask from, and the `map_server` pane is dying on the same file.
+keepout.pgm`), so a map rename stays one `os.rename`.
+
+**No gridmap, no mask: the mask server starts idle** (2026-10-19). A 3D-only
+map (`OctomapPlanner3D`: `map.pcd`, `poses.txt`, `octomap.bt`, no
+`gridmap.yaml`) has nothing to size a mask from; until then the launch started
+nothing there, a dead-looking pane on every boot of such a map. Now both nodes
+start, with `filter_mask_server`'s `yaml_filename` set to `""` — `map_server`'s
+idle mode: no mask published, `filter_mask_server/load_map` still served — so
+a mask drawn later, or a switch to a 2D map, is a `load_map` call. No blank
+mask is generated for a 3D map: `octomap.bt`'s header has no bounding box,
+sizing one means loading the whole tree (or `map.pcd`) in a launch file, and
+`Octo3D` does not read the keepout yet. The planner's "Filter mask was not
+received" is therefore expected on such a map. The same idle start covers an
+unreadable gridmap, a blank mask that cannot be written, and an existing
+`keepout.yaml` whose image is missing (reported, never replaced — it is
+operator data). Only an explicit `mask_yaml:=` that does not exist still starts
+nothing.
 
 The `mask_topic` stays relative on purpose: `KeepoutFilter` resolves it against
 the costmap node's *parent* namespace (the costmap lives in a sub-namespace like
@@ -226,8 +240,13 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py
 that it shared `localization` with pointlio and the localizer)
 and must come up **before** the planner, whose global costmap static layer blocks
 on the latched map. The mapping session (`start_mapping.yaml`) does not run it at
-all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs to exist, and
-`map_server` throws in its constructor when the file is absent.
+all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs to exist.
+When `[map] map` names a gridmap that does not exist — a 3D-only map — the
+launch passes `yaml_filename: ""` (2026-10-19), so the node comes up idle with a
+warning instead of throwing: nothing on `map`, `load_map` still served, and the
+planner's static layer never gets a map (noise for `Octo3D`, which does not wait
+for it). It must be an explicit `""`: no override would fall back to the params
+file's hard-coded map. A gridmap that exists but cannot be read still throws.
 `costmap_filter_info.launch.py` is the second pane of the same window (log
 directory `keepout`) since 2026-09, and the planner's global costmap has the
 matching `filters: ["keepout_filter"]` in `planner_server_params.yaml`. On a
@@ -251,9 +270,11 @@ missing when it is not.
   `rclcpp::PARAMETER_STRING`, so `ros2 run syncai_map_server map_server` with no
   params file throws on startup rather than starting empty. Pass `""` explicitly
   to start map-less.
-- **A bad map path throws in the constructor** and kills the process. Since the
-  path usually comes from `[map] map` in the instance INI, a typo there takes the
-  whole map server down — check the INI before the params file.
+- **A bad map path throws in the constructor** and kills the process — but
+  through the launch, a `[map] map` naming a file that does not exist starts the
+  node idle instead (a 3D-only map, 2026-10-19), so a typo there now shows up as
+  the launch's "does not exist" warning and an empty `map`, not a crash. Check
+  the INI before the params file.
 - **QoS must be transient-local on both ends.** Every consumer in this stack
   (`StaticLayer` via `map_subscribe_transient_local`, the backend's map
   subscriber, `map_saver`) has a matching setting; a volatile subscriber simply

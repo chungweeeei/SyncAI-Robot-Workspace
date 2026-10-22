@@ -15,22 +15,38 @@
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
     # This is a warning threshold only — nothing throttles or aborts on it.
     # 20 Hz (50 ms) is a generous ceiling: the BT's RateController only asks
-    # for a plan at most once a second (only when is_path_valid says the
-    # current one is blocked), so the warning is a canary for a pathological
-    # Smac search (a huge unknown region, a goal buried in lethal cost), not a
-    # cadence anyone is trying to hit. A Smac plan on a 0.05 m hall map
-    # normally lands well under it.
+    # for a plan at most once a second (in the 2D tree only when is_path_valid
+    # says the current one is blocked; in the 3D tree, move_3d.xml, once per
+    # goal), so the warning is a canary for a pathological search (a huge
+    # unknown region, a goal buried in lethal cost), not a cadence anyone is
+    # trying to hit. A Smac plan on a 0.05 m hall map, and an Octo3D plan
+    # (~1 ms for 25 m, ~30 ms 1F -> 2F on dp1f_1012), land well under it.
     expected_planner_frequency: 20.0
 
     # Re-send the last plan on `plan` this often (Hz), restamped; 0 = publish
-    # only when a plan is made. move.xml plans only when the path is blocked,
-    # so without this a viewer that subscribes mid-drive never sees the route.
+    # only when a plan is made. The BT plans once per goal (move_3d.xml, a 3D
+    # map) or only when the path is blocked (move.xml, a 2D map), so without
+    # this a viewer that subscribes mid-drive never sees the route.
     plan_republish_rate: 1.0
 
-    # is_path_valid (the BT's once-a-second check of the path still ahead)
-    # tests each pose twice: the centre cell against INSCRIBED, which is
-    # Smac's own expansion test (unknown, off-map, the keepout band, anything
-    # within the inscribed radius of the centre, including inside the
+    # How long a goal for a planner that reads the costmap (GridBased) waits
+    # for it to be current before the goal is aborted (s; <= 0 = forever, as
+    # upstream did). The global costmap updates at 1 Hz, so a clear
+    # repopulates within ~1 s and 5 s is only ever hit by a layer that is not
+    # getting its data. Until 2026-10-19 the wait had no way out at all: a
+    # GridBased goal on a 3D-only map (no gridmap.yaml, the static layer never
+    # gets a map) hung the action thread for good. That case no longer waits
+    # for this timeout -- a static layer without a map fails the goal at once
+    # -- and a cancel ends the wait too. An aborted ComputePathToPose reaches
+    # NavigateToGoal as PLAN_FAILED. Dynamic.
+    costmap_wait_timeout: 5.0
+
+    # is_path_valid (the 2D tree's once-a-second check of the path still
+    # ahead; the 3D tree, move_3d.xml, does not call it, because the check is
+    # 2D and reads a path upstairs as blocked) tests each pose twice: the
+    # centre cell against INSCRIBED, which is Smac's own expansion test
+    # (unknown, off-map, the keepout band, anything within the inscribed
+    # radius of the centre, including inside the
     # rectangle), and, with footprint_check, the padded footprint's perimeter
     # against LETHAL -- the test RPP applies on the local costmap before it
     # drives. The two are not nested: INSCRIBED at the centre means lethal
@@ -53,13 +69,28 @@
       footprint_check: true
       heading_margin: 0.35
 
-    # The id stays "GridBased" rather than becoming "Smac2D": the BT's move.xml
+    # The id stays "GridBased" rather than becoming "Smac2D": the 2D move.xml
     # hardcodes planner_id="GridBased" in its ComputePathToPose node, so an id
     # rename here would silently send every task-runner goal to an unknown
     # planner (getPlan() logs an error and returns an empty path). Swapping the
     # plugin under the existing id is what makes the change take effect without
     # touching the behavior tree.
-    planner_plugins: ["GridBased"]
+    #
+    # Two ids on purpose (2026-10). GridBased stays Smac2D on the 2D costmap
+    # and is what move.xml asks for on dev. Octo3D is the OctoMap surface
+    # planner for the quadruped (OctomapPlanner3D, below), and on
+    # feature/octomap-planner-3d a 3D map's trees ask for it (move_3d.xml /
+    # dock_3d.xml, with FollowPathRPP3D, the controller that follows a path
+    # with heights and climbs stairs). Which trees a goal runs is read off
+    # Octo3D's latched map_available (2026-10-19): a map is 2D or 3D, never
+    # both, so on a 2D map Octo3D has no tree, says false, and the goal runs
+    # move.xml on GridBased. Loading Octo3D costs a background build of a few
+    # seconds at startup and ~30 MB. A map without octomap.bt logs one error
+    # and leaves GridBased untouched -- but with move.xml on Octo3D, every
+    # navigation goal on that map then fails (PLAN_FAILED). With two ids
+    # loaded an EMPTY planner_id no longer falls back to the only plugin
+    # (getPlan() needs the id); the BT always names one.
+    planner_plugins: ["GridBased", "Octo3D"]
     GridBased:
       plugin: "syncai_global_planner/SmacPlanner2D"
 
@@ -116,8 +147,318 @@
     # NavfnPlanner ("syncai_global_planner/NavfnPlanner", params: tolerance /
     #   use_astar / allow_unknown / use_final_approach_orientation) and
     #   StraightLinePlanner are still built and registered. To fall back, set
-    #   plugin: above — do not add a second id, since move.xml only ever asks
-    #   for GridBased.
+    #   plugin: above under GridBased -- a third id is invisible to move.xml
+    #   until the tree names it.
+
+    # OctomapPlanner3D: A* over the floor surfaces of map/<name>/octomap.bt
+    # (the tree clean_map writes beside map.pcd), for the quadruped. The tree
+    # is reduced once at startup to a multi-layer 2.5D surface map -- every
+    # column's floor surfaces, each judged with the geometry below -- and a
+    # path only ever runs over cells that passed, so it cannot leave the
+    # ground, climb a wall, cross a stair riser or a kerb, or jump floors; it
+    # takes ramps. The one way between floors is a stair the robot walked
+    # while mapping: poses.txt next to the tree turns each flight on the track
+    # into a stair link (stair_* below). The 2D costmap is used for its frame
+    # id only. Offline the
+    # same code runs as `octomap_planner_3d_cli map/<name>/octomap.bt --stats`
+    # (also --check-poses, --dump-image, --plan); that is where these values
+    # were set, on dp1f_1012_v2 (2026-10). The README's OctomapPlanner3D
+    # section has the algorithm.
+    Octo3D:
+      plugin: "syncai_global_planner/OctomapPlanner3D"
+
+      # Set by the launch file to map/<name>/octomap.bt, derived from the
+      # directory of [map] pcd (no INI key: the backend's map switch writes
+      # [map] name alone). Empty or missing file = every Octo3D plan fails
+      # with map_not_loaded, nothing else is affected. A map switch replaces
+      # it through /<robot_id>/planner_server/Octo3D/load_map
+      # (nav2_msgs/srv/LoadMap, map_url = the new octomap.bt; 2026-10-19),
+      # which also writes the new path back here; `ros2 param set` on it is
+      # refused, pointing at that service.
+      octomap_file: ""
+      # The map's track, for the stair links. Empty = poses.txt next to
+      # octomap_file (map/<name>/poses.txt, written by every save_maps with
+      # patches). Missing = a warning and no links: the floors stay apart.
+      # Boot only: a load_map reload always takes poses.txt from beside the
+      # new tree.
+      poses_file: ""
+
+      # The server hands the planner the planar map -> base_link pose, whose
+      # z is always 0, so the robot's real height comes from TF to this frame
+      # (the LIO body, which keeps z; overridden by the launch file with the
+      # <robot_id>/ prefix) minus lidar_height, the sensor's height above the
+      # ground -- the same number clean_map was run with (map_clean.recipe.json
+      # lidar_height). Without the TF the request's z is used, which is right
+      # on the ground floor and wrong upstairs.
+      body_frame: pointlio_body
+      lidar_height: 0.481
+
+      # request: the goal's own z picks the floor, within snap_z_window. The
+      # backend sends z = 0, which lands on the ground floor (its surface is
+      # ~0.5 m below the map origin, the first lidar pose). start: use the
+      # robot's floor instead, for sending a 2D goal while it is upstairs.
+      goal_z_mode: request
+
+      # ---- surface map (baked in at startup; a change needs a restart) ----
+      # Hard clearance: every column within this radius of a cell must hold a
+      # usable surface, else the cell is blocked -- the implicit inflation of
+      # walls, drop-offs and unfillable holes. Same 0.25 m as the global
+      # costmap's inscribed radius (padded half-width of the footprint), so
+      # Octo3D and GridBased refuse the same gaps.
+      robot_radius: 0.25
+      # Non-occupied voxels needed above a surface for the body to fit. The
+      # lidar top is ~0.55 m up; 6 cells at 0.1 m.
+      body_clearance: 0.6
+      # Largest height change between neighbouring cells: the legs' step
+      # capability, 0.17 m = a standard riser, which the G23 was driven up
+      # while mapping dp1f_1012 (0.10 until 2026-10-14, chosen to refuse
+      # stairs, which the stair links below now handle). Rounded to whole
+      # cells: at res 0.1 this is two cells, so a 0.15 m kerb is one step
+      # and a 0.5 m ledge is not.
+      max_step_height: 0.17
+      # Tilt limit of the plane fitted under the footprint disc. With single
+      # risers allowed this is what refuses a stair flight (~30 deg): a disc
+      # whose surfaces span at most one step is level ground with a kerb and
+      # is not fitted; a flight shows two risers in a 0.5 m disc and is. Also
+      # the only guard against a shallow stair with 0.1 m risers (a 19 deg
+      # "ramp" at this resolution). A fit, not max-minus-min: a flat floor
+      # read cell by cell looks 11 deg tilted across a 0.5 m disc.
+      max_slope_deg: 20.0
+      # Share of the footprint disc's columns that must hold a usable
+      # surface. The rest may be gaps -- columns nothing was ever seen in --
+      # never a wall, a drop or an obstacle, which block outright. The lidar
+      # sees the floor at grazing angles only, so the observed floor is
+      # sparse: with every column required (the rule until 2026-10-14) 13 %
+      # of dp1f_1012's own keyframes stood on "untraversable" ground. The
+      # missing share is also paid for in cost (gap_cost_weight). 1.0 = the
+      # old rule.
+      footprint_min_support: 0.8
+      # Unknown voxels tolerated in the clearance band (-1 = all). The lidar
+      # looks mostly outward from 0.48 m up, so the band is observed only where
+      # the robot passed; a strict value punches holes in exactly the
+      # corridors the path needs. An occupied voxel in the band always rejects.
+      max_unknown_clearance_cells: -1
+      # The voxel right above a floor must have been observed free: a floor
+      # the robot stood on always has, a ceiling / slab underside seen from
+      # below never has. 1 removed every ceiling island of the multi-storey
+      # dp1f_1012_v2 (748 -> 153 components); 0 disables.
+      min_known_free_above: 1
+      # Floor voxels exist only where a scan hit them, and the lidar's lower
+      # field of view (-7 deg) cannot see the floor nearer than ~4 m, so the
+      # floor under the robot's own track is seen only from afar: ~5 % of
+      # the columns under it are empty. A column with no surface whose
+      # neighbours within the radius agree on a height from three of the four
+      # quadrants around it, with at least min_support of them, and with no
+      # occupied voxel near that height, gets an inferred surface. The
+      # quadrant rule keeps a floor edge or a balcony from being extended
+      # (one-sided support). Two passes close a hole from the rim inward.
+      # dp1f_1012_v2: 86 % of the keyframes on a traversable cell with this,
+      # 74 % without.
+      hole_fill_radius: 0.3
+      hole_fill_min_support: 0.5
+      hole_fill_passes: 2
+      # Reach of the soft clearance cost, from the traversable boundary (which
+      # already sits robot_radius from the wall): 0.55 puts the band edge
+      # 0.8 m from the wall, the global costmap's inflation_radius.
+      clearance_cost_radius: 0.55
+
+      # ---- stair links (baked in at startup) ----
+      # The geometry rules refuse every stair (step and slope), and relaxing
+      # them map-wide would pass every 0.2 m kerb and drop-off too. Instead a
+      # stretch of the map's own track that leaves one floor and arrives on
+      # another, at least stair_min_rise higher or lower and at most
+      # stair_max_length of track later, becomes a link the search may take
+      # both ways and the path follows keyframe by keyframe (loops from turns
+      # and waits on the landings cut out). Links end only in components of
+      # stair_anchor_min_area or more: a stairwell's landings rarely survive
+      # the rules (dp1f_1012: small, walled, the air above never observed),
+      # so a link spans the whole stairwell, floor to floor. Stairs the robot
+      # never walked stay refused. dp1f_1012 (2026-10-14): one 1F -> 2F link
+      # over the switchback stair (four flights, 5.3 m, 39 m of track after
+      # the loop cut), plus two over a 0.4 m step on 2F.
+      stair_links: true
+      # Above a kerb (0.15) and one stair step, below a flight between landings.
+      stair_min_rise: 0.3
+      # dp1f_1012's stairwell took 32 m of track with the turns on its landings.
+      stair_max_length: 60.0
+      # Track ground (pose z - lidar_height) to a cell's top face.
+      stair_anchor_z_window: 0.3
+      # m2. The two storeys of dp1f_1012 are 1200 and 330, the stairwell's
+      # islands at most ~11.
+      stair_anchor_min_area: 10.0
+      # Three-point moving-average passes over a walked link's points after
+      # the loop cut: a hand-driven track weaves by centimetres and the body
+      # pitches on a flight. 0 = the raw keyframes.
+      stair_smooth_passes: 2
+      # The track says where a stair is, not how to climb it (2026-10-19): a
+      # single flight becomes a row of straight links across its width -- the
+      # surfaces beside the walked stretch are fitted with a plane, whose
+      # gradient is the uphill direction, and a line is marched up it from
+      # every lower-floor cell near the walked foot that reaches the upper
+      # floor. The search picks the entry, so a route meets the stair where
+      # its own line crosses it and climbs facing the risers. dp's 2F flight:
+      # one walked link 9 deg off the stair's axis became 24 straight ones,
+      # and a 27 deg turn at the stair head went away. false = one link along
+      # the walk (the 2026-10-14 behaviour).
+      stair_straight: true
+      # Longest stretch of track (m, xy) taken as one straight flight; a
+      # switchback stairwell (dp: 30 m, dp1f_1012: 32 m) keeps its walked link,
+      # and a startup note says so.
+      stair_straight_max_flight: 8.0
+      # Surfaces within this of the walked stretch, at heights between the two
+      # floors, fit the plane.
+      stair_straight_fit_radius: 1.0
+      # How far either side of the walked foot entries are tried: the stair's
+      # width the planner may use. dp's 2F flight is 2.6 m wide.
+      stair_straight_half_width: 2.0
+      # Longest level run a line may make between two rises: the ~robot_radius
+      # of blocked floor the footprint rule leaves before the first riser and
+      # after the last. A landing longer than this ends the flight.
+      stair_straight_exit_reach: 0.6
+      # A multi-flight stretch (dp's switchback stairwell) is laid as flights
+      # and landing corners read off the map (2026-10-21), not as the walk:
+      # the walk's height profile gives the landings, each flight's direction
+      # comes from the well's wall (the straighter side of the cross-sections;
+      # all flights of one well share one orientation), its axis from the
+      # cross-sections' middle, and consecutive flights are joined on the
+      # landing with explicit corners -- one at the axes' crossing for an L,
+      # two (0.5-1 m out, across, in) for a U -- plus a 0.5 m lead-in and
+      # lead-out. Nothing on it is smoothed. dp: 4 flights 1.3-1.6 m wide,
+      # three U landings, 6 turns, every flight within 0.01 m of its axis.
+      # false = the walked link, centred below when stair_centre is on.
+      stair_flights: true
+      # A level run of the walk at least this long (m) is a landing.
+      stair_flights_landing_min_len: 0.5
+      # A segment of the walk flatter than this is level (dp's flights ~30
+      # deg, its landings under 5).
+      stair_flights_landing_slope_deg: 15.0
+      # The straight run before the first foot and past the last head (m).
+      stair_flights_lead: 0.5
+      # A walked link (a switchback stairwell) is centred in the well
+      # (2026-10-20): at every point the cross-section square to the walk is
+      # measured on the surface map -- columns holding a surface within
+      # stair_centre_dz of the point's tread, until a wall or the drop to the
+      # neighbouring flight -- and the point moves to its middle, the shifts
+      # median-filtered and smoothed along the link. A side longer than
+      # stair_centre_max_half_width is open floor, and the point stays. dp's
+      # stairwell: 58 of 66 points moved, mean 0.09 m, at most 0.30 m (the
+      # second flight, walked along its inner rail). false = the operator's
+      # own line.
+      stair_centre: true
+      stair_centre_dz: 0.25
+      stair_centre_max_half_width: 1.5
+      stair_centre_max_shift: 0.6
+
+      # ---- search (dynamic) ----
+      # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
+      # band, x 1 beyond: the costmap's inflation curve (cost_scaling_factor
+      # 1.5) and Smac's cost_travel_multiplier (1.0) in one. A multiplier, not
+      # a per-node penalty, so diagonals are not cheaper per metre.
+      clearance_cost_weight: 1.0
+      clearance_cost_scaling: 1.5
+      # Prefer observed floor over hole-filled floor, mildly.
+      inferred_cost_multiplier: 1.2
+      # Move length x (1 + weight * gaps / footprint columns): prefer ground
+      # seen all of, take sparse ground when that is what there is.
+      gap_cost_weight: 1.0
+      # 1.0 = optimal (3D Euclidean is admissible here). A 50 m plan on
+      # dp1f_1012_v2 takes a few ms at 1.0; raise only if that ever matters.
+      heuristic_weight: 1.0
+      max_iterations: 2000000
+      max_planning_time: 2.0
+      # Snap: nearest traversable cell within the xy radius (Smac's tolerance)
+      # whose top face is within the z window of the height hint. 1.0 covers
+      # the 0.48 m lidar-to-floor offset of a goal at the robot's height and
+      # is far below the spacing of two floors (~5.7 m here).
+      snap_xy_radius: 0.5
+      snap_z_window: 1.0
+      # Factor on a stair link's 3D length: a level detour up to this many
+      # times longer wins over the stairs. >= 1 (keeps the heuristic admissible).
+      stair_cost_multiplier: 2.0
+
+      # ---- dynamic obstacles (2026-10-21) ----
+      # The surface map is static, so on its own a replan returns the route
+      # a person is standing on, and is_path_valid, judged on the 2D global
+      # costmap, cannot see a 3D path (upstairs it lies over the ground
+      # floor's gridmap; on a 3D-only map the costmap is a 5 x 5 m default
+      # grid). This block is the planner's own memory of what the lidar sees
+      # that the map does not -- what the global costmap's obstacle layer is
+      # to GridBased: every return in the band above the surface it lies on
+      # marks that cell (the surface is picked by height, so two floors
+      # never see each other's people), rays clear the marks they cross,
+      # and marks age out. The search and the shortcut keep off the marks
+      # and block_radius round them and pay for the band beyond with the
+      # clearance cost above, so a replan detours; is_path_valid asks this
+      # planner for its own paths (planner_server asks the planner that
+      # made the last plan when it does not use the costmap), so move_3d.xml
+      # runs move.xml's IsPathValid / blocked_time / replan unchanged. See
+      # dynamic_overlay.hpp for the three decisions that shape it: only
+      # traversable cells are marked (a wall's returns land in the 0.25 m
+      # footprint ring, and inflating those would narrow every corridor and
+      # close every door under ~0.9 m), returns within self_radius are
+      # ignored (the robot's own legs sit in the band), and marks decay (no
+      # ray reaches what the robot walked away from).
+      dynamic:
+        # false = the 2026-10-20 behaviour: no mark, every path valid, no
+        # replan on a 3D map. The subscription is not created. Not dynamic.
+        enabled: true
+        # The cloud the costmaps read: motion-compensated, stamped in the
+        # LIO body frame (the lidar). Relative, so /<robot_id>/... . Not
+        # dynamic.
+        topic: pointlio/body_cloud
+        # How long a cloud may wait for map -> body (map <- pointlio_odom <-
+        # pointlio_body resolves only after relocalize). Not dynamic.
+        transform_tolerance: 0.3
+        # Planar distance from the sensor within which a return marks: the
+        # 2D global obstacle layer's obstacle_max_range, so a 3D map replans
+        # round the same person at the same distance.
+        obstacle_max_range: 2.5
+        # Within which a return's ray clears; a return further out clears
+        # along its first 3 m and marks nothing. The obstacle layer's value.
+        raytrace_max_range: 3.0
+        # Returns closer than this to the sensor, in the plane, are neither
+        # marks nor rays. The robot's own feet are in every map as 0.2-0.3 m
+        # clusters ~0.54 m from the lidar (0.5 m in the plane): inside the
+        # band, and without this they marked the cells under the robot on
+        # every scan, so the path's first poses read blocked for good and
+        # the BT replanned every 10 s with nothing to change.
+        self_radius: 0.6
+        # Band above a surface's top face in which a return is an obstacle:
+        # (min_obstacle_height, body_clearance) -- the terrain layer's band
+        # and the surface map's clearance, one calibration. The top face is
+        # quantised to the voxel, so 0.1 keeps the floor's own returns out.
+        min_obstacle_height: 0.1
+        # Seconds a mark lives unrefreshed and uncleared. Must outlast
+        # IsPathValid's blocked_time (10 s) plus a plan plus the stretch of
+        # the detour during which the mark is out of view; three times
+        # blocked_time. A mark in view is refreshed or raytraced away every
+        # scan, so this only governs what the robot cannot see. Longer, and
+        # a person the robot walked away from shapes the next goal's route
+        # (the new-goal clear_overlay in move_3d.xml guards that too); the
+        # 2D obstacle layer never forgets, only rays clear it. The terrain
+        # layer's 2 s serves the 5 Hz controller, a different job.
+        obstacle_memory: 30.0
+        # Cells within this distance of a mark are not traversable for the
+        # search and read blocked to is_path_valid; it is also the disc
+        # round the robot's own cell that the dilation does not block.
+        # Between the inscribed radius (0.25, the surface map's own wall
+        # inflation) and the circumscribed one (0.455); the 2D footprint-
+        # perimeter test at the path heading +-0.35 rad reaches ~0.36 m
+        # sideways, so a 3D map refuses a passage beside a person at the
+        # width a 2D one does. Beyond it the clearance cost above applies
+        # out to clearance_cost_radius, as for a wall.
+        block_radius: 0.35
+
+      # ---- output ----
+      # Line-of-sight shortcut of the cell chain (supercover, step-continuous,
+      # never closer to the boundary than the search was), then a resample
+      # at interpolation_resolution with z read from the surface. Poses carry
+      # z = the floor's top face + path_z_offset; the 2D controllers ignore z.
+      shortcut: true
+      interpolation_resolution: 0.1
+      path_z_offset: 0.0
+      # Publish the un-shortcut chain on Octo3D/raw_plan for comparison.
+      publish_raw_plan: false
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").

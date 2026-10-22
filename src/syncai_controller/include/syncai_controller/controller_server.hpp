@@ -329,6 +329,15 @@ protected:
   // length drops below this threshold (meters). <= 0 disables the gate.
   double goal_reached_max_remaining_path_;
 
+  // Paths with heights (OctomapPlanner3D, path_height.hpp): the robot's ground
+  // height is body_frame_'s z minus body_height_, the remaining-path gate above
+  // measures from the pose nearest in 3D, and the goal is only reached within
+  // goal_z_tolerance_ of the end pose's height -- the goal checkers are x / y
+  // only, and a 2F goal can lie right above a 1F stretch of its own route.
+  std::string body_frame_;
+  double body_height_;
+  double goal_z_tolerance_;
+
   geometry_msgs::msg::PoseStamped end_pose_;
 
   // Last time the controller generated a valid command

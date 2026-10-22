@@ -82,6 +82,9 @@ def launch_setup(context, *args, **kwargs):
                 "global_frame": f"{robot_id}/odom",
                 "robot_base_frame": f"{robot_id}/base_link",
                 "obstacle_layer.scan.sensor_frame": f"{robot_id}/scan",
+                # Point-LIO's body (the lidar): the one frame that still
+                # climbs, for tracking paths with heights (path_height.hpp).
+                "body_frame": f"{robot_id}/pointlio_body",
             },
         ],
     )

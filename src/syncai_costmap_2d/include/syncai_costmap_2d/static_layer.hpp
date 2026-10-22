@@ -1,6 +1,7 @@
 #ifndef SYNCAI_COSTMAP_2D__STATIC_LAYER_HPP_
 #define SYNCAI_COSTMAP_2D__STATIC_LAYER_HPP_
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -57,6 +58,15 @@ public:
    * @brief If clearing operations should be processed on this layer or not
    */
   virtual bool isClearable() { return false; }
+
+  /**
+   * @brief Whether a map has ever arrived on map_topic. reset() (a costmap
+   * clear) keeps it: the layer keeps its map across a clear. False for good on
+   * a 3D-only map, where map_server runs idle and publishes nothing -- the
+   * planner_server fails a goal for a planner that reads the cells at once
+   * then, rather than waiting for a map that will not come (2026-10-19).
+   */
+  bool isMapReceived() const { return map_received_.load(); }
 
   /**
    * @brief Update the bounds of the master costmap by this layer's update dimensions
@@ -158,8 +168,16 @@ protected:
   unsigned char lethal_threshold_;
   unsigned char unknown_cost_value_;
   bool trinary_costmap_;
-  bool map_received_{false};
+  // Atomic since 2026-10-19: written by the map subscription on the costmap
+  // node's executor, read through isMapReceived() from the planner_server's
+  // action thread.
+  std::atomic<bool> map_received_{false};
   bool map_received_in_update_bounds_{false};
+  // Whether updateCosts() last ran without a map: warned on entering that
+  // state, an info when a map arrives (2026-10-19). Until then a function-
+  // local static counter warned every 10th update -- shared by every
+  // StaticLayer in the process -- and for good on a 3D-only map.
+  bool no_map_warned_{false};
   tf2::Duration transform_tolerance_;
   nav_msgs::msg::OccupancyGrid::SharedPtr map_buffer_;
   // Dynamic parameters handler

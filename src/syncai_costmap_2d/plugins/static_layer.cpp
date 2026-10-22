@@ -331,13 +331,21 @@ void StaticLayer::updateCosts(
     return;
   }
   if (!map_received_in_update_bounds_) {
-    static int count = 0;
-    // throttle warning down to only 1/10 message rate
-    if (++count == 10) {
-      RCLCPP_WARN(logger_, "Can't update static costmap layer, no map received");
-      count = 0;
+    if (!no_map_warned_) {
+      no_map_warned_ = true;
+      RCLCPP_WARN(
+        logger_,
+        "Can't update static costmap layer, no map received on %s (said once until one is). "
+        "Expected on a 3D-only map (no gridmap.yaml), where map_server runs idle and only "
+        "Octo3D plans; a planner that reads this costmap (GridBased) fails until a map is "
+        "loaded",
+        map_topic_.c_str());
     }
     return;
+  }
+  if (no_map_warned_) {
+    no_map_warned_ = false;
+    RCLCPP_INFO(logger_, "Static costmap layer received a map on %s", map_topic_.c_str());
   }
 
   if (footprint_clearing_enabled_) {

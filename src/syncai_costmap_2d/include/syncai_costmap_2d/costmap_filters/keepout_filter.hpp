@@ -116,6 +116,12 @@ private:
   // Set when inflated_mask_ was rebuilt; the next updateBounds() grows the
   // update window to the whole mask so every cell is rewritten once.
   bool has_updated_data_{false};
+
+  // Whether process() last ran without a mask: warned on entering that
+  // state, an info once a mask arrives, instead of every 2 s for as long as
+  // it lasts (2026-10-19) -- forever on a 3D-only map, where the mask server
+  // runs idle on purpose.
+  bool mask_missing_{false};
 };
 
 }  // namespace syncai_costmap_2d

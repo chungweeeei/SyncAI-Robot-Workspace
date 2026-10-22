@@ -4,10 +4,11 @@ The bottom of the dependency graph: shared helpers every other C++ package in
 the stack pulls in. Port of the parts of `nav2_util` this workspace actually
 uses.
 
-> Both `package.xml` and `CLAUDE.md` describe this as "header-only". It is not —
-> five of the eleven headers have compiled implementations in `src/`, and the
-> package builds `libsyncai_util.so`. Consumers must link it, not just include
-> the headers.
+> Not header-only: six of the thirteen headers have compiled implementations in
+> `src/`, and the package builds `libsyncai_util.so`. Consumers must link it,
+> not just include the headers. Since 2026-10-20 it also depends on
+> `syncai_common` (for `StairMode`'s service and messages), so the interface
+> checkout is needed to build anything above it.
 
 | Header | Kind | Provides | Used by |
 |---|---|---|---|
@@ -22,6 +23,8 @@ uses.
 | `validate_messages.hpp` | header-only | NaN/inf/consistency checks for common msgs | costmap_2d (only `plugins/static_layer.cpp`) |
 | `string_utils.hpp` | compiled | `split`, `strip_leading_slash` | *nobody* — no consumer left in `src/`; kept from the `nav2_util` port (its user was AMCL, which went with the 2D bringup) |
 | `occ_grid_values.hpp` | header-only | `OCC_GRID_UNKNOWN/FREE/OCCUPIED` (−1 / 0 / 100) | costmap_2d, map_server |
+| `path_height.hpp` | header-only | `pathHasHeight` (a path whose poses do not all share one z: OctomapPlanner3D's) and `lookupGroundZ` (the ground under the robot = the lidar frame's z minus its height, since `base_link` is planar). Moved here from `syncai_controller` on 2026-10-20 so MPPI could share it | controller (server goal check, RPP 3D), mppi_controller, costmap_2d (`TerrainLayer`) |
+| `stair_mode.hpp` | compiled | `StairMode` — the stair state machine both controllers run on a path with heights: detects a climbing stretch, switches the gait policy over `set_policy_mode` standing still, settles, reports on the latched `stair_mode`. `initialize()` for a node (parameters under the plugin's name), `configure()` with callbacks for a test (`test/test_stair_mode.cpp`). Lifted out of RPP 3D on 2026-10-20; the climb itself stays each controller's. `findCorner()` (static, 2026-10-21) finds the first landing corner of a plan for both controllers' stair carrots | controller (RPP 3D), mppi_controller |
 
 ## SimpleActionServer
 

@@ -58,6 +58,12 @@
       y: 0.0
       yaw: 0.0
 
+    # Lidar (Point-LIO body) above the feet, metres. An initialpose that gives a
+    # z (its z variance set) gives the ground's height; the guess puts the body
+    # this far above it. Same value as the controller's and the planner's
+    # lidar_height.
+    lidar_height: 0.481
+
     # 1.0 -> 5.0 (2026-08-28, measured on robot01): at 1 Hz, walking fast at
     # 0.7 m/s let the guess error accumulate for a whole second before being
     # pulled back in one step, so the map -> odom correction moved in staircase

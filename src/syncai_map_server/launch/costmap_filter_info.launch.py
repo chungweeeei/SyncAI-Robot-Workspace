@@ -54,9 +54,25 @@
 # property the rest of map/<name>/ keeps and the backend relies on. An existing
 # `keepout.yaml` is never touched, whatever its geometry: it is operator data.
 #
-# The one case that still starts nothing is a map whose `gridmap.yaml` is
-# missing or unreadable -- there is nothing to size the mask from, and the
-# map_server pane next door is dying on the same file anyway.
+# NO GRIDMAP, NO MASK: BOTH NODES START IDLE (2026-10-19). A 3D-only map
+# (OctomapPlanner3D: map.pcd, poses.txt, octomap.bt, no gridmap.yaml) has
+# nothing to size a mask from. Until then this launch started nothing there,
+# which read as a dead pane on every boot of such a map. Now it starts both
+# nodes anyway, with filter_mask_server's yaml_filename "" -- map_server's
+# idle mode: no mask published, `filter_mask_server/load_map` still served --
+# and the info server as usual, so the pane is up and a later load_map (a
+# mask drawn for this map, or a switch to a 2D one) needs no restart. No blank
+# mask is generated for a 3D map on purpose: octomap.bt's header carries no
+# bounding box, sizing one would mean loading the whole tree (or map.pcd) in
+# a launch file, and Octo3D does not read the keepout yet, so a mask would
+# keep nothing out. The planner's KeepoutFilter then logs "Filter mask was not
+# received" -- on a 3D-only map that is expected, not this pane being down.
+# The same idle start covers the other ways a mask cannot be served: a
+# gridmap that exists but cannot be read, a blank mask that cannot be
+# written, and an existing keepout.yaml whose image is missing (map_server
+# would throw on it; the file is operator data, so it is reported, not
+# replaced). Only an explicit mask_yaml:= that does not exist still starts
+# nothing: its author named a file and should hear that it is not there.
 #
 # Filters run AFTER the layer stack, inflation included, so the KeepoutFilter
 # inflates the mask itself with the costmap's footprint and inflation
@@ -237,28 +253,69 @@ def write_blank_mask(keepout_yaml: str, geometry: dict) -> None:
     os.replace(tmp_yaml, keepout_yaml)
 
 
-def ensure_keepout_mask(keepout_yaml: str, map_yaml: str) -> bool:
-    """Make sure `keepout_yaml` exists, generating a blank one from `map_yaml`.
+def mask_image_error(keepout_yaml: str) -> Optional[str]:
+    """Return why `keepout_yaml`'s image cannot be loaded, or None when it can.
 
-    Returns False when there is nothing to serve: no mask and no readable
-    gridmap to size one from.
+    Checked here because map_server throws in its constructor on a missing
+    image, which would take the pane down on a map whose mask pair was only
+    half copied. Existence only: map_io decodes the image itself.
+    """
+    try:
+        with open(keepout_yaml) as f:
+            meta = yaml.safe_load(f) or {}
+        image = str(meta["image"])
+    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
+        return f"cannot read its image name: {exc}"
+    if not os.path.isabs(image):
+        image = os.path.join(os.path.dirname(keepout_yaml), image)
+    if not os.path.isfile(image):
+        return f"its image '{image}' does not exist"
+    return None
+
+
+def ensure_keepout_mask(keepout_yaml: str, map_yaml: str) -> str:
+    """Return the mask YAML to serve, generating a blank one from `map_yaml`.
+
+    Returns "" -- filter_mask_server's idle mode -- when there is nothing to
+    serve: a 3D-only map with no gridmap, an unreadable gridmap, a mask that
+    cannot be written, or an existing mask whose image is missing.
     """
     if os.path.isfile(keepout_yaml):
-        return True
+        error = mask_image_error(keepout_yaml)
+        if error is not None:
+            logger.error(
+                f"Keepout mask '{keepout_yaml}' cannot be served: {error}. "
+                "Starting filter_mask_server idle; fix the pair and call "
+                "filter_mask_server/load_map."
+            )
+            return ""
+        return keepout_yaml
+
+    if not os.path.isfile(map_yaml):
+        logger.warning(
+            f"No gridmap '{map_yaml}' and no keepout mask -- a 3D-only map. "
+            "Starting filter_mask_server idle (no mask published; the planner's "
+            "'Filter mask was not received' is expected on this map)."
+        )
+        return ""
 
     geometry = read_gridmap_geometry(map_yaml)
     if geometry is None:
         logger.error(
             f"Keepout mask '{keepout_yaml}' does not exist and no blank one can be "
-            f"generated without a readable '{map_yaml}'; nothing to launch."
+            f"generated without a readable '{map_yaml}'; starting filter_mask_server "
+            "idle."
         )
-        return False
+        return ""
 
     try:
         write_blank_mask(keepout_yaml, geometry)
     except OSError as exc:
-        logger.error(f"Cannot write blank keepout mask '{keepout_yaml}': {exc}")
-        return False
+        logger.error(
+            f"Cannot write blank keepout mask '{keepout_yaml}': {exc}; starting "
+            "filter_mask_server idle."
+        )
+        return ""
 
     logger.info(
         f"Generated blank keepout mask '{keepout_yaml}' "
@@ -266,7 +323,7 @@ def ensure_keepout_mask(keepout_yaml: str, map_yaml: str) -> bool:
         f"origin {geometry['origin']}) -- all unknown, so it changes nothing "
         "until zones are drawn into it"
     )
-    return True
+    return keepout_yaml
 
 
 def launch_setup(context, *args, **kwargs):
@@ -280,25 +337,27 @@ def launch_setup(context, *args, **kwargs):
     # Mask path precedence: explicit mask_yaml:= argument > derived from the
     # INI's [map] map > the params file. An explicit path names a file its
     # author maintains, so it must exist; the derived path is generated blank
-    # when missing (see the header). The params-file fallback is left to
-    # map_server itself (it throws on a bad path), because that path only
-    # applies when the node is being run outside the robot convention and its
-    # author knows why.
-    keepout_yaml = LaunchConfiguration("mask_yaml").perform(context).strip()
-    if keepout_yaml:
-        if not os.path.isfile(keepout_yaml):
+    # when missing, or served idle ("") when it cannot be (see the header). The
+    # params-file fallback is left to map_server itself (it throws on a bad
+    # path), because that path only applies when the node is being run outside
+    # the robot convention and its author knows why.
+    # None = no override (params file applies); "" = idle; else the mask.
+    serve_yaml: Optional[str] = None
+    explicit_yaml = LaunchConfiguration("mask_yaml").perform(context).strip()
+    if explicit_yaml:
+        if not os.path.isfile(explicit_yaml):
             logger.error(
-                f"Keepout mask '{keepout_yaml}' (mask_yaml:=) does not exist; "
+                f"Keepout mask '{explicit_yaml}' (mask_yaml:=) does not exist; "
                 "nothing to launch. Only the path derived from the INI's [map] map "
                 "is generated when missing."
             )
             return []
+        serve_yaml = explicit_yaml
     else:
         map_yaml = read_map_yaml(config_path)
         if map_yaml:
             keepout_yaml = os.path.join(os.path.dirname(map_yaml), KEEPOUT_YAML_BASENAME)
-            if not ensure_keepout_mask(keepout_yaml, map_yaml):
-                return []
+            serve_yaml = ensure_keepout_mask(keepout_yaml, map_yaml)
         else:
             logger.info(
                 f"No [map] map in '{config_path}'; "
@@ -306,11 +365,14 @@ def launch_setup(context, *args, **kwargs):
             )
 
     mask_overrides = []
-    if keepout_yaml:
-        logger.info(f"Keepout mask yaml: {keepout_yaml}")
+    if serve_yaml is not None:
+        if serve_yaml:
+            logger.info(f"Keepout mask yaml: {serve_yaml}")
         # Later entries in the parameters list take precedence over the params
         # file, exactly as map_server.launch.py layers [map] map on top of it.
-        mask_overrides = [{"yaml_filename": keepout_yaml}]
+        # An explicit "" too: the idle start must not depend on the params
+        # file's value staying "".
+        mask_overrides = [{"yaml_filename": serve_yaml}]
 
     costmap_filter_info_server_node = Node(
         package="syncai_map_server",

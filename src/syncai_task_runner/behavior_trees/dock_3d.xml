@@ -1,0 +1,180 @@
+<!--
+  dock_3d.xml: dock.xml for a 3D map (feature/octomap-planner-3d,
+  2026-10-19). A goal naming dock.xml runs this file instead while the
+  planner's Octo3D has a map (the same per-goal choice as move.xml /
+  move_3d.xml; move_3d.xml's header has it). Only the staging leg differs,
+  and only as move_3d.xml differs from move.xml: planner_id="Octo3D", and
+  the recovery's ClearEntireCostmap pointed at planner_server/Octo3D/
+  clear_overlay (Octo3D's dynamic-obstacle memory, which is what its
+  IsPathValid judges on since 2026-10-21 -- move_3d.xml's header has the
+  whole story; from 2026-10-19 until then this leg planned once per goal,
+  number_plans == 0, in IsPathValid's place, because the check judged on
+  the 2D costmap); the controller is move.xml's FollowPath (MPPI,
+  3D-aware since 2026-10-20; it was FollowPathRPP3D for a day). On a 3D-only
+  map dock.xml's GridBased has no map and every dock failed PLAN_FAILED
+  until this file. The MPC half and the last metre are dock.xml's,
+  unchanged: the docking controller tracks the dock pose in the planar odom
+  frame and reads no costmap, so it does not care which map planned the
+  staging leg. Keep the two files in step outside the staging leg.
+
+  Dock: navigate to a staging pose in front of the dock with move.xml's
+  machinery, switch the gait to MPC, wait, hand the last metre to the
+  controller's DockToPose, and end there, standing on the dock in MPC.
+  Selected per goal by NavigateToGoal.behavior_tree
+  ("dock.xml" -- a bare name resolves against this directory -- or the
+  absolute share path); there is no separate dock action, so a dock reports
+  through the same error_code / status_msg surface as a move, and the goal's
+  `pose` is the DOCK pose: this tree derives the staging pose from it.
+
+  Why a staging leg first (2026-10): the docking controller drives a straight
+  line with no path and NO COSTMAP -- obstacle avoidance is switched off for
+  the last metre on purpose, because the dock is itself a lethal cell in the
+  local costmap and any footprint test refuses the final half metre of every
+  dock -- so it must start from a pose it can reach by going straight,
+  roughly in front of the dock, roughly facing it, in space the costmap-aware
+  navigation has just certified clear. ComputeStagingPose derives that pose
+  from the dock pose (back along the dock's yaw by `distance`), and the
+  staging subtree below is move.xml's tree with goal="{staging_pose}": same
+  replanning rule (replan only when the path is blocked or the goal changed),
+  same retries, same attribution. Keep the two in step -- a fix to move.xml's
+  shape belongs here too, and move.xml's header is the design record for
+  everything inside NavigateToStaging. ComputeStagingPose sits INSIDE the
+  planner branch, not before it, so a preempt that moves the dock pose (the
+  navigator swaps {goal}, GlobalUpdatedGoal fires) recomputes the staging
+  pose before the replan; computed once at the top it would be stale for the
+  rest of the goal. The SimpleGoalChecker ends the leg within
+  xy_goal_tolerance (0.15 m) and yaw_goal_tolerance (0.2 rad) of the staging
+  pose; that residual is the docking controller's starting error.
+
+  How the gait switch is checked (2026-10-14): MPC is SetMotionKey key="5"
+  -> syncai_driver_manager -> `MODE M` over one-way UDP, and the driver's
+  `success` means the datagram left, nothing more. The controller reports its
+  motion state on the `mode` topic (std_msgs/Int32MultiArray, data[1]), and
+  for MPC that is 5 (read off the robot on 2026-10-14). WaitForMotionState
+  waits for it, up to `timeout` (5000 ms); a controller that never reports it
+  fails the step, the Fallback restores RL, and the goal is DOCK_FAILED with
+  the last state seen in error_msg. The node logs how long the switch took --
+  the number to tune the timeout with. The Wait of 3000 ms after it is
+  deliberate settling time: the controller reports MPC when it has entered
+  the mode, not when the gait under it is steady, and a dock approach started
+  mid transition is the failure this tree exists to prevent. Raised 2000 ->
+  3000 ms on 2026-10-15, during the robot01 dock tests, where the switch
+  itself was reported after 49 ms. The settling time is still not measured
+  (nothing reports "steady"), so the number is a judgement, not a reading;
+  undock.xml's settling Wait is the same transition and moved with it --
+  keep the two equal. Until 2026-10-14 the whole check was a fixed 1500 ms
+  Wait, a guess.
+
+  The tree does NOT lie the robot down (2026-10-15): SUCCEEDED means
+  "standing on the dock in MPC". From 2026-10-14 to 2026-10-15 a
+  LieDownOnDock sequence after DockToPose sent key="2" (`MODE X`) and waited
+  a guessed 4000 ms; it was removed on request. Lying down on the dock, if a
+  task wants it, is the caller's step again (the backend's LIEDOWN, i.e.
+  set_motion_key 2). undock.xml starts from this end state and has no
+  stand-up step (removed the same day), so a robot laid down after the dock
+  must be stood up by the caller before the undock.
+
+  Why RL is restored only on failure: on success the robot stays on the dock
+  in MPC, and the next step is undock.xml, which runs in MPC itself;
+  switching back to RL first would be a step the task never asked for. On
+  any failure after the switch was attempted -- the
+  switch refused (LOCKED), or the approach aborted -- the Fallback's second
+  child sends key="1" (`MODE C`, RL locomotion) so the robot is left as the
+  step found it, and ForceFailure keeps the goal a failure. The Fallback
+  wraps only the MPC half: a staging-leg failure (no route, path blocked)
+  never switched the gait, so it needs no restore, and its attribution --
+  PLAN_FAILED / FOLLOW_PATH_FAILED, "the dock was unreachable" -- is more
+  useful than DOCK_FAILED would be. A CANCEL during the approach halts the
+  tree and cannot run the restore (halt() does not tick), so a cancelled dock
+  leaves the gait in MPC, standing; the backend restores RL itself before
+  the next MOVE.
+
+  Attribution (last writer wins, see move.xml and blackboard_keys.hpp): the
+  staging subtree writes ComputePathToPose / FollowPath as in move.xml;
+  SetMotionKey writes itself on a refused key or an unanswered call;
+  WaitForMotionState writes itself when MPC is never reported; DockToPose
+  writes itself with the controller's reason. The navigator maps the last
+  three (and ComputeStagingPose) to DOCK_FAILED. One accepted
+  consequence: when the dock approach fails AND the restore is refused
+  (LOCKED), the restore's SetMotionKey is the last writer, so error_msg says
+  LOCKED and the approach's reason is in the task_runner log at ERROR
+  (DockToPose::on_aborted logs it). That is the right order of importance: a
+  locked driver stops every later step, the dock reason does not.
+
+  Status sentence: the staging leg writes nav_status_msg as move.xml does
+  ("Planning a path to the goal" from the navigator, "Following the path",
+  the replanning / retry sentences). SetBlackboard then says the gait is
+  switching -- written by the tree, not by SetMotionKey, which is a generic
+  node that does not know why it is sending key 5 -- and DockToPose writes
+  "Approaching the dock", "Docking: 0.42 m from the dock" from the
+  controller's feedback, and "Docked" / "Dock approach failed", which are
+  the tree's last sentences. output_key is
+  the BARE key on purpose: with {nav_status_msg} SetBlackboard would read the
+  current sentence and use it as the key name. During the approach the
+  navigator's distance_remaining is still measured along the staging path
+  (the robot stands at its end, so it reads <= 0.15 m); the dock distance is
+  in status_msg only.
+
+  server_timeout="500" on every SetMotionKey call: the default 20 ms is the
+  action-ack budget, but for a service it is the whole call, and the
+  driver's four services share one worker thread, so a set_speed_scale in
+  flight from the console would time the switch out. Half a second is still
+  far below anything a human would notice.
+
+  Not a RecoveryNode around DockToPose: a dock approach that failed is
+  re-tried by re-sending the goal, i.e. by the backend, with the robot
+  standing somewhere in the last metre; a blind in-tree retry from a pose the
+  controller already gave up on has no new information.
+
+  This tree docks to the goal's pose as given. A dock against a tag
+  detected on the charger will be a tree of its own, its detection node
+  producing the pose for the same DockToPose; until 2026-10-15 that choice
+  was a `method` attribute on DockToPose ("position" | a reserved, refused
+  "charger"), removed so the detection lives in the tree that needs it.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="Dock">
+      <!-- Staging leg: move_3d.xml with goal="{staging_pose}"; see move_3d.xml for the why -->
+      <PipelineSequence name="NavigateToStaging">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <Fallback name="FallbackComputePathToPose">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <!-- Judged by Octo3D on its dynamic overlay (move_3d.xml) -->
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
+              </ReactiveSequence>
+              <Sequence name="PlanToStaging">
+                <ComputeStagingPose dock_pose="{goal}" distance="1.0" staging_pose="{staging_pose}"/>
+                <ComputePathToPose goal="{staging_pose}" path="{path}" planner_id="Octo3D"/>
+              </Sequence>
+            </Fallback>
+            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+
+      <!-- MPC half: restore RL on any failure after the switch was attempted -->
+      <Fallback name="DockInMpc">
+        <Sequence name="SwitchAndDock">
+          <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for docking"/>
+          <SetMotionKey key="5" server_timeout="500"/>
+          <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (header) -->
+          <WaitForMotionState state="5" timeout="5000"/>
+          <Wait msec="3000"/>
+          <DockToPose dock_pose="{goal}" controller_id="Docking" goal_checker_id="dock_goal_checker" timeout="60.0"/>
+        </Sequence>
+        <ForceFailure>
+          <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
+        </ForceFailure>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+</root>

@@ -25,9 +25,12 @@ src/costmap_2d_ros.cpp          the ROS wrapper node — most of the local compl
 src/costmap_2d_publisher.cpp    OccupancyGrid / Costmap / update publishing
 src/clear_costmap_service.cpp   the three clear_* services
 src/observation_buffer.cpp      TF-transformed, time-windowed sensor readings
+src/terrain_grid.cpp            the ROS-free 2.5D grid behind TerrainLayer (gtest: test/test_terrain_grid.cpp)
+src/map_type_gate.cpp           a layer's map_type: obstacle layer on a 2D map, terrain layer on a 3D one
 src/footprint.cpp, footprint_collision_checker.cpp, costmap_math.cpp, array_parser.cpp
 plugins/static_layer.cpp        ┐
-plugins/obstacle_layer.cpp      ├ pluginlib layers
+plugins/obstacle_layer.cpp      │
+plugins/terrain_layer.cpp       ├ pluginlib layers
 plugins/inflation_layer.cpp     ┘
 plugins/costmap_filters/{costmap_filter,keepout_filter}.cpp
 src/costmap_2d_node.cpp         standalone runner
@@ -178,7 +181,21 @@ Per-source parameters: `topic`, `sensor_frame`, `data_type` (`LaserScan` or
 `PointCloud2`), `marking`, `clearing`, `min_obstacle_height` /
 `max_obstacle_height`, `obstacle_min_range` / `obstacle_max_range` (marking
 range), `raytrace_min_range` / `raytrace_max_range` (clearing range),
-`observation_persistence`, `expected_update_rate`, `inf_is_valid`.
+`observation_persistence`, `expected_update_rate`, `inf_is_valid`, and two that
+are not upstream, `height_reference` / `sensor_height` (below).
+
+**`height_reference`** (2026-10): `global` (default, upstream) measures
+`min_obstacle_height` / `max_obstacle_height` from the global frame's `z = 0`;
+`sensor` measures them from the ground under the sensor — its origin's z in the
+global frame minus `sensor_height`. The buffered cloud (and its origin) are
+stored with z relative to that ground, so the layer-level
+`min_obstacle_height` / `max_obstacle_height` read the same way for that source;
+nothing downstream of the buffer reads z in a 2D costmap. It exists because
+lio_bridge keeps `odom` planar, so z in `odom` is height in the map, whose origin
+is the lidar where mapping started: the 1F floor sits at about -0.48, and on 2F
+(~5.5 m up) a fixed band sees nothing. The controller's `pointcloud` source uses
+`sensor` with `sensor_height: 0.481` and a band chosen to equal what 1F already
+ran with; the global costmap's sources are still `global`.
 
 Two things worth internalising:
 
@@ -194,6 +211,115 @@ Two things worth internalising:
 `expected_update_rate` is what drives `isCurrent()`: a source that stops
 publishing eventually marks the layer not-current, and both the planner and the
 controller wait on `isCurrent()` before using the costmap.
+
+Since 2026-10-20 the **local** costmap runs this layer on a **2D map only**;
+on a 3D map `TerrainLayer` (next) runs in its place — see "Which sensor layer
+runs". The global costmap keeps it on every map.
+
+### Which sensor layer runs (`map_type`)
+
+The local costmap loads both `obstacle_layer` and `terrain_layer` (2026-10-20,
+`feature/octomap-planner-3d`) and exactly one of them runs, picked by the map:
+the obstacle layer on a 2D map — `dev`'s local costmap, unchanged — and the
+terrain layer on a 3D one. Never both: they disagree on a ramp (free in the
+terrain layer, a wall in the band) and the max of the two is the wall. MPPI
+(`FollowPath`) drives on either.
+
+Each layer has a `map_type` parameter — `"any"` (the default for the obstacle
+layer, so the global costmap and every other use are upstream's), `"2d"` or
+`"3d"` — read by `MapTypeGate` (`map_type_gate.hpp`) against `map_3d_topic`,
+the planner's latched `planner_server/Octo3D/map_available`. That is the topic
+the task_runner picks `move.xml` / `move_3d.xml` by, so the tree and the
+costmap switch together, and since `Octo3D/load_map` switches maps without a
+restart, the layer switches at the next update too. The map reads 2D until the
+first message, as it does for the task_runner. On a switch either layer
+empties itself and puts its whole window in the update bounds once, so the
+master grid loses what the other layer had marked. A gated-off layer counts as
+current (a costmap clear would otherwise leave it not-current, and the
+controller waiting on it), and the terrain layer takes no samples while off.
+The gate does not touch `enabled`, which stays the operator's.
+
+### TerrainLayer
+
+The local costmap's sensor source on a **3D map** (2026-10-20), in place of
+the obstacle layer's height band. The band — every return between 0.58 and
+1.98 m above the robot's own ground — could not see a box, a cart's base, a
+kerb's wall, a drop-off or a stair tread, and read a ramp as a wall after a
+metre, so MPPI had nothing to avoid low. Every
+quadruped stack on this kind of hardware (CMU's `terrain_analysis` on the Go2,
+SCAN-Planner, RAEM) keeps a rolling 2.5D grid with a ground height per cell and
+judges returns against *that* ground; this layer is that grid with
+OctomapPlanner3D's rules on top, so the local costmap sees what the global
+planner sees. The global side's own memory of what the lidar sees that the
+map does not is `Octo3D`'s dynamic overlay (`syncai_global_planner`,
+"Dynamic obstacles", 2026-10-21): the same cloud and the same 0.1–0.6 m band
+above the surface, in the map frame, raytrace-cleared and forgotten after
+30 s, read by the planner's search and its `is_path_valid`. The two are
+independent; this layer is the controller's and nothing in it changed for
+the overlay. The grid itself, `TerrainGrid` (`terrain_grid.hpp`, ROS-free,
+unit-tested on synthetic scenes in `test/test_terrain_grid.cpp`), holds per
+cell a ring of the newest returns with their times, in the costmap's frame,
+and judges every cell on each update:
+
+1. **Ground** = the 0.25 quantile of the 3×3 neighbourhood's returns younger
+   than `ground_memory` (10 s), capped at the lowest + `max_ground_lift`
+   (0.15; CMU's `quantileZ` / `maxGroundLift`). Long memory on purpose: the
+   MID360's −7° lower FOV never sees the floor within ~3.9 m of the robot, so
+   the floor under and ahead of it was seen 5–13 s earlier, from further off.
+   A cell with fewer than `min_ground_samples` returns borrows the robot's own
+   ground (the lidar frame's z minus `sensor_height`, the obstacle layer's
+   `height_reference: sensor`).
+2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
+   (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
+   that ground → LETHAL. Short memory is how a person who walks on is gone
+   without raytracing.
+3. **Reach**: cells are flooded from the robot's own over 8-neighbours within
+   `max_step_height`; a cell with a ground estimate the flood does not reach
+   is an island — a box top, a table, a platform seen without the floor under
+   it, which the lower FOV makes the normal view of anything low and near —
+   and LETHAL. Octo3D's connected components, locally. The poses of the
+   path (`plan_topic`, the planner's `plan`, republished at 1 Hz with Octo3D's
+   heights) seed the flood too, so a ramp whose foot the lidar never looked
+   at is still the floor the planner says it is; a level path seeds nothing.
+4. **Step**: an 8-neighbour whose ground differs by more than
+   `max_step_height` (0.17, a riser) → LETHAL: a wall foot, a ledge, a
+   drop-off — the negative obstacle the band could never see.
+5. **Slope**: the plane fitted under the `robot_radius` disc steeper than
+   `max_slope_deg` (20) → LETHAL, judged only when the disc spans more than a
+   step (a level floor with a kerb is not fitted) and at least
+   `slope_min_known` of it has a ground.
+6. Nothing seen → NO_INFORMATION; the rest FREE. Then `updateWithMax`, the
+   footprint cleared as the obstacle layer clears it, and the
+   `InflationLayer` inflates it all as before.
+
+The four geometry values are `SurfaceMapParams`' (Octo3D), one calibration of
+the legs; change them together.
+
+**Stairs are lethal, and nothing opens them.** The step and slope rules refuse
+a flight, as Octo3D's do, and the global planner crosses one only over a stair
+link in its path. The climb is the controllers' stair mode (`syncai_util::
+StairMode`, in MPPI and RPP 3D), which does not read the costmap from the hold
+at the stair's foot to the hold past its top: **no obstacle avoidance on
+stairs**, by decision (2026-10-20). The lethal here is what keeps MPPI's
+optimizer off a stair the robot was not routed over. A draft of the same day
+opened a corridor along a climbing path (the path's height as the ground, the
+obstacle band starting 0.3 m up) so the climb could avoid a box on the stairs;
+it was taken out with that decision, and git history has it.
+
+**What a costmap clear does here**: drops the costs, keeps the returns. The
+floor the lidar can no longer see is in them, and a stale obstacle mark leaves
+by itself after `obstacle_memory`.
+
+**Limits.** A raised surface whose connection to the robot's floor was never
+observed is an island even when it is a ramp — at start-up facing a ramp whose
+foot is inside the blind 3.9 m and with no path through it, the ramp is lethal
+until the robot has seen its foot (a path with heights over it connects it).
+Unknown cells
+are free to MPPI unless the costmap tracks unknown space, so the far side of a
+drop the lidar has not looked over is not yet a wall; the drop's edge is.
+Returns are not raytraced, so a wall seen through a doorway and a person in it
+age out at the same rate. Dynamic parameters are not handled: a change needs a
+restart.
 
 ### InflationLayer
 
@@ -372,6 +498,12 @@ ros2 launch syncai_costmap_2d keepout_filter_test.launch.py \
     map_yaml:=map/testmap.yaml mask_yaml:=map/keepout_mask_test.yaml
 ```
 
+`test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
+syncai_costmap_2d`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
+step, drop-off, ramp, slope, box, person, wall foot, a stair lethal with and
+without a climbing path, the window moving — with no ROS; it also builds on a workstation
+with plain `clang++` against `include/` and googletest.
+
 `scripts/fake_scan.py` publishes a 50-beam forward scan at 2 m. Its timestamps
 are deliberately current: `tf2_ros::MessageFilter` drops messages older than the
 TF cache, so a zero-stamped scan from `ros2 topic pub` never reaches the obstacle
@@ -392,6 +524,19 @@ misspelled `costmap_topic_coliision_checker.hpp` (the `.cpp` is spelled
 correctly); renaming it means touching its two includes.
 
 ## Gotchas
+
+- **Four "missing" warnings are logged once per state change, not
+  repeatedly** (2026-10-19): `StaticLayer`'s "no map received",
+  `LayeredCostmap`'s "Robot … is out of bounds of the costmap",
+  `ObstacleLayer`'s "Sensor origin … is out of map bounds" and
+  `KeepoutFilter`'s "Filter mask was not received" each warn once on
+  entering the state and log an info on leaving it. Until then they
+  repeated every 1–10 s (the static layer's counter was a function-local
+  `static`, shared by every `StaticLayer` in the process), and on a 3D-only
+  map — no `gridmap.yaml`, so the global costmap never gets a map and stays
+  at its 5 × 5 m default for good — they were most of the planner log. So
+  read the log from the top: a warning that appeared once still holds until
+  its info says otherwise.
 
 - **Params need `/**/` wildcard keys.** The costmap node's fully-qualified name is
   `/<robot_id>/<costmap_name>`, and the hosting process must declare its `Node`
