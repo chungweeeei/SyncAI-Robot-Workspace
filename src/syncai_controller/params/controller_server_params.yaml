@@ -475,7 +475,7 @@
       # leave zero alone.
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
                 "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
-                "PreferForwardCritic"]
+                "PreferForwardCritic", "TwirlingCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -588,6 +588,23 @@
         threshold_to_consider: 0.5
         max_angle_to_furthest: 1.0
         forward_preference: true
+      # The anti-weave term (2026-10-22): weight x the mean |wz| of each
+      # candidate over the horizon. On robot01 MPPI walked straight stretches
+      # swinging left-right; nothing above charges for yaw rate as such (the
+      # optimizer's gamma control cost is relative to the previous sequence,
+      # not to zero), so two mirrored corrections scored alike and the
+      # sampled winner flipped between them, the gait's lag on top making
+      # each correction overshoot. 5.0, half upstream's README value: a mean
+      # 0.3 rad/s turn costs 1.5 against PathAlignCritic's 14, so a corner is
+      # still taken -- raise toward 10 if it still weaves, lower it if
+      # corners round off wide or blockers are dodged late. Off inside
+      # xy_goal_tolerance (the critic's own rule), and the final rotation,
+      # direct approach, turn onto a new path and stair mode skip the
+      # optimizer, so no in-place turn is slowed by it. Unmeasured.
+      TwirlingCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
 
     # FollowPath until 2026-10; unchanged since, apart from the id.
     FollowPathRPP:
