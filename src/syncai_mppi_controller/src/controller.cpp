@@ -687,8 +687,8 @@ bool MPPIController::climbStairs(
   // the pruned path stair_lookahead_dist away, tracked like the direct
   // approach's goal point (turn in place onto it past
   // approach_rotate_min_angle, else trackPoint()). Blind from the moment
-  // StairMode holds (up to stair_enter_dist plus the brake before the rise)
-  // until it leaves
+  // StairMode holds (stair_standoff, at least, before the stair, so the floor
+  // up to it too -- accepted 2026-10-22) until it leaves
   // (stair_exit_behind_dist past the top), which also keeps the robot clear
   // of the flight's lethal cells when the optimizer takes over again.
   //
@@ -718,7 +718,8 @@ bool MPPIController::climbStairs(
   // (2026-10-22): the optimizer brakes into the stair's lethal cells on its
   // own, the commanded speed and with it this figure go to 0, and robot01
   // stood 8 s at dp's stair foot with the 1 m window 2 cm short of the rise
-  // (StairMode::update() has the numbers).
+  // (StairMode::update() has the numbers). StairMode adds stair_standoff on
+  // top of this figure, so the robot stands that far back once braked.
   const double v = std::fabs(last_cmd_vel_.linear.x);
   const double stop_dist = max_linear_accel_ > 0.0 ? 0.75 * v * v / max_linear_accel_ : 0.0;
   const auto stair = stair_mode_.update(

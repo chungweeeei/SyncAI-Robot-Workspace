@@ -27,6 +27,8 @@ void StairMode::initialize(const rclcpp::Node::SharedPtr & node, const std::stri
   declare_parameter_if_not_declared(
     node, plugin_name + ".stair_enter_dist", rclcpp::ParameterValue(params_.enter_dist));
   declare_parameter_if_not_declared(
+    node, plugin_name + ".stair_standoff", rclcpp::ParameterValue(params_.standoff));
+  declare_parameter_if_not_declared(
     node, plugin_name + ".stair_exit_behind_dist",
     rclcpp::ParameterValue(params_.exit_behind_dist));
   declare_parameter_if_not_declared(
@@ -40,6 +42,7 @@ void StairMode::initialize(const rclcpp::Node::SharedPtr & node, const std::stri
   node->get_parameter(plugin_name + ".use_stair_mode", params_.enabled);
   node->get_parameter(plugin_name + ".stair_min_rise", params_.min_rise);
   node->get_parameter(plugin_name + ".stair_enter_dist", params_.enter_dist);
+  node->get_parameter(plugin_name + ".stair_standoff", params_.standoff);
   node->get_parameter(plugin_name + ".stair_exit_behind_dist", params_.exit_behind_dist);
   node->get_parameter(plugin_name + ".stair_exit_ahead_dist", params_.exit_ahead_dist);
   node->get_parameter(plugin_name + ".stair_policy_settle_time", params_.settle_time);
@@ -114,9 +117,11 @@ StairMode::Decision StairMode::update(
   // footprint's reach (2026-10-22; the header has the robot01 stall): a
   // controller that stops on its own at a stair's lethal cells takes its
   // stopping distance to 0 with it, and the window must still reach the
-  // flight from the body's front edge.
+  // flight from the body's front edge. The standoff (2026-10-22) goes on top
+  // of the stopping distance: it is where the robot is to stand once braked.
   const double lead = std::max(
-    {stop_dist, body_reach, transition_ == Transition::Entering ? entry_lead_ : 0.0, 0.0});
+    {stop_dist + params_.standoff, body_reach,
+     transition_ == Transition::Entering ? entry_lead_ : 0.0, 0.0});
   const bool want = wantStairs(remaining_poses, lead);
   if (transition_ == Transition::None && want != on_stairs_) {
     int target = -1;

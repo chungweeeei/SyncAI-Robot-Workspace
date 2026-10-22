@@ -1,6 +1,7 @@
 // StairMode on a synthetic path: 3 m level, a 2 m flight rising 1.36 m (0.68 m
 // per metre, dp1f_1012's spiral stair), a 2 m landing, 3 m level, 0.1 m between
-// poses. With the default windows the robot enters 0.5 m before the flight
+// poses. With the default windows and no standoff (windowsOnly(), what every
+// case but the standoff's runs) the robot enters 0.5 m before the flight
 // (idx 25) and leaves 0.4 m past its top (idx 54), where the 0.8 m window
 // behind holds less than 0.3 m of rise.
 // The controllers' part (braking, the climb itself) is not here; what is
@@ -60,6 +61,15 @@ rclcpp::Time at(double sec)
   return rclcpp::Time(static_cast<int64_t>(sec * 1e9), RCL_ROS_TIME);
 }
 
+// The shipped parameters less the standoff, which only moves the entry back:
+// the cases below pin the windows themselves.
+StairMode::Params windowsOnly()
+{
+  StairMode::Params p;
+  p.standoff = 0.0;
+  return p;
+}
+
 struct Harness
 {
   StairMode sm;
@@ -67,7 +77,7 @@ struct Harness
   std::vector<bool> published;
   bool ready{true};
 
-  explicit Harness(StairMode::Params params = StairMode::Params())
+  explicit Harness(StairMode::Params params = windowsOnly())
   {
     sm.configure(
       params, [this](int p) { sent.push_back(p); }, [this]() { return ready; },
@@ -147,9 +157,36 @@ TEST(StairMode, StopDistanceEntersEarlierAndKeepsItsLeadWhileBraking)
   EXPECT_EQ(h.sent[0], 1);
 }
 
+TEST(StairMode, StandoffEntersThatMuchEarlierAtAnySpeed)
+{
+  // The shipped standoff (1.5 m, 2026-10-22) moves the entry 15 poses back
+  // from where the stopping distance alone puts it, with the same window, so
+  // the robot stands 1.5 m further from the flight once braked. Checked a
+  // pose either side of each boundary, so 0.1 m sums do not decide it.
+  ASSERT_DOUBLE_EQ(StairMode::Params().standoff, 1.5);
+  const auto path = stairPath();
+  const size_t n = path.poses.size();
+  {
+    // Standing or crawling: no-lead entry kLevelIn - 5, now kLevelIn - 20.
+    Harness h(StairMode::Params{});
+    h.sm.setReportedPolicy(0);
+    h.sm.setPlan(path);
+    EXPECT_FALSE(h.sm.update(at(0.0), n - (kLevelIn - 22), 0.0).hold);
+    EXPECT_TRUE(h.sm.update(at(0.05), n - (kLevelIn - 19), 0.0).hold);
+  }
+  {
+    // From 0.8 m/s (0.48 m of brake): kLevelIn - 9, now kLevelIn - 24.
+    Harness h(StairMode::Params{});
+    h.sm.setReportedPolicy(0);
+    h.sm.setPlan(path);
+    EXPECT_FALSE(h.sm.update(at(0.0), n - (kLevelIn - 26), 0.48).hold);
+    EXPECT_TRUE(h.sm.update(at(0.05), n - (kLevelIn - 23), 0.48).hold);
+  }
+}
+
 TEST(StairMode, DisabledNeverHolds)
 {
-  StairMode::Params p;
+  StairMode::Params p = windowsOnly();
   p.enabled = false;
   Harness h(p);
   const auto path = stairPath();
@@ -165,7 +202,7 @@ TEST(StairMode, DisabledNeverHolds)
 
 TEST(StairMode, NoPolicySwitchChangesModeWithoutStopping)
 {
-  StairMode::Params p;
+  StairMode::Params p = windowsOnly();
   p.stair_policy = -1;
   Harness h(p);
   const auto path = stairPath();
@@ -258,7 +295,7 @@ TEST(StairMode, PolicySwitchHoldsSendsSettlesAndRestores)
 TEST(StairMode, FlatPolicyNamedIsRestoredAndUnknownIsKept)
 {
   {
-    StairMode::Params p;
+    StairMode::Params p = windowsOnly();
     p.flat_policy = 2;
     Harness h(p);
     h.sm.setReportedPolicy(0);

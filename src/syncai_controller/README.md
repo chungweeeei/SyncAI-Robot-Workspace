@@ -248,6 +248,19 @@ own with the footprint's front edge at the first riser and its stopping
 distance at 0, and the 1 m window from the centre ~0.6 m back may miss the
 rise — robot01 on MPPI stood 8 s at the foot of dp's stairwell, in no stair
 mode, with the window 0.28 m of rise against 0.3, until the optimizer crept on.
+And since the same day the robot stands **`stair_standoff`** (1.5 m, from its
+centre along the path; 0 in code would be the old aim at the foot) before the
+stair, at least, when it switches the policy: the window is looked for that much
+further out than the stopping distance. The aim at the foot had no margin for a
+gait that overruns its brake — coming to dp's 2F step down at 0.8 m/s, robot01
+kept 0.73 m/s for a second of the hold's brake, travelled 1.05 m instead of
+0.48, and was switched to HIMLOCO standing on the first step. "At least": a slow
+approach stands up to the window's slack further back (~0.7 m at that step), and
+an overrun eats into it (~0.6 m from 0.8 m/s). The floor from there to the stair
+is walked as the stair is, blind on the stair carrot (accepted 2026-10-22; a
+descent turns round and backs it). Keep `stair_standoff` + `stair_enter_dist`
+under `stair_exit_ahead_dist`, or the robot would leave stair mode where it
+stopped.
 The detection, the policy switch and the latched report are
 one state machine, **`syncai_util::StairMode`** (`stair_mode.hpp`; lifted out
 of RPP 3D on 2026-10-20 when MPPI needed the same behaviour, so there is one
@@ -272,7 +285,8 @@ and so is the braking, done with each one's own acceleration clamp:
    footprint, ~0.76 m) short. Until 2026-10-20 that length also mattered
    against the local costmap's obstacle floor (0.58 m above the robot's
    ground), which the treads rose past after ~0.76 m. Since 2026-10-20 the
-   collision check is **off** from the hold at the stair's foot to the hold
+   collision check is **off** from the hold before the stair (`stair_standoff`
+   back since 2026-10-22, so the floor up to it too) to the hold
    past its top — the climb is blind, by decision, in both controllers: on a
    3D map the local costmap runs `TerrainLayer` (`syncai_costmap_2d`), which
    judges the flight itself lethal and opens nothing along the path, so the
