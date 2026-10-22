@@ -227,6 +227,21 @@ public:
   std::shared_ptr<tf2_ros::Buffer> getTfBuffer() { return tf_buffer_; }
 
   /**
+   * @brief The callback group executor_thread_ spins: the /tf(_static)
+   * listener that fills getTfBuffer(), the buffer's timeout timers and every
+   * layer's subscriptions. Anything outside the costmap that runs a
+   * tf2_ros::MessageFilter on getTfBuffer() subscribes on this group too, so
+   * the filter is fed, timed out and called back on the one thread that also
+   * inserts the transforms, as the layers' filters are. Octo3D's overlay ran
+   * its filter on a thread of its own until 2026-10-22, and on robot01 this
+   * thread then stopped for good (every thread in futex_wait): /tf stopped
+   * reaching the buffer, getRobotPose() went on answering the last pose it
+   * had, and every plan started where the robot had been, 20 m from where
+   * it stood.
+   */
+  rclcpp::CallbackGroup::SharedPtr getCallbackGroup() { return callback_group_; }
+
+  /**
    * @brief  Get the costmap's use_radius_ parameter, corresponding to
    * whether the footprint for the robot is a circle with radius robot_radius_
    * or an arbitrarily defined footprint in footprint_.

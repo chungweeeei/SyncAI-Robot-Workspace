@@ -146,6 +146,12 @@ owner's executor. Two details in there are load-bearing and easy to break:
   on `/tf_static` and that subscription lands on the default callback group,
   which nothing spins until `rclcpp::spin()` runs — so `activate()` deadlocks
   waiting for a static transform that is never processed.
+- A `tf2_ros::MessageFilter` on `getTfBuffer()` belongs on this group, wherever
+  it is created: `getCallbackGroup()` (2026-10-22) hands it out for that.
+  `Octo3D`'s dynamic overlay ran its filter on a thread of its own, and on
+  robot01 this group's thread then stopped for good: `/tf` stopped reaching
+  the buffer, and `getRobotPose()`, which answers the newest transform however
+  old, kept returning a pose from 20 m away.
 
 **The map update thread** runs `updateMap()` at `update_frequency` and publishes
 at `publish_frequency`, holding `_dynamic_parameter_mutex` for the whole cycle so

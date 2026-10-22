@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "message_filters/connection.h"
 #include "message_filters/subscriber.h"
 #include "nav2_msgs/srv/clear_entire_costmap.hpp"
 #include "nav2_msgs/srv/load_map.hpp"
@@ -90,8 +91,9 @@ namespace syncai_global_planner
  * costmap test for the planner that made the last plan -- reads the same
  * snapshot for the path ahead, so move_3d.xml runs move.xml's
  * IsPathValid / blocked_time / replan machinery unchanged. The overlay has
- * its own lock and its own executor thread; nothing of it waits behind
- * mutex_. `<planner_server>/<id>/clear_overlay` (nav2_msgs/srv/
+ * its own lock, and its scans arrive on the global costmap's TF thread (see
+ * initialize()); nothing of it waits behind mutex_.
+ * `<planner_server>/<id>/clear_overlay` (nav2_msgs/srv/
  * ClearEntireCostmap, an empty request) drops every mark: what the 3D
  * trees' ClearEntireCostmap nodes call where the 2D trees clear the global
  * costmap.
@@ -124,8 +126,10 @@ public:
 
 protected:
   // The lidar cloud, transformed into the map frame and fed to the overlay.
-  // Runs on the overlay's executor thread or on the TF buffer's (the message
-  // filter calls back from whichever delivers the transform).
+  // Runs on the global costmap's executor thread, the one that fills tf_
+  // from /tf: the subscription and the filter's timers are on its callback
+  // group, so the filter calls back from that thread whichever way the
+  // transform arrives.
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
 
   // `<planner_server>/<id>/clear_overlay`: drop every mark.
@@ -221,21 +225,24 @@ protected:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 
   // The overlay's input: the cloud through a TF message filter to the map
-  // frame (as the costmap's terrain layer takes it), on a callback group of
-  // its own spun by its own thread, so a plan or a reload never queues the
-  // scans and the scans never queue a plan. clear_overlay is on the node's
-  // default group (the planner server's main executor, beside
+  // frame (as the costmap's terrain layer takes it), subscribed on the global
+  // costmap's node and callback group, so the thread that takes /tf into tf_
+  // runs the whole filter (see initialize() for why it has no thread of its
+  // own). A plan or a reload still never queues the scans, nor the scans a
+  // plan: those run on the action and load_map threads. clear_overlay is on
+  // the node's default group (the planner server's main executor, beside
   // is_path_valid): O(marks) under the overlay's lock, and the BT gives it
-  // 20 ms. The subscriber takes the node by raw pointer: the node owns this
-  // plugin, and a shared_ptr here would be an ownership cycle.
+  // 20 ms. The subscriber takes the costmap node by raw pointer: the planner
+  // server owns it and destroys it after the planners.
   rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_overlay_service_;
-  rclcpp::CallbackGroup::SharedPtr overlay_group_;
-  rclcpp::executors::SingleThreadedExecutor::SharedPtr overlay_executor_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2, rclcpp::Node>>
     cloud_sub_;
   std::shared_ptr<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>> cloud_filter_;
-  // The very last member: its thread stops before anything it reads goes.
-  std::unique_ptr<syncai_util::NodeThread> overlay_thread_;
+  // cloudCallback()'s registration on cloud_filter_, which the destructor
+  // disconnects first: the costmap's thread is still spinning while this
+  // plugin is destroyed, and the disconnect is what waits for a call in
+  // progress there (the filter's signal lock) and stops the next one.
+  message_filters::Connection cloud_connection_;
 };
 
 }  // namespace syncai_global_planner

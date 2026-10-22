@@ -30,10 +30,14 @@ namespace o3d = octomap_planner_3d;
 
 OctomapPlanner3D::~OctomapPlanner3D()
 {
-  // The overlay's thread first (it reads the overlay and tf_), then the
-  // service thread: a reload in progress joins build_thread_ too, and waits
-  // for its build to end before the thread stops.
-  overlay_thread_.reset();
+  // The scans first (they read the overlay and tf_). They arrive on the
+  // global costmap's executor thread, which the planner server stops only
+  // after the planners are gone, so there is no thread here to join:
+  // disconnecting cloudCallback() waits for a call in progress and stops the
+  // next one. Then the service thread: a reload in progress joins
+  // build_thread_ too, and waits for its build to end before the thread
+  // stops.
+  cloud_connection_.disconnect();
   load_map_thread_.reset();
   if (build_thread_.joinable()) {
     build_thread_.join();
@@ -265,35 +269,53 @@ void OctomapPlanner3D::initialize(
     std::bind(
       &OctomapPlanner3D::clearOverlayCallback, this, std::placeholders::_1, std::placeholders::_2));
   if (dynamic_enabled_) {
-    overlay_group_ =
-      node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    // On the global costmap's callback group, the one its executor thread
+    // spins for the /tf listener that fills tf_ (costmap_2d_ros.cpp), as the
+    // costmap layers' own filters on that buffer are. From 2026-10-21 to
+    // 2026-10-22 the subscription had a group and thread of its own, so the
+    // filter ran on two threads: add() on this one (registering a
+    // transformable request and its timeout timer on tf_), the ready callback
+    // -- and with it cloudCallback() -- on whichever thread delivered the
+    // transform, the costmap's included. On robot01 (2026-10-22) the
+    // costmap's thread stopped for good mid-goal: every thread of
+    // planner_server in futex_wait, /tf no longer reaching tf_, the global
+    // costmap's footprint stamped with the same second from then on. Since
+    // getRobotPose() answers the newest transform in the buffer however old,
+    // every later plan started where the robot had been, 20 m from where it
+    // stood, and MPPI aborted each goal ("Resulting plan has 0 poses"). Most likely a
+    // lock-order deadlock between the filter and tf2's request / timer
+    // bookkeeping; no backtrace was taken. On one thread the filter cannot
+    // interleave with itself. The price: the thread that takes /tf now also
+    // runs addScan(), as the local costmap's terrain layer does with its
+    // scans.
     auto sub_opt = rclcpp::SubscriptionOptions();
-    sub_opt.callback_group = overlay_group_;
+    sub_opt.callback_group = costmap_ros->getCallbackGroup();
     rmw_qos_profile_t qos = rmw_qos_profile_sensor_data;
     qos.depth = 10;
-    // A relative topic: the node is /<robot_id>/planner_server, so this is
+    // The subscription is the costmap node's (a group belongs to one node),
+    // whose namespace is /<robot_id>/global_costmap, so the topic is resolved
+    // against this node first: relative, it is still
     // /<robot_id>/pointlio/body_cloud, the cloud the costmaps read.
+    const std::string cloud_topic =
+      node->get_node_topics_interface()->resolve_topic_name(dynamic_topic_);
     cloud_sub_ =
       std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2, rclcpp::Node>>(
-        node.get(), dynamic_topic_, qos, sub_opt);
+        costmap_ros.get(), cloud_topic, qos, sub_opt);
     cloud_sub_->unsubscribe();
     // The filter holds a cloud until its frame resolves in the map frame
     // (map <- pointlio_odom <- pointlio_body: only after relocalize).
     cloud_filter_ = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>>(
       *cloud_sub_, *tf_, global_frame_, 10, node->get_node_logging_interface(),
       node->get_node_clock_interface(), tf2::durationFromSec(transform_tolerance_));
-    cloud_filter_->registerCallback(
+    cloud_connection_ = cloud_filter_->registerCallback(
       std::bind(&OctomapPlanner3D::cloudCallback, this, std::placeholders::_1));
     cloud_sub_->subscribe();
-    overlay_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
-    overlay_executor_->add_callback_group(overlay_group_, node->get_node_base_interface());
-    overlay_thread_ = std::make_unique<syncai_util::NodeThread>(overlay_executor_);
     RCLCPP_INFO(
       logger_,
       "[OctomapPlanner3D][%s] dynamic overlay on %s: marks returns %.2f-%.2f m above the surface "
       "within %.1f m, clears to %.1f m, ignores %.1f m round the sensor, memory %.0f s, block "
       "radius %.2f m",
-      __func__, dynamic_topic_.c_str(), dynamic_params_.min_obstacle_height,
+      __func__, cloud_topic.c_str(), dynamic_params_.min_obstacle_height,
       map_params_.body_clearance, dynamic_params_.obstacle_max_range,
       dynamic_params_.raytrace_max_range, dynamic_params_.self_radius,
       dynamic_params_.obstacle_memory, dynamic_params_.block_radius);
