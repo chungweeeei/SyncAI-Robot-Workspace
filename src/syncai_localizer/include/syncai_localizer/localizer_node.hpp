@@ -58,6 +58,7 @@
 #include "syncai_localizer/localizers/commons.h"
 #include "syncai_localizer/localizers/global_localizer.h"
 #include "syncai_localizer/localizers/icp_localizer.h"
+#include "syncai_localizer/localizers/localizability.h"
 
 namespace syncai_localizer
 {
@@ -71,7 +72,12 @@ struct NodeConfig
   std::string cloud_topic = "/pointlio/body_cloud";
   std::string odom_topic = "/pointlio/lio_odom";
   std::string map_frame = "map";
-  std::string local_frame = "lidar";
+  // Same value as the YAML since 2026-10 (it said "lidar" here and
+  // "pointlio_odom" there): the 10 ms timer broadcasts map -> local_frame
+  // before the first odom message replaces it with that message's frame_id,
+  // and a bare run with no params file used to put an unprefixed "lidar" on
+  // TF for that window.
+  std::string local_frame = "pointlio_odom";
   // The [map] pcd from system.ini, passed in by the launch file as a parameter override.
   // initialpose uses it to loadMap automatically when no map is loaded yet (the localizer was
   // restarted and no relocalize has run since); an empty string means it is not set, in which
@@ -86,7 +92,11 @@ struct NodeConfig
   double initial_pose_x = 0.0;
   double initial_pose_y = 0.0;
   double initial_pose_yaw = 0.0;
-  double update_hz = 1.0;
+  // Ceiling on re-registration. The YAML's 5.0 (since 2026-08-28; the
+  // measurements are there) is repeated here since 2026-10 so a missing key
+  // degrades to the production value, not to the 1 Hz that produced
+  // staircase corrections.
+  double update_hz = 5.0;
 
   // Motion gate. update_hz is a *ceiling* on re-registration, not a schedule:
   // below these thresholds the odom pose has not moved enough to justify a new
@@ -112,6 +122,61 @@ struct NodeConfig
   // the first successful align would leave a parked robot refining at one
   // alpha=0.1 step per max_update_interval, i.e. tens of seconds to converge.
   double post_reloc_settle = 3.0;
+
+  // Source window of the tracking loop (2026-10): the newest this many
+  // synchronised body clouds, composed through their odom poses into the
+  // newest scan's body frame and registered as one cloud (the same
+  // accumulation auto_localize has always done over accum_scans, only
+  // shorter). A single filter_num-6 MID360 scan is ~3k points on a
+  // non-repetitive pattern -- sparse enough that the rough stage dithers and a
+  // parked robot's solution resamples GICP's noise floor every round (the
+  // motion gate above exists for that). Three scans is ~0.3 s; Point-LIO's
+  // drift over that is well under a centimetre and each scan is already
+  // de-skewed to its end. 1 is the single-scan behaviour this node had until
+  // 2026-10. The cost is in the refine stage's source size; the `refine:` log
+  // line carries the round's ms.
+  int track_accum_scans = 3;
+  // Refine-stage inlier ratio (inliers / voxelised source points) below which
+  // a converged round is dropped anyway. 0 disables it, and it ships disabled:
+  // the ratio is logged on every round (`loc: ... inl=`) and the value is to
+  // be set from data of a site this was NOT mapped from, the same rule the
+  // fitness thresholds follow (params/localizer_params.yaml).
+  double min_inlier_ratio = 0.0;
+  // A guess from relocalize / initialpose / the INI's [initial_pose] that the
+  // timer has not converged on within this long is withdrawn, and the timer
+  // goes back to its previous offset + odometry. Until 2026-10 such a guess
+  // was retried every round forever, with the TF frozen on the old offset
+  // meanwhile (a flat guess on the tilted mount is the classic case, see
+  // applyPlanarGuess); only auto_localize / reset_odometry withdrew theirs.
+  // Those two still own their guesses and their own deadlines
+  // (handOverAndAwait), this timeout does not touch them. <= 0 keeps the old
+  // behaviour.
+  double guess_timeout_sec = 10.0;
+  // Per-direction use of a registration result: GICP's correction is taken
+  // only along the directions its Hessian says the scan constrained, the rest
+  // stays with odometry. localizers/localizability.h has the whole argument;
+  // the thresholds are first guesses to be set from the `loc:` log lines.
+  LocalizabilityConfig localizability;
+  // Jump gate: a registration whose map-frame body pose is further from the
+  // last ACCEPTED one than the robot could have moved meanwhile is dropped
+  // (the TF coasts on odometry for that round). The reference is the last
+  // accepted body pose, deliberately NOT the odometry prediction: when
+  // Point-LIO diverges the prediction is garbage while GICP's result is right,
+  // and the offset absorbing that jump is exactly what kept the TF correct on
+  // robot01 on 2026-10-13 -- a gate against the prediction would have thrown
+  // the correct rounds away. What this catches is the other case: the solution
+  // landing in a different basin (the west-end corner's two solutions), or a
+  // round that converged on the wrong structure. The robot tops out at 0.6
+  // m/s; 1.5 leaves room for the gait's lurch and the 0.2 s floor on dt.
+  bool jump_gate_enabled = true;
+  double max_jump_speed = 1.5;      // m/s
+  double max_jump_rot_speed = 1.5;  // rad/s
+  // After this many consecutive rejections the next round is accepted
+  // regardless: by then it is the reference that is suspect, not the new
+  // solution. The gate must never freeze the TF on a wrong basin for good --
+  // the failure direction this node has always chosen is "jitter partly
+  // suppressed", never "frozen on a stale pose".
+  int jump_reject_max_streak = 5;
 
   // reset_odometry. The service name is relative, so from this node's
   // /<robot_id> namespace it resolves to pointlio's /<robot_id>/pointlio/reset.
@@ -180,6 +245,38 @@ struct NodeState
   rclcpp::Time last_reg_time{0, 0, RCL_SYSTEM_TIME};
   // Full-rate window after a relocalize; see NodeConfig::post_reloc_settle.
   rclcpp::Time settle_until{0, 0, RCL_SYSTEM_TIME};
+
+  // Map-frame body pose of the last accepted registration (the projected
+  // solution, before any backstop blend): the jump gate's reference. Timer
+  // thread only, like last_reg_*.
+  M3D last_reg_map_body_r = M3D::Identity();
+  V3D last_reg_map_body_t = V3D::Zero();
+  int jump_reject_streak = 0;
+
+  // guess_timeout_sec bookkeeping (timer thread only): the guess the timer is
+  // currently retrying and when it first saw it. A different guess restarts
+  // the clock; a converged round or a withdrawal clears it.
+  bool guess_seen_valid = false;
+  M4F guess_seen = M4F::Identity();
+  rclcpp::Time guess_seen_since{0, 0, RCL_SYSTEM_TIME};
+  // service_mutex. True while the pending guess belongs to auto_localize /
+  // reset_odometry, which withdraw it on their own deadline
+  // (handOverAndAwait); the timer's guess_timeout_sec leaves such a guess
+  // alone. relocalize / initialpose / the INI guess set it false.
+  bool guess_owned_by_service = false;
+
+  // Round counters (timer thread only), summarised in one `loc stats:` log
+  // line a minute so a replay's acceptance rate can be read off the log
+  // without counting `refine:` lines. "run" is rounds that reached align();
+  // gate-skipped ticks are not rounds.
+  uint64_t rounds_run = 0;
+  uint64_t rounds_accepted = 0;
+  uint64_t rounds_not_converged = 0;
+  uint64_t rounds_low_inliers = 0;
+  uint64_t rounds_degenerate = 0;
+  uint64_t rounds_jump_rejected = 0;
+  uint64_t rounds_projected = 0;
+  rclcpp::Time last_stats_log{0, 0, RCL_SYSTEM_TIME};
 
   // The last TRUSTED registration, map_T_body: one that converged while the
   // odometry moved plausibly (NodeConfig::max_lio_speed). reset_odometry's
@@ -301,6 +398,9 @@ private:
 
   // map_T_body at the newest odometry, from the current offset.
   void currentMapPose(M3D & r, V3D & t);
+
+  // One `loc stats:` line a minute from the round counters in NodeState.
+  void logRoundStats(const rclcpp::Time & now);
 
   NodeConfig m_config;
   NodeState m_state;

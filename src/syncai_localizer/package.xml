@@ -41,6 +41,9 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <!-- test/test_localizability.cpp: the localizability analysis is pure Eigen
+       and the only unit-testable piece of the node. -->
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
