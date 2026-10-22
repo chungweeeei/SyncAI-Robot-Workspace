@@ -66,26 +66,28 @@ public:
     // and never short of the footprint's reach (2026-10-22), where the
     // controller's own collision test stops it at the stair's lethal cells.
     double enter_dist{1.0};
-    // stair_standoff: how far before the stair the robot stands, at least,
+    // stair_standoff: how far before the stair the robot is meant to stand
     // when it switches the policy, from its centre along the path
-    // (2026-10-22). The window above is looked for this much further out than
+    // (2026-10-22; 1.5 m for its first hours, 1.0 m since, both the
+    // operator's figure). The window above is looked for this much further out than
     // the controller's stopping distance, so the hold begins that much
     // earlier. Without it the hold aimed at the stair's foot, with no margin
     // for a gait that overruns its brake: robot01, coming to dp's 2F step
     // down at 0.8 m/s, was to stop with its centre ~0.4 m short of the edge
     // (0.48 m of brake), kept 0.73 m/s for a second of the brake, travelled
     // 1.05 m, and was put on HIMLOCO standing on the first step; the 175 deg
-    // turn that starts a descent then drifted it 0.4 m. "At least": the
+    // turn that starts a descent then drifted it 0.4 m. Not a minimum: the
     // window first holds min_rise when the edge is still up to enter_dist,
     // less the run the flight needs to rise min_rise, beyond its start, so a
     // slow approach stands that much further back (~0.7 m more at that step),
-    // and a brake overrun eats into it (~0.6 m from 0.8 m/s there). The floor
+    // and a brake overrun eats into it -- on the 2F step up the same day,
+    // 1.5 m stood the robot 1.1 m from the path's edge, from ~0.8 m/s. The floor
     // from there to the stair is walked as the climb is -- the stair carrot,
     // no costmap, no obstacle avoidance (accepted 2026-10-22). Keep
     // standoff + enter_dist under exit_ahead_dist, or the window that keeps
     // the robot in stair mode does not reach the stair from where it stopped.
     // 0 = aim at the foot, as before.
-    double standoff{1.5};
+    double standoff{1.0};
     // stair_exit_behind_dist / stair_exit_ahead_dist: the window that must
     // have gone level before leaving. 2.5 m ahead keeps a landing (rarely
     // longer than ~2 m on a spiral) in stair mode instead of switching the
@@ -168,7 +170,7 @@ public:
    * @param body_reach The footprint's reach from the robot's centre
    * (bodyReach()); the stair is looked for at least that far ahead, whatever
    * the speed. 0 = no floor. Moot while Params::standoff exceeds it, which the
-   * shipped 1.5 m does; it is what keeps standoff 0 from stalling.
+   * shipped 1.0 m does; it is what keeps standoff 0 from stalling.
    *
    * Why the floor (2026-10-22): the controller reaches the stair braking on
    * its own, not on this class's hold -- the local costmap's terrain layer

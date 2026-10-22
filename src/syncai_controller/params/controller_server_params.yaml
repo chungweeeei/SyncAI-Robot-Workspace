@@ -356,13 +356,15 @@
       use_stair_mode: true
       stair_min_rise: 0.3
       stair_enter_dist: 1.0
-      # Where the robot stands, at least, when it switches the policy: 1.5 m
-      # before the stair from its centre (2026-10-22, the operator's figure).
-      # robot01 overran the brake by ~0.6 m from 0.8 m/s and took HIMLOCO on
-      # the first step of dp's 2F step down. A slow approach stands up to
-      # ~0.7 m further back. The floor to the stair is walked blind on the
-      # stair carrot. Keep it + stair_enter_dist under stair_exit_ahead_dist.
-      stair_standoff: 1.5
+      # Where the robot is meant to stand when it switches the policy: 1.0 m
+      # before the stair from its centre (2026-10-22, the operator's figure;
+      # 1.5 for a few hours). robot01 overran the brake by ~0.6 m from 0.8 m/s
+      # and took HIMLOCO on the first step of dp's 2F step down. A slow
+      # approach stands up to ~0.7 m further back, a fast one ~0.4 m closer
+      # (1.5 stood it 1.1 m from the 2F step up). The floor to the stair is
+      # walked blind on the stair carrot. Keep it + stair_enter_dist under
+      # stair_exit_ahead_dist.
+      stair_standoff: 1.0
       stair_exit_behind_dist: 0.8
       # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
       # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to
@@ -791,13 +793,15 @@
       use_stair_mode: true
       stair_min_rise: 0.3
       stair_enter_dist: 1.0
-      # Where the robot stands, at least, when it switches the policy: 1.5 m
-      # before the stair from its centre (2026-10-22, the operator's figure).
-      # robot01 overran the brake by ~0.6 m from 0.8 m/s and took HIMLOCO on
-      # the first step of dp's 2F step down. A slow approach stands up to
-      # ~0.7 m further back. The floor to the stair is walked blind on the
-      # stair carrot. Keep it + stair_enter_dist under stair_exit_ahead_dist.
-      stair_standoff: 1.5
+      # Where the robot is meant to stand when it switches the policy: 1.0 m
+      # before the stair from its centre (2026-10-22, the operator's figure;
+      # 1.5 for a few hours). robot01 overran the brake by ~0.6 m from 0.8 m/s
+      # and took HIMLOCO on the first step of dp's 2F step down. A slow
+      # approach stands up to ~0.7 m further back, a fast one ~0.4 m closer
+      # (1.5 stood it 1.1 m from the 2F step up). The floor to the stair is
+      # walked blind on the stair carrot. Keep it + stair_enter_dist under
+      # stair_exit_ahead_dist.
+      stair_standoff: 1.0
       stair_exit_behind_dist: 0.8
       # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
       # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to

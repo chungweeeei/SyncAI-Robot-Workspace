@@ -159,28 +159,28 @@ TEST(StairMode, StopDistanceEntersEarlierAndKeepsItsLeadWhileBraking)
 
 TEST(StairMode, StandoffEntersThatMuchEarlierAtAnySpeed)
 {
-  // The shipped standoff (1.5 m, 2026-10-22) moves the entry 15 poses back
+  // The shipped standoff (1.0 m, 2026-10-22) moves the entry 10 poses back
   // from where the stopping distance alone puts it, with the same window, so
-  // the robot stands 1.5 m further from the flight once braked. Checked a
+  // the robot stands 1.0 m further from the flight once braked. Checked a
   // pose either side of each boundary, so 0.1 m sums do not decide it.
-  ASSERT_DOUBLE_EQ(StairMode::Params().standoff, 1.5);
+  ASSERT_DOUBLE_EQ(StairMode::Params().standoff, 1.0);
   const auto path = stairPath();
   const size_t n = path.poses.size();
   {
-    // Standing or crawling: no-lead entry kLevelIn - 5, now kLevelIn - 20.
+    // Standing or crawling: no-lead entry kLevelIn - 5, now kLevelIn - 15.
     Harness h(StairMode::Params{});
     h.sm.setReportedPolicy(0);
     h.sm.setPlan(path);
-    EXPECT_FALSE(h.sm.update(at(0.0), n - (kLevelIn - 22), 0.0).hold);
-    EXPECT_TRUE(h.sm.update(at(0.05), n - (kLevelIn - 19), 0.0).hold);
+    EXPECT_FALSE(h.sm.update(at(0.0), n - (kLevelIn - 17), 0.0).hold);
+    EXPECT_TRUE(h.sm.update(at(0.05), n - (kLevelIn - 14), 0.0).hold);
   }
   {
-    // From 0.8 m/s (0.48 m of brake): kLevelIn - 9, now kLevelIn - 24.
+    // From 0.8 m/s (0.48 m of brake): kLevelIn - 9, now kLevelIn - 19.
     Harness h(StairMode::Params{});
     h.sm.setReportedPolicy(0);
     h.sm.setPlan(path);
-    EXPECT_FALSE(h.sm.update(at(0.0), n - (kLevelIn - 26), 0.48).hold);
-    EXPECT_TRUE(h.sm.update(at(0.05), n - (kLevelIn - 23), 0.48).hold);
+    EXPECT_FALSE(h.sm.update(at(0.0), n - (kLevelIn - 21), 0.48).hold);
+    EXPECT_TRUE(h.sm.update(at(0.05), n - (kLevelIn - 18), 0.48).hold);
   }
 }
 
