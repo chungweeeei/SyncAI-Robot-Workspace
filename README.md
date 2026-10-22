@@ -56,7 +56,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine, SmacPlanner2D and OctomapPlanner3D plugins (Smac is configured as `GridBased`; OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`, is loaded beside it as `Octo3D`, which a 3D map's trees ask for on this branch (`move_3d.xml` / `dock_3d.xml`, picked per goal); since 2026-10-21 `Octo3D` keeps a dynamic-obstacle overlay of the lidar cloud, on which it answers `is_path_valid` for its own paths and detours when it replans) |
 | `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath`, its own Regulated Pure Pursuit as `FollowPathRPP` and, on this branch, RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap. RPP 3D (`RegulatedPurePursuitController3D`, a separate plugin so `FollowPathRPP` stays `dev`'s 2D RPP) and the goal check follow paths with heights (`Octo3D`) in 3D, and both RPP 3D and MPPI climb stairs in a *stair mode* (`syncai_util::StairMode`) that switches the gait controller's RL policy. A 3D map's trees name MPPI (`FollowPath`) since 2026-10-20; RPP 3D is the A/B |
 | `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan`. On this branch it also matches a path with heights in 3D and climbs stairs in the shared stair mode — blind, without the optimizer or the costmap — so a 3D map's trees run it as the 2D ones do |
-| `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`), plus the docking nodes `DockToPose`, `SetMotionKey`, `ComputeStagingPose`, `Wait` (2026-10) |
+| `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`), plus the docking nodes `DockToPose`, `SetMotionKey`, `ComputeStagingPose`, `ComputeBackOutPose`, `Wait`, `WaitForMotionState` (2026-10) |
 | `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` — or `dock.xml` / `undock.xml` when the goal names them; on a 3D map (this branch) `move_3d.xml` / `dock_3d.xml` in their place |
 | `syncai_map_server` | Map server, map saver, costmap-filter-info server |
 | `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud (deskewed to the end of the scan; plus `body_cloud_dense` for mapping), the `pointlio_odom → pointlio_body` TF, and `reset` |
@@ -98,12 +98,13 @@ over DDS; the infra it needs (postgres, temporal) stays in this repo's
 
 ### Third-party (`src/third-party/`)
 
-All five are checked out by vcstool from `third-party.repos` (they were git
+All six are checked out by vcstool from `third-party.repos` (they were git
 submodules until `fca520b`); nothing is vendored there any more.
 
 | Package | Notes |
 |---|---|
 | `behaviortree_cpp_v3` | Pinned to upstream tag `3.8.8`, unmodified |
+| `direct_visual_lidar_calibration` | Targetless camera → lidar extrinsic calibration, run by hand on bags recorded in CALIBRATION mode. Has git submodules, hence `--recursive`; Ceres / Iridescence / GTSAM's unstable library come from the image |
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver. `colcon.meta` passes the cmake flags the driver needs; see "Build" |
 | `small_gicp` | Pinned to `v1.0.1`, unmodified; the registration backend of `syncai_localizer` and of `syncai_mapping`'s loop closure |
 | `vizionsdk-ros2` | TechNexion camera wrapper; needs the VizionSDK `.deb` the `Dockerfile` installs |
@@ -129,22 +130,24 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ```
 .
 ├── src/                          # colcon packages (see table above)
-│   └── third-party/              # five upstream repos, checked out by vcstool
+│   └── third-party/              # six upstream repos, checked out by vcstool
 ├── config/
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
 │   ├── instances/robot01.ini     # per-robot identity: [system] robot_id, [map], [initial_pose], [sensor.lidar]
-│   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL)
+│   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL), calib_lidar_camera.yaml (CALIBRATION)
 │   ├── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1
 │   └── rviz2/robot01.rviz        # for running rviz2 from a workstation (no display on the robot)
 ├── scripts/
 │   ├── attach.sh                 # host-side: attach to whichever byobu session is live in the container
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml
 │   ├── urdf2glb.py               # bakes G23.urdf into the GLB the operator console renders (handed over to its repo)
+│   ├── calibration/              # camera intrinsics + lidar-camera extrinsic tools (see docs/lidar-camera-calibration.md)
 │   └── release/                  # offline release bundle for the IPC (currently non-functional, see CLAUDE.md)
-├── doc/                          # design proposals (agent / MCP integration; not implemented)
-├── map/                          # LIO map output per map name (map.pcd, poses.txt, gridmap.*, optional keepout.*) — gitignored
+├── docs/                         # operating procedures: lidar-camera calibration, localizer offline replay
+├── .github/                      # CI: lint, arm64 build + smoke test of every session spec
+├── map/                          # LIO map output per map name (map.pcd, poses.txt, gridmap.* or octomap.bt, optional keepout.*) — gitignored
 ├── log/stack/<robot_id>/         # multilog capture of every byobu pane — gitignored
-├── Dockerfile                    # multi-stage: base → livox / gtsam / sophus + rust-underlay (parallel) → dev
+├── Dockerfile                    # multi-stage: base → deps-builder → livox / gtsam / sophus / ceres / iridescence, base → rust-underlay (all parallel) → dev
 ├── docker-compose.yml            # infra: postgres (5432) / pgadmin (5050) / temporal (7233) / temporal_ui (8081)
 ├── docker-compose.robots.yml     # robot01 (host networking, nvidia runtime, cameras, audio, D-Bus, avahi); `include`d above
 ├── docker-compose.build.yml      # standalone one-shot `colcon build` service (same image, own project name)
@@ -327,10 +330,16 @@ scripts/attach.sh                    # finds the live session, or a shell if non
 scripts/attach.sh robot01 syncai-dev # explicit container / session
 alias robot='~/SyncAI-Robot-Workspace/scripts/attach.sh'   # handy in ~/.bashrc
 
-# inside the container: query / switch the operating mode (MAINTENANCE=0 MANUAL=1 AUTO=2)
+# inside the container: query / switch the operating mode (MAINTENANCE=0 MANUAL=1 AUTO=2 CALIBRATION=3)
 ros2 service call /<robot_id>/get_mode    syncai_common/srv/GetMode
 ros2 service call /<robot_id>/switch_mode syncai_common/srv/SwitchMode "{mode: 1}"
 ```
+
+CALIBRATION (`calib_lidar_camera.yaml`, session `syncai-calib`) runs bringup
+with the livox driver on `PointCloud2` plus the camera feeder, for recording
+lidar-camera calibration bags — no `driver_manager`, so lie the robot down
+first. The backend's mode route does not offer it; switch with the service
+call above. The procedure is `docs/lidar-camera-calibration.md`.
 
 The mode is derived from which byobu session exists, never stored, so it stays
 correct across a `sys_manager` restart. `switch_mode` kills every session before
@@ -372,7 +381,8 @@ while mapping. Which one is the planner's call: the task_runner reads
   planar), and a goal only counts within `goal_z_tolerance` (0.5 m) of the end
   pose's height.
 - Where the path rises 0.3 m within 1 m, the controller enters **stair mode**
-  (`syncai_util::StairMode`, one state machine for both): it stops, calls
+  (`syncai_util::StairMode`, one state machine for both): it stops about
+  `stair_standoff` (1.0 m) before the stair, calls
   `set_policy_mode` with `stair_policy_mode` (1, HIMLOCO), stands
   `stair_policy_settle_time` (3 s), climbs at 0.5 m/s (MPPI on a 0.6 m
   carrot, RPP 3D on 0.4 m; MPPI's flat speed is 0.8 m/s, all unmeasured on
@@ -390,8 +400,8 @@ while mapping. Which one is the planner's call: the task_runner reads
   at the stair's foot to the hold past its top the climb reads no costmap.
   On the flat the local costmap runs the terrain layer, which sees low
   obstacles, drop-offs and ledges the 2D obstacle layer's height band missed,
-  and judges a stair lethal, which also keeps MPPI off a stair it was not
-  routed over.
+  clears an obstacle as soon as a later ray passes through it, and judges a
+  stair lethal, which also keeps MPPI off a stair it was not routed over.
 - **No forbidden zones (keepout).** `Octo3D` does not read the 2D costmap
   a keepout mask is drawn into, nothing else keeps the robot out of a zone,
   and a 3D map has no mask at all. Not supported in 3D for now (decided
@@ -408,9 +418,7 @@ forgotten after 30 s (2026-10-21) — so a person standing in the way for 10 s
 gets a replan that detours round them; MPPI bends round one inside its local
 costmap meanwhile, and at one that closes the way the four `FollowPath`
 retries are the wait before the goal fails. The check judges only the floor
-stretch the robot is on and never replans mid-stair. (From 2026-10-19 to
-2026-10-21 the tree planned once per goal and never replanned, because the
-check judged on the 2D costmap.) `syncai_controller/README.md` ("Paths with
+stretch the robot is on and never replans mid-stair. `syncai_controller/README.md` ("Paths with
 heights", "Stairs"), `syncai_mppi_controller/README.md`,
 `syncai_costmap_2d/README.md`, `syncai_global_planner/README.md` and
 `syncai_task_runner/README.md` ("The behavior tree") have the details.
@@ -465,9 +473,17 @@ colcon test --packages-select <package_name>
 colcon test-result --verbose
 ```
 
-The C++ packages carry only the ament linter tests from the package templates;
-`syncai_sys_manager` adds `test_wifi_manager.py`. The large pytest suite that
-used to live here went with `syncai_backend`.
+Four ROS-free gtests: `syncai_global_planner`'s `test_surface_map` (surface
+map, search, stair links, dynamic overlay), `syncai_util`'s `test_stair_mode`,
+`syncai_costmap_2d`'s `test_terrain_grid` and `syncai_localizer`'s
+`test_localizability`; `syncai_sys_manager` adds `test_wifi_manager.py`. The
+rest are the template ament linter tests, which are not enforced. The large
+pytest suite that used to live here went with `syncai_backend`.
+
+CI (`.github/workflows/ci.yml`) runs ruff and clang-format on changed lines,
+then on an arm64 runner builds the robot image and the workspace, runs
+`test_wifi_manager.py`, and smoke-tests every pane of the three session specs
+against generated 2D and 3D fixture maps (`.github/scripts/smoke_test.sh`).
 
 ## Notes
 
