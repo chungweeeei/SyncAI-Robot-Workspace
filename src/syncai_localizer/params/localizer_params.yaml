@@ -191,11 +191,15 @@
     # diverges the prediction is garbage and GICP's answer is right (robot01
     # 2026-10-13), and the offset absorbing that jump is what kept the TF
     # correct -- a gate against the prediction would have thrown those rounds
-    # away. What this catches is a solution in the wrong basin. The robot
-    # tops out at 0.6 m/s; 1.5 leaves room for the gait's lurch and the 0.2 s
-    # floor on dt. After max_reject_streak consecutive rejections the next
-    # round is accepted regardless (logged), because by then it is the
-    # reference that is suspect: the gate must never freeze the TF on a wrong
+    # away. What this catches is a solution in the wrong basin. The interval
+    # is the two scans' stamp difference (floored at 0.2 s), not the timer's:
+    # on the timer's, a robot walking at 0.7-1.1 m/s read as 1.6-3 m/s and the
+    # loc_1022 dp replay (2026-10-22) rejected 8 correct rounds. Navigation is
+    # capped at 1.0 m/s; that bag's teleop drive peaked at 1.19 m/s and
+    # 1.6 rad/s over 0.2 s of scan stamps, so 1.5 / 1.5 is the cap plus the
+    # gait's lurch and a correction. After max_reject_streak consecutive
+    # rejections the next round is accepted regardless (logged), because by
+    # then it is the reference that is suspect: the gate must never freeze the TF on a wrong
     # pose for good -- the failure direction chosen under the motion gate
     # above, "jitter partly suppressed, never frozen", applies here too.
     jump_gate:

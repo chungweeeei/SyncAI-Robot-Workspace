@@ -328,10 +328,10 @@ nothing — the pre-2026-10 behaviour, for an A/B on the same bag.
 
 A registration whose map-frame body pose is further from the last
 **accepted** one than the robot could have moved meanwhile
-(`jump_gate.max_speed` 1.5 m/s, `max_rot_speed` 1.5 rad/s, over at least
-0.2 s) is dropped, and the TF coasts on odometry for that round (`jump
-rejected` in the log). The reference is deliberately the last accepted body
-pose and not the odometry prediction: when Point-LIO diverges (robot01,
+(`jump_gate.max_speed` 1.5 m/s, `max_rot_speed` 1.5 rad/s, over the two
+scans' stamp difference, at least 0.2 s) is dropped, and the TF coasts on
+odometry for that round (`jump rejected` in the log). The reference is
+deliberately the last accepted body pose and not the odometry prediction: when Point-LIO diverges (robot01,
 2026-10-13) the prediction is garbage while GICP's answer is right, and the
 offset absorbing that jump is what kept the TF correct — a gate against the
 prediction would have thrown those rounds away. What this catches is the
@@ -340,6 +340,13 @@ consecutive rejections the next round is accepted regardless, because by
 then it is the reference that is suspect: the gate must never freeze the TF
 on a wrong pose for good. Service guesses, their settle window and the round
 that straddles `reset_odometry`'s jump are exempt.
+
+The interval was the timer's until 2026-10-23, and that was a bug: the 5 Hz
+rounds and the 10 Hz scans do not line up, so two rounds 0.2 s apart often
+compared scans 0.3–0.5 s apart, and a robot walking at 0.7–1.1 m/s read as
+1.6–3 m/s. The `loc_1022` replay on dp (12 min, 540 m) rejected 8 correct
+rounds that way. `reset_odom.max_lio_speed`'s trust check divides by the same
+stamp interval now.
 
 ### The source window
 

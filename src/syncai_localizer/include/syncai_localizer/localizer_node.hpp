@@ -248,6 +248,11 @@ struct NodeState
   V3D last_reg_t = V3D::Zero();
   bool has_reg = false;
   rclcpp::Time last_reg_time{0, 0, RCL_SYSTEM_TIME};
+  // Stamp (seconds) of the scan the last accepted registration posed. The
+  // speed checks divide a distance between two scans' poses by this, never
+  // by last_reg_time: the timer's 0.2 s and the scans' spacing are not the
+  // same interval (see the jump gate in timerCB).
+  double last_reg_stamp = 0.0;
   // Full-rate window after a relocalize; see NodeConfig::post_reloc_settle.
   rclcpp::Time settle_until{0, 0, RCL_SYSTEM_TIME};
 

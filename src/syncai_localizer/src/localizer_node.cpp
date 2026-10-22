@@ -630,10 +630,19 @@ void LocalizerNode::timerCB()
   // garbage while GICP's answer is right, and that answer must get through.
   // The flag reads once per successful align, as before, and exempts the
   // round that straddles reset_odometry's jump.
+  //
+  // dt is the two scans' stamp difference, not the timer's: the poses
+  // compared belong to those scans. On wall time (until 2026-10-23) the
+  // timer's 0.2 s was set against scans 0.3-0.5 s apart -- the 10 Hz scans do
+  // not line up with the 5 Hz rounds -- so a robot walking at 0.7-1.1 m/s read
+  // as 1.6-3 m/s, and the loc_1022 dp replay rejected 8 correct rounds. The
+  // 0.2 s floor stays: it bounds the allowance for two scans 0.1 s apart, or
+  // one scan registered twice, where the correction alone is the motion.
+  const double scan_dt = rclcpp::Time(current_time).seconds() - m_state.last_reg_stamp;
   const bool skip_speed = m_state.skip_speed_check.exchange(false);
   if (
     m_config.jump_gate_enabled && m_state.has_reg && !service_pending && !settling && !skip_speed) {
-    const double dt_s = std::max((now - m_state.last_reg_time).seconds(), 0.2);
+    const double dt_s = std::max(scan_dt, 0.2);
     const double jump_t = (map_body_t - m_state.last_reg_map_body_t).norm();
     const M3D dr = map_body_r * m_state.last_reg_map_body_r.transpose();
     const double jump_r = std::acos(std::clamp((dr.trace() - 1.0) * 0.5, -1.0, 1.0));
@@ -706,7 +715,8 @@ void LocalizerNode::timerCB()
   // reset_odometry, whose odometry jumped back to the origin.
   bool trusted = true;
   if (m_state.has_reg && !service_pending && !skip_speed) {
-    const double dt = std::max((now - m_state.last_reg_time).seconds(), 0.05);
+    // Same scan-stamp interval as the jump gate, for the same reason.
+    const double dt = std::max(scan_dt, 0.05);
     const double speed = (current_local_t - m_state.last_reg_t).norm() / dt;
     if (speed > m_config.max_lio_speed) {
       trusted = false;
@@ -721,6 +731,7 @@ void LocalizerNode::timerCB()
   m_state.last_reg_r = current_local_r;
   m_state.last_reg_t = current_local_t;
   m_state.last_reg_time = now;
+  m_state.last_reg_stamp = rclcpp::Time(current_time).seconds();
   m_state.has_reg = true;
   // The jump gate's reference: the projected solution, before the backstop
   // blend, which is a filter on the broadcast and not a measurement.
