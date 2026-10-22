@@ -39,6 +39,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,6 +61,101 @@ struct Waypoint
 {
   double x, y, z;
 };
+
+// A column of a disc around a centre column: the offset, the distance of its
+// centre from the disc's centre, and the quadrant it lies in. discOffsets()
+// is the one definition of "the columns within r of a column", shared by the
+// footprint rule, the hole fill and the dynamic overlay's dilation
+// (dynamic_overlay.hpp), so a mark is inflated over exactly the disc the
+// footprint rule judges.
+struct Offset
+{
+  int dx, dy;
+  float d_m;     // distance of the column centre from the disc centre (m)
+  int quadrant;  // 0..3, the four quadrants around the centre with the axes split evenly
+};
+
+// Every column whose centre is within radius_m of the centre column's centre,
+// nearest first. (0,0) is included only if include_centre.
+std::vector<Offset> discOffsets(double radius_m, double res, bool include_centre);
+
+// Supercover line (E. Dedu): every grid cell the segment from (x0, y0) to
+// (x1, y1) passes through, in order, both cells at an exact corner crossing
+// -- a Bresenham line skips the cell a segment clips at a corner, which is
+// exactly where a wall foot sits. visit(ix, iy) returns false to stop the
+// walk, and the result is false then. Shared by the line-of-sight shortcut
+// and the stair crossing (path_postprocess.cpp) and by the dynamic overlay's
+// ray clearing (dynamic_overlay.cpp), which must agree on which columns a
+// line touches.
+template <typename Fn>
+bool supercover(int x0, int y0, int x1, int y1, Fn && visit)
+{
+  int x = x0, y = y0;
+  int dx = x1 - x0, dy = y1 - y0;
+  const int xstep = dx < 0 ? -1 : 1, ystep = dy < 0 ? -1 : 1;
+  dx = std::abs(dx);
+  dy = std::abs(dy);
+  const int ddx = 2 * dx, ddy = 2 * dy;
+  if (!visit(x, y)) {
+    return false;
+  }
+  if (ddx >= ddy) {
+    int error = dx, errorprev = dx;
+    for (int i = 0; i < dx; ++i) {
+      x += xstep;
+      error += ddy;
+      if (error > ddx) {
+        y += ystep;
+        error -= ddx;
+        if (error + errorprev < ddx) {
+          if (!visit(x, y - ystep)) {
+            return false;
+          }
+        } else if (error + errorprev > ddx) {
+          if (!visit(x - xstep, y)) {
+            return false;
+          }
+        } else {
+          if (!visit(x, y - ystep) || !visit(x - xstep, y)) {
+            return false;
+          }
+        }
+      }
+      if (!visit(x, y)) {
+        return false;
+      }
+      errorprev = error;
+    }
+  } else {
+    int error = dy, errorprev = dy;
+    for (int i = 0; i < dy; ++i) {
+      y += ystep;
+      error += ddx;
+      if (error > ddy) {
+        x += xstep;
+        error -= ddy;
+        if (error + errorprev < ddy) {
+          if (!visit(x - xstep, y)) {
+            return false;
+          }
+        } else if (error + errorprev > ddy) {
+          if (!visit(x, y - ystep)) {
+            return false;
+          }
+        } else {
+          if (!visit(x - xstep, y) || !visit(x, y - ystep)) {
+            return false;
+          }
+        }
+      }
+      if (!visit(x, y)) {
+        return false;
+      }
+      errorprev = error;
+    }
+  }
+  return true;
+}
 
 // Geometry the map is judged with. All of these bake into the map at build
 // time (a change needs a rebuild -- "requires restart" in the ROS plugin).
@@ -208,7 +304,24 @@ public:
   double cx(int ix) const { return x0 + (ix + 0.5) * res; }
   double cy(int iy) const { return y0 + (iy + 0.5) * res; }
   double zTop(CellId c) const { return z0 + (cells[c].kz + 1) * res; }
+  // The kz of a surface whose top face is at height z: the inverse of zTop.
+  int kzOfTop(double z) const { return static_cast<int>(std::floor((z - z0) / res)) - 1; }
   bool traversable(CellId c) const { return (cells[c].flags & kTraversable) != 0; }
+  // The traversable surface under (x, y) nearest in height to z, within
+  // max_dkz cells of it, or kNoCell: what a path pose with a height stands
+  // on. Three cells covers the quantisation of a resampled path's z and a
+  // TF height a few cm off the voxel face, and is far below the spacing of
+  // two floors; a pose on a stair finds nothing, since a flight's cells are
+  // all rejected.
+  CellId traversableAt(double x, double y, double z, int max_dkz = 3) const
+  {
+    const int ix = ixOf(x), iy = iyOf(y);
+    if (!inGrid(ix, iy)) {
+      return kNoCell;
+    }
+    const CellId c = layerNear(col(ix, iy), kzOfTop(z), max_dkz);
+    return (c != kNoCell && traversable(c)) ? c : kNoCell;
+  }
   bool inferred(CellId c) const { return (cells[c].flags & kInferred) != 0; }
   void cellXY(CellId c, double & x, double & y) const
   {

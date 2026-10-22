@@ -9,18 +9,23 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "message_filters/subscriber.h"
+#include "nav2_msgs/srv/clear_entire_costmap.hpp"
 #include "nav2_msgs/srv/load_map.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
 #include "tf2_ros/buffer.h"
+#include "tf2_ros/message_filter.h"
 
 namespace syncai_global_planner
 {
@@ -71,6 +76,25 @@ namespace syncai_global_planner
  * whether this planner has a map, built or being built: the task_runner
  * reads it per goal to run the 3D trees (move_3d.xml, dock_3d.xml) on a 3D
  * map and the 2D ones otherwise (2026-10-19). See publishMapAvailable().
+ *
+ * Dynamic obstacles (2026-10-21): the surface map is static, so on its own
+ * a replan returns the route a person is standing on, and is_path_valid,
+ * judged on the 2D costmap, cannot see a 3D path. The plugin therefore keeps
+ * a dynamic overlay of its own (dynamic_overlay.hpp): the lidar cloud
+ * (`dynamic.topic`, pointlio/body_cloud) in the map frame, every return in
+ * the band above the surface it lies on a mark on that cell, rays clearing
+ * the marks they cross, marks aging out after dynamic.obstacle_memory. A
+ * plan reads a snapshot of it (the search and the shortcut keep off the
+ * marks and their block_radius ring, and pay for the band beyond as for a
+ * wall), and isPathValid() -- which the planner server calls instead of its
+ * costmap test for the planner that made the last plan -- reads the same
+ * snapshot for the path ahead, so move_3d.xml runs move.xml's
+ * IsPathValid / blocked_time / replan machinery unchanged. The overlay has
+ * its own lock and its own executor thread; nothing of it waits behind
+ * mutex_. `<planner_server>/<id>/clear_overlay` (nav2_msgs/srv/
+ * ClearEntireCostmap, an empty request) drops every mark: what the 3D
+ * trees' ClearEntireCostmap nodes call where the 2D trees clear the global
+ * costmap.
  */
 class OctomapPlanner3D : public syncai_nav_core::GlobalPlanner
 {
@@ -91,7 +115,23 @@ public:
   // global costmap never turns current.
   bool usesCostmap() const override { return false; }
 
+  // The part of `path` ahead of the robot against the dynamic overlay, on
+  // the floor stretch the robot is on (see the .cpp for the stair rule).
+  // Takes the overlay's lock only, never mutex_.
+  bool isPathValid(
+    const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose,
+    std::vector<int32_t> & invalid_pose_indices) override;
+
 protected:
+  // The lidar cloud, transformed into the map frame and fed to the overlay.
+  // Runs on the overlay's executor thread or on the TF buffer's (the message
+  // filter calls back from whichever delivers the transform).
+  void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
+
+  // `<planner_server>/<id>/clear_overlay`: drop every mark.
+  void clearOverlayCallback(
+    const std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Request> request,
+    std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Response> response);
   // Load the .bt, build the surface map and the stair links, swap them in and
   // clear building_. Runs on the boot thread, or on the load_map service's
   // thread for a reload. On failure sets build_error_ (= error) and leaves no
@@ -138,6 +178,18 @@ protected:
   octomap_planner_3d::SurfaceMapParams map_params_;
   octomap_planner_3d::StairLinkParams stair_params_;
   octomap_planner_3d::SearchParams search_params_;
+  // dynamic.*: the overlay's own (dynamic_overlay.hpp), plus whether to
+  // subscribe at all, what, and how long a cloud may wait for its transform.
+  bool dynamic_enabled_{true};
+  std::string dynamic_topic_{"pointlio/body_cloud"};
+  double transform_tolerance_{0.3};
+  octomap_planner_3d::DynamicOverlayParams dynamic_params_;
+
+  // The dynamic overlay: bound to map_ by buildMap(), unbound by
+  // loadMapCallback(); read by createPlan() (under mutex_) and by
+  // isPathValid() and the cloud callback (never under mutex_). Its own lock
+  // orders those; mutex_ -> overlay lock is the one order ever taken.
+  std::unique_ptr<octomap_planner_3d::DynamicOverlay> overlay_;
 
   // One lock around createPlan, the parameter callback and the map swap.
   std::mutex mutex_;
@@ -167,6 +219,23 @@ protected:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raw_plan_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr map_available_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
+
+  // The overlay's input: the cloud through a TF message filter to the map
+  // frame (as the costmap's terrain layer takes it), on a callback group of
+  // its own spun by its own thread, so a plan or a reload never queues the
+  // scans and the scans never queue a plan. clear_overlay is on the node's
+  // default group (the planner server's main executor, beside
+  // is_path_valid): O(marks) under the overlay's lock, and the BT gives it
+  // 20 ms. The subscriber takes the node by raw pointer: the node owns this
+  // plugin, and a shared_ptr here would be an ownership cycle.
+  rclcpp::Service<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_overlay_service_;
+  rclcpp::CallbackGroup::SharedPtr overlay_group_;
+  rclcpp::executors::SingleThreadedExecutor::SharedPtr overlay_executor_;
+  std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2, rclcpp::Node>>
+    cloud_sub_;
+  std::shared_ptr<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>> cloud_filter_;
+  // The very last member: its thread stops before anything it reads goes.
+  std::unique_ptr<syncai_util::NodeThread> overlay_thread_;
 };
 
 }  // namespace syncai_global_planner

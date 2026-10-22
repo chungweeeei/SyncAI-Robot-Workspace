@@ -3,9 +3,13 @@
   2026-10-19). A goal naming dock.xml runs this file instead while the
   planner's Octo3D has a map (the same per-goal choice as move.xml /
   move_3d.xml; move_3d.xml's header has it). Only the staging leg differs,
-  and only as move_3d.xml differs from move.xml: planner_id="Octo3D" and a
-  plan once per goal (number_plans == 0) in place of IsPathValid, which
-  judges on the 2D costmap; the controller is move.xml's FollowPath (MPPI,
+  and only as move_3d.xml differs from move.xml: planner_id="Octo3D", and
+  the recovery's ClearEntireCostmap pointed at planner_server/Octo3D/
+  clear_overlay (Octo3D's dynamic-obstacle memory, which is what its
+  IsPathValid judges on since 2026-10-21 -- move_3d.xml's header has the
+  whole story; from 2026-10-19 until then this leg planned once per goal,
+  number_plans == 0, in IsPathValid's place, because the check judged on
+  the 2D costmap); the controller is move.xml's FollowPath (MPPI,
   3D-aware since 2026-10-20; it was FollowPathRPP3D for a day). On a 3D-only
   map dock.xml's GridBased has no map and every dock failed PLAN_FAILED
   until this file. The MPC half and the last metre are dock.xml's,
@@ -140,19 +144,15 @@
                 <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
-                <!-- Plan once per goal (move_3d.xml): number_plans is reset per goal by the navigator -->
-                <Inverter>
-                  <BlackboardCheckInt value_A="{number_plans}" value_B="0" return_on_mismatch="FAILURE">
-                    <AlwaysSuccess/>
-                  </BlackboardCheckInt>
-                </Inverter>
+                <!-- Judged by Octo3D on its dynamic overlay (move_3d.xml) -->
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
               </ReactiveSequence>
               <Sequence name="PlanToStaging">
                 <ComputeStagingPose dock_pose="{goal}" distance="1.0" staging_pose="{staging_pose}"/>
                 <ComputePathToPose goal="{staging_pose}" path="{path}" planner_id="Octo3D"/>
               </Sequence>
             </Fallback>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">

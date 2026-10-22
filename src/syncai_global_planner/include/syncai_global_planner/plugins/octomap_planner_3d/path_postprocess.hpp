@@ -28,10 +28,18 @@
 // the stair head on dp; with it the route is one line through the stair,
 // facing the risers to within the tolerance.
 //
+// Every function takes an optional BlockedView (dynamic_overlay.hpp,
+// 2026-10-21): with one, a cell the dynamic overlay blocks is not in sight,
+// and the clearance the shortcut keeps counts the marks as boundary, so a
+// straightened segment can no more cut through a person than the search
+// could. The flight phase of a stair crossing is not checked against it
+// (stair cells are not surface cells, and the climb is blind by decision).
+//
 // ROS-free (see surface_map.hpp).
 
 #include <vector>
 
+#include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/stair_links.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 
@@ -50,12 +58,13 @@ constexpr double kStairCrossingToleranceDeg = 15.0;
 // min_clearance everywhere. With out set, the cells visited, a first.
 bool lineOfSight(
   const SurfaceMap & m, CellId a, CellId b, float min_clearance,
-  std::vector<CellId> * out = nullptr);
+  std::vector<CellId> * out = nullptr, const BlockedView * blocked = nullptr);
 
 // Greedy forward shortcut: from an anchor, extend the segment while the next
 // cell is still in sight, then anchor there. The result is a sub-sequence of
 // the input (first and last cells kept).
-std::vector<CellId> shortcutPath(const SurfaceMap & m, const std::vector<CellId> & cells);
+std::vector<CellId> shortcutPath(
+  const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked = nullptr);
 
 // Points every `spacing` metres (xy) along the polyline through the cell
 // centres, first and last cell included. z is the top face of the surface
@@ -73,7 +82,8 @@ std::vector<Waypoint> resamplePath(
 // vertices plus link points).
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
-  const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices = nullptr);
+  const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices = nullptr,
+  const BlockedView * blocked = nullptr);
 
 }  // namespace syncai_global_planner::octomap_planner_3d
 

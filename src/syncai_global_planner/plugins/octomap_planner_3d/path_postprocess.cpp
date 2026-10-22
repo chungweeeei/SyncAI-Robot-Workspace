@@ -9,85 +9,9 @@
 namespace syncai_global_planner::octomap_planner_3d
 {
 
-namespace
-{
-
-// Supercover line (E. Dedu): every grid cell the segment from (x0, y0) to
-// (x1, y1) passes through, in order, both cells at an exact corner crossing.
-template <typename Fn>
-bool supercover(int x0, int y0, int x1, int y1, Fn && visit)
-{
-  int x = x0, y = y0;
-  int dx = x1 - x0, dy = y1 - y0;
-  const int xstep = dx < 0 ? -1 : 1, ystep = dy < 0 ? -1 : 1;
-  dx = std::abs(dx);
-  dy = std::abs(dy);
-  const int ddx = 2 * dx, ddy = 2 * dy;
-  if (!visit(x, y)) {
-    return false;
-  }
-  if (ddx >= ddy) {
-    int error = dx, errorprev = dx;
-    for (int i = 0; i < dx; ++i) {
-      x += xstep;
-      error += ddy;
-      if (error > ddx) {
-        y += ystep;
-        error -= ddx;
-        if (error + errorprev < ddx) {
-          if (!visit(x, y - ystep)) {
-            return false;
-          }
-        } else if (error + errorprev > ddx) {
-          if (!visit(x - xstep, y)) {
-            return false;
-          }
-        } else {
-          if (!visit(x, y - ystep) || !visit(x - xstep, y)) {
-            return false;
-          }
-        }
-      }
-      if (!visit(x, y)) {
-        return false;
-      }
-      errorprev = error;
-    }
-  } else {
-    int error = dy, errorprev = dy;
-    for (int i = 0; i < dy; ++i) {
-      y += ystep;
-      error += ddx;
-      if (error > ddy) {
-        x += xstep;
-        error -= ddy;
-        if (error + errorprev < ddy) {
-          if (!visit(x - xstep, y)) {
-            return false;
-          }
-        } else if (error + errorprev > ddy) {
-          if (!visit(x, y - ystep)) {
-            return false;
-          }
-        } else {
-          if (!visit(x - xstep, y) || !visit(x, y - ystep)) {
-            return false;
-          }
-        }
-      }
-      if (!visit(x, y)) {
-        return false;
-      }
-      errorprev = error;
-    }
-  }
-  return true;
-}
-
-}  // namespace
-
 bool lineOfSight(
-  const SurfaceMap & m, CellId a, CellId b, float min_clearance, std::vector<CellId> * out)
+  const SurfaceMap & m, CellId a, CellId b, float min_clearance, std::vector<CellId> * out,
+  const BlockedView * blocked)
 {
   const int ax = m.colIx(m.cell_col[a]), ay = m.colIy(m.cell_col[a]);
   const int bx = m.colIx(m.cell_col[b]), by = m.colIy(m.cell_col[b]);
@@ -101,7 +25,11 @@ bool lineOfSight(
       return false;
     }
     const CellId c = m.layerNear(m.col(ix, iy), kz, m.step_cells);
-    if (c == kNoCell || !m.traversable(c) || m.cells[c].clearance_d < min_clearance) {
+    if (c == kNoCell || !m.traversable(c) || (blocked && blocked->blocked(m, c))) {
+      return false;
+    }
+    const float clearance = blocked ? blocked->clearance(m, c) : m.cells[c].clearance_d;
+    if (clearance < min_clearance) {
       return false;
     }
     kz = m.cells[c].kz;
@@ -114,21 +42,25 @@ bool lineOfSight(
   return ok && last == b;
 }
 
-std::vector<CellId> shortcutPath(const SurfaceMap & m, const std::vector<CellId> & cells)
+std::vector<CellId> shortcutPath(
+  const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked)
 {
   std::vector<CellId> out;
   if (cells.size() < 3) {
     return cells;
   }
+  const auto clearOf = [&](CellId c) {
+    return blocked ? blocked->clearance(m, c) : m.cells[c].clearance_d;
+  };
   out.push_back(cells[0]);
   size_t anchor = 0;
   while (anchor + 1 < cells.size()) {
     size_t j = anchor + 1;
     // The clearance the replaced sub-path kept; the shortcut may not do worse.
-    float min_clear = std::min(m.cells[cells[anchor]].clearance_d, m.cells[cells[j]].clearance_d);
+    float min_clear = std::min(clearOf(cells[anchor]), clearOf(cells[j]));
     while (j + 1 < cells.size()) {
-      const float next_clear = std::min(min_clear, m.cells[cells[j + 1]].clearance_d);
-      if (!lineOfSight(m, cells[anchor], cells[j + 1], next_clear - 1e-4f)) {
+      const float next_clear = std::min(min_clear, clearOf(cells[j + 1]));
+      if (!lineOfSight(m, cells[anchor], cells[j + 1], next_clear - 1e-4f, nullptr, blocked)) {
         break;
       }
       min_clear = next_clear;
@@ -248,7 +180,7 @@ void append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b)
 // flight.
 bool stairCrossing(
   const SurfaceMap & m, CellId p, CellId n, const StairLink & link, float clear_p, float clear_n,
-  double spacing, std::vector<Waypoint> * out)
+  double spacing, std::vector<Waypoint> * out, const BlockedView * blocked)
 {
   double px, py, nx, ny;
   m.cellXY(p, px, py);
@@ -287,10 +219,12 @@ bool stairCrossing(
   const auto onFloor = [&](int ix, int iy, uint32_t comp, float clear, int ph) {
     const uint32_t c = m.col(ix, iy);
     const CellId f = m.layerNear(c, kz, m.step_cells);
-    if (f == kNoCell || !m.traversable(f) || m.cells[f].component != comp) {
+    if (
+      f == kNoCell || !m.traversable(f) || m.cells[f].component != comp ||
+      (blocked && blocked->blocked(m, f))) {
       return false;
     }
-    if (m.cells[f].clearance_d < clear) {
+    if ((blocked ? blocked->clearance(m, f) : m.cells[f].clearance_d) < clear) {
       short_at.push_back(s_of(ix, iy));
     }
     kz = m.cells[f].kz;
@@ -393,7 +327,8 @@ bool stairCrossing(
 
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
-  const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices)
+  const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices,
+  const BlockedView * blocked)
 {
   std::vector<Waypoint> out;
   if (cells.empty()) {
@@ -403,6 +338,9 @@ std::vector<Waypoint> buildPath(
     return out;
   }
   spacing = std::max(spacing, m.res * 0.25);
+  const auto clearOf = [&](CellId c) {
+    return blocked ? blocked->clearance(m, c) : m.cells[c].clearance_d;
+  };
   // The floor stretches between the links, each its own (shortcut) chain.
   std::vector<std::vector<CellId>> chains;
   size_t from = 0;
@@ -410,7 +348,7 @@ std::vector<Waypoint> buildPath(
     const std::vector<CellId> seg(
       cells.begin() + static_cast<std::ptrdiff_t>(from),
       cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
-    chains.push_back(shortcut ? shortcutPath(m, seg) : seg);
+    chains.push_back(shortcut ? shortcutPath(m, seg, blocked) : seg);
     from = to + 1;
   };
   for (const LinkUse & u : uses) {
@@ -438,11 +376,10 @@ std::vector<Waypoint> buildPath(
           continue;
         }
         const CellId p = A[na - 1 - t.first], n = B[t.second];
-        const float clear_p =
-          std::min(m.cells[p].clearance_d, m.cells[A[na - 1]].clearance_d) - 1e-4f;
-        const float clear_n = std::min(m.cells[n].clearance_d, m.cells[B[0]].clearance_d) - 1e-4f;
+        const float clear_p = std::min(clearOf(p), clearOf(A[na - 1])) - 1e-4f;
+        const float clear_n = std::min(clearOf(n), clearOf(B[0])) - 1e-4f;
         std::vector<Waypoint> pts;
-        if (stairCrossing(m, p, n, link, clear_p, clear_n, spacing, &pts)) {
+        if (stairCrossing(m, p, n, link, clear_p, clear_n, spacing, &pts, blocked)) {
           crossings[i] = std::move(pts);
           A.resize(na - t.first);
           B.erase(B.begin(), B.begin() + static_cast<std::ptrdiff_t>(t.second));

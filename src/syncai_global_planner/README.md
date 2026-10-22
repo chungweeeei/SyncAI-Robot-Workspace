@@ -21,7 +21,10 @@ syncai_task_runner ──ComputePathToPose (nav2_msgs)──►  planner_server
 Two planners are loaded: `SmacPlanner2D` as `GridBased`, and
 `OctomapPlanner3D` (not drawn above; its own section below) as `Octo3D`. On
 this branch (`feature/octomap-planner-3d`) a 3D map's tree (`move_3d.xml`)
-asks for `Octo3D`, and a 2D map's (`move.xml`, as on `dev`) for `GridBased`. NavFn and StraightLine are built and
+asks for `Octo3D`, and a 2D map's (`move.xml`, as on `dev`) for `GridBased`.
+Both trees check their path once a second with `is_path_valid`; for an
+`Octo3D` path the server asks the planner itself, which judges on its own
+dynamic-obstacle overlay (2026-10-21, "Dynamic obstacles" below). NavFn and StraightLine are built and
 registered but not loaded.
 
 Two structural notes carry over from the rest of the stack:
@@ -282,10 +285,10 @@ the `octomap::OcTree` that `syncai_mapping`'s `clean_map --octomap 1` writes
 beside `map.pcd` (0.1 m; free **and** occupied, so never-seen space is
 unknown; hit floor-band voxels kept occupied). It is loaded beside
 `GridBased` as a second id, and on this branch a 3D map's trees ask for it
-(`move_3d.xml` / `dock_3d.xml`, with `controller_id="FollowPathRPP3D"`, the
-controller that follows a path with heights and climbs stairs —
-`syncai_controller/README.md`), so every navigation goal on a 3D map plans
-here. Which trees a goal runs is read off this planner: it latches
+(`move_3d.xml` / `dock_3d.xml`, with `controller_id="FollowPath"` — MPPI,
+which follows a path with heights in 3D and climbs stairs since 2026-10-20;
+`FollowPathRPP3D` is the A/B — `syncai_controller/README.md`), so every
+navigation goal on a 3D map plans here. Which trees a goal runs is read off this planner: it latches
 **`planner_server/Octo3D/map_available`** (`std_msgs/Bool`), true while it has
 a map, built or being built (a goal mid-build belongs to the 3D tree and
 fails `map_loading`), false with no `octomap_file` or after a failed build;
@@ -627,6 +630,75 @@ builds the same binary against the system's octomap
 (`cmake -S … -B /tmp/octo3d -DCMAKE_PREFIX_PATH=/opt/homebrew`); the core
 headers include nothing of ROS on purpose.
 
+**Dynamic obstacles** (2026-10-21). The surface map is static, so on its own
+a replan returns the route a person is standing on, and `is_path_valid`,
+judged on the 2D global costmap, cannot see a 3D path (upstairs it lies over
+the ground floor's gridmap; on a 3D-only map the costmap is the 5 × 5 m
+default grid). `Octo3D` therefore keeps a **dynamic overlay** of its own
+(`dynamic_overlay.hpp`, ROS-free) — what the global costmap's obstacle layer
+is to `GridBased`, in the surface map's terms:
+
+- It subscribes the lidar cloud the costmaps read (`dynamic.topic`,
+  `pointlio/body_cloud`), through a TF message filter into the map frame,
+  on an executor thread of its own. Every return within
+  `obstacle_max_range` (2.5 m) is dropped onto the surface it lies above —
+  the highest layer of its column whose top face is at most one cell above
+  the return, so two floors never see each other's people — and if it lies
+  between `min_obstacle_height` (0.1 m) and `body_clearance` (0.6 m) above
+  a **traversable** cell, that cell is marked with the scan's stamp. Before
+  that, every return within `raytrace_max_range` (3 m) clears the marks its
+  ray crosses: at each column the ray passes, the height it has there is
+  checked against the band of the surface under it. A mark the robot
+  cannot see (behind it, occluded, out of range) is forgotten after
+  `obstacle_memory` (30 s).
+- A plan takes a snapshot: per cell, the xy distance to the nearest live
+  mark on the same floor (dilated over the footprint disc's own slope cone,
+  so a ramp's uphill cells are reached and the floor a storey below is
+  not). Cells within `block_radius` (0.35 m — the inscribed radius plus the
+  margin the 2D footprint test sweeps) are not expanded by the A*, not in
+  sight for the shortcut and refused to a goal snap; beyond the ring the
+  clearance the cost factor reads is the smaller of the static one and the
+  distance past the ring, so a person is paid for with the same curve as a
+  wall and the detour keeps its distance where it has room. The start's own
+  disc (`block_radius` round it) is exempt from the dilation — not from a
+  mark — so a person beside the robot does not make its first step illegal.
+  The components are baked, so a corridor a mark closes is `no_path`, with
+  the mark count in the detail, not `disconnected`.
+- `is_path_valid` for an `Octo3D` path is answered by the planner
+  (`GlobalPlanner::isPathValid()`, which the server calls instead of its
+  costmap test for the planner that made the last plan when that planner
+  does not use the costmap): the pose nearest the robot in 3D, then every
+  pose from there against the snapshot, with the same exempt disc. Two rules
+  are the stair's: the check stops where the path leaves traversable ground
+  (a stair link), judging only the floor stretch the robot is on, and it
+  answers "valid" while the robot itself stands on no traversable cell
+  (mid-flight) — a replan from there would snap its start to the wrong
+  floor, and a goal aborting on a flight stops the robot on the stair. With
+  `blocked_time`'s 10 s between a blocked answer and the replan, judging the
+  floor above from the stair foot would fire exactly that.
+- `planner_server/Octo3D/clear_overlay` (`nav2_msgs/ClearEntireCostmap`,
+  the costmap clear's type, so the 3D trees call it with `move.xml`'s
+  `ClearEntireCostmap` node) drops every mark: at every new goal and when a
+  plan fails, with `move.xml`'s semantics.
+
+Three decisions shape it (the header of `dynamic_overlay.hpp` has them in
+full): only traversable cells are marked, because a wall's returns land in
+the 0.25 m footprint ring and inflating those would narrow every corridor by
+0.1–0.2 m a side and close every door under ~0.9 m whenever a wall is in
+range — so a person flattened against a wall is the local costmap's to see;
+returns within `self_radius` (0.6 m) of the sensor are ignored, because the
+robot's own legs sit in the band and marked the cells under the robot on
+every scan, so the path's first poses read blocked for good; and marks
+decay, because no ray reaches what the robot has walked away from.
+
+`octomap_planner_3d_cli --dynamic <x> <y> <z>` (repeatable) drops a
+synthetic person (eighteen returns 0.3 and 0.5 m up on a 0.3 m square) into
+the overlay before every `--plan` and prints the plan's mark count: on
+`--synthetic flat` a person at (6, 4) turns the 8.00 m line from (2, 4) to
+(10, 4) into an 8.34 m detour, and one in the `wall` scene's door makes the
+plan through it `no_path`. `test/test_surface_map.cpp`'s `DynamicOverlay`
+cases are the promises above, one each.
+
 **Known limits** (prototype):
 
 - **`Octo3D` ignores the keepout (forbidden zones)** — by decision
@@ -639,10 +711,15 @@ headers include nothing of ROS on purpose.
   `move.xml` with `GridBased`, where the keepout works as on `dev`.
   Doing it needs a decision on floors first: a mask is one 2D image, a
   3D map has several storeys.
-- `is_path_valid` and the republish trim run on the 2D costmap: fine on the
-  ground floor, meaningless for a path upstairs or on the stairs (checked
-  against the ground-floor gridmap). That is why `move_3d.xml`
-  does not call `is_path_valid` and plans once per goal instead.
+- `is_path_valid` for an `Octo3D` path judges only the floor stretch the
+  robot is on, answers "valid" on a stair, and sees nothing the overlay did
+  not mark: a person inside a wall's 0.25 m ring, anything the lidar's −7°
+  lower field of view has not reached yet, anything behind the first thing
+  the rays hit. After a `clear_overlay` the first plan runs before the next
+  scan re-marks a person in view (≤ 0.1 s; the 2D tree's planner waits for
+  its costmap to be current instead), and `IsPathValid` replans after its
+  10 s. The republish trim on `plan` still uses the server's planar
+  nearest-pose search.
 - A route over a stair link is only a route: climbing it is RPP 3D's stair mode
   (`FollowPathRPP3D`; `syncai_controller/README.md`, "Stairs"), which stops and
   switches the gait controller's RL policy over `set_policy_mode`. MPPI and
@@ -789,6 +866,12 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
 | `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |
 | `publish_raw_plan` | `false` | Also publish the un-shortcut chain on `Octo3D/raw_plan` |
+| `dynamic.enabled`, `dynamic.topic`, `dynamic.transform_tolerance` | `true`, `pointlio/body_cloud`, `0.3` | The dynamic overlay's input (see **Dynamic obstacles**); `false` = no mark ever, every path valid, no detour (the 2026-10-20 behaviour). Startup only |
+| `dynamic.obstacle_max_range`, `dynamic.raytrace_max_range` | `2.5`, `3.0` | Planar range within which a return marks / its ray clears — the 2D obstacle layer's values. Dynamic |
+| `dynamic.self_radius` | `0.6` | Returns closer to the sensor are neither marks nor rays: the robot's own legs (0.2–0.3 m up, ~0.5 m out) sit in the band. Dynamic |
+| `dynamic.min_obstacle_height` | `0.1` | Band bottom above a surface's top face; the top is `body_clearance`. The terrain layer's band. Dynamic |
+| `dynamic.obstacle_memory` | `30.0` s | How long an unrefreshed, uncleared mark lives: outlasts `blocked_time` (10 s) plus a plan plus the detour's blind stretch. Dynamic |
+| `dynamic.block_radius` | `0.35` | Cells within it of a mark are blocked (search, shortcut, goal snap, `is_path_valid`); also the exempt disc round the start. Between the inscribed 0.25 and the circumscribed 0.455, what the 2D perimeter test sweeps. Dynamic |
 
 A build-time parameter set through `ros2 param set` is refused with the
 reason; it needs a planner_server restart.
@@ -801,8 +884,10 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
-| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by the 2D `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10); the 3D tree (`Octo3D` + `FollowPathRPP3D`) plans once per goal and does not call it, since it judges on the 2D costmap. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10) — and by the 3D trees since 2026-10-21: when the last plan was made by a planner that does not use the costmap (`Octo3D`), the server asks that planner instead of its costmap (`GlobalPlanner::isPathValid()`), and it judges on its dynamic overlay (see **Dynamic obstacles**); before any plan, or after `clear_plan`, the costmap test answers. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
 | Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
+| Service | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap` (2026-10-21) — drop every mark of `Octo3D`'s dynamic overlay; what the 3D trees' `ClearEntireCostmap` nodes call (at every new goal, and when a plan fails) where the 2D trees clear the global costmap, which is a no-op for `Octo3D`. Main executor |
+| Subscriber | `pointlio/body_cloud` | `sensor_msgs/PointCloud2` (2026-10-21, `Octo3D.dynamic.topic`) — the lidar cloud for the dynamic overlay, through a TF message filter into `map`, on the overlay's own executor thread; dropped unread while `Octo3D` has no map |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled**, which until then left the cancelled route on `plan` until the next goal. A new plan stops the repeats. Main executor, the republish timer's thread |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` |
 | Publisher | `Octo3D/raw_plan` | `nav_msgs/Path`, only with `Octo3D.publish_raw_plan`: the A* cell chain before the shortcut, for comparing against `plan` |
@@ -855,10 +940,11 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
 
 ## Gotchas
 
-- **`waitForCostmap()` has no timeout.** If an observation source stops
-  publishing, the costmap never becomes current and the plan request hangs with
-  the goal still active rather than failing. Same pattern as the controller's
-  loop.
+- **`waitForCostmap()` gives up after `costmap_wait_timeout`** (5 s,
+  2026-10-19). It had no timeout before: an observation source that stopped
+  publishing left the costmap never current and the plan request hung with
+  the goal still active. A `GridBased` goal now fails `PLAN_FAILED` instead;
+  `Octo3D` never waits (`usesCostmap()` false).
 - **A plugin load failure calls `exit(-1)`** — a typo in a `.plugin` string
   takes the whole process down at startup.
 - **Footprints must match the controller's local costmap.** Diverging footprints
@@ -879,13 +965,18 @@ ros2 service call /<robot_id>/global_costmap/clear_entirely_global_costmap \
 - **Dynamic parameter changes are refused mid-plan** by the shared mutex, and
   only `expected_planner_frequency` is handled at all — plugin parameters go to
   each plugin's own callback.
-- **`is_path_valid` judges an `Octo3D` path on the 2D costmap.** On the
-  ground floor that is the same check `GridBased` paths get; upstairs the
-  path is compared with the ground-floor gridmap and reads blocked, so a 2D
-  tree with `Octo3D` swapped in would replan into the same path once a
-  second. `move_3d.xml` therefore leaves `IsPathValid` out and
-  plans once per goal — which also means no replan round a blocker. There
-  is no 3D-aware validity check yet.
+- **`is_path_valid` is answered by the planner that made the last plan**
+  when that planner does not use the costmap (`Octo3D`, on its dynamic
+  overlay — "Dynamic obstacles"), and by the costmap test otherwise. The
+  request carries no planner id; the server remembers the last plan's. Before
+  a first plan, or after `clear_plan`, there is no such planner and the
+  costmap test answers, which on a 3D-only map (the 5 × 5 m default grid)
+  reads an off-map path as blocked — harmless, since the BT asks only once
+  it has a path. A person inside a wall's 0.25 m ring is never marked, by
+  decision; the local costmap's terrain layer and MPPI deal with them.
+  Until 2026-10-21 the check judged every path on the 2D costmap, which
+  upstairs read a good path as blocked, and `move_3d.xml` planned once per
+  goal with no replan round a blocker.
 - **`Octo3D` does not follow a map switch by itself.** Nothing watches the
   INI: the caller of the switch (the backend) must call
   `planner_server/Octo3D/load_map` with the new `octomap.bt`, as it calls

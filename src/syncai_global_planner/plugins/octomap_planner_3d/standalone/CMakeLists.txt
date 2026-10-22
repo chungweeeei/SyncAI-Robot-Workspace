@@ -28,6 +28,7 @@ add_executable(octomap_planner_3d_cli
   ${core_dir}/surface_astar.cpp
   ${core_dir}/path_postprocess.cpp
   ${core_dir}/stair_links.cpp
+  ${core_dir}/dynamic_overlay.cpp
 )
 target_include_directories(octomap_planner_3d_cli PRIVATE ${include_dir})
 target_include_directories(octomap_planner_3d_cli SYSTEM PRIVATE ${OCTOMAP_INCLUDE_DIRS})
@@ -46,6 +47,7 @@ if(GTest_FOUND)
     ${core_dir}/surface_astar.cpp
     ${core_dir}/path_postprocess.cpp
     ${core_dir}/stair_links.cpp
+    ${core_dir}/dynamic_overlay.cpp
   )
   target_include_directories(test_surface_map PRIVATE ${include_dir})
   target_include_directories(test_surface_map SYSTEM PRIVATE ${OCTOMAP_INCLUDE_DIRS})

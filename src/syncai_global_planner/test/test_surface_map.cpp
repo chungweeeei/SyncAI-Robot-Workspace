@@ -12,6 +12,7 @@
 #include <cmath>
 #include <memory>
 
+#include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
@@ -422,4 +423,387 @@ TEST(SurfaceAStar, NoCornerCutting)
   BuildStats s;
   const auto m = buildSurfaceMap(*tree, SurfaceMapParams{}, &s);
   EXPECT_EQ(s.components, 2u);
+}
+
+// ---- the dynamic overlay (dynamic_overlay.hpp, 2026-10-21) ----
+//
+// What a 3D map's "path blocked -> replan round it" rests on: a return in the
+// band above a surface marks that surface's cell and no other floor's, a ray
+// through the band clears it, marks age out, the dilation stays on the floor
+// and within reach, the robot's own disc is exempt from the dilation but not
+// from a mark, the search and the shortcut keep off the marks and pay for
+// the band beyond, a closed door is no_path (not disconnected), a goal under
+// a person does not snap, and a stair link is taken with the floor stretch
+// bent round the mark.
+
+namespace
+{
+
+// The lidar 0.48 m over the floor at (x, y): where pointlio_body is.
+Waypoint sensorOver(double x, double y, double floor_z)
+{
+  return {x, y, floor_z + 0.48};
+}
+
+// Traversable cells of the floor at z the mask blocks.
+size_t blockedOnFloor(const SurfaceMap & m, const DynamicMask & mask, double z)
+{
+  size_t n = 0;
+  for (CellId c = 0; c < m.cells.size(); ++c) {
+    if (m.traversable(c) && std::fabs(m.zTop(c) - z) < 0.3 && mask.d[c] <= mask.block_radius) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+BlockedView viewFrom(const DynamicMask & mask, CellId start)
+{
+  BlockedView v;
+  v.mask = &mask;
+  v.exempt = start;
+  v.exempt_radius = mask.block_radius;
+  return v;
+}
+
+}  // namespace
+
+TEST(DynamicOverlay, MarksTheSurfaceUnderTheReturnAndNoOtherFloor)
+{
+  const auto m = build("two_floors");
+  DynamicOverlay o;
+  o.setMap(m);
+  // A knee 2 m ahead of the sensor on the ground floor: a mark on that
+  // floor's cell and nothing on the floor 5 m above it.
+  o.addScan({{5.05, 4.05, 0.3}}, sensorOver(3.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_EQ(mask->marked, 1u);
+  const CellId lo = cellAt(*m, 5.05, 4.05, 0.0), hi = cellAt(*m, 5.05, 4.05, 5.0);
+  ASSERT_NE(lo, kNoCell);
+  ASSERT_NE(hi, kNoCell);
+  EXPECT_FLOAT_EQ(mask->d[lo], 0.0f);
+  EXPECT_TRUE(std::isinf(mask->d[hi]));
+  EXPECT_GT(blockedOnFloor(*m, *mask, 0.0), 0u);
+  EXPECT_EQ(blockedOnFloor(*m, *mask, 5.0), 0u);
+  // The same knee upstairs marks the upper floor only.
+  o.clear();
+  o.addScan({{5.05, 4.05, 5.3}}, sensorOver(3.05, 4.05, 5.0), 1.0);
+  const auto up = o.snapshot(1.0);
+  ASSERT_NE(up, nullptr);
+  EXPECT_TRUE(std::isinf(up->d[lo]));
+  EXPECT_FLOAT_EQ(up->d[hi], 0.0f);
+  // layerUnder is the surface a point lies on, not the nearest one in
+  // height: a point just under the upper floor's slab is the lower floor's.
+  const uint32_t col = m->col(m->ixOf(5.05), m->iyOf(4.05));
+  EXPECT_EQ(DynamicOverlay::layerUnder(*m, col, 0.3), lo);
+  EXPECT_EQ(DynamicOverlay::layerUnder(*m, col, 4.8), lo);
+  EXPECT_EQ(DynamicOverlay::layerUnder(*m, col, 5.3), hi);
+}
+
+TEST(DynamicOverlay, ReturnsOutsideTheBandOrInTheWallRingOrOnTheRobotDoNotMark)
+{
+  const auto flat = build("flat");
+  DynamicOverlay o;
+  o.setMap(flat);
+  const Waypoint sensor = sensorOver(3.05, 4.05, 0.0);
+  o.addScan({{5.05, 4.05, 0.05}}, sensor, 0.0);  // the floor itself
+  o.addScan({{5.05, 4.05, 0.8}}, sensor, 0.1);   // above the body
+  o.addScan({{3.45, 4.05, 0.3}}, sensor, 0.2);   // the robot's own leg (self_radius)
+  EXPECT_EQ(o.snapshot(0.2), nullptr);
+  EXPECT_EQ(o.hotCount(), 0u);
+  // A wall's returns land in the ring the footprint rule cut, which is
+  // never marked: inflating it would narrow every corridor and close every
+  // door under ~0.9 m whenever a wall is in range.
+  const auto wall = build("wall");
+  o.setMap(wall);
+  const Waypoint in_front = sensorOver(4.05, 3.05, 0.0);
+  o.addScan({{5.95, 3.05, 0.3}, {6.05, 3.05, 0.3}, {5.85, 3.05, 0.3}}, in_front, 0.0);
+  EXPECT_EQ(o.snapshot(0.0), nullptr);
+  // One step out of the ring, on floor the robot may stand on, it marks.
+  o.addScan({{5.45, 3.05, 0.3}}, in_front, 0.1);
+  EXPECT_NE(o.snapshot(0.1), nullptr);
+}
+
+TEST(DynamicOverlay, ARayThroughTheBandClearsAMarkAndAReturnKeepsItsOwnCell)
+{
+  const auto m = build("flat");
+  DynamicOverlay o;
+  o.setMap(m);
+  const Waypoint sensor = sensorOver(3.05, 4.05, 0.0);
+  const CellId near = cellAt(*m, 4.55, 4.05, 0.0), far = cellAt(*m, 5.45, 4.05, 0.0);
+  o.addScan({{4.55, 4.05, 0.3}}, sensor, 0.0);
+  ASSERT_NE(o.snapshot(0.0), nullptr);
+  // A return short of the mark leaves it: its ray ends before the column.
+  // (Above the band itself, so it is a ray and not a second mark.)
+  o.addScan({{4.05, 4.05, 0.8}}, sensor, 0.1);
+  auto mask = o.snapshot(0.1);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_FLOAT_EQ(mask->d[near], 0.0f);
+  EXPECT_EQ(mask->marked, 1u);
+  // A wall point at 1.5 m past the mark leaves it too: over the mark that
+  // ray is still 1.1 m up, above the band. It marks nothing itself.
+  o.addScan({{5.45, 4.05, 1.5}}, sensor, 0.2);
+  mask = o.snapshot(0.2);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_FLOAT_EQ(mask->d[near], 0.0f);
+  EXPECT_EQ(mask->marked, 1u);
+  // A low return past the mark, whose ray crosses the band over it (0.37 m
+  // up at the mark's column): the mark is seen empty, and the return marks
+  // its own cell.
+  o.addScan({{5.45, 4.05, 0.3}}, sensor, 0.3);
+  mask = o.snapshot(0.3);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_EQ(mask->marked, 1u);
+  EXPECT_GT(mask->d[near], mask->block_radius);  // cleared: in the new mark's band, not its ring
+  EXPECT_FLOAT_EQ(mask->d[far], 0.0f);
+  // Seen again from the same place: a ray never clears its own return's
+  // column, so the mark stays and there is still exactly one.
+  o.addScan({{5.45, 4.05, 0.3}}, sensor, 0.4);
+  mask = o.snapshot(0.4);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_FLOAT_EQ(mask->d[far], 0.0f);
+  EXPECT_EQ(mask->marked, 1u);
+}
+
+TEST(DynamicOverlay, MarksExpireAndClearAndANewMapDropThem)
+{
+  const auto m = build("flat");
+  DynamicOverlay o;
+  o.setMap(m);
+  const Waypoint sensor = sensorOver(3.05, 4.05, 0.0);
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 100.0);
+  EXPECT_NE(o.snapshot(129.0), nullptr);  // obstacle_memory is 30 s
+  EXPECT_EQ(o.hotCount(), 1u);
+  EXPECT_EQ(o.snapshot(131.0), nullptr);
+  EXPECT_EQ(o.hotCount(), 0u);
+  // A refreshed mark lives on from its last sighting.
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 140.0);
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 160.0);
+  EXPECT_NE(o.snapshot(189.0), nullptr);
+  EXPECT_EQ(o.clear(), 1u);
+  EXPECT_EQ(o.snapshot(189.0), nullptr);
+  // A new map (a reload) starts empty, and the mask is sized to it.
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 200.0);
+  const auto two = build("two_floors");
+  o.setMap(two);
+  EXPECT_EQ(o.snapshot(200.0), nullptr);
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 201.0);
+  const auto mask = o.snapshot(201.0);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_EQ(mask->d.size(), two->cells.size());
+}
+
+TEST(DynamicOverlay, DilationStaysOnTheFloorAndWithinReach)
+{
+  const auto m = build("two_floors");
+  DynamicOverlay o;
+  o.setMap(m);
+  o.addScan({{5.05, 4.05, 0.3}}, sensorOver(3.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  const double reach = DynamicOverlayParams{}.block_radius + m->params.clearance_cost_radius;
+  double mx, my;
+  m->cellXY(cellAt(*m, 5.05, 4.05, 0.0), mx, my);
+  size_t blocked = 0, costed = 0;
+  for (CellId c = 0; c < m->cells.size(); ++c) {
+    const float d = mask->d[c];
+    if (std::isinf(d)) {
+      continue;
+    }
+    double x, y;
+    m->cellXY(c, x, y);
+    EXPECT_NEAR(m->zTop(c), 0.0, 1e-9);                // never the floor above
+    EXPECT_NEAR(d, std::hypot(x - mx, y - my), 1e-6);  // the true xy distance to the mark
+    EXPECT_LE(d, reach + 1e-6);
+    (d <= mask->block_radius ? blocked : costed)++;
+  }
+  EXPECT_EQ(blocked, 37u);  // the 0.35 m disc at 0.1 m
+  EXPECT_GT(costed, blocked);
+}
+
+TEST(DynamicOverlay, TheStartDiscIsExemptFromTheDilationButNotFromAMark)
+{
+  const auto m = build("flat");
+  DynamicOverlay o;
+  o.setMap(m);
+  // A person 0.3 m ahead of a robot standing at (5, 4), seen from behind.
+  o.addScan({{5.35, 4.05, 0.3}}, sensorOver(3.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  const CellId start = cellAt(*m, 5.05, 4.05, 0.0), step = cellAt(*m, 5.15, 4.05, 0.0),
+               person = cellAt(*m, 5.35, 4.05, 0.0), beyond = cellAt(*m, 5.55, 4.05, 0.0);
+  BlockedView plain;
+  plain.mask = mask.get();
+  const BlockedView view = viewFrom(*mask, start);
+  // Without the disc the first step is illegal; with it only the person is.
+  EXPECT_TRUE(plain.blocked(*m, step));
+  EXPECT_FALSE(view.blocked(*m, step));
+  EXPECT_TRUE(plain.blocked(*m, person));
+  EXPECT_TRUE(view.blocked(*m, person));
+  // Past the person, 0.5 m from the start, the dilation stands.
+  EXPECT_TRUE(plain.blocked(*m, beyond));
+  EXPECT_TRUE(view.blocked(*m, beyond));
+  // The clearance the cost and the shortcut read: none inside the ring,
+  // growing beyond it, the static one out of reach.
+  EXPECT_FLOAT_EQ(view.clearance(*m, step), 0.0f);
+  const CellId near = cellAt(*m, 6.05, 4.05, 0.0);  // 0.7 m from the person
+  EXPECT_NEAR(view.clearance(*m, near), 0.7 - mask->block_radius, 1e-6);
+  const CellId far = cellAt(*m, 7.05, 4.05, 0.0);  // 1.7 m: out of reach
+  EXPECT_FLOAT_EQ(view.clearance(*m, far), m->cells[far].clearance_d);
+  // And a search from that start gets out and round.
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const SnapResult g = astar.snap(9.0, 4.0, 0.0, p);
+  ASSERT_NE(g.cell, kNoCell);
+  const PlanResult r = astar.plan(start, g.cell, p, view);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  for (CellId c : r.cells) {
+    EXPECT_FALSE(view.blocked(*m, c));
+  }
+}
+
+TEST(SurfaceAStar, DetoursRoundAMarkAndPaysForItsBand)
+{
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const SnapResult a = astar.snap(2.0, 4.0, 0.0, p), b = astar.snap(10.0, 4.0, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  const PlanResult r0 = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r0.failure, PlanFailure::None);
+  // A person across the route at x = 6, seen from 2 m back.
+  DynamicOverlay o;
+  o.setMap(m);
+  std::vector<Waypoint> person;
+  for (double y = 3.55; y < 4.6; y += 0.1) {
+    person.push_back({6.05, y, 0.3});
+  }
+  o.addScan(person, sensorOver(4.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_EQ(mask->marked, person.size());
+  const BlockedView view = viewFrom(*mask, a.cell);
+  const PlanResult r1 = astar.plan(a.cell, b.cell, p, view);
+  ASSERT_EQ(r1.failure, PlanFailure::None) << r1.detail;
+  for (CellId c : r1.cells) {
+    EXPECT_FALSE(view.blocked(*m, c));
+  }
+  EXPECT_GT(r1.cost, r0.cost);
+  // The band beyond the ring costs as a wall's does: a cell 0.5 m from the
+  // person pays, the same cell with no person does not.
+  const CellId beside = cellAt(*m, 6.55, 4.05, 0.0);
+  EXPECT_GT(astar.cellCostFactor(beside, p, &view), astar.cellCostFactor(beside, p));
+  // The straight line is in sight without the person and not with them,
+  // and the shortcut of the detour keeps off the marks all the way.
+  EXPECT_TRUE(lineOfSight(*m, a.cell, b.cell, 0.0f));
+  EXPECT_FALSE(lineOfSight(*m, a.cell, b.cell, 0.0f, nullptr, &view));
+  const auto chain = shortcutPath(*m, r1.cells, &view);
+  EXPECT_LT(chain.size(), r1.cells.size());
+  for (size_t i = 1; i < chain.size(); ++i) {
+    EXPECT_TRUE(lineOfSight(*m, chain[i - 1], chain[i], 0.0f, nullptr, &view));
+  }
+  const auto path = buildPath(*m, nullptr, r1.cells, {}, true, 0.1, nullptr, &view);
+  ASSERT_GE(path.size(), 2u);
+  for (const Waypoint & w : path) {
+    const CellId c = m->traversableAt(w.x, w.y, w.z);
+    ASSERT_NE(c, kNoCell);
+    EXPECT_FALSE(view.blocked(*m, c)) << w.x << ", " << w.y;
+  }
+}
+
+TEST(SurfaceAStar, AMarkedDoorIsNoPathAndAGoalUnderAPersonDoesNotSnap)
+{
+  const auto m = build("wall");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const SnapResult a = astar.snap(3.0, 6.0, 0.0, p), b = astar.snap(9.0, 6.0, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  ASSERT_EQ(astar.plan(a.cell, b.cell, p).failure, PlanFailure::None);
+  // A person in the door (y 3.6..4.4 at x = 6): the returns on the door's
+  // own traversable cells mark, those in the jambs' rings do not, and the
+  // dilation closes the whole width.
+  DynamicOverlay o;
+  o.setMap(m);
+  std::vector<Waypoint> door;
+  for (double y = 3.65; y < 4.4; y += 0.1) {
+    door.push_back({6.05, y, 0.3});
+  }
+  o.addScan(door, sensorOver(4.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  EXPECT_LT(mask->marked, door.size());
+  const BlockedView view = viewFrom(*mask, a.cell);
+  const PlanResult r = astar.plan(a.cell, b.cell, p, view);
+  // The components are baked, so a closed door is no_path, not
+  // disconnected, and the detail says a mark may be why.
+  EXPECT_EQ(r.failure, PlanFailure::NoPath);
+  EXPECT_NE(r.detail.find("dynamic obstacles"), std::string::npos);
+  // A goal under the person does not snap, and the detail counts the cells
+  // the marks took; one on the floor before the door still does.
+  SearchParams tight = p;
+  tight.snap_xy_radius = 0.3;
+  const SnapResult under = astar.snap(6.05, 4.05, 0.0, tight, kNoComponent, &view);
+  EXPECT_EQ(under.cell, kNoCell);
+  EXPECT_NE(under.detail.find("dynamic obstacles"), std::string::npos);
+  EXPECT_NE(astar.snap(5.35, 4.05, 0.0, p, kNoComponent, &view).cell, kNoCell);
+}
+
+TEST(StairLinks, AMarkOnTheFloorBendsTheStretchAndTheLinkIsStillTaken)
+{
+  const auto m = build("stairs");
+  const auto stairs = [](double x) {
+    return x < 4.0 ? 0.0 : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
+  };
+  const auto links = buildStairLinks(*m, walk(2.0, 10.0, stairs), StairLinkParams{});
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult lo = astar.snap(2.0, 4.0, 0.0, p);
+  ASSERT_NE(lo.cell, kNoCell);
+  const SnapResult hi = astar.snap(10.0, 4.0, 1.02, p, m->cells[lo.cell].component);
+  ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+  // A person on the lower floor, on the walked line a metre before the
+  // stair, seen from the start.
+  DynamicOverlay o;
+  o.setMap(m);
+  o.addScan(
+    {{3.05, 4.05, 0.3}, {3.05, 3.95, 0.3}, {3.05, 4.15, 0.3}}, sensorOver(2.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  const BlockedView view = viewFrom(*mask, lo.cell);
+  const PlanResult r = astar.plan(lo.cell, hi.cell, p, view);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  ASSERT_EQ(r.links.size(), 1u);
+  for (CellId c : r.cells) {
+    EXPECT_FALSE(view.blocked(*m, c));
+  }
+  const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1, nullptr, &view);
+  ASSERT_GE(path.size(), 2u);
+  EXPECT_NEAR(path.back().z, 1.02, 0.25);
+  // Every floor pose keeps off the marks; the flight's poses have no
+  // traversable cell and are not judged (the climb is blind by decision).
+  for (const Waypoint & w : path) {
+    const CellId c = m->traversableAt(w.x, w.y, w.z);
+    if (c != kNoCell) {
+      EXPECT_FALSE(view.blocked(*m, c)) << w.x << ", " << w.y << ", " << w.z;
+    }
+  }
+}
+
+TEST(SurfaceMap, TraversableAtFindsFloorsAndNotFlights)
+{
+  // What the plugin's isPathValid() puts a path pose on: the traversable
+  // surface within three cells of the pose's height, so a pose on a flight
+  // finds nothing and the check stops there.
+  const auto s = build("stairs");
+  EXPECT_NE(s->traversableAt(2.0, 4.0, 0.0), kNoCell);
+  EXPECT_NE(s->traversableAt(10.0, 4.0, 1.02), kNoCell);
+  EXPECT_EQ(s->traversableAt(5.0, 4.0, 0.68), kNoCell);  // mid-tread, two risers in the disc
+  const auto t = build("two_floors");
+  EXPECT_NEAR(t->zTop(t->traversableAt(6.0, 4.0, 5.1)), 5.0, 1e-9);
+  EXPECT_NEAR(t->zTop(t->traversableAt(6.0, 4.0, -0.1)), 0.0, 1e-9);
+  EXPECT_EQ(t->traversableAt(6.0, 4.0, 2.5), kNoCell);  // three cells, not a storey
+  EXPECT_EQ(t->traversableAt(-1.0, 4.0, 0.0), kNoCell);
 }

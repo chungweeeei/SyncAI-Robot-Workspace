@@ -250,7 +250,13 @@ quadruped stack on this kind of hardware (CMU's `terrain_analysis` on the Go2,
 SCAN-Planner, RAEM) keeps a rolling 2.5D grid with a ground height per cell and
 judges returns against *that* ground; this layer is that grid with
 OctomapPlanner3D's rules on top, so the local costmap sees what the global
-planner sees. The grid itself, `TerrainGrid` (`terrain_grid.hpp`, ROS-free,
+planner sees. The global side's own memory of what the lidar sees that the
+map does not is `Octo3D`'s dynamic overlay (`syncai_global_planner`,
+"Dynamic obstacles", 2026-10-21): the same cloud and the same 0.1–0.6 m band
+above the surface, in the map frame, raytrace-cleared and forgotten after
+30 s, read by the planner's search and its `is_path_valid`. The two are
+independent; this layer is the controller's and nothing in it changed for
+the overlay. The grid itself, `TerrainGrid` (`terrain_grid.hpp`, ROS-free,
 unit-tested on synthetic scenes in `test/test_terrain_grid.cpp`), holds per
 cell a ring of the newest returns with their times, in the costmap's frame,
 and judges every cell on each update:

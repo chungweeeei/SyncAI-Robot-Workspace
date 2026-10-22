@@ -21,6 +21,13 @@ find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(syncai_costmap_2d REQUIRED)
 find_package(syncai_nav_core REQUIRED)
+# OctomapPlanner3D's dynamic overlay subscribes the lidar cloud through a TF
+# message filter and transforms it into the map frame (2026-10-21). All three
+# came in transitively through syncai_costmap_2d before, but a target that
+# includes their headers has to name them.
+find_package(sensor_msgs REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 # smac planner dependencies. ompl is still required after the Hybrid-A*
 # planner was dropped: Smoother uses its Dubins state space to resample the
 # boundary segments of a path. Its humble CMake config only exports classic
@@ -51,6 +58,9 @@ set(dependencies
   syncai_costmap_2d
   syncai_nav_core
   angles
+  sensor_msgs
+  message_filters
+  tf2_sensor_msgs
 )
 
 set(library_name ${PROJECT_NAME})
@@ -71,6 +81,7 @@ add_library(${library_name} SHARED
   plugins/octomap_planner_3d/surface_astar.cpp
   plugins/octomap_planner_3d/path_postprocess.cpp
   plugins/octomap_planner_3d/stair_links.cpp
+  plugins/octomap_planner_3d/dynamic_overlay.cpp
   plugins/octomap_planner_3d/octomap_planner_3d.cpp
   src/planner_server.cpp
 )

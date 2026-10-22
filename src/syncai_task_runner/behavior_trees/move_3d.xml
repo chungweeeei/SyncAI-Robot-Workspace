@@ -171,24 +171,55 @@
   here is the A/B on a 3D map, as FollowPathRPP is on a 2D one. move.xml is
   the 2D stack; nobody edits ids to switch any more.
 
-  IsPathValid is out of the tree for the same branch: it judges the path on
-  the 2D global costmap, which is wrong once the path leaves the floor that
-  costmap was made from, so upstairs it would read a good path as blocked and
-  replan every second. A replan is also worse than useless here: Octo3D's map
-  is the static octomap, so it can only return the same route, and a start
-  snapped mid-stair can land on the floor under the spiral. The tree now
-  plans once per goal (number_plans == 0) and again only when the goal
-  changes. What is lost is the replan round a blocker that the global costmap
-  sees but the local one cannot get round; MPPI stops in front of it, and the
-  FollowPath retries below are the whole wait. move.xml keeps IsPathValid.
+  IsPathValid is in this tree again since 2026-10-21, and everything the
+  paragraphs above say about it, blocked_time and the FollowPath retries
+  holds here. What changed to make that true: Octo3D keeps a dynamic
+  overlay of its own (syncai_global_planner, dynamic_overlay.hpp) -- the
+  same lidar cloud the costmaps read, in the map frame, every return
+  0.1-0.6 m above the surface it lies on a mark on that cell (the surface
+  is picked by height, so two floors never see each other's people), rays
+  clearing the marks they cross, marks forgotten after 30 s -- and
+  planner_server's is_path_valid asks the planner that made the last plan
+  when that planner does not use the costmap, so an Octo3D path is judged
+  on that overlay and never on the 2D costmap. (That costmap was why the
+  check was taken out on 2026-10-19: judged on the ground floor's gridmap,
+  a path upstairs read blocked every second, and a replan on the static
+  octree could only return the same route.) A replan detours now: the
+  search keeps off the marks and 0.35 m round them (the robot's half-width
+  plus the margin the 2D footprint test sweeps) and pays for the band
+  beyond as it does for a wall, so the route bends round a person with the
+  room it has, and NavigateToGoal's number_of_replans is meaningful on a 3D
+  map. Two rules of the check are the planner's and not the 2D test's: it
+  judges only the floor stretch the robot is on and answers "valid" while
+  the robot is on a stair, because a replan from mid-flight would snap its
+  start to the wrong floor and a goal aborting on a flight stops the robot
+  there, so a person at the stair head is judged once the robot is on that
+  floor; and the 0.35 m round the robot's own cell is exempt from the
+  marks' dilation (as the planner exempts the start), so a person beside
+  the robot does not block the pose under it with nothing a replan could
+  change. A person inside the 0.25 m wall ring is not marked at all; the
+  local costmap's terrain layer and MPPI deal with them.
 
-  What that leaves of the 2D paragraphs above (merged from dev 2026-10-15):
-  the new-goal clear of the global costmap stays, and is a no-op for Octo3D,
-  which uses that costmap for its frame id only; it is kept so the two trees
-  differ only where they have to. blocked_time and everything said about
-  IsPathValid describe the 2D tree. The four FollowPath retries stay too, for
-  a different reason than the one given there: with no replan, the retries
-  are the only wait for a blocker that closes the way (~16 s).
+  Both ClearEntireCostmap nodes call planner_server/Octo3D/clear_overlay
+  (nav2_msgs/srv/ClearEntireCostmap, the costmap clear's own type, so the
+  node is move.xml's) instead of the global costmap's clear, which is a
+  no-op for Octo3D. The semantics are move.xml's: every new goal starts
+  from a clean memory -- a mark the robot walked away from is not
+  raytraced away here either, and though it ages out after 30 s a goal sent
+  sooner must not plan round a person who has left -- and a plan that fails
+  clears and retries once. One difference: after its clear move.xml's
+  planner waits for the costmap to be current, which re-marks a blocker
+  within 2.5 m before the first plan; Octo3D does not wait, so the first
+  plan after a clear can run through a person in view until the next scan
+  (<= 0.1 s) marks them and IsPathValid replans after blocked_time.
+  Accepted: the stale-memory route is the worse failure.
+
+  From 2026-10-19 to 2026-10-21 this tree planned once per goal
+  (number_plans == 0 in place of IsPathValid), so nothing replanned on a 3D
+  map and the FollowPath retries were the only wait for a blocker that
+  closes the way -- ~16 s on paper, in practice the progress checker's
+  30 s per attempt, since MPPI stands still legally in front of a person who
+  stands still and never trips failure_tolerance.
 
   Costmap clear services live on the costmap nodes owned by the planner
   (global_costmap) and controller (local_costmap). Relative service names
@@ -198,7 +229,7 @@
   <BehaviorTree ID="MainTree">
     <Sequence name="NavigateFromFreshGlobalCostmap">
       <ForceSuccess>
-        <ClearEntireCostmap name="ClearGlobalCostmap-NewGoal" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="1000"/>
+        <ClearEntireCostmap name="ClearDynamicOverlay-NewGoal" service_name="planner_server/Octo3D/clear_overlay" server_timeout="1000"/>
       </ForceSuccess>
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
@@ -208,21 +239,13 @@
                 <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
-                <!-- Plan once per goal: number_plans is reset to 0 by the
-                     navigator on every goal (preempts included) and counted by
-                     ComputePathToPose on success, so this reads "a path exists
-                     for this goal". It replaced IsPathValid; see the header.
-                     The 2D tree here was
-                     <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/> -->
-                <Inverter>
-                  <BlackboardCheckInt value_A="{number_plans}" value_B="0" return_on_mismatch="FAILURE">
-                    <AlwaysSuccess/>
-                  </BlackboardCheckInt>
-                </Inverter>
+                <!-- Judged by Octo3D on its dynamic overlay (the planner server
+                     asks the planner that made the last plan); see the header. -->
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
               </ReactiveSequence>
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
             </Fallback>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">

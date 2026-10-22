@@ -21,12 +21,21 @@
 // stays admissible), and two cells are reachable when their components are in
 // the same linked group rather than the same component.
 //
+// With a BlockedView (dynamic_overlay.hpp, 2026-10-21) the search also keeps
+// off the cells the dynamic overlay has marked: a blocked cell is never
+// expanded (except in the disc around the start, the robot's own
+// surroundings) and the clearance the cost factor reads counts the marks as
+// boundary, so a replan round a person detours exactly as it would round a
+// wall that had been there at build time. The map's components are baked, so
+// a corridor a mark closes ends the search with no_path, not disconnected.
+//
 // ROS-free (see surface_map.hpp).
 
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/stair_links.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 
@@ -118,15 +127,23 @@ public:
   // (a goal is snapped to the floor the robot can get to, not to the floor
   // below a balcony edge); the detail then names the nearest cell that was
   // refused for being elsewhere, so the message says "wrong floor" and not
-  // "nothing".
+  // "nothing". With blocked set, cells the dynamic overlay blocks do not
+  // qualify either (a goal under a person fails, as a goal in a lethal cell
+  // does in 2D), and the detail counts them; the start is snapped without
+  // it, since the robot stands where it stands.
   SnapResult snap(
     double x, double y, double z_hint, const SearchParams & p,
-    uint32_t prefer_component = kNoComponent) const;
+    uint32_t prefer_component = kNoComponent, const BlockedView * blocked = nullptr) const;
 
-  PlanResult plan(CellId start, CellId goal, const SearchParams & p);
+  // blocked: the dynamic overlay's mask for this plan, with its exempt disc
+  // around `start` (see BlockedView); the default blocks nothing.
+  PlanResult plan(
+    CellId start, CellId goal, const SearchParams & p, const BlockedView & blocked = BlockedView{});
 
-  // The multiplier on the length of a move INTO cell c.
-  double cellCostFactor(CellId c, const SearchParams & p) const;
+  // The multiplier on the length of a move INTO cell c; with blocked, the
+  // clearance it reads counts the overlay's marks as boundary.
+  double cellCostFactor(
+    CellId c, const SearchParams & p, const BlockedView * blocked = nullptr) const;
 
 private:
   // The linked group of a cell's component (the component itself without links).

@@ -198,13 +198,14 @@ staging leg, exactly as `move_3d.xml` differs from `move.xml`.
 
 `behavior_trees/move.xml` on a 2D map, **`behavior_trees/move_3d.xml` on a 3D
 one** — picked per goal (2026-10-19, `feature/octomap-planner-3d`; see "2D or
-3D: which tree a goal runs" below). `move_3d.xml` navigates in 3D and plans
-once per goal (or again when the goal changes), with contextual recovery:
+3D: which tree a goal runs" above). `move_3d.xml` navigates in 3D, replanning
+only when the current path becomes invalid or the goal changes, with
+contextual recovery:
 
 ```xml
 <Sequence name="NavigateFromFreshGlobalCostmap">
   <ForceSuccess>
-    <ClearEntireCostmap name="ClearGlobalCostmap-NewGoal" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="1000"/>
+    <ClearEntireCostmap name="ClearDynamicOverlay-NewGoal" service_name="planner_server/Octo3D/clear_overlay" server_timeout="1000"/>
   </ForceSuccess>
   <PipelineSequence name="NavigateWithReplanning">
     <RateController hz="1.0">
@@ -214,48 +215,53 @@ once per goal (or again when the goal changes), with contextual recovery:
             <Inverter>
               <GlobalUpdatedGoal/>
             </Inverter>
-            <Inverter>
-              <BlackboardCheckInt value_A="{number_plans}" value_B="0" return_on_mismatch="FAILURE">
-                <AlwaysSuccess/>
-              </BlackboardCheckInt>
-            </Inverter>
+            <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
           </ReactiveSequence>
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
         </Fallback>
-        <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+        <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
       </RecoveryNode>
     </RateController>
     <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
-      <FollowPath path="{path}" controller_id="FollowPathRPP3D"/>
+      <FollowPath path="{path}" controller_id="FollowPath"/>
       <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
     </RecoveryNode>
   </PipelineSequence>
 </Sequence>
 ```
 
-**Octo3D + RPP 3D, planned once.** `Octo3D` (OctomapPlanner3D on the map's
-`octomap.bt`) is the only planner that routes between floors, over a stair
-link; `FollowPathRPP3D` (`syncai_controller`'s `RegulatedPurePursuitController3D`,
-split out of `FollowPathRPP` on 2026-10-19 so that one stays `dev`'s 2D RPP) is
-the controller that matches a path with heights in 3D and switches the gait
-policy for stairs, while MPPI and `FollowPathRPP` match the path on x / y only. `IsPathValid` is out because it judges the path on
-the 2D global costmap, which upstairs reads a good path as blocked, and a
-replan on the static octomap can only return the same route. In its place, the
-`number_plans == 0` check (`number_plans` is reset to 0 by the navigator on
-every goal, preempts included, and counted by `ComputePathToPose` on success)
-reads "no path yet for this goal". The BT.CPP built-ins it uses need no
-`plugin_lib_names` entry. The price: nothing replans round a blocker the global
-costmap sees, and RPP stops in front of one instead of bending round it, so
-the four `FollowPath` retries (~16 s) are the whole wait before the goal fails
-with `FOLLOW_PATH_FAILED`. The feedback's `number_of_replans` (plans after
-the first) therefore reads 0 throughout.
+**Octo3D, judged on its own overlay.** `Octo3D` (OctomapPlanner3D on the
+map's `octomap.bt`) is the only planner that routes between floors, over a
+stair link; `FollowPath` is MPPI, 3D-aware since 2026-10-20 (it matches a
+path with heights in 3D and climbs stairs in `syncai_util::StairMode`;
+`FollowPathRPP3D` is the A/B). `IsPathValid` is the 2D tree's node on the
+same service, but for an `Octo3D` path planner_server asks the planner
+itself (`GlobalPlanner::isPathValid()`, 2026-10-21), which judges on its
+**dynamic overlay** — the lidar cloud in the map frame, every return
+0.1–0.6 m above the surface it lies on a mark on that cell, rays clearing the
+marks they cross, marks forgotten after 30 s
+(`syncai_global_planner/README.md`, "Dynamic obstacles") — and never on the
+2D costmap, which upstairs reads a good path as blocked. That is why the
+check was out of this tree from 2026-10-19 to 2026-10-21, with a
+`number_plans == 0` plan-once check in its place, and why nothing replanned
+on a 3D map then. A replan detours now: the search keeps off the marks and
+0.35 m round them and pays for the band beyond as it does for a wall, so
+`number_of_replans` is meaningful on a 3D map. The check judges only the
+floor stretch the robot is on and answers "valid" while the robot is on a
+stair, so a person at the stair head is judged once the robot is on that
+floor and nothing replans mid-flight. The two `ClearEntireCostmap` nodes
+call `planner_server/Octo3D/clear_overlay` (the costmap clear's own type,
+so the node is `move.xml`'s), which drops the marks, in place of the global
+costmap's clear, a no-op for `Octo3D`; the semantics are `move.xml`'s,
+below. One difference: `Octo3D` waits for nothing after the clear, so the
+first plan can run through a person in view until the next scan (≤ 0.1 s)
+marks them and `IsPathValid` replans after `blocked_time`.
 
 **The 2D tree** (`move.xml`, exactly `dev`'s): the same tree with
-`<IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>` in
-place of the second `Inverter`, `planner_id="GridBased"` (SmacPlanner2D) and
-`controller_id="FollowPath"` (MPPI). The paragraphs below on `IsPathValid`,
-`blocked_time`, detours and MPPI describe that tree; the new-goal costmap
-clear, the `PipelineSequence`, the retries and their refill apply to both.
+`planner_id="GridBased"` (SmacPlanner2D) and the two global clears on
+`global_costmap/clear_entirely_global_costmap`, with `IsPathValid` judged on
+the global costmap. Everything below describes both trees unless it says
+otherwise.
 
 **Every new goal starts from a cleared global costmap** (2026-10-14). The
 obstacle layer forgets a mark only by raytracing through it, out to 3 m, so
@@ -373,7 +379,8 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 | Action client | `compute_path_to_pose` | via the BT node |
 | Action client | `follow_path` | via the BT node |
 | Action client | `dock_to_pose` | `syncai_common/DockToPose`, via the `DockToPose` BT node — `dock.xml` / `undock.xml` only (2026-10) |
-| Service client | `global_costmap/clear_entirely_global_costmap` | via the BT node |
+| Service client | `global_costmap/clear_entirely_global_costmap` | via the BT node (the 2D trees) |
+| Service client | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap`, via the same BT node — the 3D trees' two global clears, dropping `Octo3D`'s dynamic-obstacle marks (2026-10-21) |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
 | Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** only, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Not on success (the re-send is trimmed to a stub inside `xy_goal_tolerance`) nor on failure (the route explains the failure). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
 | Service client | `set_motion_key` | `syncai_common/SetMotionKey` (`syncai_driver_manager`), via the `SetMotionKey` BT node — the docking trees' gait switch |
@@ -431,8 +438,9 @@ so it backs out 1 m from where it stands.
 
 `dock.xml`: the `move.xml` structure navigates to the staging pose (MPPI,
 local costmap — this is where obstacle avoidance happens; on a 3D map
-`dock_3d.xml` runs instead, whose staging leg is `move_3d.xml`'s: `Octo3D` +
-`FollowPathRPP3D`, planned once), then
+`dock_3d.xml` runs instead, whose staging leg is `move_3d.xml`'s: `Octo3D`,
+`IsPathValid` judged on its dynamic overlay, the overlay's clear as the
+recovery), then
 `SetMotionKey key="5"` switches the gait to MPC, `WaitForMotionState
 state="5"` waits (up to 5 s) for the controller to report it on `mode`
 data[1], `Wait msec="3000"` lets the gait settle (2000 until 2026-10-15), `DockToPose controller_id="Docking"` drives the last metre
@@ -487,6 +495,9 @@ each switch (milliseconds, every server already up).
   nodes are constructed at the **first dock goal**, and a `dock_to_pose` or
   `set_motion_key` server missing then fails *that goal* (`ABORTED`,
   `error_code` NONE, the task_runner log names the server), not the node.
+  The 3D trees are built at the first goal on a 3D map the same way; their
+  two global clears are `planner_server/Octo3D/clear_overlay`, served by the
+  planner process that is already up for `is_path_valid`.
 - **During a dock approach `distance_remaining` is the staging path's
   residual** (≤ 0.15 m, since the robot stands at its end and nothing clears
   `{path}` — `haltChild()` only halts RUNNING nodes), and 0 for an undock,

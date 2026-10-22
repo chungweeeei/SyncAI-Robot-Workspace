@@ -330,11 +330,14 @@ specialisation shows up as an XML parse error at tree-load time.
 of the 2D tree on `dev` (the new-goal `ClearEntireCostmap` that precedes it is
 left out) — replanning only when the path becomes invalid or the goal changes. On
 `feature/octomap-planner-3d` a 3D map runs `move_3d.xml` instead (picked per
-goal by the task_runner), which asks for `planner_id="Octo3D"` and
-`controller_id="FollowPathRPP3D"`, and a `number_plans == 0` check
-(`BlackboardCheckInt`, a BT.CPP built-in) replaces `IsPathValid`, so it plans
-once per goal. Both with contextual recovery (the why is in the
-XML header and `syncai_task_runner`'s README):
+goal by the task_runner): the same tree with `planner_id="Octo3D"`,
+`controller_id="FollowPath"` (MPPI, 3D-aware) and both `ClearEntireCostmap`
+nodes on `planner_server/Octo3D/clear_overlay`, the planner's dynamic-obstacle
+memory — which is also what its `IsPathValid` is judged on, since
+planner_server asks the planner itself for an `Octo3D` path (2026-10-21; from
+2026-10-19 until then a `number_plans == 0` `BlackboardCheckInt` stood in for
+`IsPathValid` there and the tree planned once per goal). Both with contextual
+recovery (the why is in the XML header and `syncai_task_runner`'s README):
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">

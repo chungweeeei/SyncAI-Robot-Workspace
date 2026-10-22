@@ -59,12 +59,17 @@ uint32_t SurfaceAStar::reach(CellId c) const
   return links_ ? links_->groupOf(comp) : comp;
 }
 
-double SurfaceAStar::cellCostFactor(CellId c, const SearchParams & p) const
+double SurfaceAStar::cellCostFactor(
+  CellId c, const SearchParams & p, const BlockedView * blocked) const
 {
   const SurfaceCell & cell = map_->cells[c];
   double f = 1.0;
-  if (cell.clearance_d < map_->params.clearance_cost_radius) {
-    f += p.clearance_cost_weight * std::exp(-p.clearance_cost_scaling * cell.clearance_d);
+  // The marks count as boundary: the clearance is the smaller of the static
+  // one and the distance beyond the nearest mark's blocked ring, so the same
+  // curve keeps the path off a person that keeps it off a wall.
+  const float clearance = blocked ? blocked->clearance(*map_, c) : cell.clearance_d;
+  if (clearance < map_->params.clearance_cost_radius) {
+    f += p.clearance_cost_weight * std::exp(-p.clearance_cost_scaling * clearance);
   }
   if (cell.flags & kInferred) {
     f *= p.inferred_cost_multiplier;
@@ -76,10 +81,12 @@ double SurfaceAStar::cellCostFactor(CellId c, const SearchParams & p) const
 }
 
 SnapResult SurfaceAStar::snap(
-  double x, double y, double z_hint, const SearchParams & p, uint32_t prefer_component) const
+  double x, double y, double z_hint, const SearchParams & p, uint32_t prefer_component,
+  const BlockedView * blocked) const
 {
   const SurfaceMap & m = *map_;
   SnapResult out;
+  size_t n_blocked = 0;  // traversable cells within the radius the overlay refused
   const int cx = m.ixOf(x), cy = m.iyOf(y);
   if (!m.inGrid(cx, cy)) {
     out.outside = true;
@@ -113,6 +120,10 @@ SnapResult SurfaceAStar::snap(
         }
         const double dz = m.zTop(i) - z_hint;
         if (std::fabs(dz) > p.snap_z_window) {
+          continue;
+        }
+        if (blocked && blocked->blocked(m, i)) {
+          ++n_blocked;
           continue;
         }
         if (prefer_component != kNoComponent && reach(i) != want) {
@@ -160,10 +171,15 @@ SnapResult SurfaceAStar::snap(
   if (best_other == kNoCell) {
     out.detail += m.describeColumn(m.col(cx, cy));
   }
+  if (n_blocked > 0) {
+    out.detail += "; " + std::to_string(n_blocked) +
+                  " traversable cells within the radius are blocked by dynamic obstacles";
+  }
   return out;
 }
 
-PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
+PlanResult SurfaceAStar::plan(
+  CellId start, CellId goal, const SearchParams & p, const BlockedView & blocked)
 {
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
@@ -257,7 +273,7 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
     }
     const double zc = m.zTop(c);
     m.forEachMove(c, [&](CellId n, int k) {
-      if (closed_stamp_[n] == gen) {
+      if (closed_stamp_[n] == gen || blocked.blocked(m, n)) {
         return;
       }
       const double dz = m.zTop(n) - zc;
@@ -265,7 +281,7 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
         (SurfaceMap::kDx8[k] * SurfaceMap::kDx8[k] + SurfaceMap::kDy8[k] * SurfaceMap::kDy8[k]) *
           m.res * m.res +
         dz * dz);
-      const float ng = g_[c] + static_cast<float>(len * cellCostFactor(n, p));
+      const float ng = g_[c] + static_cast<float>(len * cellCostFactor(n, p, &blocked));
       if (open_stamp_[n] != gen || ng < g_[n]) {
         open_stamp_[n] = gen;
         g_[n] = ng;
@@ -298,6 +314,12 @@ PlanResult SurfaceAStar::plan(CellId start, CellId goal, const SearchParams & p)
   if (r.failure == PlanFailure::None) {
     r.failure = PlanFailure::NoPath;
     r.detail = "the open set ran out before the goal was reached";
+    // The components are baked, so this is the one way a mark shows up as a
+    // failure: say so, or a route that existed yesterday "has no path".
+    if (blocked.mask) {
+      r.detail += " (" + std::to_string(blocked.mask->marked) +
+                  " cells marked by dynamic obstacles; a mark may have closed the way)";
+    }
   }
   r.search_s = std::chrono::duration<double>(Clock::now() - t0).count();
   return r;

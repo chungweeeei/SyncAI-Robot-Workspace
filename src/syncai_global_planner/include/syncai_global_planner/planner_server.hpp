@@ -206,10 +206,12 @@ protected:
     double x, double y, double theta, const std::vector<geometry_msgs::msg::Point> & footprint);
 
   /**
-   * @brief Publish a path for visualization purposes
+   * @brief Publish a path for visualization purposes, and remember it with
+   * the id of the planner that made it (is_path_valid asks that planner)
    * @param path Reference to Global Path
+   * @param planner_id The goal's planner_id
    */
-  void publishPlan(const nav_msgs::msg::Path & path);
+  void publishPlan(const nav_msgs::msg::Path & path, const std::string & planner_id);
 
   /**
    * @brief Timer callback: re-send the last plan on `plan`, restamped and
@@ -264,7 +266,12 @@ protected:
 
   // The last plan handed out, re-sent on `plan` at plan_republish_rate. Written
   // from the action servers' threads, read from the main executor's timer.
+  // With it the planner_id it was made with: the is_path_valid request
+  // carries no planner id, and the path the BT checks is this plan, so the
+  // planner that made it is the one to ask when it does not use the costmap
+  // (2026-10-21). Empty until the first plan, and after clear_plan.
   nav_msgs::msg::Path last_plan_;
+  std::string last_plan_planner_id_;
   std::mutex last_plan_mutex_;
   rclcpp::TimerBase::SharedPtr plan_republish_timer_;
 

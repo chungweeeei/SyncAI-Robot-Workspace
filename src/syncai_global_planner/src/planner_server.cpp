@@ -441,6 +441,41 @@ void PlannerServer::isPathValid(
     return;
   }
 
+  // The request carries no planner id, but the path the BT checks is the
+  // last plan this server handed out, so the planner that made it is known.
+  // One that reads no costmap cells (Octo3D) is the one the costmap test
+  // below is wrong for -- a 3D path upstairs lies over the ground floor's
+  // gridmap, and on a 3D-only map the costmap is a 5 x 5 m default grid at
+  // the origin -- and it judges its own paths, on its dynamic overlay
+  // (2026-10-21). pathHasHeight() is not the detector: a path on one flat
+  // floor has no z span. An id this server has never planned with (no plan
+  // yet, or after clear_plan) falls through to the costmap test as before.
+  // The empty-id case mirrors getPlan(): with one plugin loaded it is that
+  // plugin.
+  std::string planner_id;
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    planner_id = last_plan_planner_id_;
+  }
+  auto planner_it = planners_.find(planner_id);
+  if (planner_it == planners_.end() && planner_id.empty() && planners_.size() == 1) {
+    planner_it = planners_.begin();
+  }
+  if (planner_it != planners_.end() && !planner_it->second->usesCostmap()) {
+    response->is_valid =
+      planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
+    if (!response->is_valid && !response->invalid_pose_indices.empty()) {
+      const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
+      RCLCPP_INFO(
+        get_logger(),
+        "[PlannerServer][%s] Path blocked by planner %s: %zu poses, first at index %zu (%.2f, "
+        "%.2f)",
+        __func__, planner_it->first.c_str(), response->invalid_pose_indices.size(), first_idx,
+        poses[first_idx].pose.position.x, poses[first_idx].pose.position.y);
+    }
+    return;
+  }
+
   // Only what is still ahead of the robot matters: the part already driven
   // may well be blocked now (by the robot's own trail of marks, or by the
   // obstacle it just went around) without that saying anything about the
@@ -665,7 +700,7 @@ void PlannerServer::computePlan()
     }
 
     // Publish the plan for visualization purposes
-    publishPlan(result->path);
+    publishPlan(result->path, goal->planner_id);
 
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
@@ -802,7 +837,7 @@ void PlannerServer::computePlanThroughPoses()
     result->path = concat_path;
 
     // Publish the plan for visualization purposes
-    publishPlan(result->path);
+    publishPlan(result->path, goal->planner_id);
 
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
@@ -858,13 +893,14 @@ nav_msgs::msg::Path PlannerServer::getPlan(
   return nav_msgs::msg::Path();
 }
 
-void PlannerServer::publishPlan(const nav_msgs::msg::Path & path)
+void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::string & planner_id)
 {
   {
     // Stored even with no subscriber, so one that arrives later gets it from
     // the timer.
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = path;
+    last_plan_planner_id_ = planner_id;
     clear_resends_left_ = 0;
   }
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
@@ -927,6 +963,7 @@ void PlannerServer::clearPlan(
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = nav_msgs::msg::Path();
+    last_plan_planner_id_.clear();
     // The immediate publish below is the first of the repeats; the timer sends
     // the rest, one per plan_republish_rate tick (none when it is 0).
     clear_resends_left_ = kClearResends - 1;

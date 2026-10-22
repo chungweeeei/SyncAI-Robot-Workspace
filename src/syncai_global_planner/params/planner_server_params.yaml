@@ -376,6 +376,79 @@
       # times longer wins over the stairs. >= 1 (keeps the heuristic admissible).
       stair_cost_multiplier: 2.0
 
+      # ---- dynamic obstacles (2026-10-21) ----
+      # The surface map is static, so on its own a replan returns the route
+      # a person is standing on, and is_path_valid, judged on the 2D global
+      # costmap, cannot see a 3D path (upstairs it lies over the ground
+      # floor's gridmap; on a 3D-only map the costmap is a 5 x 5 m default
+      # grid). This block is the planner's own memory of what the lidar sees
+      # that the map does not -- what the global costmap's obstacle layer is
+      # to GridBased: every return in the band above the surface it lies on
+      # marks that cell (the surface is picked by height, so two floors
+      # never see each other's people), rays clear the marks they cross,
+      # and marks age out. The search and the shortcut keep off the marks
+      # and block_radius round them and pay for the band beyond with the
+      # clearance cost above, so a replan detours; is_path_valid asks this
+      # planner for its own paths (planner_server asks the planner that
+      # made the last plan when it does not use the costmap), so move_3d.xml
+      # runs move.xml's IsPathValid / blocked_time / replan unchanged. See
+      # dynamic_overlay.hpp for the three decisions that shape it: only
+      # traversable cells are marked (a wall's returns land in the 0.25 m
+      # footprint ring, and inflating those would narrow every corridor and
+      # close every door under ~0.9 m), returns within self_radius are
+      # ignored (the robot's own legs sit in the band), and marks decay (no
+      # ray reaches what the robot walked away from).
+      dynamic:
+        # false = the 2026-10-20 behaviour: no mark, every path valid, no
+        # replan on a 3D map. The subscription is not created. Not dynamic.
+        enabled: true
+        # The cloud the costmaps read: motion-compensated, stamped in the
+        # LIO body frame (the lidar). Relative, so /<robot_id>/... . Not
+        # dynamic.
+        topic: pointlio/body_cloud
+        # How long a cloud may wait for map -> body (map <- pointlio_odom <-
+        # pointlio_body resolves only after relocalize). Not dynamic.
+        transform_tolerance: 0.3
+        # Planar distance from the sensor within which a return marks: the
+        # 2D global obstacle layer's obstacle_max_range, so a 3D map replans
+        # round the same person at the same distance.
+        obstacle_max_range: 2.5
+        # Within which a return's ray clears; a return further out clears
+        # along its first 3 m and marks nothing. The obstacle layer's value.
+        raytrace_max_range: 3.0
+        # Returns closer than this to the sensor, in the plane, are neither
+        # marks nor rays. The robot's own feet are in every map as 0.2-0.3 m
+        # clusters ~0.54 m from the lidar (0.5 m in the plane): inside the
+        # band, and without this they marked the cells under the robot on
+        # every scan, so the path's first poses read blocked for good and
+        # the BT replanned every 10 s with nothing to change.
+        self_radius: 0.6
+        # Band above a surface's top face in which a return is an obstacle:
+        # (min_obstacle_height, body_clearance) -- the terrain layer's band
+        # and the surface map's clearance, one calibration. The top face is
+        # quantised to the voxel, so 0.1 keeps the floor's own returns out.
+        min_obstacle_height: 0.1
+        # Seconds a mark lives unrefreshed and uncleared. Must outlast
+        # IsPathValid's blocked_time (10 s) plus a plan plus the stretch of
+        # the detour during which the mark is out of view; three times
+        # blocked_time. A mark in view is refreshed or raytraced away every
+        # scan, so this only governs what the robot cannot see. Longer, and
+        # a person the robot walked away from shapes the next goal's route
+        # (the new-goal clear_overlay in move_3d.xml guards that too); the
+        # 2D obstacle layer never forgets, only rays clear it. The terrain
+        # layer's 2 s serves the 5 Hz controller, a different job.
+        obstacle_memory: 30.0
+        # Cells within this distance of a mark are not traversable for the
+        # search and read blocked to is_path_valid; it is also the disc
+        # round the robot's own cell that the dilation does not block.
+        # Between the inscribed radius (0.25, the surface map's own wall
+        # inflation) and the circumscribed one (0.455); the 2D footprint-
+        # perimeter test at the path heading +-0.35 rad reaches ~0.36 m
+        # sideways, so a 3D map refuses a passage beside a person at the
+        # width a 2D one does. Beyond it the clearance cost above applies
+        # out to clearance_cost_radius, as for a wall.
+        block_radius: 0.35
+
       # ---- output ----
       # Line-of-sight shortcut of the cell chain (supercover, step-continuous,
       # never closer to the boundary than the search was), then a resample

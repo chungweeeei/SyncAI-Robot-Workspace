@@ -8,16 +8,19 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "tf2/exceptions.h"
 #include "tf2/time.h"
+#include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 
 namespace syncai_global_planner
 {
@@ -27,8 +30,10 @@ namespace o3d = octomap_planner_3d;
 
 OctomapPlanner3D::~OctomapPlanner3D()
 {
-  // The service thread first: a reload in progress joins build_thread_ too,
-  // and waits for its build to end before the thread stops.
+  // The overlay's thread first (it reads the overlay and tf_), then the
+  // service thread: a reload in progress joins build_thread_ too, and waits
+  // for its build to end before the thread stops.
+  overlay_thread_.reset();
   load_map_thread_.reset();
   if (build_thread_.joinable()) {
     build_thread_.join();
@@ -125,6 +130,16 @@ void OctomapPlanner3D::initialize(
   dp("snap_xy_radius", rclcpp::ParameterValue(search_params_.snap_xy_radius));
   dp("snap_z_window", rclcpp::ParameterValue(search_params_.snap_z_window));
   dp("stair_cost_multiplier", rclcpp::ParameterValue(search_params_.stair_cost_multiplier));
+  // Dynamic obstacles (the overlay; its six doubles are dynamic).
+  dp("dynamic.enabled", rclcpp::ParameterValue(dynamic_enabled_));
+  dp("dynamic.topic", rclcpp::ParameterValue(dynamic_topic_));
+  dp("dynamic.transform_tolerance", rclcpp::ParameterValue(transform_tolerance_));
+  dp("dynamic.obstacle_max_range", rclcpp::ParameterValue(dynamic_params_.obstacle_max_range));
+  dp("dynamic.raytrace_max_range", rclcpp::ParameterValue(dynamic_params_.raytrace_max_range));
+  dp("dynamic.self_radius", rclcpp::ParameterValue(dynamic_params_.self_radius));
+  dp("dynamic.min_obstacle_height", rclcpp::ParameterValue(dynamic_params_.min_obstacle_height));
+  dp("dynamic.obstacle_memory", rclcpp::ParameterValue(dynamic_params_.obstacle_memory));
+  dp("dynamic.block_radius", rclcpp::ParameterValue(dynamic_params_.block_radius));
 
   node->get_parameter(name + ".octomap_file", octomap_file_);
   node->get_parameter(name + ".poses_file", poses_file_);
@@ -178,6 +193,15 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".snap_xy_radius", search_params_.snap_xy_radius);
   node->get_parameter(name + ".snap_z_window", search_params_.snap_z_window);
   node->get_parameter(name + ".stair_cost_multiplier", search_params_.stair_cost_multiplier);
+  node->get_parameter(name + ".dynamic.enabled", dynamic_enabled_);
+  node->get_parameter(name + ".dynamic.topic", dynamic_topic_);
+  node->get_parameter(name + ".dynamic.transform_tolerance", transform_tolerance_);
+  node->get_parameter(name + ".dynamic.obstacle_max_range", dynamic_params_.obstacle_max_range);
+  node->get_parameter(name + ".dynamic.raytrace_max_range", dynamic_params_.raytrace_max_range);
+  node->get_parameter(name + ".dynamic.self_radius", dynamic_params_.self_radius);
+  node->get_parameter(name + ".dynamic.min_obstacle_height", dynamic_params_.min_obstacle_height);
+  node->get_parameter(name + ".dynamic.obstacle_memory", dynamic_params_.obstacle_memory);
+  node->get_parameter(name + ".dynamic.block_radius", dynamic_params_.block_radius);
   // poses.txt sits next to octomap.bt in map/<name>/, so it is derived the
   // way the launch derives the tree from [map] pcd.
   if (poses_file_.empty() && !octomap_file_.empty()) {
@@ -194,6 +218,12 @@ void OctomapPlanner3D::initialize(
   if (publish_raw_plan_) {
     raw_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>(name + "/raw_plan", 1);
   }
+  // The dynamic overlay (see the class comment and dynamic_overlay.hpp)
+  // exists before anything that can reach it -- the parameter callback
+  // (setParams), load_map (setMap) and the boot build -- and with no map,
+  // so the subscription and the service below come up once and stay; the
+  // cloud callback does nothing until buildMap() binds a map.
+  overlay_ = std::make_unique<o3d::DynamicOverlay>(dynamic_params_);
   RCLCPP_INFO(
     logger_,
     "[OctomapPlanner3D][%s] octomap_file '%s', body_frame '%s' (lidar_height %.3f), robot_radius "
@@ -228,6 +258,52 @@ void OctomapPlanner3D::initialize(
   load_map_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   load_map_executor_->add_callback_group(load_map_group_, node->get_node_base_interface());
   load_map_thread_ = std::make_unique<syncai_util::NodeThread>(load_map_executor_);
+
+  // The overlay's input and clear (the overlay itself was made above).
+  clear_overlay_service_ = node->create_service<nav2_msgs::srv::ClearEntireCostmap>(
+    std::string(node->get_name()) + "/" + name_ + "/clear_overlay",
+    std::bind(
+      &OctomapPlanner3D::clearOverlayCallback, this, std::placeholders::_1, std::placeholders::_2));
+  if (dynamic_enabled_) {
+    overlay_group_ =
+      node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    auto sub_opt = rclcpp::SubscriptionOptions();
+    sub_opt.callback_group = overlay_group_;
+    rmw_qos_profile_t qos = rmw_qos_profile_sensor_data;
+    qos.depth = 10;
+    // A relative topic: the node is /<robot_id>/planner_server, so this is
+    // /<robot_id>/pointlio/body_cloud, the cloud the costmaps read.
+    cloud_sub_ =
+      std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2, rclcpp::Node>>(
+        node.get(), dynamic_topic_, qos, sub_opt);
+    cloud_sub_->unsubscribe();
+    // The filter holds a cloud until its frame resolves in the map frame
+    // (map <- pointlio_odom <- pointlio_body: only after relocalize).
+    cloud_filter_ = std::make_shared<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>>(
+      *cloud_sub_, *tf_, global_frame_, 10, node->get_node_logging_interface(),
+      node->get_node_clock_interface(), tf2::durationFromSec(transform_tolerance_));
+    cloud_filter_->registerCallback(
+      std::bind(&OctomapPlanner3D::cloudCallback, this, std::placeholders::_1));
+    cloud_sub_->subscribe();
+    overlay_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    overlay_executor_->add_callback_group(overlay_group_, node->get_node_base_interface());
+    overlay_thread_ = std::make_unique<syncai_util::NodeThread>(overlay_executor_);
+    RCLCPP_INFO(
+      logger_,
+      "[OctomapPlanner3D][%s] dynamic overlay on %s: marks returns %.2f-%.2f m above the surface "
+      "within %.1f m, clears to %.1f m, ignores %.1f m round the sensor, memory %.0f s, block "
+      "radius %.2f m",
+      __func__, dynamic_topic_.c_str(), dynamic_params_.min_obstacle_height,
+      map_params_.body_clearance, dynamic_params_.obstacle_max_range,
+      dynamic_params_.raytrace_max_range, dynamic_params_.self_radius,
+      dynamic_params_.obstacle_memory, dynamic_params_.block_radius);
+  } else {
+    RCLCPP_WARN(
+      logger_,
+      "[OctomapPlanner3D][%s] dynamic overlay disabled (dynamic.enabled false): no dynamic "
+      "obstacle is ever marked, every path reads valid and no replan detours",
+      __func__);
+  }
 
   if (octomap_file_.empty()) {
     RCLCPP_ERROR(
@@ -274,6 +350,7 @@ void OctomapPlanner3D::loadMapCallback(
       map_.reset();
       links_.reset();
       astar_.reset();
+      overlay_->setMap(nullptr);
       octomap_file_.clear();
       poses_file_.clear();
       build_error_ = "no 3D map loaded (unloaded by load_map for a 2D map)";
@@ -327,6 +404,8 @@ void OctomapPlanner3D::loadMapCallback(
     map_.reset();
     links_.reset();
     astar_.reset();
+    // The marks are the old site's too; buildMap() binds the new map empty.
+    overlay_->setMap(nullptr);
     octomap_file_ = octomap_file;
     poses_file_ = poses_file;
     build_error_.clear();
@@ -473,6 +552,8 @@ bool OctomapPlanner3D::buildMap(
   map_ = map;
   links_ = links;
   astar_ = std::make_unique<o3d::SurfaceAStar>(map_, links_);
+  // Bound empty: the scans start marking it from the next cloud on.
+  overlay_->setMap(map_);
   building_ = false;
   return true;
 }
@@ -534,21 +615,32 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   }
   const double goal_z = goal_z_mode_ == "start" ? start_z : goal.pose.position.z;
 
+  // The start is snapped without the overlay: the robot stands where it
+  // stands, and a person beside it must not make its own cell unavailable.
   const o3d::SnapResult s =
     astar_->snap(start.pose.position.x, start.pose.position.y, start_z, search_params_);
   if (s.cell == o3d::kNoCell) {
     return fail(
       s.outside ? o3d::PlanFailure::StartOutsideMap : o3d::PlanFailure::StartUnavailable, s.detail);
   }
+  // The dynamic obstacles as of now, for this plan: the goal snap, the
+  // search and the shortcut all read the one snapshot. The disc around the
+  // start is exempt from the marks' dilation (not from the marks), so the
+  // first step away from a person standing close is legal.
+  const o3d::DynamicMaskPtr mask = overlay_->snapshot(clock_->now().seconds());
+  o3d::BlockedView blocked;
+  blocked.mask = mask.get();
+  blocked.exempt = s.cell;
+  blocked.exempt_radius = mask ? mask->block_radius : 0.0;
   const o3d::SnapResult g = astar_->snap(
     goal.pose.position.x, goal.pose.position.y, goal_z, search_params_,
-    map_->cells[s.cell].component);
+    map_->cells[s.cell].component, &blocked);
   if (g.cell == o3d::kNoCell) {
     return fail(
       g.outside ? o3d::PlanFailure::GoalOutsideMap : o3d::PlanFailure::GoalUnavailable, g.detail);
   }
 
-  o3d::PlanResult r = astar_->plan(s.cell, g.cell, search_params_);
+  o3d::PlanResult r = astar_->plan(s.cell, g.cell, search_params_, blocked);
   if (r.failure != o3d::PlanFailure::None) {
     char buf[96];
     std::snprintf(buf, sizeof buf, " (%zu iterations, %.3f s)", r.iterations, r.search_s);
@@ -577,12 +669,15 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   if (raw_plan_pub_) {
     nav_msgs::msg::Path raw;
     raw.header = path.header;
-    toPoses(o3d::buildPath(*map_, links_.get(), r.cells, r.links, false, map_->res), raw);
+    toPoses(
+      o3d::buildPath(*map_, links_.get(), r.cells, r.links, false, map_->res, nullptr, &blocked),
+      raw);
     raw_plan_pub_->publish(raw);
   }
   size_t vertices = 0;
   const auto wps = o3d::buildPath(
-    *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &vertices);
+    *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &vertices,
+    &blocked);
   toPoses(wps, path);
 
   double length = 0.0, zmin = wps.empty() ? 0.0 : wps.front().z, zmax = zmin;
@@ -595,11 +690,160 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     logger_,
     "[OctomapPlanner3D][createPlan] %zu poses, %.1f m, z %.2f..%.2f (start snapped %.2f m, goal "
     "%.2f m), "
-    "%zu cells -> %zu vertices, %zu stair links, %zu iterations, search %.3f s, total %.3f s",
+    "%zu cells -> %zu vertices, %zu stair links, %zu dynamic marks, %zu iterations, search %.3f "
+    "s, total %.3f s",
     path.poses.size(), length, zmin, zmax, s.xy_dist, g.xy_dist, r.cells.size(), vertices,
-    r.links.size(), r.iterations, r.search_s,
+    r.links.size(), mask ? mask->marked : size_t{0}, r.iterations, r.search_s,
     std::chrono::duration<double>(Clock::now() - t0).count());
   return path;
+}
+
+bool OctomapPlanner3D::isPathValid(
+  const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose,
+  std::vector<int32_t> & invalid_pose_indices)
+{
+  // Never mutex_: a plan in progress holds it for up to max_planning_time
+  // and the BT gives this call 100 ms. The overlay carries its own copy of
+  // the map pointer under its own lock, which is all this needs. body_frame_
+  // and lidar_height_ (startHeightHint) and path_z_offset_ are written by
+  // the parameter callback, which runs on the same executor as this
+  // service, so they are read unlocked by design.
+  const auto map = overlay_->map();
+  if (!map || path.poses.empty()) {
+    return true;  // no 3D map: nothing to judge against, keep the path
+  }
+  const o3d::DynamicMaskPtr mask = overlay_->snapshot(clock_->now().seconds());
+  if (!mask) {
+    return true;  // the fast path: not one mark alive
+  }
+  double rz = 0.0;
+  if (!startHeightHint(rz)) {
+    // The server's rule for "can't tell": valid, so the path is kept.
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 5000,
+      "[OctomapPlanner3D][%s] no TF %s -> %s; cannot place the robot on a floor, keeping the "
+      "path unchecked",
+      __func__, global_frame_.c_str(), body_frame_.c_str());
+    return true;
+  }
+  const o3d::SurfaceMap & m = *map;
+  const auto & poses = path.poses;
+  const double rx = robot_pose.pose.position.x, ry = robot_pose.pose.position.y;
+
+  // The pose nearest the robot in 3D (the server's own nearest-pose search
+  // is planar, with a robot z of 0: wrong on a stair whose turns lie over
+  // each other), then the robot's own cell. No traversable cell under that
+  // pose means the robot is on a stair (a flight's cells are all rejected)
+  // or off the map's ground: valid, never a replan from there. A replan
+  // whose start snaps mid-flight lands on the wrong floor, and a goal that
+  // aborts on a flight stops the robot on the stair.
+  size_t i0 = 0;
+  double best = std::numeric_limits<double>::infinity();
+  for (size_t i = 0; i < poses.size(); ++i) {
+    const auto & p = poses[i].pose.position;
+    const double d = (p.x - rx) * (p.x - rx) + (p.y - ry) * (p.y - ry) +
+                     (p.z - path_z_offset_ - rz) * (p.z - path_z_offset_ - rz);
+    if (d < best) {
+      best = d;
+      i0 = i;
+    }
+  }
+  const auto cellOf = [&](size_t i) {
+    const auto & p = poses[i].pose.position;
+    return m.traversableAt(p.x, p.y, p.z - path_z_offset_);
+  };
+  const o3d::CellId c0 = cellOf(i0);
+  if (c0 == o3d::kNoCell) {
+    return true;
+  }
+  // Only the floor stretch the robot is on is judged: the check stops where
+  // the path leaves traversable ground (a stair link), and the stretch
+  // beyond is judged once the robot is on it. Judging it now would, with
+  // blocked_time's 10 s wait, fire the replan while the robot is mid-flight
+  // -- the case above. The disc around the robot's own cell is exempt from
+  // the marks' dilation, as it is for the planner, or a person beside the
+  // robot would read "blocked 0.0 m ahead" on every call with nothing a
+  // replan could change.
+  o3d::BlockedView blocked;
+  blocked.mask = mask.get();
+  blocked.exempt = c0;
+  blocked.exempt_radius = mask->block_radius;
+  for (size_t i = i0; i < poses.size(); ++i) {
+    const o3d::CellId c = i == i0 ? c0 : cellOf(i);
+    if (c == o3d::kNoCell) {
+      break;
+    }
+    if (blocked.blocked(m, c)) {
+      invalid_pose_indices.push_back(static_cast<int32_t>(i));
+    }
+  }
+  if (!invalid_pose_indices.empty()) {
+    const size_t first = static_cast<size_t>(invalid_pose_indices.front());
+    double ahead = 0.0;
+    for (size_t i = i0; i < first; ++i) {
+      ahead += syncai_util::geometry_utils::euclidean_distance(poses[i], poses[i + 1]);
+    }
+    RCLCPP_INFO(
+      logger_,
+      "[OctomapPlanner3D][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
+      "ahead of the robot, (%.2f, %.2f, z %.2f); %zu cells marked by dynamic obstacles",
+      __func__, invalid_pose_indices.size(), poses.size() - i0, first, ahead,
+      poses[first].pose.position.x, poses[first].pose.position.y, poses[first].pose.position.z,
+      mask->marked);
+    return false;
+  }
+  return true;
+}
+
+void OctomapPlanner3D::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
+{
+  // No 3D map (a 2D map, or one still building): nothing to judge a return
+  // against, and tens of thousands of points a second not to transform.
+  if (!overlay_->map()) {
+    return;
+  }
+  geometry_msgs::msg::TransformStamped tf;
+  try {
+    tf = tf_->lookupTransform(
+      global_frame_, message->header.frame_id, message->header.stamp,
+      tf2::durationFromSec(transform_tolerance_));
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 5000, "[OctomapPlanner3D][%s] cannot transform %s into %s: %s", __func__,
+      message->header.frame_id.c_str(), global_frame_.c_str(), ex.what());
+    return;
+  }
+  sensor_msgs::msg::PointCloud2 cloud;
+  tf2::doTransform(*message, cloud, tf);
+  std::vector<o3d::Waypoint> points;
+  points.reserve(static_cast<size_t>(cloud.width) * cloud.height);
+  sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud, "x");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_y(cloud, "y");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_z(cloud, "z");
+  for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+    points.push_back({*iter_x, *iter_y, *iter_z});
+  }
+  // The cloud's frame is the lidar's own (the LIO body frame, the IMU a few
+  // cm from the optical centre -- nothing at a 0.1 m cell), so the
+  // transform's translation is the sensor origin the rays start from.
+  const o3d::Waypoint origin{
+    tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z};
+  const o3d::ScanStats st =
+    overlay_->addScan(points, origin, rclcpp::Time(message->header.stamp).seconds());
+  RCLCPP_DEBUG_THROTTLE(
+    logger_, *clock_, 5000,
+    "[OctomapPlanner3D][%s] scan: %zu returns, %zu in range, %zu marked, %zu cleared; %zu cells "
+    "marked in all",
+    __func__, st.points, st.in_range, st.marked, st.cleared, overlay_->hotCount());
+}
+
+void OctomapPlanner3D::clearOverlayCallback(
+  const std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Request> /*request*/,
+  std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Response> /*response*/)
+{
+  const size_t n = overlay_->clear();
+  RCLCPP_INFO(
+    logger_, "[OctomapPlanner3D][%s] dynamic overlay cleared: %zu marks dropped", __func__, n);
 }
 
 rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCallback(
@@ -640,6 +884,31 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         path_z_offset_ = v;
       } else if (key == "lidar_height") {
         lidar_height_ = v;
+      } else if (key.rfind("dynamic.", 0) == 0) {
+        // The overlay's own values take effect on the next scan / snapshot;
+        // the transform tolerance is bound into the message filter.
+        const std::string dkey = key.substr(std::string("dynamic.").size());
+        o3d::DynamicOverlayParams dyn = dynamic_params_;
+        if (dkey == "obstacle_max_range") {
+          dyn.obstacle_max_range = v;
+        } else if (dkey == "raytrace_max_range") {
+          dyn.raytrace_max_range = v;
+        } else if (dkey == "self_radius") {
+          dyn.self_radius = v;
+        } else if (dkey == "min_obstacle_height") {
+          dyn.min_obstacle_height = v;
+        } else if (dkey == "obstacle_memory") {
+          dyn.obstacle_memory = v;
+        } else if (dkey == "block_radius") {
+          dyn.block_radius = v;
+        } else {
+          result.successful = false;
+          result.reason = key + " cannot be changed at runtime";
+        }
+        if (result.successful) {
+          dynamic_params_ = dyn;
+          overlay_->setParams(dynamic_params_);
+        }
       } else {
         result.successful = false;
         result.reason =

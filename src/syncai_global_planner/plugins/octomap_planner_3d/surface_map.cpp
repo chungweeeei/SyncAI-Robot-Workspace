@@ -110,6 +110,37 @@ std::string SurfaceMap::describeColumn(uint32_t c) const
   return os.str();
 }
 
+std::vector<Offset> discOffsets(double radius_m, double res, bool include_centre)
+{
+  std::vector<Offset> out;
+  const int r = static_cast<int>(std::ceil(radius_m / res));
+  for (int dy = -r; dy <= r; ++dy) {
+    for (int dx = -r; dx <= r; ++dx) {
+      if (dx == 0 && dy == 0 && !include_centre) {
+        continue;
+      }
+      const double d = std::hypot(dx, dy) * res;
+      if (d > radius_m + 1e-9) {
+        continue;
+      }
+      int q;
+      if (dx >= 0 && dy > 0) {
+        q = 0;
+      } else if (dx < 0 && dy >= 0) {
+        q = 1;
+      } else if (dx <= 0 && dy < 0) {
+        q = 2;
+      } else {
+        q = 3;  // dx > 0 && dy <= 0, and the centre
+      }
+      out.push_back({dx, dy, static_cast<float>(d), q});
+    }
+  }
+  std::sort(
+    out.begin(), out.end(), [](const Offset & a, const Offset & b) { return a.d_m < b.d_m; });
+  return out;
+}
+
 namespace
 {
 
@@ -172,46 +203,6 @@ struct ColumnMasks
     return n;
   }
 };
-
-struct Offset
-{
-  int dx, dy;
-  float d_m;     // distance of the column centre from the disc centre (m)
-  int quadrant;  // 0..3, the four quadrants around the centre with the axes split evenly
-};
-
-// Every column whose centre is within radius_m of the centre column's centre,
-// nearest first. (0,0) is included only if include_centre.
-std::vector<Offset> discOffsets(double radius_m, double res, bool include_centre)
-{
-  std::vector<Offset> out;
-  const int r = static_cast<int>(std::ceil(radius_m / res));
-  for (int dy = -r; dy <= r; ++dy) {
-    for (int dx = -r; dx <= r; ++dx) {
-      if (dx == 0 && dy == 0 && !include_centre) {
-        continue;
-      }
-      const double d = std::hypot(dx, dy) * res;
-      if (d > radius_m + 1e-9) {
-        continue;
-      }
-      int q;
-      if (dx >= 0 && dy > 0) {
-        q = 0;
-      } else if (dx < 0 && dy >= 0) {
-        q = 1;
-      } else if (dx <= 0 && dy < 0) {
-        q = 2;
-      } else {
-        q = 3;  // dx > 0 && dy <= 0, and the centre
-      }
-      out.push_back({dx, dy, static_cast<float>(d), q});
-    }
-  }
-  std::sort(
-    out.begin(), out.end(), [](const Offset & a, const Offset & b) { return a.d_m < b.d_m; });
-  return out;
-}
 
 // Re-sort cells by (column, kz) and recompute col_begin. Needed after the
 // hole-fill appends cells out of order.

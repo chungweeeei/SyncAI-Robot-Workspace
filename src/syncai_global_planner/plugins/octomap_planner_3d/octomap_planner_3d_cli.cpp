@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 
+#include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
@@ -65,6 +66,10 @@ void usage()
     "  --image-components       colour --dump-image by component instead of by state\n"
     "  --debug-fill <x> <y>     replay the hole-fill decision for one column (uses --image-z)\n"
     "  --plan <sx> <sy> <sz> <gx> <gy> <gz>   plan between two points (z = height hints)\n"
+    "  --dynamic <x> <y> <z>    a person standing at (x, y) on the floor at height z: eighteen\n"
+    "                           returns 0.3 and 0.5 m up on a 0.3 m square, marked in the\n"
+    "                           dynamic overlay before every --plan as the robot's scans would\n"
+    "                           mark them (repeatable; the plan detours round them)\n"
     "  --plan-poses <i> <j>     plan between keyframes i and j of --poses (ground = z - lidar "
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
@@ -687,10 +692,13 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
   return static_cast<bool>(out);
 }
 
+// mask: the dynamic overlay's snapshot (--dynamic), or null. Read exactly as
+// the plugin reads it: the goal snap, the search and the shortcut keep off
+// it, with the disc round the start exempt from the dilation.
 int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
-  std::vector<PlannedPath> * planned)
+  std::vector<PlannedPath> * planned, const DynamicMask * mask)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -702,7 +710,11 @@ int runPlan(
       s.detail.c_str());
     return 1;
   }
-  const SnapResult g = astar.snap(gx, gy, gz, sp, m.cells[s.cell].component);
+  BlockedView blocked;
+  blocked.mask = mask;
+  blocked.exempt = s.cell;
+  blocked.exempt_radius = mask ? mask->block_radius : 0.0;
+  const SnapResult g = astar.snap(gx, gy, gz, sp, m.cells[s.cell].component, &blocked);
   if (g.cell == kNoCell) {
     std::printf(
       "plan: %s: %s\n",
@@ -718,7 +730,7 @@ int runPlan(
     "(%.2f, %.2f, %.2f) [%.2f m xy, %+.2f m z], component %u\n",
     sxc, syc, m.zTop(s.cell), s.xy_dist, s.dz, gxc, gyc, m.zTop(g.cell), g.xy_dist, g.dz,
     m.cells[s.cell].component);
-  PlanResult r = astar.plan(s.cell, g.cell, sp);
+  PlanResult r = astar.plan(s.cell, g.cell, sp, blocked);
   if (r.failure != PlanFailure::None) {
     std::printf(
       "plan: %s: %s (%zu iterations, %.3f s)\n", planFailureName(r.failure), r.detail.c_str(),
@@ -734,7 +746,8 @@ int runPlan(
     raw_len += std::hypot(bx - ax, by - ay);
   }
   size_t vertices = 0;
-  const auto path = buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices);
+  const auto path =
+    buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked);
   if (planned) {
     PlannedPath pp;
     pp.start = Waypoint{sxc, syc, m.zTop(s.cell)};
@@ -761,9 +774,9 @@ int runPlan(
   std::printf(
     "plan: ok -- %zu cells, cost %.2f, %zu iterations, search %.3f s, total %.3f s; "
     "shortcut to %zu vertices; %zu poses, %.2f m (raw %.2f m), z %.2f..%.2f, min clearance %.2f "
-    "m, %zu stair links\n",
+    "m, %zu stair links, %zu dynamic marks\n",
     raw_cells, r.cost, r.iterations, r.search_s, total, vertices, path.size(), len, raw_len, zmin,
-    zmax, min_clear, r.links.size());
+    zmax, min_clear, r.links.size(), mask ? mask->marked : size_t{0});
   for (const LinkUse & u : r.links) {
     const StairLink & l = astar.links()->links[u.link];
     std::printf(
@@ -1085,6 +1098,7 @@ int main(int argc, char ** argv)
   };
   std::vector<PlanReq> plans;
   std::vector<PlannedPath> planned;
+  std::vector<Waypoint> people;  // --dynamic
   std::string html_path;
   std::string out_path;
   std::string write_bt_path;
@@ -1143,6 +1157,12 @@ int main(int argc, char ** argv)
       r.v[0] = std::atof(next("--plan-poses").c_str());
       r.v[1] = std::atof(next("--plan-poses").c_str());
       plans.push_back(r);
+    } else if (a == "--dynamic") {
+      Waypoint w;
+      w.x = std::atof(next("--dynamic").c_str());
+      w.y = std::atof(next("--dynamic").c_str());
+      w.z = std::atof(next("--dynamic").c_str());
+      people.push_back(w);
     } else if (a == "--out") {
       out_path = next("--out");
     } else if (a == "--write-bt") {
@@ -1327,6 +1347,17 @@ int main(int argc, char ** argv)
   }
   if (!plans.empty()) {
     SurfaceAStar astar(map, links);
+    // --dynamic: the people are placed by hand, not seen, so the ranges the
+    // robot's scans are judged with do not apply (a person 10 m from the
+    // start marks all the same) and no ray clears anything; the band and
+    // the self radius are the plugin's.
+    DynamicOverlayParams dyn;
+    dyn.obstacle_max_range = 1e9;
+    dyn.raytrace_max_range = 0.0;
+    DynamicOverlay overlay(dyn);
+    if (!people.empty()) {
+      overlay.setMap(map);
+    }
     for (const PlanReq & r : plans) {
       double v[6];
       std::copy(r.v, r.v + 6, v);
@@ -1344,8 +1375,31 @@ int main(int argc, char ** argv)
         v[4] = poses[j].y;
         v[5] = poses[j].z - lidar_height;
       }
-      rc |=
-        runPlan(astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned);
+      DynamicMaskPtr mask;
+      if (!people.empty()) {
+        overlay.clear();
+        std::vector<Waypoint> returns;
+        for (const Waypoint & w : people) {
+          for (const double dz : {0.3, 0.5}) {
+            for (const double dx : {-0.15, 0.0, 0.15}) {
+              for (const double dy : {-0.15, 0.0, 0.15}) {
+                returns.push_back({w.x + dx, w.y + dy, w.z + dz});
+              }
+            }
+          }
+        }
+        // Seen from the plan's start, the lidar at its height over the floor.
+        const Waypoint origin{v[0], v[1], v[2] + lidar_height};
+        const ScanStats st = overlay.addScan(returns, origin, 0.0);
+        mask = overlay.snapshot(0.0);
+        std::printf(
+          "dynamic: %zu people, %zu returns, %zu on traversable cells in the band -> %zu cells "
+          "marked\n",
+          people.size(), returns.size(), st.marked, mask ? mask->marked : size_t{0});
+      }
+      rc |= runPlan(
+        astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned,
+        mask.get());
     }
   }
   if (!image_path.empty()) {
