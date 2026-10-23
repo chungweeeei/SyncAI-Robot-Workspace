@@ -15,8 +15,9 @@
 // limitations under the License.
 
 #include "syncai_mppi_controller/tools/path_handler.hpp"
-#include "syncai_mppi_controller/tools/utils.hpp"
+
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/path_height.hpp"
 
@@ -144,12 +145,11 @@ geometry_msgs::msg::PoseStamped PathHandler::transformToGlobalPlanFrame(
     std::string error;
     double ground_z = 0.0;
     if (!syncai_util::lookupGroundZ(
-        *tf_buffer_, global_plan_up_to_inversion_.header.frame_id, body_frame_, body_height_,
-        ground_z, &error))
-    {
+          *tf_buffer_, global_plan_up_to_inversion_.header.frame_id, body_frame_, body_height_,
+          ground_z, &error)) {
       throw syncai_nav_core::PlannerException(
-              "Plan has heights but the robot's (" + body_frame_ + " in " +
-              global_plan_up_to_inversion_.header.frame_id + ") is unknown: " + error);
+        "Plan has heights but the robot's (" + body_frame_ + " in " +
+        global_plan_up_to_inversion_.header.frame_id + ") is unknown: " + error);
     }
     robot_pose.pose.position.z = ground_z;
   }

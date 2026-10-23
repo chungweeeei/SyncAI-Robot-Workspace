@@ -165,13 +165,11 @@ void ObstacleLayer::onInitialize()
       topic.c_str(), sensor_frame.c_str());
 
     // create an observation buffer
-    observation_buffers_.push_back(
-      std::shared_ptr<ObservationBuffer>(
-        new ObservationBuffer(
-          node_, topic, observation_keep_time, expected_update_rate, min_obstacle_height,
-          max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
-          raytrace_min_range, *tf_, global_frame_, sensor_frame,
-          tf2::durationFromSec(transform_tolerance), height_reference, sensor_height)));
+    observation_buffers_.push_back(std::shared_ptr<ObservationBuffer>(new ObservationBuffer(
+      node_, topic, observation_keep_time, expected_update_rate, min_obstacle_height,
+      max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
+      raytrace_min_range, *tf_, global_frame_, sensor_frame,
+      tf2::durationFromSec(transform_tolerance), height_reference, sensor_height)));
 
     // check if we'll add this buffer to our marking observation buffers
     if (marking) {

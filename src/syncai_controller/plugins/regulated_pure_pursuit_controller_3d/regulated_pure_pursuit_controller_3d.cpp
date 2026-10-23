@@ -8,11 +8,11 @@
 #include <utility>
 #include <vector>
 
-#include "syncai_util/path_height.hpp"
 #include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "syncai_util/path_height.hpp"
 #include "tf2/utils.h"
 
 using std::abs;
@@ -20,9 +20,9 @@ using std::hypot;
 using std::max;
 using std::min;
 using syncai_util::declare_parameter_if_not_declared;
-using syncai_util::geometry_utils::euclidean_distance;
 using syncai_util::lookupGroundZ;
 using syncai_util::pathHasHeight;
+using syncai_util::geometry_utils::euclidean_distance;
 using namespace syncai_costmap_2d;  // NOLINT
 using rcl_interfaces::msg::ParameterType;
 
@@ -258,9 +258,8 @@ void RegulatedPurePursuitController3D::initialize(
   collision_checker_->setCostmap(costmap_);
 
   // Add callback for dynamic parameters
-  dyn_params_handler_ = node->add_on_set_parameters_callback(
-    std::bind(
-      &RegulatedPurePursuitController3D::dynamicParametersCallback, this, std::placeholders::_1));
+  dyn_params_handler_ = node->add_on_set_parameters_callback(std::bind(
+    &RegulatedPurePursuitController3D::dynamicParametersCallback, this, std::placeholders::_1));
 }
 
 std::unique_ptr<geometry_msgs::msg::PointStamped> RegulatedPurePursuitController3D::createCarrotMsg(
@@ -770,10 +769,9 @@ bool RegulatedPurePursuitController3D::isCollisionImminent(
   // odom frame and the carrot_pose is in robot base frame.
 
   // Check whether the robot's footprint, right now, is already on a LETHAL obstacle
-  if (
-    inCollision(
-      robot_pose.pose.position.x, robot_pose.pose.position.y,
-      tf2::getYaw(robot_pose.pose.orientation))) {
+  if (inCollision(
+        robot_pose.pose.position.x, robot_pose.pose.position.y,
+        tf2::getYaw(robot_pose.pose.orientation))) {
     return true;
   }
 
@@ -1052,11 +1050,10 @@ nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
     std::string error;
     double ground_z = 0.0;
     if (!lookupGroundZ(
-          *tf_, global_plan_.header.frame_id, body_frame_, body_height_, ground_z, &error))
-    {
+          *tf_, global_plan_.header.frame_id, body_frame_, body_height_, ground_z, &error)) {
       throw syncai_nav_core::PlannerException(
-              "Plan has heights but the robot's (" + body_frame_ + " in " +
-              global_plan_.header.frame_id + ") is unknown: " + error);
+        "Plan has heights but the robot's (" + body_frame_ + " in " + global_plan_.header.frame_id +
+        ") is unknown: " + error);
     }
     robot_pose.pose.position.z = ground_z;
   }
@@ -1078,8 +1075,8 @@ nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
 
   // Scan forward from transformation_begin and take the first point whose straight-line
   // distance from the robot exceeds the local costmap extent as transformation_end
-  auto transformation_end = std::find_if(
-    transformation_begin, global_plan_.poses.end(), [&](const auto & pose) {
+  auto transformation_end =
+    std::find_if(transformation_begin, global_plan_.poses.end(), [&](const auto & pose) {
       return euclidean_distance(pose, robot_pose, is_3d) > max_costmap_extent;
     });
 

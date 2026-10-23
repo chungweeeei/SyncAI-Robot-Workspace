@@ -57,7 +57,8 @@ public:
   void flatFloor(
     double x_min, double x_max, double y_min, double y_max, double h, int free_cells = 12)
   {
-    floor(x_min, x_max, y_min, y_max, [h](double, double) { return h; }, free_cells);
+    floor(
+      x_min, x_max, y_min, y_max, [h](double, double) { return h; }, free_cells);
   }
 
   // A solid block of occupied voxels: every voxel the box intersects, so a

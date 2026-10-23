@@ -10,10 +10,10 @@
 #include <vector>
 
 #include "angles/angles.h"
-#include "syncai_util/path_height.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "syncai_util/path_height.hpp"
 #include "syncai_util/robot_utils.hpp"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -964,8 +964,7 @@ bool ControllerServer::isGoalReached()
     std::string error;
     if (!lookupGroundZ(
           *costmap_ros_->getTfBuffer(), current_path_.header.frame_id, body_frame_, body_height_,
-          ground_z, &error))
-    {
+          ground_z, &error)) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000,
         "Path has heights but the robot's height is unknown (%s); goal not checked: %s",

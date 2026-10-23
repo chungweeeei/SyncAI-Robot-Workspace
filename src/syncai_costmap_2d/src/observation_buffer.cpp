@@ -42,8 +42,10 @@ ObservationBuffer::ObservationBuffer(
   last_updated_ = parent->now();
   if (height_reference != "global" && height_reference != "sensor") {
     throw std::runtime_error(
-            "observation source " + topic_name + ": height_reference must be \"global\" or "
-            "\"sensor\", not \"" + height_reference + "\"");
+      "observation source " + topic_name +
+      ": height_reference must be \"global\" or "
+      "\"sensor\", not \"" +
+      height_reference + "\"");
   }
 }
 
