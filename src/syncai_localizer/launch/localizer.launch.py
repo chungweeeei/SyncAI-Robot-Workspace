@@ -44,9 +44,13 @@
 # construction, so a missing file means the node is not started at all. The
 # optional [initial_pose] section (the one the retired syncai_amcl read too)
 # becomes the localizer's boot guess, so a robot standing at its known start
-# pose localizes itself without a relocalize call.
+# pose localizes itself without a relocalize call. Since 2026-10-23 the last
+# pose the node saved (config/state/<robot_id>/last_pose.json) comes first
+# when it is for the same map, so a robot that shut down anywhere starts where
+# it stopped; [initial_pose] is the fallback (read_last_pose).
 
 import configparser
+import json
 import os
 
 import launch
@@ -135,6 +139,72 @@ def read_initial_pose(config_path: str):
     }
 
 
+def last_pose_path(config_path: str, robot_id: str) -> str:
+    """<workspace>/config/state/<robot_id>/last_pose.json, the workspace root
+    found the way read_map_pcd finds it (two directories above the INI).
+    Per-robot state like config/calibration/, so gitignored; the node creates
+    the directory on its first write."""
+    workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
+    return os.path.join(workspace_root, "config", "state", robot_id, "last_pose.json")
+
+
+def read_last_pose(path: str, map_pcd: str):
+    """The boot guess from the last pose file the node writes
+    (localizers/last_pose_store.h), or None to fall back to [initial_pose].
+
+    Taken only when it is complete and for the map being loaded -- compared
+    by the map directory's name, which is what the node writes (map/dp/map.pcd
+    -> "dp"), so a map switch since the last run falls back to the INI rather
+    than starting the new map from a pose on the old one. Unlike the INI it
+    carries the ground's z, so the guess starts on the storey the robot was
+    on. Whether the robot is still there is not knowable here: if it was
+    carried off while down, the guess fails like any wrong one and is
+    withdrawn after guess_timeout_sec, and the file is not rewritten until the
+    robot is localized again."""
+    if not os.path.isfile(path):
+        logger.info(f"No last pose file at '{path}'; using the INI's [initial_pose]")
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            fields = json.load(f)
+        # bool is an int subclass; a number has to be a real number here, the
+        # same rule the node's own reader applies (loadLastPose).
+        pose = {}
+        for key in ("x", "y", "ground_z", "yaw"):
+            value = fields[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{key} is not a number: {value!r}")
+            pose[key] = float(value)
+        saved_map = fields["map"]
+        if not isinstance(saved_map, str) or not saved_map:
+            raise ValueError(f"map is not a name: {saved_map!r}")
+    except (OSError, KeyError, TypeError, ValueError) as err:
+        logger.warning(
+            f"Last pose file '{path}' is unreadable or incomplete ({err!r}); "
+            "using the INI's [initial_pose]"
+        )
+        return None
+    map_name = os.path.basename(os.path.dirname(map_pcd))
+    if saved_map != map_name:
+        logger.info(
+            f"Last pose file '{path}' is for map '{saved_map}', not '{map_name}'; "
+            "using the INI's [initial_pose]"
+        )
+        return None
+    logger.info(
+        f"Initial pose from the last pose file '{path}' (saved "
+        f"{fields.get('saved_at', 'at an unknown time')}): {pose}"
+    )
+    return {
+        "set_initial_pose": True,
+        "initial_pose.x": pose["x"],
+        "initial_pose.y": pose["y"],
+        "initial_pose.yaw": pose["yaw"],
+        "initial_pose.use_ground_z": True,
+        "initial_pose.ground_z": pose["ground_z"],
+    }
+
+
 def localizer_params_file() -> str:
     """The installed /**/localizer_node params file — holds every localizer
     parameter that does not depend on robot_id."""
@@ -142,7 +212,9 @@ def localizer_params_file() -> str:
     return os.path.join(pkg_localizer, "params", "localizer_params.yaml")
 
 
-def localizer_overrides(robot_id: str, map_pcd: str, initial_pose: dict) -> dict:
+def localizer_overrides(
+    robot_id: str, map_pcd: str, initial_pose: dict, last_pose_file: str
+) -> dict:
     """The instance-dependent localizer parameters, layered on top of the params
     file. cloud_topic / odom_topic live under pointlio's namespace, not the
     localizer's, so relative names cannot reach them; they are the contract with
@@ -151,13 +223,16 @@ def localizer_overrides(robot_id: str, map_pcd: str, initial_pose: dict) -> dict
     broadcasts map -> local_frame from startup; without the override that was
     the YAML's unprefixed placeholder until pointlio's first message. map_pcd is
     already absolute and verified to exist (see launch_setup); initial_pose is
-    read_initial_pose()'s dict, or None to leave set_initial_pose at the
-    params-file default (false)."""
+    read_last_pose()'s or read_initial_pose()'s dict, or None to leave
+    set_initial_pose at the params-file default (false). last_pose_file is
+    where the node keeps the pose for the next start, whichever source this
+    start's guess came from."""
     overrides = {
         "cloud_topic": f"/{robot_id}/pointlio/body_cloud",
         "odom_topic": f"/{robot_id}/pointlio/lio_odom",
         "local_frame": f"{robot_id}/pointlio_odom",
         "map_path": map_pcd,
+        "last_pose.file": last_pose_file,
     }
     if initial_pose:
         overrides.update(initial_pose)
@@ -188,7 +263,11 @@ def launch_setup(context, *args, **kwargs):
         logger.error(f"[map] pcd '{map_pcd}' does not exist; nothing to launch")
         return []
 
-    initial_pose = read_initial_pose(config_path)
+    # The last pose file first, the INI's [initial_pose] when there is none for
+    # this map: the robot was last seen at the former, the latter is wherever
+    # someone last wrote it (2026-10-23; see read_last_pose).
+    last_pose_file = last_pose_path(config_path, robot_id)
+    initial_pose = read_last_pose(last_pose_file, map_pcd) or read_initial_pose(config_path)
 
     # `name=` is fine here, unlike the planner / controller launches: this
     # process hosts exactly one node, so there is no second node to be remapped
@@ -204,7 +283,7 @@ def launch_setup(context, *args, **kwargs):
             # params file first, robot_id overrides second — later entries win
             parameters=[
                 localizer_params_file(),
-                localizer_overrides(robot_id, map_pcd, initial_pose),
+                localizer_overrides(robot_id, map_pcd, initial_pose, last_pose_file),
             ],
         ),
     ]

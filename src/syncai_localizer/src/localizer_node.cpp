@@ -159,8 +159,16 @@ LocalizerNode::LocalizerNode() : Node("localizer_node")
   if (m_config.set_initial_pose) {
     RCLCPP_INFO(
       this->get_logger(),
-      "initial pose from config: x=%.3f y=%.3f yaw=%.3f (applied on first odom)",
-      m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw);
+      "initial pose from config: x=%.3f y=%.3f yaw=%.3f%s (applied on first odom)",
+      m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw,
+      m_config.initial_pose_use_ground_z ? " with its ground z" : "");
+  }
+  if (m_config.last_pose_file.empty()) {
+    RCLCPP_INFO(this->get_logger(), "last pose file: off");
+  } else {
+    RCLCPP_INFO(
+      this->get_logger(), "last pose file: %s (every %.0f s while moving)",
+      m_config.last_pose_file.c_str(), m_config.last_pose_save_interval);
   }
 
   m_timer = this->create_wall_timer(10ms, std::bind(&LocalizerNode::timerCB, this));
@@ -187,7 +195,7 @@ void LocalizerNode::loadInitialMap()
       m_config.map_path.c_str());
     return;
   }
-  m_state.loaded_map_path = m_config.map_path;
+  setLoadedMap(m_config.map_path);
   RCLCPP_INFO(this->get_logger(), "map preloaded from %s", m_config.map_path.c_str());
   builtin_interfaces::msg::Time stamp = this->now();
   publishMapCloud(stamp);
@@ -265,13 +273,26 @@ void LocalizerNode::loadParameters()
 
   // The nested names (initial_pose.x) line up with the retired syncai_amcl's set_initial_pose /
   // initial_pose.*; both are overridden by the launch file from the [initial_pose] section of
-  // system.ini. z is deliberately not accepted here: see applyPlanarGuess.
+  // system.ini, or from the last pose file when it is for the same map (localizer.launch.py).
+  // Only the file gives a z (initial_pose.ground_z with use_ground_z): see applyPlanarGuess.
   m_config.set_initial_pose =
     declare_parameter<bool>("set_initial_pose", m_config.set_initial_pose);
   m_config.initial_pose_x = declare_parameter<double>("initial_pose.x", m_config.initial_pose_x);
   m_config.initial_pose_y = declare_parameter<double>("initial_pose.y", m_config.initial_pose_y);
   m_config.initial_pose_yaw =
     declare_parameter<double>("initial_pose.yaw", m_config.initial_pose_yaw);
+  m_config.initial_pose_use_ground_z =
+    declare_parameter<bool>("initial_pose.use_ground_z", m_config.initial_pose_use_ground_z);
+  m_config.initial_pose_ground_z =
+    declare_parameter<double>("initial_pose.ground_z", m_config.initial_pose_ground_z);
+  m_config.last_pose_file =
+    declare_parameter<std::string>("last_pose.file", m_config.last_pose_file);
+  m_config.last_pose_save_interval =
+    declare_parameter<double>("last_pose.save_interval", m_config.last_pose_save_interval);
+  m_config.last_pose_min_move =
+    declare_parameter<double>("last_pose.min_move", m_config.last_pose_min_move);
+  m_config.last_pose_min_rot =
+    declare_parameter<double>("last_pose.min_rot", m_config.last_pose_min_rot);
   m_config.lidar_height = declare_parameter<double>("lidar_height", m_config.lidar_height);
 
   // Common parameters of the small_gicp backend, shared by both registration stages.
@@ -372,8 +393,14 @@ void LocalizerNode::timerCB()
   if (m_state.initial_pose_pending) {
     m_state.initial_pose_pending = false;
     if (m_localizer->isMapLoaded()) {
+      // The ground's z only from the last pose file (NodeConfig::initial_pose_use_ground_z):
+      // at boot the current estimate is Point-LIO's origin, i.e. whatever storey the map's
+      // origin is on, and a robot shut down on another one would start a storey out.
+      std::optional<double> ground_z;
+      if (m_config.initial_pose_use_ground_z) ground_z = m_config.initial_pose_ground_z;
       applyPlanarGuess(
-        m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw, "config");
+        m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw, "config",
+        ground_z);
     } else {
       RCLCPP_WARN(
         this->get_logger(),
@@ -409,8 +436,10 @@ void LocalizerNode::timerCB()
   M4F initial_guess = M4F::Identity();
   bool service_pending = false;
   bool service_owned = false;
+  std::string round_map;
   {
     std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    round_map = m_state.loaded_map_name;
     service_pending = m_state.service_received;
     if (service_pending) {
       initial_guess = m_state.initial_guess;
@@ -750,11 +779,90 @@ void LocalizerNode::timerCB()
       m_state.localize_success = true;
       m_state.service_received = false;
       m_state.guess_owned_by_service = false;
+      m_state.pose_established = true;
     }
   }
   m_state.guess_seen_valid = false;
 
+  // Only an ordinary tracking round is a pose worth booting from: a service
+  // guess and its settle window are still converging, and an untrusted round
+  // may be riding a diverging Point-LIO.
+  if (trusted && !service_pending && !settling) maybeSaveLastPose(now, round_map);
+
   finish();
+}
+
+void LocalizerNode::maybeSaveLastPose(const rclcpp::Time & now, const std::string & round_map)
+{
+  if (m_config.last_pose_file.empty() || round_map.empty()) return;
+  if (
+    m_state.last_pose_saved &&
+    (now - m_state.last_pose_saved_time).seconds() < m_config.last_pose_save_interval) {
+    return;
+  }
+  LastPose pose;
+  V3D t;
+  double yaw = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    // A relocalize between the round's snapshot and here: this pose was
+    // solved against the previous map (or a new guess is pending on the new
+    // one). The next round saves.
+    if (m_state.service_received || m_state.loaded_map_name != round_map) return;
+    // Never localized on this map: rounds still run from whatever offset
+    // there is (identity at boot, after a wrong boot guess was withdrawn) and
+    // can converge in a wrong basin -- the loc_1022 replay with a boot guess
+    // 5 m out "converged" 50 s later 1 rad off. Broadcasting that is the
+    // node's behaviour before this file existed; booting from it next time
+    // must not be.
+    if (!m_state.pose_established) return;
+    t = m_state.good_map_body_t;
+    yaw = std::atan2(m_state.good_map_body_r(1, 0), m_state.good_map_body_r(0, 0));
+  }
+  if (m_state.last_pose_saved) {
+    const double moved = (t - m_state.last_pose_saved_t).head<2>().norm();
+    const double turned = std::abs(std::remainder(yaw - m_state.last_pose_saved_yaw, 2.0 * M_PI));
+    if (moved < m_config.last_pose_min_move && turned < m_config.last_pose_min_rot) {
+      // Parked: the file already says where the robot is. Restart the
+      // interval anyway, so the check runs at its pace and not every round.
+      m_state.last_pose_saved_time = now;
+      return;
+    }
+  }
+  pose.map = round_map;
+  pose.x = t.x();
+  pose.y = t.y();
+  pose.ground_z = t.z() - m_config.lidar_height;
+  pose.yaw = yaw;
+  std::string error;
+  // A few hundred bytes, every few seconds at most, on the timer thread: the
+  // fsyncs are the cost, and they are well inside a round's 200 ms.
+  if (!saveLastPose(m_config.last_pose_file, pose, error)) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 60000, "last pose not saved: %s", error.c_str());
+    return;
+  }
+  if (!m_state.last_pose_saved) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "last pose saved to %s (map %s, x=%.2f y=%.2f ground_z=%.2f yaw=%.2f); written again as "
+      "the robot moves",
+      m_config.last_pose_file.c_str(), pose.map.c_str(), pose.x, pose.y, pose.ground_z, pose.yaw);
+  }
+  m_state.last_pose_saved = true;
+  m_state.last_pose_saved_t = t;
+  m_state.last_pose_saved_yaw = yaw;
+  m_state.last_pose_saved_time = now;
+}
+
+void LocalizerNode::setLoadedMap(const std::string & pcd_path)
+{
+  m_state.loaded_map_path = pcd_path;
+  std::lock_guard<std::mutex> lock(m_state.service_mutex);
+  m_state.loaded_map_name = mapNameFromPcdPath(pcd_path);
+  // A pose on the previous map says nothing about this one; the guess that
+  // comes with a map switch establishes it again once it converges.
+  m_state.pose_established = false;
 }
 
 void LocalizerNode::logRoundStats(const rclcpp::Time & now)
@@ -875,7 +983,7 @@ void LocalizerNode::relocCB(
     response->message = "load map failed";
     return;
   }
-  m_state.loaded_map_path = pcd_path;
+  setLoadedMap(pcd_path);
   // The request's RAW 6-DOF pose, deliberately NOT through applyPlanarGuess: a caller that
   // knows the full pose (a bag, a test) must be able to hand it over. The price is that a flat
   // guess from a 2D source never converges on this robot's tilted mount, which is why the
@@ -931,7 +1039,7 @@ void LocalizerNode::initialPoseCB(
         m_config.map_path.c_str());
       return;
     }
-    m_state.loaded_map_path = m_config.map_path;
+    setLoadedMap(m_config.map_path);
     builtin_interfaces::msg::Time stamp = this->now();
     publishMapCloud(stamp);
   }

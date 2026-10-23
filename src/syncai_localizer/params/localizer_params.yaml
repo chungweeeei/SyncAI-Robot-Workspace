@@ -53,10 +53,31 @@
     # map_T_body always carries the mount pitch, and a 2D pose with pitch=0
     # would keep ICP from matching (see applyPlanarGuess in localizer_node.cpp).
     set_initial_pose: false
+    # Since 2026-10-23 the launch prefers the last pose file below over the
+    # INI when that file is for the INI's [map] name; only then is
+    # use_ground_z true, so a robot shut down on 2F starts its guess on 2F
+    # instead of on the storey the odometry's origin is on.
     initial_pose:
       x: 0.0
       y: 0.0
       yaw: 0.0
+      use_ground_z: false
+      ground_z: 0.0
+
+    # The last pose file (2026-10-23; localizers/last_pose_store.h has why it
+    # is a file of its own and not the INI). Every trusted tracking round --
+    # not a service guess, not its settle window, not one riding a diverging
+    # Point-LIO -- may write the pose, at most every save_interval seconds and
+    # only after min_move metres or min_rot radians (2 deg) of motion, so a
+    # parked robot does not rewrite the eMMC. Nothing is written until a
+    # guess has converged on the loaded map, so a robot carried off while it
+    # was down keeps the old file until it is localized again. file "" = off; the launch sets it to
+    # <workspace>/config/state/<robot_id>/last_pose.json.
+    last_pose:
+      file: ""
+      save_interval: 5.0
+      min_move: 0.05
+      min_rot: 0.035
 
     # Lidar (Point-LIO body) above the feet, metres. An initialpose that gives a
     # z (its z variance set) gives the ground's height; the guess puts the body

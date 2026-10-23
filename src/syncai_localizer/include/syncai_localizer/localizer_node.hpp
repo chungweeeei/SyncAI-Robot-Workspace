@@ -59,6 +59,7 @@
 #include "syncai_localizer/localizers/commons.h"
 #include "syncai_localizer/localizers/global_localizer.h"
 #include "syncai_localizer/localizers/icp_localizer.h"
+#include "syncai_localizer/localizers/last_pose_store.h"
 #include "syncai_localizer/localizers/localizability.h"
 
 namespace syncai_localizer
@@ -88,11 +89,25 @@ struct NodeConfig
   // set, it is applied once as the ICP initial guess as soon as the first odom arrives, which is
   // equivalent to an automatic relocalize with no manual service call.
   // Only x / y / yaw: z / roll / pitch are always taken from the current estimate, for the
-  // reasons given at applyPlanarGuess.
+  // reasons given at applyPlanarGuess -- except when the launch filled it in from the last
+  // pose file (last_pose_store.h), which knows the storey: then initial_pose_ground_z is the
+  // ground under the robot and use_ground_z is true, exactly as an initialpose with a marked
+  // z. The INI's [initial_pose] never sets it.
   bool set_initial_pose = false;
   double initial_pose_x = 0.0;
   double initial_pose_y = 0.0;
   double initial_pose_yaw = 0.0;
+  bool initial_pose_use_ground_z = false;
+  double initial_pose_ground_z = 0.0;
+  // The last pose file (localizers/last_pose_store.h): every trusted registration is a
+  // candidate, written at most every last_pose_save_interval seconds and only once the robot
+  // has moved last_pose_min_move metres or turned last_pose_min_rot radians since the last
+  // write, so a parked robot does not rewrite the eMMC every few seconds. "" = off; the launch
+  // sets it to <workspace>/config/state/<robot_id>/last_pose.json.
+  std::string last_pose_file = "";
+  double last_pose_save_interval = 5.0;
+  double last_pose_min_move = 0.05;
+  double last_pose_min_rot = 0.035;
   // Height of the lidar (Point-LIO's body frame) above the feet, metres. An initialpose that
   // gives a z gives the ground's height, and this raises it to the body's. The controller's
   // and the planner's `lidar_height` are the same number; keep the three equal.
@@ -236,6 +251,18 @@ struct NodeState
   // during construction and on the services' callback group, and only read on
   // that group, so it needs no lock.
   std::string loaded_map_path;
+  // loaded_map_path's map name (mapNameFromPcdPath), for the last pose file. Unlike the path
+  // it is read on the timer thread too, so it is written and read under service_mutex.
+  std::string loaded_map_name;
+  // A guess (the boot one, initialpose, relocalize, auto_localize, reset_odometry) has
+  // converged on the loaded map since it was loaded (service_mutex). A guess that is withdrawn
+  // leaves it as it was. Until it is true nothing is written to the last pose file.
+  bool pose_established = false;
+  // The last pose file's throttle (timer thread only): what was written last, and when.
+  bool last_pose_saved = false;
+  V3D last_pose_saved_t = V3D::Zero();
+  double last_pose_saved_yaw = 0.0;
+  rclcpp::Time last_pose_saved_time{0, 0, RCL_SYSTEM_TIME};
   M3D last_r;                           // localmap_body_r
   V3D last_t;                           // localmap_body_t
   M3D last_offset_r = M3D::Identity();  // map_localmap_r
@@ -414,6 +441,14 @@ private:
 
   // One `loc stats:` line a minute from the round counters in NodeState.
   void logRoundStats(const rclcpp::Time & now);
+
+  // Write the last trusted pose to NodeConfig::last_pose_file when the throttle allows.
+  // `round_map` is the map name snapshot taken when the round started; a relocalize that
+  // switched maps mid-round makes it stale, and nothing is written then.
+  void maybeSaveLastPose(const rclcpp::Time & now, const std::string & round_map);
+
+  // loaded_map_path and its name together, after a successful loadMap.
+  void setLoadedMap(const std::string & pcd_path);
 
   NodeConfig m_config;
   NodeState m_state;

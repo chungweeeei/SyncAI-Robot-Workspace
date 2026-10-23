@@ -45,6 +45,10 @@ find_package(syncai_common REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(small_gicp REQUIRED)
+# The last pose file (localizers/last_pose_store.*) is JSON like the
+# workspace's other machine-written sidecars; same package and version floor
+# as syncai_mapping's clean_map, so the image already has it.
+find_package(nlohmann_json 3.2.0 REQUIRED)
 
 add_executable(localizer_node
   src/main.cpp
@@ -52,6 +56,7 @@ add_executable(localizer_node
   src/localizers/icp_localizer.cpp
   src/localizers/global_localizer.cpp
   src/localizers/localizability.cpp
+  src/localizers/last_pose_store.cpp
 )
 target_include_directories(localizer_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -78,6 +83,7 @@ ament_target_dependencies(localizer_node
 target_link_libraries(localizer_node
   ${PCL_LIBRARIES}
   small_gicp::small_gicp
+  nlohmann_json::nlohmann_json
 )
 
 install(TARGETS localizer_node
@@ -117,6 +123,18 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
     ${PCL_INCLUDE_DIRS})
+
+  # The last pose file (localizers/last_pose_store.*): plain C++ and POSIX, so
+  # the round trip, the atomic write and the refusal of a truncated file are
+  # tested here without a node. What the launch does with the file (map match,
+  # fallback to the INI) is Python and is checked by hand -- see the README.
+  ament_add_gtest(test_last_pose_store
+    test/test_last_pose_store.cpp
+    src/localizers/last_pose_store.cpp
+  )
+  target_include_directories(test_last_pose_store PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_last_pose_store nlohmann_json::nlohmann_json)
 endif()
 
 ament_package()

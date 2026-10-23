@@ -71,6 +71,7 @@ wrong. Check with `ros2 node info /<robot_id>/localizer_node`, not with
 | `initialpose` | `geometry_msgs/PoseWithCovarianceStamped`, depth 10 | the console, rviz "2D Pose Estimate", the backend's map switch | A 2D guess through `applyPlanarGuess` (below); `position.z` is the ground's height and taken only when `covariance[14]` (the z variance) is positive |
 | `relocalize` | `syncai_common/srv/Relocalize` | the backend (initial pose, map switch), a shell | (Re)load a PCD and take the request's raw 6-DOF pose as the next guess |
 | `[map] pcd`, `[initial_pose]` | `config/system.ini` via the launch | | `map_path` (loaded during construction) and the boot guess |
+| `config/state/<robot_id>/last_pose.json` | written by this node, read by the launch | | The boot guess when it is for the loaded map, ahead of `[initial_pose]`; see "The last pose file" |
 
 The two topics are joined by a `message_filters` `ApproximateTime` synchroniser
 (queue 10, age penalty 0.1). They are **absolute names set as parameters**,
@@ -123,12 +124,53 @@ loaded the TF stays at identity.
    covariance cell 0 — on the storey they are on, rather than pulled to the
    ground floor. The ground only has to be close: half a metre out (the
    console's "0 is the ground floor") is well inside `rough_max_corr_dist`.
-   The INI's `[initial_pose]` has no z and stays on the current estimate's.
+   The INI's `[initial_pose]` has no z and stays on the current estimate's;
+   the last pose file (below) has one, and the boot guess takes it.
 
 The consequence for callers: a `relocalize` from a 2D source (the console's
 gridmap click) must be **followed by an `initialpose` publish**, which
 overwrites the flat guess with a tilt-correct one before the next round. The
 backend's map switch does exactly that, in that order. Keep both paths.
+
+### The last pose file: booting where the robot stopped
+
+Since 2026-10-23 every trusted tracking round may write the map pose to
+`config/state/<robot_id>/last_pose.json` (`last_pose.file`, which the launch
+sets), and the next start's launch takes it as the boot guess ahead of the
+INI's `[initial_pose]`, so a robot shut down anywhere on a map localizes
+itself on the next start with no `initialpose`. On loc_1022 (dp, 2026-10-22)
+the INI said (0, 0), the robot stood at (2.06, 4.61), and it took two
+initialposes from the console and 26 s to localize.
+
+- **What is written.** One JSON object: `map` (the map directory's name, never a path), x, y,
+  yaw and `ground_z` — the ground under the body, as an initialpose's marked
+  z — so a robot shut down on 2F starts its guess on 2F. Only a round that is
+  trusted (the same test `reset_odometry`'s seed uses) and is neither a
+  service guess nor inside its settle window; at most every
+  `last_pose.save_interval` (5 s), and only after `min_move` (0.05 m) or
+  `min_rot` (2°) of motion, so a parked robot does not rewrite the eMMC. The
+  write is tmp + fsync + rename (`localizers/last_pose_store.*`), so a power
+  loss leaves the old file or the new one.
+- **When it is read.** By the launch, when the file is complete and its `map`
+  equals the loaded PCD's directory; otherwise (no file, a broken one, a map
+  switch since) `[initial_pose]` as before, with a log line saying which.
+  The guess goes through `applyPlanarGuess` like the INI's, with the file's
+  `ground_z`.
+- **When it is wrong.** A robot carried off while it was down gets a guess
+  that does not converge; it is withdrawn after `guess_timeout_sec` like any
+  other, and nothing searches on its own (decided 2026-10-23: the operator
+  sends an `initialpose` or runs the auto localization). Nothing is written
+  until a guess has converged on the loaded map (`pose_established`; a map
+  switch clears it), because after a withdrawn guess the rounds keep running
+  from whatever offset is left and can converge in a wrong basin: the
+  loc_1022 replay with a boot guess 5 m out "converged" 50 s later 1 rad off.
+  So a wrong file is never overwritten with another wrong pose.
+- **Why not the INI.** The instance INI is a single-file bind mount, which
+  cannot be replaced by rename, so a rewrite cut by a power loss would take
+  `robot_id` and `[map]` with it; the backend writes `[initial_pose]` too; and
+  `sys_manager` only builds a session at container start, so a rewrite there
+  would miss every AUTO session from `switch_mode` / `restart_mode`. Deleting
+  the file is safe: the next start uses the INI.
 
 ### `auto_localize`: the kidnap recovery
 
@@ -387,7 +429,9 @@ throwing. The launch layers the instance values on top.
 | `map_frame` | `map` | | Never namespaced |
 | `local_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | Replaced by the first odom's `frame_id`, but the 10 ms timer broadcasts `map → local_frame` before that, so the launch sets the same name pointlio broadcasts. The YAML said `laser` until 2026-10, and that unprefixed frame was on TF until pointlio's first message |
 | `map_path` | `""` | `[map] pcd`, made absolute | Loaded in the constructor. Empty → the node runs but cannot localize until `relocalize` |
-| `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
+| `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from the last pose file, else `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
+| `initial_pose.{use_ground_z,ground_z}` | `false`, `0.0` | from the last pose file only | The boot guess's storey |
+| `last_pose.{file,save_interval,min_move,min_rot}` | `""`, `5.0` s, `0.05` m, `0.035` rad | `file` = `config/state/<robot_id>/last_pose.json` | The last pose file's path and write throttle |
 | `lidar_height` | `0.481` m | | Lidar above the feet: how far above a marked `initialpose` z (a ground height) the guess puts the body. Same as the controller's and planner's `lidar_height` |
 | `update_hz` | `5.0` | | Ceiling on re-registration; was 1.0 until 2026-08-28 (staircase corrections at 0.7 m/s) |
 | `min_update_trans` / `min_update_rot` | `0.05` m / `0.02` rad | | Motion gate thresholds |
