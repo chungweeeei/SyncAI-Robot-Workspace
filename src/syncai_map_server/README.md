@@ -170,8 +170,11 @@ idle mode: no mask published, `filter_mask_server/load_map` still served — so
 a mask drawn later, or a switch to a 2D map, is a `load_map` call. No blank
 mask is generated for a 3D map: `octomap.bt`'s header has no bounding box,
 sizing one means loading the whole tree (or `map.pcd`) in a launch file, and
-`Octo3D` does not read the keepout yet. The planner's "Filter mask was not
-received" is therefore expected on such a map. The same idle start covers an
+`Octo3D` does not read this mask at all — a 3D map's forbidden zones are
+**`map/<name>/keepout.json`** (polygons with a z band per floor, read by the
+planner itself and reloaded with `planner_server/Octo3D/load_keepout`; see
+`syncai_global_planner`'s README, "Keepout zones"). The planner's "Filter
+mask was not received" is therefore expected on such a map. The same idle start covers an
 unreadable gridmap, a blank mask that cannot be written, and an existing
 `keepout.yaml` whose image is missing (reported, never replaced — it is
 operator data). Only an explicit `mask_yaml:=` that does not exist still starts

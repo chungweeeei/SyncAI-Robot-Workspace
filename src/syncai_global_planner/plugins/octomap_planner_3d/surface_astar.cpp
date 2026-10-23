@@ -28,6 +28,8 @@ const char * planFailureName(PlanFailure f)
       return "start_unavailable";
     case PlanFailure::GoalUnavailable:
       return "goal_unavailable";
+    case PlanFailure::StartInKeepout:
+      return "start_in_keepout";
     case PlanFailure::Disconnected:
       return "disconnected";
     case PlanFailure::SearchLimit:
@@ -86,7 +88,8 @@ SnapResult SurfaceAStar::snap(
 {
   const SurfaceMap & m = *map_;
   SnapResult out;
-  size_t n_blocked = 0;  // traversable cells within the radius the overlay refused
+  // Traversable cells within the radius the view refused, by source.
+  size_t n_marked = 0, n_zoned = 0;
   const int cx = m.ixOf(x), cy = m.iyOf(y);
   if (!m.inGrid(cx, cy)) {
     out.outside = true;
@@ -123,7 +126,9 @@ SnapResult SurfaceAStar::snap(
           continue;
         }
         if (blocked && blocked->blocked(m, i)) {
-          ++n_blocked;
+          // A cell both refuse counts as a zone's: the zone is permanent and
+          // the one the operator can do something about.
+          (blocked->blockedByZone(m, i) ? n_zoned : n_marked)++;
           continue;
         }
         if (prefer_component != kNoComponent && reach(i) != want) {
@@ -171,9 +176,13 @@ SnapResult SurfaceAStar::snap(
   if (best_other == kNoCell) {
     out.detail += m.describeColumn(m.col(cx, cy));
   }
-  if (n_blocked > 0) {
-    out.detail += "; " + std::to_string(n_blocked) +
+  if (n_marked > 0) {
+    out.detail += "; " + std::to_string(n_marked) +
                   " traversable cells within the radius are blocked by dynamic obstacles";
+  }
+  if (n_zoned > 0) {
+    out.detail +=
+      "; " + std::to_string(n_zoned) + " traversable cells within the radius are in keepout zones";
   }
   return out;
 }
@@ -294,6 +303,11 @@ PlanResult SurfaceAStar::plan(
       const auto it = links_->at.find(c);
       if (it != links_->at.end()) {
         for (const uint32_t li : it->second) {
+          // A link the keepout zones cut (a point of it in a core) is not a
+          // move: the one way a zone forbids a stair.
+          if (blocked.keepout && blocked.keepout->linkCut(li)) {
+            continue;
+          }
           const StairLink & l = links_->links[li];
           const CellId n = l.a == c ? l.b : l.a;
           if (closed_stamp_[n] == gen) {
@@ -314,11 +328,18 @@ PlanResult SurfaceAStar::plan(
   if (r.failure == PlanFailure::None) {
     r.failure = PlanFailure::NoPath;
     r.detail = "the open set ran out before the goal was reached";
-    // The components are baked, so this is the one way a mark shows up as a
-    // failure: say so, or a route that existed yesterday "has no path".
+    // The components and the linked groups are baked, so this is the one
+    // way a mark or a zone shows up as a failure: say so, or a route that
+    // existed yesterday "has no path".
     if (blocked.mask) {
       r.detail += " (" + std::to_string(blocked.mask->marked) +
                   " cells marked by dynamic obstacles; a mark may have closed the way)";
+    }
+    if (blocked.keepout) {
+      r.detail += " (" + std::to_string(blocked.keepout->zones) + " keepout zones block " +
+                  std::to_string(blocked.keepout->blocked) + " cells and cut " +
+                  std::to_string(blocked.keepout->links_cut) +
+                  " stair links; a zone may have closed the way)";
     }
   }
   r.search_s = std::chrono::duration<double>(Clock::now() - t0).count();

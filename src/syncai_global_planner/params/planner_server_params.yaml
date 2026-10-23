@@ -449,6 +449,35 @@
         # out to clearance_cost_radius, as for a wall.
         block_radius: 0.35
 
+      # ---- keepout zones (2026-10-23) ----
+      # What map/<name>/keepout.yaml + keepout.pgm are to the 2D global
+      # costmap's KeepoutFilter, which this planner never reads: the zones
+      # of a 3D map are map/<name>/keepout.json beside octomap.bt --
+      # polygons in the map frame, each with a z band naming its floor
+      # (keepout_zones.hpp has the format; a 2D image cannot say which of
+      # a site's storeys a pixel forbids). Read with the tree at boot and on
+      # every load_map, rasterised on the surface map, and read beside the
+      # dynamic overlay's marks by the goal snap, the search, the shortcut
+      # and is_path_valid, so a zone is kept off exactly as a person is. A
+      # start inside a zone fails start_in_keepout; a stair link with a
+      # point in a zone is never taken. Reload an edited file with
+      # planner_server/Octo3D/load_keepout (nav2_msgs/LoadMap, map_url =
+      # the file, "" = no zones); clear_overlay leaves the zones alone.
+      keepout:
+        # The file. Empty = keepout.json beside octomap_file, which is what
+        # every map uses; load_map always takes the new tree's own and
+        # writes it back here, and `ros2 param set` is refused (call
+        # load_keepout). Absent = no zones, one info line.
+        file: ""
+        # Ring round a zone's core within which cells are blocked: the
+        # robot's radius, the costmap's inscribed radius that KeepoutFilter
+        # inflates the 2D mask with, so a zone closes a gap narrower than
+        # the robot exactly as a wall does and the editor draws the forbidden
+        # area only, no margin. = robot_radius above; change the two
+        # together. The clearance cost applies beyond it as for a wall.
+        # Dynamic: re-rasterised on change.
+        block_radius: 0.25
+
       # ---- output ----
       # Line-of-sight shortcut of the cell chain (supercover, step-continuous,
       # never closer to the boundary than the search was), then a resample

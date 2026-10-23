@@ -37,6 +37,10 @@
        same rosdep key syncai_mapping's clean_map uses; the image's dev stage
        installs ros-humble-octomap for it. -->
   <depend>octomap</depend>
+  <!-- OctomapPlanner3D's keepout zones (map/<name>/keepout.json) are parsed
+       with nlohmann-json, header-only (apt nlohmann-json3-dev; the key
+       syncai_localizer and syncai_mapping use too). -->
+  <depend>nlohmann-json-dev</depend>
 
   <!-- OctomapPlanner3D's dynamic-obstacle overlay (2026-10-21) subscribes
        the lidar cloud through a TF message filter and transforms it into the

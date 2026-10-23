@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
@@ -70,6 +71,10 @@ void usage()
     "                           returns 0.3 and 0.5 m up on a 0.3 m square, marked in the\n"
     "                           dynamic overlay before every --plan as the robot's scans would\n"
     "                           mark them (repeatable; the plan detours round them)\n"
+    "  --keepout <keepout.json> the map's keepout zones (keepout_zones.hpp): rasterised on the\n"
+    "                           map with robot_radius as the ring, read by every --plan as the\n"
+    "                           plugin reads them, drawn by --dump-image (crimson core, dark red\n"
+    "                           ring)\n"
     "  --plan-poses <i> <j>     plan between keyframes i and j of --poses (ground = z - lidar "
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
@@ -449,9 +454,12 @@ struct ImageRegion
   bool by_component = false;
 };
 
+// keepout: the map's keepout mask (--keepout) or null; its cores and rings
+// on the layer nearest z are drawn over the state colours.
 bool dumpImage(
   const SurfaceMap & m, double z, const std::vector<Pose> & poses,
-  const std::vector<PlannedPath> & paths, const ImageRegion & reg, const std::string & path)
+  const std::vector<PlannedPath> & paths, const ImageRegion & reg, const KeepoutMask * keepout,
+  const std::string & path)
 {
   const int W = (reg.ix1 - reg.ix0) * reg.scale, H = (reg.iy1 - reg.iy0) * reg.scale;
   const int row = (W * 3 + 3) & ~3;
@@ -518,6 +526,22 @@ bool dumpImage(
           break;
         default:
           break;
+      }
+    }
+  }
+  if (keepout) {
+    const int kz = static_cast<int>(std::floor((z - m.z0) / m.res)) - 1;
+    for (int iy = reg.iy0; iy < reg.iy1; ++iy) {
+      for (int ix = reg.ix0; ix < reg.ix1; ++ix) {
+        const CellId l = m.layerNear(m.col(ix, iy), kz, 10);
+        if (l == kNoCell) {
+          continue;
+        }
+        if (keepout->core_(l)) {
+          put(ix, iy, 200, 30, 60);
+        } else if (keepout->d[l] <= keepout->block_radius) {
+          put(ix, iy, 120, 30, 40);
+        }
       }
     }
   }
@@ -692,13 +716,16 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
   return static_cast<bool>(out);
 }
 
-// mask: the dynamic overlay's snapshot (--dynamic), or null. Read exactly as
-// the plugin reads it: the goal snap, the search and the shortcut keep off
-// it, with the disc round the start exempt from the dilation.
+// mask: the dynamic overlay's snapshot (--dynamic), or null; keepout: the
+// map's keepout mask (--keepout), or null. Read exactly as the plugin reads
+// them: the goal snap, the search and the shortcut keep off both, with the
+// disc round the start exempt from the dilation, and a start inside a zone's
+// core is refused.
 int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
-  std::vector<PlannedPath> * planned, const DynamicMask * mask)
+  std::vector<PlannedPath> * planned, const DynamicMask * mask, const KeepoutMask * keepout,
+  const std::vector<KeepoutZone> & zones)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -710,10 +737,19 @@ int runPlan(
       s.detail.c_str());
     return 1;
   }
+  if (keepout && keepout->core_(s.cell)) {
+    const KeepoutZone * z = zoneAt(zones, m, s.cell);
+    std::printf(
+      "plan: %s: the start stands inside keepout zone %s\n",
+      planFailureName(PlanFailure::StartInKeepout), z ? zoneLabel(*z).c_str() : "?");
+    return 1;
+  }
   BlockedView blocked;
   blocked.mask = mask;
+  blocked.keepout = keepout;
   blocked.exempt = s.cell;
-  blocked.exempt_radius = mask ? mask->block_radius : 0.0;
+  blocked.exempt_radius =
+    std::max(mask ? mask->block_radius : 0.0, keepout ? keepout->block_radius : 0.0);
   const SnapResult g = astar.snap(gx, gy, gz, sp, m.cells[s.cell].component, &blocked);
   if (g.cell == kNoCell) {
     std::printf(
@@ -774,9 +810,10 @@ int runPlan(
   std::printf(
     "plan: ok -- %zu cells, cost %.2f, %zu iterations, search %.3f s, total %.3f s; "
     "shortcut to %zu vertices; %zu poses, %.2f m (raw %.2f m), z %.2f..%.2f, min clearance %.2f "
-    "m, %zu stair links, %zu dynamic marks\n",
+    "m, %zu stair links, %zu dynamic marks, %zu keepout cells\n",
     raw_cells, r.cost, r.iterations, r.search_s, total, vertices, path.size(), len, raw_len, zmin,
-    zmax, min_clear, r.links.size(), mask ? mask->marked : size_t{0});
+    zmax, min_clear, r.links.size(), mask ? mask->marked : size_t{0},
+    keepout ? keepout->blocked : size_t{0});
   for (const LinkUse & u : r.links) {
     const StairLink & l = astar.links()->links[u.link];
     std::printf(
@@ -1099,6 +1136,7 @@ int main(int argc, char ** argv)
   std::vector<PlanReq> plans;
   std::vector<PlannedPath> planned;
   std::vector<Waypoint> people;  // --dynamic
+  std::string keepout_path;      // --keepout
   std::string html_path;
   std::string out_path;
   std::string write_bt_path;
@@ -1163,6 +1201,8 @@ int main(int argc, char ** argv)
       w.y = std::atof(next("--dynamic").c_str());
       w.z = std::atof(next("--dynamic").c_str());
       people.push_back(w);
+    } else if (a == "--keepout") {
+      keepout_path = next("--keepout");
     } else if (a == "--out") {
       out_path = next("--out");
     } else if (a == "--write-bt") {
@@ -1345,6 +1385,30 @@ int main(int argc, char ** argv)
       std::printf("  note: %s\n", note.c_str());
     }
   }
+  // --keepout: the zones as the plugin loads them beside the tree, with
+  // robot_radius as the ring (the plugin's keepout.block_radius, 0.25, is
+  // that same number by design).
+  std::vector<KeepoutZone> zones;
+  KeepoutMaskPtr keepout;
+  if (!keepout_path.empty()) {
+    std::string error;
+    if (!readKeepoutFile(keepout_path, zones, error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    keepout = buildKeepoutMask(*map, links.get(), zones, params.robot_radius);
+    std::printf(
+      "keepout: %zu zones from %s, %zu cells blocked (%zu core), %zu stair links cut (ring %.2f "
+      "m)\n",
+      zones.size(), keepout_path.c_str(), keepout ? keepout->blocked : size_t{0},
+      keepout ? keepout->core : size_t{0}, keepout ? keepout->links_cut : size_t{0},
+      params.robot_radius);
+    for (const KeepoutZone & z : zones) {
+      std::printf(
+        "  zone %s: %zu vertices, z %.2f..%.2f\n", zoneLabel(z).c_str(), z.polygon.size(), z.z_min,
+        z.z_max);
+    }
+  }
   if (!plans.empty()) {
     SurfaceAStar astar(map, links);
     // --dynamic: the people are placed by hand, not seen, so the ranges the
@@ -1398,8 +1462,8 @@ int main(int argc, char ** argv)
           people.size(), returns.size(), st.marked, mask ? mask->marked : size_t{0});
       }
       rc |= runPlan(
-        astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned,
-        mask.get());
+        astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned, mask.get(),
+        keepout.get(), zones);
     }
   }
   if (!image_path.empty()) {
@@ -1414,7 +1478,7 @@ int main(int argc, char ** argv)
       reg.ix1 = std::min(map->nx, map->ixOf(region[2]) + 1);
       reg.iy1 = std::min(map->ny, map->iyOf(region[3]) + 1);
     }
-    if (!dumpImage(*map, image_z, poses, planned, reg, image_path)) {
+    if (!dumpImage(*map, image_z, poses, planned, reg, keepout.get(), image_path)) {
       std::fprintf(stderr, "cannot write '%s'\n", image_path.c_str());
       return 1;
     }

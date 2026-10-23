@@ -583,10 +583,12 @@ ros2 service call /<robot_id>/planner_server/Octo3D/load_map nav2_msgs/srv/LoadM
   tree is ever in memory — and a failed build (`RESULT_INVALID_MAP_DATA`)
   leaves **no map**, not the old one: every `Octo3D` plan then fails with
   `map_not_loaded` and the reason.
-- `poses.txt` is always taken from beside the new tree (an explicit
-  `poses_file` applies at boot only), and both paths are written back to
-  `Octo3D.octomap_file` / `poses_file`, which `ros2 param set` otherwise
-  refuses.
+- `poses.txt` and `keepout.json` are always taken from beside the new tree
+  (an explicit `poses_file` / `keepout.file` applies at boot only), and all
+  three paths are written back to `Octo3D.octomap_file` / `poses_file` /
+  `keepout.file`, which `ros2 param set` otherwise refuses. An absent
+  `keepout.json` is no zones; a broken one loads the map without zones and
+  logs an error (see "Keepout zones").
 - The planner's own `clear_plan` is called, so `plan` stops re-sending the
   old map's route.
 - One reload at a time on its own thread: a second call waits for the
@@ -607,6 +609,7 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --plan sx sy sz gx gy gz --out path.csv / --plan-poses i j  # z are height hints
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
    … --poses … --plan-poses 0 2000 [--no-stair-links]           # with --poses, the track's stairs are links
+   … --keepout map/<name>/keepout.json --plan … --dump-image out.bmp   # the zones, as the plugin reads them (see "Keepout zones")
    … --synthetic ramp|stairs|kerb|drop|wall|hole|two_floors      # the test scenes
    … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
 ```
@@ -711,18 +714,96 @@ the overlay before every `--plan` and prints the plan's mark count: on
 plan through it `no_path`. `test/test_surface_map.cpp`'s `DynamicOverlay`
 cases are the promises above, one each.
 
+**Keepout zones** (2026-10-23). What `map/<name>/keepout.yaml` +
+`keepout.pgm` are to the 2D global costmap's `KeepoutFilter` — which this
+planner never reads, so until 2026-10-23 nothing kept the robot out of a
+zone on a 3D map (decided 2026-10-19, pending a decision on floors). The
+zones of a 3D map are **`map/<name>/keepout.json`** beside `octomap.bt`:
+
+```json
+{ "version": 1,
+  "zones": [ { "id": "zone-7f3a", "name": "server rack 2F",
+               "polygon": [[12.4, 3.1], [15.0, 3.1], [15.0, 5.6], [12.4, 5.6]],
+               "z_min": 4.5, "z_max": 5.5 } ] }
+```
+
+Vector polygons, not a raster: a 3D map has no gridmap to size a mask from,
+a site map has several storeys, and one 2D image cannot say which floor a
+pixel forbids — the corridor on 1F and the room above it share an (x, y). So
+each zone is a polygon in the map frame (metres, three or more `[x, y]`
+vertices, implicitly closed — a repeated first vertex is dropped — either
+winding, even-odd if self-crossing) with a **z band** naming its floor:
+`z_min` / `z_max` are optional (absent = unbounded that side) and a backend
+writes `floor_z ± 0.5`. `id` is required, non-empty and unique in the file
+(the logs and `error_msg` name zones by it), `name` is for display,
+`version` is optional (absent = 1; a larger one is refused as written by a
+newer backend), unknown keys are ignored, every number must be finite.
+Nothing in the file names the map or holds a path, so a map directory still
+renames with one `os.rename`. The rules are enforced by
+`keepout_zones.hpp`'s parser, which refuses the file with the zone and key
+named; `test/test_surface_map.cpp`'s `KeepoutZones` cases are the contract.
+
+What a zone does, on the surface map: a cell is in the zone's **core** when
+its column centre lies inside the polygon and its top face in the band — so
+the same polygon with band 4.5..5.5 forbids 2F and leaves 1F alone — and the
+core is dilated over the surface by **`keepout.block_radius`** (0.25, the
+robot's radius: the costmap's inscribed radius, what the 2D `KeepoutFilter`
+inflates its mask with, so a zone closes any gap narrower than the robot
+exactly as a wall does and the editor draws the forbidden area only, no
+margin), and costed beyond that out to `clearance_cost_radius` with the
+walls' own curve. The dilation is the dynamic overlay's (`dilateOnSurface`):
+it follows a ramp and stops at a floor edge the way a mark's does, so one
+floor's zone never reaches the other. The mask (`KeepoutMask`) rides beside
+the overlay's in every `BlockedView`, so the goal snap, the search, the
+shortcut and `is_path_valid` keep off a zone exactly as they keep off a
+person: a goal inside one fails `goal_unavailable` ("… in keepout zones"), a
+zone across the only corridor fails `no_path` with the zones named (the
+components are baked, so never `disconnected`), and a **stair link any of
+whose points lies in a core is cut** — never expanded by the search, so a
+zone over a stair foot forbids that stair (`no_path`, "… cut N stair
+links"). A robot **standing inside a core is refused a plan**
+(`start_in_keepout`, naming the zone; the 2D planner fails on a lethal start
+the same way) and the operator drives it out; the ring round the robot's own
+cell is exempt as it is for a mark, so standing next to a zone edge is fine.
+`clear_overlay` drops marks and leaves zones alone.
+
+The file is read with the tree — at boot and on every `load_map`, always
+from beside the new tree (an explicit `keepout.file` applies at boot only,
+and is written back like `octomap_file`). Absent = no zones, one info line.
+A **broken file beside a good tree loads the map without zones** and logs an
+error saying the zones protect nothing: failing the whole load would leave
+*no map* (a reload drops the old one first), which strands the robot worse
+than missing zones. Reloading an edited file needs no rebuild:
+
+```bash
+ros2 service call /<robot_id>/planner_server/Octo3D/load_keepout nav2_msgs/srv/LoadMap \
+    "{map_url: 'map/<name>/keepout.json'}"
+```
+
+| `map_url` | Result | Effect |
+|---|---|---|
+| `""` | `RESULT_SUCCESS` | no zones: the mask dropped, `keepout.file` written back empty |
+| a file that does not exist | `RESULT_MAP_DOES_NOT_EXIST` | nothing changes (as `load_map`) |
+| any, with no 3D map loaded | `RESULT_UNDEFINED_FAILURE` | nothing to rasterise on; the next `load_map` reads the file beside its tree |
+| a file the parser refuses | `RESULT_INVALID_MAP_DATA` | the **current zones are kept** (stale zones are safer than none; unlike `load_map` there is no memory reason to drop first), the error logged |
+| a good file | `RESULT_SUCCESS` | parsed and rasterised outside the plan lock, swapped in under it; waits for a boot build and for a plan in flight (≤ `max_planning_time`). **No `clear_plan`**: the current route is judged against the new zones by the next `is_path_valid` (1 Hz), and `move_3d.xml` replans after `blocked_time` |
+
+On `load_map`'s thread, so a reload and a keepout load never interleave. The
+backend writes the file and calls this after an edit; a map switch needs no
+extra call. `octomap_planner_3d_cli --keepout <file>` reads it for every
+`--plan` as the plugin does and draws the cores (crimson) and rings (dark
+red) in `--dump-image`: on `--synthetic flat` a 2 × 2 m box across the line
+from (2, 4) to (10, 4) turns the 8.00 m route into an 8.97 m detour, a start
+inside it is `start_in_keepout`, and on `stairs` a box over the flight cuts
+all 41 links and the upper floor is `no_path`.
+
 **Known limits** (prototype):
 
-- **`Octo3D` ignores the keepout (forbidden zones)** — by decision
-  (2026-10-19), not yet built. The zones live only in the 2D global costmap
-  (`KeepoutFilter`), whose cells `Octo3D` never reads, and the controllers'
-  local costmap has no filter either — so on a 3D map **nothing keeps the
-  robot out of a zone**. A map is 2D or 3D, never both (2026-10-19), and a
-  3D map has no mask at all (no gridmap to size one from; the mask server
-  runs idle), so the zone editor has no canvas there; a 2D map runs
-  `move.xml` with `GridBased`, where the keepout works as on `dev`.
-  Doing it needs a decision on floors first: a mask is one 2D image, a
-  3D map has several storeys.
+- The keepout is the planner's alone: the controllers' local costmap has no
+  filter (as in 2D), so the planner keeps the robot out and MPPI cannot
+  reject a path for grazing a zone edge. `is_path_valid` sees a zone only
+  after a `load_keepout` changed it under a running path (a path planned
+  with the zones never crosses one).
 - `is_path_valid` for an `Octo3D` path judges only the floor stretch the
   robot is on, answers "valid" on a stair, and sees nothing the overlay did
   not mark: a person inside a wall's 0.25 m ring, anything the lidar's −7°
@@ -846,8 +927,9 @@ margin; a zone then closes any gap narrower than the robot exactly as a wall
 does), and only the global costmap has the filter — the controller's local
 costmap does not, so the planner alone keeps the robot out and RPP cannot
 reject a path for grazing a zone edge. That planner is `GridBased`:
-**`Octo3D` does not read the keepout** (see its "Known limits"), so on a 3D
-map, whose trees plan with `Octo3D`, there are no zones. Running the mask source
+**`Octo3D` does not read this mask** — a 3D map's zones are
+`map/<name>/keepout.json`, polygons with a z band per floor that the planner
+reads itself (see "Keepout zones" under `OctomapPlanner3D`). Running the mask source
 by hand, outside the session:
 
 ```bash
@@ -885,6 +967,8 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | `dynamic.min_obstacle_height` | `0.1` | Band bottom above a surface's top face; the top is `body_clearance`. The terrain layer's band. Dynamic |
 | `dynamic.obstacle_memory` | `30.0` s | How long an unrefreshed, uncleared mark lives: outlasts `blocked_time` (10 s) plus a plan plus the detour's blind stretch. Dynamic |
 | `dynamic.block_radius` | `0.35` | Cells within it of a mark are blocked (search, shortcut, goal snap, `is_path_valid`); also the exempt disc round the start. Between the inscribed 0.25 and the circumscribed 0.455, what the 2D perimeter test sweeps. Dynamic |
+| `keepout.file` | `""` (= `keepout.json` next to `octomap_file`) | The zones (see **Keepout zones**); absent = none. Boot only: `load_map` takes the new tree's own and writes it back; `ros2 param set` is refused (call `load_keepout`) |
+| `keepout.block_radius` | `0.25` | Ring round a zone's core within which cells are blocked: = `robot_radius`, the inscribed radius `KeepoutFilter` inflates the 2D mask with — change the two together. Dynamic (re-rasterised) |
 
 A build-time parameter set through `ros2 param set` is refused with the
 reason; it needs a planner_server restart.
@@ -897,9 +981,10 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
 | Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` |
-| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10) — and by the 3D trees since 2026-10-21: when the last plan was made by a planner that does not use the costmap (`Octo3D`), the server asks that planner instead of its costmap (`GlobalPlanner::isPathValid()`), and it judges on its dynamic overlay (see **Dynamic obstacles**); before any plan, or after `clear_plan`, the costmap test answers. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Two tests per pose: the centre cell `< INSCRIBED` (the test SmacPlanner2D expands with; unknown counts as blocked, matching `allow_unknown: false`) and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test, so a path that passes is one RPP will drive; unknown under the perimeter does not count, since the local costmap never shows RPP unknown). Called once a second by `move.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10) — and by the 3D trees since 2026-10-21: when the last plan was made by a planner that does not use the costmap (`Octo3D`), the server asks that planner instead of its costmap (`GlobalPlanner::isPathValid()`), and it judges on its dynamic overlay and its keepout zones (see **Dynamic obstacles** and **Keepout zones**); before any plan, or after `clear_plan`, the costmap test answers. Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails and whose recovery clears the global costmap). Served on the main executor, so it never queues behind a plan. Where the two tests still disagree with RPP: marks only the local costmap holds, RPP's in-place rotation sweep, heading error beyond the margin |
 | Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
-| Service | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap` (2026-10-21) — drop every mark of `Octo3D`'s dynamic overlay; what the 3D trees' `ClearEntireCostmap` nodes call (at every new goal, and when a plan fails) where the 2D trees clear the global costmap, which is a no-op for `Octo3D`. Main executor |
+| Service | `planner_server/Octo3D/load_keepout` | `nav2_msgs/LoadMap` (2026-10-23) — replace `Octo3D`'s keepout zones from `map_url` (`map/<name>/keepout.json`; `""` = none) on the loaded map, without rebuilding it. What the backend calls after it writes the file; a map switch needs no call, `load_map` reads the new map's own. Result table under "Keepout zones". On `load_map`'s thread |
+| Service | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap` (2026-10-21) — drop every mark of `Octo3D`'s dynamic overlay (the keepout zones stay); what the 3D trees' `ClearEntireCostmap` nodes call (at every new goal, and when a plan fails) where the 2D trees clear the global costmap, which is a no-op for `Octo3D`. Main executor |
 | Subscriber | `pointlio/body_cloud` | `sensor_msgs/PointCloud2` (2026-10-21, `Octo3D.dynamic.topic`) — the lidar cloud for the dynamic overlay, through a TF message filter into `map`. Created on the `global_costmap` node and its callback group since 2026-10-22, so the costmap's TF thread runs the filter (see **Dynamic obstacles**); the name is still resolved in the planner's namespace. Dropped unread while `Octo3D` has no map |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled** (2026-10-14; until then the cancelled route stayed on `plan` until the next goal) or **succeeds** (2026-10-22; the trimmed re-send left a stub that grew back along the route once the robot moved off the goal), and by `Octo3D` on a map switch. A new plan stops the repeats. Main executor, the republish timer's thread |
 | Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` |

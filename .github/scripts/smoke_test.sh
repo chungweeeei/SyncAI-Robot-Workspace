@@ -50,11 +50,15 @@ OUT=log/smoke
 # the idle starts of 397f264 (rather than a pane that merely did not crash),
 # Octo3D's surface map built from the fixture's octomap.bt, and the
 # task_runner having heard Octo3D's map_available and switched its goals to
-# the *_3d.xml trees (the per-goal tree choice, wired end to end).
+# the *_3d.xml trees (the per-goal tree choice, wired end to end), and Octo3D
+# having read the fixture's keepout.json (the 3D zones: the derivation of
+# the file beside the tree and the summary line, which the gtests never
+# touch since they parse strings).
 EXPECT_3D="$(printf '%s\t%s\n' \
     map_server  'Starting map_server idle' \
     keepout     'Starting filter_mask_server idle' \
     planner     'surface map: [0-9]+ x [0-9]+ columns' \
+    planner     'keepout zones from .*keepout\.json: 1 zones, [0-9]+ cells blocked \([0-9]+ core\), 0 stair links cut' \
     task_runner '3D map \(.*map_available\) -- goals run the \*_3d\.xml trees')"
 
 # A node that dies in ros2 launch is reported as "process has died"; the rest
@@ -112,11 +116,12 @@ with open(f"{d}/poses.txt", "w") as f:
 EOF
 
 # The 3D-only fixture: the same walls as map.pcd for the localizer, an
-# octomap.bt for Octo3D and no gridmap.yaml / keepout.yaml at all. The tree is
-# the planner CLI's two_floors scene (a 12 x 8 m floor and a second one 5 m
-# above it), written by the CLI that was just built, so the fixture is the
-# same OcTree format clean_map writes. poses.txt is empty: no stair links,
-# which Octo3D logs as a warning and boots without.
+# octomap.bt for Octo3D and no gridmap.yaml / keepout.yaml (the 2D mask) at
+# all -- but a keepout.json, the 3D zones, one box on the ground floor. The
+# tree is the planner CLI's two_floors scene (a 12 x 8 m floor and a second
+# one 5 m above it), written by the CLI that was just built, so the fixture
+# is the same OcTree format clean_map writes. poses.txt is empty: no stair
+# links, which Octo3D logs as a warning and boots without.
 mkdir -p "map/${MAP_NAME_3D}"
 cp "map/${MAP_NAME}/map.pcd" "map/${MAP_NAME_3D}/map.pcd"
 : > "map/${MAP_NAME_3D}/poses.txt"
@@ -124,6 +129,12 @@ rm -f "map/${MAP_NAME_3D}/gridmap.yaml" "map/${MAP_NAME_3D}/keepout.yaml"
 ros2 run syncai_global_planner octomap_planner_3d_cli --synthetic two_floors \
     --write-bt "map/${MAP_NAME_3D}/octomap.bt" > /dev/null || \
     die "cannot write the 3D fixture's octomap.bt"
+cat > "map/${MAP_NAME_3D}/keepout.json" <<'JSON'
+{ "version": 1,
+  "zones": [ { "id": "smoke", "name": "a box on the ground floor",
+               "polygon": [[3.0, 3.0], [4.0, 3.0], [4.0, 4.0], [3.0, 4.0]],
+               "z_min": -0.5, "z_max": 0.5 } ] }
+JSON
 
 # Point the INI's [map] name at another map, in place: config/system.ini is a
 # single-file bind mount, and a rename (sed -i) cannot replace one.

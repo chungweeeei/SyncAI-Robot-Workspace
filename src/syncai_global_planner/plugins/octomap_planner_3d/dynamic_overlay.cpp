@@ -7,6 +7,29 @@
 namespace syncai_global_planner::octomap_planner_3d
 {
 
+void dilateOnSurface(
+  const SurfaceMap & m, const std::vector<CellId> & seeds, const std::vector<Offset> & disc,
+  std::vector<float> & d)
+{
+  const double tan_slope = std::tan(m.params.max_slope_deg * M_PI / 180.0);
+  for (const CellId h : seeds) {
+    d[h] = 0.0f;
+    const int ix = m.colIx(m.cell_col[h]), iy = m.colIy(m.cell_col[h]);
+    const int kz = m.cells[h].kz;
+    for (const Offset & o : disc) {
+      const int nx_ = ix + o.dx, ny_ = iy + o.dy;
+      if (!m.inGrid(nx_, ny_)) {
+        continue;
+      }
+      const int tol = m.step_cells + static_cast<int>(std::ceil(tan_slope * o.d_m / m.res - 1e-9));
+      const CellId n = m.layerNear(m.col(nx_, ny_), kz, tol);
+      if (n != kNoCell && o.d_m < d[n]) {
+        d[n] = o.d_m;
+      }
+    }
+  }
+}
+
 DynamicOverlay::DynamicOverlay(const DynamicOverlayParams & p) : p_(p)
 {
 }
@@ -15,6 +38,7 @@ void DynamicOverlay::setMap(std::shared_ptr<const SurfaceMap> map)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   map_ = std::move(map);
+  keepout_.reset();
   const size_t n = map_ ? map_->cells.size() : 0;
   last_hit_.assign(n, kNever);
   in_hot_.assign(n, 0);
@@ -29,6 +53,19 @@ std::shared_ptr<const SurfaceMap> DynamicOverlay::map() const
 {
   std::lock_guard<std::mutex> lock(mutex_);
   return map_;
+}
+
+void DynamicOverlay::setKeepout(KeepoutMaskPtr keepout)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  // A mask is per map; without one there is nothing it could index.
+  keepout_ = map_ ? std::move(keepout) : nullptr;
+}
+
+std::pair<std::shared_ptr<const SurfaceMap>, KeepoutMaskPtr> DynamicOverlay::mapAndKeepout() const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  return {map_, keepout_};
 }
 
 void DynamicOverlay::setParams(const DynamicOverlayParams & p)
@@ -203,32 +240,14 @@ DynamicMaskPtr DynamicOverlay::snapshot(double now)
   }
 
   // Dilate: every column within block_radius + clearance_cost_radius of a
-  // mark, resolved to the layer within the slope cone of the mark's (the
-  // footprint rule's own tolerance, surface_map.cpp), so a ramp's uphill
-  // cells are reached and the floor a body height below is not. Cells of
-  // any kind are stamped; only traversable ones are ever read.
+  // mark, on the mark's floor (dilateOnSurface, shared with the keepout
+  // rasteriser).
   const SurfaceMap & m = *map_;
   auto mask = std::make_shared<DynamicMask>();
   mask->block_radius = p_.block_radius;
   mask->marked = hot_.size();
   mask->d.assign(m.cells.size(), std::numeric_limits<float>::infinity());
-  const double tan_slope = std::tan(m.params.max_slope_deg * M_PI / 180.0);
-  for (const CellId h : hot_) {
-    mask->d[h] = 0.0f;
-    const int ix = m.colIx(m.cell_col[h]), iy = m.colIy(m.cell_col[h]);
-    const int kz = m.cells[h].kz;
-    for (const Offset & o : disc_) {
-      const int nx_ = ix + o.dx, ny_ = iy + o.dy;
-      if (!m.inGrid(nx_, ny_)) {
-        continue;
-      }
-      const int tol = m.step_cells + static_cast<int>(std::ceil(tan_slope * o.d_m / m.res - 1e-9));
-      const CellId n = m.layerNear(m.col(nx_, ny_), kz, tol);
-      if (n != kNoCell && o.d_m < mask->d[n]) {
-        mask->d[n] = o.d_m;
-      }
-    }
-  }
+  dilateOnSurface(m, hot_, disc_, mask->d);
   mask_ = mask;
   dirty_ = false;
   return mask_;
