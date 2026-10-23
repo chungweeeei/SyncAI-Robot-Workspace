@@ -389,6 +389,171 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `reset_odometry: seed from … resetting Point-LIO` | A reset started; `new odometry after … s; seeded` and then `odometry reset; localized from …` (or `reset_odometry failed: …`) follow |
 | `initialpose ignored: map not loaded …` | No `map_path` and no `relocalize` yet; the message was dropped, not queued |
 
+## Offline replay
+
+How to record a bag on the robot and replay it later, to tune the parameters
+or check a change without driving the robot again. The node's two topics
+(`pointlio/body_cloud` + `pointlio/lio_odom`, see "Inputs") are made by
+`syncai_pointlio`, so there are two ways to feed it:
+
+| | Replay plays | Replay runs | Covers |
+|---|---|---|---|
+| **A (recommended)** | `livox/lidar` + `livox/imu` | `pointlio_node` + `localizer_node` | everything, including `reset_odometry` and Point-LIO's own IMU init / deskew |
+| **B** | `pointlio/body_cloud` + `pointlio/lio_odom` | `localizer_node` only | registration, the motion gate, `relocalize` / `initialpose` / `auto_localize`; **not** `reset_odometry`, which calls `pointlio/reset` and waits for odometry newer than the reset — a bag has no Point-LIO to reset |
+
+One bag recorded as below serves both; the choice is made at replay time.
+
+### Recording
+
+In the nav session (`AUTO`), inside the robot container, into the gitignored
+`record/`:
+
+```bash
+ros2 bag record -o record/loc_<robot_id>_<yyyymmdd>_<site> \
+  /<robot_id>/livox/lidar \
+  /<robot_id>/livox/imu \
+  /<robot_id>/pointlio/lio_odom \
+  /<robot_id>/pointlio/body_cloud \
+  /<robot_id>/initialpose \
+  /tf /tf_static
+```
+
+| Topic | Why |
+|---|---|
+| `livox/lidar` (`livox_ros_driver2/msg/CustomMsg`), `livox/imu` | Replay A's input. Required. |
+| `pointlio/lio_odom`, `pointlio/body_cloud` | Replay B's input, and the live Point-LIO output to compare A against |
+| `initialpose` | The guesses given on site, if any; not needed when the robot localized from `[initial_pose]` at boot |
+| `/tf`, `/tf_static` | **Reference only, never played back**: the live `map → <robot_id>/pointlio_odom` to compare the replay with |
+
+Driving the robot by teleop through the whole map is the normal way to make
+such a bag — the replay re-runs the nodes on the sensor data, so it does not
+matter what drove the robot. What does matter:
+
+- **Start the bag before moving, and stand still for a few seconds.**
+  Point-LIO runs a static, gravity-aligning IMU init on its first samples; a
+  bag that starts in motion tilts replay A's odometry for the whole run, with
+  no error anywhere.
+- **No navigation goal while teleoperating**, or the controller and the
+  teleop both publish `cmd_vel`.
+- **Be localized before you start.** The replay does not need it, but the
+  recorded `/tf` is only a reference if the live localizer was right.
+- **Drive at navigation speed** (up to ~0.6 m/s, the controllers' cap). A
+  faster or rougher drive than navigation ever produces tests something the
+  robot never does.
+- **Follow the mapping run's route for most of it**, because the keyframe
+  comparison below only scores where the two overlap; add stretches off it to
+  see how the localizer holds where the map was never driven.
+- **Cover what you want to test**: in-place turns, long corridors (few
+  geometric constraints), people walking past, a long stationary stretch (the
+  motion gate: `min_update_trans`, `max_update_interval`,
+  `static_blend_alpha`), and for `auto_localize` / `reset_odometry` with
+  `skip_seed`, a kidnap at the end — lift the robot and put it down
+  elsewhere, after the localizer has been converged for a while.
+- **Write down the live map** (`[map] name`) and `[initial_pose]`; the
+  replay needs both.
+- **Check the disk.** The raw lidar is most of the bag; `ros2 bag info` on
+  the first minute tells what a full lap costs.
+
+The map to replay against must come from a **different mapping run** than the
+bag: one built from the same drive scores better than the robot ever will.
+`auto_localize` also needs its `poses.txt`, which only a save with
+`save_patches` writes.
+
+### Replaying
+
+**Not in robot01 while its stack is up**: the replay starts a second
+`/<robot_id>/pointlio_node` and `/<robot_id>/localizer_node`, which would
+publish over the live ones on domain 1. The throwaway build container has the
+same image and `install/` and none of robot01's DDS settings; put it on a
+domain of its own:
+
+```bash
+# host, workspace root
+docker compose -f docker-compose.build.yml run --rm --entrypoint bash \
+  -e ROS_DOMAIN_ID=42 build
+# inside
+source /opt/ros/humble/setup.bash
+source /opt/ros2_rust_underlay/install/setup.bash
+source install/setup.bash
+```
+
+`livox_ros_driver2` must be in `install/`, or `ros2 bag play` cannot
+deserialise `CustomMsg`. A bag recorded without the `<robot_id>` prefix needs
+`--remap`; pointlio's launch no longer strips it.
+
+Both launches read an INI, and `config/system.ini` is empty outside robot01
+(robot01 bind-mounts its instance INI over it), so write one next to the bag
+and pass it with `system_config:=`. Give `pcd` as an **absolute** path — see
+"Running" for what a relative one resolves against:
+
+```ini
+# record/loc_<...>/replay.ini
+[system]
+robot_id = robot01
+
+[map]
+name = <map name>
+pcd = /home/syncrobotic/robot_ws/map/<map name>/map.pcd
+map = /home/syncrobotic/robot_ws/map/<map name>/gridmap.yaml
+
+# leave out to start unlocalized and guess with initialpose / relocalize
+[initial_pose]
+x = 0.0
+y = 0.0
+yaw = 0.0
+```
+
+```bash
+INI=record/loc_<...>/replay.ini
+
+# A: raw sensors through Point-LIO
+ros2 launch syncai_pointlio pointlio.launch.py system_config:=$INI &
+ros2 launch syncai_localizer localizer.launch.py system_config:=$INI &
+ros2 bag play record/loc_<...> \
+  --topics /robot01/livox/lidar /robot01/livox/imu /robot01/initialpose
+
+# B: Point-LIO's recorded output
+ros2 launch syncai_localizer localizer.launch.py system_config:=$INI &
+ros2 bag play record/loc_<...> \
+  --topics /robot01/pointlio/lio_odom /robot01/pointlio/body_cloud /robot01/initialpose
+```
+
+- **Play at 1×, no `--rate`.** The node paces itself on wall time, not on
+  message stamps: `update_hz`, `max_update_interval` and `post_reloc_settle`
+  all read `rclcpp::Clock()` in `timerCB`. At 2× it registers half as often
+  per metre as the robot did. Neither node uses `use_sim_time`, so no
+  `--clock` either; the TF is stamped from the messages.
+- **Never play `/tf` or `/tf_static`**: the recorded transforms would race the
+  ones the replay broadcasts.
+- **Call the services at the point of the bag they apply to**, with the
+  commands under "Running": `auto_localize` after the kidnap, `reset_odometry`
+  (A only) where the robot stands still, `relocalize_check` after a guess.
+
+The startup log line `params: cloud_topic=/robot01/pointlio/body_cloud …` and
+then `refine: converged=yes …` rounds say the replay is wired.
+
+### Judging the result
+
+Record the replay's output in a second shell:
+
+```bash
+ros2 bag record -o record/loc_<...>_replay_<label> /tf /robot01/pointlio/lio_odom
+```
+
+- **Against the map's keyframes**: the distance from the localized body pose
+  (`map → pointlio_odom → pointlio_body`) to the nearest `poses.txt`
+  keyframe, where the routes overlap. This is how the dp1f replay was judged
+  (median 1.5 cm, p95 4.2 cm; see "Gotchas").
+- **Against the robot's own run**: the same chain from the recorded `/tf`, to
+  tell a regression from a bag the localizer always found hard.
+- **Accepted rounds**: `refine: converged=yes` against all rounds in the log
+  (dp1f: 92.5% → 97.9% after the rough-stage eps change).
+
+Not on `map → pointlio_odom` alone — its translation is not a drift gauge
+(see "Gotchas"). And replay A re-runs Point-LIO, so a Point-LIO change moves
+the result too: test a localizer-only change with replay B, or with two
+replay-A runs on the same `syncai_pointlio` build.
+
 ## Gotchas
 
 - **The namespace is `/<robot_id>`, not `/<robot_id>/localizer`.** See above.
