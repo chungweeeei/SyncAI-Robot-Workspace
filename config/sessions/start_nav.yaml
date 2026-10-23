@@ -9,9 +9,9 @@
 # launcher script, so nothing here is run by hand.
 #
 # This is a *localization* stack, the counterpart to start_mapping.yaml rather
-# than a variant of it: map_server and the localizer both load an existing map
-# during construction and die without one, so this spec cannot build the map it
-# needs. See start_mapping.yaml for the other half of that loop.
+# than a variant of it: the localizer loads an existing map during
+# construction and dies without one (map_server only idles without a gridmap),
+# so this spec cannot build the map it needs. See start_mapping.yaml for the other half of that loop.
 #
 # There is no frontend window and no backend window: `syncai_frontend` left this
 # workspace in 2026-09 and `syncai_backend` followed it, so nothing in this
@@ -64,8 +64,10 @@ windows:
 
   # ---------- Window 1: map_server + keepout (the map on disk, served) -------
   # The two map servers, in start order. Both read the same [map] map from the
-  # INI and both die in their constructor without the file, so this window is
-  # the one to read when "the map is not there". Split out of `localization`
+  # INI, so this window is the one to read when "the map is not there". On a
+  # 3D-only map (no gridmap.yaml) both start idle since 2026-10-19 -- no map,
+  # no mask, load_map still served -- and say so in a warning; until then
+  # map_server died in its constructor and the keepout pane started nothing. Split out of `localization`
   # on 2026-09-30: the localizer window is about the lidar and the pose, this
   # one is about files, and a map problem and a lidar problem should not
   # scroll past each other in one window.
@@ -77,7 +79,7 @@ windows:
   # keepout the launch first writes a blank mask of the gridmap's geometry (all
   # unknown, so the planner sees no change) and serves that, so this pane stays
   # up like every other one; "Filter mask was not received" in the planner log
-  # means it is actually down. Until 2026-09-30 it exited on purpose instead.
+  # means it is actually down -- or, on a 3D-only map, idle on purpose. Until 2026-09-30 it exited on purpose instead.
   # `sleep: 1` is log ordering only -- the KeepoutFilter's two subscriptions
   # are transient-local, so the planner may come up before or after this pane
   # and still receive both latched messages.

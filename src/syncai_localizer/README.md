@@ -66,11 +66,12 @@ wrong. Check with `ros2 node info /<robot_id>/localizer_node`, not with
 
 | Input | Kind | Source | Used for |
 |---|---|---|---|
-| `cloud_topic` = `/<robot_id>/pointlio/body_cloud` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The scan to register (voxelised twice, at the rough and refine resolutions) |
+| `cloud_topic` = `/<robot_id>/pointlio/body_cloud` | `sensor_msgs/PointCloud2`, depth 10 | `syncai_pointlio` | The scan to register: the newest `track_accum_scans` (3) of them, composed through their odom poses into the newest one's body frame, then voxelised twice (rough and refine resolutions) |
 | `odom_topic` = `/<robot_id>/pointlio/lio_odom` | `nav_msgs/Odometry`, depth 10 | `syncai_pointlio` | The LIO pose the correction is composed with; its `header.frame_id` becomes `local_frame` |
-| `initialpose` | `geometry_msgs/PoseWithCovarianceStamped`, depth 10 | the console, rviz "2D Pose Estimate", the backend's map switch | A 2D guess through `applyPlanarGuess` (below) |
+| `initialpose` | `geometry_msgs/PoseWithCovarianceStamped`, depth 10 | the console, rviz "2D Pose Estimate", the backend's map switch | A 2D guess through `applyPlanarGuess` (below); `position.z` is the ground's height and taken only when `covariance[14]` (the z variance) is positive |
 | `relocalize` | `syncai_common/srv/Relocalize` | the backend (initial pose, map switch), a shell | (Re)load a PCD and take the request's raw 6-DOF pose as the next guess |
 | `[map] pcd`, `[initial_pose]` | `config/system.ini` via the launch | | `map_path` (loaded during construction) and the boot guess |
+| `config/state/<robot_id>/last_pose.json` | written by this node, read by the launch | | The boot guess when it is for the loaded map, ahead of `[initial_pose]`; see "The last pose file" |
 
 The two topics are joined by a `message_filters` `ApproximateTime` synchroniser
 (queue 10, age penalty 0.1). They are **absolute names set as parameters**,
@@ -113,10 +114,63 @@ loaded the TF stays at identity.
    at (5.0, 0.982) hung; with the 14.6° pitch filled in the same spot
    converged on the first round.
 
+   z is the exception an `initialpose` can make: the current estimate's z is
+   the storey the localizer thinks it is on, so a guess on another storey
+   starts a whole storey (3 m and more) out of the rough stage's reach and
+   hangs the same way. A sender that knows the storey puts the ground's height
+   in `position.z` and **marks it with a positive z variance**
+   (`covariance[14]`); the body then goes `lidar_height` above it. The mark is
+   what keeps rviz's 2D Pose Estimate and every older sender — `position.z` 0,
+   covariance cell 0 — on the storey they are on, rather than pulled to the
+   ground floor. The ground only has to be close: half a metre out (the
+   console's "0 is the ground floor") is well inside `rough_max_corr_dist`.
+   The INI's `[initial_pose]` has no z and stays on the current estimate's;
+   the last pose file (below) has one, and the boot guess takes it.
+
 The consequence for callers: a `relocalize` from a 2D source (the console's
 gridmap click) must be **followed by an `initialpose` publish**, which
 overwrites the flat guess with a tilt-correct one before the next round. The
 backend's map switch does exactly that, in that order. Keep both paths.
+
+### The last pose file: booting where the robot stopped
+
+Since 2026-10-23 every trusted tracking round may write the map pose to
+`config/state/<robot_id>/last_pose.json` (`last_pose.file`, which the launch
+sets), and the next start's launch takes it as the boot guess ahead of the
+INI's `[initial_pose]`, so a robot shut down anywhere on a map localizes
+itself on the next start with no `initialpose`. On loc_1022 (dp, 2026-10-22)
+the INI said (0, 0), the robot stood at (2.06, 4.61), and it took two
+initialposes from the console and 26 s to localize.
+
+- **What is written.** One JSON object: `map` (the map directory's name, never a path), x, y,
+  yaw and `ground_z` — the ground under the body, as an initialpose's marked
+  z — so a robot shut down on 2F starts its guess on 2F. Only a round that is
+  trusted (the same test `reset_odometry`'s seed uses) and is neither a
+  service guess nor inside its settle window; at most every
+  `last_pose.save_interval` (5 s), and only after `min_move` (0.05 m) or
+  `min_rot` (2°) of motion, so a parked robot does not rewrite the eMMC. The
+  write is tmp + fsync + rename (`localizers/last_pose_store.*`), so a power
+  loss leaves the old file or the new one.
+- **When it is read.** By the launch, when the file is complete and its `map`
+  equals the loaded PCD's directory; otherwise (no file, a broken one, a map
+  switch since) `[initial_pose]` as before, with a log line saying which.
+  The guess goes through `applyPlanarGuess` like the INI's, with the file's
+  `ground_z`.
+- **When it is wrong.** A robot carried off while it was down gets a guess
+  that does not converge; it is withdrawn after `guess_timeout_sec` like any
+  other, and nothing searches on its own (decided 2026-10-23: the operator
+  sends an `initialpose` or runs the auto localization). Nothing is written
+  until a guess has converged on the loaded map (`pose_established`; a map
+  switch clears it), because after a withdrawn guess the rounds keep running
+  from whatever offset is left and can converge in a wrong basin: the
+  loc_1022 replay with a boot guess 5 m out "converged" 50 s later 1 rad off.
+  So a wrong file is never overwritten with another wrong pose.
+- **Why not the INI.** The instance INI is a single-file bind mount, which
+  cannot be replaced by rename, so a rewrite cut by a power loss would take
+  `robot_id` and `[map]` with it; the backend writes `[initial_pose]` too; and
+  `sys_manager` only builds a session at container start, so a rewrite there
+  would miss every AUTO session from `switch_mode` / `restart_mode`. Deleting
+  the file is safe: the next start uses the INI.
 
 ### `auto_localize`: the kidnap recovery
 
@@ -260,6 +314,108 @@ deadband) and the numbers are in `params/localizer_params.yaml`; do not
 re-propose them without new data. The chosen failure direction is "jitter
 partly suppressed", never "frozen on a stale pose".
 
+### Localizability: which directions a round is allowed to correct
+
+Since 2026-10 a registration is not taken whole. GICP reports "converged"
+whenever its Gauss-Newton step got small, which says nothing about whether
+the solution was *determined*: in a corridor every point lies on the two
+walls, nothing pins the pose along the axis, and the optimum slides along it
+to wherever this round's sparse sampling favours — and that round passes
+every gate the node has (`hasConverged`, the fitness bound, the inlier
+count). The same mechanism produced the two-solution bounce in the west-end
+corner on 2026-08-28 (`rough_registration_type` in the YAML). The information
+about this was always there: small_gicp's final 6×6 Hessian
+(`RegistrationResult::H`), whose eigenvector with a small eigenvalue is
+exactly a direction the scan did not constrain.
+
+`localizers/localizability.*` turns that into a per-direction decision — the
+full / partial / none classification of X-ICP (Tuna et al., T-RO 2024), with
+a damping gain in place of their re-solve:
+
+1. `H` is expressed in the map frame (`blockdiag(R,R) · H · blockdiag(R,R)ᵀ`;
+   small_gicp's `delta` is a body-frame right perturbation, `[ω; v]`),
+   divided by the inlier count, and each block is reduced to its **marginal**
+   information (Schur complement), because yaw and lateral translation are
+   coupled at range and the plain block overstates the lateral constraint.
+2. The eigenvalues of each 3×3 are classified by their ratio to the largest:
+   below `localizability.ratio_none` → NONE, below `ratio_partial` → PARTIAL,
+   otherwise FULL (plus an optional absolute floor, `min_eig_per_inlier`).
+3. The correction — GICP's solution minus the odometry prediction,
+   translation and rotation vector separately — is projected: FULL ×1,
+   PARTIAL × `partial_gain`, NONE ×0. Along a NONE direction the pose stays
+   where Point-LIO put it. All three translation directions NONE is an
+   odometry-only round (`round degenerate` in the log; nothing is advanced,
+   the next tick registers again).
+
+It is a projection of the *update*, never a rejection of the round: a
+corridor round still corrects the two directions it can see. A service guess
+and the settle window after it are exempt (a discontinuity by design, and the
+prediction may be metres off), and so is the first registration after start.
+Every accepted round logs one line:
+
+```
+loc: t-eig=(0.021 3.1 4.4) r-eig=(…) lvl=NFF/FFF weak=12deg inl=0.91 ms=38.2 dt=0.112->0.004 dr=0.31->0.30deg
+```
+
+eigenvalues weakest first (per inlier, map frame), the levels, the heading of
+the weakest translation direction, the refine inlier ratio, the round's wall
+time, and how much of the correction survived the projection. **The
+thresholds are first guesses.** Set `ratio_none` / `ratio_partial` from the
+dp1f replay's corridor stretches against its open-space rounds before
+trusting them (`docs/localizer-offline-replay.md`, "Judging the result").
+`localizability.enabled: false` keeps the analysis and the log and projects
+nothing — the pre-2026-10 behaviour, for an A/B on the same bag.
+
+### The jump gate
+
+A registration whose map-frame body pose is further from the last
+**accepted** one than the robot could have moved meanwhile
+(`jump_gate.max_speed` 1.5 m/s, `max_rot_speed` 1.5 rad/s, over the two
+scans' stamp difference, at least 0.2 s) is dropped, and the TF coasts on
+odometry for that round (`jump rejected` in the log). The reference is
+deliberately the last accepted body pose and not the odometry prediction: when Point-LIO diverges (robot01,
+2026-10-13) the prediction is garbage while GICP's answer is right, and the
+offset absorbing that jump is what kept the TF correct — a gate against the
+prediction would have thrown those rounds away. What this catches is the
+other case, a solution in the wrong basin. After `max_reject_streak` (5)
+consecutive rejections the next round is accepted regardless, because by
+then it is the reference that is suspect: the gate must never freeze the TF
+on a wrong pose for good. Service guesses, their settle window and the round
+that straddles `reset_odometry`'s jump are exempt.
+
+The interval was the timer's until 2026-10-23, and that was a bug: the 5 Hz
+rounds and the 10 Hz scans do not line up, so two rounds 0.2 s apart often
+compared scans 0.3–0.5 s apart, and a robot walking at 0.7–1.1 m/s read as
+1.6–3 m/s. The `loc_1022` replay on dp (12 min, 540 m) rejected 8 correct
+rounds that way. `reset_odom.max_lio_speed`'s trust check divides by the same
+stamp interval now.
+
+### The source window
+
+The tracking round registers the newest `track_accum_scans` (3) body clouds,
+composed through their odom poses into the newest scan's body frame, as one
+cloud — what `auto_localize` has always done over `auto_loc.accum_scans`,
+only shorter. A single filter-num-6 MID360 scan is ~3k points on a
+non-repetitive pattern: sparse enough that the rough stage dithers and that a
+parked robot's solution resamples GICP's noise floor every round (the reason
+the motion gate exists). Three scans is ~0.3 s of coverage; Point-LIO's drift
+over that is well under a centimetre and each scan is already de-skewed to
+its end. `1` is the single-scan behaviour until 2026-10, bit for bit. The
+cost is the refine stage's source size: the `refine:` log line carries the
+round's wall time (`ms=`) since 2026-10, and rough + refine has to stay under
+half the `update_hz` period. Not yet measured on the robot.
+
+### Guess timeout
+
+A guess from `relocalize`, `initialpose` or the INI that the timer cannot
+converge on used to be retried every round forever, with the TF frozen on
+the old offset meanwhile (a flat guess on the tilted mount is the classic
+case). Since 2026-10 such a guess is withdrawn after `guess_timeout_sec`
+(10 s; `guess withdrawn` in the log) and the timer goes back to its previous
+offset + odometry; `relocalize_check` keeps answering `false` for it, as
+before. `auto_localize` and `reset_odometry` own their guesses and keep their
+own deadlines, unchanged. `<= 0` restores the old behaviour.
+
 ## Parameters
 
 `params/localizer_params.yaml`, keyed `/**/localizer_node:` so it applies at
@@ -273,12 +429,20 @@ throwing. The launch layers the instance values on top.
 | `map_frame` | `map` | | Never namespaced |
 | `local_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | Replaced by the first odom's `frame_id`, but the 10 ms timer broadcasts `map → local_frame` before that, so the launch sets the same name pointlio broadcasts. The YAML said `laser` until 2026-10, and that unprefixed frame was on TF until pointlio's first message |
 | `map_path` | `""` | `[map] pcd`, made absolute | Loaded in the constructor. Empty → the node runs but cannot localize until `relocalize` |
-| `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
+| `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from the last pose file, else `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
+| `initial_pose.{use_ground_z,ground_z}` | `false`, `0.0` | from the last pose file only | The boot guess's storey |
+| `last_pose.{file,save_interval,min_move,min_rot}` | `""`, `5.0` s, `0.05` m, `0.035` rad | `file` = `config/state/<robot_id>/last_pose.json` | The last pose file's path and write throttle |
+| `lidar_height` | `0.481` m | | Lidar above the feet: how far above a marked `initialpose` z (a ground height) the guess puts the body. Same as the controller's and planner's `lidar_height` |
 | `update_hz` | `5.0` | | Ceiling on re-registration; was 1.0 until 2026-08-28 (staircase corrections at 0.7 m/s) |
 | `min_update_trans` / `min_update_rot` | `0.05` m / `0.02` rad | | Motion gate thresholds |
 | `max_update_interval` | `2.0` s | | Backstop re-registration when parked |
 | `static_blend_alpha` | `0.1` | | EMA weight for a backstop refresh; `1.0` keeps the gate and drops the blend |
 | `post_reloc_settle` | `3.0` s | | Full-rate window after a guess |
+| `track_accum_scans` | `3` | | Body clouds composed into the tracking round's source (above); `1` = single scan, the pre-2026-10 path |
+| `min_inlier_ratio` | `0.0` (off) | | Refine inlier-ratio gate; the ratio is logged every round, set it from off-site data |
+| `guess_timeout_sec` | `10.0` s | | Withdraw an un-owned guess the timer cannot converge on; `<= 0` retries forever |
+| `localizability.{enabled, ratio_none, ratio_partial, min_eig_per_inlier, partial_gain}` | `true`, `0.02`, `0.1`, `0.0`, `0.3` | | Per-direction projection of the correction (above). The thresholds are **first guesses**, to be set from the `loc:` log |
+| `jump_gate.{enabled, max_speed, max_rot_speed, max_reject_streak}` | `true`, `1.5` m/s, `1.5` rad/s, `5` | | Against the last accepted body pose (above); the streak cap is what keeps it from freezing the TF |
 | `num_threads` | `4` | | GICP covariance / KD-tree / reduction threads. Read **once**: `RegistrationPCL` builds the tree at `setInputTarget`. Shares the CPU with pointlio |
 | `num_neighbors` | `20` | | Local-covariance neighbours (pcl::GICP's correspondence randomness) |
 | `rough_*` | `0.25` / `0.25` m, `20` iters, score `0.2`, corr `2.0` m, `GICP`, voxel `1.0` | | Absorbs a hand-entered guess. VGICP was tried and reverted (double solutions in degenerate geometry, 2026-08-28) |
@@ -350,6 +514,9 @@ ros2 service call /<robot_id>/relocalize syncai_common/srv/Relocalize \
 # then a planar guess, so roll/pitch/z are filled in from the current estimate
 ros2 topic pub --once /<robot_id>/initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
   "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0}, orientation: {w: 1.0}}}}"
+# the same on another storey: z is the ground there, marked by the z variance (cell 14)
+ros2 topic pub --once /<robot_id>/initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
+  "{header: {frame_id: map}, pose: {pose: {position: {x: 0.0, y: 0.0, z: 5.2}, orientation: {w: 1.0}}, covariance: [0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0.01,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0]}}"
 # did the first registration after that guess succeed?
 ros2 service call /<robot_id>/relocalize_check syncai_common/srv/IsValid "{code: 0}"
 
@@ -366,6 +533,9 @@ ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry \
 ros2 service call /<robot_id>/reset_odometry syncai_common/srv/ResetOdometry "{skip_seed: true}"
 ```
 
+Replaying a recorded bag offline (what to record, where to run it, and how to
+judge the result) is `docs/localizer-offline-replay.md`.
+
 Checking it:
 
 ```bash
@@ -380,8 +550,14 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `map preloaded from …` | Constructor `loadMap` succeeded; `map_cloud` was published |
 | `initial pose from config: … (applied on first odom)` | `[initial_pose]` was read; `guess from config applied` follows on the first odom |
 | `guess from initialpose applied: … (roll/pitch/z from current estimate)` | An `initialpose` went through `applyPlanarGuess` |
+| `guess from initialpose applied: … (z from the given ground, …)` | The same, with a marked z: the storey came from the sender |
 | `rough : converged=no iters=20 …` every round | Stuck: the guess is too far off, or a flat guess on the tilted mount — publish an `initialpose` |
-| `refine: converged=yes … fitness=0.0xx` | A registration was accepted; the TF moved |
+| `refine: converged=yes … fitness=0.0xx ms=38.2` | Both stages converged (`ms` is the round's wall time); whether the TF moved is decided by the lines below |
+| `loc: t-eig=(…) r-eig=(…) lvl=NFF/FFF weak=12deg inl=0.91 ms=38.2 dt=0.112->0.004 …` | One per accepted round: the localizability eigenvalues (weakest first, per inlier, map frame), the levels, the weakest translation heading, the inlier ratio, and what the projection kept of the correction. `(not projected)` on a guess / settle round |
+| `round degenerate: no translation direction constrained` | All three translation directions NONE; odometry only this round |
+| `jump rejected (n/5): body moved … m / … deg in … s` | The jump gate dropped the round; `accepting a … jump after 5 rejected rounds` is the streak cap letting the next one through |
+| `guess withdrawn: no converged registration within 10.0 s` | `guess_timeout_sec`; back to the previous offset + odometry, `relocalize_check` stays `false` |
+| `loc stats (since start): run=… accepted=… not_converged=… degenerate=… jump_rejected=… projected=…` | Once a minute, the round counters — a replay's acceptance rate without counting lines |
 | `coarse: N candidates … best 0.xx, K kept for GICP` | `auto_localize` coarse stage; one `fine: …` line per kept candidate follows |
 | `search failed …: ambiguous, a distinct pose scores alike` | Symmetric surroundings; move the robot somewhere more distinctive and retry |
 | `… the timer did not converge on it within …; withdrawn` | The search's pose did not hold against a fresh scan; localization is as before the call |
@@ -558,7 +734,10 @@ replay-A runs on the same `syncai_pointlio` build.
 
 - **The namespace is `/<robot_id>`, not `/<robot_id>/localizer`.** See above.
   The rviz config in `config/rviz2/` reads `/<robot_id>/map_cloud`.
-- **`relocalize` success is a receipt.** Poll `relocalize_check`.
+- **`relocalize` success is a receipt.** Poll `relocalize_check`. A guess
+  the timer cannot converge on is withdrawn after `guess_timeout_sec` (10 s)
+  since 2026-10, so `relocalize_check` answering `false` ten seconds later
+  means the guess is gone, not still pending.
   **`auto_localize` and `reset_odometry` success is a result** — the
   opposite — and both block.
   `RobotState.localization_valid` is TF presence only and reads true against a
@@ -594,14 +773,16 @@ replay-A runs on the same `syncai_pointlio` build.
   would then register the new scan with the previous scan's covariances.
 - **`num_threads` is read once, at construction.** Changing it at runtime does
   not rebuild the KD-tree.
-- **Two-thread `MultiThreadedExecutor`, and it is load-bearing.** The timer +
-  subscriptions sit on the default group; `relocalize`, `relocalize_check` and
-  `initialpose` on their own MutuallyExclusive group, so a multi-second
-  `loadMap` never gaps the TF rebroadcast. `ICPLocalizer::m_target_mutex`
-  exists for that split (`loadMap` builds into locals and swaps under it;
-  `align` holds it for one round). Collapsing to `rclcpp::spin()` is safe but
-  reintroduces the gap; adding a third group needs a look at `NodeState`'s two
-  mutexes first.
+- **Three-thread `MultiThreadedExecutor`, and it is load-bearing.** The timer +
+  subscriptions sit on the default group; `relocalize`, `relocalize_check`,
+  `auto_localize`, `reset_odometry` and `initialpose` on their own
+  MutuallyExclusive group, so a multi-second `loadMap` never gaps the TF
+  rebroadcast; and `reset_odometry`'s `ResetLIO` client on a third, because
+  the handler blocks on the client's future (two threads until 2026-10).
+  `ICPLocalizer::m_target_mutex` exists for the first split (`loadMap` builds
+  into locals and swaps under it; `align` holds it for one round). Collapsing
+  to `rclcpp::spin()` is safe but reintroduces the gap; adding a fourth group
+  needs a look at `NodeState`'s two mutexes first.
 - **Lint is partly off.** `ament_cmake_copyright` and `cpplint` are disabled
   as they were upstream: `localizers/` has no per-file licence headers (the
   package `LICENSE` covers it). The node shell follows the workspace
@@ -613,7 +794,12 @@ replay-A runs on the same `syncai_pointlio` build.
   `[initial_pose]` read, `relocalize_check` answering `true` for `code: 1` and
   `false` for `code: 0` before any registration, `relocalize` refusing a
   missing PCD and accepting the map. Registration itself (a real map, pointlio
-  running, the console's map switch) still needs the robot.
+  running, the console's map switch) still needs the robot. The 2026-10
+  localizability projection, jump gate and source window are in the same
+  state: the analysis has a unit test (`test/test_localizability.cpp`,
+  synthetic Hessians, `colcon test --packages-select syncai_localizer`), the
+  node's behaviour with them has been checked on neither a replay nor the
+  robot yet — the dp1f replay is the first thing to run.
 - **A stale fork checkout builds a second `localizer` package.** If
   `src/third-party/FASTLIO2_ROS2` is still on disk from before this port,
   colcon builds its `localizer` too (same executable name, different package).

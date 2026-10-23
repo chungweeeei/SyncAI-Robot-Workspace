@@ -14,6 +14,11 @@ find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+# For StairMode (stair_mode.hpp): SetPolicyMode and the `mode` / `stair_mode`
+# messages. syncai_common is vcs-imported from SyncAI-Robot-Interface, so this
+# package, and every nav package above it, now needs that checkout to build.
+find_package(std_msgs REQUIRED)
+find_package(syncai_common REQUIRED)
 
 set(dependencies
   rclcpp
@@ -23,6 +28,8 @@ set(dependencies
   tf2
   tf2_ros
   tf2_geometry_msgs
+  std_msgs
+  syncai_common
 )
 
 add_library(${PROJECT_NAME} SHARED
@@ -30,6 +37,7 @@ add_library(${PROJECT_NAME} SHARED
   src/node_utils.cpp
   src/odometry_utils.cpp
   src/robot_utils.cpp
+  src/stair_mode.cpp
   src/string_utils.cpp
 )
 
@@ -58,6 +66,13 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # ROS-free: the stair state machine driven through configure() with fake
+  # policy / service / publish callbacks on a synthetic rising path.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_stair_mode test/test_stair_mode.cpp)
+  target_link_libraries(test_stair_mode ${PROJECT_NAME})
+  ament_target_dependencies(test_stair_mode ${dependencies})
 endif()
 
 ament_export_include_directories(include)

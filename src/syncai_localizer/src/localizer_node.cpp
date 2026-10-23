@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -17,6 +18,45 @@ using namespace std::chrono_literals;
 
 namespace syncai_localizer
 {
+
+namespace
+{
+// The cell of PoseWithCovariance's row-major 6x6 that marks an initialpose's z as meant: the z
+// variance, row 2 column 2. RViz's "2D Pose Estimate" and every sender from before leave it 0
+// with position.z 0, and taking that 0 would pull each of their guesses to the ground floor.
+constexpr std::size_t kInitialPoseZVarianceIndex = 2 * 6 + 2;
+
+// Compose several synchronised scans into one cloud in a common frame: each
+// record's points go through its own odom pose (localmap_T_body) and then
+// through dst_T_localmap = (R_dst_local, t_dst_local). Two callers: the global
+// search puts auto_loc.accum_scans scans into the newest scan's gravity-level,
+// yaw-zero frame, and the tracking loop puts track_accum_scans scans into the
+// newest scan's body frame, so the registration still answers map_T_body of
+// that scan. The clouds are never mutated after syncCB allocates them, so the
+// records can be copied out of recent_scans by pointer and read here without
+// the lock.
+CloudType::Ptr accumulateScans(
+  const std::vector<ScanRecord> & scans, const M3D & R_dst_local, const V3D & t_dst_local)
+{
+  CloudType::Ptr out = std::make_shared<CloudType>();
+  std::size_t total = 0;
+  for (const ScanRecord & rec : scans) total += rec.cloud->size();
+  out->reserve(total);
+  for (const ScanRecord & rec : scans) {
+    const M3D R = R_dst_local * rec.r;
+    const V3D t = R_dst_local * rec.t + t_dst_local;
+    for (const PointType & p : *rec.cloud) {
+      const V3D q = R * V3D(p.x, p.y, p.z) + t;
+      PointType o = p;
+      o.x = static_cast<float>(q.x());
+      o.y = static_cast<float>(q.y());
+      o.z = static_cast<float>(q.z());
+      out->push_back(o);
+    }
+  }
+  return out;
+}
+}  // namespace
 
 LocalizerNode::LocalizerNode() : Node("localizer_node")
 {
@@ -119,8 +159,16 @@ LocalizerNode::LocalizerNode() : Node("localizer_node")
   if (m_config.set_initial_pose) {
     RCLCPP_INFO(
       this->get_logger(),
-      "initial pose from config: x=%.3f y=%.3f yaw=%.3f (applied on first odom)",
-      m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw);
+      "initial pose from config: x=%.3f y=%.3f yaw=%.3f%s (applied on first odom)",
+      m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw,
+      m_config.initial_pose_use_ground_z ? " with its ground z" : "");
+  }
+  if (m_config.last_pose_file.empty()) {
+    RCLCPP_INFO(this->get_logger(), "last pose file: off");
+  } else {
+    RCLCPP_INFO(
+      this->get_logger(), "last pose file: %s (every %.0f s while moving)",
+      m_config.last_pose_file.c_str(), m_config.last_pose_save_interval);
   }
 
   m_timer = this->create_wall_timer(10ms, std::bind(&LocalizerNode::timerCB, this));
@@ -147,7 +195,7 @@ void LocalizerNode::loadInitialMap()
       m_config.map_path.c_str());
     return;
   }
-  m_state.loaded_map_path = m_config.map_path;
+  setLoadedMap(m_config.map_path);
   RCLCPP_INFO(this->get_logger(), "map preloaded from %s", m_config.map_path.c_str());
   builtin_interfaces::msg::Time stamp = this->now();
   publishMapCloud(stamp);
@@ -180,6 +228,37 @@ void LocalizerNode::loadParameters()
   m_config.post_reloc_settle =
     declare_parameter<double>("post_reloc_settle", m_config.post_reloc_settle);
 
+  // The tracking round's source window, inlier gate and guess timeout; see
+  // NodeConfig for what each one buys.
+  // declare_parameter<int> hands back the int64 the parameter server holds.
+  m_config.track_accum_scans = std::max(
+    1, static_cast<int>(declare_parameter<int>("track_accum_scans", m_config.track_accum_scans)));
+  m_config.min_inlier_ratio =
+    declare_parameter<double>("min_inlier_ratio", m_config.min_inlier_ratio);
+  m_config.guess_timeout_sec =
+    declare_parameter<double>("guess_timeout_sec", m_config.guess_timeout_sec);
+
+  // Localizability projection (localizers/localizability.h) and the jump gate;
+  // NodeConfig has the rationale, the YAML the tuning state.
+  m_config.localizability.enabled =
+    declare_parameter<bool>("localizability.enabled", m_config.localizability.enabled);
+  m_config.localizability.ratio_none =
+    declare_parameter<double>("localizability.ratio_none", m_config.localizability.ratio_none);
+  m_config.localizability.ratio_partial = declare_parameter<double>(
+    "localizability.ratio_partial", m_config.localizability.ratio_partial);
+  m_config.localizability.min_eig_per_inlier = declare_parameter<double>(
+    "localizability.min_eig_per_inlier", m_config.localizability.min_eig_per_inlier);
+  m_config.localizability.partial_gain =
+    declare_parameter<double>("localizability.partial_gain", m_config.localizability.partial_gain);
+  m_config.jump_gate_enabled =
+    declare_parameter<bool>("jump_gate.enabled", m_config.jump_gate_enabled);
+  m_config.max_jump_speed =
+    declare_parameter<double>("jump_gate.max_speed", m_config.max_jump_speed);
+  m_config.max_jump_rot_speed =
+    declare_parameter<double>("jump_gate.max_rot_speed", m_config.max_jump_rot_speed);
+  m_config.jump_reject_max_streak =
+    declare_parameter<int>("jump_gate.max_reject_streak", m_config.jump_reject_max_streak);
+
   // reset_odometry; see NodeConfig.
   m_config.lio_reset_service =
     declare_parameter<std::string>("reset_odom.lio_reset_service", m_config.lio_reset_service);
@@ -194,13 +273,27 @@ void LocalizerNode::loadParameters()
 
   // The nested names (initial_pose.x) line up with the retired syncai_amcl's set_initial_pose /
   // initial_pose.*; both are overridden by the launch file from the [initial_pose] section of
-  // system.ini. z is deliberately not accepted here: see applyPlanarGuess.
+  // system.ini, or from the last pose file when it is for the same map (localizer.launch.py).
+  // Only the file gives a z (initial_pose.ground_z with use_ground_z): see applyPlanarGuess.
   m_config.set_initial_pose =
     declare_parameter<bool>("set_initial_pose", m_config.set_initial_pose);
   m_config.initial_pose_x = declare_parameter<double>("initial_pose.x", m_config.initial_pose_x);
   m_config.initial_pose_y = declare_parameter<double>("initial_pose.y", m_config.initial_pose_y);
   m_config.initial_pose_yaw =
     declare_parameter<double>("initial_pose.yaw", m_config.initial_pose_yaw);
+  m_config.initial_pose_use_ground_z =
+    declare_parameter<bool>("initial_pose.use_ground_z", m_config.initial_pose_use_ground_z);
+  m_config.initial_pose_ground_z =
+    declare_parameter<double>("initial_pose.ground_z", m_config.initial_pose_ground_z);
+  m_config.last_pose_file =
+    declare_parameter<std::string>("last_pose.file", m_config.last_pose_file);
+  m_config.last_pose_save_interval =
+    declare_parameter<double>("last_pose.save_interval", m_config.last_pose_save_interval);
+  m_config.last_pose_min_move =
+    declare_parameter<double>("last_pose.min_move", m_config.last_pose_min_move);
+  m_config.last_pose_min_rot =
+    declare_parameter<double>("last_pose.min_rot", m_config.last_pose_min_rot);
+  m_config.lidar_height = declare_parameter<double>("lidar_height", m_config.lidar_height);
 
   // Common parameters of the small_gicp backend, shared by both registration stages.
   m_localizer_config.num_threads =
@@ -300,8 +393,14 @@ void LocalizerNode::timerCB()
   if (m_state.initial_pose_pending) {
     m_state.initial_pose_pending = false;
     if (m_localizer->isMapLoaded()) {
+      // The ground's z only from the last pose file (NodeConfig::initial_pose_use_ground_z):
+      // at boot the current estimate is Point-LIO's origin, i.e. whatever storey the map's
+      // origin is on, and a robot shut down on another one would start a storey out.
+      std::optional<double> ground_z;
+      if (m_config.initial_pose_use_ground_z) ground_z = m_config.initial_pose_ground_z;
       applyPlanarGuess(
-        m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw, "config");
+        m_config.initial_pose_x, m_config.initial_pose_y, m_config.initial_pose_yaw, "config",
+        ground_z);
     } else {
       RCLCPP_WARN(
         this->get_logger(),
@@ -331,24 +430,66 @@ void LocalizerNode::timerCB()
   }
 
   m_state.last_send_tf_time = rclcpp::Clock().now();
+  const rclcpp::Time now = rclcpp::Clock().now();
 
   // Run rough + refine ICP and update the offset on success.
   M4F initial_guess = M4F::Identity();
   bool service_pending = false;
+  bool service_owned = false;
+  std::string round_map;
   {
     std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    round_map = m_state.loaded_map_name;
     service_pending = m_state.service_received;
-    if (service_pending) initial_guess = m_state.initial_guess;
+    if (service_pending) {
+      initial_guess = m_state.initial_guess;
+      service_owned = m_state.guess_owned_by_service;
+    }
   }
 
-  // Snapshot the odom pose before deciding whether to register: the motion
-  // gate measures against it. setInput() stays on the align path — copying
-  // the cloud into the localizer is the expensive part and a gated tick must
-  // not pay it.
+  // guess_timeout_sec (NodeConfig): a guess from relocalize / initialpose /
+  // the INI that this timer cannot converge on used to be retried every round
+  // forever, with the TF frozen on the old offset meanwhile. auto_localize and
+  // reset_odometry own their guesses and withdraw them on their own deadlines
+  // (handOverAndAwait), so only the un-owned ones are timed here. The clock
+  // starts when the timer first sees a guess and restarts on a different one.
+  if (!service_pending || service_owned || m_config.guess_timeout_sec <= 0.0) {
+    m_state.guess_seen_valid = false;
+  } else if (!m_state.guess_seen_valid || m_state.guess_seen != initial_guess) {
+    m_state.guess_seen_valid = true;
+    m_state.guess_seen = initial_guess;
+    m_state.guess_seen_since = now;
+  } else if ((now - m_state.guess_seen_since).seconds() > m_config.guess_timeout_sec) {
+    {
+      std::lock_guard<std::mutex> lock(m_state.service_mutex);
+      // Only this guess: one that replaced it since the snapshot gets its own
+      // clock on the next round.
+      if (m_state.service_received && m_state.initial_guess == initial_guess) {
+        m_state.service_received = false;
+      }
+    }
+    m_state.guess_seen_valid = false;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "guess withdrawn: no converged registration within %.1f s (guess_timeout_sec); back to "
+      "the previous offset + odometry. A guess from a 2D source needs an initialpose so "
+      "roll/pitch/z are filled in from the current estimate -- see the README",
+      m_config.guess_timeout_sec);
+    // This round runs as an ordinary odometry-fed one.
+    service_pending = false;
+  }
+
+  // Snapshot the odom pose and the source window before deciding whether to
+  // register: the motion gate measures against the pose, and the window is
+  // only shared_ptr copies (syncCB allocates a fresh cloud per message and
+  // never mutates one), so the lock is held for no real work. The
+  // accumulation and setInput() stay on the align path -- they are the
+  // expensive part and a gated tick must not pay for them.
   M3D current_local_r;
   V3D current_local_t;
   builtin_interfaces::msg::Time current_time;
   uint64_t reset_epoch = 0;
+  std::vector<ScanRecord> window;
   {
     std::lock_guard<std::mutex> lock(m_state.message_mutex);
     reset_epoch = m_state.reset_epoch;
@@ -360,6 +501,13 @@ void LocalizerNode::timerCB()
       initial_guess.block<3, 1>(0, 3) =
         (m_state.last_offset_r * m_state.last_t + m_state.last_offset_t).cast<float>();
     }
+    // The newest track_accum_scans records; the newest one is the scan
+    // last_cloud / last_r / last_t came from (syncCB writes them together).
+    const std::size_t want = static_cast<std::size_t>(m_config.track_accum_scans);
+    const std::size_t n = std::min(want, m_state.recent_scans.size());
+    window.assign(
+      m_state.recent_scans.end() - static_cast<std::ptrdiff_t>(n), m_state.recent_scans.end());
+    if (window.empty()) window.push_back({m_state.last_cloud, m_state.last_r, m_state.last_t});
   }
 
   // A relocalize (or the config initial pose, which reaches us the same way)
@@ -367,7 +515,6 @@ void LocalizerNode::timerCB()
   // switch, and easing 10% toward the requested pose would be worse than
   // useless. It also opens a full-rate settle window, because the pose only
   // converges over the rounds that follow.
-  const rclcpp::Time now = rclcpp::Clock().now();
   if (service_pending) {
     m_state.settle_until = now + rclcpp::Duration::from_seconds(m_config.post_reloc_settle);
   }
@@ -392,83 +539,236 @@ void LocalizerNode::timerCB()
     if (!moved) alpha = m_config.static_blend_alpha;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(m_state.message_mutex);
-    m_localizer->setInput(m_state.last_cloud);
+  // The source: the window composed into the newest scan's body frame
+  // (NodeConfig::track_accum_scans). With one scan the cloud goes in as it
+  // is -- the single-scan path this node had until 2026-10, bit for bit.
+  CloudType::Ptr source = window.back().cloud;
+  if (window.size() > 1) {
+    const ScanRecord & ref = window.back();
+    const M3D body_local_r = ref.r.transpose();
+    source = accumulateScans(window, body_local_r, -(body_local_r * ref.t));
   }
+  m_localizer->setInput(source);
+
+  // From here to the broadcast is one registration round. Every exit that
+  // leaves the offset alone goes through this, so the stats line and the
+  // rebroadcast of the previous offset are never skipped.
+  auto finish = [&]() {
+    logRoundStats(now);
+    sendBroadCastTF(current_time);
+  };
 
   // With no map loaded the target cloud is empty and align() returns false outright, before
   // touching the guess. Normally loadInitialMap() has loaded it in the constructor; this only
   // happens when map_path was unset or unreadable and no relocalize / initialpose has loaded one
   // since.
-  bool result = m_localizer->align(initial_guess);
-  if (result) {
-    M3D map_body_r = initial_guess.block<3, 3>(0, 0).cast<double>();
-    V3D map_body_t = initial_guess.block<3, 1>(0, 3).cast<double>();
-    // Re-orthonormalize: the ICP solution and the odom rotation are chained float products (and
-    // are fed back into initial_guess on the next round), so accumulated error drifts R off
-    // SO(3), and the norm of the quaternion it is converted to at broadcast time drifts with it
-    // (tf2 denormalized-quaternion warning, and the skew/scale gets read as a spurious
-    // displacement). Pull it back to a valid rotation. The blending path adds one more product
-    // to the chain, which makes this step more important there; slerp itself returns a unit
-    // quaternion.
-    const M3D raw_offset_r = map_body_r * current_local_r.transpose();
-    Eigen::Quaterniond cand_q(raw_offset_r);
-    cand_q.normalize();
-    M3D cand_r = cand_q.toRotationMatrix();
-    // Use the same orthonormalized rotation for the translation so rotation and translation
-    // stay consistent.
-    V3D cand_t = -cand_r * current_local_t + map_body_t;
+  const M4F pred = initial_guess;  // the odometry prediction, or the service guess
+  AlignInfo info;
+  const bool result = m_localizer->align(initial_guess, info);
+  ++m_state.rounds_run;
+  if (!result) {
+    ++m_state.rounds_not_converged;
+    finish();
+    return;
+  }
 
-    // Build the candidate in locals and blend afterwards: writing
-    // last_offset_r first and then deriving last_offset_t from it (as this
-    // used to) would mix a blended rotation into an unblended translation.
-    // Eigen's slerp picks the short arc itself, so no sign fix-up is needed.
-    if (alpha < 1.0 && m_state.has_reg) {
-      cand_q = Eigen::Quaterniond(m_state.last_offset_r).slerp(alpha, cand_q);
-      cand_r = cand_q.toRotationMatrix();
-      cand_t = (1.0 - alpha) * m_state.last_offset_t + alpha * cand_t;
-    }
-    {
-      // Locked since reset_odometry: the services' thread now reads the
-      // offset (currentMapPose) and writes it (the seed), so a torn Eigen
-      // read is no longer only a cosmetic risk.
-      std::lock_guard<std::mutex> lock(m_state.message_mutex);
-      // A reset_odometry began while this round was registering: its pose is
-      // in the old odometry, and the service may already have written the
-      // new run's seed. Drop the round rather than overwrite it.
-      if (m_state.reset_epoch != reset_epoch) return;
-      m_state.last_offset_r = cand_r;
-      m_state.last_offset_t = cand_t;
-    }
+  M3D map_body_r = initial_guess.block<3, 3>(0, 0).cast<double>();
+  V3D map_body_t = initial_guess.block<3, 1>(0, 3).cast<double>();
+  {
+    // The GICP solution is a float 4x4 at the end of a chain of float products
+    // (the offset's own re-orthonormalisation below has the full story); pull
+    // it back onto SO(3) before it goes into any more products.
+    Eigen::Quaterniond q(map_body_r);
+    q.normalize();
+    map_body_r = q.toRotationMatrix();
+  }
 
-    // Is this registration worth remembering as reset_odometry's seed? Only
-    // when the odometry it is chained to moved plausibly since the last one:
-    // a diverging Point-LIO can still drag a round or two of ICP to
-    // "converged" (robot01 2026-10-13: fitness 0.004 while the guess jumped
-    // 0.3-0.6 m every 0.2 s). A service guess is a discontinuity by design and
-    // is trusted on convergence alone, and so is the first round after a
-    // reset_odometry, whose odometry jumped back to the origin.
-    bool trusted = true;
-    const bool skip_speed = m_state.skip_speed_check.exchange(false);
-    if (m_state.has_reg && !service_pending && !skip_speed) {
-      const double dt = std::max((now - m_state.last_reg_time).seconds(), 0.05);
-      const double speed = (current_local_t - m_state.last_reg_t).norm() / dt;
-      if (speed > m_config.max_lio_speed) {
-        trusted = false;
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(), *this->get_clock(), 1000,
-          "LIO moved %.2f m in %.2f s (%.1f m/s > reset_odom.max_lio_speed %.1f): Point-LIO may "
-          "be diverging; this registration will not seed reset_odometry",
-          (current_local_t - m_state.last_reg_t).norm(), dt, speed, m_config.max_lio_speed);
+  const double inlier_ratio = info.inlierRatio();
+  if (m_config.min_inlier_ratio > 0.0 && inlier_ratio < m_config.min_inlier_ratio) {
+    ++m_state.rounds_low_inliers;
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "round dropped: refine inlier ratio %.2f < min_inlier_ratio %.2f", inlier_ratio,
+      m_config.min_inlier_ratio);
+    finish();
+    return;
+  }
+
+  // Localizability (localizers/localizability.h): take GICP's correction
+  // only along the directions this scan constrained; along the others the
+  // pose stays where odometry predicted it. Not applied to a service guess or
+  // inside the settle window after one (a discontinuity by design, and the
+  // prediction may be metres off), nor to the first registration ever, which
+  // has no prediction to project against. The analysis still runs and is
+  // logged in those cases.
+  const Localizability loc =
+    analyzeLocalizability(info.H, map_body_r, info.num_inliers, m_config.localizability);
+  const bool projectable = !service_pending && !settling && m_state.has_reg;
+  double dt_raw = 0.0, dt_proj = 0.0, dr_raw = 0.0, dr_proj = 0.0;
+  if (projectable) {
+    if (loc.transFullyDegenerate()) {
+      // Nothing to take from this scan. last_reg_* is not advanced, so the
+      // next tick registers again instead of waiting for the motion gate.
+      ++m_state.rounds_degenerate;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "round degenerate: no translation direction constrained (lvl=%s inl=%.2f); odometry "
+        "only this round",
+        loc.levelString().c_str(), inlier_ratio);
+      finish();
+      return;
+    }
+    // The prediction is a float chain too (offset x odom, cast); normalise it
+    // the same way before taking a difference against it.
+    const M3D pred_r_raw = pred.block<3, 3>(0, 0).cast<double>();
+    const M3D pred_r = Eigen::Quaterniond(pred_r_raw).normalized().toRotationMatrix();
+    const V3D pred_t = pred.block<3, 1>(0, 3).cast<double>();
+    const V3D dt = map_body_t - pred_t;
+    const M3D dR_raw = map_body_r * pred_r.transpose();
+    const Eigen::AngleAxisd aa(dR_raw);
+    const V3D dtheta = aa.axis() * aa.angle();
+    const V3D dt_p = projectTranslation(loc, dt, m_config.localizability);
+    const V3D dtheta_p = projectRotation(loc, dtheta, m_config.localizability);
+    dt_raw = dt.norm();
+    dt_proj = dt_p.norm();
+    dr_raw = dtheta.norm();
+    dr_proj = dtheta_p.norm();
+    if ((dt_p - dt).norm() > 1e-9 || (dtheta_p - dtheta).norm() > 1e-9) {
+      ++m_state.rounds_projected;
+    }
+    map_body_t = pred_t + dt_p;
+    map_body_r =
+      (dr_proj > 1e-12 ? Eigen::AngleAxisd(dr_proj, dtheta_p / dr_proj).toRotationMatrix()
+                       : M3D::Identity()) *
+      pred_r;
+  }
+  // One line per accepted round: the eigenvalues (per inlier, map frame,
+  // weakest first) are what the localizability thresholds are tuned from,
+  // and dt / dr show how much of the correction the projection kept.
+  RCLCPP_INFO(
+    this->get_logger(),
+    "loc: t-eig=(%.3g %.3g %.3g) r-eig=(%.3g %.3g %.3g) lvl=%s weak=%.0fdeg inl=%.2f ms=%.1f "
+    "dt=%.3f->%.3f dr=%.2f->%.2fdeg%s",
+    loc.trans_eig(0), loc.trans_eig(1), loc.trans_eig(2), loc.rot_eig(0), loc.rot_eig(1),
+    loc.rot_eig(2), loc.levelString().c_str(), loc.weakestTransHeading() * 180.0 / M_PI,
+    inlier_ratio, info.elapsed_ms, dt_raw, dt_proj, dr_raw * 180.0 / M_PI, dr_proj * 180.0 / M_PI,
+    projectable ? "" : " (not projected)");
+
+  // The jump gate (NodeConfig::jump_gate_*), against the last ACCEPTED body
+  // pose and never the prediction -- a diverged Point-LIO makes the prediction
+  // garbage while GICP's answer is right, and that answer must get through.
+  // The flag reads once per successful align, as before, and exempts the
+  // round that straddles reset_odometry's jump.
+  //
+  // dt is the two scans' stamp difference, not the timer's: the poses
+  // compared belong to those scans. On wall time (until 2026-10-23) the
+  // timer's 0.2 s was set against scans 0.3-0.5 s apart -- the 10 Hz scans do
+  // not line up with the 5 Hz rounds -- so a robot walking at 0.7-1.1 m/s read
+  // as 1.6-3 m/s, and the loc_1022 dp replay rejected 8 correct rounds. The
+  // 0.2 s floor stays: it bounds the allowance for two scans 0.1 s apart, or
+  // one scan registered twice, where the correction alone is the motion.
+  const double scan_dt = rclcpp::Time(current_time).seconds() - m_state.last_reg_stamp;
+  const bool skip_speed = m_state.skip_speed_check.exchange(false);
+  if (
+    m_config.jump_gate_enabled && m_state.has_reg && !service_pending && !settling && !skip_speed) {
+    const double dt_s = std::max(scan_dt, 0.2);
+    const double jump_t = (map_body_t - m_state.last_reg_map_body_t).norm();
+    const M3D dr = map_body_r * m_state.last_reg_map_body_r.transpose();
+    const double jump_r = std::acos(std::clamp((dr.trace() - 1.0) * 0.5, -1.0, 1.0));
+    if (jump_t > m_config.max_jump_speed * dt_s || jump_r > m_config.max_jump_rot_speed * dt_s) {
+      ++m_state.jump_reject_streak;
+      if (m_state.jump_reject_streak <= m_config.jump_reject_max_streak) {
+        ++m_state.rounds_jump_rejected;
+        RCLCPP_WARN(
+          this->get_logger(),
+          "jump rejected (%d/%d): body moved %.2f m / %.1f deg in %.2f s, over jump_gate.max_speed "
+          "%.1f m/s / max_rot_speed %.1f rad/s; coasting on odometry",
+          m_state.jump_reject_streak, m_config.jump_reject_max_streak, jump_t,
+          jump_r * 180.0 / M_PI, dt_s, m_config.max_jump_speed, m_config.max_jump_rot_speed);
+        finish();
+        return;
       }
+      RCLCPP_WARN(
+        this->get_logger(),
+        "accepting a %.2f m / %.1f deg jump after %d rejected rounds "
+        "(jump_gate.max_reject_streak): "
+        "the reference pose, not this one, is now taken to be the wrong one",
+        jump_t, jump_r * 180.0 / M_PI, m_state.jump_reject_streak - 1);
     }
+  }
+  m_state.jump_reject_streak = 0;
 
-    m_state.last_reg_r = current_local_r;
-    m_state.last_reg_t = current_local_t;
-    m_state.last_reg_time = now;
-    m_state.has_reg = true;
+  // Re-orthonormalize: the ICP solution and the odom rotation are chained float products (and
+  // are fed back into initial_guess on the next round), so accumulated error drifts R off
+  // SO(3), and the norm of the quaternion it is converted to at broadcast time drifts with it
+  // (tf2 denormalized-quaternion warning, and the skew/scale gets read as a spurious
+  // displacement). Pull it back to a valid rotation. The blending path adds one more product
+  // to the chain, which makes this step more important there; slerp itself returns a unit
+  // quaternion.
+  const M3D raw_offset_r = map_body_r * current_local_r.transpose();
+  Eigen::Quaterniond cand_q(raw_offset_r);
+  cand_q.normalize();
+  M3D cand_r = cand_q.toRotationMatrix();
+  // Use the same orthonormalized rotation for the translation so rotation and translation
+  // stay consistent.
+  V3D cand_t = -cand_r * current_local_t + map_body_t;
 
+  // Build the candidate in locals and blend afterwards: writing
+  // last_offset_r first and then deriving last_offset_t from it (as this
+  // used to) would mix a blended rotation into an unblended translation.
+  // Eigen's slerp picks the short arc itself, so no sign fix-up is needed.
+  if (alpha < 1.0 && m_state.has_reg) {
+    cand_q = Eigen::Quaterniond(m_state.last_offset_r).slerp(alpha, cand_q);
+    cand_r = cand_q.toRotationMatrix();
+    cand_t = (1.0 - alpha) * m_state.last_offset_t + alpha * cand_t;
+  }
+  {
+    // Locked since reset_odometry: the services' thread now reads the
+    // offset (currentMapPose) and writes it (the seed), so a torn Eigen
+    // read is no longer only a cosmetic risk.
+    std::lock_guard<std::mutex> lock(m_state.message_mutex);
+    // A reset_odometry began while this round was registering: its pose is
+    // in the old odometry, and the service may already have written the
+    // new run's seed. Drop the round rather than overwrite it.
+    if (m_state.reset_epoch != reset_epoch) return;
+    m_state.last_offset_r = cand_r;
+    m_state.last_offset_t = cand_t;
+  }
+
+  // Is this registration worth remembering as reset_odometry's seed? Only
+  // when the odometry it is chained to moved plausibly since the last one:
+  // a diverging Point-LIO can still drag a round or two of ICP to
+  // "converged" (robot01 2026-10-13: fitness 0.004 while the guess jumped
+  // 0.3-0.6 m every 0.2 s). A service guess is a discontinuity by design and
+  // is trusted on convergence alone, and so is the first round after a
+  // reset_odometry, whose odometry jumped back to the origin.
+  bool trusted = true;
+  if (m_state.has_reg && !service_pending && !skip_speed) {
+    // Same scan-stamp interval as the jump gate, for the same reason.
+    const double dt = std::max(scan_dt, 0.05);
+    const double speed = (current_local_t - m_state.last_reg_t).norm() / dt;
+    if (speed > m_config.max_lio_speed) {
+      trusted = false;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "LIO moved %.2f m in %.2f s (%.1f m/s > reset_odom.max_lio_speed %.1f): Point-LIO may "
+        "be diverging; this registration will not seed reset_odometry",
+        (current_local_t - m_state.last_reg_t).norm(), dt, speed, m_config.max_lio_speed);
+    }
+  }
+
+  m_state.last_reg_r = current_local_r;
+  m_state.last_reg_t = current_local_t;
+  m_state.last_reg_time = now;
+  m_state.last_reg_stamp = rclcpp::Time(current_time).seconds();
+  m_state.has_reg = true;
+  // The jump gate's reference: the projected solution, before the backstop
+  // blend, which is a filter on the broadcast and not a measurement.
+  m_state.last_reg_map_body_r = map_body_r;
+  m_state.last_reg_map_body_t = map_body_t;
+  ++m_state.rounds_accepted;
+
+  {
     std::lock_guard<std::mutex> lock(m_state.service_mutex);
     if (trusted) {
       m_state.has_good = true;
@@ -478,10 +778,109 @@ void LocalizerNode::timerCB()
     if (!m_state.localize_success && m_state.service_received) {
       m_state.localize_success = true;
       m_state.service_received = false;
+      m_state.guess_owned_by_service = false;
+      m_state.pose_established = true;
     }
   }
+  m_state.guess_seen_valid = false;
 
-  sendBroadCastTF(current_time);
+  // Only an ordinary tracking round is a pose worth booting from: a service
+  // guess and its settle window are still converging, and an untrusted round
+  // may be riding a diverging Point-LIO.
+  if (trusted && !service_pending && !settling) maybeSaveLastPose(now, round_map);
+
+  finish();
+}
+
+void LocalizerNode::maybeSaveLastPose(const rclcpp::Time & now, const std::string & round_map)
+{
+  if (m_config.last_pose_file.empty() || round_map.empty()) return;
+  if (
+    m_state.last_pose_saved &&
+    (now - m_state.last_pose_saved_time).seconds() < m_config.last_pose_save_interval) {
+    return;
+  }
+  LastPose pose;
+  V3D t;
+  double yaw = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    // A relocalize between the round's snapshot and here: this pose was
+    // solved against the previous map (or a new guess is pending on the new
+    // one). The next round saves.
+    if (m_state.service_received || m_state.loaded_map_name != round_map) return;
+    // Never localized on this map: rounds still run from whatever offset
+    // there is (identity at boot, after a wrong boot guess was withdrawn) and
+    // can converge in a wrong basin -- the loc_1022 replay with a boot guess
+    // 5 m out "converged" 50 s later 1 rad off. Broadcasting that is the
+    // node's behaviour before this file existed; booting from it next time
+    // must not be.
+    if (!m_state.pose_established) return;
+    t = m_state.good_map_body_t;
+    yaw = std::atan2(m_state.good_map_body_r(1, 0), m_state.good_map_body_r(0, 0));
+  }
+  if (m_state.last_pose_saved) {
+    const double moved = (t - m_state.last_pose_saved_t).head<2>().norm();
+    const double turned = std::abs(std::remainder(yaw - m_state.last_pose_saved_yaw, 2.0 * M_PI));
+    if (moved < m_config.last_pose_min_move && turned < m_config.last_pose_min_rot) {
+      // Parked: the file already says where the robot is. Restart the
+      // interval anyway, so the check runs at its pace and not every round.
+      m_state.last_pose_saved_time = now;
+      return;
+    }
+  }
+  pose.map = round_map;
+  pose.x = t.x();
+  pose.y = t.y();
+  pose.ground_z = t.z() - m_config.lidar_height;
+  pose.yaw = yaw;
+  std::string error;
+  // A few hundred bytes, every few seconds at most, on the timer thread: the
+  // fsyncs are the cost, and they are well inside a round's 200 ms.
+  if (!saveLastPose(m_config.last_pose_file, pose, error)) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 60000, "last pose not saved: %s", error.c_str());
+    return;
+  }
+  if (!m_state.last_pose_saved) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "last pose saved to %s (map %s, x=%.2f y=%.2f ground_z=%.2f yaw=%.2f); written again as "
+      "the robot moves",
+      m_config.last_pose_file.c_str(), pose.map.c_str(), pose.x, pose.y, pose.ground_z, pose.yaw);
+  }
+  m_state.last_pose_saved = true;
+  m_state.last_pose_saved_t = t;
+  m_state.last_pose_saved_yaw = yaw;
+  m_state.last_pose_saved_time = now;
+}
+
+void LocalizerNode::setLoadedMap(const std::string & pcd_path)
+{
+  m_state.loaded_map_path = pcd_path;
+  std::lock_guard<std::mutex> lock(m_state.service_mutex);
+  m_state.loaded_map_name = mapNameFromPcdPath(pcd_path);
+  // A pose on the previous map says nothing about this one; the guess that
+  // comes with a map switch establishes it again once it converges.
+  m_state.pose_established = false;
+}
+
+void LocalizerNode::logRoundStats(const rclcpp::Time & now)
+{
+  if ((now - m_state.last_stats_log).seconds() < 60.0) return;
+  m_state.last_stats_log = now;
+  if (m_state.rounds_run == 0) return;
+  RCLCPP_INFO(
+    this->get_logger(),
+    "loc stats (since start): run=%llu accepted=%llu not_converged=%llu low_inliers=%llu "
+    "degenerate=%llu jump_rejected=%llu projected=%llu",
+    static_cast<unsigned long long>(m_state.rounds_run),
+    static_cast<unsigned long long>(m_state.rounds_accepted),
+    static_cast<unsigned long long>(m_state.rounds_not_converged),
+    static_cast<unsigned long long>(m_state.rounds_low_inliers),
+    static_cast<unsigned long long>(m_state.rounds_degenerate),
+    static_cast<unsigned long long>(m_state.rounds_jump_rejected),
+    static_cast<unsigned long long>(m_state.rounds_projected));
 }
 
 void LocalizerNode::syncCB(
@@ -522,7 +921,11 @@ void LocalizerNode::syncCB(
     odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y, odom_msg->pose.pose.position.z);
   m_state.last_message_time = cloud_msg->header.stamp;
   m_state.recent_scans.push_back({cloud, m_state.last_r, m_state.last_t});
-  while (m_state.recent_scans.size() > static_cast<size_t>(m_global_config.accum_scans)) {
+  // Sized for the longer of its two readers: auto_localize's search window
+  // and the tracking round's source window (NodeConfig::track_accum_scans).
+  const size_t keep =
+    static_cast<size_t>(std::max(m_global_config.accum_scans, m_config.track_accum_scans));
+  while (m_state.recent_scans.size() > keep) {
     m_state.recent_scans.pop_front();
   }
   if (!m_state.message_received) {
@@ -580,7 +983,7 @@ void LocalizerNode::relocCB(
     response->message = "load map failed";
     return;
   }
-  m_state.loaded_map_path = pcd_path;
+  setLoadedMap(pcd_path);
   // The request's RAW 6-DOF pose, deliberately NOT through applyPlanarGuess: a caller that
   // knows the full pose (a bag, a test) must be able to hand it over. The price is that a flat
   // guess from a 2D source never converges on this robot's tilted mount, which is why the
@@ -593,6 +996,8 @@ void LocalizerNode::relocCB(
     m_state.initial_guess.block<3, 1>(0, 3) = V3F(x, y, z);
     m_state.service_received = true;
     m_state.localize_success = false;
+    // Timed by the timer's guess_timeout_sec, unlike auto_localize's.
+    m_state.guess_owned_by_service = false;
   }
 
   // This is the only place the map changes at runtime; publish it once, latched, for RViz and
@@ -634,7 +1039,7 @@ void LocalizerNode::initialPoseCB(
         m_config.map_path.c_str());
       return;
     }
-    m_state.loaded_map_path = m_config.map_path;
+    setLoadedMap(m_config.map_path);
     builtin_interfaces::msg::Time stamp = this->now();
     publishMapCloud(stamp);
   }
@@ -650,9 +1055,18 @@ void LocalizerNode::initialPoseCB(
     msg->pose.pose.orientation.z);
   q.normalize();
   M3D msg_r = q.toRotationMatrix();
+
+  // position.z is the ground under the pose, and taken only when the sender marks it with a
+  // positive z variance (the backend's set_initial_pose with a z does). Unmarked, it is RViz's
+  // or an older sender's 0, which says nothing about the storey.
+  std::optional<double> ground_z;
+  const double z_variance = msg->pose.covariance[kInitialPoseZVarianceIndex];
+  if (z_variance > 0.0 && std::isfinite(msg->pose.pose.position.z)) {
+    ground_z = msg->pose.pose.position.z;
+  }
   applyPlanarGuess(
     msg->pose.pose.position.x, msg->pose.pose.position.y, std::atan2(msg_r(1, 0), msg_r(0, 0)),
-    "initialpose");
+    "initialpose", ground_z);
 }
 
 // Build the ICP initial guess from a 2D start pose (x, y, yaw). Shared by two sources: the
@@ -666,8 +1080,16 @@ void LocalizerNode::initialPoseCB(
 // guess is pending, timerCB also skips the odom feedback path, so localization freezes on the
 // old offset and retries forever (measured on the robot: an initialpose at (5.0, 0.982) hung;
 // with the 14.6° pitch filled in, the same spot converged on the first round).
-// So only x, y, yaw are taken; roll/pitch/z are always filled in from the current estimate.
-void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char * source)
+// So only x, y, yaw are taken; roll/pitch are always filled in from the current estimate.
+//
+// z is too, unless the sender names the storey with `ground_z` (an initialpose with its z
+// variance set): the current estimate's z is the storey the localizer thinks it is on, and a
+// guess on another one starts a whole storey out, beyond rough_max_corr_dist, and hangs the
+// same way. `ground_z` is the ground's height, so the body sits lidar_height above it. It only
+// has to land the rough stage inside its reach, so a storey's ground half a metre out (the
+// console's "0 is the ground floor") still converges.
+void LocalizerNode::applyPlanarGuess(
+  double x, double y, double yaw, const char * source, std::optional<double> ground_z)
 {
   M3D guess_r = Eigen::AngleAxisd(yaw, V3D::UnitZ()).toRotationMatrix();
   V3D guess_t(x, y, 0.0);
@@ -684,6 +1106,9 @@ void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char 
     // Early at boot, before any odom has arrived, there is no estimate to fill in from, so the
     // pure 2D pose is used (the config start pose waits for the first odom and never gets here).
   }
+  if (ground_z) {
+    guess_t.z() = *ground_z + m_config.lidar_height;
+  }
 
   std::lock_guard<std::mutex> lock(m_state.service_mutex);
   m_state.initial_guess.setIdentity();
@@ -691,10 +1116,15 @@ void LocalizerNode::applyPlanarGuess(double x, double y, double yaw, const char 
   m_state.initial_guess.block<3, 1>(0, 3) = guess_t.cast<float>();
   m_state.service_received = true;
   m_state.localize_success = false;
+  // Timed by the timer's guess_timeout_sec, unlike auto_localize's.
+  m_state.guess_owned_by_service = false;
+  const char * filled_in = "roll/pitch/z from current estimate";
+  if (ground_z) {
+    filled_in = "z from the given ground, roll/pitch from current estimate";
+  }
   RCLCPP_INFO(
-    this->get_logger(),
-    "guess from %s applied: x=%.3f y=%.3f z=%.3f yaw=%.3f (roll/pitch/z from current estimate)",
-    source, guess_t.x(), guess_t.y(), guess_t.z(), yaw);
+    this->get_logger(), "guess from %s applied: x=%.3f y=%.3f z=%.3f yaw=%.3f (%s)", source,
+    guess_t.x(), guess_t.y(), guess_t.z(), yaw, filled_in);
 }
 
 bool LocalizerNode::globalSearch(
@@ -732,19 +1162,8 @@ bool LocalizerNode::globalSearch(
   const double ref_yaw = std::atan2(ref.r(1, 0), ref.r(0, 0));
   const M3D level_local_r = Eigen::AngleAxisd(-ref_yaw, V3D::UnitZ()).toRotationMatrix();
   const M3D level_body_r = level_local_r * ref.r;
-  CloudType::Ptr accumulated = std::make_shared<CloudType>();
-  for (const ScanRecord & rec : scans) {
-    const M3D R = level_local_r * rec.r;
-    const V3D t = level_local_r * (rec.t - ref.t);
-    for (const PointType & p : *rec.cloud) {
-      const V3D q = R * V3D(p.x, p.y, p.z) + t;
-      PointType o = p;
-      o.x = static_cast<float>(q.x());
-      o.y = static_cast<float>(q.y());
-      o.z = static_cast<float>(q.z());
-      accumulated->push_back(o);
-    }
-  }
+  const CloudType::Ptr accumulated =
+    accumulateScans(scans, level_local_r, -(level_local_r * ref.t));
   RCLCPP_INFO(
     this->get_logger(), "global search: %zu scans, %zu points, %zu candidate positions",
     scans.size(), accumulated->size(), positions.size());
@@ -776,12 +1195,15 @@ bool LocalizerNode::globalSearch(
 Convergence LocalizerNode::handOverAndAwait(const M4F & guess, double timeout_sec)
 {
   // From here on it is relocalize's path exactly -- the timer takes
-  // initial_guess, bypasses the motion gate and opens the settle window.
+  // initial_guess, bypasses the motion gate and opens the settle window --
+  // except that this guess is owned here: the deadline below withdraws it,
+  // and the timer's own guess_timeout_sec leaves it alone.
   {
     std::lock_guard<std::mutex> lock(m_state.service_mutex);
     m_state.initial_guess = guess;
     m_state.service_received = true;
     m_state.localize_success = false;
+    m_state.guess_owned_by_service = true;
   }
 
   // Wait for the timer's own (converged-gated) registration against a fresh
@@ -811,6 +1233,7 @@ Convergence LocalizerNode::handOverAndAwait(const M4F & guess, double timeout_se
 
   std::lock_guard<std::mutex> lock(m_state.service_mutex);
   m_state.service_received = false;
+  m_state.guess_owned_by_service = false;
   return Convergence::kTimedOut;
 }
 
@@ -1148,6 +1571,8 @@ void LocalizerNode::resetOdomCB(
       m_state.initial_guess = guess;
       m_state.service_received = true;
       m_state.localize_success = false;
+      // Owned: handOverAndAwait's deadline withdraws it, not guess_timeout_sec.
+      m_state.guess_owned_by_service = true;
     }
     m_state.skip_speed_check.store(true);
     m_state.lio_resetting.store(false);

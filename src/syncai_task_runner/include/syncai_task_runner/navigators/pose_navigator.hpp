@@ -1,6 +1,7 @@
 #ifndef SYNCAI_TASK_RUNNER__NAVIGATORS__POSE_NAVIGATOR_HPP_
 #define SYNCAI_TASK_RUNNER__NAVIGATORS__POSE_NAVIGATOR_HPP_
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "syncai_common/action/navigate_to_goal.hpp"
 #include "syncai_task_runner/navigator.hpp"
@@ -107,6 +109,17 @@ protected:
   void initializeGoalPose(typename ActionT::Goal::ConstSharedPtr goal);
 
   /**
+   * @brief The tree file a goal runs: its behavior_tree resolved (a bare name
+   * against behavior_trees/, empty = default_bt_xml), then, on a 3D map, the
+   * `<stem>_3d.xml` beside it when one exists -- move.xml -> move_3d.xml,
+   * dock.xml -> dock_3d.xml; undock.xml has no variant and runs as is
+   * (2026-10-19). "3D map" is the planner's latched map_3d_topic. Used for a
+   * new goal and for a preempt's same-tree comparison alike, so a preempt
+   * after the map changed type is a different tree and is refused.
+   */
+  std::string selectBtFilename(const std::string & requested) const;
+
+  /**
    * @brief Ask the planner (clear_plan) to stop re-sending the last route on
    * `plan` and send an empty one. Fire and forget.
    */
@@ -118,9 +131,16 @@ protected:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   typename rclcpp_action::Client<ActionT>::SharedPtr self_client_;
 
-  // The planner's clear_plan: called on cancel, so the console stops showing
-  // the route of a navigation that no longer exists
+  // The planner's clear_plan: called on a success or a cancel, so the console
+  // stops showing the route of a navigation that no longer exists
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr clear_plan_client_;
+
+  // Whether the map is a 3D one: the planner's Octo3D map_available
+  // (map_3d_topic), latched there, so the current value arrives on subscribe.
+  // False until it does: a goal in the first moments after boot runs the 2D
+  // tree. Written on the executor, read when a goal arrives.
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr map_3d_sub_;
+  std::atomic<bool> map_3d_{false};
 
   std::string goal_blackboard_id_;
   std::string path_blackboard_id_;

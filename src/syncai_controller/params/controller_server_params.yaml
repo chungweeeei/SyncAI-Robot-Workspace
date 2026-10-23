@@ -52,6 +52,11 @@
     # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
     # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
+    # The replanned detour above is the 2D tree's. A 3D map's move_3d.xml
+    # (Octo3D + FollowPath) has no IsPathValid and plans once per goal, so
+    # the only detour there is MPPI's own, inside the local costmap; at a
+    # blocker that closes the way it stops, and those retries (~16 s) are
+    # the whole wait before the goal fails.
     # MPPI's "Optimizer fail to compute path" reaches this window only since
     # 2026-10-21: until then the optimizer threw Humble's std::runtime_error,
     # which the server does not tolerate, so FollowPath aborted on the first
@@ -76,6 +81,30 @@
     default_dock_goal_checker_id: "dock_goal_checker"
     dock_approach_timeout: 60.0
 
+    # Paths with heights (2026-10): OctomapPlanner3D writes the ground height
+    # on every pose, and its stair links climb. On dp1f_1012's spiral stair
+    # the path is back over the same x / y every 8.1 m, 2.5 m higher, so a
+    # planar match puts the robot on the wrong turn -- RPP's nearest-pose
+    # search spans 10 m -- and a 2F goal can be "reached" from the 1F
+    # corridor under it. A path whose poses do not all share one z is
+    # therefore matched in 3D, by RPP 3D (nearest pose, local window) and by the
+    # goal check here; a 2D planner's path (all z = 0) is untouched. The
+    # robot's height is not in its pose -- lio_bridge projects base_link onto
+    # the plane -- so it is body_frame's z in the path's frame minus
+    # lidar_height: the planner's own start-height lookup, and the same two
+    # values (planner_server_params.yaml, Octo3D). body_frame gets the
+    # <robot_id>/ prefix from the launch file; without that TF a path with
+    # heights fails each cycle in RPP and never reaches its goal, rather
+    # than being tracked on x / y. path_height.hpp has the rest.
+    body_frame: pointlio_body
+    lidar_height: 0.481
+    # How far the ground under the robot may be from the end pose's height
+    # for the goal to count. The end pose is the top of a 0.1 m cell and the
+    # ground estimate rides the lidar's z (1F keyframes spread 0.24 m on a
+    # floor the planner calls level), so 0.5 m: well clear of both, and far
+    # under the 2.5 m of one stair turn or the ~5.5 m between floors.
+    goal_z_tolerance: 0.5
+
     progress_checker_plugin: "progress_checker"
     # ORDER MATTERS: a FollowPath goal that names no goal checker (move.xml
     # names none, and the BT node defaults it to "") gets the FIRST entry, so
@@ -93,8 +122,18 @@
     # Undocking (2026-10) are two instances of the pose-to-pose docking
     # controller that the dock_to_pose action drives, differing only in
     # direction (see their blocks). Only the controller a goal names runs;
-    # the others cost memory, not CPU.
-    controller_plugins: ["FollowPath", "FollowPathRPP", "Docking", "Undocking"]
+    # the others cost memory, not CPU. FollowPathRPP3D is
+    # feature/octomap-planner-3d's: the RPP above plus 3D matching of a path
+    # with heights and the stair mode, as a plugin of its own so FollowPathRPP
+    # stays dev's 2D RPP. Since 2026-10-20 FollowPath (MPPI) matches a path
+    # with heights in 3D and climbs stairs the same way (one state machine,
+    # syncai_util::StairMode, for both), so a 3D map's trees (move_3d.xml,
+    # dock_3d.xml's staging leg) name FollowPath as the 2D trees do, and
+    # FollowPathRPP3D is the A/B on a 3D map as FollowPathRPP is on a 2D
+    # one. One controller for both map types: a path without heights (every
+    # 2D planner) takes MPPI's planar code path unchanged. Only FollowPathRPP
+    # matches on x / y alone.
+    controller_plugins: ["FollowPath", "FollowPathRPP", "FollowPathRPP3D", "Docking", "Undocking"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -175,7 +214,15 @@
       # them together. vx_min 0.0 disables reversing, as RPP's
       # allow_reversing: false does; PathAngleCritic then forces
       # forward_preference on by itself.
-      vx_max: 0.60
+      # vx_max 0.60 -> 0.80 (2026-10-20), FollowPathRPP3D's speed since
+      # 2026-10-19, with time_steps cut to keep the horizon inside the local
+      # costmap (see there). NOT measured: with scale_fwd 1.40 the gait is
+      # commanded 1.12 m/s, past the 0.80 run A swept, and the rollouts assume
+      # the commanded speed is the real one -- check cmd_vel against odom on
+      # the first run. The optimizer does not model max_linear_accel either,
+      # so it plans as if it could stop at once; the clamp needs 0.32 m to
+      # stop from 0.80 (0.18 from 0.60).
+      vx_max: 0.80
       vx_min: 0.0
       wz_max: 0.65
       # DiffDrive although the quadruped can strafe: driver_manager's
@@ -208,18 +255,18 @@
       # in_place_wz_min is raised to in_place_wz_min, keeping its sign; while
       # walking nothing changes (a small wz there is an arc, and raising it
       # would weave). Pre-scale like every value here. 0.3 -> 0.45
-      # (2026-10-21): 0.3 is not above the gait's floor. On robot01
-      # (feature/octomap-planner-3d's MPPI, the same gait) MPPI held vx
-      # 0.02-0.07 with wz +/-0.30 in front of a blocker for ~9 s and odom
-      # turned at 0-0.16 rad/s, while 0.65 rad/s turns onto a new path turned
-      # at 0.5-0.9 -- the robot stood, the optimizer's situation never
-      # changed, and it swung between passing left and right until
-      # IsPathValid's 10 s replan. 0.45 sits between the two; the floor
-      # itself is somewhere in 0.3-0.65 and unmeasured. 0.3 dated from
-      # 2026-10-15, as the cmd_vel value of a gait floor quoted as ~0.3, and
-      # 0.21 = 0.3 / scale_turn 1.40 for a day before that.
-      # Same value as FollowPathRPP's rotate_to_heading_min_angular_vel; change
-      # them together. 0 disables it.
+      # (2026-10-21): 0.3 is not above the gait's floor. On robot01 MPPI held
+      # vx 0.02-0.07 with wz +/-0.30 in front of a blocker for ~9 s and odom
+      # turned at 0-0.16 rad/s, while the 0.65 rad/s turns onto a new path
+      # (rotate_to_path_min_angle) turned at 0.5-0.9 -- the robot stood, the
+      # optimizer's situation never changed, and it swung between passing
+      # left and right until IsPathValid's 10 s replan. 0.45 sits between the
+      # two; the floor itself is somewhere in 0.3-0.65 and unmeasured. 0.3
+      # dated from 2026-10-15, as the cmd_vel value of a gait floor quoted as
+      # ~0.3, and 0.21 = 0.3 / scale_turn 1.40 for a day before that.
+      # Same value as FollowPathRPP's / FollowPathRPP3D's
+      # rotate_to_heading_min_angular_vel; change them together. 0 disables
+      # it.
       in_place_wz_min: 0.45
       in_place_wz_deadband: 0.05
       in_place_vx_max: 0.1
@@ -266,28 +313,163 @@
       # bearing runs a wider arc than the one through the goal point (a few
       # mm wide at 0.25 rad and 0.2 m, well inside xy_goal_tolerance).
       approach_rotate_min_angle: 0.25
-      # Horizon 40 x 0.05 = 2.0 s (upstream 56 = 2.8 s). At 0.60 m/s that is
-      # 1.2 m, which with the footprint fits in the 4 x 4 m local costmap's
-      # 2 m half-width. With consider_footprint, a rolled-out point off the
-      # costmap is checked as a footprint, and footprintCost() reads an
-      # off-map vertex as LETHAL, so a horizon longer than the window makes
-      # every fast candidate "collide" at its far end and MPPI slows down for
-      # no obstacle. model_dt must stay 1 / controller_frequency:
+      # Not upstream: the turn onto a new path (2026-10-20). From a stand
+      # (commanded |vx| under in_place_vx_max), once per path, a robot more
+      # than rotate_to_path_min_angle off the bearing of the first pose
+      # rotate_to_path_sampling_dist away turns in place at final_rotation_wz
+      # until within approach_rotate_min_angle, then the optimizer takes over
+      # -- RPP's rotate-to-heading, and nav2's rotation shim (whose defaults,
+      # 45 deg and 0.5 m, these are). The optimizer starts a goal from a zero
+      # control sequence and builds a turn up over ~0.5-1 s, under the gait's
+      # floor at first; on robot01 the turn onto the path started slow. The
+      # turn is checked against LETHAL footprints; blocked, or under 45 deg
+      # (where the optimizer turns while it walks off), it is the
+      # optimizer's. 0 disables it. Unmeasured on the robot: the controller
+      # log says "rotating in place onto it" when it opens.
+      rotate_to_path_min_angle: 0.785
+      rotate_to_path_sampling_dist: 0.5
+      # Stair mode (2026-10-20): RPP 3D's, in MPPI, so one controller serves
+      # a 2D map and a 3D one. Detection and the policy switch are
+      # syncai_util::StairMode's (shared with FollowPathRPP3D), with the
+      # SAME values as that block's -- one calibration of one gait; change
+      # them together, and the notes there are the record. On a path with
+      # heights a stretch rising stair_min_rise within stair_enter_dist is a
+      # stair: the robot brakes, set_policy_mode switches the gait to
+      # stair_policy_mode, it stands stair_policy_settle_time, then climbs
+      # on a stair_lookahead_dist carrot at stair_linear_vel with the
+      # optimizer skipped and the costmap unread -- no obstacle avoidance on
+      # a flight, by decision; the terrain layer judges a stair lethal --
+      # using final_rotation_wz for the turn onto the carrot (so that must
+      # stay > 0). Leaves when the window from stair_exit_behind_dist back to
+      # stair_exit_ahead_dist ahead has gone level, with a second stop and
+      # the policy restored. A path without heights never enters it.
+      # Untested on the robot, as RPP 3D's is. The stair_enter_dist window is
+      # looked for from the robot out to the stair brake's own stopping
+      # distance (2026-10-20; 0.75 v^2 / max_linear_accel, 0.48 m from 0.80),
+      # so at vx_max the hold starts up to ~1.5 m before the rise and the
+      # robot stands about where a slow approach would start braking: the
+      # 1.0 m window alone left 0.48 m before a 30 deg ramp, all of it brake.
+      # Never from short of the padded footprint's front edge (0.38 m;
+      # 2026-10-22): the optimizer brakes into a stair's lethal cells on its
+      # own, which takes the stopping distance to 0, and robot01 stood 8 s at
+      # dp's stair foot with the window from its centre 2 cm short of the rise.
+      use_stair_mode: true
+      stair_min_rise: 0.3
+      stair_enter_dist: 1.0
+      # Where the robot is meant to stand when it switches the policy: 1.0 m
+      # before the stair from its centre (2026-10-22, the operator's figure;
+      # 1.5 for a few hours). robot01 overran the brake by ~0.6 m from 0.8 m/s
+      # and took HIMLOCO on the first step of dp's 2F step down. A slow
+      # approach stands up to ~0.7 m further back, a fast one ~0.4 m closer
+      # (1.5 stood it 1.1 m from the 2F step up). The floor to the stair is
+      # walked blind on the stair carrot. Keep it + stair_enter_dist under
+      # stair_exit_ahead_dist.
+      stair_standoff: 1.0
+      stair_exit_behind_dist: 0.8
+      # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
+      # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to
+      # ~2.8 m of level path between two flights, and at 2.5 the window from
+      # the first corner read level (0.29 m of rise) and left stair mode on
+      # the landing. HIMLOCO turns in place and climbs the whole well; the
+      # policy goes back only on the top floor.
+      stair_exit_ahead_dist: 3.5
+      stair_policy_settle_time: 3.0
+      stair_policy_mode: 1
+      flat_policy_mode: -1
+      # Every change of speed in stair mode is an S-curve (2026-10-20): up to
+      # this after every stop on a flight (the policy switch, a turn onto the
+      # carrot), and down to 0 for an in-place turn and for the brakes before
+      # each policy switch. The acceleration rises from 0, peaks at
+      # max_linear_accel halfway, and falls back to 0 as the speed arrives --
+      # 0 <-> 0.5 in 0.75 s -- instead of the clamp's constant-acceleration
+      # ramp, which starts and ends in a step. A floor that started the walk
+      # at this speed in one step was tried the same day and dropped for it.
+      stair_linear_vel: 0.5
+      # 0.4 -> 0.6 (2026-10-20). 0.4 was RPP 3D's, for the inside treads of
+      # dp1f_1012's spiral (radius ~1.3 m), but a single flight is a straight
+      # stair link now (Octo3D, 2026-10-19), with no turn to cut. At 0.4 the
+      # carrot's bearing passed approach_rotate_min_angle (0.25 rad) at ~10 cm
+      # of sideways sway -- a stop and an in-place turn on the stairs -- and at
+      # 0.5 m/s 10 cm asked ~0.63 rad/s, the turn cap. At 0.6 those are ~15 cm
+      # and ~0.28 rad/s; a switchback's landing turn (walked link) is cut by
+      # ~0.15-0.2 m. FollowPathRPP3D keeps its own 0.4. Unmeasured.
+      stair_lookahead_dist: 0.6
+      # The landing corners (2026-10-21; StairMode::findCorner()): a heading
+      # change over stair_turn_angle within 0.2 m either side is a corner.
+      # The carrot is held at it, the robot stops stair_turn_dist before it
+      # on the S-curve, then turns in place onto the next flight until the
+      # carrot's bearing is under stair_turn_done_angle (5 deg, against
+      # approach_rotate_min_angle's 14 deg to start the turn: a flight is
+      # climbed straight or not at all). 0.15 m puts the body's centre at
+      # the corner the planner set 0.5-1 m out on the landing. Unmeasured.
+      stair_turn_angle: 0.785
+      stair_turn_dist: 0.15
+      stair_turn_done_angle: 0.087
+      # Down backwards (2026-10-21): HIMLOCO descends a flight facing the
+      # risers as it climbs one, so on a path that goes down the robot turns
+      # round at the top (its tail onto the path, past approach_rotate_min_angle
+      # and latched to stair_turn_done_angle like every stair turn), walks the
+      # flights and the landing corners in reverse at -stair_linear_vel, and
+      # turns back to the path standing at the bottom, before the policy goes
+      # back. The direction is read from the path ahead every cycle
+      # (StairMode::slopeAhead(), the first stair_min_rise of height change
+      # within 10 m); a level stretch keeps the last reading. false = down
+      # forwards. Unmeasured.
+      stair_descend_backwards: true
+      # Horizon 32 x 0.05 = 1.6 s (upstream 56 = 2.8 s). At vx_max 0.80 that is
+      # 1.28 m, which with the footprint's 0.36 m nose and the window's lag
+      # (it re-centres at update_frequency 5 Hz, 0.16 m at 0.80) fits in the
+      # 4 x 4 m local costmap's 2 m half-width. With consider_footprint, a
+      # rolled-out point off the costmap is checked as a footprint, and
+      # footprintCost() reads an off-map vertex as LETHAL, so a horizon
+      # longer than the window makes every fast candidate "collide" at its
+      # far end and MPPI slows down for no obstacle. It was 40 (2.0 s, 1.2 m
+      # at 0.60) until vx_max went to 0.80 (2026-10-20), where 40 would reach
+      # 1.6 + 0.36 + 0.16 = 2.12 m; a 5 x 5 m costmap is the way to keep 2.0 s.
+      # model_dt must stay 1 / controller_frequency:
       # equal turns on the warm-start shift, a longer controller period throws
       # out of initialize() and takes controller_server down.
-      time_steps: 40
+      time_steps: 32
       model_dt: 0.05
       # Upstream's default 1000 (the README example uses 2000). Measure the
       # controller process's CPU on the Orin before raising it or time_steps:
       # a cycle past 50 ms shows up as "Control loop missed its desired rate".
       batch_size: 1000
       iteration_count: 1
-      vx_std: 0.2
+      # 0.2 (upstream's) -> 0.3 (2026-10-20): MPPI never reached vx_max on a
+      # straight. There the only critic that pays for speed is
+      # PathFollowCritic (cost_weight x end point to carrot: w * N * dt per
+      # m/s of the whole horizon), and the optimizer's control cost charges
+      # gamma / vx_std^2 * u * N for the same (faster than the current
+      # sequence u is "energy"). They balance at u = w * dt * vx_std^2 /
+      # gamma, whatever the horizon: 5 * 0.05 * 0.04 / 0.015 = 0.67 m/s, and
+      # a model of this update (1000 samples, warm start, ConstraintCritic)
+      # settles lower still, at 0.59 -- 0.50 back when vx_max was 0.60, so
+      # MPPI never commanded RPP's 0.60 either. At 0.3 the balance is 1.5
+      # m/s, and the same model holds vx_max, 0.80. vx_std rather than gamma
+      # (0.008 -> 0.78 in the model) because gamma scales the yaw control
+      # cost as well, or PathFollowCritic (7.5 -> 0.77) because that weighs
+      # against PathAlignCritic and cuts corners. Unmeasured on the robot:
+      # compare cmd_vel's plateau with odom's, which also shows how the gait
+      # tracks 0.80 x scale_fwd.
+      vx_std: 0.3
       wz_std: 0.4
       temperature: 0.3
       gamma: 0.015
-      # Path kept ahead of the robot; must stay inside the local costmap too.
-      prune_distance: 1.5
+      # Path kept ahead of the robot, measured along it; the path handler
+      # also cuts it where it leaves the local costmap, so the window's 2 m
+      # half-width caps it on a straight run. This is MPPI's lookahead.
+      # 1.5 -> 2.0 (2026-10-20): it has to hold the horizon (1.28 m at
+      # vx_max) plus PathFollowCritic's carrot (5 points, 0.5 m on Octo3D's
+      # path), which 1.5 clamped to the path's end at cruise. It also has to
+      # reach past the largest threshold_to_consider (1.4 m), because the
+      # critics see the goal only once this path reaches it
+      # (CriticData::goal): shorter, and GoalCritic would start later than
+      # its threshold says. Until the same day the critics took this path's
+      # last pose for the goal, as Humble does, and at 1.5 a 90 deg corner
+      # brought it within 1.4 m mid-path (GoalCritic on, PathFollowCritic
+      # off, the corner cut toward it); 2.0 was first raised for that.
+      prune_distance: 2.0
       transform_tolerance: 0.2
       # Same reach as RPP's max_robot_pose_search_dist: a path that loops back
       # near itself must not snap to its later leg.
@@ -306,7 +488,7 @@
       # leave zero alone.
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
                 "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
-                "PreferForwardCritic"]
+                "PreferForwardCritic", "TwirlingCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -347,6 +529,31 @@
       CostCritic:
         enabled: true
         cost_power: 1
+        # 3.81, upstream's: obstacle avoidance over narrow doors (decided
+        # 2026-10-21). It was 0.5 for a day (2026-10-20), with the inflation
+        # band at cost_scaling_factor 20 (see there), because MPPI stopped in
+        # front of narrow doors. Off a path that is blocked, CostCritic is the
+        # only critic that pays a candidate to stop and PathFollowCritic the
+        # only one that pays it to go on, worth 5 x the distance of the end
+        # point to its carrot -- ~9 for standing still. CostCritic charges
+        # weight x the mean inflation cost over the horizon, so a door whose
+        # centre line is in the band cannot be passed outside it: at 3.81 and
+        # 0.40 / 3.0 crossing a 0.7 m door cost ~260, the cheapest candidate
+        # stopped at the band's edge ~0.3 m before the door, and a
+        # constant-speed model of the two critics stalled at every door under
+        # 0.9 m. At 0.5 a door's centre line was nearly free -- and so was a
+        # blocker's flank: a horizon of critical cells scored 0.59 against
+        # PathAlignCritic's ~4 for a 0.3 m sidestep, so MPPI learned of a
+        # blocker only when a candidate collided, steered late, and passed
+        # with the footprint padding (1 cm) to spare. To a cost of distance
+        # alone a door's jamb and a blocker passed at the same distance look
+        # the same, so one of the two had to give. The price of this one:
+        # MPPI stalls before doors and corridors narrower than ~1.0 m (0.9 m
+        # at the old 0.40 radius; extrapolated from that model, not rerun),
+        # and a route through one needs FollowPathRPP (move.xml's
+        # controller_id), which checks LETHAL only. Collisions are
+        # collision_cost's (1e6 x weight / time_steps, decisive) on the
+        # footprint either way. Unmeasured on the robot.
         cost_weight: 3.81
         critical_cost: 300.0
         consider_footprint: true
@@ -364,7 +571,21 @@
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 3
         threshold_to_consider: 0.5
-        offset_from_furthest: 20
+        # Counted in path POINTS, not metres: the critic scores nothing until
+        # some candidate's end point projects this many points along the
+        # pruned path. Upstream's 20 assumes a 0.05 m path (Smac at costmap
+        # resolution) and a 2.8 s horizon. Here the horizon was 2.0 s (1.2 m at
+        # 0.60; 1.6 s since vx_max 0.80) and Octo3D resamples at 0.1 m (its
+        # interpolation_resolution), so the furthest candidate reached ~12
+        # points -- at 20 this critic never ran on a 3D map, and on a 2D
+        # map only at cruise on straight segments (a diagonal's 0.07 m spacing
+        # puts 20 points at 1.41 m, past the horizon). Tracking was left to
+        # PathFollowCritic's end-point carrot, which pays a cut corner as well
+        # as a tracked one. 5 (2026-10-20): 0.5 m on a 3D map, which a
+        # candidate averaging walk_vx_min over the 1.6 s horizon (0.48 m) all
+        # but reaches -- the furthest of 1000 noisy candidates gets there;
+        # 0.25 m on a 2D map. Unmeasured.
+        offset_from_furthest: 5
         use_path_orientations: false
       PathFollowCritic:
         enabled: true
@@ -380,6 +601,23 @@
         threshold_to_consider: 0.5
         max_angle_to_furthest: 1.0
         forward_preference: true
+      # The anti-weave term (2026-10-22): weight x the mean |wz| of each
+      # candidate over the horizon. On robot01 MPPI walked straight stretches
+      # swinging left-right; nothing above charges for yaw rate as such (the
+      # optimizer's gamma control cost is relative to the previous sequence,
+      # not to zero), so two mirrored corrections scored alike and the
+      # sampled winner flipped between them, the gait's lag on top making
+      # each correction overshoot. 5.0, half upstream's README value: a mean
+      # 0.3 rad/s turn costs 1.5 against PathAlignCritic's 14, so a corner is
+      # still taken -- raise toward 10 if it still weaves, lower it if
+      # corners round off wide or blockers are dodged late. Off inside
+      # xy_goal_tolerance (the critic's own rule), and the final rotation,
+      # direct approach, turn onto a new path and stair mode skip the
+      # optimizer, so no in-place turn is slowed by it. Unmeasured.
+      TwirlingCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
 
     # FollowPath until 2026-10; unchanged since, apart from the id.
     FollowPathRPP:
@@ -447,6 +685,166 @@
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
+
+    # RPP 3D (2026-10, feature/octomap-planner-3d): FollowPathRPP plus 3D
+    # matching of a path with heights (OctomapPlanner3D) and the stair mode
+    # below -- a copy of the 2D plugin, not a subclass, so FollowPathRPP is
+    # exactly dev's. Every value down to max_robot_pose_search_dist is
+    # FollowPathRPP's and is one calibration with it (and with
+    # driver_manager's scales): change them together -- except
+    # desired_linear_vel, 0.8 here against 0.60 there since 2026-10-19 (see
+    # its note). A path without heights (all z = 0, any 2D planner) is
+    # followed as FollowPathRPP follows it, at that speed, stair mode never
+    # engaging. Not named by any tree since 2026-10-20 (FollowPath climbs
+    # stairs too); kept loaded as the A/B on a 3D map.
+    FollowPathRPP3D:
+      plugin: "syncai_controller::RegulatedPurePursuitController3D"
+      # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
+      # so pure pursuit was computing its arcs (w = v * curvature) for a speed
+      # a quarter higher than reality. driver_manager's scale_fwd now corrects
+      # the gain, but the gait controller's response falls off as the command
+      # grows and nobody has swept it properly yet, so keep the command in the
+      # range that has been measured. Raise this only together with a fresh
+      # scale_fwd measurement at the new speed — the two are one calibration.
+      # RPP 3D only: raised 0.60 -> 0.8 on 2026-10-19, asked for after the
+      # stair tests (1.0 was asked first and taken back the same day) --
+      # FollowPathRPP above keeps dev's 0.60. NOT yet measured on the robot:
+      # with scale_fwd 1.40 the gait is commanded 1.12 m/s, past anything
+      # swept, so check the real speed against cmd_vel (and the weaving the
+      # regulated_linear_scaling_min_speed note warns about) on the first
+      # run. At 0.8 m/s the velocity-scaled lookahead (lookahead_time 1.5)
+      # just reaches max_lookahead_dist 1.2.
+      desired_linear_vel: 0.8
+      lookahead_dist: 0.6
+      # Raised from 0.3: pure pursuit steering gain scales with 1/lookahead^2,
+      # so the short low-speed lookahead made startup oscillate (weaving until
+      # the velocity-scaled lookahead grew with speed).
+      min_lookahead_dist: 0.5
+      max_lookahead_dist: 1.2
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
+      transform_tolerance: 0.2
+      min_approach_linear_velocity: 0.3
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: 0.9
+      # Raised to 0.3 to keep the robot from crawling while tracking a path.
+      # Caveat (this floor was previously lowered to 0.1 for this reason): a
+      # value this high overrides curvature regulation right after
+      # rotate-to-heading exits, where the arc is sharpest, so watch for
+      # corner-cutting / weaving on tight turns. Now that desired_linear_vel is
+      # 0.60 this floor is half the top speed, so curvature regulation has only
+      # a 0.30-0.60 band to work in — lower it before raising it if corner
+      # cutting persists.
+      regulated_linear_scaling_min_speed: 0.3
+      use_rotate_to_heading: true
+      # Lowered from 0.785 (45 deg): exiting rotation that far off-heading made
+      # the robot drive away from the path and trigger another rotation.
+      # 0.25 rad (~14 deg) hands over to path tracking nearly aligned.
+      rotate_to_heading_min_angle: 0.25
+      # Lowered from 1.3, where the robot only delivered 0.695 rad/s (ratio
+      # 0.53). The controller therefore believed every in-place turn was
+      # finishing about twice as fast as it was, exited rotate-to-heading still
+      # off-heading, and had to re-enter — the weave. At 0.65 with
+      # scale_turn_* the measured rate lands within ~20% of the command, which
+      # is the whole point: rotate-to-heading's exit test only means something
+      # if the commanded rate is the real one.
+      rotate_to_heading_angular_vel: 0.65
+      # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
+      # in_place_wz_min for the rotate-to-heading branch -- same value, pre-scale
+      # (0.3 until 2026-10-21 and 0.21 for a day before that, see there);
+      # change them together. Lifts the acceleration ramp's first cycle (0.16)
+      # and the last hundredths of a radian of the stop cap, the two places a
+      # rotation dips under it. 0 disables it.
+      rotate_to_heading_min_angular_vel: 0.45
+      max_angular_accel: 3.2
+      # No velocity smoother in this stack: the controller clamps linear
+      # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
+      max_linear_accel: 1.0
+      allow_reversing: false
+      use_interpolation: true
+      cost_scaling_dist: 0.6
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      max_robot_pose_search_dist: 10.0
+
+      # Stair mode (2026-10; README "Stairs"; the same block under FollowPath
+      # since 2026-10-20, where the climb is MPPI's bypass). On a path with heights
+      # (OctomapPlanner3D) a stretch rising stair_min_rise within
+      # stair_enter_dist ahead is a stair: the robot stops, set_policy_mode
+      # switches the gait controller to stair_policy_mode, it stands
+      # stair_policy_settle_time, and climbs at stair_linear_vel with a
+      # stair_lookahead_dist carrot. It leaves once the path from
+      # stair_exit_behind_dist back to stair_exit_ahead_dist ahead rises less
+      # than stair_min_rise, stopping again to switch the policy back. The
+      # stair_enter_dist window is looked for out to the hold's own stopping
+      # distance (v^2 / 2 max_linear_accel, 0.32 m from 0.8; 2026-10-20), so
+      # the hold starts that much earlier and the 1 m window's margin before
+      # the rise is not spent braking -- and never from short of the padded
+      # footprint's front edge (2026-10-22), where the collision test stops a
+      # robot that reaches the stair's lethal cells at a crawl, its stopping
+      # distance 0. Windows from dp1f_1012's Octo3D paths: level paths rise at most
+      # 0.10-0.20 m within 1 m, the 2F ramp 0.47 m (so it is climbed in stair
+      # mode too, 1.9 m of it), the spiral stair 0.68 m; with these values
+      # each stair path enters stair mode once, and its landings keep it.
+      use_stair_mode: true
+      stair_min_rise: 0.3
+      stair_enter_dist: 1.0
+      # Where the robot is meant to stand when it switches the policy: 1.0 m
+      # before the stair from its centre (2026-10-22, the operator's figure;
+      # 1.5 for a few hours). robot01 overran the brake by ~0.6 m from 0.8 m/s
+      # and took HIMLOCO on the first step of dp's 2F step down. A slow
+      # approach stands up to ~0.7 m further back, a fast one ~0.4 m closer
+      # (1.5 stood it 1.1 m from the 2F step up). The floor to the stair is
+      # walked blind on the stair carrot. Keep it + stair_enter_dist under
+      # stair_exit_ahead_dist.
+      stair_standoff: 1.0
+      stair_exit_behind_dist: 0.8
+      # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
+      # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to
+      # ~2.8 m of level path between two flights, and at 2.5 the window from
+      # the first corner read level (0.29 m of rise) and left stair mode on
+      # the landing. HIMLOCO turns in place and climbs the whole well; the
+      # policy goes back only on the top floor.
+      stair_exit_ahead_dist: 3.5
+      # The 0.4 m carrot keeps RPP's collision projection (carrot + 0.36 m of
+      # footprint) within ~0.76 m, where a 0.17 / 0.28 m stair has risen
+      # ~0.46 m -- under the local costmap's 0.58 m obstacle floor, so the
+      # treads ahead do not read as a wall while the stairwell's walls do.
+      # The projection runs min(v x max_allowed_time_to_collision_up_to_carrot
+      # (1 s), carrot), so from 0.4 m/s up the carrot is the bound and the
+      # speed does not move it. Raised 0.2 -> 0.5 on 2026-10-19: the stair
+      # tests found the climb far too slow. NOT yet measured on the robot --
+      # whether HIMLOCO tracks 0.5 (x scale_fwd 1.40 = 0.7 m/s commanded) on
+      # a spiral stair is open.
+      stair_linear_vel: 0.5
+      stair_lookahead_dist: 0.4
+      # The landing corners (2026-10-21): the same rule as FollowPath's, with
+      # rotate_to_heading_min_angle to start the turn and the clamp's ramp
+      # (v^2 / 2a) for the stop before the corner.
+      stair_turn_angle: 0.785
+      stair_turn_dist: 0.15
+      stair_turn_done_angle: 0.087
+      # Down backwards (2026-10-21): the same rule as FollowPath's -- the
+      # tail is held on the path (shouldRotateToPath() measures from it), the
+      # speed's sign is reversed, and the robot turns round to the path in
+      # the hold at the bottom before the policy goes back.
+      stair_descend_backwards: true
+      # 3 s standing after each policy switch, in and out (asked for on
+      # 2026-10-14; nothing measured yet). Two stops per flight, so ~6 s plus
+      # braking added to a stair path -- far inside the progress checker's 30 s.
+      stair_policy_settle_time: 3.0
+      # The gait controller's RL policy index (syncai_common
+      # RobotLowLevelMode.msg: 0 PPO, 1 HIMLOCO, 2 CHAMP, 3 ISSAC). HIMLOCO
+      # for stairs. flat_policy_mode -1 = go back to the policy the controller
+      # reported on <robot_id>/mode before the switch; with no report heard,
+      # the robot stays on HIMLOCO. stair_policy_mode -1 = never switch (speed
+      # and carrot only, no stops).
+      stair_policy_mode: 1
+      flat_policy_mode: -1
 
     # The last metre onto the dock (2026-10): dock_to_pose's default
     # controller, driven by dock.xml. One pose, no path, NO COSTMAP -- this
@@ -630,13 +1028,139 @@
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 
-    # Layer stack — order matters: obstacle(mark/clear) -> inflation
-    plugins: ["obstacle_layer", "inflation_layer"]
+    # Layer stack -- order matters: sensor (mark) -> inflation. Two sensor
+    # layers are loaded and exactly ONE runs, picked per map (2026-10-20):
+    # obstacle_layer on a 2D map (dev's local costmap, unchanged), terrain_layer
+    # on a 3D one. Each has a map_type ("2d" / "3d") read against the
+    # planner's latched planner_server/Octo3D/map_available -- the signal the
+    # task_runner picks move.xml / move_3d.xml by, so the tree and the costmap
+    # switch together, and a map switch over Octo3D/load_map switches the
+    # layer with no restart (syncai_costmap_2d/map_type_gate.hpp). Never both
+    # at once: they disagree on a ramp (free in the terrain layer, a wall in
+    # the obstacle layer's band) and the max of the two is the wall. The map
+    # reads 2D until the planner says otherwise, as it does for the
+    # task_runner. MPPI (FollowPath) is the controller on both.
+    plugins: ["obstacle_layer", "terrain_layer", "inflation_layer"]
 
+    # TerrainLayer (2026-10-20, 3D maps only; syncai_costmap_2d/terrain_grid.hpp
+    # has the design): the lidar cloud judged against the ground under each cell with
+    # OctomapPlanner3D's own rules -- the four geometry values below are
+    # SurfaceMapParams' (planner_server_params.yaml, Octo3D), one calibration
+    # of the robot's legs; change them together. What it fixes on a 3D map:
+    # the obstacle layer's band started 0.58 m above the robot's ground, so a
+    # box, a cart's base, a kerb's wall, a drop-off and a stair tread were all
+    # invisible to it, and a ramp was a wall after a metre. Here a return is
+    # an obstacle only from min_obstacle_height above the floor *at its own
+    # cell*; a floor that changes height is judged by the step rule (a riser
+    # is fine, a ledge or a drop is not) and the slope rule (a ramp is fine, a
+    # flight is not). A stair is lethal here and nothing opens it: the stair
+    # mode (FollowPath's / FollowPathRPP3D's) climbs a flight without reading
+    # the costmap -- no obstacle avoidance on stairs, by decision.
+    terrain_layer:
+      plugin: "syncai_costmap_2d::TerrainLayer"
+      enabled: true
+      map_type: "3d"
+      # Relative: /<robot_id>/planner_server/Octo3D/map_available. Same
+      # value as the task_runner's map_3d_topic; change them together.
+      map_3d_topic: planner_server/Octo3D/map_available
+      footprint_clearing_enabled: true
+      # Relative name: /<robot_id>/pointlio/body_cloud. The cloud's own frame
+      # (pointlio_body, the lidar) is the robot's height reference: its z
+      # minus sensor_height is the ground under the robot (lidar_height
+      # elsewhere; same 0.481).
+      topic: pointlio/body_cloud
+      sensor_height: 0.481
+      # Returns kept: within max_range of the lidar in the plane (the window
+      # is 2.83 m to its corner) and within [min_rel_z, max_rel_z] of the
+      # robot's ground -- a drop one floor down is in, the ceiling is out.
+      # An overhang lower than max_rel_z (a stair's underside, a table top) is
+      # in, and is dropped by the grid as overhead instead: more than
+      # body_clearance + max_ground_lift over the lowest return of its cell
+      # (2026-10-22; terrain_grid.hpp). Lowering max_rel_z is not the fix --
+      # dp's lobby stair, where the robot stood twitching under an underside
+      # 1.0-1.4 m up, would need it under 1.0, and a ramp up ahead with it.
+      max_range: 3.0
+      min_rel_z: -1.5
+      max_rel_z: 1.5
+      # Relative name: /<robot_id>/plan, the planner's last path (republished
+      # at plan_republish_rate, 1 Hz, with Octo3D's heights; emptied on a
+      # cancel). Its poses seed the reach rule below; a level path seeds
+      # nothing.
+      plan_topic: plan
+      # Memory. The MID360's -7 deg lower FOV never sees the floor within
+      # ~3.9 m of the robot: the floor under and ahead of it was seen 5-13 s
+      # ago at walking speed, from further off, so a cell's ground comes from
+      # the newest 24 returns of 10 s; an obstacle is a return of the last 2 s
+      # (CMU terrain_analysis's decayTime) that no later ray has cleared (ray
+      # clearing, below). A cell with under 6 returns in its 3x3
+      # neighbourhood borrows the robot's own ground height: right on a level
+      # floor, and what keeps a low box on never-seen floor an obstacle (its
+      # own returns are then in the band). Ground = the 0.25 quantile of the
+      # neighbourhood, capped at its lowest return + 0.15 (CMU's quantileZ /
+      # maxGroundLift), so a wall's or a box's returns cannot lift the ground
+      # off the floor they stand on once the floor has been seen.
+      max_samples_per_cell: 24
+      ground_memory: 10.0
+      obstacle_memory: 2.0
+      min_ground_samples: 6
+      ground_quantile: 0.25
+      max_ground_lift: 0.15
+      # Ray clearing (2026-10-23; terrain_grid.hpp has the design). Until
+      # then obstacle_memory was the only way a person who walked on left
+      # the costmap: 2 s, plus a costmap cycle (0.2 s at 5 Hz), plus MPPI's
+      # start from a stop, was the 2-3 s robot01 stood after a blocker left
+      # -- and a person who had stood long enough for the floor memory round
+      # them to age out (the floor within 3.9 m is never re-seen while the
+      # robot stands) left an island of their legs' returns for the 10 s of
+      # ground_memory. Now every return's ray is traced through the cells
+      # between the lidar and it, and a sample within ray_clear_tolerance of
+      # the ray's height in its cell, older than the ray, is removed from the
+      # cell (not only ignored as an obstacle, so the ghost's ground evidence
+      # goes with it): a person who walks on is gone with the next scan that
+      # sees through where they stood. A ray proves nothing about the surface
+      # it ends on and grazes it for its last stretch -- a floor return at the
+      # MID360's -7 deg edge is within 0.05 m of the floor for the last 0.41
+      # m (tolerance / tan 7 deg) -- so nothing within ray_clear_end_margin of
+      # the end is cleared; the margin must stay above that figure plus
+      # noise, or the floor ahead (seen once, from further off, and relied on
+      # for 10 s) is eroded as the robot approaches it. obstacle_memory is the
+      # fallback for cells no ray crosses: behind an occluder, or a person
+      # standing closer than the margin to the wall behind them. 0.0
+      # tolerance restores the memory-only behaviour.
+      ray_clear_tolerance: 0.05
+      ray_clear_end_margin: 0.6
+      # The geometry rules (= Octo3D's SurfaceMapParams). robot_radius is the
+      # disc the slope is fitted under (the inscribed radius); a return
+      # between min_obstacle_height and body_clearance above its cell's
+      # ground is an obstacle (0.1: a kerb's riser, a doormat and the
+      # quantile's noise pass, the step rule judges kerbs); 8-neighbours
+      # whose ground differs by more than max_step_height make a cell lethal
+      # (a wall foot, a ledge, a drop-off); the plane under the disc steeper
+      # than max_slope_deg does too, judged only when the disc spans more
+      # than a step (a level floor with a kerb is not fitted) and when at
+      # least slope_min_known of it has a ground estimate. A surface the
+      # robot cannot reach from its own cell over such steps (an island: a
+      # box top, a table, a platform seen without the floor under it) is
+      # lethal too; the path's heights seed that reach, so a ramp the
+      # lidar has not looked at the foot of is still floor on a 3D map.
+      robot_radius: 0.25
+      min_obstacle_height: 0.1
+      body_clearance: 0.6
+      max_step_height: 0.17
+      max_slope_deg: 20.0
+      slope_min_known: 0.5
+
+    # dev's local obstacle source, unchanged but for map_type (2026-10-20):
+    # it runs on a 2D map and is off on a 3D one, where terrain_layer runs.
     obstacle_layer:
       plugin: "syncai_costmap_2d::ObstacleLayer"
       enabled: true
+      map_type: "2d"
+      map_3d_topic: planner_server/Octo3D/map_available
       footprint_clearing_enabled: true
+      # Layer-wide cap, applied after each source's own band. For the
+      # pointcloud source (height_reference: sensor) it reads as height above
+      # the robot's ground too, so it must stay >= that source's 1.98.
       max_obstacle_height: 2.0
       combination_method: 1            # 0=Overwrite, 1=Maximum
       observation_sources: scan pointcloud
@@ -674,10 +1198,25 @@
         data_type: "PointCloud2"
         marking: true
         clearing: true
-        # map -> odom is planar (z preserved), so heights here are still metres
-        # above the floor: skip the ground plane, keep chassis-height obstacles.
-        min_obstacle_height: 0.1
-        max_obstacle_height: 1.5
+        # Heights from the ground under the robot, not from odom's z = 0
+        # (height_reference, 2026-10; ObservationBuffer). lio_bridge keeps
+        # map -> odom and odom -> base_link planar, so a point's z in odom is
+        # its height in the map, whose origin is the lidar where mapping
+        # started: the 1F floor is at about -0.48 there, and the old fixed
+        # band of 0.1-1.5 -- documented as "above the floor" -- was 0.58-1.98
+        # above it on 1F, and above everything on 2F (~5.5 m up), where this
+        # source saw nothing at all; on a stair it slid past the robot. Now the
+        # band rides with the robot: ground = the sensor's (pointlio_body's) z
+        # minus sensor_height, lidar_height in planner_server_params.yaml.
+        # The numbers below are that same 0.58-1.98 above the floor, i.e. what
+        # 1F has always actually run with, so 1F does not change; whether the
+        # local costmap should see lower things (the 0.1 the old comment meant:
+        # boxes, low carts) is a separate decision -- it would also mark ramps
+        # and kerbs the planner accepts, and MPPI would steer round them.
+        height_reference: sensor
+        sensor_height: 0.481
+        min_obstacle_height: 0.58
+        max_obstacle_height: 1.98
         obstacle_max_range: 2.5
         obstacle_min_range: 0.0
         raytrace_max_range: 3.0
@@ -685,17 +1224,18 @@
 
     # Read by MPPI's CostCritic (and nothing else here: RPP checks LETHAL
     # only, its cost-regulated scaling is off, docking reads no costmap).
-    # inflation_radius 0.45 (0.4 until 2026-10-21): at least the footprint's
+    # inflation_radius 0.45 (0.4 until 2026-10-20): at least the footprint's
     # circumscribed radius (0.427 with the padding). CostCritic checks the
     # footprint only where the centre's cell has a cost, so at 0.4 a centre
     # 0.40-0.43 m from an obstacle read 0 and a corner could clip it
-    # unchecked. The price is 5 cm more band: a door's centre line now sits
-    # in it up to ~1.0 m wide rather than ~0.9 m, and CostCritic, which
-    # charges the band's mean cost over the horizon, stops MPPI in front of
-    # such a door (feature/octomap-planner-3d's d4875c5 has that model; this
-    # is extrapolated, not rerun). Obstacle avoidance over narrow doors was
-    # decided 2026-10-21. cost_scaling_factor 3.0: cost 204 at 0.30 m from
-    # the robot's centre, 176 at 0.35, 151 at 0.40, 130 at 0.45.
+    # unchecked. Kept when cost_scaling_factor went back, because that hole
+    # has nothing to do with doors.
+    # cost_scaling_factor 3.0: cost 204 at 0.30 m, 176 at 0.35, 151 at 0.40,
+    # 130 at 0.45, so a blocker's flank costs as soon as the robot's centre
+    # is within 0.45 m of it -- obstacle avoidance over narrow doors
+    # (CostCritic, 2026-10-21). It was 20.0 for a day (2026-10-20: 62 / 23 / 8
+    # at 0.30 / 0.35 / 0.40, nearly free at a 0.7 m door's centre line), which
+    # left MPPI nothing to steer by until a candidate collided.
     inflation_layer:
       plugin: "syncai_costmap_2d::InflationLayer"
       enabled: true

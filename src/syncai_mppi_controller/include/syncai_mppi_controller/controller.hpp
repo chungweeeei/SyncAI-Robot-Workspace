@@ -15,6 +15,7 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__CONTROLLER_HPP_
 #define SYNCAI_MPPI_CONTROLLER__CONTROLLER_HPP_
 
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -27,6 +28,7 @@
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
+#include "syncai_util/stair_mode.hpp"
 
 namespace syncai_mppi_controller
 {
@@ -156,6 +158,52 @@ protected:
     geometry_msgs::msg::TwistStamped & cmd);
 
   /**
+    * @brief From a stand at a new path's start, turn in place onto the path
+    * before the optimizer runs (RPP's rotate-to-heading)
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param cmd Filled with the turn when this returns true, else untouched
+    * @return Whether this cycle is the turn (the optimizer is skipped)
+    */
+  bool rotateToPath(
+    const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
+    * @brief On a path with heights, brake for the policy switch and climb a
+    * stair link with a short pure-pursuit carrot instead of running the optimizer
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param cmd Filled with the stair command when this returns true, else untouched
+    * @return Whether this cycle is stair mode's (the optimizer is skipped)
+    */
+  bool climbStairs(
+    const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
+    * @brief The straight walk onto a point shared by the direct approach and
+    * the stair carrot: vx towards `speed`, wz on the pure-pursuit arc through
+    * the point, both acceleration-clamped
+    * @param bearing Bearing of the point from the robot's heading, signed
+    * @param dist Distance to the point
+    * @param speed The linear speed to walk at
+    * @param vx Set to the linear command
+    * @param wz Set to the angular command
+    */
+  void trackPoint(double bearing, double dist, double speed, double & vx, double & wz) const;
+
+  /**
+    * @brief The linear speed stair mode commands this cycle: an S-curve from
+    * the speed the robot had when `target` was first asked for to `target`,
+    * whose peak acceleration (or deceleration) is max_linear_accel
+    * @param target stair_linear_vel to walk, 0 to stop (a turn, a brake)
+    * @param now The cycle's time
+    */
+  double stairSpeed(double target, const rclcpp::Time & now);
+
+  /**
+    * @brief Ramp both commands to zero at the clamps' own rates
+    */
+  void brake(double & vx, double & wz) const;
+
+  /**
     * @brief Whether the direct approach would put the footprint on a LETHAL cell
     * @param x Robot x in the costmap's global frame
     * @param y Robot y
@@ -215,7 +263,44 @@ protected:
   // when the final rotation takes over, when the way onto the goal is blocked,
   // and by setPlan() / reset() (see approachGoal()).
   bool approaching_goal_{false};
-  // The direct approach's only obstacle test (see isApproachBlocked()).
+  double rotate_to_path_min_angle_{0.0};
+  double rotate_to_path_sampling_dist_{0.5};
+  // Set by setPlan(): the new path's start is still to be checked. Cleared
+  // once it has been -- aligned, moving, blocked, or turned onto -- with
+  // rotating_to_path_ latching the turn in between (see rotateToPath()).
+  bool rotate_to_path_pending_{false};
+  bool rotating_to_path_{false};
+  // Stairs (2026-10-20): the detection, policy switch and latched report are
+  // syncai_util::StairMode's, shared with RPP 3D; the climb is climbStairs()'s.
+  syncai_util::StairMode stair_mode_;
+  double stair_linear_vel_{0.5};
+  double stair_lookahead_dist_{0.4};
+  // The landing corners (climbStairs()): a heading change past
+  // stair_turn_angle is one; the robot stops stair_turn_dist before it and
+  // turns in place until the carrot's bearing is under stair_turn_done_angle.
+  double stair_turn_angle_{M_PI / 4};
+  double stair_turn_dist_{0.15};
+  double stair_turn_done_angle_{0.087};
+  // The in-place turn on the stairs is latched: in past
+  // approach_rotate_min_angle, out under stair_turn_done_angle.
+  bool stair_turning_{false};
+  // Descend backwards (climbStairs()): on a path going down the robot turns
+  // round and walks in reverse, facing the risers, landings included, and
+  // turns back to the path at the bottom before the policy goes back.
+  bool stair_descend_backwards_{true};
+  bool stair_reverse_{false};
+  // Stair mode's speed S-curve (stairSpeed()): its target, where it started
+  // and when. A new curve starts whenever the target changes; leaving the
+  // stairs and reset() drop it.
+  bool stair_ramp_valid_{false};
+  double stair_ramp_to_{0.0};
+  double stair_ramp_from_{0.0};
+  rclcpp::Time stair_ramp_start_;
+  // Set while climbStairs() owns the robot (hold or climb), so the optimizer
+  // is reset once on the way in and once on the way out.
+  bool climbing_stairs_{false};
+  // The direct approach's and the stair carrot's only obstacle test (see
+  // isApproachBlocked()).
   syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> collision_checker_{
     nullptr};
   double control_duration_{0.05};

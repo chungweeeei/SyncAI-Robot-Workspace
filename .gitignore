@@ -103,6 +103,11 @@ src/third-party/*
 # committed.
 /config/calibration/
 
+# Per-robot runtime state: config/state/<robot_id>/last_pose.json, the pose
+# syncai_localizer saved for its next start (2026-10-23). Rewritten every few
+# seconds while the robot moves; never committed.
+/config/state/
+
 # Materialised by `vcs import < dependencies.repos`, not committed -- the same
 # arrangement src/third-party/ has, for our own packages that live in their own
 # repositories. Each was tracked here until it moved out: syncai_common (28

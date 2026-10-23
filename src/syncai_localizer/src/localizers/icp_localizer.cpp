@@ -2,6 +2,7 @@
 
 #include <rclcpp/logging.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -25,13 +26,29 @@ void logPose(const char * tag, const M4F & T)
 // registered source to the target, in m²), which does not depend on the algorithm, so the physical
 // meaning of *_score_thresh is unchanged after the switch to GICP; error / num_inliers are
 // small_gicp's own Mahalanobis residual and inlier count, used to tell, when the threshold blocks
-// an update, whether the scan does not match or there simply are not enough inliers.
-void logResult(const char * tag, const small_gicp::RegistrationResult & r, double fitness)
+// an update, whether the scan does not match or there simply are not enough inliers. The refine
+// line also carries the round's wall time (both stages), so a replay shows what update_hz has
+// to fit -- and what the accumulated source window (track_accum_scans) costs.
+void logResult(
+  const char * tag, const small_gicp::RegistrationResult & r, double fitness,
+  double elapsed_ms = -1.0)
 {
-  RCLCPP_INFO(
-    rclcpp::get_logger("icp_localizer"),
-    "%s: converged=%s iters=%zu inliers=%zu error=%.4f fitness=%.4f", tag,
-    r.converged ? "yes" : "no", r.iterations, r.num_inliers, r.error, fitness);
+  if (elapsed_ms < 0.0) {
+    RCLCPP_INFO(
+      rclcpp::get_logger("icp_localizer"),
+      "%s: converged=%s iters=%zu inliers=%zu error=%.4f fitness=%.4f", tag,
+      r.converged ? "yes" : "no", r.iterations, r.num_inliers, r.error, fitness);
+  } else {
+    RCLCPP_INFO(
+      rclcpp::get_logger("icp_localizer"),
+      "%s: converged=%s iters=%zu inliers=%zu error=%.4f fitness=%.4f ms=%.1f", tag,
+      r.converged ? "yes" : "no", r.iterations, r.num_inliers, r.error, fitness, elapsed_ms);
+  }
+}
+
+double msSince(const std::chrono::steady_clock::time_point & t0)
+{
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 }  // namespace
 
@@ -161,8 +178,12 @@ void ICPLocalizer::setInput(const CloudType::Ptr & cloud)
   }
 }
 
-bool ICPLocalizer::align(M4F & guess)
+bool ICPLocalizer::align(M4F & guess, AlignInfo & info)
 {
+  const auto t0 = std::chrono::steady_clock::now();
+  info = AlignInfo();
+  info.source_points = m_refine_inp->size();
+
   // held for the whole alignment so loadMap() cannot swap the targets
   // mid-ICP; worst case a pending swap waits one align (~tens of ms)
   std::lock_guard<std::mutex> lock(m_target_mutex);
@@ -182,13 +203,28 @@ bool ICPLocalizer::align(M4F & guess)
   // "almost always true" to something that really does block (see the note on
   // ICPConfig::refine_max_iteration), so when localization is stuck it must be obvious at a glance
   // whether converged failed or the score did.
-  logResult("rough ", m_rough_icp.getRegistrationResult(), rough_score);
-  if (!m_rough_icp.hasConverged() || rough_score > m_config.rough_score_thresh) return false;
+  const small_gicp::RegistrationResult & rough = m_rough_icp.getRegistrationResult();
+  logResult("rough ", rough, rough_score);
+  info.fitness_rough = rough_score;
+  info.iters_rough = rough.iterations;
+  info.converged_rough = rough.converged;
+  if (!m_rough_icp.hasConverged() || rough_score > m_config.rough_score_thresh) {
+    info.elapsed_ms = msSince(t0);
+    return false;
+  }
   m_refine_icp.setMaximumIterations(m_config.refine_max_iteration);
   m_refine_icp.setInputSource(m_refine_inp);
   m_refine_icp.align(*aligned_cloud, m_rough_icp.getFinalTransformation());
   double refine_score = m_refine_icp.getFitnessScore();
-  logResult("refine", m_refine_icp.getRegistrationResult(), refine_score);
+  const small_gicp::RegistrationResult & refine = m_refine_icp.getRegistrationResult();
+  info.elapsed_ms = msSince(t0);
+  logResult("refine", refine, refine_score, info.elapsed_ms);
+  info.fitness_refine = refine_score;
+  info.iters_refine = refine.iterations;
+  info.converged_refine = refine.converged;
+  info.num_inliers = refine.num_inliers;
+  info.error = refine.error;
+  info.H = refine.H;
   if (!m_refine_icp.hasConverged() || refine_score > m_config.refine_score_thresh) return false;
   guess = m_refine_icp.getFinalTransformation();
 

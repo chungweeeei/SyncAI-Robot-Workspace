@@ -1,0 +1,1279 @@
+#include "syncai_controller/plugins/regulated_pure_pursuit_controller_3d/regulated_pure_pursuit_controller_3d.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "syncai_costmap_2d/cost_values.hpp"
+#include "syncai_nav_core/exceptions.hpp"
+#include "syncai_util/geometry_utils.hpp"
+#include "syncai_util/node_utils.hpp"
+#include "syncai_util/path_height.hpp"
+#include "tf2/utils.h"
+
+using std::abs;
+using std::hypot;
+using std::max;
+using std::min;
+using syncai_util::declare_parameter_if_not_declared;
+using syncai_util::lookupGroundZ;
+using syncai_util::pathHasHeight;
+using syncai_util::geometry_utils::euclidean_distance;
+using namespace syncai_costmap_2d;  // NOLINT
+using rcl_interfaces::msg::ParameterType;
+
+namespace syncai_controller
+{
+
+// nav2_costmap_2d::NO_SPEED_LIMIT from costmap_filters/filter_values.hpp.
+constexpr double NO_SPEED_LIMIT = 0.0;
+
+void RegulatedPurePursuitController3D::initialize(
+  const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
+  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+{
+  costmap_ros_ = costmap_ros;
+  costmap_ = costmap_ros_->getCostmap();
+
+  tf_ = tf;
+  plugin_name_ = name;
+
+  logger_ = node->get_logger();
+  clock_ = node->get_clock();
+
+  double transform_tolerance = 0.1;
+  double control_frequency = 20.0;
+  goal_dist_tol_ = 0.25;  // reasonable default before first update
+
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".desired_linear_vel", rclcpp::ParameterValue(0.5));
+  node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
+  base_desired_linear_vel_ = desired_linear_vel_;
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController3D][%s] desired_linear_vel: %f", __func__,
+    desired_linear_vel_);
+
+  // pure pursuit lookahead parameters
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".lookahead_dist", rclcpp::ParameterValue(0.6));
+  node->get_parameter(plugin_name_ + ".lookahead_dist", lookahead_dist_);
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".min_lookahead_dist", rclcpp::ParameterValue(0.3));
+  node->get_parameter(plugin_name_ + ".min_lookahead_dist", min_lookahead_dist_);
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_lookahead_dist", rclcpp::ParameterValue(0.9));
+  node->get_parameter(plugin_name_ + ".max_lookahead_dist", max_lookahead_dist_);
+  RCLCPP_INFO(
+    logger_,
+    "[RegulatedPurePursuitController3D][%s] lookahead_dist: %f, min_lookahead_dist: %f, "
+    "max_lookahead_dist: %f",
+    __func__, lookahead_dist_, min_lookahead_dist_, max_lookahead_dist_);
+
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".lookahead_time", rclcpp::ParameterValue(1.5));
+  node->get_parameter(plugin_name_ + ".lookahead_time", lookahead_time_);
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController3D][%s] lookahead_time: %f", __func__,
+    lookahead_time_);
+
+  //
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".rotate_to_heading_angular_vel", rclcpp::ParameterValue(1.8));
+  node->get_parameter(
+    plugin_name_ + ".rotate_to_heading_angular_vel", rotate_to_heading_angular_vel_);
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController3D][%s] rotate_to_heading_angular_vel: %f", __func__,
+    rotate_to_heading_angular_vel_);
+
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".transform_tolerance", rclcpp::ParameterValue(0.1));
+  node->get_parameter(plugin_name_ + ".transform_tolerance", transform_tolerance);
+
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_velocity_scaled_lookahead_dist", rclcpp::ParameterValue(false));
+  node->get_parameter(
+    plugin_name_ + ".use_velocity_scaled_lookahead_dist", use_velocity_scaled_lookahead_dist_);
+  RCLCPP_INFO(
+    logger_, "[RegulatedPurePursuitController3D][%s] use_velocity_scaled_lookahead_dist: %s",
+    __func__, use_velocity_scaled_lookahead_dist_ ? "true" : "false");
+
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".min_approach_linear_velocity", rclcpp::ParameterValue(0.05));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".approach_velocity_scaling_dist", rclcpp::ParameterValue(0.6));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_allowed_time_to_collision_up_to_carrot",
+    rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_collision_detection", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_regulated_linear_velocity_scaling", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_cost_regulated_linear_velocity_scaling",
+    rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".cost_scaling_dist", rclcpp::ParameterValue(0.6));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".cost_scaling_gain", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".inflation_cost_scaling_factor", rclcpp::ParameterValue(3.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".regulated_linear_scaling_min_radius", rclcpp::ParameterValue(0.90));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".regulated_linear_scaling_min_speed", rclcpp::ParameterValue(0.25));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_rotate_to_heading", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".rotate_to_heading_min_angle", rclcpp::ParameterValue(0.785));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_angular_accel", rclcpp::ParameterValue(3.2));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".rotate_to_heading_min_angular_vel", rclcpp::ParameterValue(0.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(2.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".allow_reversing", rclcpp::ParameterValue(false));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_robot_pose_search_dist",
+    rclcpp::ParameterValue(getCostmapMaxExtent()));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_interpolation", rclcpp::ParameterValue(true));
+
+  node->get_parameter(
+    plugin_name_ + ".min_approach_linear_velocity", min_approach_linear_velocity_);
+  node->get_parameter(
+    plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
+  if (approach_velocity_scaling_dist_ > costmap_->getSizeInMetersX() / 2.0) {
+    RCLCPP_WARN(
+      logger_,
+      "approach_velocity_scaling_dist is larger than forward costmap extent, "
+      "leading to permanent slowdown");
+  }
+  node->get_parameter(
+    plugin_name_ + ".max_allowed_time_to_collision_up_to_carrot",
+    max_allowed_time_to_collision_up_to_carrot_);
+  node->get_parameter(plugin_name_ + ".use_collision_detection", use_collision_detection_);
+  node->get_parameter(
+    plugin_name_ + ".use_regulated_linear_velocity_scaling",
+    use_regulated_linear_velocity_scaling_);
+  node->get_parameter(
+    plugin_name_ + ".use_cost_regulated_linear_velocity_scaling",
+    use_cost_regulated_linear_velocity_scaling_);
+  node->get_parameter(plugin_name_ + ".cost_scaling_dist", cost_scaling_dist_);
+  node->get_parameter(plugin_name_ + ".cost_scaling_gain", cost_scaling_gain_);
+  node->get_parameter(
+    plugin_name_ + ".inflation_cost_scaling_factor", inflation_cost_scaling_factor_);
+  node->get_parameter(
+    plugin_name_ + ".regulated_linear_scaling_min_radius", regulated_linear_scaling_min_radius_);
+  node->get_parameter(
+    plugin_name_ + ".regulated_linear_scaling_min_speed", regulated_linear_scaling_min_speed_);
+  node->get_parameter(plugin_name_ + ".use_rotate_to_heading", use_rotate_to_heading_);
+  node->get_parameter(plugin_name_ + ".rotate_to_heading_min_angle", rotate_to_heading_min_angle_);
+  node->get_parameter(plugin_name_ + ".max_angular_accel", max_angular_accel_);
+  node->get_parameter(
+    plugin_name_ + ".rotate_to_heading_min_angular_vel", rotate_to_heading_min_angular_vel_);
+  node->get_parameter(plugin_name_ + ".max_linear_accel", max_linear_accel_);
+  node->get_parameter(plugin_name_ + ".allow_reversing", allow_reversing_);
+  node->get_parameter("controller_frequency", control_frequency);
+  node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist", max_robot_pose_search_dist_);
+  node->get_parameter(plugin_name_ + ".use_interpolation", use_interpolation_);
+
+  // Server-level, not per plugin: the controller_server's goal check needs the
+  // same robot height, and two copies of a frame name drift. Declared here only
+  // so the plugin still loads in a host that does not declare them.
+  declare_parameter_if_not_declared(node, "body_frame", rclcpp::ParameterValue("pointlio_body"));
+  declare_parameter_if_not_declared(node, "lidar_height", rclcpp::ParameterValue(0.481));
+  node->get_parameter("body_frame", body_frame_);
+  node->get_parameter("lidar_height", body_height_);
+
+  // Stairs (see the header and the README's "Stairs"): detection, the policy
+  // switch and the latched `stair_mode` report are syncai_util::StairMode's
+  // (its parameters, windows and why are documented there, under this plugin's
+  // name); the climb itself -- the carrot and speed below, and the braking in
+  // computeVelocityCommandsImpl() -- is this plugin's.
+  stair_mode_.initialize(node, plugin_name_);
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_linear_vel", rclcpp::ParameterValue(0.2));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_lookahead_dist", rclcpp::ParameterValue(0.4));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_turn_angle", rclcpp::ParameterValue(M_PI / 4));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_turn_dist", rclcpp::ParameterValue(0.15));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_turn_done_angle", rclcpp::ParameterValue(0.087));
+  node->get_parameter(plugin_name_ + ".stair_linear_vel", stair_linear_vel_);
+  node->get_parameter(plugin_name_ + ".stair_lookahead_dist", stair_lookahead_dist_);
+  node->get_parameter(plugin_name_ + ".stair_turn_angle", stair_turn_angle_);
+  node->get_parameter(plugin_name_ + ".stair_turn_dist", stair_turn_dist_);
+  node->get_parameter(plugin_name_ + ".stair_turn_done_angle", stair_turn_done_angle_);
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".stair_descend_backwards", rclcpp::ParameterValue(true));
+  node->get_parameter(plugin_name_ + ".stair_descend_backwards", stair_descend_backwards_);
+  {
+    const auto & sp = stair_mode_.params();
+    RCLCPP_INFO(
+      logger_,
+      "[RegulatedPurePursuitController3D][%s] stair mode %s: rise %.2f m, %.2f m/s, lookahead "
+      "%.2f m, policy %d (back to %d, -1 = the one reported on `mode`)",
+      __func__, sp.enabled ? "on" : "off", sp.min_rise, stair_linear_vel_, stair_lookahead_dist_,
+      sp.stair_policy, sp.flat_policy);
+  }
+
+  transform_tolerance_ = tf2::durationFromSec(transform_tolerance);
+  control_duration_ = 1.0 / control_frequency;
+
+  if (inflation_cost_scaling_factor_ <= 0.0) {
+    RCLCPP_WARN(
+      logger_,
+      "The value inflation_cost_scaling_factor is incorrectly set, "
+      "it should be >0. Disabling cost regulated linear velocity scaling.");
+    use_cost_regulated_linear_velocity_scaling_ = false;
+  }
+
+  /** Possible to drive in reverse direction if and only if
+   "use_rotate_to_heading" parameter is set to false **/
+
+  if (use_rotate_to_heading_ && allow_reversing_) {
+    RCLCPP_WARN(
+      logger_,
+      "Disabling reversing. Both use_rotate_to_heading and allow_reversing "
+      "parameter cannot be set to true. By default setting use_rotate_to_heading true");
+    allow_reversing_ = false;
+  }
+
+  // initialize publishers
+  global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
+  carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("lookahead_point", 1);
+  carrot_arc_pub_ = node->create_publisher<nav_msgs::msg::Path>("lookahead_collision_arc", 1);
+
+  // initialize collision checker and set costmap
+  collision_checker_ =
+    std::make_unique<syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *>>(
+      costmap_);
+  collision_checker_->setCostmap(costmap_);
+
+  // Add callback for dynamic parameters
+  dyn_params_handler_ = node->add_on_set_parameters_callback(std::bind(
+    &RegulatedPurePursuitController3D::dynamicParametersCallback, this, std::placeholders::_1));
+}
+
+std::unique_ptr<geometry_msgs::msg::PointStamped> RegulatedPurePursuitController3D::createCarrotMsg(
+  const geometry_msgs::msg::PoseStamped & carrot_pose)
+{
+  auto carrot_msg = std::make_unique<geometry_msgs::msg::PointStamped>();
+  carrot_msg->header = carrot_pose.header;
+  carrot_msg->point.x = carrot_pose.pose.position.x;
+  carrot_msg->point.y = carrot_pose.pose.position.y;
+  carrot_msg->point.z = 0.01;  // publish right over map to stand out
+  return carrot_msg;
+}
+
+double RegulatedPurePursuitController3D::getLookAheadDistance(
+  const geometry_msgs::msg::Twist & speed)
+{
+  // If using velocity-scaled look ahead distances, find and clamp the dist
+  // Else, use the static look ahead distance
+  double lookahead_dist = lookahead_dist_;
+  if (use_velocity_scaled_lookahead_dist_) {
+    lookahead_dist = fabs(speed.linear.x) * lookahead_time_;
+    lookahead_dist = std::clamp(lookahead_dist, min_lookahead_dist_, max_lookahead_dist_);
+  }
+
+  return lookahead_dist;
+}
+
+geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVelocityCommands(
+  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed,
+  syncai_nav_core::GoalChecker * goal_checker)
+{
+  std::lock_guard<std::mutex> lock_reinit(mutex_);
+
+  try {
+    return computeVelocityCommandsImpl(pose, speed, goal_checker);
+  } catch (...) {
+    // Every exception out of the body means this cycle commands a stop, so the
+    // acceleration-clamp baseline has to follow the stop and not the velocity we
+    // abandoned halfway through computing it. ControllerServer answers a PlannerException
+    // with a zero cmd_vel while failure_tolerance (3.0 s) lasts, and past
+    // that patience it fails the goal and calls publishZeroVelocity() on the way out;
+    // either way the robot is told to stop. The baseline is our own last *command*
+    // precisely because it is not the measurement (see the clamp in the body), so nothing
+    // else notices that the command never happened.
+    //
+    // Concretely, with the collision throw: hold 0.60 m/s, flag a collision, publish 0 for
+    // a few cycles while an obstacle (or a sway-induced false positive) clears, then
+    // re-open the clamp window around the stale 0.60 and emit >= 0.55 m/s on the first
+    // good cycle. That is 0 -> 0.55 in one 50 ms cycle, ~11x max_linear_accel (1.0 m/s^2),
+    // landing exactly where something was just detected ahead of the robot. Same shape on
+    // the angular side out of rotate-to-heading: baseline 0.65 rad/s, first command after
+    // the all-clear >= 0.49 rad/s.
+    //
+    // Deliberately catch-all rather than per-throw-site: the empty-plan and TF-failure
+    // throws in transformGlobalPlan(), and costAtPose()'s "costmap too small", all reach
+    // the server the same way, and a throw added later would otherwise reintroduce this
+    // silently. reset() does not cover any of them — it runs at goal start and on
+    // cycles that never reach this function (a robot-pose failure in the server).
+    last_cmd_vel_ = geometry_msgs::msg::Twist();
+    throw;
+  }
+}
+
+geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVelocityCommandsImpl(
+  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed,
+  syncai_nav_core::GoalChecker * goal_checker)
+{
+  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+
+  // Update for the current goal checker's state
+  geometry_msgs::msg::Pose pose_tolerance;
+  geometry_msgs::msg::Twist vel_tolerance;
+  if (!goal_checker->getTolerances(pose_tolerance, vel_tolerance)) {
+    RCLCPP_WARN(logger_, "Unable to retrieve goal checker's tolerances!");
+  } else {
+    goal_dist_tol_ = pose_tolerance.position.x;
+  }
+
+  // Transform path to robot base frame, that is convert pose from map frame to odom frame
+  auto transformed_plan = transformGlobalPlan(pose);
+
+  // Stairs: StairMode decides whether this cycle brakes for a policy switch
+  // (hold) or climbs (on_stairs); transformGlobalPlan() has just pruned
+  // global_plan_, so its size is the robot's place in the full plan. A refusal
+  // (set_policy_mode missing on the way in) fails the cycle; the server stops
+  // the robot. The stair is looked for past where the hold's brake below
+  // (constant deceleration at max_linear_accel) would stop the robot from the
+  // commanded speed, v^2 / 2a -- 0.32 m from 0.8 m/s (2026-10-20) -- and
+  // never from short of the footprint's front edge (2026-10-22): a robot
+  // that has stopped on its own at the stair's lethal cells (the collision
+  // test on the local costmap's terrain layer) has a stopping distance of 0,
+  // and its centre is too far back for the 1 m window to see the rise;
+  // StairMode::update() has robot01's stall on MPPI, which shares the case.
+  const double stop_v = std::fabs(last_cmd_vel_.linear.x);
+  const double stop_dist =
+    max_linear_accel_ > 0.0 ? stop_v * stop_v / (2.0 * max_linear_accel_) : 0.0;
+  const auto stair = stair_mode_.update(
+    clock_->now(), global_plan_.poses.size(), stop_dist,
+    syncai_util::StairMode::bodyReach(costmap_ros_->getRobotFootprint()));
+  if (!stair.refuse.empty()) {
+    throw syncai_nav_core::PlannerException(stair.refuse);
+  }
+  const bool stair_hold = stair.hold;
+  const bool on_stairs = stair.on_stairs;
+  // Which way the stair ahead goes, read every cycle (2026-10-21): down is
+  // taken backwards, because HIMLOCO descends a flight facing the risers as
+  // it climbs one. A level stretch keeps the last reading, so a descent
+  // stays backwards across its landings and through the hold at the
+  // bottom, where the robot turns round before the policy goes back. Read off
+  // the global plan through StairMode, not transformed_plan, whose heights
+  // transformGlobalPlan() zeroes -- on it this always read level and a
+  // descent went forwards (fixed 2026-10-22).
+  if (stair_descend_backwards_ && (stair_hold || on_stairs)) {
+    const int slope = stair_mode_.slopeAhead(global_plan_.poses.size(), 10.0);
+    if (slope != 0 && (slope < 0) != stair_reverse_) {
+      stair_reverse_ = slope < 0;
+      RCLCPP_INFO(
+        logger_, "[RegulatedPurePursuitController3D] Stairs: the path %s ahead; going %s",
+        slope < 0 ? "descends" : "climbs", stair_reverse_ ? "down backwards" : "up forwards");
+    }
+  }
+
+  // Find look ahead distance and point on path and publish
+  double lookahead_dist = getLookAheadDistance(speed);
+  if (on_stairs) {
+    // A spiral stair's turns are tight (radius ~1.3 m on dp1f_1012) and its inside
+    // treads are the narrowest; a long carrot cuts toward them. The shorter carrot
+    // also keeps the collision projection (carrot + 0.36 m of footprint) short of
+    // the treads that already rise past the local costmap's obstacle band.
+    lookahead_dist = std::min(lookahead_dist, stair_lookahead_dist_);
+  }
+
+  // Check for reverse driving
+  if (allow_reversing_) {
+    // Cusp check
+    double dist_to_cusp = findVelocitySignChange(transformed_plan);
+
+    // if the lookahead distance is further than the cusp, use the cusp distance instead
+    if (dist_to_cusp < lookahead_dist) {
+      lookahead_dist = dist_to_cusp;
+    }
+  }
+
+  auto carrot_pose = getLookAheadPoint(lookahead_dist, transformed_plan);
+  // On the stairs the carrot never passes a landing corner (2026-10-21;
+  // StairMode::findCorner() has the design): OctomapPlanner3D lays a
+  // switchback stairwell as straight flights joined by 90 deg corners, to be
+  // climbed straight, stopped at, turned on the spot and climbed on. The
+  // carrot is held at the corner, the speed is taken to zero so the clamp's
+  // ramp stops the robot stair_turn_dist before it (v^2 / 2a from the stair
+  // speed), and from the stop the carrot is let past it, so its bearing
+  // (~90 deg) goes through rotateToHeading(); the turn is latched until the
+  // bearing is under stair_turn_done_angle (5 deg; rotate_to_heading_min_angle
+  // alone, 14 deg, would start the walk skew on a flight). The same rule
+  // lines the robot up on the planner's lead-in before the first riser. The
+  // landings stay on the stair policy (stair_exit_ahead_dist reaches over
+  // one): HIMLOCO turns in place, decided 2026-10-21.
+  bool stair_stop = false;
+  if (on_stairs) {
+    size_t corner_idx = 0;
+    double corner_heading = 0.0;
+    if (syncai_util::StairMode::findCorner(
+          transformed_plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+      const auto & cp = transformed_plan.poses[corner_idx].pose.position;
+      const double corner_dist = std::hypot(cp.x, cp.y);  // the plan is in the base frame
+      const double brake = max_linear_accel_ > 0.0
+                             ? stair_linear_vel_ * stair_linear_vel_ / (2.0 * max_linear_accel_)
+                             : 0.0;
+      const bool stopping = corner_dist <= stair_turn_dist_ + brake;
+      const bool at_corner =
+        corner_dist <= stair_turn_dist_ || (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      stair_stop = stopping && !at_corner;
+      if (
+        !at_corner &&
+        std::hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y) > corner_dist) {
+        carrot_pose = transformed_plan.poses[corner_idx];
+      }
+    }
+  } else if (!stair_hold) {
+    // Off the stairs (not in the hold before them, where the direction has
+    // just been read for the climb to come).
+    stair_turning_ = false;
+    stair_reverse_ = false;
+  }
+  carrot_pub_->publish(createCarrotMsg(carrot_pose));
+
+  double linear_vel, angular_vel;
+  // Find distance^2 to look ahead point (carrot) in robot base frame
+  // This is the chord length of the circle
+  const double carrot_dist2 = (carrot_pose.pose.position.x * carrot_pose.pose.position.x) +
+                              (carrot_pose.pose.position.y * carrot_pose.pose.position.y);
+
+  // Find curvature of circle (k = 1 / R)
+  double curvature = 0.0;
+  if (carrot_dist2 > 0.001) {
+    curvature = 2.0 * carrot_pose.pose.position.y / carrot_dist2;
+  }
+
+  // Setting the velocity direction
+  double sign = 1.0;
+  if (allow_reversing_) {
+    sign = carrot_pose.pose.position.x >= 0.0 ? 1.0 : -1.0;
+  }
+  if (on_stairs && stair_reverse_) {
+    // Backwards down a descent: the carrot is behind the robot, the arc
+    // through it is the same, and shouldRotateToPath() measures from the
+    // tail.
+    sign = -1.0;
+  }
+
+  linear_vel = desired_linear_vel_;
+
+  // Make sure we're in compliance with basic constraints.
+  // The constraints split into three branches:
+  // 1. Near the goal: rotate in place to face the goal heading.
+  // 2. Heading deviates too far from the path: first rotate in place onto the local path.
+  // 3. Normal path tracking.
+  double angle_to_heading;
+  bool is_rotating_to_heading = false;
+  if (shouldRotateToGoalHeading(carrot_pose)) {
+    double angle_to_goal = tf2::getYaw(transformed_plan.poses.back().pose.orientation);
+    rotateToHeading(linear_vel, angular_vel, angle_to_goal);
+    is_rotating_to_heading = true;
+  } else if (!stair_hold && (shouldRotateToPath(carrot_pose, angle_to_heading) || stair_turning_)) {
+    // On the stairs the turn is latched (see the corner block above): in
+    // past rotate_to_heading_min_angle, out under stair_turn_done_angle.
+    // Not during a stair hold, whose block below owns the latch (the turn
+    // round at the bottom of a descent).
+    if (on_stairs) {
+      stair_turning_ = std::fabs(angle_to_heading) >= stair_turn_done_angle_;
+    }
+    if (on_stairs && !stair_turning_) {
+      applyConstraints(
+        curvature, speed, costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
+        linear_vel, sign);
+    } else {
+      rotateToHeading(linear_vel, angular_vel, angle_to_heading);
+      is_rotating_to_heading = true;
+    }
+  } else {
+    applyConstraints(
+      curvature, speed, costAtPose(pose.pose.position.x, pose.pose.position.y), transformed_plan,
+      linear_vel, sign);
+  }
+
+  // Linear acceleration limit: cmd_vel in this stack does not pass through a velocity
+  // smoother, so the controller itself has to guarantee the kinematic feasibility of the
+  // linear velocity. Angular velocity is clamped separately in each branch: the rotation
+  // branch inside rotateToHeading(), the tracking branch below, after the curvature step.
+  //
+  // The reference is the previous cycle's commanded velocity, last_cmd_vel_, not the
+  // measured velocity `speed`. `speed` comes from the unsmoothed Point-LIO twist, and the
+  // quadruped gait rocks the trunk fore/aft by +-0.2~0.5 m/s. Referencing the measurement
+  // would drag the command along with that rocking, and with allow_reversing=false could
+  // even squash it negative, closing a positive feedback loop: command oscillates -> dog
+  // rocks harder -> measurement oscillates harder. Referencing our own previous command
+  // only guarantees that the commanded trajectory itself is acceleration-feasible, without
+  // coupling to gait noise.
+  const double min_feasible_linear_speed =
+    last_cmd_vel_.linear.x - max_linear_accel_ * control_duration_;
+  const double max_feasible_linear_speed =
+    last_cmd_vel_.linear.x + max_linear_accel_ * control_duration_;
+  linear_vel = std::clamp(linear_vel, min_feasible_linear_speed, max_feasible_linear_speed);
+
+  if (!is_rotating_to_heading) {
+    // Apply curvature to angular velocity after constraining linear velocity:
+    // compute the angular velocity from the clamped linear velocity so the curvature of the
+    // tracked arc stays unchanged.
+    angular_vel = linear_vel * curvature;
+
+    // Angular acceleration limit. rotateToHeading() already has the same clamp internally,
+    // but the tracking branch originally did not, so the one cycle that exits rotate-in-place
+    // was a cliff: on the real robot wz measured 1.300 -> 0.235 (~ -21 rad/s^2), whereas the
+    // entry side, going through rotateToHeading(), ramps smoothly at +0.16 per cycle. The
+    // cliff exit also feeds oscillation: after exiting, the heading overshoots and the next
+    // cycle re-enters rotate-to-heading in the opposite direction (measured wz +1.300 ->
+    // +0.024 -> -0.064 -> ... -> -0.815), i.e. exactly the weaving that the
+    // regulated_linear_scaling_min_speed comment in controller_server_params.yaml warns about.
+    //
+    // Cost: during the few clamped cycles (v, w) no longer exactly equals the path curvature,
+    // so the robot swings a slightly wider arc coming out of a turn -- the same trade-off as
+    // the linear clamp above. The heading error on exit is bounded by
+    // rotate_to_heading_min_angle (0.25 rad), while bleeding 1.3 rad/s off at 3.2 rad/s^2
+    // overturns by about 0.26 rad; the two are of the same order and cancel out.
+    //
+    // Added only in this branch: rotateToHeading()'s sqrt(2*alpha*theta) is a deceleration
+    // ceiling that exists "so we can still stop in time"; applying a symmetric acceleration
+    // clamp after it would pull the velocity back up and defeat that ceiling.
+    const double min_feasible_angular_speed =
+      last_cmd_vel_.angular.z - max_angular_accel_ * control_duration_;
+    const double max_feasible_angular_speed =
+      last_cmd_vel_.angular.z + max_angular_accel_ * control_duration_;
+    angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
+  }
+
+  if (on_stairs) {
+    // Stopping before a landing corner: the clamp above has already ramped
+    // linear_vel down by one step from the last command; take it to the
+    // floor of that step so the ramp continues to zero.
+    if (stair_stop && !is_rotating_to_heading) {
+      linear_vel = std::clamp(0.0, min_feasible_linear_speed, max_feasible_linear_speed);
+      angular_vel = linear_vel * curvature;
+    }
+    // Stair speed. A cap only lowers |v|, so it cannot break the clamp above, and the
+    // curvature is the path's either way: w scales with v.
+    if (std::fabs(linear_vel) > stair_linear_vel_) {
+      const double scale = stair_linear_vel_ / std::fabs(linear_vel);
+      linear_vel *= scale;
+      if (!is_rotating_to_heading) {
+        angular_vel *= scale;
+      }
+    }
+  }
+
+  if (stair_hold) {
+    // Brake to a stop for the policy switch, at the clamps' own rates.
+    const double dv = max_linear_accel_ * control_duration_;
+    const double dw = max_angular_accel_ * control_duration_;
+    linear_vel = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+    angular_vel = std::clamp(0.0, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+
+    if (stair.leaving && stair_reverse_ && linear_vel == 0.0) {
+      // Off a descent the robot faces back up the stairs: turn round to the
+      // path, standing, before the policy goes back and the level-ground
+      // tracking takes over facing the right way. The latch is this
+      // block's while a hold is on (see the rotate branch above).
+      const double fwd = std::atan2(carrot_pose.pose.position.y, carrot_pose.pose.position.x);
+      if (!stair_turning_ && std::fabs(fwd) > rotate_to_heading_min_angle_) {
+        stair_turning_ = true;
+        RCLCPP_INFO(
+          logger_,
+          "[RegulatedPurePursuitController3D] Stairs: at the bottom of the descent, turning "
+          "%.0f deg round to the path",
+          fwd * 180.0 / M_PI);
+      } else if (stair_turning_ && std::fabs(fwd) < stair_turn_done_angle_) {
+        stair_turning_ = false;
+      }
+      if (stair_turning_) {
+        rotateToHeading(linear_vel, angular_vel, fwd);
+      }
+    }
+    if (linear_vel == 0.0 && angular_vel == 0.0) {
+      // Standing: the policy goes out, or the settle time runs down.
+      stair_mode_.standing(clock_->now());
+    }
+  }
+
+  // The (v, w) just computed defines an arc. Before actually executing it, simulate the robot
+  // driving along that arc on the costmap and check whether the footprint would touch an
+  // obstacle anywhere along the way. This tells us, after regulation, whether the predicted
+  // path collides with an obstacle -- a safety check.
+  //
+  // Not on a stair (2026-10-20): from the hold at its foot to the hold past its top the
+  // robot climbs blind, by decision -- no obstacle avoidance on a flight. The local
+  // costmap's terrain layer judges the flight itself lethal (a riser over
+  // max_step_height, a slope over max_slope_deg) and opens nothing along the path, so
+  // this check would refuse every stair; MPPI's stair climb skips the costmap the same
+  // way.
+  const double & carrot_dist = hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
+  if (
+    use_collision_detection_ && !stair_hold && !on_stairs &&
+    isCollisionImminent(pose, linear_vel, angular_vel, carrot_dist)) {
+    // The (v, w) computed above is never commanded: the wrapper in
+    // computeVelocityCommands() zeroes the accel-clamp baseline on the way out, which is
+    // what keeps the cycle after the all-clear from lurching off the stale pre-collision
+    // speed. The numbers that bought that are in the wrapper's comment.
+    throw syncai_nav_core::PlannerException(
+      "RegulatedPurePursuitController3D detected collision ahead!");
+  }
+
+  // populate and return message
+  geometry_msgs::msg::TwistStamped cmd_vel;
+  cmd_vel.header = pose.header;
+  cmd_vel.twist.linear.x = linear_vel;
+  cmd_vel.twist.angular.z = angular_vel;
+
+  // Remember what we actually commanded so next cycle's accel clamps use it as
+  // their baseline (see the linear clamp above and rotateToHeading()).
+  last_cmd_vel_ = cmd_vel.twist;
+  return cmd_vel;
+}
+
+bool RegulatedPurePursuitController3D::shouldRotateToPath(
+  const geometry_msgs::msg::PoseStamped & carrot_pose, double & angle_to_path)
+{
+  // Whether we should rotate robot to rough path heading
+  angle_to_path = atan2(carrot_pose.pose.position.y, carrot_pose.pose.position.x);
+  if (stair_reverse_ && stair_mode_.onStairs()) {
+    // Backwards down a descent: the tail, not the nose, is held on the path.
+    angle_to_path = std::remainder(angle_to_path - M_PI, 2.0 * M_PI);
+  }
+  return use_rotate_to_heading_ && fabs(angle_to_path) > rotate_to_heading_min_angle_;
+}
+
+bool RegulatedPurePursuitController3D::shouldRotateToGoalHeading(
+  const geometry_msgs::msg::PoseStamped & carrot_pose)
+{
+  // Whether we should rotate robot to goal heading
+  double dist_to_goal = std::hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y);
+  return use_rotate_to_heading_ && dist_to_goal < goal_dist_tol_;
+}
+
+void RegulatedPurePursuitController3D::rotateToHeading(
+  double & linear_vel, double & angular_vel, const double & angle_to_path)
+{
+  // Rotate in place using max angular velocity / acceleration possible
+  linear_vel = 0.0;
+  const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
+  angular_vel = sign * rotate_to_heading_angular_vel_;
+
+  // Baseline is our own last commanded angular velocity, not the measured odom
+  // twist — same reasoning as the linear clamp in computeVelocityCommands():
+  // the raw Point-LIO angular twist jitters with the gait and would make
+  // angular.z chatter if used as the clamp reference.
+  const double & dt = control_duration_;
+  const double min_feasible_angular_speed = last_cmd_vel_.angular.z - max_angular_accel_ * dt;
+  const double max_feasible_angular_speed = last_cmd_vel_.angular.z + max_angular_accel_ * dt;
+  angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
+
+  // Check if we need to slow down to avoid overshooting
+  double max_vel_to_stop = std::sqrt(2 * max_angular_accel_ * fabs(angle_to_path));
+  if (fabs(angular_vel) > max_vel_to_stop) {
+    angular_vel = sign * max_vel_to_stop;
+  }
+
+  // Not upstream: the gait controller under RL does not turn in place below a
+  // floor, so a command under it is a robot standing still. Two places put
+  // one there: the acceleration clamp ramping out of rest or out of a turn
+  // the other way (0.16 rad/s a cycle at 3.2 rad/s^2), and the stop cap
+  // above in the last few hundredths of a radian. Raised to the floor in the
+  // direction of the target, last, so it wins over both: a ramp that starts
+  // at the floor is one step over max_angular_accel, and the stop cap is
+  // overridden only below sqrt(2 * alpha * theta) = floor, i.e. inside
+  // ~0.014 rad at 0.3 rad/s -- far inside yaw_goal_tolerance. 0 disables it.
+  if (fabs(angular_vel) < rotate_to_heading_min_angular_vel_) {
+    angular_vel = sign * rotate_to_heading_min_angular_vel_;
+  }
+}
+
+geometry_msgs::msg::Point RegulatedPurePursuitController3D::circleSegmentIntersection(
+  const geometry_msgs::msg::Point & p1, const geometry_msgs::msg::Point & p2, double r)
+{
+  // Formula for intersection of a line with a circle centered at the origin,
+  // modified to always return the point that is on the segment between the two points.
+  // https://mathworld.wolfram.com/Circle-LineIntersection.html
+  // This works because the poses are transformed into the robot frame.
+  // This can be derived from solving the system of equations of a line and a circle
+  // which results in something that is just a reformulation of the quadratic formula.
+  // Interactive illustration in doc/circle-segment-intersection.ipynb as well as at
+  // https://www.desmos.com/calculator/td5cwbuocd
+  double x1 = p1.x;
+  double x2 = p2.x;
+  double y1 = p1.y;
+  double y2 = p2.y;
+
+  double dx = x2 - x1;
+  double dy = y2 - y1;
+  double dr2 = dx * dx + dy * dy;
+  double D = x1 * y2 - x2 * y1;
+
+  // Augmentation to only return point within segment
+  double d1 = x1 * x1 + y1 * y1;
+  double d2 = x2 * x2 + y2 * y2;
+  double dd = d2 - d1;
+
+  geometry_msgs::msg::Point p;
+  double sqrt_term = std::sqrt(r * r * dr2 - D * D);
+  p.x = (D * dy + std::copysign(1.0, dd) * dx * sqrt_term) / dr2;
+  p.y = (-D * dx + std::copysign(1.0, dd) * dy * sqrt_term) / dr2;
+  return p;
+}
+
+geometry_msgs::msg::PoseStamped RegulatedPurePursuitController3D::getLookAheadPoint(
+  const double & lookahead_dist, const nav_msgs::msg::Path & transformed_plan)
+{
+  // Find the first pose which is at a distance greater than the lookahead distance
+  auto goal_pose_it = std::find_if(
+    transformed_plan.poses.begin(), transformed_plan.poses.end(), [&](const auto & ps) {
+      return hypot(ps.pose.position.x, ps.pose.position.y) >= lookahead_dist;
+    });
+
+  // If the no pose is not far enough, take the last pose
+  if (goal_pose_it == transformed_plan.poses.end()) {
+    goal_pose_it = std::prev(transformed_plan.poses.end());
+  } else if (use_interpolation_ && goal_pose_it != transformed_plan.poses.begin()) {
+    auto prev_pose_it = std::prev(goal_pose_it);
+    // Interpolation here simply solves a geometric equation: the intersection of the segment
+    // with the lookahead circle. That intersection becomes the lookahead point the robot chases.
+    auto point = circleSegmentIntersection(
+      prev_pose_it->pose.position, goal_pose_it->pose.position, lookahead_dist);
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = prev_pose_it->header.frame_id;
+    pose.header.stamp = goal_pose_it->header.stamp;
+    pose.pose.position = point;
+    return pose;
+  }
+
+  return *goal_pose_it;
+}
+
+bool RegulatedPurePursuitController3D::isCollisionImminent(
+  const geometry_msgs::msg::PoseStamped & robot_pose, const double & linear_vel,
+  const double & angular_vel, const double & carrot_dist)
+{
+  // Note(stevemacenski): This may be a bit unusual, but the robot_pose is in
+  // odom frame and the carrot_pose is in robot base frame.
+
+  // Check whether the robot's footprint, right now, is already on a LETHAL obstacle
+  if (inCollision(
+        robot_pose.pose.position.x, robot_pose.pose.position.y,
+        tf2::getYaw(robot_pose.pose.orientation))) {
+    return true;
+  }
+
+  // visualization messages
+  nav_msgs::msg::Path arc_pts_msg;
+  arc_pts_msg.header.frame_id = costmap_ros_->getGlobalFrameID();
+  arc_pts_msg.header.stamp = robot_pose.header.stamp;
+
+  geometry_msgs::msg::PoseStamped pose_msg;
+  pose_msg.header.frame_id = arc_pts_msg.header.frame_id;
+  pose_msg.header.stamp = arc_pts_msg.header.stamp;
+
+  double projection_time = 0.0;
+  if (fabs(linear_vel) < 0.01 && fabs(angular_vel) > 0.01) {
+    // rotating to heading at goal or toward path
+    // Equation finds the angular distance required for the largest
+    // part of the robot radius to move to another costmap cell:
+    // theta_min = 2.0 * sin ((res/2) / r_max)
+    // via isosceles triangle r_max-r_max-resolution,
+    // dividing by angular_velocity gives us a timestep.
+    double max_radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
+    projection_time = 2.0 * sin((costmap_->getResolution() / 2) / max_radius) / fabs(angular_vel);
+  } else {
+    // Normal path tracking
+    // each step(one grid in costmap) => time = distance / speed
+    projection_time = costmap_->getResolution() / fabs(linear_vel);
+  }
+
+  const geometry_msgs::msg::Point & robot_xy = robot_pose.pose.position;
+  geometry_msgs::msg::Pose2D curr_pose;
+  curr_pose.x = robot_pose.pose.position.x;
+  curr_pose.y = robot_pose.pose.position.y;
+  curr_pose.theta = tf2::getYaw(robot_pose.pose.orientation);
+
+  // only forward simulate within time requested
+  int i = 1;
+  while (i * projection_time < max_allowed_time_to_collision_up_to_carrot_) {
+    i++;
+
+    // apply velocity at curr_pose over distance
+    curr_pose.x += projection_time * (linear_vel * cos(curr_pose.theta));
+    curr_pose.y += projection_time * (linear_vel * sin(curr_pose.theta));
+    curr_pose.theta += projection_time * angular_vel;
+
+    // check if past carrot pose, where no longer a thoughtfully valid command
+    if (hypot(curr_pose.x - robot_xy.x, curr_pose.y - robot_xy.y) > carrot_dist) {
+      break;
+    }
+
+    // store it for visualization
+    pose_msg.pose.position.x = curr_pose.x;
+    pose_msg.pose.position.y = curr_pose.y;
+    pose_msg.pose.position.z = 0.01;
+    arc_pts_msg.poses.push_back(pose_msg);
+
+    // check for collision at the projected pose
+    // whether the robot footprint at the projected pose would be in collision with obstacles on the costmap
+    // it would publish the projected arc for visualization
+    if (inCollision(curr_pose.x, curr_pose.y, curr_pose.theta)) {
+      carrot_arc_pub_->publish(arc_pts_msg);
+      return true;
+    }
+  }
+
+  carrot_arc_pub_->publish(arc_pts_msg);
+  return false;
+}
+
+bool RegulatedPurePursuitController3D::inCollision(
+  const double & x, const double & y, const double & theta)
+{
+  unsigned int mx, my;
+
+  if (!costmap_->worldToMap(x, y, mx, my)) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *(clock_), 30000,
+      "The dimensions of the costmap is too small to successfully check for "
+      "collisions as far ahead as requested. Proceed at your own risk, slow the robot, or "
+      "increase your costmap size.");
+    return false;
+  }
+
+  double footprint_cost =
+    collision_checker_->footprintCostAtPose(x, y, theta, costmap_ros_->getRobotFootprint());
+  if (
+    footprint_cost == static_cast<double>(NO_INFORMATION) &&
+    costmap_ros_->getLayeredCostmap()->isTrackingUnknown()) {
+    return false;
+  }
+
+  // if occupied or unknown and not to traverse unknown space
+  return footprint_cost >= static_cast<double>(LETHAL_OBSTACLE);
+}
+
+double RegulatedPurePursuitController3D::costAtPose(const double & x, const double & y)
+{
+  unsigned int mx, my;
+
+  if (!costmap_->worldToMap(x, y, mx, my)) {
+    RCLCPP_FATAL(
+      logger_,
+      "The dimensions of the costmap is too small to fully include your robot's footprint, "
+      "thusly the robot cannot proceed further");
+    throw syncai_nav_core::PlannerException(
+      "RegulatedPurePursuitController3D: Dimensions of the costmap are too small "
+      "to encapsulate the robot footprint at current speeds!");
+  }
+
+  unsigned char cost = costmap_->getCost(mx, my);
+  return static_cast<double>(cost);
+}
+
+double RegulatedPurePursuitController3D::approachVelocityScalingFactor(
+  const nav_msgs::msg::Path & transformed_path) const
+{
+  // Waiting to apply the threshold based on integrated distance ensures we don't
+  // erroneously apply approach scaling on curvy paths that are contained in a large local costmap.
+  double remaining_distance = syncai_util::geometry_utils::calculate_path_length(transformed_path);
+  if (remaining_distance < approach_velocity_scaling_dist_) {
+    auto & last = transformed_path.poses.back();
+    // Here we will use a regular euclidean distance from the robot frame (origin)
+    // to get smooth scaling, regardless of path density.
+    double distance_to_last_pose = std::hypot(last.pose.position.x, last.pose.position.y);
+    return distance_to_last_pose / approach_velocity_scaling_dist_;
+  } else {
+    return 1.0;
+  }
+}
+
+void RegulatedPurePursuitController3D::applyApproachVelocityScaling(
+  const nav_msgs::msg::Path & path, double & linear_vel) const
+{
+  double approach_vel = linear_vel;
+  double velocity_scaling = approachVelocityScalingFactor(path);
+  double unbounded_vel = approach_vel * velocity_scaling;
+  if (unbounded_vel < min_approach_linear_velocity_) {
+    approach_vel = min_approach_linear_velocity_;
+  } else {
+    approach_vel *= velocity_scaling;
+  }
+
+  // Use the lowest velocity between approach and other constraints, if all overlapping
+  linear_vel = std::min(linear_vel, approach_vel);
+}
+
+void RegulatedPurePursuitController3D::applyConstraints(
+  const double & curvature, const geometry_msgs::msg::Twist & /*curr_speed*/,
+  const double & pose_cost, const nav_msgs::msg::Path & path, double & linear_vel, double & sign)
+{
+  // Under normal path tracking, constrain the linear velocity by curvature and obstacle cost.
+  // Compared with a classic pure pursuit controller this is the extra part. There are three
+  // regulators:
+  // 1. Curvature regulation: scale speed down linearly with the turning radius -> slow down
+  //    through turns.
+  // 2. Obstacle proximity regulation: derive the distance to the nearest obstacle from the
+  //    local costmap's inflation layer.
+  // 3. Approach slowdown: scale speed down linearly with the distance to the goal.
+  double curvature_vel = linear_vel;
+  double cost_vel = linear_vel;
+
+  // limit the linear velocity by curvature
+  const double radius = fabs(1.0 / curvature);
+  const double & min_rad = regulated_linear_scaling_min_radius_;
+  if (use_regulated_linear_velocity_scaling_ && radius < min_rad) {
+    curvature_vel *= 1.0 - (fabs(radius - min_rad) / min_rad);
+  }
+
+  // limit the linear velocity by proximity to obstacles
+  if (
+    use_cost_regulated_linear_velocity_scaling_ &&
+    pose_cost != static_cast<double>(NO_INFORMATION) &&
+    pose_cost != static_cast<double>(FREE_SPACE)) {
+    const double inscribed_radius = costmap_ros_->getLayeredCostmap()->getInscribedRadius();
+    const double min_distance_to_obstacle =
+      (-1.0 / inflation_cost_scaling_factor_) *
+        std::log(pose_cost / (INSCRIBED_INFLATED_OBSTACLE - 1)) +
+      inscribed_radius;
+
+    if (min_distance_to_obstacle < cost_scaling_dist_) {
+      cost_vel *= cost_scaling_gain_ * min_distance_to_obstacle / cost_scaling_dist_;
+    }
+  }
+
+  // Use the lowest of the 2 constraint heuristics, but above the minimum translational speed
+  // The first two regulators each produce an upper bound; to satisfy both, take the stricter:
+  // - curvature_vel: "a turn this sharp allows at most speed X"
+  // - cost_vel: "this close to an obstacle allows at most speed Y"
+  linear_vel = std::min(cost_vel, curvature_vel);
+  linear_vel = std::max(linear_vel, regulated_linear_scaling_min_speed_);
+
+  // limit the linear velocity as we approach the goal
+  applyApproachVelocityScaling(path, linear_vel);
+
+  // Limit linear velocities to be valid
+  linear_vel = std::clamp(fabs(linear_vel), 0.0, desired_linear_vel_);
+  linear_vel = sign * linear_vel;
+}
+
+void RegulatedPurePursuitController3D::setPlan(const nav_msgs::msg::Path & path)
+{
+  // Path only. last_cmd_vel_ deliberately survives: setPlan() is also the
+  // mid-navigation replan entry point (the BT re-ticks FollowPath every ~3 s,
+  // which arrives as an action preempt -> updateGlobalPath -> setPlan), and
+  // zeroing the accel-clamp baseline here made the command collapse to a single
+  // accel step and re-ramp on every replan. Measured on the real robot: vx
+  // 0.80 -> 0.05 m/s in one 50 ms cycle (max_linear_accel * control_duration),
+  // worse in rotate-to-heading where the 1.3 rad/s plateau was cut to 0.16 and
+  // needed 8 cycles to recover — a 0.32 Hz sawtooth on cmd_vel that burned ~16%
+  // of the drive re-accelerating. Per-goal reset lives in reset().
+  global_plan_ = path;
+  stair_mode_.setPlan(path);
+  plan_has_height_ = pathHasHeight(path);
+}
+
+void RegulatedPurePursuitController3D::reset()
+{
+  // New goal: zero the accel-clamp baseline so the first command ramps up from
+  // a standstill rather than inheriting the previous goal's velocity.
+  last_cmd_vel_ = geometry_msgs::msg::Twist();
+
+  // Stair mode's on_stairs deliberately survives: it is the policy the gait
+  // controller is on, and that outlives a cancelled goal (StairMode::reset()).
+  stair_mode_.reset();
+}
+
+void RegulatedPurePursuitController3D::setSpeedLimit(
+  const double & speed_limit, const bool & percentage)
+{
+  if (speed_limit == NO_SPEED_LIMIT) {
+    // Restore default value
+    desired_linear_vel_ = base_desired_linear_vel_;
+  } else {
+    if (percentage) {
+      // Speed limit is expressed in % from maximum speed of robot
+      desired_linear_vel_ = base_desired_linear_vel_ * speed_limit / 100.0;
+    } else {
+      // Speed limit is expressed in absolute value
+      desired_linear_vel_ = speed_limit;
+    }
+  }
+}
+
+nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  /**
+   * @brief Transforms the global plan into the robot's frame of reference.
+   * This function solves three problems:
+   *    1. The global plan is in the map frame, but the pure pursuit math (finding the
+   *       lookahead point, computing curvature) works in the robot frame.
+   *    2. The full path may be hundreds of meters long, but the controller only cares about
+   *       the part inside the local costmap.
+   *    3. The part already driven has to be dropped, otherwise every
+   *       computeVelocityCommands() call would reprocess it.
+   */
+  if (global_plan_.poses.empty()) {
+    throw syncai_nav_core::PlannerException("Received plan with zero length");
+  }
+
+  // let's get the pose of the robot in the frame of the plan
+  geometry_msgs::msg::PoseStamped robot_pose;
+  if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
+    throw syncai_nav_core::PlannerException(
+      "Unable to transform robot pose into global plan's frame");
+  }
+
+  // A plan with heights (OctomapPlanner3D) is matched in 3D: robot_pose comes from the
+  // planar base_link (z = 0), so its z is replaced by the ground height under the robot
+  // in the plan's frame (path_height.hpp has why, and the spiral stair that needs it).
+  // Then both the nearest-pose search below and the window's far end count height: the
+  // turn of a spiral stair 2.5 m above the robot is neither "the closest pose" nor
+  // "inside the local costmap". No height, no matching: on a stair that would mean
+  // steering by whichever turn happens to be nearest in x / y, so this cycle fails and
+  // the server holds the robot (failure_tolerance) until the TF is back.
+  if (plan_has_height_) {
+    std::string error;
+    double ground_z = 0.0;
+    if (!lookupGroundZ(
+          *tf_, global_plan_.header.frame_id, body_frame_, body_height_, ground_z, &error)) {
+      throw syncai_nav_core::PlannerException(
+        "Plan has heights but the robot's (" + body_frame_ + " in " + global_plan_.header.frame_id +
+        ") is unknown: " + error);
+    }
+    robot_pose.pose.position.z = ground_z;
+  }
+  const bool is_3d = plan_has_height_;
+
+  // We'll discard points on the plan that are outside the local costmap
+  double max_costmap_extent = getCostmapMaxExtent();
+
+  // Use the integrated distance along the path to bound the range allowed for the search
+  auto closest_pose_upper_bound = syncai_util::geometry_utils::first_after_integrated_distance(
+    global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
+
+  // Within the range found above, find the path point closest to the robot
+  auto transformation_begin = syncai_util::geometry_utils::min_by(
+    global_plan_.poses.begin(), closest_pose_upper_bound,
+    [&robot_pose, is_3d](const geometry_msgs::msg::PoseStamped & ps) {
+      return euclidean_distance(robot_pose, ps, is_3d);
+    });
+
+  // Scan forward from transformation_begin and take the first point whose straight-line
+  // distance from the robot exceeds the local costmap extent as transformation_end
+  auto transformation_end =
+    std::find_if(transformation_begin, global_plan_.poses.end(), [&](const auto & pose) {
+      return euclidean_distance(pose, robot_pose, is_3d) > max_costmap_extent;
+    });
+
+  // Lambda to transform a PoseStamped from global frame to local
+  auto transformGlobalPoseToLocal = [&](const auto & global_plan_pose) {
+    geometry_msgs::msg::PoseStamped stamped_pose, transformed_pose;
+    stamped_pose.header.frame_id = global_plan_.header.frame_id;
+    stamped_pose.header.stamp = robot_pose.header.stamp;
+    stamped_pose.pose = global_plan_pose.pose;
+    transformPose(costmap_ros_->getBaseFrameID(), stamped_pose, transformed_pose);
+    transformed_pose.pose.position.z = 0.0;
+    return transformed_pose;
+  };
+
+  // Transform the path range selected above into the robot frame, point by point
+  nav_msgs::msg::Path transformed_plan;
+  std::transform(
+    transformation_begin, transformation_end, std::back_inserter(transformed_plan.poses),
+    transformGlobalPoseToLocal);
+  transformed_plan.header.frame_id = costmap_ros_->getBaseFrameID();
+  transformed_plan.header.stamp = robot_pose.header.stamp;
+
+  // Remove the portion of the global plan that we've already passed so we don't
+  // process it on the next iteration (this is called path pruning)
+  global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
+  global_path_pub_->publish(transformed_plan);
+
+  if (transformed_plan.poses.empty()) {
+    throw syncai_nav_core::PlannerException("Resulting plan has 0 poses in it.");
+  }
+
+  return transformed_plan;
+}
+
+double RegulatedPurePursuitController3D::findVelocitySignChange(
+  const nav_msgs::msg::Path & transformed_plan)
+{
+  // Iterating through the transformed global path to determine the position of the cusp
+  for (unsigned int pose_id = 1; pose_id < transformed_plan.poses.size() - 1; ++pose_id) {
+    // We have two vectors for the dot product OA and AB. Determining the vectors.
+    double oa_x = transformed_plan.poses[pose_id].pose.position.x -
+                  transformed_plan.poses[pose_id - 1].pose.position.x;
+    double oa_y = transformed_plan.poses[pose_id].pose.position.y -
+                  transformed_plan.poses[pose_id - 1].pose.position.y;
+    double ab_x = transformed_plan.poses[pose_id + 1].pose.position.x -
+                  transformed_plan.poses[pose_id].pose.position.x;
+    double ab_y = transformed_plan.poses[pose_id + 1].pose.position.y -
+                  transformed_plan.poses[pose_id].pose.position.y;
+
+    /* Checking for the existance of cusp, in the path, using the dot product
+    and determine it's distance from the robot. If there is no cusp in the path,
+    then just determine the distance to the goal location. */
+    if ((oa_x * ab_x) + (oa_y * ab_y) < 0.0) {
+      // returning the distance if there is a cusp
+      // The transformed path is in the robots frame, so robot is at the origin
+      return hypot(
+        transformed_plan.poses[pose_id].pose.position.x,
+        transformed_plan.poses[pose_id].pose.position.y);
+    }
+  }
+
+  return std::numeric_limits<double>::max();
+}
+
+bool RegulatedPurePursuitController3D::transformPose(
+  const std::string frame, const geometry_msgs::msg::PoseStamped & in_pose,
+  geometry_msgs::msg::PoseStamped & out_pose) const
+{
+  if (in_pose.header.frame_id == frame) {
+    out_pose = in_pose;
+    return true;
+  }
+
+  try {
+    tf_->transform(in_pose, out_pose, frame, transform_tolerance_);
+    out_pose.header.frame_id = frame;
+    return true;
+  } catch (tf2::TransformException & ex) {
+    RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
+  }
+  return false;
+}
+
+double RegulatedPurePursuitController3D::getCostmapMaxExtent() const
+{
+  const double max_costmap_dim_meters =
+    std::max(costmap_->getSizeInMetersX(), costmap_->getSizeInMetersY());
+  return max_costmap_dim_meters / 2.0;
+}
+
+rcl_interfaces::msg::SetParametersResult
+RegulatedPurePursuitController3D::dynamicParametersCallback(
+  std::vector<rclcpp::Parameter> parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  std::lock_guard<std::mutex> lock_reinit(mutex_);
+
+  for (auto parameter : parameters) {
+    const auto & type = parameter.get_type();
+    const auto & name = parameter.get_name();
+
+    if (type == ParameterType::PARAMETER_DOUBLE) {
+      if (name == plugin_name_ + ".inflation_cost_scaling_factor") {
+        if (parameter.as_double() <= 0.0) {
+          RCLCPP_WARN(
+            logger_,
+            "The value inflation_cost_scaling_factor is incorrectly set, "
+            "it should be >0. Ignoring parameter update.");
+          continue;
+        }
+        inflation_cost_scaling_factor_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".desired_linear_vel") {
+        desired_linear_vel_ = parameter.as_double();
+        base_desired_linear_vel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".lookahead_dist") {
+        lookahead_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".max_lookahead_dist") {
+        max_lookahead_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".min_lookahead_dist") {
+        min_lookahead_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".lookahead_time") {
+        lookahead_time_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotate_to_heading_angular_vel") {
+        rotate_to_heading_angular_vel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".min_approach_linear_velocity") {
+        min_approach_linear_velocity_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".max_allowed_time_to_collision_up_to_carrot") {
+        max_allowed_time_to_collision_up_to_carrot_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".cost_scaling_dist") {
+        cost_scaling_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".cost_scaling_gain") {
+        cost_scaling_gain_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".regulated_linear_scaling_min_radius") {
+        regulated_linear_scaling_min_radius_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".transform_tolerance") {
+        double transform_tolerance = parameter.as_double();
+        transform_tolerance_ = tf2::durationFromSec(transform_tolerance);
+      } else if (name == plugin_name_ + ".regulated_linear_scaling_min_speed") {
+        regulated_linear_scaling_min_speed_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".max_angular_accel") {
+        max_angular_accel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".max_linear_accel") {
+        max_linear_accel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotate_to_heading_min_angle") {
+        rotate_to_heading_min_angle_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_min_rise") {
+        stair_mode_.params().min_rise = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_linear_vel") {
+        stair_linear_vel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_lookahead_dist") {
+        stair_lookahead_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_turn_angle") {
+        stair_turn_angle_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_turn_dist") {
+        stair_turn_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_turn_done_angle") {
+        stair_turn_done_angle_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".stair_policy_settle_time") {
+        stair_mode_.params().settle_time = parameter.as_double();
+      }
+    } else if (type == ParameterType::PARAMETER_BOOL) {
+      if (name == plugin_name_ + ".stair_descend_backwards") {
+        stair_descend_backwards_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_velocity_scaled_lookahead_dist") {
+        use_velocity_scaled_lookahead_dist_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_regulated_linear_velocity_scaling") {
+        use_regulated_linear_velocity_scaling_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_cost_regulated_linear_velocity_scaling") {
+        use_cost_regulated_linear_velocity_scaling_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_rotate_to_heading") {
+        if (parameter.as_bool() && allow_reversing_) {
+          RCLCPP_WARN(
+            logger_,
+            "Both use_rotate_to_heading and allow_reversing "
+            "parameter cannot be set to true. Rejecting parameter update.");
+          continue;
+        }
+        use_rotate_to_heading_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".allow_reversing") {
+        if (use_rotate_to_heading_ && parameter.as_bool()) {
+          RCLCPP_WARN(
+            logger_,
+            "Both use_rotate_to_heading and allow_reversing "
+            "parameter cannot be set to true. Rejecting parameter update.");
+          continue;
+        }
+        allow_reversing_ = parameter.as_bool();
+      }
+    }
+  }
+
+  result.successful = true;
+  return result;
+}
+
+}  // namespace syncai_controller
+
+// Register this controller as a syncai_nav_core plugin
+PLUGINLIB_EXPORT_CLASS(
+  syncai_controller::RegulatedPurePursuitController3D, syncai_nav_core::Controller)

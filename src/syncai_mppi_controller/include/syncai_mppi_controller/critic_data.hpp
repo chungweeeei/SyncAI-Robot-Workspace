@@ -49,6 +49,19 @@ struct CriticData
   std::shared_ptr<MotionModel> motion_model;
   std::optional<std::vector<bool>> path_pts_valid;
   std::optional<size_t> furthest_reached_path_point;
+
+  // Not upstream (2026-10-20): the navigation goal in the costmap frame, for
+  // every critic's "near the goal" test (utils::withinPositionGoalTolerance)
+  // and GoalCritic / GoalAngleCritic's target. Humble took the last pose of
+  // `path` -- the path pruned to prune_distance -- for the goal, so at a
+  // corner, where that pose comes back within 1.4 m of the robot, GoalCritic
+  // pulled every trajectory at a point mid-path and PathFollowCritic
+  // switched off: MPPI cut the corner toward it. nullopt while `path` stops
+  // short of the goal (PathHandler::transformedGoal()), which no tolerance
+  // contains -- rather than later nav2's goal at any distance, because a
+  // goal on the floor above, or behind a wall, can be 1 m away in x / y with
+  // the route to it 30 m long.
+  std::optional<geometry_msgs::msg::Pose> goal;
 };
 
 }  // namespace mppi

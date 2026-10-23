@@ -190,27 +190,23 @@ inline models::Path toTensor(const nav_msgs::msg::Path & path)
  * @brief Check if the robot pose is within the Goal Checker's tolerances to goal
  * @param global_checker Pointer to the goal checker
  * @param robot Pose of robot
- * @param path Path to retreive goal pose from
+ * @param goal The goal, CriticData::goal: nullopt (the path in view stops short
+ * of it) is never within any tolerance
  * @return bool If robot is within goal checker tolerances to the goal
  */
 inline bool withinPositionGoalTolerance(
-  syncai_nav_core::GoalChecker * goal_checker,
-  const geometry_msgs::msg::Pose & robot,
-  const models::Path & path)
+  syncai_nav_core::GoalChecker * goal_checker, const geometry_msgs::msg::Pose & robot,
+  const std::optional<geometry_msgs::msg::Pose> & goal)
 {
-  const auto goal_idx = path.x.shape(0) - 1;
-  const auto goal_x = path.x(goal_idx);
-  const auto goal_y = path.y(goal_idx);
-
-  if (goal_checker) {
+  if (goal_checker && goal) {
     geometry_msgs::msg::Pose pose_tolerance;
     geometry_msgs::msg::Twist velocity_tolerance;
     goal_checker->getTolerances(pose_tolerance, velocity_tolerance);
 
     const auto pose_tolerance_sq = pose_tolerance.position.x * pose_tolerance.position.x;
 
-    auto dx = robot.position.x - goal_x;
-    auto dy = robot.position.y - goal_y;
+    auto dx = robot.position.x - goal->position.x;
+    auto dy = robot.position.y - goal->position.y;
 
     auto dist_sq = dx * dx + dy * dy;
 
@@ -226,22 +222,22 @@ inline bool withinPositionGoalTolerance(
  * @brief Check if the robot pose is within tolerance to the goal
  * @param pose_tolerance Pose tolerance to use
  * @param robot Pose of robot
- * @param path Path to retreive goal pose from
+ * @param goal The goal, CriticData::goal: nullopt (the path in view stops short
+ * of it) is never within any tolerance
  * @return bool If robot is within tolerance to the goal
  */
 inline bool withinPositionGoalTolerance(
-  float pose_tolerance,
-  const geometry_msgs::msg::Pose & robot,
-  const models::Path & path)
+  float pose_tolerance, const geometry_msgs::msg::Pose & robot,
+  const std::optional<geometry_msgs::msg::Pose> & goal)
 {
-  const auto goal_idx = path.x.shape(0) - 1;
-  const auto goal_x = path.x(goal_idx);
-  const auto goal_y = path.y(goal_idx);
+  if (!goal) {
+    return false;
+  }
 
   const auto pose_tolerance_sq = pose_tolerance * pose_tolerance;
 
-  auto dx = robot.position.x - goal_x;
-  auto dy = robot.position.y - goal_y;
+  auto dx = robot.position.x - goal->position.x;
+  auto dy = robot.position.y - goal->position.y;
 
   auto dist_sq = dx * dx + dy * dy;
 

@@ -329,10 +329,22 @@ void KeepoutFilter::process(
   std::lock_guard<CostmapFilter::mutex_t> guard(*getMutex());
 
   if (!mask_costmap_ || !inflated_mask_) {
-    // Show warning message every 2 seconds to not litter an output
-    RCLCPP_WARN_THROTTLE(
-      logger_, *(clock_), 2000, "[KeepoutFilter][%s] Filter mask was not received", __func__);
+    // Once per state change (see mask_missing_), not every 2 s.
+    if (!mask_missing_) {
+      mask_missing_ = true;
+      RCLCPP_WARN(
+        logger_,
+        "[KeepoutFilter][%s] Filter mask was not received on %s; no keepout zones until it is "
+        "(said once). Expected on a 3D-only map (no gridmap.yaml), where the mask server runs "
+        "idle; otherwise the keepout pane is down",
+        __func__, mask_topic_.empty() ? "(no filter info yet)" : mask_topic_.c_str());
+    }
     return;
+  }
+  if (mask_missing_) {
+    mask_missing_ = false;
+    RCLCPP_INFO(
+      logger_, "[KeepoutFilter][%s] Filter mask received; keepout zones applied", __func__);
   }
 
   tf2::Transform tf2_transform;

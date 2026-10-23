@@ -21,7 +21,7 @@ depend on, so neither has to depend on the other.
 
 | Header | Class | Implemented by |
 |---|---|---|
-| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (the one the shipped params select) |
+| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (id `GridBased`), `OctomapPlanner3D` (id `Octo3D`) |
 | `controller.hpp` | `Controller` | `syncai_controller`: `RegulatedPurePursuitController` |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker`, `StoppedGoalChecker`, `PositionGoalChecker` |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker`, `PoseProgressChecker` |
@@ -29,7 +29,21 @@ depend on, so neither has to depend on the other.
 
 **`GlobalPlanner`** — `initialize(node, name, tf, costmap_ros)` then
 `createPlan(start, goal) → nav_msgs::msg::Path`. An empty path means failure;
-there is no separate error channel.
+there is no separate error channel. `usesCostmap()` (not in nav2_core,
+2026-10-15) tells the planner server whether to wait for the costmap to be
+current before `createPlan()`; it defaults to `true`, and a planner that takes
+only the frame id from the costmap (`OctomapPlanner3D`) returns `false`, so a
+map with no `gridmap.yaml` — whose costmap never turns current — does not fail
+its goals in that wait. (A planner that does read it now fails there at once
+on such a map, rather than hanging the action thread as it did until
+2026-10-19.) `isPathValid(path, robot_pose, invalid_pose_indices)`
+(2026-10-21) is the validity test for such a planner: the planner server's
+`is_path_valid` service asks the planner that made the last plan instead of
+its costmap when that planner's `usesCostmap()` is `false`, since the costmap
+test is wrong for a path the costmap did not plan. The default body says
+"valid" (a planner with no dynamic knowledge has nothing to say);
+`OctomapPlanner3D` judges on its dynamic-obstacle overlay. It must answer
+fast and never wait behind a `createPlan()` in progress.
 
 **`Controller`** — `initialize(node, name, tf, costmap_ros)`, `setPlan(path)`,
 `reset()`, `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`,

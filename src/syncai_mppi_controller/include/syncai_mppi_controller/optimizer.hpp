@@ -88,12 +88,15 @@ public:
    * @param robot_pose Pose of the robot at given time
    * @param robot_speed Speed of the robot at given time
    * @param plan Path plan to track
+   * @param goal The goal in the plan's frame, nullopt while the plan stops short of it
+   * (CriticData::goal)
    * @param goal_checker Object to check if goal is completed
    * @return TwistStamped of the MPPI control
    */
   geometry_msgs::msg::TwistStamped evalControl(
     const geometry_msgs::msg::PoseStamped & robot_pose,
     const geometry_msgs::msg::Twist & robot_speed, const nav_msgs::msg::Path & plan,
+    const std::optional<geometry_msgs::msg::Pose> & goal,
     syncai_nav_core::GoalChecker * goal_checker);
 
   /**
@@ -131,12 +134,14 @@ protected:
    * @param robot_pose Pose of the robot at given time
    * @param robot_speed Speed of the robot at given time
    * @param plan Path plan to track
+   * @param goal The goal in the plan's frame, or nullopt (CriticData::goal)
    * @param goal_checker Object to check if goal is completed
    */
   void prepare(
     const geometry_msgs::msg::PoseStamped & robot_pose,
-    const geometry_msgs::msg::Twist & robot_speed,
-    const nav_msgs::msg::Path & plan, syncai_nav_core::GoalChecker * goal_checker);
+    const geometry_msgs::msg::Twist & robot_speed, const nav_msgs::msg::Path & plan,
+    const std::optional<geometry_msgs::msg::Pose> & goal,
+    syncai_nav_core::GoalChecker * goal_checker);
 
   /**
    * @brief Obtain the main controller's parameters
@@ -256,9 +261,18 @@ protected:
   models::Path path_;
   xt::xtensor<float, 1> costs_;
 
-  CriticData critics_data_ =
-  {state_, generated_trajectories_, path_, costs_, settings_.model_dt, false, nullptr, nullptr,
-    std::nullopt, std::nullopt};  /// Caution, keep references
+  CriticData critics_data_ = {
+    state_,
+    generated_trajectories_,
+    path_,
+    costs_,
+    settings_.model_dt,
+    false,
+    nullptr,
+    nullptr,
+    std::nullopt,
+    std::nullopt,
+    std::nullopt};  /// Caution, keep references
 
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 };

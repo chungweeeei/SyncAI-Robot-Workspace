@@ -134,11 +134,11 @@ void Optimizer::reset()
 }
 
 geometry_msgs::msg::TwistStamped Optimizer::evalControl(
-  const geometry_msgs::msg::PoseStamped & robot_pose,
-  const geometry_msgs::msg::Twist & robot_speed,
-  const nav_msgs::msg::Path & plan, syncai_nav_core::GoalChecker * goal_checker)
+  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
+  const nav_msgs::msg::Path & plan, const std::optional<geometry_msgs::msg::Pose> & goal,
+  syncai_nav_core::GoalChecker * goal_checker)
 {
-  prepare(robot_pose, robot_speed, plan, goal_checker);
+  prepare(robot_pose, robot_speed, plan, goal, goal_checker);
 
   do {
     optimize();
@@ -193,9 +193,9 @@ bool Optimizer::fallback(bool fail)
 }
 
 void Optimizer::prepare(
-  const geometry_msgs::msg::PoseStamped & robot_pose,
-  const geometry_msgs::msg::Twist & robot_speed,
-  const nav_msgs::msg::Path & plan, syncai_nav_core::GoalChecker * goal_checker)
+  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
+  const nav_msgs::msg::Path & plan, const std::optional<geometry_msgs::msg::Pose> & goal,
+  syncai_nav_core::GoalChecker * goal_checker)
 {
   state_.pose = robot_pose;
   state_.speed = robot_speed;
@@ -204,6 +204,7 @@ void Optimizer::prepare(
 
   critics_data_.fail_flag = false;
   critics_data_.goal_checker = goal_checker;
+  critics_data_.goal = goal;
   critics_data_.motion_model = motion_model_;
   critics_data_.furthest_reached_path_point.reset();
   critics_data_.path_pts_valid.reset();

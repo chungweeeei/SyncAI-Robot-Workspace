@@ -13,6 +13,7 @@
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "syncai_util/path_height.hpp"
 #include "syncai_util/robot_utils.hpp"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -25,6 +26,8 @@
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
+using syncai_util::lookupGroundZ;
+using syncai_util::pathHasHeight;
 
 namespace syncai_controller
 {
@@ -57,6 +60,11 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
   declare_parameter("goal_reached_max_remaining_path", rclcpp::ParameterValue(1.0));
+  // Height-aware tracking of paths with z (path_height.hpp). Shared with the
+  // controller plugins, which read these server-level names.
+  declare_parameter("body_frame", rclcpp::ParameterValue(std::string("pointlio_body")));
+  declare_parameter("lidar_height", rclcpp::ParameterValue(0.481));
+  declare_parameter("goal_z_tolerance", rclcpp::ParameterValue(0.5));
 
   // DockToPose (dock_to_pose). The ids are what an empty goal field resolves
   // to; they must name entries of controller_plugins / goal_checker_plugins,
@@ -139,6 +147,9 @@ void ControllerServer::configure()
   get_parameter("default_dock_controller_id", default_dock_controller_id_);
   get_parameter("default_dock_goal_checker_id", default_dock_goal_checker_id_);
   get_parameter("dock_approach_timeout", dock_approach_timeout_);
+  get_parameter("body_frame", body_frame_);
+  get_parameter("lidar_height", body_height_);
+  get_parameter("goal_z_tolerance", goal_z_tolerance_);
 
   costmap_ros_->init();
   // Launch a thread to run the costmap node
@@ -940,6 +951,31 @@ bool ControllerServer::isGoalReached()
     end_pose_latest, transformed_end_pose, *costmap_ros_->getTfBuffer(),
     costmap_ros_->getGlobalFrameID(), costmap_ros_->getTransformTolerance());
 
+  // A path with heights (OctomapPlanner3D) can end right above a stretch of
+  // itself: a 2F goal over the 1F corridor that leads to the stairs, or any
+  // point of a spiral stair over the turn below it. The goal checkers compare
+  // x / y only, so the robot is first required to be on the end pose's level.
+  // The robot's height is looked up, not read from `pose`: base_link is planar
+  // (path_height.hpp). No height, no goal -- a "reached" one floor short of it
+  // is the failure this exists for, and the next cycle tries again.
+  const bool path_has_height = pathHasHeight(current_path_);
+  double ground_z = 0.0;
+  if (path_has_height) {
+    std::string error;
+    if (!lookupGroundZ(
+          *costmap_ros_->getTfBuffer(), current_path_.header.frame_id, body_frame_, body_height_,
+          ground_z, &error)) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Path has heights but the robot's height is unknown (%s); goal not checked: %s",
+        body_frame_.c_str(), error.c_str());
+      return false;
+    }
+    if (std::abs(ground_z - end_pose_.pose.position.z) > goal_z_tolerance_) {
+      return false;
+    }
+  }
+
   // Proximity to the end pose alone cannot decide completion: on a path that
   // loops back onto its own start (patrol), the robot is within goal tolerance
   // before it has moved. Only consult the goal checker once the remaining
@@ -955,13 +991,19 @@ bool ControllerServer::isGoalReached()
       return false;
     }
 
+    // Nearest in 3D on a path with heights, for the reason above: on a spiral
+    // stair the turn above the robot is as near in x / y as the one under it.
+    if (path_has_height) {
+      robot_in_path_frame.pose.position.z = ground_z;
+    }
+
     // Strict '<' keeps the earliest pose on ties, so on a closed loop the
     // robot standing on the shared start/end point resolves to the start.
     size_t closest_idx = 0;
     double min_dist = std::numeric_limits<double>::max();
     for (size_t i = 0; i < current_path_.poses.size(); ++i) {
       double dist = syncai_util::geometry_utils::euclidean_distance(
-        robot_in_path_frame, current_path_.poses[i]);
+        robot_in_path_frame, current_path_.poses[i], path_has_height);
       if (dist < min_dist) {
         min_dist = dist;
         closest_idx = i;
@@ -1037,6 +1079,8 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
         goal_reached_max_remaining_path_ = parameter.as_double();
       } else if (name == "dock_approach_timeout") {
         dock_approach_timeout_ = parameter.as_double();
+      } else if (name == "goal_z_tolerance") {
+        goal_z_tolerance_ = parameter.as_double();
       }
     }
 

@@ -43,6 +43,10 @@ void ObstacleLayer::onInitialize()
   declareParameter("max_obstacle_height", rclcpp::ParameterValue(2.0));
   declareParameter("combination_method", rclcpp::ParameterValue(1));
   declareParameter("observation_sources", rclcpp::ParameterValue(std::string("")));
+  // Not upstream (2026-10-20): MapTypeGate. "any" keeps upstream's behaviour.
+  declareParameter("map_type", rclcpp::ParameterValue(std::string("any")));
+  declareParameter(
+    "map_3d_topic", rclcpp::ParameterValue(std::string("planner_server/Octo3D/map_available")));
 
   if (!node_) {
     throw std::runtime_error{"Failed to get node in ObstacleLayer"};
@@ -56,6 +60,13 @@ void ObstacleLayer::onInitialize()
   node_->get_parameter("track_unknown_space", track_unknown_space);
   node_->get_parameter("transform_tolerance", transform_tolerance);
   node_->get_parameter(name_ + "." + "observation_sources", topics_string);
+  {
+    std::string map_type, map_3d_topic;
+    node_->get_parameter(name_ + "." + "map_type", map_type);
+    node_->get_parameter(name_ + "." + "map_3d_topic", map_3d_topic);
+    map_gate_.initialize(
+      node_, name_, map_type, joinWithParentNamespace(map_3d_topic), callback_group_);
+  }
 
   dyn_params_handler_ = node_->add_on_set_parameters_callback(
     std::bind(&ObstacleLayer::dynamicParametersCallback, this, std::placeholders::_1));
@@ -103,6 +114,12 @@ void ObstacleLayer::onInitialize()
     declareParameter(source + "." + "obstacle_min_range", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "raytrace_max_range", rclcpp::ParameterValue(3.0));
     declareParameter(source + "." + "raytrace_min_range", rclcpp::ParameterValue(0.0));
+    // Not upstream (2026-10): measure this source's min / max_obstacle_height from the
+    // ground under the sensor instead of the global frame's z = 0 (ObservationBuffer
+    // has the mechanism, the README why). "global" is upstream's behaviour.
+    declareParameter(
+      source + "." + "height_reference", rclcpp::ParameterValue(std::string("global")));
+    declareParameter(source + "." + "sensor_height", rclcpp::ParameterValue(0.0));
 
     node_->get_parameter(name_ + "." + source + "." + "topic", topic);
     // The costmap node lives in its own sub-namespace; resolve a relative sensor
@@ -138,18 +155,21 @@ void ObstacleLayer::onInitialize()
     node_->get_parameter(name_ + "." + source + "." + "raytrace_min_range", raytrace_min_range);
     node_->get_parameter(name_ + "." + source + "." + "raytrace_max_range", raytrace_max_range);
 
+    std::string height_reference;
+    double sensor_height;
+    node_->get_parameter(name_ + "." + source + "." + "height_reference", height_reference);
+    node_->get_parameter(name_ + "." + source + "." + "sensor_height", sensor_height);
+
     RCLCPP_DEBUG(
       logger_, "Creating an observation buffer for source %s, topic %s, frame %s", source.c_str(),
       topic.c_str(), sensor_frame.c_str());
 
     // create an observation buffer
-    observation_buffers_.push_back(
-      std::shared_ptr<ObservationBuffer>(
-        new ObservationBuffer(
-          node_, topic, observation_keep_time, expected_update_rate, min_obstacle_height,
-          max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
-          raytrace_min_range, *tf_, global_frame_, sensor_frame,
-          tf2::durationFromSec(transform_tolerance))));
+    observation_buffers_.push_back(std::shared_ptr<ObservationBuffer>(new ObservationBuffer(
+      node_, topic, observation_keep_time, expected_update_rate, min_obstacle_height,
+      max_obstacle_height, obstacle_max_range, obstacle_min_range, raytrace_max_range,
+      raytrace_min_range, *tf_, global_frame_, sensor_frame,
+      tf2::durationFromSec(transform_tolerance), height_reference, sensor_height)));
 
     // check if we'll add this buffer to our marking observation buffers
     if (marking) {
@@ -359,6 +379,26 @@ void ObstacleLayer::updateBounds(
   if (rolling_window_) {
     updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
   }
+  // MapTypeGate (not upstream): on a switch either way, start from an empty
+  // layer and put the whole window in the update bounds once, so the master
+  // grid is reset there -- otherwise what the other sensor layer marked
+  // outside this layer's next bounds would stay in it.
+  if (map_gate_.gated() && map_gate_.changed()) {
+    resetMaps();
+    *min_x = std::min(*min_x, getOriginX());
+    *min_y = std::min(*min_y, getOriginY());
+    *max_x = std::max(*max_x, getOriginX() + getSizeInMetersX());
+    *max_y = std::max(*max_y, getOriginY() + getSizeInMetersY());
+  }
+  if (!map_gate_.active()) {
+    // Gated off counts as current, as a disabled layer does in
+    // LayeredCostmap::isCurrent(): the controller must not wait on a sensor
+    // layer the map does not use (a clear's reset() would otherwise leave it
+    // not-current for good).
+    current_ = true;
+    was_reset_ = false;
+    return;
+  }
   if (!enabled_) {
     return;
   }
@@ -471,7 +511,7 @@ void ObstacleLayer::updateCosts(
   syncai_costmap_2d::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
-  if (!enabled_) {
+  if (!enabled_ || !map_gate_.active()) {
     return;
   }
 
@@ -561,13 +601,22 @@ void ObstacleLayer::raytraceFreespace(
   // get the map coordinates of the origin of the sensor
   unsigned int x0, y0;
   if (!worldToMap(ox, oy, x0, y0)) {
-    RCLCPP_WARN(
-      logger_,
-      "Sensor origin at (%.2f, %.2f) is out of map bounds (%.2f, %.2f) to (%.2f, %.2f). "
-      "The costmap cannot raytrace for it.",
-      ox, oy, origin_x_, origin_y_, origin_x_ + getSizeInMetersX(),
-      origin_y_ + getSizeInMetersY());
+    if (!sensor_out_of_bounds_) {
+      sensor_out_of_bounds_ = true;
+      RCLCPP_WARN(
+        logger_,
+        "Sensor origin at (%.2f, %.2f) is out of map bounds (%.2f, %.2f) to (%.2f, %.2f). "
+        "The costmap cannot raytrace for it; said once until it is back. Expected for a "
+        "global costmap whose static layer has no map, as on a 3D-only map (no gridmap.yaml)",
+        ox, oy, origin_x_, origin_y_, origin_x_ + getSizeInMetersX(),
+        origin_y_ + getSizeInMetersY());
+    }
     return;
+  }
+  if (sensor_out_of_bounds_) {
+    sensor_out_of_bounds_ = false;
+    RCLCPP_INFO(
+      logger_, "Sensor origin at (%.2f, %.2f) is back inside the map; raytracing again", ox, oy);
   }
 
   // we can pre-compute the enpoints of the map outside of the inner loop... we'll need these later

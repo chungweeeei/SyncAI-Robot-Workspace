@@ -18,6 +18,9 @@
     <class type="syncai_controller::RegulatedPurePursuitController" base_class_type="syncai_nav_core::Controller">
       <description>Regulated pure pursuit controller</description>
     </class>
+    <class type="syncai_controller::RegulatedPurePursuitController3D" base_class_type="syncai_nav_core::Controller">
+      <description>Regulated pure pursuit for paths with heights (OctomapPlanner3D): matches the plan in 3D and switches the gait policy for stairs</description>
+    </class>
     <class type="syncai_controller::DockingController" base_class_type="syncai_nav_core::Controller">
       <description>Pose-to-pose docking controller (Park and Kuipers smooth control law); tracks the last pose of its path in the odom frame, no costmap</description>
     </class>

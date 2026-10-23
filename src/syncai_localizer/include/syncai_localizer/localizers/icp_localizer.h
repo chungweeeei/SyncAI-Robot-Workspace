@@ -76,6 +76,38 @@ struct ICPConfig
   int num_neighbors = 20;
 };
 
+// What one align() measured, beyond the pose. Filled on every call, including the ones that
+// return false, so the caller can log why a round was lost. The Hessian is the refine stage's
+// (the stage whose solution becomes the TF): small_gicp's final information matrix in the
+// body-frame right-perturbation parameterisation [omega; v] -- localizers/localizability.h
+// has the frame derivation and is what consumes it. Everything here was already computed by
+// small_gicp and thrown away after the log line until 2026-10.
+struct AlignInfo
+{
+  Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
+  // Refine stage: inliers (source points that found a correspondence within
+  // refine_max_corr_dist) over the voxelised source points it was given.
+  size_t num_inliers = 0;
+  size_t source_points = 0;
+  double inlierRatio() const
+  {
+    return source_points == 0 ? 0.0 : static_cast<double>(num_inliers) / source_points;
+  }
+  // small_gicp's own Mahalanobis residual of the refine stage.
+  double error = 0.0;
+  // pcl::Registration::getFitnessScore() of each stage (mean squared NN distance, m^2).
+  double fitness_rough = 0.0;
+  double fitness_refine = 0.0;
+  size_t iters_rough = 0;
+  size_t iters_refine = 0;
+  bool converged_rough = false;
+  bool converged_refine = false;
+  // Wall time of the whole round (both stages, including the covariance estimation of the
+  // source clouds), the number update_hz has to fit. There was no measurement of this before
+  // 2026-10: the "30-50 ms" in the docs dates from 2026-08.
+  double elapsed_ms = 0.0;
+};
+
 class ICPLocalizer
 {
 public:
@@ -85,7 +117,9 @@ public:
 
   void setInput(const CloudType::Ptr & cloud);
 
-  bool align(M4F & guess);
+  // Rough then refine from `guess`; on success `guess` is overwritten with the refine solution.
+  // `info` is filled either way.
+  bool align(M4F & guess, AlignInfo & info);
   ICPConfig & config() { return m_config; }
   CloudType::Ptr roughMap()
   {

@@ -25,6 +25,7 @@
   <depend>message_filters</depend>
   <depend>tf2_sensor_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>std_msgs</depend>
 
   <exec_depend>rclpy</exec_depend>
   <!-- No rviz2 exec_depend: three_layer_test.launch.py starts it only with
@@ -33,6 +34,7 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

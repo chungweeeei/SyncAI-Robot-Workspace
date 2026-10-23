@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
@@ -11,6 +12,7 @@
 #include "builtin_interfaces/msg/duration.hpp"
 #include "syncai_costmap_2d/cost_values.hpp"
 #include "syncai_costmap_2d/footprint.hpp"
+#include "syncai_costmap_2d/static_layer.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "tf2/utils.h"
@@ -89,6 +91,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   this->declare_parameter("plan_republish_rate", 1.0);
   this->declare_parameter("is_path_valid.footprint_check", true);
   this->declare_parameter("is_path_valid.heading_margin", 0.35);
+  this->declare_parameter("costmap_wait_timeout", 5.0);
   path_check_footprint_ = this->get_parameter("is_path_valid.footprint_check").as_bool();
   path_check_heading_margin_ = this->get_parameter("is_path_valid.heading_margin").as_double();
 
@@ -178,6 +181,7 @@ void PlannerServer::configure()
       __func__, expected_planner_frequency);
     max_planner_duration_ = 0.0;
   }
+  get_parameter("costmap_wait_timeout", costmap_wait_timeout_);
 
   // Initialize pubs & subs
   plan_publisher_ = this->create_publisher<nav_msgs::msg::Path>("plan", 1);
@@ -187,11 +191,10 @@ void PlannerServer::configure()
   // that subscribes mid-drive (rviz opened late, a reconnect) saw nothing until
   // the next replan, which may never come. Re-sending the last plan keeps
   // `plan` showing the route being driven (the part still ahead; see
-  // republishPlan()). It goes on showing the last route after the goal ends
-  // too, as rviz would have kept displaying it anyway: nothing here knows when
-  // the navigation that asked for it finished -- except a cancel, which the
-  // task_runner reports through clear_plan below. 0 disables, leaving the
-  // plan-time publish only.
+  // republishPlan()). Nothing here knows when the navigation that asked for it
+  // finished, so the task_runner reports a success or a cancel through
+  // clear_plan below; after a failure the route stays up, as rviz would have
+  // kept displaying it anyway. 0 disables, leaving the plan-time publish only.
   double plan_republish_rate;
   get_parameter("plan_republish_rate", plan_republish_rate);
   if (plan_republish_rate > 0.0) {
@@ -247,13 +250,86 @@ bool PlannerServer::isServerInactive()
   return false;
 }
 
-void PlannerServer::waitForCostmap()
+template <typename ServerT, typename GoalT>
+PlannerServer::CostmapWait PlannerServer::waitForCostmap(
+  ServerT & server, std::shared_ptr<const GoalT> & goal, std::string & reason)
 {
-  // Don't compute a plan until costmap is valid (after clear costmap)
+  // Don't compute a plan until costmap is valid (after clear costmap). Every
+  // way out but Ready is the caller's to report and terminate.
+  const auto started = std::chrono::steady_clock::now();
   rclcpp::Rate r(100);
-  while (!costmap_ros_->isCurrent()) {
+  while (rclcpp::ok()) {
+    if (server.is_cancel_requested()) {
+      return CostmapWait::Cancelled;
+    }
+    // A preempt is taken during the wait, not only after it (upstream): the new
+    // goal may name a planner that does not read the costmap (Octo3D), and then
+    // there is nothing to wait for.
+    if (server.is_preempt_requested()) {
+      goal = server.accept_pending_goal();
+    }
+    if (!plannerUsesCostmap(goal->planner_id)) {
+      return CostmapWait::Ready;
+    }
+    // Before isCurrent(): a static layer without a map is never current, and
+    // on a 3D-only map (map_server idle, no gridmap.yaml) no map is coming, so
+    // the timeout would only delay the same failure. A map_server that is
+    // merely slow at boot is not this case in practice: its latched map
+    // reaches the static layer within a second of the planner coming up,
+    // long before a goal. A clear (reset()) keeps the layer's map.
+    const std::string layer = staticLayerWithoutMap();
+    if (!layer.empty()) {
+      reason = "static layer '" + layer +
+               "' has no map (none published on its map topic; a 3D-only map has no "
+               "gridmap.yaml, so map_server runs idle) -- planner '" +
+               goal->planner_id + "' plans on that costmap";
+      return CostmapWait::NoStaticMap;
+    }
+    if (costmap_ros_->isCurrent()) {
+      return CostmapWait::Ready;
+    }
+    const double waited =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (costmap_wait_timeout_ > 0.0 && waited > costmap_wait_timeout_) {
+      // The global costmap updates at 1 Hz, so a clear repopulates within
+      // ~1 s; staying stale past the timeout means a layer is not getting its
+      // data (a sensor source past its expected_update_rate, a TF gap).
+      char buf[160];
+      std::snprintf(
+        buf, sizeof(buf),
+        "global costmap not current after %.1f s (costmap_wait_timeout); a layer is not "
+        "receiving its data",
+        costmap_wait_timeout_);
+      reason = buf;
+      return CostmapWait::TimedOut;
+    }
     r.sleep();
   }
+  reason = "shutting down";
+  return CostmapWait::Cancelled;
+}
+
+std::string PlannerServer::staticLayerWithoutMap() const
+{
+  // Read without the costmap mutex: the layer list is fixed after init(), and
+  // isMapReceived() is atomic.
+  for (const auto & layer : *costmap_ros_->getLayeredCostmap()->getPlugins()) {
+    auto static_layer = std::dynamic_pointer_cast<syncai_costmap_2d::StaticLayer>(layer);
+    if (static_layer && static_layer->isEnabled() && !static_layer->isMapReceived()) {
+      return static_layer->getName();
+    }
+  }
+  return "";
+}
+
+bool PlannerServer::plannerUsesCostmap(const std::string & planner_id) const
+{
+  // Resolved exactly as getPlan() resolves it.
+  auto it = planners_.find(planner_id);
+  if (it == planners_.end() && planners_.size() == 1 && planner_id.empty()) {
+    it = planners_.begin();
+  }
+  return it != planners_.end() && it->second->usesCostmap();
 }
 
 bool PlannerServer::isCancelRequested()
@@ -361,6 +437,41 @@ void PlannerServer::isPathValid(
       get_logger(), *get_clock(), 2000,
       "[PlannerServer][%s] No robot pose; keeping the current path unchecked", __func__);
     response->is_valid = true;
+    return;
+  }
+
+  // The request carries no planner id, but the path the BT checks is the
+  // last plan this server handed out, so the planner that made it is known.
+  // One that reads no costmap cells (Octo3D) is the one the costmap test
+  // below is wrong for -- a 3D path upstairs lies over the ground floor's
+  // gridmap, and on a 3D-only map the costmap is a 5 x 5 m default grid at
+  // the origin -- and it judges its own paths, on its dynamic overlay
+  // (2026-10-21). pathHasHeight() is not the detector: a path on one flat
+  // floor has no z span. An id this server has never planned with (no plan
+  // yet, or after clear_plan) falls through to the costmap test as before.
+  // The empty-id case mirrors getPlan(): with one plugin loaded it is that
+  // plugin.
+  std::string planner_id;
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    planner_id = last_plan_planner_id_;
+  }
+  auto planner_it = planners_.find(planner_id);
+  if (planner_it == planners_.end() && planner_id.empty() && planners_.size() == 1) {
+    planner_it = planners_.begin();
+  }
+  if (planner_it != planners_.end() && !planner_it->second->usesCostmap()) {
+    response->is_valid =
+      planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
+    if (!response->is_valid && !response->invalid_pose_indices.empty()) {
+      const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
+      RCLCPP_INFO(
+        get_logger(),
+        "[PlannerServer][%s] Path blocked by planner %s: %zu poses, first at index %zu (%.2f, "
+        "%.2f)",
+        __func__, planner_it->first.c_str(), response->invalid_pose_indices.size(), first_idx,
+        poses[first_idx].pose.position.x, poses[first_idx].pose.position.y);
+    }
     return;
   }
 
@@ -540,9 +651,34 @@ void PlannerServer::computePlan()
       return;
     }
 
-    waitForCostmap();
-
     getPreemptedGoalIfRequested(goal);
+
+    // Only a planner that reads the cells waits for them (upstream waits for
+    // every one, before taking a preempt). Octo3D does not: on a 3D-only map
+    // with no gridmap.yaml this wait never ends, and every goal hung here
+    // without reaching the planner. Since 2026-10-19 the wait itself can end
+    // without the costmap: a cancel, a static layer with no map (a GridBased
+    // goal on a 3D-only map, which hung the action thread for good until
+    // then) or costmap_wait_timeout. An aborted ComputePathToPose is what the
+    // task_runner reports as PLAN_FAILED.
+    std::string wait_reason;
+    switch (waitForCostmap(*action_server_pose_, goal, wait_reason)) {
+      case CostmapWait::Ready:
+        break;
+      case CostmapWait::Cancelled:
+        RCLCPP_INFO(
+          get_logger(), "[PlannerServer][%s] Goal was canceled while waiting for the costmap.",
+          __func__);
+        action_server_pose_->terminate_all();
+        return;
+      case CostmapWait::NoStaticMap:
+      case CostmapWait::TimedOut:
+        RCLCPP_WARN(
+          get_logger(), "[PlannerServer][%s] Cannot plan to (%.2f, %.2f): %s", __func__,
+          goal->goal.pose.position.x, goal->goal.pose.position.y, wait_reason.c_str());
+        action_server_pose_->terminate_current();
+        return;
+    }
 
     // Use start pose if provided otherwise use current robot pose
     geometry_msgs::msg::PoseStamped start;
@@ -563,7 +699,7 @@ void PlannerServer::computePlan()
     }
 
     // Publish the plan for visualization purposes
-    publishPlan(result->path);
+    publishPlan(result->path, goal->planner_id);
 
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
@@ -615,10 +751,25 @@ void PlannerServer::computePlanThroughPoses()
       return;
     }
 
-    waitForCostmap();
-
-    if (action_server_poses_->is_preempt_requested()) {
-      goal = action_server_poses_->accept_pending_goal();
+    // Same rule as computePlan(): only a planner that reads the cells waits,
+    // and the wait ends on a cancel, a missing static map or the timeout.
+    std::string wait_reason;
+    switch (waitForCostmap(*action_server_poses_, goal, wait_reason)) {
+      case CostmapWait::Ready:
+        break;
+      case CostmapWait::Cancelled:
+        RCLCPP_INFO(
+          get_logger(), "[PlannerServer][%s] Goal was canceled while waiting for the costmap.",
+          __func__);
+        action_server_poses_->terminate_all();
+        return;
+      case CostmapWait::NoStaticMap:
+      case CostmapWait::TimedOut:
+        RCLCPP_WARN(
+          get_logger(), "[PlannerServer][%s] Cannot plan through poses: %s", __func__,
+          wait_reason.c_str());
+        action_server_poses_->terminate_current();
+        return;
     }
 
     if (goal->goals.empty()) {
@@ -685,7 +836,7 @@ void PlannerServer::computePlanThroughPoses()
     result->path = concat_path;
 
     // Publish the plan for visualization purposes
-    publishPlan(result->path);
+    publishPlan(result->path, goal->planner_id);
 
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
@@ -741,13 +892,14 @@ nav_msgs::msg::Path PlannerServer::getPlan(
   return nav_msgs::msg::Path();
 }
 
-void PlannerServer::publishPlan(const nav_msgs::msg::Path & path)
+void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::string & planner_id)
 {
   {
     // Stored even with no subscriber, so one that arrives later gets it from
     // the timer.
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = path;
+    last_plan_planner_id_ = planner_id;
     clear_resends_left_ = 0;
   }
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
@@ -800,7 +952,7 @@ void PlannerServer::clearPlan(
   const std::shared_ptr<std_srvs::srv::Empty::Request> /*request*/,
   std::shared_ptr<std_srvs::srv::Empty::Response> /*response*/)
 {
-  // The republish would otherwise keep a cancelled route on `plan` for good:
+  // The republish would otherwise keep a finished route on `plan` for good:
   // the backend forwards it to the console, which drew the last route until
   // the next goal replaced it. An empty path is the clear both rviz and the
   // backend's path subscriber already understand. Its frame is the global
@@ -810,11 +962,12 @@ void PlannerServer::clearPlan(
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = nav_msgs::msg::Path();
+    last_plan_planner_id_.clear();
     // The immediate publish below is the first of the repeats; the timer sends
     // the rest, one per plan_republish_rate tick (none when it is 0).
     clear_resends_left_ = kClearResends - 1;
   }
-  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared (navigation cancelled)", __func__);
+  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared", __func__);
 
   if (plan_publisher_->get_subscription_count() > 0) {
     auto msg = std::make_unique<nav_msgs::msg::Path>();
@@ -847,6 +1000,8 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
             __func__, parameter.as_double());
           max_planner_duration_ = 0.0;
         }
+      } else if (name == "costmap_wait_timeout") {
+        costmap_wait_timeout_ = parameter.as_double();
       } else if (name == "is_path_valid.heading_margin") {
         // Dynamic so the on-robot A/B (footprint_check on / off, margin up /
         // down) needs no rebuild. Beyond a right angle the "margin" would test

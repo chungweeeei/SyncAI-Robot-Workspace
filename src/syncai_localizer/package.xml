@@ -34,6 +34,9 @@
        ships its own package.xml (build_type cmake), so a `rosdep` run with `ignore-src`
        skips it and this line is what makes colcon build it before us. -->
   <depend>small_gicp</depend>
+  <!-- The last pose file, config/state/<robot_id>/last_pose.json
+       (nlohmann-json3-dev, the key syncai_mapping uses too). -->
+  <depend>nlohmann-json-dev</depend>
 
   <!-- Not listed on purpose: PCL and Eigen, which arrive through
        pcl_conversions' own rosdep chain (libpcl-dev, libeigen3-dev). Nothing
@@ -41,6 +44,9 @@
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <!-- test/test_localizability.cpp: the localizability analysis is pure Eigen
+       and the only unit-testable piece of the node. -->
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

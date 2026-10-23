@@ -102,8 +102,26 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
     combined_costmap_.updateOrigin(new_origin_x, new_origin_y);
   }
 
-  if (isOutofBounds(robot_x, robot_y)) {
-    RCLCPP_WARN(rclcpp::get_logger("nav2_costmap_2d"), "Robot is out of bounds of the costmap!");
+  // Once per state change, not per update (see robot_out_of_bounds_).
+  const bool out_of_bounds = isOutofBounds(robot_x, robot_y);
+  if (out_of_bounds != robot_out_of_bounds_) {
+    robot_out_of_bounds_ = out_of_bounds;
+    const double ox = combined_costmap_.getOriginX();
+    const double oy = combined_costmap_.getOriginY();
+    if (out_of_bounds) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("nav2_costmap_2d"),
+        "Robot at (%.2f, %.2f) is out of bounds of the costmap (%.2f, %.2f) to (%.2f, %.2f) in "
+        "%s; said once until it is back. Expected for a global costmap whose static layer has "
+        "no map, as on a 3D-only map (no gridmap.yaml), where only Octo3D plans",
+        robot_x, robot_y, ox, oy, ox + combined_costmap_.getSizeInMetersX(),
+        oy + combined_costmap_.getSizeInMetersY(), global_frame_.c_str());
+    } else {
+      RCLCPP_INFO(
+        rclcpp::get_logger("nav2_costmap_2d"),
+        "Robot at (%.2f, %.2f) is back inside the costmap in %s", robot_x, robot_y,
+        global_frame_.c_str());
+    }
   }
 
   if (plugins_.size() == 0 && filters_.size() == 0) {

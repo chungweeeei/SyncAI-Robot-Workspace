@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <list>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -18,7 +19,8 @@ ObservationBuffer::ObservationBuffer(
   double expected_update_rate, double min_obstacle_height, double max_obstacle_height,
   double obstacle_max_range, double obstacle_min_range, double raytrace_max_range,
   double raytrace_min_range, tf2_ros::Buffer & tf2_buffer, std::string global_frame,
-  std::string sensor_frame, tf2::Duration tf_tolerance)
+  std::string sensor_frame, tf2::Duration tf_tolerance, const std::string & height_reference,
+  double sensor_height)
 : tf2_buffer_(tf2_buffer),
   observation_keep_time_(rclcpp::Duration::from_seconds(observation_keep_time)),
   expected_update_rate_(rclcpp::Duration::from_seconds(expected_update_rate)),
@@ -27,6 +29,8 @@ ObservationBuffer::ObservationBuffer(
   topic_name_(topic_name),
   min_obstacle_height_(min_obstacle_height),
   max_obstacle_height_(max_obstacle_height),
+  heights_from_sensor_(height_reference == "sensor"),
+  sensor_height_(sensor_height),
   obstacle_max_range_(obstacle_max_range),
   obstacle_min_range_(obstacle_min_range),
   raytrace_max_range_(raytrace_max_range),
@@ -36,6 +40,13 @@ ObservationBuffer::ObservationBuffer(
   clock_ = parent->get_clock();
   logger_ = parent->get_logger();
   last_updated_ = parent->now();
+  if (height_reference != "global" && height_reference != "sensor") {
+    throw std::runtime_error(
+      "observation source " + topic_name +
+      ": height_reference must be \"global\" or "
+      "\"sensor\", not \"" +
+      height_reference + "\"");
+  }
 }
 
 ObservationBuffer::~ObservationBuffer() {}
@@ -61,6 +72,19 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     local_origin.point.y = 0;
     local_origin.point.z = 0;
     tf2_buffer_.transform(local_origin, global_origin, global_frame_, tf_tolerance_);
+    // height_reference "sensor" (2026-10): heights from the ground under the sensor
+    // rather than from the global frame's z = 0. The global frame here is odom, which
+    // lio_bridge keeps planar, so a point's z in it is its height in the map -- fine on
+    // the floor the map started on and meaningless on any other: on dp1f_1012's 2F
+    // (~5.5 m up) a fixed band of 0.1-1.5 m sees nothing, and on a stair it slides past
+    // the robot. Shifting the stored cloud (and origin) rather than only the test below
+    // is what carries the reference into the obstacle layer's own height bounds; the 2D
+    // costmap reads no z after that.
+    double ground_z = 0.0;
+    if (heights_from_sensor_) {
+      ground_z = global_origin.point.z - sensor_height_;
+      global_origin.point.z -= ground_z;
+    }
     tf2::convert(global_origin.point, observation_list_.front().origin_);
 
     // make sure to pass on the raytrace/obstacle range
@@ -100,6 +124,7 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     for (; iter_global != iter_global_end;
       ++iter_z, iter_global += global_frame_cloud.point_step)
     {
+      *iter_z -= static_cast<float>(ground_z);  // 0 for "global": unchanged
       if ((*iter_z) <= max_obstacle_height_ && (*iter_z) >= min_obstacle_height_) {
         std::copy(iter_global, iter_global + global_frame_cloud.point_step, iter_obs);
         iter_obs += global_frame_cloud.point_step;
