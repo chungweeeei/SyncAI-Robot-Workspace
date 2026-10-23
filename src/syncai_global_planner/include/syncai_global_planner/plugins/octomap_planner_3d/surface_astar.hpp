@@ -28,6 +28,9 @@
 // boundary, so a replan round a person detours exactly as it would round a
 // wall that had been there at build time. The map's components are baked, so
 // a corridor a mark closes ends the search with no_path, not disconnected.
+// The view's keepout mask (keepout_zones.hpp, 2026-10-23) is read the same
+// way, and a stair link the zones cut is never expanded, so a zone closes a
+// corridor or a stair the same way: no_path, with the zones named.
 //
 // ROS-free (see surface_map.hpp).
 
@@ -86,6 +89,7 @@ enum class PlanFailure {
   GoalOutsideMap,
   StartUnavailable,
   GoalUnavailable,
+  StartInKeepout,  // the robot stands inside a keepout zone's core (the callers' check)
   Disconnected,
   SearchLimit,
   Timeout,
@@ -127,16 +131,20 @@ public:
   // (a goal is snapped to the floor the robot can get to, not to the floor
   // below a balcony edge); the detail then names the nearest cell that was
   // refused for being elsewhere, so the message says "wrong floor" and not
-  // "nothing". With blocked set, cells the dynamic overlay blocks do not
-  // qualify either (a goal under a person fails, as a goal in a lethal cell
-  // does in 2D), and the detail counts them; the start is snapped without
-  // it, since the robot stands where it stands.
+  // "nothing". With blocked set, cells the dynamic overlay or the keepout
+  // zones block do not qualify either (a goal under a person or in a zone
+  // fails, as a goal in a lethal cell does in 2D), and the detail counts
+  // them by source; the start is snapped without it, since the robot stands
+  // where it stands.
   SnapResult snap(
     double x, double y, double z_hint, const SearchParams & p,
     uint32_t prefer_component = kNoComponent, const BlockedView * blocked = nullptr) const;
 
-  // blocked: the dynamic overlay's mask for this plan, with its exempt disc
-  // around `start` (see BlockedView); the default blocks nothing.
+  // blocked: the dynamic overlay's mask and the keepout mask for this plan,
+  // with the exempt disc around `start` (see BlockedView); the default
+  // blocks nothing. A start inside a zone's core is the caller's to refuse
+  // (StartInKeepout) before calling: here it is expanded like any start,
+  // and gets out only where the core's edge is within the exempt disc.
   PlanResult plan(
     CellId start, CellId goal, const SearchParams & p, const BlockedView & blocked = BlockedView{});
 

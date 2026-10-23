@@ -29,11 +29,14 @@
 // facing the risers to within the tolerance.
 //
 // Every function takes an optional BlockedView (dynamic_overlay.hpp,
-// 2026-10-21): with one, a cell the dynamic overlay blocks is not in sight,
-// and the clearance the shortcut keeps counts the marks as boundary, so a
-// straightened segment can no more cut through a person than the search
-// could. The flight phase of a stair crossing is not checked against it
-// (stair cells are not surface cells, and the climb is blind by decision).
+// 2026-10-21): with one, a cell the dynamic overlay blocks -- or, since
+// 2026-10-23, a cell in a keepout zone's core or ring (keepout_zones.hpp) --
+// is not in sight, and the clearance the shortcut keeps counts the marks and
+// the zones as boundary, so a straightened segment can no more cut through a
+// person or a zone than the search could. The flight phase of a stair
+// crossing is not checked against it (stair cells are not surface cells, and
+// the climb is blind by decision); a link the zones cut never reaches here,
+// since the search does not take it.
 //
 // ROS-free (see surface_map.hpp).
 

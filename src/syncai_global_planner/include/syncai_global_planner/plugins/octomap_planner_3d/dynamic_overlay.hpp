@@ -54,6 +54,15 @@
 //     route for ever. obstacle_memory outlasts the BT's blocked_time plus a
 //     plan, which is all a mark has to do.
 //
+// The keepout zones (keepout_zones.hpp, 2026-10-23) ride on the same
+// machinery: a KeepoutMask is a DynamicMask's shape -- per cell, the xy
+// distance to the nearest zone core on the same floor -- built once from the
+// map's keepout.json instead of from scans, and BlockedView reads both, so
+// every consumer of the view (snap, search, cost, shortcut, validity) keeps
+// off a zone exactly as it keeps off a person. KeepoutMask lives in this
+// header because BlockedView::blocked() reads it inline; what makes one is
+// in keepout_zones.hpp.
+//
 // ROS-free (see surface_map.hpp): the plugin feeds it transformed clouds and
 // stamps in seconds; the CLI feeds it synthetic returns.
 
@@ -64,6 +73,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
@@ -113,26 +123,93 @@ struct DynamicMask
 };
 using DynamicMaskPtr = std::shared_ptr<const DynamicMask>;
 
-// One plan's (or one validity check's) view of a mask: which cells are
+// The keepout zones of a map, rasterised onto one SurfaceMap
+// (keepout_zones.hpp builds it): per cell, the xy distance to the nearest
+// cell inside a zone's core on the same floor, +inf beyond block_radius +
+// clearance_cost_radius -- a DynamicMask's shape, so the search reads both
+// the same way. block_radius is the robot's radius (the costmap's inscribed
+// radius, what the 2D KeepoutFilter inflates its mask with), so a zone
+// closes a gap narrower than the robot exactly as a wall does and the drawn
+// polygon is the forbidden area only. A stair link any of whose points lies
+// in a core is cut: not expanded by the search, so a zone over a stair foot
+// forbids that stair. Immutable once built; indexes the CellIds of the map
+// it was built on, so a reload builds a new one.
+struct KeepoutMask
+{
+  std::vector<float> d;           // per CellId
+  double block_radius = 0.25;     // d <= block_radius is blocked
+  size_t zones = 0;               // zones rasterised
+  size_t core = 0;                // cells with d == 0 (inside a polygon, in its z band)
+  size_t blocked = 0;             // traversable cells with d <= block_radius
+  std::vector<uint8_t> link_cut;  // per StairLinks::links index: a point of the link is in a core
+  size_t links_cut = 0;
+
+  bool core_(CellId c) const { return d[c] <= 0.0f; }
+  bool linkCut(uint32_t li) const { return li < link_cut.size() && link_cut[li] != 0; }
+};
+using KeepoutMaskPtr = std::shared_ptr<const KeepoutMask>;
+
+// One plan's (or one validity check's) view of the masks: which cells are
 // blocked, and how clear the others are. The disc of exempt_radius around
 // `exempt` -- the start cell, i.e. the robot's own surroundings -- is not
-// blocked by a mark's dilation, so a person right beside the robot does not
-// make every first step illegal (the 2D stack clears the robot's footprint
-// from its costmap for the same reason); a marked cell itself (d == 0) is
-// blocked even there, since the robot is not standing on the person.
+// blocked by a mark's or a zone's dilation, so a person right beside the
+// robot, or a zone edge it stands next to, does not make every first step
+// illegal (the 2D stack clears the robot's footprint from its costmap for
+// the same reason); a marked cell or a zone's core cell itself (d == 0) is
+// blocked even there, since the robot is not standing on the person, and a
+// robot standing inside a zone is refused a plan (start_in_keepout) rather
+// than let out through the core. Both masks may be null; the view then
+// blocks nothing, and consumers test empty() for the fast path.
 struct BlockedView
 {
   const DynamicMask * mask = nullptr;
+  const KeepoutMask * keepout = nullptr;
   CellId exempt = kNoCell;
+  // One disc for both rings: the larger of the two block radii, set by the
+  // caller (a 0.35 m disc round the robot is exempt from a 0.25 m zone ring
+  // too, which only matters within 0.1 m of a zone edge).
   double exempt_radius = 0.0;
+
+  bool empty() const { return mask == nullptr && keepout == nullptr; }
 
   bool blocked(const SurfaceMap & m, CellId c) const
   {
-    if (!mask) {
-      return false;
+    return blockedByMark(m, c) || blockedByZone(m, c);
+  }
+  bool blockedByMark(const SurfaceMap & m, CellId c) const
+  {
+    return mask && ring(m, c, mask->d[c], mask->block_radius);
+  }
+  bool blockedByZone(const SurfaceMap & m, CellId c) const
+  {
+    return keepout && ring(m, c, keepout->d[c], keepout->block_radius);
+  }
+
+  // The cell's clearance with the marks and the zones counted as boundary:
+  // the smallest of its static clearance_d and its distance beyond the
+  // blocked ring of the nearest mark and of the nearest zone. What the cost
+  // factor and the shortcut's clearance rule read, so a person or a zone is
+  // paid for and kept away from exactly as a wall is.
+  float clearance(const SurfaceMap & m, CellId c) const
+  {
+    float cl = m.cells[c].clearance_d;
+    if (mask) {
+      const float e = mask->d[c] - static_cast<float>(mask->block_radius);
+      cl = std::min(cl, std::max(0.0f, e));
     }
-    const float d = mask->d[c];
-    if (d > mask->block_radius) {
+    if (keepout) {
+      const float e = keepout->d[c] - static_cast<float>(keepout->block_radius);
+      cl = std::min(cl, std::max(0.0f, e));
+    }
+    return cl;
+  }
+
+private:
+  // d <= r blocks, except inside the exempt disc, which never exempts a
+  // core (d == 0).
+  bool ring(const SurfaceMap & m, CellId c, float d, double r) const
+  {
+    if (d > r) {
       return false;
     }
     if (d <= 0.0f || exempt == kNoCell) {
@@ -144,21 +221,21 @@ struct BlockedView
     const bool same_floor = std::fabs(m.zTop(c) - m.zTop(exempt)) < m.params.body_clearance;
     return !(same_floor && std::hypot(x - ex, y - ey) <= exempt_radius + 1e-9);
   }
-
-  // The cell's clearance with the marks counted as boundary: the smaller of
-  // its static clearance_d and its distance beyond the blocked ring of the
-  // nearest mark. What the cost factor and the shortcut's clearance rule
-  // read, so a person is paid for and kept away from exactly as a wall is.
-  float clearance(const SurfaceMap & m, CellId c) const
-  {
-    float cl = m.cells[c].clearance_d;
-    if (mask) {
-      const float e = mask->d[c] - static_cast<float>(mask->block_radius);
-      cl = std::min(cl, std::max(0.0f, e));
-    }
-    return cl;
-  }
 };
+
+// The one definition of "the cells within reach of a seed, on its floor":
+// every seed gets d = 0, and every column of `disc` round it is resolved to
+// the layer within the slope cone of the seed's (step_cells plus the rise of
+// max_slope over the distance, the footprint rule's own tolerance,
+// surface_map.cpp), so a ramp's uphill cells are reached and the floor a
+// body height below is not; each cell keeps the distance of the nearest
+// seed. Cells of any kind are stamped; only traversable ones are ever read.
+// `d` must be sized to m.cells and hold +inf where nothing has reached yet.
+// Shared by the dynamic overlay's snapshot and the keepout rasteriser, so a
+// zone's ring follows a ramp and stops at a floor edge exactly as a mark's.
+void dilateOnSurface(
+  const SurfaceMap & m, const std::vector<CellId> & seeds, const std::vector<Offset> & disc,
+  std::vector<float> & d);
 
 struct ScanStats
 {
@@ -173,9 +250,19 @@ class DynamicOverlay
 public:
   explicit DynamicOverlay(const DynamicOverlayParams & p = DynamicOverlayParams{});
 
-  // Bind to a map (every mark is dropped, the arrays resized) or to none.
+  // Bind to a map (every mark is dropped, the arrays resized, the keepout
+  // reset -- it indexed the old map's cells) or to none.
   void setMap(std::shared_ptr<const SurfaceMap> map);
   std::shared_ptr<const SurfaceMap> map() const;
+
+  // The map's keepout mask, carried here beside the map pointer because this
+  // is the one object the plugin's isPathValid() reads without the plugin's
+  // own lock (a plan holds that for its whole search). Swapped by the plugin
+  // after a build or a load_keepout; nullptr = no zones. clear() leaves it
+  // alone: clear_overlay drops marks, never zones.
+  void setKeepout(KeepoutMaskPtr keepout);
+  // Both under one lock, so a reader never pairs a mask with another map.
+  std::pair<std::shared_ptr<const SurfaceMap>, KeepoutMaskPtr> mapAndKeepout() const;
 
   void setParams(const DynamicOverlayParams & p);
   DynamicOverlayParams params() const;
@@ -210,6 +297,7 @@ private:
 
   mutable std::mutex mutex_;
   std::shared_ptr<const SurfaceMap> map_;
+  KeepoutMaskPtr keepout_;
   DynamicOverlayParams p_;
   // Per CellId, the stamp of the last return in its band, seconds since
   // epoch_ (the first stamp seen, so a float keeps ms precision for days);

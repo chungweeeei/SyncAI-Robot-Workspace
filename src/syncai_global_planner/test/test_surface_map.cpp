@@ -5,14 +5,18 @@
 // observed floor is closed but a floor edge is not extended, two floors never
 // connect, and a goal snaps to the floor the robot is on -- except over a
 // stair the robot walked, which a stair link joins in both directions while
-// a walked kerb stays a wall.
+// a walked kerb stays a wall. The dynamic overlay's and the keepout zones'
+// cases follow, each introduced by its own banner.
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
@@ -863,4 +867,345 @@ TEST(SurfaceMap, TraversableAtFindsFloorsAndNotFlights)
   EXPECT_NEAR(t->zTop(t->traversableAt(6.0, 4.0, -0.1)), 0.0, 1e-9);
   EXPECT_EQ(t->traversableAt(6.0, 4.0, 2.5), kNoCell);  // three cells, not a storey
   EXPECT_EQ(t->traversableAt(-1.0, 4.0, 0.0), kNoCell);
+}
+
+// ---- keepout zones (keepout_zones.hpp, 2026-10-23) ----
+//
+// What a 3D map's forbidden zones rest on: the file contract is enforced, a
+// polygon is rasterised on the floor its band names and no other, ringed by
+// the robot radius as the 2D KeepoutFilter inflates its mask, the search
+// detours round a zone and a zone across the floor is no_path that names the
+// zones, the start's ring is exempt but never a core, a zone on a flight cuts
+// the stair link, and the two masks combine in one view while clear_overlay
+// keeps the zones and a new map drops them.
+
+namespace
+{
+
+KeepoutZone rect(
+  const std::string & id, double x0, double x1, double y0, double y1, double z_min, double z_max)
+{
+  KeepoutZone z;
+  z.id = id;
+  z.polygon = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+  z.z_min = z_min;
+  z.z_max = z_max;
+  return z;
+}
+
+BlockedView zoneView(const KeepoutMask & keepout, CellId start)
+{
+  BlockedView v;
+  v.keepout = &keepout;
+  v.exempt = start;
+  v.exempt_radius = keepout.block_radius;
+  return v;
+}
+
+}  // namespace
+
+TEST(KeepoutZones, ParsesTheContractAndRefusesWhatBreaksIt)
+{
+  std::vector<KeepoutZone> zones;
+  std::string error;
+  const std::string good = R"({ "version": 1, "zones": [
+    { "id": "a", "name": "rack", "z_min": 4.5, "z_max": 5.5, "colour": "ignored",
+      "points": [{"x": 1, "y": 1}, {"x": 3, "y": 1}, {"x": 3, "y": 2}, {"x": 1, "y": 2},
+                 {"x": 1, "y": 1}] },
+    { "id": "b", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 0, "y": 1}] },
+    { "id": "c", "name": null, "z_min": null, "z_max": 1.0,
+      "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 0, "y": 1}] } ] })";
+  ASSERT_TRUE(parseKeepoutJson(good, zones, error)) << error;
+  ASSERT_EQ(zones.size(), 3u);
+  EXPECT_EQ(zones[0].id, "a");
+  EXPECT_EQ(zones[0].name, "rack");
+  EXPECT_EQ(zones[0].polygon.size(), 4u);  // the closing vertex is dropped
+  EXPECT_DOUBLE_EQ(zones[0].z_min, 4.5);
+  EXPECT_DOUBLE_EQ(zones[0].z_max, 5.5);
+  EXPECT_TRUE(zones[1].name.empty());
+  EXPECT_TRUE(std::isinf(zones[1].z_min) && zones[1].z_min < 0);  // absent = unbounded
+  EXPECT_TRUE(std::isinf(zones[1].z_max) && zones[1].z_max > 0);
+  EXPECT_TRUE(zoneContains(zones[0], 2.0, 1.5, 5.0));
+  EXPECT_FALSE(zoneContains(zones[0], 2.0, 1.5, 0.0));  // 1F, under the band
+  EXPECT_FALSE(zoneContains(zones[0], 4.0, 1.5, 5.0));  // outside the polygon
+  EXPECT_TRUE(zoneContains(zones[1], 0.2, 0.2, -100.0));
+  EXPECT_FALSE(zoneContains(zones[1], 0.8, 0.8, 0.0));  // the triangle's far corner
+  EXPECT_TRUE(zones[2].name.empty());                   // null = absent
+  EXPECT_TRUE(std::isinf(zones[2].z_min));
+  EXPECT_DOUBLE_EQ(zones[2].z_max, 1.0);
+  // The backend's 2D editor writes exactly this today (id + points, no
+  // band): the same file is a 3D map's zones, on every floor.
+  const std::string backend_2d =
+    R"({"version": 1, "zones": [{"id": "zone-1", "points": [{"x": 0.0, "y": 0.0},)"
+    R"( {"x": 2.0, "y": 0.0}, {"x": 2.0, "y": 2.0}, {"x": 0.0, "y": 2.0}]}]})";
+  std::vector<KeepoutZone> from_2d;
+  ASSERT_TRUE(parseKeepoutJson(backend_2d, from_2d, error)) << error;
+  ASSERT_EQ(from_2d.size(), 1u);
+  EXPECT_TRUE(zoneContains(from_2d[0], 1.0, 1.0, 0.0));
+  EXPECT_TRUE(zoneContains(from_2d[0], 1.0, 1.0, 5.0));
+  // Every rule, each refused with the zone named; `zones` stays as it was.
+  const char * bad[] = {
+    R"({ "zones": [ { "id": "a" } ] })",  // no points
+    R"({ "zones": [ { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": "x"}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "id": "a", "points": [[0, 0], [1, 0], [1, 1]] } ] })",  // pairs, not objects
+    R"({ "zones": [ { "id": "a", "z_min": 2, "z_max": 1,
+                      "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] },
+                    { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "version": 2, "zones": [] })",
+    R"([ 1, 2 ])",
+    R"({ "zones": 3 })",
+    R"(not json)",
+  };
+  for (const char * text : bad) {
+    std::vector<KeepoutZone> out = zones;
+    EXPECT_FALSE(parseKeepoutJson(text, out, error)) << text;
+    EXPECT_FALSE(error.empty()) << text;
+    EXPECT_EQ(out.size(), zones.size()) << text;
+  }
+  parseKeepoutJson(bad[1], zones, error);
+  EXPECT_NE(error.find("'a'"), std::string::npos) << error;
+  EXPECT_NE(error.find("points"), std::string::npos) << error;
+  // Empty is a valid file: no zones.
+  ASSERT_TRUE(parseKeepoutJson(R"({ "zones": [] })", zones, error)) << error;
+  EXPECT_TRUE(zones.empty());
+}
+
+TEST(KeepoutZones, ARectangleIsRasterisedOnItsFloorOnlyAndRingedByTheRobotRadius)
+{
+  const auto m = build("two_floors");
+  // A 2 x 2 m box on the ground floor: 20 x 20 columns at 0.1 m, every one
+  // with a surface at z = 0 and one at z = 5.
+  const auto k = buildKeepoutMask(*m, nullptr, {rect("box", 5, 7, 3, 5, -0.5, 0.5)}, 0.25);
+  ASSERT_NE(k, nullptr);
+  EXPECT_EQ(k->zones, 1u);
+  EXPECT_EQ(k->core, 400u);
+  EXPECT_DOUBLE_EQ(k->block_radius, 0.25);
+  EXPECT_EQ(k->links_cut, 0u);
+  size_t core_lo = 0, touched_hi = 0;
+  for (CellId c = 0; c < m->cells.size(); ++c) {
+    if (std::isinf(k->d[c])) {
+      continue;
+    }
+    if (m->zTop(c) > 2.5) {
+      ++touched_hi;
+    } else {
+      core_lo += k->core_(c);
+    }
+  }
+  EXPECT_EQ(core_lo, 400u);
+  EXPECT_EQ(touched_hi, 0u);  // the floor above is never reached
+  const CellId inside = cellAt(*m, 6.05, 4.05, 0.0), above = cellAt(*m, 6.05, 4.05, 5.0);
+  ASSERT_NE(inside, kNoCell);
+  ASSERT_NE(above, kNoCell);
+  EXPECT_TRUE(k->core_(inside));
+  EXPECT_TRUE(std::isinf(k->d[above]));
+  // The ring: distances are between column centres, as the overlay's are.
+  // 0.2 m out of the last core column is blocked, 0.3 m is costed, 0.9 m
+  // is beyond reach (0.25 + 0.55).
+  BlockedView v;
+  v.keepout = k.get();
+  const CellId r2 = cellAt(*m, 7.15, 4.05, 0.0), r3 = cellAt(*m, 7.25, 4.05, 0.0),
+               r9 = cellAt(*m, 7.85, 4.05, 0.0);
+  EXPECT_TRUE(v.blocked(*m, r2));
+  EXPECT_NEAR(k->d[r2], 0.2, 1e-6);
+  EXPECT_FALSE(v.blocked(*m, r3));
+  EXPECT_NEAR(k->d[r3], 0.3, 1e-6);
+  EXPECT_NEAR(v.clearance(*m, r3), 0.05, 1e-6);
+  EXPECT_TRUE(std::isinf(k->d[r9]));
+  EXPECT_FLOAT_EQ(v.clearance(*m, r9), m->cells[r9].clearance_d);
+  EXPECT_GT(k->blocked, k->core);
+  // The same polygon with the upper floor's band forbids 2F and leaves 1F.
+  const auto up = buildKeepoutMask(*m, nullptr, {rect("box", 5, 7, 3, 5, 4.5, 5.5)}, 0.25);
+  ASSERT_NE(up, nullptr);
+  EXPECT_EQ(up->core, 400u);
+  EXPECT_TRUE(up->core_(above));
+  EXPECT_TRUE(std::isinf(up->d[inside]));
+  // A band that holds no floor, or a polygon off the map, is no mask at all.
+  EXPECT_EQ(buildKeepoutMask(*m, nullptr, {rect("mid", 5, 7, 3, 5, 2.0, 3.0)}, 0.25), nullptr);
+  EXPECT_EQ(buildKeepoutMask(*m, nullptr, {rect("off", 50, 52, 3, 5, -1, 1)}, 0.25), nullptr);
+  EXPECT_EQ(buildKeepoutMask(*m, nullptr, {}, 0.25), nullptr);
+  // zoneAt finds the zone a core cell is in, for the messages.
+  const std::vector<KeepoutZone> zones = {rect("box", 5, 7, 3, 5, -0.5, 0.5)};
+  ASSERT_NE(zoneAt(zones, *m, inside), nullptr);
+  EXPECT_EQ(zoneAt(zones, *m, inside)->id, "box");
+  EXPECT_EQ(zoneAt(zones, *m, above), nullptr);
+  EXPECT_EQ(zoneLabel(zones[0]), "'box'");
+}
+
+TEST(SurfaceAStar, DetoursRoundAZoneAndAZoneAcrossTheFloorIsNoPathThatSaysSo)
+{
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const SnapResult a = astar.snap(2.0, 4.0, 0.0, p), b = astar.snap(10.0, 4.0, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  const PlanResult r0 = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r0.failure, PlanFailure::None);
+  // A box across the straight line: the route goes round it, off every
+  // blocked cell, and the shortcut and the resampled path stay off too.
+  const auto box = buildKeepoutMask(*m, nullptr, {rect("box", 5, 7, 3, 5, -0.5, 0.5)}, 0.25);
+  ASSERT_NE(box, nullptr);
+  const BlockedView view = zoneView(*box, a.cell);
+  const PlanResult r1 = astar.plan(a.cell, b.cell, p, view);
+  ASSERT_EQ(r1.failure, PlanFailure::None) << r1.detail;
+  EXPECT_GT(r1.cost, r0.cost);
+  for (CellId c : r1.cells) {
+    EXPECT_FALSE(view.blocked(*m, c));
+  }
+  const auto path = buildPath(*m, nullptr, r1.cells, {}, true, 0.1, nullptr, &view);
+  ASSERT_GE(path.size(), 2u);
+  double len = 0.0;
+  for (size_t i = 1; i < path.size(); ++i) {
+    len += std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    const CellId c = m->traversableAt(path[i].x, path[i].y, path[i].z);
+    ASSERT_NE(c, kNoCell);
+    EXPECT_FALSE(view.blocked(*m, c)) << path[i].x << ", " << path[i].y;
+  }
+  EXPECT_GT(len, 8.0);
+  // The band beyond the ring costs as a wall's does.
+  const CellId beside = cellAt(*m, 7.45, 4.05, 0.0);
+  EXPECT_GT(astar.cellCostFactor(beside, p, &view), astar.cellCostFactor(beside, p));
+  // A zone across the whole floor: the components are baked, so no_path,
+  // and the detail names the zones.
+  const auto wall = buildKeepoutMask(*m, nullptr, {rect("wall", 5, 7, 0, 8, -0.5, 0.5)}, 0.25);
+  ASSERT_NE(wall, nullptr);
+  const BlockedView closed = zoneView(*wall, a.cell);
+  const PlanResult r2 = astar.plan(a.cell, b.cell, p, closed);
+  EXPECT_EQ(r2.failure, PlanFailure::NoPath);
+  EXPECT_NE(r2.detail.find("keepout zones"), std::string::npos) << r2.detail;
+  // A goal inside a zone does not snap, and the detail says why; one on the
+  // floor before it does.
+  const SnapResult in = astar.snap(6.0, 4.0, 0.0, p, kNoComponent, &view);
+  EXPECT_EQ(in.cell, kNoCell);
+  EXPECT_NE(in.detail.find("keepout zones"), std::string::npos) << in.detail;
+  EXPECT_NE(astar.snap(4.0, 4.0, 0.0, p, kNoComponent, &view).cell, kNoCell);
+}
+
+TEST(SurfaceAStar, TheStartRingIsExemptButACoreCellIsNot)
+{
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const auto box = buildKeepoutMask(*m, nullptr, {rect("box", 5, 7, 3, 5, -0.5, 0.5)}, 0.25);
+  ASSERT_NE(box, nullptr);
+  const SnapResult g = astar.snap(10.0, 4.0, 0.0, p);
+  ASSERT_NE(g.cell, kNoCell);
+  // A robot standing 0.2 m outside the zone, inside its ring: its own cell
+  // and the ring round it are exempt, so it plans away; a view without the
+  // disc would block its first step.
+  const CellId edge = cellAt(*m, 7.15, 4.05, 0.0), step = cellAt(*m, 7.25, 4.05, 0.0);
+  ASSERT_NE(edge, kNoCell);
+  BlockedView plain;
+  plain.keepout = box.get();
+  EXPECT_TRUE(plain.blocked(*m, edge));
+  const BlockedView view = zoneView(*box, edge);
+  EXPECT_FALSE(view.blocked(*m, edge));
+  EXPECT_FALSE(view.blocked(*m, step));
+  const PlanResult r = astar.plan(edge, g.cell, p, view);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  // A core cell is blocked whatever the disc: the plugin refuses the plan
+  // before the search (start_in_keepout); the search from deep inside the
+  // core finds no way out, since every neighbour is a core cell.
+  const CellId inside = cellAt(*m, 6.05, 4.05, 0.0);
+  EXPECT_TRUE(box->core_(inside));
+  const BlockedView from_inside = zoneView(*box, inside);
+  EXPECT_TRUE(from_inside.blocked(*m, cellAt(*m, 6.15, 4.05, 0.0)));
+  EXPECT_EQ(astar.plan(inside, g.cell, p, from_inside).failure, PlanFailure::NoPath);
+  EXPECT_STREQ(planFailureName(PlanFailure::StartInKeepout), "start_in_keepout");
+}
+
+TEST(StairLinks, AZoneOnTheFlightCutsTheLinkAndTheFailureSaysSo)
+{
+  const auto m = build("stairs");
+  const auto stairs = [](double x) {
+    return x < 4.0 ? 0.0 : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
+  };
+  const auto links = buildStairLinks(*m, walk(2.0, 10.0, stairs), StairLinkParams{});
+  ASSERT_GE(links->links.size(), 20u);
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult lo = astar.snap(2.0, 4.0, 0.0, p);
+  ASSERT_NE(lo.cell, kNoCell);
+  const SnapResult hi = astar.snap(10.0, 4.0, 1.02, p, m->cells[lo.cell].component);
+  ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+  ASSERT_EQ(astar.plan(lo.cell, hi.cell, p).failure, PlanFailure::None);
+  // A zone over the flight's whole width and height: every link has a point
+  // in it, so every link is cut and the upper floor is no_path -- not
+  // disconnected, the groups are baked -- with the cut named.
+  const auto foot = buildKeepoutMask(*m, links.get(), {rect("foot", 4, 6, 0, 8, 0.0, 1.2)}, 0.25);
+  ASSERT_NE(foot, nullptr);
+  EXPECT_EQ(foot->links_cut, links->links.size());
+  for (uint32_t li = 0; li < links->links.size(); ++li) {
+    EXPECT_TRUE(foot->linkCut(li));
+  }
+  const PlanResult cut = astar.plan(lo.cell, hi.cell, p, zoneView(*foot, lo.cell));
+  EXPECT_EQ(cut.failure, PlanFailure::NoPath);
+  EXPECT_NE(cut.detail.find("stair links"), std::string::npos) << cut.detail;
+  // The same polygon with a band above the stair cuts nothing (no link
+  // point and no surface in it: no mask), and the link is taken.
+  const auto high = buildKeepoutMask(*m, links.get(), {rect("foot", 4, 6, 0, 8, 4.5, 5.5)}, 0.25);
+  EXPECT_EQ(high, nullptr);
+  // A zone beside the walked line on the lower floor cuts the links whose
+  // entries cross it and leaves the rest; the route takes one of those.
+  const auto side = buildKeepoutMask(*m, links.get(), {rect("side", 3, 6, 5, 8, -0.5, 1.2)}, 0.25);
+  ASSERT_NE(side, nullptr);
+  EXPECT_GT(side->links_cut, 0u);
+  EXPECT_LT(side->links_cut, links->links.size());
+  const PlanResult round = astar.plan(lo.cell, hi.cell, p, zoneView(*side, lo.cell));
+  ASSERT_EQ(round.failure, PlanFailure::None) << round.detail;
+  ASSERT_EQ(round.links.size(), 1u);
+  EXPECT_FALSE(side->linkCut(round.links[0].link));
+}
+
+TEST(BlockedView, AMarkAndAZoneCombineAsOrAndTheirClearanceAsMin)
+{
+  const auto m = build("flat");
+  DynamicOverlay o;
+  o.setMap(m);
+  // A person at x = 4 and a zone at x = 6..8, both across y = 4.
+  o.addScan({{4.05, 4.05, 0.3}}, sensorOver(2.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  const auto zone = buildKeepoutMask(*m, nullptr, {rect("z", 6, 8, 3, 5, -0.5, 0.5)}, 0.25);
+  ASSERT_NE(zone, nullptr);
+  BlockedView both;
+  both.mask = mask.get();
+  both.keepout = zone.get();
+  EXPECT_FALSE(both.empty());
+  EXPECT_TRUE(BlockedView{}.empty());
+  const CellId person = cellAt(*m, 4.05, 4.05, 0.0), in_zone = cellAt(*m, 7.05, 4.05, 0.0),
+               between = cellAt(*m, 5.05, 4.05, 0.0), near_zone = cellAt(*m, 5.75, 4.05, 0.0),
+               near_person = cellAt(*m, 4.55, 4.05, 0.0);
+  EXPECT_TRUE(both.blocked(*m, person));
+  EXPECT_TRUE(both.blockedByMark(*m, person));
+  EXPECT_FALSE(both.blockedByZone(*m, person));
+  EXPECT_TRUE(both.blocked(*m, in_zone));
+  EXPECT_TRUE(both.blockedByZone(*m, in_zone));
+  EXPECT_FALSE(both.blockedByMark(*m, in_zone));
+  EXPECT_FALSE(both.blocked(*m, between));
+  // 0.5 m from the person (ring 0.35): 0.15 beyond it; 0.3 m from the zone's
+  // first core column (ring 0.25): 0.05 beyond it. Each cell's clearance is
+  // the smaller of its two distances-beyond and the static one.
+  EXPECT_NEAR(both.clearance(*m, near_person), 0.5 - mask->block_radius, 1e-6);
+  EXPECT_NEAR(both.clearance(*m, near_zone), 0.3 - zone->block_radius, 1e-6);
+  BlockedView zone_only;
+  zone_only.keepout = zone.get();
+  EXPECT_FLOAT_EQ(zone_only.clearance(*m, near_person), m->cells[near_person].clearance_d);
+  // The overlay carries the keepout for the validity check: clear() (what
+  // clear_overlay calls) keeps it, setMap() (a reload) drops it, and
+  // setKeepout() on no map stores nothing.
+  o.setKeepout(zone);
+  EXPECT_EQ(o.mapAndKeepout().second, zone);
+  EXPECT_EQ(o.clear(), 1u);
+  EXPECT_EQ(o.mapAndKeepout().second, zone);
+  EXPECT_EQ(o.snapshot(0.0), nullptr);
+  o.setMap(build("two_floors"));
+  EXPECT_EQ(o.mapAndKeepout().second, nullptr);
+  o.setMap(nullptr);
+  o.setKeepout(zone);
+  EXPECT_EQ(o.mapAndKeepout().second, nullptr);
 }

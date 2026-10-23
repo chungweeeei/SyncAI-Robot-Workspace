@@ -41,6 +41,13 @@ find_package(ompl REQUIRED)
 # arrived in 1.10), so it is linked by variable like OMPL. It is the same
 # ros-humble-octomap syncai_mapping's clean_map builds against.
 find_package(octomap REQUIRED)
+# OctomapPlanner3D's keepout zones are read from map/<name>/keepout.json
+# (keepout_zones.cpp, 2026-10-23) with nlohmann-json, the header-only
+# library syncai_localizer already parses its last_pose.json with (its
+# CMakeLists.txt has the same line); apt nlohmann-json3-dev, rosdep key
+# nlohmann-json-dev. Header-only, so linking its interface target only adds
+# an include directory; only keepout_zones.cpp includes it.
+find_package(nlohmann_json 3.2.0 REQUIRED)
 
 set(dependencies
   rclcpp
@@ -82,6 +89,7 @@ add_library(${library_name} SHARED
   plugins/octomap_planner_3d/path_postprocess.cpp
   plugins/octomap_planner_3d/stair_links.cpp
   plugins/octomap_planner_3d/dynamic_overlay.cpp
+  plugins/octomap_planner_3d/keepout_zones.cpp
   plugins/octomap_planner_3d/octomap_planner_3d.cpp
   src/planner_server.cpp
 )
@@ -99,6 +107,7 @@ target_link_libraries(${library_name}
   ${OMPL_LIBRARIES}
   ${OCTOMAP_LIBRARIES}
   Eigen3::Eigen
+  nlohmann_json::nlohmann_json
 )
 # The smac A* search is the hot path and upstream always builds it -O3; plan
 # latency is user-visible, so force it regardless of the workspace build type.

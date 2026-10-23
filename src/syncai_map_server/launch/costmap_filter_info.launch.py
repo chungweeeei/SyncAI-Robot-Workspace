@@ -64,7 +64,9 @@
 # mask drawn for this map, or a switch to a 2D one) needs no restart. No blank
 # mask is generated for a 3D map on purpose: octomap.bt's header carries no
 # bounding box, sizing one would mean loading the whole tree (or map.pcd) in
-# a launch file, and Octo3D does not read the keepout yet, so a mask would
+# a launch file, and Octo3D does not read this mask at all -- a 3D map's
+# zones are map/<name>/keepout.json (polygons with a z band per floor, read
+# by the planner itself; syncai_global_planner's README), so a mask would
 # keep nothing out. The planner's KeepoutFilter then logs "Filter mask was not
 # received" -- on a 3D-only map that is expected, not this pane being down.
 # The same idle start covers the other ways a mask cannot be served: a

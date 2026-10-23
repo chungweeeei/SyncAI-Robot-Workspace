@@ -21,6 +21,7 @@
 #include "std_srvs/srv/empty.hpp"
 #include "syncai_costmap_2d/costmap_2d_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 #include "syncai_nav_core/global_planner.hpp"
@@ -97,6 +98,25 @@ namespace syncai_global_planner
  * ClearEntireCostmap, an empty request) drops every mark: what the 3D
  * trees' ClearEntireCostmap nodes call where the 2D trees clear the global
  * costmap.
+ *
+ * Keepout zones (2026-10-23): map/<name>/keepout.json beside the tree --
+ * polygons in the map frame with a z band each (keepout_zones.hpp has the
+ * format and the rules) -- is read with the tree, at boot and on every
+ * load_map, and rasterised onto the surface map as a KeepoutMask: the
+ * polygon's cells on the band's floor are the core, dilated by
+ * keepout.block_radius (the robot's radius, as the 2D KeepoutFilter inflates
+ * its mask) and costed beyond like a wall; a stair link with a point in a
+ * core is cut. The mask rides beside the dynamic overlay's in every
+ * BlockedView, so a plan, its shortcut, the goal snap and isPathValid()
+ * keep off a zone as they keep off a person; a robot standing inside a core
+ * is refused a plan (start_in_keepout), and clear_overlay leaves the zones
+ * alone. `<planner_server>/<id>/load_keepout` (nav2_msgs/srv/LoadMap,
+ * map_url = the file, "" = no zones) reloads an edited file without
+ * rebuilding the surface map -- what the backend calls after it writes the
+ * file; a map switch needs no extra call, load_map reads the new map's own.
+ * An absent file is no zones (one info line); a broken one beside a good
+ * tree loads the map without zones and says so in an error, since failing
+ * the whole load would leave no map at all. See loadKeepoutCallback().
  */
 class OctomapPlanner3D : public syncai_nav_core::GlobalPlanner
 {
@@ -117,9 +137,9 @@ public:
   // global costmap never turns current.
   bool usesCostmap() const override { return false; }
 
-  // The part of `path` ahead of the robot against the dynamic overlay, on
-  // the floor stretch the robot is on (see the .cpp for the stair rule).
-  // Takes the overlay's lock only, never mutex_.
+  // The part of `path` ahead of the robot against the dynamic overlay and
+  // the keepout zones, on the floor stretch the robot is on (see the .cpp
+  // for the stair rule). Takes the overlay's lock only, never mutex_.
   bool isPathValid(
     const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose,
     std::vector<int32_t> & invalid_pose_indices) override;
@@ -136,13 +156,14 @@ protected:
   void clearOverlayCallback(
     const std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Request> request,
     std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Response> response);
-  // Load the .bt, build the surface map and the stair links, swap them in and
-  // clear building_. Runs on the boot thread, or on the load_map service's
-  // thread for a reload. On failure sets build_error_ (= error) and leaves no
-  // map. The files are passed in rather than read from the members, which a
-  // reload changes.
+  // Load the .bt, build the surface map, the stair links and the keepout
+  // mask, swap them in and clear building_. Runs on the boot thread, or on
+  // the load_map service's thread for a reload. On failure sets build_error_
+  // (= error) and leaves no map. The files are passed in rather than read
+  // from the members, which a reload changes.
   bool buildMap(
-    const std::string & octomap_file, const std::string & poses_file, std::string & error);
+    const std::string & octomap_file, const std::string & poses_file,
+    const std::string & keepout_file, std::string & error);
 
   // `<planner_server>/<id>/load_map`: reload from request->map_url (see the
   // class comment). Blocks for the build, on its own executor thread.
@@ -150,8 +171,27 @@ protected:
     const std::shared_ptr<nav2_msgs::srv::LoadMap::Request> request,
     std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response);
 
-  // poses.txt next to the tree: map/<name>/ holds both.
-  static std::string posesFileBeside(const std::string & octomap_file);
+  // `<planner_server>/<id>/load_keepout`: replace the zones from
+  // request->map_url on the loaded map, "" = none (see the class comment).
+  // On load_map's thread, so it never interleaves with a reload.
+  void loadKeepoutCallback(
+    const std::shared_ptr<nav2_msgs::srv::LoadMap::Request> request,
+    std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response);
+
+  // Read `file` and rasterise it on `map` / `links` with `block_radius`.
+  // Absent: no zones, one info line. Loaded: zones and mask set, the one
+  // summary line logged. Failed: error logged with the parser's message,
+  // zones and mask untouched. Never takes mutex_: the caller swaps.
+  enum class KeepoutLoad { Loaded, Absent, Failed };
+  KeepoutLoad loadKeepout(
+    const std::string & file, const octomap_planner_3d::SurfaceMap & map,
+    const octomap_planner_3d::StairLinks * links, double block_radius,
+    std::vector<octomap_planner_3d::KeepoutZone> & zones,
+    octomap_planner_3d::KeepoutMaskPtr & mask) const;
+
+  // `name` next to the tree: map/<name>/ holds poses.txt and keepout.json
+  // beside octomap.bt.
+  static std::string fileBeside(const std::string & octomap_file, const char * name);
 
   // Latch `available` on map_available: true from the moment a build starts
   // (boot or load_map) until one fails, false with no octomap_file or after a
@@ -188,11 +228,17 @@ protected:
   std::string dynamic_topic_{"pointlio/body_cloud"};
   double transform_tolerance_{0.3};
   octomap_planner_3d::DynamicOverlayParams dynamic_params_;
+  // keepout.*: the file (derived beside octomap_file when empty; written
+  // back by load_map / load_keepout, refused to `ros2 param set`) and the
+  // ring round a zone's core (dynamic: re-rasterised on change).
+  std::string keepout_file_;
+  double keepout_block_radius_{0.25};
 
   // The dynamic overlay: bound to map_ by buildMap(), unbound by
   // loadMapCallback(); read by createPlan() (under mutex_) and by
   // isPathValid() and the cloud callback (never under mutex_). Its own lock
-  // orders those; mutex_ -> overlay lock is the one order ever taken.
+  // orders those; mutex_ -> overlay lock is the one order ever taken. It
+  // also carries the keepout mask for isPathValid() (setKeepout).
   std::unique_ptr<octomap_planner_3d::DynamicOverlay> overlay_;
 
   // One lock around createPlan, the parameter callback and the map swap.
@@ -200,6 +246,10 @@ protected:
   std::shared_ptr<const octomap_planner_3d::SurfaceMap> map_;
   std::shared_ptr<const octomap_planner_3d::StairLinks> links_;
   std::unique_ptr<octomap_planner_3d::SurfaceAStar> astar_;
+  // The zones as parsed (for messages and a re-rasterise) and their mask on
+  // map_ (immutable; a plan copies the pointer and reads that).
+  std::vector<octomap_planner_3d::KeepoutZone> zones_;
+  octomap_planner_3d::KeepoutMaskPtr keepout_;
   std::thread build_thread_;
   std::atomic<bool> building_{false};
   std::string build_error_;
@@ -211,10 +261,14 @@ protected:
   rclcpp::CallbackGroup::SharedPtr load_map_group_;
   rclcpp::executors::SingleThreadedExecutor::SharedPtr load_map_executor_;
   rclcpp::Service<nav2_msgs::srv::LoadMap>::SharedPtr load_map_service_;
+  // load_keepout shares load_map's group and thread: a reload and a keepout
+  // load never interleave, and neither stalls the main executor.
+  rclcpp::Service<nav2_msgs::srv::LoadMap>::SharedPtr load_keepout_service_;
   // planner_server's clear_plan, so `plan` stops re-sending the old map's route.
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr clear_plan_client_;
-  // True only while loadMapCallback() writes octomap_file / poses_file back
-  // into the parameters, which the parameter callback otherwise refuses.
+  // True only while loadMapCallback() / loadKeepoutCallback() write
+  // octomap_file / poses_file / keepout.file back into the parameters,
+  // which the parameter callback otherwise refuses.
   std::atomic<bool> updating_file_params_{false};
   // Declared last: destroyed first, so the service thread stops before the
   // members it uses go.

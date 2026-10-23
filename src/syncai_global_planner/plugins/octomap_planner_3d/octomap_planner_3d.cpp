@@ -53,11 +53,10 @@ void OctomapPlanner3D::publishMapAvailable(bool available)
   }
 }
 
-std::string OctomapPlanner3D::posesFileBeside(const std::string & octomap_file)
+std::string OctomapPlanner3D::fileBeside(const std::string & octomap_file, const char * name)
 {
   const auto slash = octomap_file.find_last_of('/');
-  return (slash == std::string::npos ? std::string() : octomap_file.substr(0, slash + 1)) +
-         "poses.txt";
+  return (slash == std::string::npos ? std::string() : octomap_file.substr(0, slash + 1)) + name;
 }
 
 void OctomapPlanner3D::initialize(
@@ -144,6 +143,9 @@ void OctomapPlanner3D::initialize(
   dp("dynamic.min_obstacle_height", rclcpp::ParameterValue(dynamic_params_.min_obstacle_height));
   dp("dynamic.obstacle_memory", rclcpp::ParameterValue(dynamic_params_.obstacle_memory));
   dp("dynamic.block_radius", rclcpp::ParameterValue(dynamic_params_.block_radius));
+  // Keepout zones (keepout_zones.hpp): the file, and the ring (dynamic).
+  dp("keepout.file", rclcpp::ParameterValue(std::string("")));
+  dp("keepout.block_radius", rclcpp::ParameterValue(keepout_block_radius_));
 
   node->get_parameter(name + ".octomap_file", octomap_file_);
   node->get_parameter(name + ".poses_file", poses_file_);
@@ -206,10 +208,15 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".dynamic.min_obstacle_height", dynamic_params_.min_obstacle_height);
   node->get_parameter(name + ".dynamic.obstacle_memory", dynamic_params_.obstacle_memory);
   node->get_parameter(name + ".dynamic.block_radius", dynamic_params_.block_radius);
-  // poses.txt sits next to octomap.bt in map/<name>/, so it is derived the
-  // way the launch derives the tree from [map] pcd.
+  node->get_parameter(name + ".keepout.file", keepout_file_);
+  node->get_parameter(name + ".keepout.block_radius", keepout_block_radius_);
+  // poses.txt and keepout.json sit next to octomap.bt in map/<name>/, so
+  // they are derived the way the launch derives the tree from [map] pcd.
   if (poses_file_.empty() && !octomap_file_.empty()) {
-    poses_file_ = posesFileBeside(octomap_file_);
+    poses_file_ = fileBeside(octomap_file_, "poses.txt");
+  }
+  if (keepout_file_.empty() && !octomap_file_.empty()) {
+    keepout_file_ = fileBeside(octomap_file_, "keepout.json");
   }
 
   if (goal_z_mode_ != "request" && goal_z_mode_ != "start") {
@@ -252,6 +259,14 @@ void OctomapPlanner3D::initialize(
     std::string(node->get_name()) + "/" + name_ + "/load_map",
     std::bind(
       &OctomapPlanner3D::loadMapCallback, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default, load_map_group_);
+  // The keepout reload, on the same group and thread (see the header): the
+  // backend calls /<robot_id>/planner_server/Octo3D/load_keepout with the
+  // same request type after it writes map/<name>/keepout.json.
+  load_keepout_service_ = node->create_service<nav2_msgs::srv::LoadMap>(
+    std::string(node->get_name()) + "/" + name_ + "/load_keepout",
+    std::bind(
+      &OctomapPlanner3D::loadKeepoutCallback, this, std::placeholders::_1, std::placeholders::_2),
     rmw_qos_profile_services_default, load_map_group_);
   clear_plan_client_ =
     node->create_client<std_srvs::srv::Empty>("clear_plan", rmw_qos_profile_services_default);
@@ -343,10 +358,47 @@ void OctomapPlanner3D::initialize(
   // with map_loading.
   building_ = true;
   publishMapAvailable(true);
-  build_thread_ = std::thread([this, octomap_file = octomap_file_, poses_file = poses_file_]() {
-    std::string error;
-    buildMap(octomap_file, poses_file, error);
-  });
+  build_thread_ = std::thread(
+    [this, octomap_file = octomap_file_, poses_file = poses_file_, keepout_file = keepout_file_]() {
+      std::string error;
+      buildMap(octomap_file, poses_file, keepout_file, error);
+    });
+}
+
+OctomapPlanner3D::KeepoutLoad OctomapPlanner3D::loadKeepout(
+  const std::string & file, const o3d::SurfaceMap & map, const o3d::StairLinks * links,
+  double block_radius, std::vector<o3d::KeepoutZone> & zones, o3d::KeepoutMaskPtr & mask) const
+{
+  std::error_code ec;
+  if (file.empty() || !std::filesystem::is_regular_file(file, ec)) {
+    RCLCPP_INFO(
+      logger_, "[OctomapPlanner3D][%s] no keepout.json beside the tree (%s): no keepout zones",
+      __func__, file.c_str());
+    return KeepoutLoad::Absent;
+  }
+  std::vector<o3d::KeepoutZone> parsed;
+  std::string error;
+  if (!o3d::readKeepoutFile(file, parsed, error)) {
+    RCLCPP_ERROR(
+      logger_, "[OctomapPlanner3D][%s] keepout zones not loaded: %s", __func__, error.c_str());
+    return KeepoutLoad::Failed;
+  }
+  o3d::KeepoutMaskPtr built = o3d::buildKeepoutMask(map, links, parsed, block_radius);
+  // One line the smoke test greps for; keep its shape.
+  RCLCPP_INFO(
+    logger_,
+    "[OctomapPlanner3D][%s] keepout zones from %s: %zu zones, %zu cells blocked (%zu core), %zu "
+    "stair links cut (block radius %.2f m)",
+    __func__, file.c_str(), parsed.size(), built ? built->blocked : size_t{0},
+    built ? built->core : size_t{0}, built ? built->links_cut : size_t{0}, block_radius);
+  for (const o3d::KeepoutZone & z : parsed) {
+    RCLCPP_INFO(
+      logger_, "[OctomapPlanner3D][%s]   zone %s: %zu vertices, z %.2f..%.2f", __func__,
+      o3d::zoneLabel(z).c_str(), z.polygon.size(), z.z_min, z.z_max);
+  }
+  zones = std::move(parsed);
+  mask = std::move(built);
+  return KeepoutLoad::Loaded;
 }
 
 void OctomapPlanner3D::loadMapCallback(
@@ -372,9 +424,12 @@ void OctomapPlanner3D::loadMapCallback(
       map_.reset();
       links_.reset();
       astar_.reset();
+      zones_.clear();
+      keepout_.reset();
       overlay_->setMap(nullptr);
       octomap_file_.clear();
       poses_file_.clear();
+      keepout_file_.clear();
       build_error_ = "no 3D map loaded (unloaded by load_map for a 2D map)";
       building_ = false;
     }
@@ -383,7 +438,8 @@ void OctomapPlanner3D::loadMapCallback(
       updating_file_params_ = true;
       node->set_parameters(
         {rclcpp::Parameter(name_ + ".octomap_file", std::string()),
-         rclcpp::Parameter(name_ + ".poses_file", std::string())});
+         rclcpp::Parameter(name_ + ".poses_file", std::string()),
+         rclcpp::Parameter(name_ + ".keepout.file", std::string())});
       updating_file_params_ = false;
     }
     if (clear_plan_client_->service_is_ready()) {
@@ -413,9 +469,11 @@ void OctomapPlanner3D::loadMapCallback(
     build_thread_.join();
   }
 
-  // On a reload poses.txt always comes from beside the new tree: an explicit
-  // poses_file parameter named the boot map's track, not this one's.
-  const std::string poses_file = posesFileBeside(octomap_file);
+  // On a reload poses.txt and keepout.json always come from beside the new
+  // tree: an explicit poses_file / keepout.file parameter named the boot
+  // map's, not this one's.
+  const std::string poses_file = fileBeside(octomap_file, "poses.txt");
+  const std::string keepout_file = fileBeside(octomap_file, "keepout.json");
 
   // Drop the old site's map first. It must not plan once the robot is on
   // another map (a route through the wrong building), and freeing it before
@@ -426,17 +484,21 @@ void OctomapPlanner3D::loadMapCallback(
     map_.reset();
     links_.reset();
     astar_.reset();
-    // The marks are the old site's too; buildMap() binds the new map empty.
+    // The zones and the marks are the old site's too; buildMap() binds the
+    // new map with its own zones and no marks.
+    zones_.clear();
+    keepout_.reset();
     overlay_->setMap(nullptr);
     octomap_file_ = octomap_file;
     poses_file_ = poses_file;
+    keepout_file_ = keepout_file;
     build_error_.clear();
     building_ = true;
   }
   publishMapAvailable(true);
 
   std::string error;
-  const bool ok = buildMap(octomap_file, poses_file, error);
+  const bool ok = buildMap(octomap_file, poses_file, keepout_file, error);
 
   // Keep `ros2 param get` telling the truth about what is loaded. Outside
   // mutex_: the parameter callback takes it.
@@ -444,7 +506,8 @@ void OctomapPlanner3D::loadMapCallback(
     updating_file_params_ = true;
     node->set_parameters(
       {rclcpp::Parameter(name_ + ".octomap_file", octomap_file),
-       rclcpp::Parameter(name_ + ".poses_file", poses_file)});
+       rclcpp::Parameter(name_ + ".poses_file", poses_file),
+       rclcpp::Parameter(name_ + ".keepout.file", keepout_file)});
     updating_file_params_ = false;
   }
 
@@ -467,13 +530,20 @@ void OctomapPlanner3D::loadMapCallback(
 }
 
 bool OctomapPlanner3D::buildMap(
-  const std::string & octomap_file, const std::string & poses_file, std::string & error)
+  const std::string & octomap_file, const std::string & poses_file,
+  const std::string & keepout_file, std::string & error)
 {
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
   std::shared_ptr<const o3d::SurfaceMap> map;
   o3d::BuildStats stats;
   error.clear();
+  double keepout_block_radius;
+  {
+    // Written by the parameter callback under mutex_; this build is not.
+    std::lock_guard<std::mutex> lock(mutex_);
+    keepout_block_radius = keepout_block_radius_;
+  }
   try {
     // Scoped so the tree is freed before the map is handed over: a 7 M node
     // tree is ~300 MB resident, the surface map ~30 MB.
@@ -570,14 +640,120 @@ bool OctomapPlanner3D::buildMap(
       "body_clearance against the map's resolution, or run octomap_planner_3d_cli --stats on it",
       __func__);
   }
+  // The zones beside the tree. A broken file does not fail the build: the
+  // old map is gone already (a reload drops it first), so failing here would
+  // leave no map at all, which strands the robot worse than missing zones;
+  // the error above says the zones protect nothing, and load_keepout takes
+  // the fixed file without a rebuild.
+  std::vector<o3d::KeepoutZone> zones;
+  o3d::KeepoutMaskPtr keepout;
+  loadKeepout(keepout_file, *map, links.get(), keepout_block_radius, zones, keepout);
   std::lock_guard<std::mutex> lock(mutex_);
   map_ = map;
   links_ = links;
   astar_ = std::make_unique<o3d::SurfaceAStar>(map_, links_);
-  // Bound empty: the scans start marking it from the next cloud on.
+  zones_ = std::move(zones);
+  keepout_ = std::move(keepout);
+  // Bound empty: the scans start marking it from the next cloud on. setMap()
+  // resets the overlay's keepout, so the mask goes in after it.
   overlay_->setMap(map_);
+  overlay_->setKeepout(keepout_);
   building_ = false;
   return true;
+}
+
+void OctomapPlanner3D::loadKeepoutCallback(
+  const std::shared_ptr<nav2_msgs::srv::LoadMap::Request> request,
+  std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response)
+{
+  using LoadMap = nav2_msgs::srv::LoadMap;
+  const std::string file = request->map_url;
+  RCLCPP_INFO(
+    logger_, "[OctomapPlanner3D][%s] load_keepout request for '%s'", __func__, file.c_str());
+  const auto writeBack = [&](const std::string & value) {
+    if (auto node = node_.lock()) {
+      updating_file_params_ = true;
+      node->set_parameters({rclcpp::Parameter(name_ + ".keepout.file", value)});
+      updating_file_params_ = false;
+    }
+  };
+  // The boot build may still be running; its swap would put the file's
+  // zones in after ours. A reload cannot: it runs on this thread.
+  if (build_thread_.joinable()) {
+    build_thread_.join();
+  }
+
+  // An empty map_url is "no zones": the mask goes, the file parameter too.
+  if (file.empty()) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      zones_.clear();
+      keepout_.reset();
+      keepout_file_.clear();
+      overlay_->setKeepout(nullptr);
+    }
+    writeBack(std::string());
+    RCLCPP_INFO(logger_, "[OctomapPlanner3D][%s] empty map_url: keepout zones cleared", __func__);
+    response->result = LoadMap::Response::RESULT_SUCCESS;
+    return;
+  }
+  // Refused before anything changes, as load_map refuses a missing tree.
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(file, ec)) {
+    RCLCPP_WARN(
+      logger_, "[OctomapPlanner3D][%s] '%s' does not exist; keeping the current zones", __func__,
+      file.c_str());
+    response->result = LoadMap::Response::RESULT_MAP_DOES_NOT_EXIST;
+    return;
+  }
+  // The map the mask is rasterised on. Copied out so the parse and the
+  // rasterisation run outside mutex_ (a plan may hold it for seconds).
+  std::shared_ptr<const o3d::SurfaceMap> map;
+  std::shared_ptr<const o3d::StairLinks> links;
+  double block_radius;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    map = map_;
+    links = links_;
+    block_radius = keepout_block_radius_;
+  }
+  if (!map) {
+    RCLCPP_WARN(
+      logger_,
+      "[OctomapPlanner3D][%s] no 3D map loaded, nothing to rasterise '%s' on; a later load_map "
+      "reads the keepout.json beside its tree",
+      __func__, file.c_str());
+    response->result = LoadMap::Response::RESULT_UNDEFINED_FAILURE;
+    return;
+  }
+  std::vector<o3d::KeepoutZone> zones;
+  o3d::KeepoutMaskPtr keepout;
+  if (loadKeepout(file, *map, links.get(), block_radius, zones, keepout) != KeepoutLoad::Loaded) {
+    // Unlike load_map there is no memory reason to drop first, and the
+    // zones in force are safer than none: kept.
+    response->result = LoadMap::Response::RESULT_INVALID_MAP_DATA;
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (map_ != map) {
+      // Cannot happen (a reload runs on this thread), but a mask indexes one
+      // map's cells, so never swap it under another.
+      RCLCPP_ERROR(
+        logger_, "[OctomapPlanner3D][%s] the map changed during the load; zones not applied",
+        __func__);
+      response->result = LoadMap::Response::RESULT_UNDEFINED_FAILURE;
+      return;
+    }
+    zones_ = std::move(zones);
+    keepout_ = std::move(keepout);
+    keepout_file_ = file;
+    overlay_->setKeepout(keepout_);
+  }
+  writeBack(file);
+  // No clear_plan: the current route is judged against the new zones by the
+  // next is_path_valid (1 Hz), and move_3d.xml replans after blocked_time.
+  response->result = LoadMap::Response::RESULT_SUCCESS;
 }
 
 bool OctomapPlanner3D::startHeightHint(double & z) const
@@ -645,15 +821,31 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     return fail(
       s.outside ? o3d::PlanFailure::StartOutsideMap : o3d::PlanFailure::StartUnavailable, s.detail);
   }
-  // The dynamic obstacles as of now, for this plan: the goal snap, the
-  // search and the shortcut all read the one snapshot. The disc around the
-  // start is exempt from the marks' dilation (not from the marks), so the
-  // first step away from a person standing close is legal.
+  // A start inside a keepout zone's core: refused, as the 2D planner refuses
+  // a start in a lethal cell. The search would otherwise walk out through
+  // the core wherever its edge is within the exempt disc, which is the one
+  // thing a zone must never allow; the operator drives the robot out.
+  if (keepout_ && keepout_->core_(s.cell)) {
+    const o3d::KeepoutZone * z = o3d::zoneAt(zones_, *map_, s.cell);
+    return fail(
+      o3d::PlanFailure::StartInKeepout, "the robot stands inside keepout zone " +
+                                          (z ? o3d::zoneLabel(*z) : std::string("?")) +
+                                          "; drive it out before planning");
+  }
+  // The dynamic obstacles as of now and the keepout zones, for this plan:
+  // the goal snap, the search and the shortcut all read the one snapshot
+  // and the one mask (keepout_ is immutable; a load_keepout swaps the
+  // pointer under mutex_, which this holds). The disc around the start is
+  // exempt from the marks' and the zones' dilation (not from a mark or a
+  // core), so the first step away from a person standing close, or from a
+  // zone edge, is legal.
   const o3d::DynamicMaskPtr mask = overlay_->snapshot(clock_->now().seconds());
   o3d::BlockedView blocked;
   blocked.mask = mask.get();
+  blocked.keepout = keepout_.get();
   blocked.exempt = s.cell;
-  blocked.exempt_radius = mask ? mask->block_radius : 0.0;
+  blocked.exempt_radius =
+    std::max(mask ? mask->block_radius : 0.0, keepout_ ? keepout_->block_radius : 0.0);
   const o3d::SnapResult g = astar_->snap(
     goal.pose.position.x, goal.pose.position.y, goal_z, search_params_,
     map_->cells[s.cell].component, &blocked);
@@ -712,11 +904,11 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     logger_,
     "[OctomapPlanner3D][createPlan] %zu poses, %.1f m, z %.2f..%.2f (start snapped %.2f m, goal "
     "%.2f m), "
-    "%zu cells -> %zu vertices, %zu stair links, %zu dynamic marks, %zu iterations, search %.3f "
-    "s, total %.3f s",
+    "%zu cells -> %zu vertices, %zu stair links, %zu dynamic marks, %zu keepout zones, %zu "
+    "iterations, search %.3f s, total %.3f s",
     path.poses.size(), length, zmin, zmax, s.xy_dist, g.xy_dist, r.cells.size(), vertices,
-    r.links.size(), mask ? mask->marked : size_t{0}, r.iterations, r.search_s,
-    std::chrono::duration<double>(Clock::now() - t0).count());
+    r.links.size(), mask ? mask->marked : size_t{0}, keepout_ ? keepout_->zones : size_t{0},
+    r.iterations, r.search_s, std::chrono::duration<double>(Clock::now() - t0).count());
   return path;
 }
 
@@ -730,13 +922,13 @@ bool OctomapPlanner3D::isPathValid(
   // and lidar_height_ (startHeightHint) and path_z_offset_ are written by
   // the parameter callback, which runs on the same executor as this
   // service, so they are read unlocked by design.
-  const auto map = overlay_->map();
+  const auto [map, keepout] = overlay_->mapAndKeepout();
   if (!map || path.poses.empty()) {
     return true;  // no 3D map: nothing to judge against, keep the path
   }
   const o3d::DynamicMaskPtr mask = overlay_->snapshot(clock_->now().seconds());
-  if (!mask) {
-    return true;  // the fast path: not one mark alive
+  if (!mask && !keepout) {
+    return true;  // the fast path: not one mark alive and no zone
   }
   double rz = 0.0;
   if (!startHeightHint(rz)) {
@@ -783,13 +975,18 @@ bool OctomapPlanner3D::isPathValid(
   // beyond is judged once the robot is on it. Judging it now would, with
   // blocked_time's 10 s wait, fire the replan while the robot is mid-flight
   // -- the case above. The disc around the robot's own cell is exempt from
-  // the marks' dilation, as it is for the planner, or a person beside the
-  // robot would read "blocked 0.0 m ahead" on every call with nothing a
-  // replan could change.
+  // the marks' and the zones' dilation, as it is for the planner, or a
+  // person beside the robot would read "blocked 0.0 m ahead" on every call
+  // with nothing a replan could change. A zone matters here only after a
+  // load_keepout: a path planned with the zones never crosses one, but one
+  // planned before they changed may, and this is what makes it replan.
   o3d::BlockedView blocked;
   blocked.mask = mask.get();
+  blocked.keepout = keepout.get();
   blocked.exempt = c0;
-  blocked.exempt_radius = mask->block_radius;
+  blocked.exempt_radius =
+    std::max(mask ? mask->block_radius : 0.0, keepout ? keepout->block_radius : 0.0);
+  size_t in_zones = 0;
   for (size_t i = i0; i < poses.size(); ++i) {
     const o3d::CellId c = i == i0 ? c0 : cellOf(i);
     if (c == o3d::kNoCell) {
@@ -797,6 +994,7 @@ bool OctomapPlanner3D::isPathValid(
     }
     if (blocked.blocked(m, c)) {
       invalid_pose_indices.push_back(static_cast<int32_t>(i));
+      in_zones += blocked.blockedByZone(m, c);
     }
   }
   if (!invalid_pose_indices.empty()) {
@@ -807,11 +1005,12 @@ bool OctomapPlanner3D::isPathValid(
     }
     RCLCPP_INFO(
       logger_,
-      "[OctomapPlanner3D][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
-      "ahead of the robot, (%.2f, %.2f, z %.2f); %zu cells marked by dynamic obstacles",
-      __func__, invalid_pose_indices.size(), poses.size() - i0, first, ahead,
+      "[OctomapPlanner3D][%s] Path blocked: %zu of %zu poses ahead (%zu in keepout zones); first "
+      "at index %zu, %.2f m ahead of the robot, (%.2f, %.2f, z %.2f); %zu cells marked by dynamic "
+      "obstacles, %zu keepout zones",
+      __func__, invalid_pose_indices.size(), poses.size() - i0, in_zones, first, ahead,
       poses[first].pose.position.x, poses[first].pose.position.y, poses[first].pose.position.z,
-      mask->marked);
+      mask ? mask->marked : size_t{0}, keepout ? keepout->zones : size_t{0});
     return false;
   }
   return true;
@@ -865,7 +1064,9 @@ void OctomapPlanner3D::clearOverlayCallback(
 {
   const size_t n = overlay_->clear();
   RCLCPP_INFO(
-    logger_, "[OctomapPlanner3D][%s] dynamic overlay cleared: %zu marks dropped", __func__, n);
+    logger_,
+    "[OctomapPlanner3D][%s] dynamic overlay cleared: %zu marks dropped (keepout zones kept)",
+    __func__, n);
 }
 
 rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCallback(
@@ -906,6 +1107,21 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         path_z_offset_ = v;
       } else if (key == "lidar_height") {
         lidar_height_ = v;
+      } else if (key == "keepout.block_radius") {
+        // The zones are kept as parsed, so the ring is re-rasterised here
+        // (milliseconds) and the mask swapped like a load_keepout's. mutex_
+        // is held; the overlay lock after it is the one order ever taken.
+        keepout_block_radius_ = v;
+        if (map_) {
+          keepout_ = o3d::buildKeepoutMask(*map_, links_.get(), zones_, keepout_block_radius_);
+          overlay_->setKeepout(keepout_);
+          RCLCPP_INFO(
+            logger_,
+            "[OctomapPlanner3D][%s] keepout.block_radius %.2f m: %zu zones, %zu cells blocked (%zu "
+            "core), %zu stair links cut",
+            __func__, v, zones_.size(), keepout_ ? keepout_->blocked : size_t{0},
+            keepout_ ? keepout_->core : size_t{0}, keepout_ ? keepout_->links_cut : size_t{0});
+        }
       } else if (key.rfind("dynamic.", 0) == 0) {
         // The overlay's own values take effect on the next scan / snapshot;
         // the transform tolerance is bound into the message filter.
@@ -961,11 +1177,17 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         }
       } else if (key == "body_frame") {
         body_frame_ = p.as_string();
-      } else if ((key == "octomap_file" || key == "poses_file") && updating_file_params_) {
-        // loadMapCallback() writing back what it loaded; the members are set.
+      } else if (
+        (key == "octomap_file" || key == "poses_file" || key == "keepout.file") &&
+        updating_file_params_) {
+        // loadMapCallback() / loadKeepoutCallback() writing back what they
+        // loaded; the members are set.
       } else if (key == "octomap_file" || key == "poses_file") {
         result.successful = false;
         result.reason = "call " + name_ + "/load_map with the new octomap.bt to switch maps";
+      } else if (key == "keepout.file") {
+        result.successful = false;
+        result.reason = "call " + name_ + "/load_keepout with the keepout.json to load zones";
       } else {
         result.successful = false;
         result.reason = key + " cannot be changed at runtime";
