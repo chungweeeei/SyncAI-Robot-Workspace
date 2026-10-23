@@ -723,18 +723,28 @@ zones of a 3D map are **`map/<name>/keepout.json`** beside `octomap.bt`:
 ```json
 { "version": 1,
   "zones": [ { "id": "zone-7f3a", "name": "server rack 2F",
-               "polygon": [[12.4, 3.1], [15.0, 3.1], [15.0, 5.6], [12.4, 5.6]],
+               "points": [{"x": 12.4, "y": 3.1}, {"x": 15.0, "y": 3.1},
+                          {"x": 15.0, "y": 5.6}, {"x": 12.4, "y": 5.6}],
                "z_min": 4.5, "z_max": 5.5 } ] }
 ```
 
 Vector polygons, not a raster: a 3D map has no gridmap to size a mask from,
 a site map has several storeys, and one 2D image cannot say which floor a
 pixel forbids — the corridor on 1F and the room above it share an (x, y). So
-each zone is a polygon in the map frame (metres, three or more `[x, y]`
-vertices, implicitly closed — a repeated first vertex is dropped — either
+each zone is a polygon in the map frame (metres, three or more `{"x", "y"}`
+points, implicitly closed — a repeated first vertex is dropped — either
 winding, even-odd if self-crossing) with a **z band** naming its floor:
-`z_min` / `z_max` are optional (absent = unbounded that side) and a backend
-writes `floor_z ± 0.5`. `id` is required, non-empty and unique in the file
+`z_min` / `z_max` are optional (absent or `null` = unbounded that side) and a
+backend writes `floor_z ± 0.5`.
+
+**One file for 2D and 3D.** This is the file the backend already writes for
+a 2D map's zones (beside the `keepout.yaml` / `keepout.pgm` mask it
+rasterises from it), in the same `points` shape, with `name`, `z_min` and
+`z_max` added as optional keys. A zone without a band covers every floor —
+what a 2D zone means — so a file the 2D editor wrote applies unchanged on a
+3D map, and the 2D mask ignores the bands. The backend must keep the three
+keys when its 2D editor rewrites the file, or a save there drops a 3D zone's
+floor. `id` is required, non-empty and unique in the file
 (the logs and `error_msg` name zones by it), `name` is for display,
 `version` is optional (absent = 1; a larger one is refused as written by a
 newer backend), unknown keys are ignored, every number must be finite.

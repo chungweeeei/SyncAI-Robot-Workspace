@@ -909,11 +909,14 @@ TEST(KeepoutZones, ParsesTheContractAndRefusesWhatBreaksIt)
   std::vector<KeepoutZone> zones;
   std::string error;
   const std::string good = R"({ "version": 1, "zones": [
-    { "id": "a", "name": "rack", "polygon": [[1, 1], [3, 1], [3, 2], [1, 2], [1, 1]],
-      "z_min": 4.5, "z_max": 5.5, "colour": "ignored" },
-    { "id": "b", "polygon": [[0, 0], [1, 0], [0, 1]] } ] })";
+    { "id": "a", "name": "rack", "z_min": 4.5, "z_max": 5.5, "colour": "ignored",
+      "points": [{"x": 1, "y": 1}, {"x": 3, "y": 1}, {"x": 3, "y": 2}, {"x": 1, "y": 2},
+                 {"x": 1, "y": 1}] },
+    { "id": "b", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 0, "y": 1}] },
+    { "id": "c", "name": null, "z_min": null, "z_max": 1.0,
+      "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 0, "y": 1}] } ] })";
   ASSERT_TRUE(parseKeepoutJson(good, zones, error)) << error;
-  ASSERT_EQ(zones.size(), 2u);
+  ASSERT_EQ(zones.size(), 3u);
   EXPECT_EQ(zones[0].id, "a");
   EXPECT_EQ(zones[0].name, "rack");
   EXPECT_EQ(zones[0].polygon.size(), 4u);  // the closing vertex is dropped
@@ -927,15 +930,30 @@ TEST(KeepoutZones, ParsesTheContractAndRefusesWhatBreaksIt)
   EXPECT_FALSE(zoneContains(zones[0], 4.0, 1.5, 5.0));  // outside the polygon
   EXPECT_TRUE(zoneContains(zones[1], 0.2, 0.2, -100.0));
   EXPECT_FALSE(zoneContains(zones[1], 0.8, 0.8, 0.0));  // the triangle's far corner
+  EXPECT_TRUE(zones[2].name.empty());                   // null = absent
+  EXPECT_TRUE(std::isinf(zones[2].z_min));
+  EXPECT_DOUBLE_EQ(zones[2].z_max, 1.0);
+  // The backend's 2D editor writes exactly this today (id + points, no
+  // band): the same file is a 3D map's zones, on every floor.
+  const std::string backend_2d =
+    R"({"version": 1, "zones": [{"id": "zone-1", "points": [{"x": 0.0, "y": 0.0},)"
+    R"( {"x": 2.0, "y": 0.0}, {"x": 2.0, "y": 2.0}, {"x": 0.0, "y": 2.0}]}]})";
+  std::vector<KeepoutZone> from_2d;
+  ASSERT_TRUE(parseKeepoutJson(backend_2d, from_2d, error)) << error;
+  ASSERT_EQ(from_2d.size(), 1u);
+  EXPECT_TRUE(zoneContains(from_2d[0], 1.0, 1.0, 0.0));
+  EXPECT_TRUE(zoneContains(from_2d[0], 1.0, 1.0, 5.0));
   // Every rule, each refused with the zone named; `zones` stays as it was.
   const char * bad[] = {
-    R"({ "zones": [ { "id": "a" } ] })",                               // no polygon
-    R"({ "zones": [ { "id": "a", "polygon": [[0, 0], [1, 1]] } ] })",  // two vertices
-    R"({ "zones": [ { "id": "a", "polygon": [[0, 0], [1, "x"], [1, 1]] } ] })",
-    R"({ "zones": [ { "id": "a", "polygon": [[0, 0], [1, 0], [1, 1]], "z_min": 2, "z_max": 1 } ] })",
-    R"({ "zones": [ { "id": "a", "polygon": [[0, 0], [1, 0], [1, 1]] },
-                    { "id": "a", "polygon": [[0, 0], [1, 0], [1, 1]] } ] })",  // duplicate id
-    R"({ "zones": [ { "polygon": [[0, 0], [1, 0], [1, 1]] } ] })",             // no id
+    R"({ "zones": [ { "id": "a" } ] })",  // no points
+    R"({ "zones": [ { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": "x"}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "id": "a", "points": [[0, 0], [1, 0], [1, 1]] } ] })",  // pairs, not objects
+    R"({ "zones": [ { "id": "a", "z_min": 2, "z_max": 1,
+                      "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] },
+                    { "id": "a", "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] } ] })",
+    R"({ "zones": [ { "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}] } ] })",
     R"({ "version": 2, "zones": [] })",
     R"([ 1, 2 ])",
     R"({ "zones": 3 })",
@@ -947,10 +965,9 @@ TEST(KeepoutZones, ParsesTheContractAndRefusesWhatBreaksIt)
     EXPECT_FALSE(error.empty()) << text;
     EXPECT_EQ(out.size(), zones.size()) << text;
   }
-  EXPECT_NE(std::string(bad[1]).find("polygon"), std::string::npos);
   parseKeepoutJson(bad[1], zones, error);
   EXPECT_NE(error.find("'a'"), std::string::npos) << error;
-  EXPECT_NE(error.find("polygon"), std::string::npos) << error;
+  EXPECT_NE(error.find("points"), std::string::npos) << error;
   // Empty is a valid file: no zones.
   ASSERT_TRUE(parseKeepoutJson(R"({ "zones": [] })", zones, error)) << error;
   EXPECT_TRUE(zones.empty());

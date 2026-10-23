@@ -132,7 +132,8 @@ ros2 run syncai_global_planner octomap_planner_3d_cli --synthetic two_floors \
 cat > "map/${MAP_NAME_3D}/keepout.json" <<'JSON'
 { "version": 1,
   "zones": [ { "id": "smoke", "name": "a box on the ground floor",
-               "polygon": [[3.0, 3.0], [4.0, 3.0], [4.0, 4.0], [3.0, 4.0]],
+               "points": [{"x": 3.0, "y": 3.0}, {"x": 4.0, "y": 3.0},
+                          {"x": 4.0, "y": 4.0}, {"x": 3.0, "y": 4.0}],
                "z_min": -0.5, "z_max": 0.5 } ] }
 JSON
 

@@ -15,19 +15,32 @@
 //
 //   { "version": 1,
 //     "zones": [ { "id": "zone-7f3a", "name": "server rack 2F",
-//                  "polygon": [[12.4, 3.1], [15.0, 3.1], [15.0, 5.6], [12.4, 5.6]],
+//                  "points": [{"x": 12.4, "y": 3.1}, {"x": 15.0, "y": 3.1},
+//                             {"x": 15.0, "y": 5.6}, {"x": 12.4, "y": 5.6}],
 //                  "z_min": 4.5, "z_max": 5.5 } ] }
+//
+// ONE FILE FOR 2D AND 3D (2026-10-23). This is the file the backend already
+// writes for a 2D map's zones beside the keepout.yaml / keepout.pgm mask it
+// rasterises from it (SyncAI-Robot-Backend, repositories/map/catalog.py:
+// write_keepout) -- the same `points` shape -- with three optional keys
+// added: `name`, `z_min`, `z_max`. A zone without a band is unbounded in z,
+// i.e. every floor, which is what a 2D zone means; so a file written by the
+// 2D editor applies unchanged on a 3D map, and the 2D mask ignores the bands
+// (one image has no floors). A first cut read `"polygon": [[x, y], ...]`,
+// which collided with the backend's file of the same name and version; it
+// never shipped.
 //
 // `zones` is required (and may be empty); `version` is optional (absent = 1,
 // a larger one is refused as written by a newer backend). Per zone: `id` is
 // required, non-empty and unique in the file (the logs and the failure
-// details name zones by it); `name` is for display; `polygon` is three or
-// more [x, y] pairs in metres, map frame, implicitly closed (a last vertex
-// equal to the first is dropped), either winding, even-odd if it crosses
-// itself; `z_min` / `z_max` are optional (absent = unbounded on that side,
-// z_min > z_max refused). Every number must be finite. Unknown keys are
-// ignored, so a later backend may annotate. Nothing in the file names the
-// map or holds a path, so a map directory still renames with one os.rename.
+// details name zones by it); `name` is for display; `points` is three or
+// more {"x", "y"} objects in metres, map frame, implicitly closed (a last
+// vertex equal to the first is dropped), either winding, even-odd if it
+// crosses itself; `z_min` / `z_max` are optional (absent or null = unbounded
+// on that side, z_min > z_max refused). Every number must be finite.
+// Unknown keys are ignored, so a later backend may annotate. Nothing in the
+// file names the map or holds a path, so a map directory still renames with
+// one os.rename.
 //
 // What a zone means on the surface map. A surface cell is in the zone's
 // CORE when its column centre lies inside the polygon and its top face lies

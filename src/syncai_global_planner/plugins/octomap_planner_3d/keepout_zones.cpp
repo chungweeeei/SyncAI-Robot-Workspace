@@ -76,21 +76,25 @@ bool parseKeepoutJson(
       error = where + ": duplicate id '" + z.id + "'";
       return false;
     }
-    if (jz.contains("name")) {
+    // null is "absent" for the optional keys: a backend serialising an unset
+    // optional field (pydantic's None) writes it that way.
+    if (jz.contains("name") && !jz["name"].is_null()) {
       if (!jz["name"].is_string()) {
         error = where + " ('" + z.id + "'): 'name' is not a string";
         return false;
       }
       z.name = jz["name"].get<std::string>();
     }
-    if (!jz.contains("polygon") || !jz["polygon"].is_array()) {
-      error = where + " ('" + z.id + "'): 'polygon' is missing or not an array";
+    if (!jz.contains("points") || !jz["points"].is_array()) {
+      error = where + " ('" + z.id + "'): 'points' is missing or not an array";
       return false;
     }
-    for (const nlohmann::json & v : jz["polygon"]) {
+    for (const nlohmann::json & v : jz["points"]) {
       double x, y;
-      if (!v.is_array() || v.size() != 2 || !finiteNumber(v[0], x) || !finiteNumber(v[1], y)) {
-        error = where + " ('" + z.id + "'): a polygon vertex is not a finite [x, y] pair";
+      if (
+        !v.is_object() || !v.contains("x") || !v.contains("y") || !finiteNumber(v["x"], x) ||
+        !finiteNumber(v["y"], y)) {
+        error = where + " ('" + z.id + "'): a point is not a finite {\"x\", \"y\"} object";
         return false;
       }
       z.polygon.emplace_back(x, y);
@@ -101,11 +105,11 @@ bool parseKeepoutJson(
       z.polygon.pop_back();
     }
     if (z.polygon.size() < 3) {
-      error = where + " ('" + z.id + "'): 'polygon' needs at least three distinct vertices";
+      error = where + " ('" + z.id + "'): 'points' needs at least three distinct vertices";
       return false;
     }
     for (const char * key : {"z_min", "z_max"}) {
-      if (!jz.contains(key)) {
+      if (!jz.contains(key) || jz[key].is_null()) {
         continue;
       }
       double v;
