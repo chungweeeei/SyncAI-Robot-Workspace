@@ -65,8 +65,9 @@ terrain), so a map switch needs no restart. 2D: `GridBased` (Smac) + MPPI on
 the obstacle layer, as on `dev`. 3D: `Octo3D` + MPPI on the terrain layer, with
 stairs climbed in stair mode. One controller (MPPI) serves both; every 3D
 branch in it is gated on the path having heights (`pathHasHeight`), so a 2D
-path takes `dev`'s code unchanged — keep it that way. **Nothing 3D has been run
-on the robot end to end; stair climbing is untested.**
+path takes `dev`'s code unchanged — keep it that way. Run on robot01 end to
+end: 3D navigation, stair climbing, the 2D ↔ 3D map switch through the
+backend, and a 2D regression with the MPPI tuning.
 
 | Package | Role |
 |---|---|
@@ -449,7 +450,7 @@ it actually uses:
 | `NavigateToPose` on `task_runner`, and `NavigateToGoal` on `navigate_to_goal` (the same, with `error_code` / `error_msg` and `status_msg`) | the MOVE step; the backend still sends the nav2 action, which stays until it has moved. **DOCK / UNDOCK are the same action** with `behavior_tree: dock.xml` / `undock.xml` and, for a DOCK, the **dock pose** as `pose` (UNDOCK's is ignored: it backs out 1 m from where the robot stands); a docking-branch failure is `DOCK_FAILED` (300), the staging leg's 100 / 200 |
 | `relocalize`, `relocalize_check`, `initialpose` (`syncai_localizer`). **Bare names in the `/<robot_id>` namespace** — the prefixed `/<robot_id>/localizer/…` spelling cost the backend a `stack_not_ready` against a healthy stack | initial pose, and map switch |
 | `map_server/load_map` | map switch, and reload after a re-conversion. Fails on a 3D-only map, which is expected there |
-| `planner_server/Octo3D/load_map` (`nav2_msgs/srv/LoadMap`; this branch, and the backend's unmerged `feature/octo3d-map-switch`) | the map switch: `map_url` = `map/<name>/octomap.bt` for a 3D map, **`""` (unload) for a 2D one** — without it `Octo3D` keeps the previous tree and the task_runner keeps running the 3D trees. Blocks until the surface map is built (seconds; size the timeout) and its success is a result; a missing file is refused with the current map kept, any other failure leaves no map |
+| `planner_server/Octo3D/load_map` (`nav2_msgs/srv/LoadMap`) | the map switch: `map_url` = `map/<name>/octomap.bt` for a 3D map, **`""` (unload) for a 2D one** — without it `Octo3D` keeps the previous tree and the task_runner keeps running the 3D trees. Blocks until the surface map is built (seconds; size the timeout) and its success is a result; a missing file is refused with the current map kept, any other failure leaves no map |
 | `auto_localize` (`syncai_localizer`, bare name) | nothing today (the backend reaches the same search through `reset_odometry`'s `skip_seed`). Blocks up to its two deadlines (15 s) |
 | `reset_odometry` (`syncai_localizer`, bare name) | `POST /api/v1/localization/auto`, with `skip_seed: true`: reset Point-LIO, then the global search — so finding a kidnapped robot always zeroes the odometry, and `odom → base_link` jumps to the origin once. Blocks up to 17 s (32 s with `global_fallback`, 27 s with `skip_seed`; the backend waits 40 s); the caller must have stopped the robot, nothing enforces it |
 | `pgo/start_mapping`, `pgo/save_maps`, `pgo/reset_mapping`, `pgo/mapping_status`, `pgo/map_cloud_file` (`syncai_mapping`) | begin a run, save a map (which ends the run), start over mid-run, the run state (latched), the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` is rviz-only) |

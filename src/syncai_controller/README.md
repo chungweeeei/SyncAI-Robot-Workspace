@@ -344,9 +344,8 @@ it as done (`reset()`). `on_stairs_` outlives the goal on purpose — it is the
 policy the gait controller is on — and the next goal's first level cycle switches
 back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
 
-**Untested on the robot**: whether HIMLOCO climbs this stair, whether a policy
-switch standing still is enough (or the controller wants `Stand` first), and the
-settle time. `FollowPathRPP` has no stair mode and no 3D matching. The state
+**Run on robot01**: HIMLOCO climbs the stair with the policy switched standing
+still (no `Stand` first) and the settle time above. `FollowPathRPP` has no stair mode and no 3D matching. The state
 machine is unit-tested in `syncai_util/test/test_stair_mode.cpp` on a
 synthetic flight (enter, hold, send, settle, leave, the replan-before-send
 cancel, the reset-after-send completion, a missing service, a level path).

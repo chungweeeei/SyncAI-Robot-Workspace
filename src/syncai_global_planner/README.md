@@ -732,10 +732,11 @@ cases are the promises above, one each.
   its costmap to be current instead), and `IsPathValid` replans after its
   10 s. The republish trim on `plan` still uses the server's planar
   nearest-pose search.
-- A route over a stair link is only a route: climbing it is RPP 3D's stair mode
-  (`FollowPathRPP3D`; `syncai_controller/README.md`, "Stairs"), which stops and
-  switches the gait controller's RL policy over `set_policy_mode`. MPPI and
-  the 2D RPP (`FollowPathRPP`) follow only its x / y. Climbing is untested on the robot.
+- A route over a stair link is only a route: climbing it is the controllers'
+  stair mode (`syncai_util::StairMode`, run by MPPI and `FollowPathRPP3D`;
+  `syncai_controller/README.md`, "Stairs"), which stops and switches the gait
+  controller's RL policy over `set_policy_mode`. The 2D RPP (`FollowPathRPP`)
+  follows only its x / y. Climbing has been run on robot01.
 - A stair link exists only where the robot walked; a stair blocked since (or
   walked only one way by a robot that cannot descend) is still linked both
   ways. A straight link's direction comes from the stair's surfaces, not the
