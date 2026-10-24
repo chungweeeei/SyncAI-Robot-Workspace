@@ -47,6 +47,19 @@
 # failure. A PR from a fork gets a read-only token, so it builds and loads
 # the image without pushing it.
 #
+# colcon compiles through ccache (2026-10). Before it every run was a clean
+# ~11 min build, almost all of it recompiling unchanged sources, with the
+# critical path syncai_common -> util -> costmap_2d -> mppi taking most of it,
+# so a bigger runner would not have helped. The cache lives in the Actions
+# cache and is SAVED only by pushes to main / dev, one entry per branch (the
+# previous one is deleted after the save): every run restores the newest of
+# its own branch or its PR base, then dev's. Per-PR entries would each be
+# another ~1 GB against the 10 GB limit, and LRU would evict the buildx cache
+# above first -- it is only read when the Dockerfile changes -- turning the
+# next image build into the hour-long one. ccache keys on content, not mtime,
+# so a fresh checkout's timestamps do not defeat it, as they would a cached
+# build/.
+#
 # Nothing here talks to a robot: there is no DDS traffic in a build, and the
 # one pytest file mocks nmcli.
 name: CI
@@ -116,6 +129,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Deleting the superseded ccache entry (see "save the ccache").
+      actions: write
+    env:
+      CCACHE_KEY_PREFIX: ccache-arm64-
     steps:
       - uses: actions/checkout@v4
 
@@ -189,17 +206,76 @@ jobs:
               vcs import --input dependencies.repos
               vcs export --exact src'
 
+      # The key is unique per commit (cache keys are immutable), so it never
+      # hits exactly; restore-keys take the newest entry of this branch, or of
+      # the PR's base, then dev's. A PR can read its base branch's entries.
+      - name: restore the ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY_PREFIX }}${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ env.CCACHE_KEY_PREFIX }}${{ github.base_ref || github.ref_name }}-
+            ${{ env.CCACHE_KEY_PREFIX }}dev-
+
       # BUILD_ROSDEP=check prints unmet keys without failing (build.sh explains
       # the known noise); a key that really is missing fails colcon below, which
       # is the signal that matters. UID / GID are the runner's, so build/,
       # install/ and log/ stay owned by it -- HOME in the image is
       # world-writable for exactly this (see docker-compose.build.yml).
+      #
+      # ccache through the environment only, so build.sh and robot01 stay as
+      # they are: CMake reads CMAKE_<LANG>_COMPILER_LAUNCHER at a fresh
+      # configure, which a CI build/ always is; the cargo packages ignore it.
+      # COMPILERCHECK=content rather than the default mtime: the compiler comes
+      # from an image that is rebuilt now and then, and a cache must never be
+      # trusted across a compiler it did not see. Stats are zeroed first so the
+      # step below reports this run's hit rate, not the cache's lifetime.
       - name: colcon build (scripts/build.sh)
         run: |
+          mkdir -p "$RUNNER_TEMP/ccache"
           # `env`, not an assignment: UID is a read-only bash variable.
           env UID="$(id -u)" GID="$(id -g)" \
-            docker compose -f docker-compose.build.yml run --rm build \
+            docker compose -f docker-compose.build.yml run --rm \
+              -v "$RUNNER_TEMP/ccache:/ccache" \
+              -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=1500M \
+              -e CCACHE_COMPILERCHECK=content \
+              -e CMAKE_C_COMPILER_LAUNCHER=ccache \
+              -e CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              --entrypoint bash build -c 'ccache -z && exec scripts/build.sh "$@"' _ \
               --event-handlers console_cohesion+
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e CCACHE_DIR=/ccache \
+            -v "$RUNNER_TEMP/ccache:/ccache" syncai-robot-base ccache -s
+
+      # Saved even when the build failed: the objects compiled before the
+      # failure are as good as any. One entry per branch -- the save goes first
+      # and the older entries of this branch are deleted after it, so a failed
+      # save never leaves the branch with none.
+      - name: save the ccache
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY_PREFIX }}${{ github.ref_name }}-${{ github.sha }}
+
+      - name: delete the superseded ccache entries
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: ${{ env.CCACHE_KEY_PREFIX }}${{ github.ref_name }}-
+          KEEP: ${{ env.CCACHE_KEY_PREFIX }}${{ github.ref_name }}-${{ github.sha }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "$PREFIX" --limit 100 \
+              --json key --jq '.[].key' |
+            while read -r key; do
+              [ "$key" = "$KEEP" ] && continue
+              echo "deleting $key"
+              gh cache delete --repo "$GITHUB_REPOSITORY" "$key" || true
+            done
 
       # The suite in this repo is this one file; the C++ packages have only the
       # ament linter templates, which are not enforced (see CLAUDE.md, "Tests").
