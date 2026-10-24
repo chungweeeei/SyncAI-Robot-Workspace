@@ -1,11 +1,15 @@
 #include "syncai_global_planner/plugins/octomap_planner_3d/stair_links.hpp"
 
+#include <octomap/OcTree.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <sstream>
+#include <unordered_map>
 
 namespace syncai_global_planner::octomap_planner_3d
 {
@@ -169,6 +173,68 @@ double sideReach(
     reach = s;
   }
   return gap > kMaxGap || reach + m.res > max_reach ? std::max(reach, max_reach) : reach;
+}
+
+// Whether column (ix, iy) blocks the body on a landing whose floor is at z:
+// a wall, a newel or something standing on the landing -- an occupied voxel
+// in the body's band, above a step and below body_clearance. Read off the
+// tree, because the surface map cannot tell a wall from a landing nobody
+// saw the floor of: it holds top faces only, a wall that runs into the slab
+// above has none near the landing, and a landing column whose floor was
+// never seen (dp's landings are seen edge-on from the flights) holds only
+// what is overhead or a stray face under the floor -- dp's first landing
+// has surfaces 0.3 m below and 0.1 m above its floor side by side. A
+// handrail (~0.9 m) is above the band; the body passes under it. The drop
+// to a flight is not tested: the corners stay half a body out from the
+// later stair edge, and the leg between them runs square to the flights.
+// Without a tree (the gtest's synthetic maps) a column that holds no
+// surface near z but one within a flight below or the band above stands in.
+bool landingObstacle(
+  const SurfaceMap & m, const octomap::OcTree * tree, int ix, int iy, double z, double dz)
+{
+  const uint32_t c = m.col(ix, iy);
+  const double band_lo = z + m.params.max_step_height + 0.05;
+  const double band_hi = z + m.params.body_clearance;
+  if (tree) {
+    for (double h = band_lo; h <= band_hi + 1e-9; h += m.res) {
+      const octomap::OcTreeNode * n = tree->search(m.cx(ix), m.cy(iy), h);
+      if (n && tree->isNodeOccupied(n)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  bool near = false, other = false;
+  for (uint32_t q = m.col_begin[c]; q < m.col_begin[c + 1]; ++q) {
+    const double t = m.zTop(q);
+    near = near || std::fabs(t - z) <= dz;
+    other = other || (t > z - 0.8 && t <= band_hi);
+  }
+  return !near && other;
+}
+
+// xy distance from (x, y) to the nearest blocked column (obstacle(ix, iy))
+// within cap, measured to the column's near edge, half a cell inside its
+// centre. cap when nothing is that close.
+template <typename Obstacle>
+double landingClearance(const SurfaceMap & m, Obstacle && obstacle, double x, double y, double cap)
+{
+  const int r = static_cast<int>(std::ceil(cap / m.res)) + 1;
+  const int ix0 = m.ixOf(x), iy0 = m.iyOf(y);
+  double best = cap;
+  for (int dy = -r; dy <= r; ++dy) {
+    for (int dx = -r; dx <= r; ++dx) {
+      const int ix = ix0 + dx, iy = iy0 + dy;
+      if (!m.inGrid(ix, iy)) {
+        continue;
+      }
+      const double d = std::hypot(m.cx(ix) - x, m.cy(iy) - y) - m.res / 2.0;
+      if (d < best && obstacle(ix, iy)) {
+        best = std::max(d, 0.0);
+      }
+    }
+  }
+  return best;
 }
 
 // Moves the interior points of a walked link to the middle of the
@@ -633,8 +699,8 @@ std::vector<Landing> landings(
 // loops cut) as flights and landing corners. Returns false, with why, when
 // the geometry cannot be read; the caller keeps the walked link then.
 bool flightLinks(
-  const SurfaceMap & m, const std::vector<Waypoint> & walk, CellId a, CellId b, size_t ka,
-  size_t kb, const StairLinkParams & p, StairLinks & out, std::string & why)
+  const SurfaceMap & m, const octomap::OcTree * tree, const std::vector<Waypoint> & walk, CellId a,
+  CellId b, size_t ka, size_t kb, const StairLinkParams & p, StairLinks & out, std::string & why)
 {
   if (walk.size() < 4) {
     why = "too few points to read a profile from";
@@ -878,10 +944,34 @@ bool flightLinks(
     F.back().head.x + p.flights_lead * F.back().dx, F.back().head.y + p.flights_lead * F.back().dy,
     L.back().z};
   // The link's ends are re-anchored to the floor cells nearest the lead
-  // points, so the A* arrives in line with the first flight.
+  // points, so the A* arrives in line with the first flight; failing that,
+  // to the first floor cell straight on along the flight's axis. The floor
+  // just past a stair head is often not in the map -- dp's 2F, for 1.3 m:
+  // the lidar is below it on the flight and cannot see it from on it, so
+  // the voxel above it was never observed free -- and with no cell within a
+  // metre the link used to follow the walk to the operator's own anchor,
+  // which on dp swung 35 deg off the axis and 56 deg back, just where the
+  // robot stops to switch the policy back (2026-10-24).
   const uint32_t comp_a = m.cells[a].component, comp_b = m.cells[b].component;
+  const auto straightOn = [&](const Waypoint & from, double dx, double dy, uint32_t comp) {
+    constexpr double kReach = 2.0;
+    for (double s = 0.0; s <= kReach + 1e-9; s += m.res) {
+      const CellId c =
+        nearestTraversable(m, from.x + s * dx, from.y + s * dy, from.z, comp, m.res * 1.5);
+      if (c != kNoCell) {
+        return c;
+      }
+    }
+    return kNoCell;
+  };
   CellId a2 = nearestTraversable(m, lead_in.x, lead_in.y, lead_in.z, comp_a, 1.0);
+  if (a2 == kNoCell) {
+    a2 = straightOn(lead_in, -F.front().dx, -F.front().dy, comp_a);
+  }
   CellId b2 = nearestTraversable(m, lead_out.x, lead_out.y, lead_out.z, comp_b, 1.0);
+  if (b2 == kNoCell) {
+    b2 = straightOn(lead_out, F.back().dx, F.back().dy, comp_b);
+  }
   link.a = a2 != kNoCell ? a2 : a;
   link.b = b2 != kNoCell ? b2 : b;
   double ex, ey;
@@ -941,43 +1031,127 @@ bool flightLinks(
       continue;
     }
     if (cosang < -std::cos(30.0 * M_PI / 180.0)) {
-      // A U: out to the landing's middle, across, and in. The depth comes
-      // from the walk -- where the operator turned, which is about the
-      // landing's middle -- because a landing is often not in the surface
-      // map at all (dp's first and third: seen only edge-on from the flights,
-      // never from above, so their columns are empty); the map's own depth
-      // is measured beside it for the logs when it is there.
-      const Landing & ld = L[j + 1];
-      std::vector<double> t1, t2;
-      for (size_t q = ld.first; q <= ld.last; ++q) {
-        t1.push_back((walk[q].x - f.head.x) * f.dx + (walk[q].y - f.head.y) * f.dy);
-        t2.push_back((g.foot.x - walk[q].x) * g.dx + (g.foot.y - walk[q].y) * g.dy);
+      // A U: out onto the landing, across, and in. The robot turns in place
+      // at both corners, sweeping a disc of flights_turn_radius, and walks
+      // the leg between them sideways to the flights, half a body wide
+      // (robot_radius). Both corners lie the same distance out, so the leg
+      // is square to the flights: each flight's own head / foot put them
+      // out of line on dp's second landing, whose flights start 0.36 m
+      // apart, and the slanted leg passed 0.3 m from the newel. How far out
+      // is read off the map: the distance that leaves the most room round
+      // the two turns and along the leg (landingClearance), the nearest
+      // such when there is room to spare. Until 2026-10-24 it came from
+      // the walk (where the operator turned, 0.5-1 m) capped at half the
+      // landing's depth measured along one ray from the head -- which on
+      // that landing went through a gap in the scanned far wall and read
+      // 2.3 m for a 1.05 m landing, and on all three left the turn closer
+      // to a wall than the body's reach.
+      const double R = p.flights_turn_radius, hw = m.params.robot_radius;
+      // The landing's floor as the map holds it, not the walk's ground (pose
+      // z - lidar_height): on dp's first landing that is 0.2 m under the
+      // floor, the body still pitched from the flight, and the map holds a
+      // surface 0.2 m below it too, so neither the walk's z nor the surface
+      // nearest it under the walk reads the floor; with either, most of the
+      // landing came out a wall. The height most columns of the landing's
+      // near metre hold a surface at, within a riser and a half of the walk.
+      double zl = z;
+      {
+        std::unordered_map<int, int> votes;
+        const double along_g0 = (g.foot.x - f.head.x) * f.dx + (g.foot.y - f.head.y) * f.dy;
+        const double sa = std::max(0.0, along_g0);
+        const double ex = g.foot.x - f.head.x - along_g0 * f.dx;  // f's axis to g's, across
+        const double ey = g.foot.y - f.head.y - along_g0 * f.dy;
+        for (double s = sa + 0.2; s <= sa + 1.0 + 1e-9; s += m.res) {
+          for (double a = 0.0; a <= 1.0 + 1e-9; a += 0.05) {
+            const int ix = m.ixOf(f.head.x + s * f.dx + a * ex);
+            const int iy = m.iyOf(f.head.y + s * f.dy + a * ey);
+            if (!m.inGrid(ix, iy)) {
+              continue;
+            }
+            const uint32_t c = m.col(ix, iy);
+            for (uint32_t q = m.col_begin[c]; q < m.col_begin[c + 1]; ++q) {
+              if (std::fabs(m.zTop(q) - z) <= 0.3) {
+                ++votes[m.cells[q].kz];
+              }
+            }
+          }
+        }
+        int best_n = 0;
+        for (const auto & [kz, n] : votes) {
+          if (n > best_n) {
+            best_n = n;
+            zl = m.z0 + (kz + 1) * m.res;
+          }
+        }
       }
-      bool w1 = false, w2 = false;
-      const double d1 = sideReach(m, f.head.x, f.head.y, z, f.dx, f.dy, p.centre_dz, 3.0, &w1);
-      const double d2 = sideReach(m, g.foot.x, g.foot.y, z, -g.dx, -g.dy, p.centre_dz, 3.0, &w2);
-      const double depth = w1 && w2 ? std::min(d1, d2) : w1 ? d1 : w2 ? d2 : -1.0;
-      // At least half a body out from the riser (the hind legs are 0.3 m
-      // behind the centre), at most a metre, and never past the middle of
-      // a landing the map does hold.
-      double c = std::clamp((median(t1) + median(t2)) / 2.0, 0.5, 1.0);
-      if (depth >= 0.6) {
-        c = std::min(c, std::max(depth / 2.0, 0.5));
+      const double cap = R + 0.3;
+      std::unordered_map<uint32_t, bool> blocked;
+      const auto obstacle = [&](int ix, int iy) {
+        const auto [it, fresh] = blocked.try_emplace(m.col(ix, iy), false);
+        if (fresh) {
+          it->second = landingObstacle(m, tree, ix, iy, zl, p.centre_dz);
+        }
+        return it->second;
+      };
+      const double ux = f.dx, uy = f.dy;  // out, onto the landing
+      const double along_g = (g.foot.x - f.head.x) * ux + (g.foot.y - f.head.y) * uy;
+      const double s0 = std::max(0.0, along_g);  // the later of the two stair edges
+      const auto corners = [&](double t, Waypoint & c1, Waypoint & c2) {
+        const double s = s0 + t;
+        c1 = {f.head.x + s * ux, f.head.y + s * uy, z};
+        c2 = {g.foot.x + (s - along_g) * ux, g.foot.y + (s - along_g) * uy, z};
+      };
+      // Room left at t: the two turns' discs and the leg's half-width,
+      // whichever is tightest. Negative = the body reaches something.
+      const auto room = [&](double t) {
+        Waypoint c1, c2;
+        corners(t, c1, c2);
+        double r = std::min(
+          landingClearance(m, obstacle, c1.x, c1.y, cap) - R,
+          landingClearance(m, obstacle, c2.x, c2.y, cap) - R);
+        const double len = std::hypot(c2.x - c1.x, c2.y - c1.y);
+        const int n = std::max(1, static_cast<int>(std::ceil(len / (m.res / 2.0))));
+        for (int k = 1; k < n; ++k) {
+          const double a = static_cast<double>(k) / n;
+          const double x = c1.x + a * (c2.x - c1.x), y = c1.y + a * (c2.y - c1.y);
+          r = std::min(r, landingClearance(m, obstacle, x, y, cap) - hw);
+        }
+        return r;
+      };
+      // At least half a body out from the later edge (the hind legs are
+      // 0.3 m behind the centre), at most 1.5 m.
+      std::vector<std::pair<double, double>> tried;  // t, room
+      double best = -std::numeric_limits<double>::infinity();
+      for (double t = 0.5; t <= 1.5 + 1e-9; t += m.res / 2.0) {
+        tried.push_back({t, room(t)});
+        best = std::max(best, tried.back().second);
       }
+      double t_pick = tried.front().first, room_pick = tried.front().second;
+      for (const auto & [t, r] : tried) {
+        if (r >= best - 0.01) {
+          t_pick = t;
+          room_pick = r;
+          break;
+        }
+      }
+      Waypoint c1, c2;
+      corners(t_pick, c1, c2);
       link.turns.push_back(pts.size());
-      pts.push_back({f.head.x + c * f.dx, f.head.y + c * f.dy, z});
+      pts.push_back(c1);
       link.turns.push_back(pts.size());
-      pts.push_back({g.foot.x - c * g.dx, g.foot.y - c * g.dy, z});
-      if (depth < 0.6) {
-        std::snprintf(
-          buf, sizeof buf, "%sU (turns %.1f m out, from the walk; the landing is not in the map)",
-          shapes.empty() ? "" : ", ", c);
-      } else {
-        std::snprintf(
-          buf, sizeof buf, "%sU (turns %.1f m out; the map's landing is %.1f m deep)",
-          shapes.empty() ? "" : ", ", c, depth);
-      }
+      pts.push_back(c2);
+      std::snprintf(
+        buf, sizeof buf, "%sU (turns %.2f m out, %.2f m %s)", shapes.empty() ? "" : ", ",
+        s0 + t_pick, std::fabs(room_pick), room_pick >= 0.0 ? "to spare" : "short");
       shapes += buf;
+      if (room_pick < 0.0) {
+        std::snprintf(
+          buf, sizeof buf,
+          "landing %zu: no room to turn in place -- the body reaches %.2f m into a wall, a "
+          "newel or something on the landing wherever the corners go",
+          j + 1, -room_pick);
+        out.notes.push_back(buf);
+      }
       continue;
     }
     std::snprintf(
@@ -1118,7 +1292,8 @@ size_t straightLinks(
 }  // namespace
 
 std::shared_ptr<const StairLinks> buildStairLinks(
-  const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params)
+  const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
+  const octomap::OcTree * tree)
 {
   auto out = std::make_shared<StairLinks>();
   uint32_t ncomp = 0;
@@ -1204,7 +1379,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
       std::string fwhy;
       if (params.flights) {
         // Flights and landing corners read off the map (see the header).
-        if (flightLinks(m, link.pts, anchor, c, anchor_kf, k, params, *out, fwhy)) {
+        if (flightLinks(m, tree, link.pts, anchor, c, anchor_kf, k, params, *out, fwhy)) {
           anchor = c;
           anchor_kf = k;
           walked = 0.0;

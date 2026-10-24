@@ -177,6 +177,8 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.flights_landing_slope_deg = v;
   } else if (k == "stair_flights_lead") {
     st.flights_lead = v;
+  } else if (k == "stair_flights_turn_radius") {
+    st.flights_turn_radius = v;
   } else if (k == "stair_centre") {
     st.centre = v != 0.0;
   } else if (k == "stair_centre_dz") {
@@ -1301,7 +1303,6 @@ int main(int argc, char ** argv)
   for (const auto & [fx, fy] : debug_fill) {
     debugFill(*tree, *map, fx, fy, have_image_z ? image_z : 0.0);
   }
-  tree.reset();
 
   std::vector<Pose> poses;
   if (!poses_path.empty() && !readPoses(poses_path, poses)) {
@@ -1353,7 +1354,7 @@ int main(int argc, char ** argv)
     for (const Pose & p : poses) {
       track.push_back({p.x, p.y, p.z - lidar_height});
     }
-    links = buildStairLinks(*map, track, stair_params);
+    links = buildStairLinks(*map, track, stair_params, tree.get());
     std::printf(
       "stair links: %zu (min_rise %.2f m, %zu straight flights)\n", links->links.size(),
       stair_params.min_rise, links->flights.size());
@@ -1385,6 +1386,8 @@ int main(int argc, char ** argv)
       std::printf("  note: %s\n", note.c_str());
     }
   }
+  // The stair links read the tree (the landings' walls); nothing below does.
+  tree.reset();
   // --keepout: the zones as the plugin loads them beside the tree, with
   // robot_radius as the ring (the plugin's keepout.block_radius, 0.25, is
   // that same number by design).

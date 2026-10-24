@@ -61,8 +61,10 @@
 // to that direction (sideReach); its foot and head are where a march along
 // the axis reaches the landings' heights. Consecutive flights are joined on
 // the landing with explicit corners: one at the axes' intersection when the
-// flights are ~90 deg apart (an L), two -- out to half the landing's depth,
-// across, and in -- when they are ~180 deg apart (a U), so the path climbs
+// flights are ~90 deg apart (an L), two -- out onto the landing, across
+// square to the flights, and in, as far out as leaves the body most room to
+// turn in place against the walls the octree holds at body height -- when
+// they are ~180 deg apart (a U), so the path climbs
 // each flight straight along its centre, stops, turns in place and climbs
 // the next, as the legs want to; a 0.5 m lead-in before the first foot and
 // lead-out past the last head line the robot up before the first riser and
@@ -174,6 +176,11 @@ struct StairLinkParams
   // The straight lead-in before the first foot and lead-out past the last
   // head (m), along the flight's axis.
   double flights_lead = 0.5;
+  // The disc the body sweeps turning in place at a U landing's corners:
+  // the padded footprint's circumscribed radius, sqrt(0.38^2 + 0.25^2).
+  // The corners go where the landing leaves the most room round it (see
+  // the header); the leg between them needs robot_radius either side.
+  double flights_turn_radius = 0.455;
   // Centre a walked link in the stairwell (see the header). false = the
   // operator's line, the 2026-10-19 behaviour.
   bool centre = true;
@@ -253,8 +260,14 @@ bool readTrack(
   std::string & error);
 
 // The links of a track over a built map. Never null; empty without links.
+// tree is the map's octree, when the caller still has it: the U landings'
+// corners are placed against the walls it holds at body height (see
+// landingObstacle in the .cpp), which the surface map cannot tell from a
+// landing whose floor was never seen. Without it they are placed against
+// the surfaces alone, which misses a wall that runs into the slab above.
 std::shared_ptr<const StairLinks> buildStairLinks(
-  const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params);
+  const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
+  const octomap::OcTree * tree = nullptr);
 
 }  // namespace syncai_global_planner::octomap_planner_3d
 
