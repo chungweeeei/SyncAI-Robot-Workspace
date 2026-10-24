@@ -334,6 +334,14 @@ protected:
   double stair_turn_dist_{0.15};
   double stair_turn_done_angle_{0.087};
   bool stair_turning_{false};
+  // The landing corner the robot has reached, in the global frame (the plan
+  // is in the base frame): latched until the plan's first corner is another
+  // one, there is none, or the stairs end; as in syncai_mppi_controller's
+  // climbStairs(), where a stop short of stair_turn_dist flipped the carrot
+  // between the corner and past it every cycle (2026-10-24).
+  bool stair_corner_latched_{false};
+  double stair_corner_x_{0.0};
+  double stair_corner_y_{0.0};
   // Descend backwards: on a path going down the robot turns round and walks
   // in reverse, facing the risers, and turns back to the path at the bottom
   // before the policy goes back (the stair hold block).

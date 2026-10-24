@@ -284,6 +284,15 @@ protected:
   // The in-place turn on the stairs is latched: in past
   // approach_rotate_min_angle, out under stair_turn_done_angle.
   bool stair_turning_{false};
+  // The landing corner the robot has reached (climbStairs()), in the plan's
+  // frame: latched until the plan's first corner is another one (more than
+  // syncai_util::StairMode::kSameCorner away), there is none, or the stairs
+  // end. Without it a stop short of stair_turn_dist (inside the brake zone)
+  // let the carrot flip between the corner and past it, the turn reversing
+  // every ~0.4 s (see climbStairs()).
+  bool stair_corner_latched_{false};
+  double stair_corner_x_{0.0};
+  double stair_corner_y_{0.0};
   // Descend backwards (climbStairs()): on a path going down the robot turns
   // round and walks in reverse, facing the risers, landings included, and
   // turns back to the path at the bottom before the policy goes back.

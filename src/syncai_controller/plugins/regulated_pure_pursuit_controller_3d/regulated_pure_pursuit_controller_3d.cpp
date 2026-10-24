@@ -430,20 +430,41 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
                              ? stair_linear_vel_ * stair_linear_vel_ / (2.0 * max_linear_accel_)
                              : 0.0;
       const bool stopping = corner_dist <= stair_turn_dist_ + brake;
-      const bool at_corner =
-        corner_dist <= stair_turn_dist_ || (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      // Reached is latched per corner (2026-10-24; syncai_mppi_controller's
+      // climbStairs() has the story): unlatched, a robot that stood in the
+      // brake zone short of stair_turn_dist was at the corner only while its
+      // last command was zero, and the turn reversed every few cycles. The
+      // corner is compared in the global frame; the plan here is the base's.
+      const double yaw = tf2::getYaw(pose.pose.orientation);
+      const double gx = pose.pose.position.x + std::cos(yaw) * cp.x - std::sin(yaw) * cp.y;
+      const double gy = pose.pose.position.y + std::sin(yaw) * cp.x + std::cos(yaw) * cp.y;
+      if (
+        stair_corner_latched_ && std::hypot(gx - stair_corner_x_, gy - stair_corner_y_) >
+                                   syncai_util::StairMode::kSameCorner) {
+        stair_corner_latched_ = false;  // the next corner: the last one is behind
+      }
+      const bool at_corner = stair_corner_latched_ || corner_dist <= stair_turn_dist_ ||
+                             (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      if (at_corner && !stair_corner_latched_) {
+        stair_corner_latched_ = true;
+        stair_corner_x_ = gx;
+        stair_corner_y_ = gy;
+      }
       stair_stop = stopping && !at_corner;
       if (
         !at_corner &&
         std::hypot(carrot_pose.pose.position.x, carrot_pose.pose.position.y) > corner_dist) {
         carrot_pose = transformed_plan.poses[corner_idx];
       }
+    } else {
+      stair_corner_latched_ = false;
     }
   } else if (!stair_hold) {
     // Off the stairs (not in the hold before them, where the direction has
     // just been read for the climb to come).
     stair_turning_ = false;
     stair_reverse_ = false;
+    stair_corner_latched_ = false;
   }
   carrot_pub_->publish(createCarrotMsg(carrot_pose));
 
@@ -995,6 +1016,7 @@ void RegulatedPurePursuitController3D::reset()
   // Stair mode's on_stairs deliberately survives: it is the policy the gait
   // controller is on, and that outlives a cancelled goal (StairMode::reset()).
   stair_mode_.reset();
+  stair_corner_latched_ = false;
 }
 
 void RegulatedPurePursuitController3D::setSpeedLimit(
