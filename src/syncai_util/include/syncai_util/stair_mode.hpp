@@ -152,8 +152,33 @@ public:
     const Params & params, SendPolicyFn send_policy, ServiceReadyFn service_ready = {},
     PublishFn publish = {});
 
-  /// The plan as the controller's setPlan() received it (before any pruning).
+  /// The plan as the controller's setPlan() received it (before any pruning),
+  /// kept with medianHeights() applied: every window and slopeAhead() read that.
   void setPlan(const nav_msgs::msg::Path & full_plan);
+
+  /**
+   * @brief Replace each inner pose's z by the median of it and its two
+   * neighbours (the end poses keep theirs)
+   *
+   * Why (2026-10-24): OctomapPlanner3D's heights are voxel tops on a 0.1 m
+   * grid, so one surface cell picked a voxel off its neighbours is a one-pose
+   * spike or dip of 0.1-0.2 m, and the windows read max - min, which takes
+   * the spike whole. On dp's arched ramp (x ~10-12, y ~3; 0.20 m high in
+   * map.pcd, ~16 deg at its steepest half metre) a return leg's path read
+   * -0.2 on the crown and one -0.5 pose in a run of -0.3 / -0.4 at its foot,
+   * exactly 1 m apart: 0.3 m of rise, so the robot stopped, went onto
+   * HIMLOCO, turned round and walked down backwards, ~20 s for a slope PPO
+   * had just walked up the other way (in the sim). The median takes that pose
+   * to -0.4 and the window to 0.2 m. A stair is untouched: its heights rise
+   * or fall monotonically along the path, and the median of three monotonic
+   * values is the middle one, so every riser, landing and flight edge keeps
+   * its height. Not removed: a dip two poses or more wide, or a slope whose
+   * two ends round 0.1 m apart the wrong way. Rejected for this: a larger
+   * min_rise (the 0.2 m ramp would still be one voxel from it), and telling
+   * stairs from slopes by the planner's stair links (the right model, but the
+   * path would have to carry which poses are on a link; not done yet).
+   */
+  static void medianHeights(nav_msgs::msg::Path & path);
 
   /**
    * @brief Run the state machine for one control cycle
