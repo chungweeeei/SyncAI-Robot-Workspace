@@ -688,17 +688,20 @@ TEST(TerrainGrid, SparseCellsAreNeverJudgedOnABoxTopOrAStairTread)
   };
   // A 0.25 m box on floor never seen, its top sparse.
   const auto box = [](Scene & s) {
-    sparse(s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
+    sparse(
+      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
   };
   // The same box on a seen floor.
   const auto box_on_floor = [](Scene & s) {
     s.floor();
-    sparse(s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
+    sparse(
+      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
   };
   // A flight seen from its foot, its first treads sparse, with and without
   // the stair link's path climbing it.
   const auto flight = [](Scene & s) {
-    sparse(s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
+    sparse(
+      s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
     s.surface(0.56, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); });
   };
   const auto flight_with_path = [&](Scene & s) {
