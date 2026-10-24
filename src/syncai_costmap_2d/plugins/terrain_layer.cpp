@@ -47,6 +47,7 @@ void TerrainLayer::onInitialize()
   declareParameter("min_ground_samples", rclcpp::ParameterValue(p.min_ground_samples));
   declareParameter("ground_quantile", rclcpp::ParameterValue(p.ground_quantile));
   declareParameter("max_ground_lift", rclcpp::ParameterValue(p.max_ground_lift));
+  declareParameter("sparse_ground_radius", rclcpp::ParameterValue(p.sparse_ground_radius));
   declareParameter("robot_radius", rclcpp::ParameterValue(p.robot_radius));
   declareParameter("min_obstacle_height", rclcpp::ParameterValue(p.min_obstacle_height));
   declareParameter("body_clearance", rclcpp::ParameterValue(p.body_clearance));
@@ -72,6 +73,7 @@ void TerrainLayer::onInitialize()
   node_->get_parameter(name_ + ".min_ground_samples", p.min_ground_samples);
   node_->get_parameter(name_ + ".ground_quantile", p.ground_quantile);
   node_->get_parameter(name_ + ".max_ground_lift", p.max_ground_lift);
+  node_->get_parameter(name_ + ".sparse_ground_radius", p.sparse_ground_radius);
   node_->get_parameter(name_ + ".robot_radius", p.robot_radius);
   node_->get_parameter(name_ + ".min_obstacle_height", p.min_obstacle_height);
   node_->get_parameter(name_ + ".body_clearance", p.body_clearance);

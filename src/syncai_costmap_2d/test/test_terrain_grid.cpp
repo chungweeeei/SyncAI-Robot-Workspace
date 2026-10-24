@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -616,6 +617,108 @@ TEST(TerrainGrid, RayClearingStopsShortOfTheRaysEnd)
   EXPECT_EQ(s.grid.clearedSamples(), 0u);
   s.classify();
   EXPECT_EQ(s.at(kLegX, kLegY), LETHAL_OBSTACLE);
+}
+
+namespace
+{
+// One return in every `every` cells over [x0, x1] x [y0, y1]: the cells the
+// lidar has only just begun to see, too few for a ground of their own.
+template <typename F>
+void sparse(Scene & s, double x0, double x1, double y0, double y1, F f, int every)
+{
+  std::uniform_real_distribution<double> jitter(0.0, kRes);
+  int n = 0;
+  for (double y = y0; y < y1; y += kRes) {
+    for (double x = x0; x < x1; x += kRes) {
+      if (n++ % every == 0) {
+        const double px = x + jitter(s.rng), py = y + jitter(s.rng);
+        s.grid.addSample(px, py, f(px, py) + s.noise(s.rng), kNow - 1.0);
+      }
+    }
+  }
+}
+
+// dp's arched ramp as robot01 came to it (2026-10-24): the floor and the
+// ramp's lower part seen, the next 0.3 m of it only just coming into view,
+// nothing beyond yet.
+template <typename F>
+void rampScene(Scene & s, F ramp)
+{
+  s.surface(kOrigin, 1.2, kOrigin, -kOrigin, ramp);
+  sparse(s, 1.2, 1.5, kOrigin, -kOrigin, ramp, 3);
+}
+}  // namespace
+
+TEST(TerrainGrid, SparseCellsOnARampAreJudgedOnTheWalkableGroundBesideThem)
+{
+  // 0.25 m over 1 m from x = 0.5 (14 deg), level after. Each sparse cell,
+  // judged against the robot's ground, has its returns 0.17-0.25 m up: the
+  // lethal band robot01's replay showed. Judged against the ramp cell beside
+  // it, which the robot walks onto, nothing is in the band.
+  auto ramp = [](double x, double) { return std::clamp(0.25 * (x - 0.5), 0.0, 0.25); };
+  {
+    Scene s;
+    s.grid.params.sparse_ground_radius = 0.0;  // as before
+    rampScene(s, ramp);
+    s.classify();
+    // Every cell with a return (one in three) is lethal.
+    EXPECT_GT(s.share(1.2, 1.5, -1.9, 1.9, LETHAL_OBSTACLE), 0.1);
+  }
+  Scene s;
+  rampScene(s, ramp);
+  const auto st = s.classify();
+  EXPECT_EQ(s.share(1.2, 1.5, -1.9, 1.9, LETHAL_OBSTACLE), 0.0);
+  EXPECT_EQ(st.lethal_obstacle, 0u);
+}
+
+TEST(TerrainGrid, SparseCellsAreNeverJudgedOnABoxTopOrAStairTread)
+{
+  // The reference is ground the robot can walk onto from its own cell, so a
+  // box top (an island) or a flight's treads (reached only over the path's
+  // seeds) never is one: each scene costs exactly what it did with the
+  // reference off. Estimating a sparse cell's ground from a wider
+  // neighbourhood instead took 78 % of the box and 33 % of the flight off
+  // lethal.
+  const auto costs = [](double radius, auto build) {
+    Scene s;
+    s.grid.params.sparse_ground_radius = radius;
+    build(s);
+    s.classify();
+    return s.cost;
+  };
+  // A 0.25 m box on floor never seen, its top sparse.
+  const auto box = [](Scene & s) {
+    sparse(
+      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
+  };
+  // The same box on a seen floor.
+  const auto box_on_floor = [](Scene & s) {
+    s.floor();
+    sparse(
+      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
+  };
+  // A flight seen from its foot, its first treads sparse, with and without
+  // the stair link's path climbing it.
+  const auto flight = [](Scene & s) {
+    sparse(
+      s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
+    s.surface(0.56, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); });
+  };
+  const auto flight_with_path = [&](Scene & s) {
+    flight(s);
+    s.grid.setPath(stairPath());
+  };
+  const double r = syncai_costmap_2d::TerrainParams().sparse_ground_radius;
+  ASSERT_GT(r, 0.0);
+  EXPECT_EQ(costs(r, box), costs(0.0, box));
+  EXPECT_EQ(costs(r, box_on_floor), costs(0.0, box_on_floor));
+  EXPECT_EQ(costs(r, flight), costs(0.0, flight));
+  EXPECT_EQ(costs(r, flight_with_path), costs(0.0, flight_with_path));
+  // And they are lethal to begin with.
+  Scene s;
+  box(s);
+  s.classify();
+  EXPECT_GT(s.share(0.8, 1.2, -0.2, 0.2, LETHAL_OBSTACLE), 0.5);
 }
 
 int main(int argc, char ** argv)

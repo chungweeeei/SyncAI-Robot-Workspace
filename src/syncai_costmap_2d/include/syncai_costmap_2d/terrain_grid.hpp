@@ -33,6 +33,30 @@
 // what keeps a low obstacle on never-seen floor an obstacle: its own
 // points, 0.2-0.5 m up, are then in the band.
 //
+// Sparse cells on a slope (2026-10-24): that borrowed height is wrong where
+// the floor ahead is not the robot's height. Coming to dp's arched ramp
+// (0.25 m crown), the cells the lidar has only just begun to see -- the
+// crown first shows ~1.9 m out -- hold a return or two, borrow the robot's
+// ground, and their returns sit 0.20-0.25 m over it: a lethal band 1-2 m
+// ahead across the way. Replayed from robot01's dp bag through this grid,
+// 554 lethal cells over 32 frames of the approach, every one of them on
+// borrowed ground. So a cell with returns but no ground of its own judges
+// them against the nearest cell within sparse_ground_radius that has a ground
+// of its own and that the robot can walk onto from where it stands (a flood
+// from its own cell, over max_step_height steps -- not from the path, whose
+// seeds reach a stair's treads): on the ramp that is the ramp beside it, and
+// the band is gone (1 cell in 1 frame). Only the obstacle test reads that reference;
+// the ground estimate, the reach flood, the step and the slope rules are
+// unchanged. Rejected: estimating the ground over a wider neighbourhood (or
+// from the path's heights). It took a sparse box top or the next tread of a
+// flight for floor, and the box on never-seen floor fell from 78 % lethal to
+// 28 %, the flight seen from its foot from 70 % to 33 %; a box or a tread is
+// an island, never walked onto, so here neither is ever a reference, and both
+// scenes (and the dp stair's approach, replayed) keep every lethal cell.
+// What this does not open: a slope whose foot was never seen at all, so that
+// nothing between the robot and its upper part is known (the sim's
+// voxel-stepped ramp, a 0.1 m tread below the lidar's view).
+//
 // Overhead (2026-10-22): a return more than body_clearance + max_ground_lift
 // above the lowest one its cell holds is clearance the robot walks under --
 // a stair's underside, a table top, a beam. Whatever ground the estimate
@@ -141,6 +165,15 @@ struct TerrainParams
   // a wall's or a box's returns cannot lift the ground past the floor they
   // stand on when the floor has been seen at all.
   double max_ground_lift = 0.15;
+  // A cell with returns but too few for a ground of its own judges them
+  // against the nearest walkable known ground this close, if any, rather than
+  // the robot's (the header has why). On robot01's dp ramp replay the
+  // approach's 554 lethal cells over 32 frames fell to 132 over 22 at 0.15
+  // m, 50 / 16 at 0.25, 15 / 7 at 0.35 and 1 / 1 at 0.4 (0 from 0.45); the
+  // dp stair's approach kept every island, step and slope cell at each. 0.4,
+  // not more: the further the reference, the likelier it is a floor at
+  // another height than the cell's. 0 = off.
+  double sparse_ground_radius = 0.4;
 
   // ---- the geometry rules: SurfaceMapParams' values, one calibration ----
   // Disc the slope is judged under; the costmap's inscribed radius.
@@ -263,7 +296,14 @@ private:
   void estimateGround(double now, double robot_ground_z) const;
   bool fitSlope(int ix, int iy, double & tilt_deg) const;
   bool cellHasObstacle(size_t i, double now, double ground) const;
-  void floodReach(double robot_x, double robot_y) const;
+  // The reach flood (classify()) into `reached`: from the robot's cell, and
+  // from the path's poses when `with_path`.
+  void floodReach(
+    double robot_x, double robot_y, bool with_path, std::vector<uint8_t> & reached) const;
+  // The height each cell's returns are judged against for the obstacle rule:
+  // its ground, or for a sparse cell the nearest walkable known ground within
+  // sparse_ground_radius (the header has why).
+  void obstacleReference() const;
   float rel(double t) const;
   // How far above the lowest return a return is overhead (see the header).
   float overheadMargin() const;
@@ -287,6 +327,10 @@ private:
   mutable std::vector<float> ground_;
   mutable std::vector<uint8_t> ground_known_;
   mutable std::vector<uint8_t> reached_;
+  // The flood from the robot's own cell only, and the obstacle rule's
+  // reference height per cell.
+  mutable std::vector<uint8_t> walkable_;
+  mutable std::vector<float> obstacle_ref_;
   mutable std::vector<float> scratch_;
   mutable std::vector<int> queue_;
 };

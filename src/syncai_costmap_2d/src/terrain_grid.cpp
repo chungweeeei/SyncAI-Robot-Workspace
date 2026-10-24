@@ -409,23 +409,26 @@ bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
   return true;
 }
 
-void TerrainGrid::floodReach(double robot_x, double robot_y) const
+void TerrainGrid::floodReach(
+  double robot_x, double robot_y, bool with_path, std::vector<uint8_t> & reached) const
 {
-  reached_.assign(cells_.size(), 0);
+  reached.assign(cells_.size(), 0);
   queue_.clear();
   auto seed = [&](double x, double y) {
     int ix, iy;
     if (worldToCell(x, y, ix, iy)) {
       const size_t i = index(ix, iy);
-      if (!reached_[i]) {
-        reached_[i] = 1;
+      if (!reached[i]) {
+        reached[i] = 1;
         queue_.push_back(static_cast<int>(i));
       }
     }
   };
   seed(robot_x, robot_y);
-  for (const auto & p : path_) {
-    seed(p.x, p.y);
+  if (with_path) {
+    for (const auto & p : path_) {
+      seed(p.x, p.y);
+    }
   }
   for (size_t head = 0; head < queue_.size(); ++head) {
     const int i = queue_[head];
@@ -437,11 +440,46 @@ void TerrainGrid::floodReach(double robot_x, double robot_y) const
         continue;
       }
       const size_t j = index(nx, ny);
-      if (reached_[j] || std::fabs(ground_[j] - g) > params.max_step_height) {
+      if (reached[j] || std::fabs(ground_[j] - g) > params.max_step_height) {
         continue;
       }
-      reached_[j] = 1;
+      reached[j] = 1;
       queue_.push_back(static_cast<int>(j));
+    }
+  }
+}
+
+void TerrainGrid::obstacleReference() const
+{
+  obstacle_ref_.assign(ground_.begin(), ground_.end());
+  const int r = static_cast<int>(std::floor(params.sparse_ground_radius / res_ + 1e-9));
+  if (r <= 0) {
+    return;
+  }
+  const int r2 = r * r;
+  for (int iy = 0; iy < ny_; ++iy) {
+    for (int ix = 0; ix < nx_; ++ix) {
+      const size_t i = index(ix, iy);
+      // Only a cell with returns and no ground of its own; one with no
+      // returns has nothing to judge.
+      if (ground_known_[i] || cells_[i].count == 0) {
+        continue;
+      }
+      int best = r2 + 1;
+      for (int ddy = -r; ddy <= r; ++ddy) {
+        for (int ddx = -r; ddx <= r; ++ddx) {
+          const int d2 = ddx * ddx + ddy * ddy;
+          const int nx = ix + ddx, ny = iy + ddy;
+          if (d2 >= best || nx < 0 || ny < 0 || nx >= nx_ || ny >= ny_) {
+            continue;
+          }
+          const size_t j = index(nx, ny);
+          if (ground_known_[j] && walkable_[j]) {
+            best = d2;
+            obstacle_ref_[i] = ground_[j];
+          }
+        }
+      }
     }
   }
 }
@@ -451,7 +489,14 @@ void TerrainGrid::classify(
   TerrainStats * stats) const
 {
   estimateGround(now, robot_ground_z);
-  floodReach(robot_x, robot_y);
+  floodReach(robot_x, robot_y, true, reached_);
+  // The floor the robot can walk onto from where it stands, without the
+  // path's seeds (they reach a stair's treads): what a sparse cell may be
+  // judged against.
+  if (params.sparse_ground_radius > 0.0) {
+    floodReach(robot_x, robot_y, false, walkable_);
+  }
+  obstacleReference();
   TerrainStats st;
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
@@ -463,8 +508,9 @@ void TerrainGrid::classify(
       const double ground = ground_[i];
 
       // 1. A return in the band above the ground: a wall foot, a box, a
-      // person, a tread two risers up.
-      if (cellHasObstacle(i, now, ground)) {
+      // person, a tread two risers up. A sparse cell's band starts from
+      // obstacleReference()'s height, not the borrowed one.
+      if (cellHasObstacle(i, now, obstacle_ref_[i])) {
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_obstacle;
         continue;

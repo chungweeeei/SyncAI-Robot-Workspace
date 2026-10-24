@@ -274,7 +274,21 @@ and judges every cell on each update:
    the floor under and ahead of it was seen 5–13 s earlier, from further off.
    A cell with fewer than `min_ground_samples` returns borrows the robot's own
    ground (the lidar frame's z minus `sensor_height`, the obstacle layer's
-   `height_reference: sensor`). **Overhead** returns — more than
+   `height_reference: sensor`) — except in the obstacle rule below, where a
+   cell that has a few returns judges them against the nearest known ground
+   within `sparse_ground_radius` (0.4 m) **that the robot can walk onto from
+   where it stands** (a second reach flood, from its own cell only), when
+   there is one (2026-10-24). Borrowed, the robot's height made the cells the
+   lidar has only just begun to see on a slope — a return or two each — a
+   lethal band 1–2 m ahead: robot01's dp bag, replayed through the grid at
+   dp's arched ramp (0.25 m crown), gave 554 lethal cells on the approach,
+   all on borrowed ground, and 1 with the reference. Not a wider ground
+   estimate, nor the path's heights: either took a sparse box top or a
+   flight's next tread for floor (a box on never-seen floor 78 % → 28 %
+   lethal, a flight seen from its foot 70 % → 33 %), while a box or a tread
+   is never walked onto and so never the reference; the dp stair's approach,
+   replayed the same way, keeps every island, step and slope cell.
+   **Overhead** returns — more than
    `body_clearance` + `max_ground_lift` (0.75 m) above the lowest return of
    the cell (on intake) or of the 3×3 neighbourhood (in the estimate) — are
    clearance the robot walks under: above the obstacle band for any ground
@@ -286,8 +300,8 @@ and judges every cell on each update:
    MPPI failing half its cycles for 18 s, the robot standing and twitching.
 2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
    (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
-   that ground → LETHAL. **Ray clearing** (2026-10-23) is what takes a person
-   who walks on out: every return's ray is traced through the cells between
+   that ground (for a sparse cell, the reference above) → LETHAL.
+   **Ray clearing** (2026-10-23) is what takes a person who walks on out: every return's ray is traced through the cells between
    the lidar and it (`TerrainGrid::clearRay()`, Amanatides–Woo in the plane,
    the ray's height interpolated per cell), and a sample within
    `ray_clear_tolerance` (0.05) of the ray's height in its cell, older than
