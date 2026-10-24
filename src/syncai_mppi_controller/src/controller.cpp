@@ -123,6 +123,7 @@ void MPPIController::reset()
   stair_mode_.reset();
   climbing_stairs_ = false;
   stair_ramp_valid_ = false;
+  stair_corner_latched_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
@@ -734,6 +735,7 @@ bool MPPIController::climbStairs(
       climbing_stairs_ = false;
       stair_turning_ = false;
       stair_reverse_ = false;
+      stair_corner_latched_ = false;
       // The warm-started sequence predates the stairs; start from scratch.
       optimizer_.reset();
       RCLCPP_INFO(logger_, "Off the stairs: handing back to the optimizer");
@@ -743,6 +745,7 @@ bool MPPIController::climbStairs(
   if (!climbing_stairs_) {
     climbing_stairs_ = true;
     approaching_goal_ = false;
+    stair_corner_latched_ = false;
     optimizer_.reset();
     RCLCPP_INFO(logger_, "Stairs: the optimizer is skipped until the path is level again");
   }
@@ -862,14 +865,37 @@ bool MPPIController::climbStairs(
                              ? 0.75 * stair_linear_vel_ * stair_linear_vel_ / max_linear_accel_
                              : 0.0;
       const bool stopping = corner_dist <= stair_turn_dist_ + brake;
-      const bool at_corner =
-        corner_dist <= stair_turn_dist_ || (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      // Reached is latched per corner (2026-10-24). Unlatched, a robot that
+      // stood inside the brake zone but short of stair_turn_dist was at the
+      // corner only while its last command was zero: the turn onto the next
+      // flight began, the S-curve's first step (0.01 m/s) or the body's
+      // swing on the spot ended "at the corner", the carrot went back to the
+      // corner ~15 deg the other way, and so on -- wz flipped sign every
+      // ~0.4 s and the heading swung -142..-160 deg for over a minute on
+      // dp's landing 2 in the sim (the log's "turning in place ~85 deg" every
+      // 0.2-0.5 s is that latch restarting). Where the robot stops depends
+      // on how far the gait overruns the brake, so the real robot can stop
+      // there too.
+      if (
+        stair_corner_latched_ && std::hypot(cp.x - stair_corner_x_, cp.y - stair_corner_y_) >
+                                   syncai_util::StairMode::kSameCorner) {
+        stair_corner_latched_ = false;  // the next corner: the last one is behind
+      }
+      const bool at_corner = stair_corner_latched_ || corner_dist <= stair_turn_dist_ ||
+                             (stopping && std::fabs(last_cmd_vel_.linear.x) < 1e-3);
+      if (at_corner && !stair_corner_latched_) {
+        stair_corner_latched_ = true;
+        stair_corner_x_ = cp.x;
+        stair_corner_y_ = cp.y;
+      }
       if (stopping && !at_corner) {
         target = 0.0;
       }
       if (!at_corner && corner_idx < carrot_idx) {
         carrot_idx = corner_idx;
       }
+    } else {
+      stair_corner_latched_ = false;
     }
     const auto & carrot = plan.poses[carrot_idx];
     const double dx = carrot.pose.position.x - x;

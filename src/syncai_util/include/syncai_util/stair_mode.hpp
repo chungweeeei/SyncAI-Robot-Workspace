@@ -286,6 +286,14 @@ public:
     double & heading_after);
 
   /**
+   * Two findCorner() results this close (m, in the global frame) are the same
+   * corner. Each controller latches "reached" per corner (2026-10-24): the
+   * replanned path moves a corner by centimetres between cycles, and the two
+   * corners of a U landing are a flight's width apart (dp: 1.4-1.6 m).
+   */
+  static constexpr double kSameCorner = 0.3;
+
+  /**
    * @brief Which way the next stair goes: +1 when the first pose within
    * `max_look` metres of path after `idx` whose height differs from
    * `idx`'s by `min_rise` or more is higher, -1 when it is lower, 0 when
