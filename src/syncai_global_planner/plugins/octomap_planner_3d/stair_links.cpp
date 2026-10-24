@@ -699,9 +699,8 @@ std::vector<Landing> landings(
 // loops cut) as flights and landing corners. Returns false, with why, when
 // the geometry cannot be read; the caller keeps the walked link then.
 bool flightLinks(
-  const SurfaceMap & m, const octomap::OcTree * tree, const std::vector<Waypoint> & walk,
-  CellId a, CellId b, size_t ka, size_t kb, const StairLinkParams & p, StairLinks & out,
-  std::string & why)
+  const SurfaceMap & m, const octomap::OcTree * tree, const std::vector<Waypoint> & walk, CellId a,
+  CellId b, size_t ka, size_t kb, const StairLinkParams & p, StairLinks & out, std::string & why)
 {
   if (walk.size() < 4) {
     why = "too few points to read a profile from";
