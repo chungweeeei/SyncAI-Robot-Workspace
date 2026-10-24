@@ -669,7 +669,11 @@ predate `.clang-format`; a wholesale reformat is its own commit, after which the
 check can widen. `build` (an **arm64** runner, because the robot is a Jetson):
 the `dev` image, pulled from `ghcr.io/<repo>:dev-<Dockerfile sha256>` and built
 only when no run has built that Dockerfile yet; both `.repos` files imported;
-`scripts/build.sh` through `docker-compose.build.yml`; `test_wifi_manager.py`;
+`scripts/build.sh` through `docker-compose.build.yml`, compiling through
+**ccache** (turned on by CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` environment
+variables in the workflow only, so robot01's builds are unchanged; the cache
+is in the Actions cache, saved by `main` / `dev` pushes only, one entry per
+branch); `test_wifi_manager.py`;
 then a **smoke test** (`.github/scripts/smoke_test.sh`): every pane of the three
 session specs, started with their `sleep` offsets against a generated 5 × 5 m
 fixture map (`robot_id: ci_smoke`), failed if any launch has exited or logged a

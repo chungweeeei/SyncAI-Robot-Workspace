@@ -687,6 +687,18 @@ COPY --from=rust-underlay /opt/rust /opt/rust
 COPY --from=rust-underlay /opt/ros2_rust_underlay /opt/ros2_rust_underlay
 RUN echo "source ${ROS2_RUST_UNDERLAY}/install/setup.bash" >> /home/syncrobotic/.bashrc
 
+# ccache, for CI (2026-10): every CI run is a clean `colcon build` of ~11 min,
+# almost all of it recompiling sources that did not change, and the critical
+# path (syncai_common -> util -> costmap_2d -> mppi) is most of that, so more
+# cores do not help. The workflow turns it on through CMake's
+# CMAKE_<LANG>_COMPILER_LAUNCHER environment variables (CMake >= 3.17 reads
+# them at a fresh configure) and keeps the cache in the Actions cache. Nothing
+# sets them on the robot, so robot01's builds are unchanged. Its own layer near
+# the end of the stage, so adding it re-ran only the short tail below it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ccache \
+    && rm -rf /var/lib/apt/lists/*
+
 # rosdep: `init` needs root (it writes /etc/ros/rosdep/sources.list.d), but the
 # cache `update` builds is per user, in ~/.ros -- so it runs once, as
 # syncrobotic, below. There used to be a root `rosdep update` here as well; its

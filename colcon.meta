@@ -11,9 +11,26 @@
     "than patch the submodule (it is pinned upstream, unmodified), we reproduce the",
     "flags build.sh would have passed. ROS_EDITION would default correctly today,",
     "but it is spelled out because the CMakeLists tests it with STREQUAL and an",
-    "empty value silently means ROS2 by accident, not by intent."
+    "empty value silently means ROS2 by accident, not by intent.",
+    "",
+    "behaviortree_cpp_v3 / vizionsdk_ros2: their own tests and examples are not",
+    "built. Nothing runs them (both are pinned upstream, unmodified), and BT.CPP's",
+    "gtest suite + examples were a good part of its ~2 min in every CI build. The",
+    "BT.CPP library, sample_nodes and tools are unaffected. small_gicp's tests and",
+    "examples already default to OFF; Livox-SDK2 has no switch for its samples."
   ],
   "names": {
+    "behaviortree_cpp_v3": {
+      "cmake-args": [
+        "-DBUILD_UNIT_TESTS=OFF",
+        "-DBUILD_EXAMPLES=OFF"
+      ]
+    },
+    "vizionsdk_ros2": {
+      "cmake-args": [
+        "-DBUILD_TESTING=OFF"
+      ]
+    },
     "livox_ros_driver2": {
       "cmake-args": [
         "-DROS_EDITION=ROS2",
