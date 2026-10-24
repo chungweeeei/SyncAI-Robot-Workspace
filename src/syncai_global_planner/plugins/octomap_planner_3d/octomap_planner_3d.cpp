@@ -119,6 +119,7 @@ void OctomapPlanner3D::initialize(
     "stair_flights_landing_slope_deg",
     rclcpp::ParameterValue(stair_params_.flights_landing_slope_deg));
   dp("stair_flights_lead", rclcpp::ParameterValue(stair_params_.flights_lead));
+  dp("stair_flights_turn_radius", rclcpp::ParameterValue(stair_params_.flights_turn_radius));
   dp("stair_centre", rclcpp::ParameterValue(stair_params_.centre));
   dp("stair_centre_dz", rclcpp::ParameterValue(stair_params_.centre_dz));
   dp("stair_centre_max_half_width", rclcpp::ParameterValue(stair_params_.centre_max_half_width));
@@ -184,6 +185,7 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(
     name + ".stair_flights_landing_slope_deg", stair_params_.flights_landing_slope_deg);
   node->get_parameter(name + ".stair_flights_lead", stair_params_.flights_lead);
+  node->get_parameter(name + ".stair_flights_turn_radius", stair_params_.flights_turn_radius);
   node->get_parameter(name + ".stair_centre", stair_params_.centre);
   node->get_parameter(name + ".stair_centre_dz", stair_params_.centre_dz);
   node->get_parameter(name + ".stair_centre_max_half_width", stair_params_.centre_max_half_width);
@@ -544,16 +546,17 @@ bool OctomapPlanner3D::buildMap(
     std::lock_guard<std::mutex> lock(mutex_);
     keepout_block_radius = keepout_block_radius_;
   }
+  // Freed once the stair links are built, before the map is handed over: a
+  // 7 M node tree is ~300 MB resident, the surface map ~30 MB. The links
+  // read it for the walls round the landings' turns.
+  auto tree = std::make_unique<octomap::OcTree>(0.1);
   try {
-    // Scoped so the tree is freed before the map is handed over: a 7 M node
-    // tree is ~300 MB resident, the surface map ~30 MB.
-    octomap::OcTree tree(0.1);
-    if (o3d::loadOctomapBt(octomap_file, tree, error)) {
+    if (o3d::loadOctomapBt(octomap_file, *tree, error)) {
       RCLCPP_INFO(
         logger_, "[OctomapPlanner3D][%s] loaded %s: %zu nodes at %.3f m in %.2f s", __func__,
-        octomap_file.c_str(), tree.size(), tree.getResolution(),
+        octomap_file.c_str(), tree->size(), tree->getResolution(),
         std::chrono::duration<double>(Clock::now() - t0).count());
-      map = o3d::buildSurfaceMap(tree, map_params_, &stats);
+      map = o3d::buildSurfaceMap(*tree, map_params_, &stats);
     }
   } catch (const std::exception & e) {
     error = std::string("building the surface map threw: ") + e.what();
@@ -591,7 +594,7 @@ bool OctomapPlanner3D::buildMap(
     std::vector<o3d::Waypoint> track;
     std::string track_error;
     if (o3d::readTrack(poses_file, lidar_height_, track, track_error)) {
-      links = o3d::buildStairLinks(*map, track, stair_params_);
+      links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links from %zu keyframes of %s (min_rise %.2f m)",
@@ -633,6 +636,7 @@ bool OctomapPlanner3D::buildMap(
         __func__, track_error.c_str());
     }
   }
+  tree.reset();
   if (stats.traversable == 0) {
     RCLCPP_WARN(
       logger_,

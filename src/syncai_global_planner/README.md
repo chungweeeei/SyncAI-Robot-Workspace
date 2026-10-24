@@ -488,21 +488,47 @@ that direction; its foot and head are where a march along the axis, down
 and up from the middle, finds the surface level for 0.45 m (a tread is
 0.3) at about the landings' heights. Consecutive flights are joined with
 corners on the landing: ~90° apart, one corner at the axes' crossing (an
-L); ~180°, two corners — out from the head by 0.5–1 m (the median of where
-the walk went onto the landing, capped at half the map's landing depth when
-a wall was found), across, and in to the next foot (a U); any other angle,
+L); ~180°, two corners — out onto the landing, across square to the flights,
+and in to the next foot (a U); any other angle,
 or a flight whose well cannot be read, falls back to the walked link with a
 note. A `stair_flights_lead` (0.5 m) straight run before the first foot and
 past the last head lines the robot up, re-anchoring the link's ends to the
-floor cells nearest those points (or keeping the walk's floor points, lightly
-smoothed, when no floor cell is within a metre — dp's approach corridor).
+floor cells nearest those points, else to the first floor cell straight on
+along the flight's axis within 2 m (2026-10-24), else keeping the walk's floor
+points, lightly smoothed. The straight-on search is for the floor just past a
+stair head, which the lidar cannot see from the flight below it nor from on it
+(dp's 2F: 1.3 m of `no_free_above`): the walk used to stand in there, and on dp
+the path swung 35° off the axis and 56° back right where the robot stops to
+switch the policy back; it now runs straight on to the floor, and the nearest
+wall along it went from 0.32 m to 0.50 m.
 Nothing on the stair itself is smoothed, and `StairLink::turns` lists the
 corner vertices for the controllers' stair mode. On dp: 4 flights 1.6 / 1.5
-/ 1.4 / 1.3 m wide, three U landings with the turns 0.5 m out, 6 turns; the
+/ 1.4 / 1.3 m wide, three U landings, 6 turns; the
 walked route ran 0.08–0.29 m off the axes, the new one under 0.01 m. Two of
 dp's three landings are not in the surface map at all (seen only edge-on
-from the flights), which is why the corners come from the walk and not the
-map.
+from the flights), which is why the corners of a U are not placed against the
+surface map.
+
+**Where a U's corners go** (2026-10-24). Both corners lie the same distance
+out from the later of the two stair edges, so the leg between them is square
+to the flights, and that distance (0.5–1.5 m) is the one that leaves the most
+room round the two in-place turns (`stair_flights_turn_radius`, 0.455 m, the
+padded footprint's circumscribed radius) and `robot_radius` either side of the
+leg — the nearest such when there is room to spare. What blocks is an
+occupied voxel in the body's band over the landing (above a step, below
+`body_clearance`; a handrail at ~0.9 m is above it), read off the **octree**,
+which the plugin and the CLI now keep until the links are built: by surfaces
+alone a wall that runs into the slab above and a landing nobody saw the floor
+of look the same, and dp's first landing holds faces 0.3 m below and 0.1 m
+above its floor side by side. The landing's height is the one most columns of
+its near metre hold a face at, not the walk's (0.2 m low there). Until then
+the corners came from the walk (0.5–1 m out, each flight's own head / foot),
+capped at half a depth measured along one ray: on dp's second landing the ray
+went through a gap in the scanned far wall (2.3 m read for 1.05 m), and the two
+flights' edges 0.36 m apart slanted the leg 0.22 m past the newel (0.30 m
+now). dp's landings are 0.95–1.05 m deep, under the turn's 0.91 m plus the
+hind legs' half body, so all three corners stay 0.5 m out and come out
+0.02–0.10 m short; a startup note names each such landing.
 
 A walked link that stays walked is **centred in the stairwell** since 2026-10-20
 (`stair_centre`), because the operator walks a stair where they like —

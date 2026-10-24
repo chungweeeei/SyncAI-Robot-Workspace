@@ -334,6 +334,17 @@
       stair_flights_landing_slope_deg: 15.0
       # The straight run before the first foot and past the last head (m).
       stair_flights_lead: 0.5
+      # The disc the body sweeps turning in place at a U landing's corners:
+      # the padded footprint's circumscribed radius (0.38 x 0.25 m, below).
+      # Both corners go the same distance out, so the leg between them is
+      # square to the flights, at the distance that leaves the most room round
+      # the two turns and robot_radius either side of the leg -- walls, newels
+      # and anything on the landing read off the octree at body height
+      # (2026-10-24; before, 0.5-1 m from the walk, which slanted dp's second
+      # leg 0.22 m past the newel). dp's three landings are 0.95-1.05 m deep,
+      # under this disc plus the hind legs' half body: every corner is 0.5 m
+      # out and 0.02-0.10 m short, and a startup note says so per landing.
+      stair_flights_turn_radius: 0.455
       # A walked link (a switchback stairwell) is centred in the well
       # (2026-10-20): at every point the cross-section square to the walk is
       # measured on the surface map -- columns holding a surface within
