@@ -1105,6 +1105,17 @@
       min_ground_samples: 6
       ground_quantile: 0.25
       max_ground_lift: 0.15
+      # A cell with returns but under 6 judges them against the nearest known
+      # ground within 0.4 m that the robot can walk onto from where it
+      # stands (not over the path's seeds), and only then the robot's own
+      # (2026-10-24). Borrowed, the robot's height put a lethal band 1-2 m
+      # ahead of dp's arched ramp, where the crown first comes into view with
+      # a return or two per cell: 554 cells over the approach in robot01's dp
+      # bag replayed through the grid, 1 with this (radius sweep in
+      # terrain_grid.hpp). A box or a stair tread is never walked onto, so it
+      # is never the reference; the dp stair's approach, replayed, kept every
+      # island, step and slope cell. 0 = off.
+      sparse_ground_radius: 0.4
       # Ray clearing (2026-10-23; terrain_grid.hpp has the design). Until
       # then obstacle_memory was the only way a person who walked on left
       # the costmap: 2 s, plus a costmap cycle (0.2 s at 5 Hz), plus MPPI's
