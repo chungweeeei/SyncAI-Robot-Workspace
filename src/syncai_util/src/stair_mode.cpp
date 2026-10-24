@@ -4,6 +4,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
@@ -91,6 +92,24 @@ void StairMode::setPlan(const nav_msgs::msg::Path & full_plan)
 {
   full_plan_ = full_plan;
   plan_has_height_ = pathHasHeight(full_plan);
+  medianHeights(full_plan_);
+}
+
+void StairMode::medianHeights(nav_msgs::msg::Path & path)
+{
+  auto & P = path.poses;
+  if (P.size() < 3) {
+    return;
+  }
+  // From the raw heights, not the ones already filtered on this pass.
+  std::vector<double> z(P.size());
+  for (size_t i = 0; i < P.size(); ++i) {
+    z[i] = P[i].pose.position.z;
+  }
+  for (size_t i = 1; i + 1 < P.size(); ++i) {
+    P[i].pose.position.z =
+      std::max(std::min(z[i - 1], z[i]), std::min(std::max(z[i - 1], z[i]), z[i + 1]));
+  }
 }
 
 StairMode::Decision StairMode::update(

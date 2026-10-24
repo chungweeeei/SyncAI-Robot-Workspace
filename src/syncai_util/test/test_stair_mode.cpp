@@ -134,6 +134,68 @@ TEST(StairRise, AheadSlidesTheSameWindowFurtherOut)
   EXPECT_NEAR(StairMode::stairRiseAhead(ramp, 0, 3.0, 1.0), 0.2, 1e-9);
 }
 
+// The median keeps a flight (monotonic heights) pose for pose, and takes a
+// one-pose dip out.
+TEST(StairRise, MedianKeepsAFlightAndDropsADip)
+{
+  const auto stair = stairPath();
+  auto filtered = stair;
+  StairMode::medianHeights(filtered);
+  for (size_t i = 0; i < stair.poses.size(); ++i) {
+    EXPECT_DOUBLE_EQ(filtered.poses[i].pose.position.z, stair.poses[i].pose.position.z) << i;
+  }
+  auto down = stair;
+  std::reverse(down.poses.begin(), down.poses.end());
+  auto down_f = down;
+  StairMode::medianHeights(down_f);
+  for (size_t i = 0; i < down.poses.size(); ++i) {
+    EXPECT_DOUBLE_EQ(down_f.poses[i].pose.position.z, down.poses[i].pose.position.z) << i;
+  }
+
+  auto dip = levelPath();
+  dip.poses[40].pose.position.z = -0.2;
+  StairMode::medianHeights(dip);
+  EXPECT_DOUBLE_EQ(dip.poses[40].pose.position.z, 0.0);
+}
+
+// dp's arched ramp as the return leg's Octo3D path read it (2026-10-24):
+// the crown at -0.2, a run of -0.3 down its far side, one -0.5 pose at the
+// foot among -0.4 (there exactly 1 m from the crown's last pose; 0.9 m here,
+// clear of the window's edge). Raw, the window reads 0.3 m and the robot went
+// into stair mode; through setPlan()'s median it reads 0.2 m and the robot
+// walks on.
+nav_msgs::msg::Path archPath()
+{
+  auto p = levelPath();
+  for (size_t i = 0; i < p.poses.size(); ++i) {
+    double z = -0.4;
+    if (i >= 30 && i < 40) {
+      z = -0.2;
+    } else if (i >= 40 && i < 48) {
+      z = -0.3;
+    } else if (i == 48) {
+      z = -0.5;
+    }
+    p.poses[i].pose.position.z = z;
+  }
+  return p;
+}
+
+TEST(StairMode, OnePoseDipOnARampNeverAsks)
+{
+  const auto arch = archPath();
+  EXPECT_GE(StairMode::stairRise(arch, 39, 0.0, 1.0), 0.3);
+  Harness h;
+  h.sm.setReportedPolicy(0);
+  h.sm.setPlan(arch);
+  for (size_t i = 0; i < arch.poses.size(); ++i) {
+    const auto d = h.tick(arch, i, 0.0);
+    EXPECT_FALSE(d.hold) << i;
+    EXPECT_FALSE(d.on_stairs) << i;
+  }
+  EXPECT_TRUE(h.sent.empty());
+}
+
 TEST(StairMode, StopDistanceEntersEarlierAndKeepsItsLeadWhileBraking)
 {
   Harness h;
