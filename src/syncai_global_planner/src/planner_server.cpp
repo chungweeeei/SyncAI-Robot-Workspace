@@ -935,8 +935,8 @@ void PlannerServer::republishPlan()
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     idle = plan_idle_clear_time_ > 0.0 && !last_plan_.poses.empty() &&
-      std::chrono::steady_clock::now() - last_plan_used_ >
-      std::chrono::duration<double>(plan_idle_clear_time_);
+           std::chrono::steady_clock::now() - last_plan_used_ >
+             std::chrono::duration<double>(plan_idle_clear_time_);
   }
   if (idle) {
     RCLCPP_INFO(

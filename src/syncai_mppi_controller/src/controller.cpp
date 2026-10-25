@@ -839,8 +839,7 @@ bool MPPIController::climbStairs(
       // there. The way round is latched for the turn.
       if (
         !stair_turning_ && !stair_turn_blocked_ &&
-        std::fabs(bearing) > approach_rotate_min_angle_)
-      {
+        std::fabs(bearing) > approach_rotate_min_angle_) {
         const double long_way = bearing - std::copysign(2.0 * M_PI, bearing);
         if (!isApproachBlocked(x, y, yaw, 0.0, bearing)) {
           stair_turn_sign_ = bearing >= 0.0 ? 1.0 : -1.0;
@@ -872,7 +871,8 @@ bool MPPIController::climbStairs(
           stair_turning_ = false;
           stair_turn_blocked_ = true;
           RCLCPP_INFO(
-            logger_, "Stairs: the turn round is blocked %.0f deg short: leaving it to the optimizer",
+            logger_,
+            "Stairs: the turn round is blocked %.0f deg short: leaving it to the optimizer",
             std::fabs(bearing) * 180.0 / M_PI);
         } else {
           rotateInPlace(bearing, vx, wz);
@@ -1017,8 +1017,7 @@ bool MPPIController::startBackOut(const geometry_msgs::msg::PoseStamped & robot_
   // Unmeasured on the robot: the controller log says "backing out".
   if (
     back_out_dist_ <= 0.0 || walk_vx_min_ <= 0.0 || back_out_used_ ||
-    std::fabs(last_cmd_vel_.linear.x) >= in_place_vx_max_)
-  {
+    std::fabs(last_cmd_vel_.linear.x) >= in_place_vx_max_) {
     return false;
   }
   back_out_used_ = true;
@@ -1081,8 +1080,7 @@ bool MPPIController::backOut(
     optimizer_.reset();
     rotate_to_path_pending_ = true;
     RCLCPP_INFO(
-      logger_, "Backed out %.2f m: handing back",
-      std::hypot(x - back_out_x_, y - back_out_y_));
+      logger_, "Backed out %.2f m: handing back", std::hypot(x - back_out_x_, y - back_out_y_));
     return false;
   }
   cmd = utils::toTwistStamped(vx, 0.0, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
