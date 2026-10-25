@@ -8,6 +8,7 @@
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <queue>
 #include <sstream>
 #include <unordered_map>
 
@@ -700,7 +701,8 @@ std::vector<Landing> landings(
 // the geometry cannot be read; the caller keeps the walked link then.
 bool flightLinks(
   const SurfaceMap & m, const octomap::OcTree * tree, const std::vector<Waypoint> & walk, CellId a,
-  CellId b, size_t ka, size_t kb, const StairLinkParams & p, StairLinks & out, std::string & why)
+  CellId b, size_t ka, size_t kb, const StairLinkParams & p, double min_width, StairLinks & out,
+  std::string & why)
 {
   if (walk.size() < 4) {
     why = "too few points to read a profile from";
@@ -887,6 +889,14 @@ bool flightLinks(
     }
     const double cx = o.x + median(perps) * nx, cy = o.y + median(perps) * ny;
     f.width = median(widths);
+    if (f.width < min_width) {
+      char wbuf[120];
+      std::snprintf(
+        wbuf, sizeof wbuf, "flight %zu: %.2f m wide, narrower than %.2f m", j + 1, f.width,
+        min_width);
+      why = wbuf;
+      return false;
+    }
     // The flight's extent along the axis, from its walk points.
     double s_min = 1e300, s_max = -1e300;
     for (size_t i = f.first; i <= f.last; ++i) {
@@ -1194,11 +1204,11 @@ bool flightLinks(
 
 // The row of straight links across the flight the robot walked between
 // keyframes ka and kb, from cell a (walked first) to cell b. Returns how many
-// it laid; 0, with `why`, when the stretch is not one straight flight -- the
-// caller then keeps the walked link.
+// it laid; 0, with `why`, when the stretch is not one straight flight or the
+// row is narrower than min_width -- the caller then keeps the walked link.
 size_t straightLinks(
   const SurfaceMap & m, const std::vector<Waypoint> & track, size_t ka, size_t kb, CellId a,
-  CellId b, const StairLinkParams & p, StairLinks & out, std::string & why)
+  CellId b, const StairLinkParams & p, double min_width, StairLinks & out, std::string & why)
 {
   double walked = 0.0;
   for (size_t k = ka + 1; k <= kb; ++k) {
@@ -1219,7 +1229,7 @@ size_t straightLinks(
   double lx, ly, hx, hy;
   m.cellXY(lo_cell, lx, ly);
   m.cellXY(hi_cell, hx, hy);
-  double ux, uy;
+  double ux = 0.0, uy = 0.0;
   if (!fitUphill(
         m, track, ka, kb, z_lo, z_hi, p.straight_fit_radius, hx - lx, hy - ly, ux, uy, why)) {
     return 0;
@@ -1229,6 +1239,7 @@ size_t straightLinks(
   // from further back runs onto lower-floor cells and is dropped).
   const double reach = p.straight_half_width + 1.0;
   const uint32_t first = static_cast<uint32_t>(out.links.size());
+  std::vector<StairLink> row;  // added once the row's width is known
   double perp_min = 1e300, perp_max = -1e300;
   for (int iy = std::max(0, m.iyOf(ly - reach)); iy <= std::min(m.ny - 1, m.iyOf(ly + reach));
        ++iy) {
@@ -1265,16 +1276,27 @@ size_t straightLinks(
           std::reverse(pts.begin(), pts.end());
         }
         link.pts = std::move(pts);
-        addLink(m, std::move(link), out);
+        row.push_back(std::move(link));
         perp_min = std::min(perp_min, perp);
         perp_max = std::max(perp_max, perp);
       }
     }
   }
-  const size_t laid = out.links.size() - first;
+  const size_t laid = row.size();
   if (laid == 0) {
     why = "no straight line from the lower floor reached the upper one";
     return 0;
+  }
+  const double width = perp_max - perp_min + m.res;
+  if (width < min_width) {
+    char buf[120];
+    std::snprintf(
+      buf, sizeof buf, "the straight links span %.2f m, narrower than %.2f m", width, min_width);
+    why = buf;
+    return 0;
+  }
+  for (StairLink & link : row) {
+    addLink(m, std::move(link), out);
   }
   StairFlight f;
   f.kf_a = ka;
@@ -1282,11 +1304,334 @@ size_t straightLinks(
   f.first = first;
   f.count = static_cast<uint32_t>(laid);
   f.heading_deg = std::atan2(uy, ux) * 180.0 / M_PI;
-  f.width = perp_max - perp_min + m.res;
+  f.width = width;
   f.z_lo = z_lo;
   f.z_hi = z_hi;
   out.flights.push_back(f);
   return laid;
+}
+
+// ---- Stairs the track never took (2026-10-25; see the header) ----
+
+// fn(neighbour) for every surface of the 8 neighbouring columns within one
+// step of c, in any state: the step rule without the traversability rules.
+template <typename Fn>
+void forEachStepNeighbour(const SurfaceMap & m, CellId c, Fn && fn)
+{
+  const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+  const int kz = m.cells[c].kz;
+  for (int k = 0; k < 8; ++k) {
+    const int jx = ix + SurfaceMap::kDx8[k], jy = iy + SurfaceMap::kDy8[k];
+    if (!m.inGrid(jx, jy)) {
+      continue;
+    }
+    const uint32_t col = m.col(jx, jy);
+    for (uint32_t i = m.col_begin[col], e = m.col_begin[col + 1]; i < e; ++i) {
+      if (std::abs(m.cells[i].kz - kz) <= m.step_cells) {
+        fn(static_cast<CellId>(i));
+      }
+    }
+  }
+}
+
+// Lays the stairs of the blobs that join two floors (see the header).
+// Runs after the track's links, whose stairs it skips.
+void detectStairs(
+  const SurfaceMap & m, const octomap::OcTree * tree, const StairLinkParams & p,
+  const std::vector<size_t> & comp_cells, double min_cells, StairLinks & out)
+{
+  const size_t n = m.cells.size();
+  const auto large = [&](CellId c) {
+    return m.traversable(c) && static_cast<double>(comp_cells[m.cells[c].component]) >= min_cells;
+  };
+  // A rail or the flight overhead in the body band rejects a tread too, but
+  // a blob that crosses such cells is a squeeze under something, not a
+  // stair: on dp's two stairs the treads are step / footprint / slope and a
+  // landing's no_free_above.
+  const auto usable = [&](CellId c) {
+    return !large(c) && m.cells[c].reject != static_cast<uint8_t>(Reject::ClearanceOccupied);
+  };
+
+  // The floors and their edges: owner = the large component, href = the
+  // height of the floor cell the edge was reached from (the floor's own
+  // height there; growing from each edge cell's own height would creep up a
+  // flight a voxel at a time).
+  std::vector<uint32_t> owner(n, kNoComponent);
+  std::vector<float> href(n, 0.0f);
+  std::vector<CellId> queue;
+  for (CellId c = 0; c < n; ++c) {
+    if (large(c)) {
+      owner[c] = m.cells[c].component;
+      href[c] = static_cast<float>(m.zTop(c));
+      queue.push_back(c);
+    }
+  }
+  for (size_t q = 0; q < queue.size(); ++q) {
+    const CellId c = queue[q];
+    forEachStepNeighbour(m, c, [&](CellId nb) {
+      if (
+        owner[nb] != kNoComponent || !usable(nb) ||
+        std::fabs(m.zTop(nb) - href[c]) > p.detect_floor_band) {
+        return;
+      }
+      owner[nb] = owner[c];
+      href[nb] = href[c];
+      queue.push_back(nb);
+    });
+  }
+
+  // The cells the track's links already cross: their blobs are those stairs.
+  std::vector<bool> covered(n, false);
+  for (const StairLink & l : out.links) {
+    for (size_t i = 1; i < l.pts.size(); ++i) {
+      const Waypoint & a = l.pts[i - 1];
+      const Waypoint & b = l.pts[i];
+      const int steps =
+        std::max(1, static_cast<int>(std::ceil(std::hypot(b.x - a.x, b.y - a.y) / (m.res / 2))));
+      for (int s = 0; s <= steps; ++s) {
+        const double t = static_cast<double>(s) / steps;
+        const int ix = m.ixOf(a.x + t * (b.x - a.x)), iy = m.iyOf(a.y + t * (b.y - a.y));
+        if (!m.inGrid(ix, iy)) {
+          continue;
+        }
+        const double z = a.z + t * (b.z - a.z);
+        const uint32_t col = m.col(ix, iy);
+        for (uint32_t c = m.col_begin[col], e = m.col_begin[col + 1]; c < e; ++c) {
+          // A straight link is one ramp over the risers: within a riser and
+          // a half of every tread it crosses.
+          if (std::fabs(m.zTop(c) - z) <= 0.4) {
+            covered[c] = true;
+          }
+        }
+      }
+    }
+  }
+
+  struct Contact
+  {
+    CellId cell;  // the blob's cell
+    uint32_t floor;
+    float z;  // the floor's height there
+  };
+  std::vector<uint32_t> blob(n, kNoComponent);
+  std::vector<CellId> members;
+  std::vector<Contact> contacts;
+  uint32_t nblobs = 0;
+  const size_t min_members = static_cast<size_t>(std::ceil(p.detect_min_area / (m.res * m.res)));
+  for (CellId s = 0; s < n; ++s) {
+    if (blob[s] != kNoComponent || owner[s] != kNoComponent || !usable(s)) {
+      continue;
+    }
+    const uint32_t id = nblobs++;
+    members.assign(1, s);
+    contacts.clear();
+    blob[s] = id;
+    for (size_t q = 0; q < members.size(); ++q) {
+      const CellId c = members[q];
+      forEachStepNeighbour(m, c, [&](CellId nb) {
+        if (owner[nb] != kNoComponent) {
+          contacts.push_back({c, owner[nb], href[nb]});
+          return;
+        }
+        if (blob[nb] != kNoComponent || !usable(nb)) {
+          return;
+        }
+        blob[nb] = id;
+        members.push_back(nb);
+      });
+    }
+    if (members.size() < min_members || contacts.empty()) {
+      continue;
+    }
+    size_t n_covered = 0;
+    for (const CellId c : members) {
+      n_covered += covered[c] ? 1 : 0;
+    }
+    if (n_covered >= 3) {
+      continue;
+    }
+    // The floors it touches, each at the median height of its contacts.
+    std::unordered_map<uint32_t, std::vector<double>> floor_z;
+    for (const Contact & k : contacts) {
+      floor_z[k.floor].push_back(k.z);
+    }
+    uint32_t lo = kNoComponent, hi = kNoComponent;
+    double z_lo = 0.0, z_hi = 0.0;
+    for (auto & [f, zs] : floor_z) {
+      const double z = median(zs);
+      if (lo == kNoComponent || z < z_lo) {
+        lo = f;
+        z_lo = z;
+      }
+      if (hi == kNoComponent || z > z_hi) {
+        hi = f;
+        z_hi = z;
+      }
+    }
+    if (z_hi - z_lo < p.min_rise) {
+      continue;
+    }
+
+    // The stand-in walk: the shortest way through the blob from the lower
+    // floor's edge to the upper one's (Dijkstra, 3D cell-centre distances),
+    // kept off the blob's edges. The plain shortest way cuts a U landing's
+    // inside corner, round the newel, in under 0.5 m of level walk, and
+    // flightLinks then reads no landing at all (dp's middle stair, read as
+    // one 5.5 m flight). Each move costs more the nearer it ends to an edge
+    // than kKeepOff, up to (1 + kEdgeWeight) times its length at the edge, so
+    // the walk takes a landing across its middle as an operator would.
+    constexpr double kKeepOff = 0.5, kEdgeWeight = 20.0;
+    std::unordered_map<CellId, uint32_t> local;
+    local.reserve(members.size() * 2);
+    for (uint32_t i = 0; i < members.size(); ++i) {
+      local.emplace(members[i], i);
+    }
+    // Distance to the edge, in moves: a cell is on the edge when one of its
+    // eight neighbouring columns holds surfaces but none within kEdgeDz of
+    // it -- a wall, the drop to the floor or the next flight. Not the step
+    // rule: dp's middle landing holds two levels 0.3 m apart side by side
+    // (two mapping passes), and read by steps its middle was all edges and
+    // the walk went round its rim. A column with nothing in it is no edge
+    // (an unseen tread); then a breadth-first pass inward.
+    constexpr double kEdgeDz = 0.35;
+    std::vector<int> edge(members.size(), -1);
+    {
+      std::vector<uint32_t> bfs;
+      for (uint32_t i = 0; i < members.size(); ++i) {
+        const CellId c = members[i];
+        const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+        bool on_edge = false;
+        for (int k = 0; k < 8 && !on_edge; ++k) {
+          const int jx = ix + SurfaceMap::kDx8[k], jy = iy + SurfaceMap::kDy8[k];
+          if (!m.inGrid(jx, jy)) {
+            on_edge = true;
+            continue;
+          }
+          const uint32_t col = m.col(jx, jy);
+          on_edge = m.col_begin[col] != m.col_begin[col + 1] &&
+                    m.surfaceNear(col, m.zTop(c), kEdgeDz) == kNoCell;
+        }
+        if (on_edge) {
+          edge[i] = 0;
+          bfs.push_back(i);
+        }
+      }
+      for (size_t q = 0; q < bfs.size(); ++q) {
+        const uint32_t i = bfs[q];
+        forEachStepNeighbour(m, members[i], [&](CellId nb) {
+          const auto it = local.find(nb);
+          if (it != local.end() && edge[it->second] < 0) {
+            edge[it->second] = edge[i] + 1;
+            bfs.push_back(it->second);
+          }
+        });
+      }
+    }
+    const auto edge_cost = [&](uint32_t i) {
+      const double d = std::max(0, edge[i]) * m.res;
+      return 1.0 + kEdgeWeight * std::max(0.0, kKeepOff - d) / kKeepOff;
+    };
+    const auto pos = [&](CellId c) {
+      double x, y;
+      m.cellXY(c, x, y);
+      return Waypoint{x, y, m.zTop(c)};
+    };
+    std::vector<double> dist(members.size(), std::numeric_limits<double>::infinity());
+    std::vector<uint32_t> prev(members.size(), ~uint32_t(0));
+    std::vector<bool> goal(members.size(), false);
+    using Item = std::pair<double, uint32_t>;
+    std::priority_queue<Item, std::vector<Item>, std::greater<Item>> open;
+    for (const Contact & k : contacts) {
+      const uint32_t i = local.at(k.cell);
+      if (k.floor == lo && std::fabs(k.z - z_lo) < p.min_rise / 2 && dist[i] > 0.0) {
+        dist[i] = 0.0;
+        open.push({0.0, i});
+      }
+      if (k.floor == hi && std::fabs(k.z - z_hi) < p.min_rise / 2) {
+        goal[i] = true;
+      }
+    }
+    uint32_t reached = ~uint32_t(0);
+    while (!open.empty()) {
+      const auto [d, i] = open.top();
+      open.pop();
+      if (d > dist[i]) {
+        continue;
+      }
+      if (goal[i]) {
+        reached = i;
+        break;
+      }
+      const Waypoint a = pos(members[i]);
+      forEachStepNeighbour(m, members[i], [&](CellId nb) {
+        const auto it = local.find(nb);
+        if (it == local.end()) {
+          return;
+        }
+        const Waypoint b = pos(nb);
+        const double nd =
+          d + edge_cost(it->second) * std::sqrt(
+                                        (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) +
+                                        (b.z - a.z) * (b.z - a.z));
+        if (nd < dist[it->second]) {
+          dist[it->second] = nd;
+          prev[it->second] = i;
+          open.push({nd, it->second});
+        }
+      });
+    }
+    double bx = 0, by = 0;
+    m.cellXY(s, bx, by);
+    char where[160];
+    std::snprintf(
+      where, sizeof where, "a stair-like stretch at (%.1f, %.1f), z %.2f -> %.2f, %.1f m2", bx, by,
+      z_lo, z_hi, members.size() * m.res * m.res);
+    if (reached == ~uint32_t(0)) {
+      out.notes.push_back(std::string(where) + ": no way through it from floor to floor");
+      continue;
+    }
+    std::vector<Waypoint> path;
+    for (uint32_t i = reached; i != ~uint32_t(0); i = prev[i]) {
+      path.push_back(pos(members[i]));
+    }
+    std::reverse(path.begin(), path.end());
+    const CellId a = nearestTraversable(m, path.front().x, path.front().y, z_lo, lo, 2.0);
+    const CellId b = nearestTraversable(m, path.back().x, path.back().y, z_hi, hi, 2.0);
+    if (a == kNoCell || b == kNoCell) {
+      out.notes.push_back(std::string(where) + ": no floor cell within 2 m of an end");
+      continue;
+    }
+    std::vector<Waypoint> walk;
+    walk.push_back(pos(a));
+    walk.insert(walk.end(), path.begin(), path.end());
+    walk.push_back(pos(b));
+
+    const size_t first = out.links.size(), first_flight = out.flights.size();
+    std::string why, fwhy;
+    size_t laid = 0;
+    if (p.straight) {
+      laid = straightLinks(m, walk, 0, walk.size() - 1, a, b, p, p.detect_min_width, out, why);
+    }
+    if (laid == 0 && p.flights) {
+      if (flightLinks(m, tree, walk, a, b, 0, walk.size() - 1, p, p.detect_min_width, out, fwhy)) {
+        laid = out.links.size() - first;
+      }
+    }
+    if (laid == 0) {
+      out.notes.push_back(
+        std::string(where) + ": not laid -- " + (p.straight ? why : "not laid straight") +
+        (p.flights ? "; " + fwhy : ""));
+      continue;
+    }
+    for (size_t i = first; i < out.links.size(); ++i) {
+      out.links[i].detected = true;
+      out.links[i].kf_a = out.links[i].kf_b = 0;
+    }
+    for (size_t i = first_flight; i < out.flights.size(); ++i) {
+      out.flights[i].detected = true;
+      out.flights[i].kf_a = out.flights[i].kf_b = 0;
+    }
+  }
 }
 
 }  // namespace
@@ -1358,7 +1703,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     std::string why;
     size_t laid = 0;
     if (params.straight) {
-      laid = straightLinks(m, track, anchor_kf, k, anchor, c, params, *out, why);
+      laid = straightLinks(m, track, anchor_kf, k, anchor, c, params, 0.0, *out, why);
     }
     if (laid == 0) {
       // The walk itself, loops cut.
@@ -1379,7 +1724,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
       std::string fwhy;
       if (params.flights) {
         // Flights and landing corners read off the map (see the header).
-        if (flightLinks(m, tree, link.pts, anchor, c, anchor_kf, k, params, *out, fwhy)) {
+        if (flightLinks(m, tree, link.pts, anchor, c, anchor_kf, k, params, 0.0, *out, fwhy)) {
           anchor = c;
           anchor_kf = k;
           walked = 0.0;
@@ -1407,6 +1752,9 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     anchor = c;
     anchor_kf = k;
     walked = 0.0;
+  }
+  if (params.detect) {
+    detectStairs(m, tree, params, comp_cells, min_cells, *out);
   }
   for (uint32_t i = 0; i < ncomp; ++i) {
     out->group[i] = findRoot(out->group, i);

@@ -79,7 +79,9 @@ void usage()
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
     "  --no-shortcut            keep the raw A* cell chain\n"
-    "  --no-stair-links         do not turn the --poses track's flights into stair links\n"
+    "  --no-stair-links         no stair links at all: neither the --poses track's flights\n"
+    "                           nor the stairs detected off the map (--param stair_detect=0\n"
+    "                           keeps the track's only)\n"
     "  --dump-html <out.html>   self-contained three.js viewer of the surface map, the planned "
     "paths and (with --poses) the stair links\n"
     "  --write-bt <out.bt>      write the tree (a --synthetic scene, say) as an OctoMap .bt; "
@@ -119,6 +121,19 @@ bool readPoses(const std::string & path, std::vector<Pose> & out)
     }
   }
   return true;
+}
+
+// "kf 2221 -> 2358" for a stair the track found, "detected at (5.9, -12.2)"
+// (its first point) for one found off the map.
+std::string linkName(const StairLink & l, const char * arrow = "->")
+{
+  char buf[80];
+  if (l.detected) {
+    std::snprintf(buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
+  } else {
+    std::snprintf(buf, sizeof buf, "kf %zu %s %zu", l.kf_a, arrow, l.kf_b);
+  }
+  return buf;
 }
 
 bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, const std::string & kv)
@@ -181,6 +196,14 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.flights_turn_radius = v;
   } else if (k == "stair_centre") {
     st.centre = v != 0.0;
+  } else if (k == "stair_detect") {
+    st.detect = v != 0.0;
+  } else if (k == "stair_detect_floor_band") {
+    st.detect_floor_band = v;
+  } else if (k == "stair_detect_min_width") {
+    st.detect_min_width = v;
+  } else if (k == "stair_detect_min_area") {
+    st.detect_min_area = v;
   } else if (k == "stair_centre_dz") {
     st.centre_dz = v;
   } else if (k == "stair_centre_max_half_width") {
@@ -819,8 +842,8 @@ int runPlan(
   for (const LinkUse & u : r.links) {
     const StairLink & l = astar.links()->links[u.link];
     std::printf(
-      "plan:   stairs kf %zu %s %zu: z %.2f -> %.2f, %.1f m\n", l.kf_a, u.reversed ? "<-" : "->",
-      l.kf_b, m.zTop(u.reversed ? l.b : l.a), m.zTop(u.reversed ? l.a : l.b), l.length);
+      "plan:   stairs %s: z %.2f -> %.2f, %.1f m\n", linkName(l, u.reversed ? "<-" : "->").c_str(),
+      m.zTop(u.reversed ? l.b : l.a), m.zTop(u.reversed ? l.a : l.b), l.length);
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -955,7 +978,7 @@ bool dumpHtml(
       }
       char label[160];
       std::snprintf(
-        label, sizeof label, "stairs kf %zu - %zu: z %.2f - %.2f, %.1f m", l.kf_a, l.kf_b,
+        label, sizeof label, "stairs %s: z %.2f - %.2f, %.1f m", linkName(l, "-").c_str(),
         m.zTop(l.a), m.zTop(l.b), l.length);
       data << (i ? "," : "") << "{\"label\":\"" << label << "\",\"zmin\":" << f(lz) << ",\"pts\":[";
       for (size_t k = 0; k < l.pts.size(); ++k) {
@@ -1348,7 +1371,7 @@ int main(int argc, char ** argv)
     inspect(*map, poses[i].x, poses[i].y, poses[i].z - lidar_height);
   }
   std::shared_ptr<const StairLinks> links;
-  if (stair_links && !poses.empty()) {
+  if (stair_links && (!poses.empty() || stair_params.detect)) {
     std::vector<Waypoint> track;
     track.reserve(poses.size());
     for (const Pose & p : poses) {
@@ -1361,9 +1384,9 @@ int main(int argc, char ** argv)
     for (const StairFlight & f : links->flights) {
       const StairLink & l = links->links[f.first];
       std::printf(
-        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %u straight links, uphill %.0f "
+        "  %s: z %.2f -> %.2f (component %u -> %u), %u straight links, uphill %.0f "
         "deg, %.1f m wide, %.1f m long\n",
-        f.kf_a, f.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+        linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
         map->cells[l.b].component, f.count, f.heading_deg, f.width, l.length);
     }
     for (const StairLink & l : links->links) {
@@ -1371,10 +1394,9 @@ int main(int argc, char ** argv)
         continue;
       }
       std::printf(
-        "  kf %zu -> %zu: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points (%s)\n", l.kf_a,
-        l.kf_b, map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
-        map->cells[l.b].component, l.length, l.pts.size(),
-        l.flights ? l.geometry.c_str() : "walked track");
+        "  %s: z %.2f -> %.2f (component %u -> %u), %.1f m, %zu points (%s)\n", linkName(l).c_str(),
+        map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component, map->cells[l.b].component,
+        l.length, l.pts.size(), l.flights ? l.geometry.c_str() : "walked track");
       if (l.centred > 0) {
         std::printf(
           "    centred: %zu points moved, mean %.2f m, max %.2f m; narrowest cross-section %.2f "
