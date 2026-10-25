@@ -328,6 +328,19 @@
       # log says "rotating in place onto it" when it opens.
       rotate_to_path_min_angle: 0.785
       rotate_to_path_sampling_dist: 0.5
+      # Not upstream: the back-out (2026-10-25). When every candidate of a
+      # cycle collides ("Optimizer fail to compute path"), from a stand,
+      # once per path, the robot backs straight out as much of this as is
+      # free of LETHAL (at least 0.1 m), at walk_vx_min, stops, and the turn
+      # onto the path is checked again from there. With vx_min 0 nothing else
+      # moves a robot whose padded footprint stands against a LETHAL cell, and
+      # the trees have no BackUp: on dp (sim) the robot stood 1.4 cm off a
+      # corridor wall at the foot of the stairs until the task failed. 0.3 m
+      # is a footprint's half-width with margin: enough to bring a robot
+      # standing across a 1.0 m corridor back towards its middle, where the
+      # 0.83 m diagonal turns. 0 disables. Unmeasured on the robot: the
+      # controller log says "backing out".
+      back_out_dist: 0.3
       # Stair mode (2026-10-20): RPP 3D's, in MPPI, so one controller serves
       # a 2D map and a 3D one. Detection and the policy switch are
       # syncai_util::StairMode's (shared with FollowPathRPP3D), with the
@@ -1084,8 +1097,8 @@
       max_rel_z: 1.5
       # Relative name: /<robot_id>/plan, the planner's last path (republished
       # at plan_republish_rate, 1 Hz, with Octo3D's heights; emptied on a
-      # cancel). Its poses seed the reach rule below; a level path seeds
-      # nothing.
+      # success or a cancel, and 30 s after a failure, plan_idle_clear_time).
+      # Its poses seed the reach rule below; a level path seeds nothing.
       plan_topic: plan
       # Memory. The MID360's -7 deg lower FOV never sees the floor within
       # ~3.9 m of the robot: the floor under and ahead of it was seen 5-13 s

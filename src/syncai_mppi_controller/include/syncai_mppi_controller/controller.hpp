@@ -168,6 +168,24 @@ protected:
     const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
 
   /**
+    * @brief Start a back-out when every candidate of the optimizer collided:
+    * from a stand, once per path, as far as back_out_dist is free of LETHAL
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @return Whether a back-out was started (backOut() then drives it)
+    */
+  bool startBackOut(const geometry_msgs::msg::PoseStamped & robot_pose);
+
+  /**
+    * @brief Drive a back-out under way: straight back at walk_vx_min, then a
+    * stop, then the turn onto the path is checked again
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @param cmd Filled with the reverse command when this returns true, else untouched
+    * @return Whether this cycle is the back-out's (the optimizer is skipped)
+    */
+  bool backOut(
+    const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
     * @brief On a path with heights, brake for the policy switch and climb a
     * stair link with a short pure-pursuit carrot instead of running the optimizer
     * @param robot_pose Robot pose in the costmap's global frame
@@ -208,7 +226,8 @@ protected:
     * @param x Robot x in the costmap's global frame
     * @param y Robot y
     * @param yaw Robot yaw
-    * @param walk Distance to walk along the bearing after turning onto it
+    * @param walk Distance to walk along the bearing after turning onto it;
+    * negative walks it backwards (the back-out)
     * @param bearing Heading change of the turn onto the goal point
     * @return Whether any footprint along the turn or the walk is in collision
     */
@@ -270,6 +289,15 @@ protected:
   // rotating_to_path_ latching the turn in between (see rotateToPath()).
   bool rotate_to_path_pending_{false};
   bool rotating_to_path_{false};
+  // The back-out (backOut()): how far, whether this path has had its one,
+  // and the one under way -- from where, how far it may go, and whether it
+  // is past that and stopping.
+  double back_out_dist_{0.0};
+  bool back_out_used_{false};
+  bool backing_out_{false};
+  double back_out_x_{0.0};
+  double back_out_y_{0.0};
+  double back_out_target_{0.0};
   // Stairs (2026-10-20): the detection, policy switch and latched report are
   // syncai_util::StairMode's, shared with RPP 3D; the climb is climbStairs()'s.
   syncai_util::StairMode stair_mode_;
@@ -284,6 +312,12 @@ protected:
   // The in-place turn on the stairs is latched: in past
   // approach_rotate_min_angle, out under stair_turn_done_angle.
   bool stair_turning_{false};
+  // The turn round at the bottom of a descent (climbStairs()) keeps the way
+  // round it started on (+1 / -1): near 180 deg the shortest way flips with
+  // a degree of drift. Blocked both ways, or on the way, it is given up for
+  // this descent (stair_turn_blocked_) and the optimizer gets the robot.
+  double stair_turn_sign_{1.0};
+  bool stair_turn_blocked_{false};
   // The landing corner the robot has reached (climbStairs()), in the plan's
   // frame: latched until the plan's first corner is another one (more than
   // syncai_util::StairMode::kSameCorner away), there is none, or the stairs

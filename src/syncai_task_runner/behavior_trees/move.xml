@@ -6,7 +6,11 @@
   costmap and retries once, since stale obstacles in the costmap are the most
   common cause. nav2's system-level branch (clear both costmaps,
   Spin/Wait/BackUp via RoundRobin, abort on GoalUpdated) is left out for now;
-  most of its BT nodes and the behavior server are not ported yet.
+  most of its BT nodes and the behavior server are not ported yet. The case
+  BackUp is for, a robot boxed in so that every MPPI candidate collides, is
+  the controller's own since 2026-10-25: FollowPath backs out up to
+  back_out_dist once per path (controller_server_params.yaml), so each
+  FollowPath retry below starts from where that left the robot.
 
   Why not replan every tick (this tree did, at 1 Hz, until 2026-10): a fresh
   plan always wins, so the route is only as stable as the costmap's memory of

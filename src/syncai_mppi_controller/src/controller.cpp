@@ -70,6 +70,9 @@ void MPPIController::initialize(
   // it, and so does final_rotation_wz <= 0: it turns at that rate.
   getParam(rotate_to_path_min_angle_, "rotate_to_path_min_angle", 0.0);
   getParam(rotate_to_path_sampling_dist_, "rotate_to_path_sampling_dist", 0.5);
+  // Not upstream; see startBackOut(). back_out_dist <= 0 disables it, and so
+  // does walk_vx_min <= 0: it reverses at that speed.
+  getParam(back_out_dist_, "back_out_dist", 0.0);
   // Not upstream; see climbStairs(). The detection and switch parameters
   // (use_stair_mode, stair_min_rise, ...) are StairMode's, declared under this
   // plugin's name; these two are the climb's.
@@ -118,12 +121,14 @@ void MPPIController::reset()
   // A turn onto the path is dropped, not the check: after a cycle without a
   // robot pose the next one looks again. A new goal's setPlan() follows.
   rotating_to_path_ = false;
+  backing_out_ = false;
   // Stair mode's on_stairs survives (it is the policy the gait controller is
   // on); a half-done switch is settled or dropped (StairMode::reset()).
   stair_mode_.reset();
   climbing_stairs_ = false;
   stair_ramp_valid_ = false;
   stair_corner_latched_ = false;
+  stair_turn_blocked_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
@@ -138,6 +143,11 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
     // turns onto the goal heading, as RPP 3D does. A plan without heights
     // never enters this branch.
     if (climbStairs(robot_pose, cmd)) {
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
+    // A back-out under way runs to its stop before anything else drives.
+    if (backOut(robot_pose, cmd)) {
       last_cmd_vel_ = cmd.twist;
       return cmd;
     }
@@ -159,7 +169,19 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
       last_cmd_vel_ = cmd.twist;
       return cmd;
     }
-    cmd = computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
+    try {
+      cmd = computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
+    } catch (const syncai_nav_core::PlannerException & e) {
+      // Every candidate collided (Optimizer::fallback()'s message; the other
+      // PlannerExceptions are no reason to move): back out instead, if the
+      // way back is free and this path has not had its back-out yet.
+      if (std::string(e.what()) != "Optimizer fail to compute path" || !startBackOut(robot_pose)) {
+        throw;
+      }
+      backOut(robot_pose, cmd);
+      last_cmd_vel_ = cmd.twist;
+      return cmd;
+    }
     // The optimizer asking to stand (or to turn in place) is what opens the
     // approach, read off its raw output -- the same |vx| < in_place_vx_max
     // that the walking floor leaves alone, which is exactly the command that
@@ -736,8 +758,16 @@ bool MPPIController::climbStairs(
       stair_turning_ = false;
       stair_reverse_ = false;
       stair_corner_latched_ = false;
+      stair_turn_blocked_ = false;
       // The warm-started sequence predates the stairs; start from scratch.
       optimizer_.reset();
+      // Off a descent whose turn round was blocked the robot still faces
+      // back up the flight, and the path is behind it: the turn onto the
+      // path is checked again from this stand, as at a path's start, and
+      // when it is blocked the optimizer's collisions start a back-out
+      // (2026-10-25).
+      rotate_to_path_pending_ = true;
+      rotating_to_path_ = false;
       RCLCPP_INFO(logger_, "Off the stairs: handing back to the optimizer");
     }
     return false;
@@ -793,20 +823,61 @@ bool MPPIController::climbStairs(
       if (ahead == plan.poses.end()) {
         ahead = std::prev(plan.poses.end());
       }
-      const double bearing = angles::shortest_angular_distance(
-        tf2::getYaw(robot_pose.pose.orientation),
-        std::atan2(ahead->pose.position.y - y, ahead->pose.position.x - x));
-      if (!stair_turning_ && std::fabs(bearing) > approach_rotate_min_angle_) {
-        stair_turning_ = true;
-        RCLCPP_INFO(
-          logger_, "Stairs: at the bottom of the descent, turning %.0f deg round to the path",
-          bearing * 180.0 / M_PI);
+      const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+      double bearing = angles::shortest_angular_distance(
+        yaw, std::atan2(ahead->pose.position.y - y, ahead->pose.position.x - x));
+      // The turn is checked against LETHAL footprints (2026-10-25), as the
+      // turn onto a new path is: unchecked, it turned robot01 (sim, dp) -173
+      // deg at the foot of a flight into a 1.0 m corridor, whose wall the
+      // 0.83 m diagonal of the padded footprint sweeps unless the robot
+      // stands within ~0.1 m of the corridor's middle, and it ended at -30 deg
+      // across it, 1.4 cm off the wall, where the optimizer found nothing
+      // that did not collide (startBackOut()). The short way round first,
+      // then the long one; blocked both ways, or on the way, the turn is
+      // left out, the policy goes back with the robot facing up the flight,
+      // and the hand-back's turn onto the path or back-out takes it from
+      // there. The way round is latched for the turn.
+      if (
+        !stair_turning_ && !stair_turn_blocked_ &&
+        std::fabs(bearing) > approach_rotate_min_angle_)
+      {
+        const double long_way = bearing - std::copysign(2.0 * M_PI, bearing);
+        if (!isApproachBlocked(x, y, yaw, 0.0, bearing)) {
+          stair_turn_sign_ = bearing >= 0.0 ? 1.0 : -1.0;
+          stair_turning_ = true;
+        } else if (!isApproachBlocked(x, y, yaw, 0.0, long_way)) {
+          stair_turn_sign_ = long_way >= 0.0 ? 1.0 : -1.0;
+          stair_turning_ = true;
+        } else {
+          stair_turn_blocked_ = true;
+          RCLCPP_INFO(
+            logger_,
+            "Stairs: at the bottom of the descent, the turn round (%.0f deg) is blocked both "
+            "ways: leaving it to the optimizer",
+            bearing * 180.0 / M_PI);
+        }
+        if (stair_turning_) {
+          RCLCPP_INFO(
+            logger_, "Stairs: at the bottom of the descent, turning %.0f deg round to the path",
+            (stair_turn_sign_ * bearing >= 0.0 ? bearing : long_way) * 180.0 / M_PI);
+        }
       } else if (stair_turning_ && std::fabs(bearing) < stair_turn_done_angle_) {
         stair_turning_ = false;
       }
       if (stair_turning_) {
-        rotateInPlace(bearing, vx, wz);
-        vx = 0.0;
+        if (stair_turn_sign_ * bearing < 0.0) {
+          bearing += stair_turn_sign_ * 2.0 * M_PI;
+        }
+        if (isApproachBlocked(x, y, yaw, 0.0, bearing)) {
+          stair_turning_ = false;
+          stair_turn_blocked_ = true;
+          RCLCPP_INFO(
+            logger_, "Stairs: the turn round is blocked %.0f deg short: leaving it to the optimizer",
+            std::fabs(bearing) * 180.0 / M_PI);
+        } else {
+          rotateInPlace(bearing, vx, wz);
+          vx = 0.0;
+        }
       }
     }
     if (vx == 0.0 && wz == 0.0) {
@@ -926,6 +997,98 @@ bool MPPIController::climbStairs(
   return true;
 }
 
+bool MPPIController::startBackOut(const geometry_msgs::msg::PoseStamped & robot_pose)
+{
+  // Not upstream (2026-10-25): a robot whose every candidate collides backs
+  // out, straight, instead of standing. On dp (sim, a 21-run task, runs 20
+  // and 21) the turn round at the bottom of a descent left the robot at
+  // -30 deg across a 1.0 m corridor, the padded footprint 1.4 cm from the
+  // wall's LETHAL cells. With vx_min 0 every candidate either walks into the
+  // wall or swings a corner into it within the 1.6 s horizon (1000 of 1000),
+  // the turn onto the path (+1.30 rad) was blocked, and the tree has no
+  // BackUp (move_3d.xml): the four FollowPath retries and the replans all
+  // started from the same pose, and the task failed; re-sent, it failed in
+  // 1.2 min. Here, from a stand: as much of back_out_dist straight back as
+  // is free of LETHAL (isApproachBlocked(), the direct approach's test, at
+  // least a tenth of a metre), at walk_vx_min, then a stop and the turn onto
+  // the path checked again (rotateToPath()) from the new spot. Once per path
+  // (setPlan()), so a robot boxed in for good backs out once per FollowPath
+  // retry and the goal still fails as before, a few decimetres further back.
+  // Unmeasured on the robot: the controller log says "backing out".
+  if (
+    back_out_dist_ <= 0.0 || walk_vx_min_ <= 0.0 || back_out_used_ ||
+    std::fabs(last_cmd_vel_.linear.x) >= in_place_vx_max_)
+  {
+    return false;
+  }
+  back_out_used_ = true;
+  const double x = robot_pose.pose.position.x;
+  const double y = robot_pose.pose.position.y;
+  const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+  constexpr double kMinBackOut = 0.1;  // m; under this it gains nothing
+  const double resolution = costmap_ros_->getCostmap()->getResolution();
+  double free = 0.0;
+  for (double d = resolution; d <= back_out_dist_ + 1e-6; d += resolution) {
+    if (isApproachBlocked(x, y, yaw, -d, 0.0)) {
+      break;
+    }
+    free = d;
+  }
+  if (free < kMinBackOut) {
+    RCLCPP_INFO(
+      logger_, "Every candidate collides and backing out is blocked too (%.2f m free)", free);
+    return false;
+  }
+  backing_out_ = true;
+  back_out_x_ = x;
+  back_out_y_ = y;
+  back_out_target_ = free;
+  rotating_to_path_ = false;
+  approaching_goal_ = false;
+  RCLCPP_INFO(logger_, "Every candidate collides: backing out %.2f m", free);
+  return true;
+}
+
+bool MPPIController::backOut(
+  const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd)
+{
+  if (!backing_out_) {
+    return false;
+  }
+  // As in rotateToGoalHeading(): the optimizer is not running, so keep its
+  // reset_period from zeroing the clamp baseline on the hand-back.
+  last_time_called_ = clock_->now();
+  const double x = robot_pose.pose.position.x;
+  const double y = robot_pose.pose.position.y;
+  const double yaw = tf2::getYaw(robot_pose.pose.orientation);
+  const double remaining = back_out_target_ - std::hypot(x - back_out_x_, y - back_out_y_);
+  // Stop where the ramp down from walk_vx_min ends at the target, and at once
+  // should the way back have closed since it was checked.
+  const double stop_dist =
+    max_linear_accel_ > 0.0 ? 0.5 * walk_vx_min_ * walk_vx_min_ / max_linear_accel_ : 0.0;
+  double vx = 0.0;
+  if (remaining > stop_dist && !isApproachBlocked(x, y, yaw, -remaining, 0.0)) {
+    vx = -walk_vx_min_;
+  }
+  if (max_linear_accel_ > 0.0) {
+    const double dv = max_linear_accel_ * control_duration_;
+    vx = std::clamp(vx, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
+  }
+  if (vx == 0.0) {
+    // Stopped: the turn onto the path is looked at again from here, and the
+    // optimizer starts from scratch.
+    backing_out_ = false;
+    optimizer_.reset();
+    rotate_to_path_pending_ = true;
+    RCLCPP_INFO(
+      logger_, "Backed out %.2f m: handing back",
+      std::hypot(x - back_out_x_, y - back_out_y_));
+    return false;
+  }
+  cmd = utils::toTwistStamped(vx, 0.0, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
+  return true;
+}
+
 bool MPPIController::isApproachBlocked(double x, double y, double yaw, double walk, double bearing)
 {
   // RPP's inCollision(): the padded footprint's perimeter on LETHAL is a
@@ -957,10 +1120,11 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
     }
   }
 
+  // A negative walk goes backwards along the end heading (the back-out).
   const double heading = yaw + bearing;
-  const int steps = static_cast<int>(std::ceil(walk / resolution));
+  const int steps = static_cast<int>(std::ceil(std::fabs(walk) / resolution));
   for (int i = 1; i <= steps; ++i) {
-    const double s = std::min(walk, i * resolution);
+    const double s = std::copysign(std::min(std::fabs(walk), i * resolution), walk);
     if (in_collision(x + s * std::cos(heading), y + s * std::sin(heading), heading)) {
       return true;
     }
@@ -1050,6 +1214,8 @@ void MPPIController::setPlan(const nav_msgs::msg::Path & path)
   // Every new path is checked once at its start (rotateToPath()).
   rotate_to_path_pending_ = true;
   rotating_to_path_ = false;
+  // One back-out per path (startBackOut()); one under way runs to its stop.
+  back_out_used_ = false;
 }
 
 void MPPIController::setSpeedLimit(const double & speed_limit, const bool & percentage)
