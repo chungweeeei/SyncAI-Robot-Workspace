@@ -29,6 +29,14 @@
     # this a viewer that subscribes mid-drive never sees the route.
     plan_republish_rate: 1.0
 
+    # A route that no navigation has planned or checked (is_path_valid, 1 Hz
+    # while a BT runs) for this long is dropped and an empty `plan` sent (s;
+    # 0 = never). task_runner clears a route on a success or a cancel; after
+    # a failure it stays up this long, so the operator sees where the robot
+    # gave up, and then goes -- until 2026-10-25 it stayed until the next
+    # goal (on dp, 1.5 h after the task had ended).
+    plan_idle_clear_time: 30.0
+
     # How long a goal for a planner that reads the costmap (GridBased) waits
     # for it to be current before the goal is aborted (s; <= 0 = forever, as
     # upstream did). The global costmap updates at 1 Hz, so a clear

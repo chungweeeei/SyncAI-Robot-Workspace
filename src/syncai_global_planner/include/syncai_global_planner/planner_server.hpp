@@ -2,6 +2,7 @@
 #define SYNCAI_GLOBAL_PLANNER__PLANNER_SERVER_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -220,6 +221,12 @@ protected:
   void republishPlan();
 
   /**
+   * @brief Forget the last plan and send an empty one on `plan` (repeated by
+   * the timer): clear_plan's work, and the idle expiry's in republishPlan()
+   */
+  void dropPlan();
+
+  /**
    * @brief Service callback: forget the last plan and send an empty one on
    * `plan`, so a viewer stops showing a route nobody is driving any more
    */
@@ -281,6 +288,13 @@ protected:
   // for good; a few repeats make that unlikely without sending an empty path
   // every second for as long as the robot is idle. A new plan zeroes it.
   int clear_resends_left_{0};
+
+  // When the last plan was made or last checked by is_path_valid, under
+  // last_plan_mutex_; republishPlan() drops a plan unused for
+  // plan_idle_clear_time (s, 0 = never), the end of a failed navigation's
+  // route.
+  std::chrono::steady_clock::time_point last_plan_used_;
+  double plan_idle_clear_time_{30.0};
 
   // Called by the task_runner when a navigation succeeds or is cancelled, and
   // by Octo3D on a map switch

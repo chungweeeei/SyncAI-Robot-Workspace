@@ -89,6 +89,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   this->declare_parameter("planner_plugins", default_ids_);
   this->declare_parameter("expected_planner_frequency", 1.0);
   this->declare_parameter("plan_republish_rate", 1.0);
+  this->declare_parameter("plan_idle_clear_time", 30.0);
   this->declare_parameter("is_path_valid.footprint_check", true);
   this->declare_parameter("is_path_valid.heading_margin", 0.35);
   this->declare_parameter("costmap_wait_timeout", 5.0);
@@ -193,8 +194,10 @@ void PlannerServer::configure()
   // `plan` showing the route being driven (the part still ahead; see
   // republishPlan()). Nothing here knows when the navigation that asked for it
   // finished, so the task_runner reports a success or a cancel through
-  // clear_plan below; after a failure the route stays up, as rviz would have
-  // kept displaying it anyway. 0 disables, leaving the plan-time publish only.
+  // clear_plan below; after a failure the route stays up for
+  // plan_idle_clear_time (see republishPlan()). 0 disables, leaving the
+  // plan-time publish only.
+  get_parameter("plan_idle_clear_time", plan_idle_clear_time_);
   double plan_republish_rate;
   get_parameter("plan_republish_rate", plan_republish_rate);
   if (plan_republish_rate > 0.0) {
@@ -423,6 +426,12 @@ void PlannerServer::isPathValid(
   const auto & poses = request->path.poses;
   if (poses.empty()) {
     return;
+  }
+  // A navigation is running: its BT checks the path once a tick (1 Hz), so
+  // the route is still the one being driven (republishPlan()).
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    last_plan_used_ = std::chrono::steady_clock::now();
   }
   if (request->path.header.frame_id != costmap_ros_->getGlobalFrameID()) {
     RCLCPP_WARN(
@@ -900,6 +909,7 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::str
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = path;
     last_plan_planner_id_ = planner_id;
+    last_plan_used_ = std::chrono::steady_clock::now();
     clear_resends_left_ = 0;
   }
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
@@ -910,6 +920,31 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::str
 
 void PlannerServer::republishPlan()
 {
+  // A route no navigation has used for plan_idle_clear_time is dropped
+  // (2026-10-25). task_runner clears the route on a success or a cancel, but
+  // not on a failure, where the operator wants to see where the robot gave
+  // up -- and this timer then re-sent that route for good: on dp the console
+  // still drew a failed goal's route 1.5 h after the task had ended, since a
+  // re-send every second also kept the backend's 6 s expiry from firing.
+  // Nothing here hears that a navigation failed, but every running one asks
+  // is_path_valid each BT tick (1 Hz, move*.xml and dock*.xml), so a route
+  // neither planned nor checked for that long belongs to no navigation.
+  // Checked before the subscriber test, so a viewer that subscribes later
+  // does not get a stale route either.
+  bool idle = false;
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    idle = plan_idle_clear_time_ > 0.0 && !last_plan_.poses.empty() &&
+           std::chrono::steady_clock::now() - last_plan_used_ >
+             std::chrono::duration<double>(plan_idle_clear_time_);
+  }
+  if (idle) {
+    RCLCPP_INFO(
+      get_logger(), "[PlannerServer][%s] No navigation has used the plan for %.0f s", __func__,
+      plan_idle_clear_time_);
+    dropPlan();
+    return;
+  }
   if (plan_publisher_->get_subscription_count() == 0) {
     return;
   }
@@ -954,10 +989,16 @@ void PlannerServer::clearPlan(
 {
   // The republish would otherwise keep a finished route on `plan` for good:
   // the backend forwards it to the console, which drew the last route until
-  // the next goal replaced it. An empty path is the clear both rviz and the
-  // backend's path subscriber already understand. Its frame is the global
-  // frame, not empty: the backend drops any `plan` whose frame is not `map`
-  // before it looks at the poses, which would leave the old route up.
+  // the next goal replaced it.
+  dropPlan();
+}
+
+void PlannerServer::dropPlan()
+{
+  // An empty path is the clear both rviz and the backend's path subscriber
+  // already understand. Its frame is the global frame, not empty: the backend
+  // drops any `plan` whose frame is not `map` before it looks at the poses,
+  // which would leave the old route up.
   constexpr int kClearResends = 3;
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
