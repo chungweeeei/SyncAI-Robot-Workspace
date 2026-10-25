@@ -298,7 +298,9 @@ void PoseNavigator<ActionT>::clearPlannerPlan()
   // the robot anywhere on the whole plan: the stub stayed drawn, and grew
   // back along the route as soon as the robot moved off the goal (a joystick
   // drive, a task's next step that does not plan). Not on a failure: there
-  // the route is what the operator wants to see to understand it. A preempt
+  // the route is what the operator wants to see to understand it, and the
+  // planner drops it itself once no navigation has used it for
+  // plan_idle_clear_time (30 s, 2026-10-25). A preempt
   // never comes here -- the tree keeps running and the next plan replaces the
   // route anyway.
   //
