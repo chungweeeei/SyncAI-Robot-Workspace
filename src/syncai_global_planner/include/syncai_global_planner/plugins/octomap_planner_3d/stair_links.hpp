@@ -15,7 +15,8 @@
 // ends, carrying the keyframes' ground points in between; the A* may take it
 // like any move (cost = its 3D length times stair_cost_multiplier), and the
 // path follows the recorded points through the flight. Links are used in
-// both directions. Stairs the robot never walked stay refused.
+// both directions. Stairs the robot never walked are found off the map
+// instead (the detection below, 2026-10-25).
 //
 // A link is made between two consecutive "anchors" of the track --
 // keyframes whose ground point is within one cell (xy) and anchor_z_window
@@ -101,6 +102,25 @@
 // open to a corridor) it stays, so the link's ends on the two floors are
 // untouched. The shifts are smoothed along the link before they are applied,
 // so one odd column does not kink the path.
+//
+// Since 2026-10-25 a stair the track never took is also **detected** off the
+// surface map alone: a map's track covers the stairs the operator happened to
+// walk while mapping, and on dp that left the stair in the middle of the
+// building -- a U of two flights, 1F to 2F, right beside the track -- out,
+// so a route from its foot to its head went 55 m round by the stairwell the
+// track did climb. The surfaces at a large component's own height along its
+// edge (within detect_floor_band of the floor cell they grow from, by the
+// step rule -- the footprint rule's rim, a stair's first tread) belong to that
+// floor; what is left of the non-traversable surfaces (bar clearance_occupied)
+// and the small components' cells is cut by the step rule into blobs. A blob
+// that touches two floors at least min_rise apart is a stair candidate: the
+// shortest way through it from the lower floor's edge to the upper one's
+// stands in for the walk, and the stair is laid from it exactly as a walked
+// one is -- straight links when it is one straight flight, flights and
+// landing corners when not -- with the geometry read off the map, never the
+// stand-in walk itself: a blob neither reader makes sense of (a slope of
+// rubble, a tree against a roof) stays unlinked, and so does one narrower
+// than detect_min_width. A blob a track link already crosses is skipped.
 //
 // What could not be linked is reported in StairLinks::notes, for the plugin
 // to log and the CLI to print: a height change on the track that stayed
@@ -194,6 +214,19 @@ struct StairLinkParams
   double centre_max_half_width = 1.5;
   // Largest shift of one point (m).
   double centre_max_shift = 0.6;
+  // Detect the stairs the track never took (see the header). false = the
+  // track's stairs only, the behaviour before 2026-10-25.
+  bool detect = true;
+  // A surface along a floor's edge within this of the floor cell it is
+  // reached from belongs to the floor: above one riser (0.17, which the
+  // 0.1 m voxels round to 0.2), below two.
+  double detect_floor_band = 0.25;
+  // Narrowest flight a detected stair may have (m): the padded footprint's
+  // width, 2 x robot_radius, and a little.
+  double detect_min_width = 0.6;
+  // Smallest blob (m2) worth reading: a flight of three steps a metre wide
+  // is ~1 m2 of treads.
+  double detect_min_area = 0.5;
 };
 
 struct StairLink
@@ -202,6 +235,7 @@ struct StairLink
   std::vector<Waypoint> pts;        // a's centre .. b's centre: the walk, or a straight line
   double length = 0.0;              // 3D length of pts
   size_t kf_a = 0, kf_b = 0;        // the keyframes that found the stair (poses.txt line index)
+  bool detected = false;            // found off the map, not the track: kf_a, kf_b mean nothing
   bool straight = false;            // a line across the fitted flight, not the walked track
   bool flights = false;             // flights + landing corners read off the map (see the header)
   std::vector<size_t> turns;        // indices into pts where the robot turns in place (flights)
@@ -218,6 +252,7 @@ struct StairLink
 struct StairFlight
 {
   size_t kf_a = 0, kf_b = 0;
+  bool detected = false;          // as StairLink::detected
   uint32_t first = 0, count = 0;  // links[first .. first + count)
   double heading_deg = 0.0;       // uphill direction, map frame
   double width = 0.0;             // spread of the entries across the stair (m)

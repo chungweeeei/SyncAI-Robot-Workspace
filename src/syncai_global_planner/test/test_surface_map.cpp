@@ -471,6 +471,87 @@ TEST(StairLinks, AWalkedKerbMakesNoLinkAndAnUnwalkedDropIsReported)
   EXPECT_NE(none->notes[0].find("not joined"), std::string::npos);
 }
 
+TEST(StairLinks, AStairNobodyWalkedIsDetectedAndADropIsNot)
+{
+  // No track at all: the stairs scene's flight is found off the map and laid
+  // as straight links across its width, as the walked one is; the drop (one
+  // 0.5 m ledge) and the kerb (one piece of ground) make no link.
+  const auto m = build("stairs");
+  const auto links = buildStairLinks(*m, {}, StairLinkParams{});
+  ASSERT_EQ(links->flights.size(), 1u);
+  EXPECT_TRUE(links->flights[0].detected);
+  EXPECT_NEAR(links->flights[0].heading_deg, 0.0, 10.0);
+  // Entries are tried within stair_straight_half_width (2 m) of the
+  // stand-in walk's foot, as of a walked one's, and the stand-in may cross
+  // anywhere more than half a metre in from the edges of this 8 m flight.
+  EXPECT_GE(links->flights[0].width, 2.0);
+  for (const StairLink & l : links->links) {
+    EXPECT_TRUE(l.detected);
+    EXPECT_TRUE(l.straight);
+  }
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult lo = astar.snap(2.0, 4.0, 0.0, p);
+  ASSERT_NE(lo.cell, kNoCell);
+  const SnapResult hi = astar.snap(10.0, 4.0, 1.02, p, m->cells[lo.cell].component);
+  ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+  const PlanResult r = astar.plan(hi.cell, lo.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  EXPECT_EQ(r.links.size(), 1u);
+
+  StairLinkParams off;
+  off.detect = false;
+  EXPECT_TRUE(buildStairLinks(*m, {}, off)->links.empty());
+  EXPECT_TRUE(buildStairLinks(*build("drop"), {}, StairLinkParams{})->links.empty());
+  EXPECT_TRUE(buildStairLinks(*build("kerb"), {}, StairLinkParams{})->links.empty());
+}
+
+TEST(StairLinks, AnUnwalkedUStairIsLaidAsFlightsAndCorners)
+{
+  // dp's middle stair in small (2026-10-25): two flights of six 0.17 / 0.29
+  // steps side by side, a wall between them, joined by a landing at the far
+  // end -- up +x along y 0.5..1.7, back -x along y 2.3..3.5 -- from a ground
+  // floor at x < 3 to an upper floor at 2.04 over x < 3, y > 2.3. The
+  // shortest way through cuts the landing's inside corner round the wall's
+  // end; the stand-in walk has to cross the landing for the U to be read.
+  synthetic::SceneBuilder b;
+  b.flatFloor(0, 3.0, 0, 8.0, 0.0);
+  b.floor(3.0, 4.74, 0.5, 1.7, [](double x, double) {
+    return 0.17 * std::min(6, static_cast<int>(std::floor((x - 3.0) / 0.29)) + 1);
+  });
+  b.flatFloor(4.74, 6.0, 0.5, 3.5, 1.02);
+  b.floor(3.0, 4.74, 2.3, 3.5, [](double x, double) {
+    return 1.02 + 0.17 * std::min(6, static_cast<int>(std::floor((4.74 - x) / 0.29)) + 1);
+  });
+  b.flatFloor(0, 3.0, 2.3, 8.0, 2.04);
+  b.box(3.0, 4.74, 1.7, 2.3, 0.0, 3.0);  // the wall between the flights
+  b.box(3.0, 6.1, 0.4, 0.5, 0.0, 3.5);   // the well's walls
+  b.box(3.0, 6.1, 3.5, 3.6, 0.0, 3.5);
+  b.box(6.0, 6.1, 0.4, 3.6, 0.0, 3.5);
+  const auto m = buildSurfaceMap(*b.finish(), SurfaceMapParams{});
+  const auto links = buildStairLinks(*m, {}, StairLinkParams{});
+  ASSERT_EQ(links->links.size(), 1u) << (links->notes.empty() ? "" : links->notes[0]);
+  const StairLink & l = links->links[0];
+  EXPECT_TRUE(l.detected);
+  ASSERT_TRUE(l.flights) << l.geometry;
+  EXPECT_EQ(l.n_flights, 2u) << l.geometry;
+  EXPECT_EQ(l.turns.size(), 2u) << l.geometry;
+  // The two corners are on the landing, past the wall's end.
+  for (const size_t t : l.turns) {
+    EXPECT_GT(l.pts[t].x, 4.74) << l.geometry;
+    EXPECT_NEAR(l.pts[t].z, 1.02, 0.25) << l.geometry;
+  }
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult lo = astar.snap(1.5, 1.0, 0.0, p);
+  ASSERT_NE(lo.cell, kNoCell);
+  const SnapResult hi = astar.snap(1.5, 5.0, 2.04, p, m->cells[lo.cell].component);
+  ASSERT_NE(hi.cell, kNoCell) << hi.detail;
+  const PlanResult r = astar.plan(lo.cell, hi.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  EXPECT_EQ(r.links.size(), 1u);
+}
+
 TEST(SurfaceAStar, NoCornerCutting)
 {
   // Two blocked cells touching corner to corner must not be passable

@@ -466,8 +466,37 @@ Only large components end a link because a stairwell's own floor rarely
 survives the rules: on dp1f_1012 the three landings of the switchback stair
 came out as a few square metres of islands or not at all (small, walled, the
 air above them never observed), so the link runs floor to floor over the
-whole well. Stairs the robot never walked stay refused; a kerb walked over
-(< 0.3 m) makes no link. `stair_links: false` restores separate floors.
+whole well. A kerb walked over (< 0.3 m) makes no link. `stair_links: false`
+restores separate floors.
+
+**Stairs nobody walked** are detected off the surface map since 2026-10-25
+(`stair_detect`), because a map's track holds only the stairs the operator
+happened to take while mapping: on dp the U stair in the middle of the
+building (1F → 2F, the track passed beside and under it) was refused, and a
+route from its foot to its head went 55 m round by the stairwell the track did
+climb. The surfaces along each large component's edge within
+`stair_detect_floor_band` (0.25 m) of the floor cell they are reached from
+belong to that floor (the footprint rule's rim, a stair's first tread); the
+rest of the rejected surfaces, bar `clearance_occupied`, and the small
+components' cells are cut by the step rule into blobs, and a blob touching two
+floors at least `stair_min_rise` apart is a candidate. The shortest way
+through it from the lower floor's edge to the upper one's, each move costing
+up to 21 times its length within 0.5 m of the blob's edge (a column holding
+surfaces but none within 0.35 m — a wall, a drop), stands in for the walk;
+without that weight it cut the U landing's inside corner round the newel in
+under 0.5 m of level walk, and the stair was read as one 5.5 m flight. The
+stair is then laid from the stand-in exactly as a walked one is — straight
+links for one straight flight, flights and landing corners otherwise, the
+geometry read off the map — and a blob neither reads, or one narrower than
+`stair_detect_min_width` (0.6 m), stays unlinked with a startup note. A blob a
+track link already crosses is skipped. Detected links are logged as `stair
+link detected at (x, y)`, and they work without a `poses.txt` at all. On dp:
+the middle stair (2 flights 1.6 / 1.7 m wide, a U landing, 0.29 m to spare at
+its turns) and a straight stair with a mid-landing at (12, 25); the route from
+the middle stair's foot to its head is 17 m. The stand-in may cross a straight
+flight anywhere more than 0.5 m in from its edges, and entries are tried
+within `stair_straight_half_width` of it, so a flight wider than ~4 m is used
+over part of its width.
 
 A stretch that is not one straight flight is laid as **flights and landing
 corners** since 2026-10-21 (`stair_flights`), because the legs climb a

@@ -124,6 +124,10 @@ void OctomapPlanner3D::initialize(
   dp("stair_centre_dz", rclcpp::ParameterValue(stair_params_.centre_dz));
   dp("stair_centre_max_half_width", rclcpp::ParameterValue(stair_params_.centre_max_half_width));
   dp("stair_centre_max_shift", rclcpp::ParameterValue(stair_params_.centre_max_shift));
+  dp("stair_detect", rclcpp::ParameterValue(stair_params_.detect));
+  dp("stair_detect_floor_band", rclcpp::ParameterValue(stair_params_.detect_floor_band));
+  dp("stair_detect_min_width", rclcpp::ParameterValue(stair_params_.detect_min_width));
+  dp("stair_detect_min_area", rclcpp::ParameterValue(stair_params_.detect_min_area));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -190,6 +194,10 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".stair_centre_dz", stair_params_.centre_dz);
   node->get_parameter(name + ".stair_centre_max_half_width", stair_params_.centre_max_half_width);
   node->get_parameter(name + ".stair_centre_max_shift", stair_params_.centre_max_shift);
+  node->get_parameter(name + ".stair_detect", stair_params_.detect);
+  node->get_parameter(name + ".stair_detect_floor_band", stair_params_.detect_floor_band);
+  node->get_parameter(name + ".stair_detect_min_width", stair_params_.detect_min_width);
+  node->get_parameter(name + ".stair_detect_min_area", stair_params_.detect_min_area);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -593,20 +601,47 @@ bool OctomapPlanner3D::buildMap(
   if (stair_links_) {
     std::vector<o3d::Waypoint> track;
     std::string track_error;
-    if (o3d::readTrack(poses_file, lidar_height_, track, track_error)) {
+    const bool have_track = o3d::readTrack(poses_file, lidar_height_, track, track_error);
+    if (!have_track) {
+      // Without the track only the detected stairs connect the floors.
+      track.clear();
+      RCLCPP_WARN(
+        logger_, "[OctomapPlanner3D][%s] %s: no stair links from the track%s", __func__,
+        track_error.c_str(),
+        stair_params_.detect ? "; the stairs detected off the map only"
+                             : ", so the floors of this map do not connect");
+    }
+    if (have_track || stair_params_.detect) {
       links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
+      size_t detected = 0;
+      for (const auto & l : links->links) {
+        detected += l.detected ? 1 : 0;
+      }
       RCLCPP_INFO(
         logger_,
-        "[OctomapPlanner3D][%s] %zu stair links from %zu keyframes of %s (min_rise %.2f m)",
-        __func__, links->links.size(), track.size(), poses_file.c_str(), stair_params_.min_rise);
+        "[OctomapPlanner3D][%s] %zu stair links: %zu from %zu keyframes of %s, %zu detected off "
+        "the map (min_rise %.2f m)",
+        __func__, links->links.size(), links->links.size() - detected, track.size(),
+        poses_file.c_str(), detected, stair_params_.min_rise);
+      // "kf 2221 -> 2358", or "detected at (6.5, -12.6)" (its first point).
+      const auto name = [](const o3d::StairLink & l) {
+        char buf[80];
+        if (l.detected) {
+          std::snprintf(
+            buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
+        } else {
+          std::snprintf(buf, sizeof buf, "kf %zu -> %zu", l.kf_a, l.kf_b);
+        }
+        return std::string(buf);
+      };
       for (const auto & f : links->flights) {
         const auto & l = links->links[f.first];
         RCLCPP_INFO(
           logger_,
-          "[OctomapPlanner3D][%s]   stair kf %zu -> %zu: z %.2f -> %.2f, %u straight links, "
+          "[OctomapPlanner3D][%s]   stair %s: z %.2f -> %.2f, %u straight links, "
           "uphill %.0f deg, %.1f m wide, %.1f m long",
-          __func__, f.kf_a, f.kf_b, map->zTop(l.a), map->zTop(l.b), f.count, f.heading_deg, f.width,
-          l.length);
+          __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), f.count, f.heading_deg,
+          f.width, l.length);
       }
       for (const auto & l : links->links) {
         if (l.straight) {
@@ -614,9 +649,8 @@ bool OctomapPlanner3D::buildMap(
         }
         RCLCPP_INFO(
           logger_,
-          "[OctomapPlanner3D][%s]   stair link kf %zu -> %zu: z %.2f -> %.2f, %.1f m, %zu points "
-          "(%s)",
-          __func__, l.kf_a, l.kf_b, map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size(),
+          "[OctomapPlanner3D][%s]   stair link %s: z %.2f -> %.2f, %.1f m, %zu points (%s)",
+          __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size(),
           l.flights ? l.geometry.c_str() : "walked track");
         if (l.centred > 0) {
           RCLCPP_INFO(
@@ -629,11 +663,6 @@ bool OctomapPlanner3D::buildMap(
       for (const std::string & note : links->notes) {
         RCLCPP_WARN(logger_, "[OctomapPlanner3D][%s] stair links: %s", __func__, note.c_str());
       }
-    } else {
-      RCLCPP_WARN(
-        logger_,
-        "[OctomapPlanner3D][%s] %s: no stair links, so the floors of this map do not connect",
-        __func__, track_error.c_str());
     }
   }
   tree.reset();

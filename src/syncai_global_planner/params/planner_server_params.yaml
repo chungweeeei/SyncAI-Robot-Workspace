@@ -367,6 +367,27 @@
       stair_centre_dz: 0.25
       stair_centre_max_half_width: 1.5
       stair_centre_max_shift: 0.6
+      # Stairs the track never took are detected off the surface map
+      # (2026-10-25): the surfaces along each large component's edge within
+      # stair_detect_floor_band of it belong to that floor, the rest of the
+      # rejected surfaces (bar clearance_occupied) form blobs by the step
+      # rule, and a blob touching two floors at least stair_min_rise apart
+      # is laid as a walked stair is -- straight links or flights and
+      # landing corners, read off the map -- from a stand-in walk through
+      # its middle; one neither reads, or narrower than
+      # stair_detect_min_width, stays unlinked with a startup note. A blob a
+      # track link crosses is skipped. dp: the U stair in the middle of the
+      # building (1F -> 2F, never walked while mapping) and the straight
+      # stair at (12, 25); a route from the first's foot to its head went
+      # from 55 m round by the stairwell to 17 m. false = the track's stairs
+      # only.
+      stair_detect: true
+      # Above one riser (0.17, 0.2 in 0.1 m voxels), below two.
+      stair_detect_floor_band: 0.25
+      # The padded footprint's width (2 x robot_radius) and a little.
+      stair_detect_min_width: 0.6
+      # Smallest blob read (m2): three steps a metre wide.
+      stair_detect_min_area: 0.5
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
