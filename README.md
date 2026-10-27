@@ -182,9 +182,16 @@ camera feed — so
 `scripts/build.sh` refuses to start on an empty checkout and names the `.repos`
 file to import.
 
+**Keeping them current.** A `git pull` of this workspace never updates those
+checkouts — each tracks its repo's `dev`, and no commit here records where it
+is. Use `scripts/sync.sh` instead of a bare `git pull`: it pulls the workspace,
+fast-forwards every checkout that is on its pinned branch, clones any that is
+missing, fetches only (and says so) for one on another branch, and needs only
+git on the host.
+
 **On an existing robot**, the pull that moves a package out deletes its
-directory and nothing puts it back: run `vcs import < dependencies.repos`
-before the next build. That also fetches and checks out the pin in every
+directory and nothing puts it back: run `scripts/sync.sh` (or
+`vcs import < dependencies.repos`) before the next build. That also fetches and checks out the pin in every
 checkout that is already there; add `--skip-existing` to clone only the missing
 one and leave the others as they are.
 
