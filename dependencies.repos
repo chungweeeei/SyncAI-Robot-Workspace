@@ -8,6 +8,7 @@
 #
 #   vcs import < dependencies.repos          # populate a fresh clone
 #   vcs import < dependencies.repos --force  # re-checkout after changing a pin
+#   scripts/sync.sh                          # keep them current (git only, no vcs)
 #
 # The keys already carry `src/`, so run this from the workspace root without an
 # extra `src` argument, or the packages land in `src/src/`.

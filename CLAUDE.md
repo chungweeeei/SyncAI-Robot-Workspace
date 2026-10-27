@@ -638,7 +638,10 @@ something to verify or edit here.
   backend kept there for development can never be committed back in). `.env`
   holds secrets — never commit it.
 - `scripts/`: `attach.sh` (host-side: attaches to whichever byobu session is
-  live — the session name follows the mode), `build.sh` (in-image, see Build),
+  live — the session name follows the mode), `sync.sh` (host-side, git only:
+  `git pull` of the workspace plus a fast-forward of every `dependencies.repos`
+  checkout on its pinned branch — a plain pull never touches them; a checkout
+  on another branch is fetched only), `build.sh` (in-image, see Build),
   `urdf2glb.py` (see "Out of tree"), `calibration/` (camera intrinsics and
   lidar-camera extrinsic; `collect_board.py` / `snapshot.py` need rclpy, the
   rest only numpy + OpenCV + PyYAML and also run on the host), and `release/`
