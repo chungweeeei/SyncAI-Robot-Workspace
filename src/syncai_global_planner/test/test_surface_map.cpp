@@ -192,6 +192,38 @@ TEST(SurfaceAStar, TwoFloorsSnapSeparatelyAndNeverConnect)
   EXPECT_EQ(r.failure, PlanFailure::Disconnected);
 }
 
+TEST(SurfaceAStar, AHintOffTheOnlyLayerSnapsToItButOverlappingFloorsStillNeedOne)
+{
+  // The ramp's top is 1.07 m up: a goal there sent at z = 0, as the backend
+  // sends every goal, is beyond snap_z_window, and the one layer under it is
+  // the one meant.
+  const auto r = build("ramp");
+  SurfaceAStar ra(r);
+  SearchParams p;
+  const double top = 4.0 * std::tan(15.0 * M_PI / 180.0);
+  ASSERT_GT(top, p.snap_z_window);
+  const SnapResult start = ra.snap(2.0, 4.0, 0.0, p);
+  ASSERT_NE(start.cell, kNoCell);
+  EXPECT_FALSE(start.z_fallback);
+  const SnapResult up = ra.snap(10.0, 4.0, 0.0, p, r->cells[start.cell].component);
+  ASSERT_NE(up.cell, kNoCell) << up.detail;
+  EXPECT_TRUE(up.z_fallback);
+  EXPECT_NEAR(r->zTop(up.cell), top, 0.15);
+  EXPECT_NEAR(up.dz, r->zTop(up.cell), 1e-9);
+  p.snap_single_layer = false;
+  EXPECT_EQ(ra.snap(10.0, 4.0, 0.0, p).cell, kNoCell);
+  p.snap_single_layer = true;
+
+  // Two floors 5 m apart: a hint half-way is in neither window, and the
+  // fallback must not pick one for it.
+  const auto f = build("two_floors");
+  SurfaceAStar fa(f);
+  const SnapResult mid = fa.snap(6.0, 4.0, 2.5, p);
+  EXPECT_EQ(mid.cell, kNoCell);
+  EXPECT_FALSE(mid.z_fallback);
+  EXPECT_NE(mid.detail.find("more than one floor"), std::string::npos) << mid.detail;
+}
+
 TEST(SurfaceAStar, PlansThroughTheDoorAndKeepsClearance)
 {
   const auto m = build("wall");

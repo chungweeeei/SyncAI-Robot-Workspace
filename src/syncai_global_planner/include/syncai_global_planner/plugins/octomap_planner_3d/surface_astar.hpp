@@ -75,6 +75,13 @@ struct SearchParams
   // height (0.48 m) and is far below the spacing of two floors.
   double snap_xy_radius = 0.5;
   double snap_z_window = 1.0;
+  // When nothing lies within snap_z_window and no column within
+  // snap_xy_radius holds more than one traversable surface, snap to that
+  // single layer at any height. A goal on sloping ground sent at z = 0 (the
+  // backend) or at a floor's nominal height drifts out of the window as the
+  // ground falls or rises; a single layer is unambiguous, so the hint only
+  // has to pick a floor where floors overlap.
+  bool snap_single_layer = true;
   // Factor on a stair link's length: a flight is slower and riskier than
   // the same length of floor, so a level detour up to this many times longer
   // wins. Clamped to >= 1.
@@ -100,10 +107,11 @@ const char * planFailureName(PlanFailure f);
 struct SnapResult
 {
   CellId cell = kNoCell;
-  bool outside = false;  // (x, y) is not even inside the grid
-  double xy_dist = 0.0;  // from the request to the cell centre
-  double dz = 0.0;       // cell top face minus the height hint
-  std::string detail;    // why nothing qualified, when cell == kNoCell
+  bool outside = false;     // (x, y) is not even inside the grid
+  double xy_dist = 0.0;     // from the request to the cell centre
+  double dz = 0.0;          // cell top face minus the height hint
+  bool z_fallback = false;  // outside snap_z_window, taken by snap_single_layer
+  std::string detail;       // why nothing qualified, when cell == kNoCell
 };
 
 struct PlanResult
