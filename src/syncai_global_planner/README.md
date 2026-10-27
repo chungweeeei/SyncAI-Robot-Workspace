@@ -401,7 +401,13 @@ request`; a 2D backend's 0 lands on the ground floor, whose surface is
 ~0.5 m *below* the map origin — the first lidar pose) or the start's
 (`start`). Both snap to the nearest traversable cell within `snap_xy_radius`
 whose top face is within `snap_z_window` (1.0 m, far below the 5.7 m floor
-spacing) of the hint; the goal only within the start's component. A failed
+spacing) of the hint; the goal only within the start's component. When
+nothing is within the window and no column within `snap_xy_radius` holds a
+second traversable layer, the one layer there is taken at any height
+(`snap_single_layer`, 2026-10-27, logged as a warning): on outdoor_1027 the
+ground falls 1.4 m from the map origin to the far end, so a z = 0 goal there
+failed `goal_unavailable` with `traversable` printed in the reason. Where
+floors overlap the hint still has to pick one. A failed
 snap says what *is* there — `goal_unavailable: … surfaces in that column:
 z=[-0.40 (untraversable: footprint_blocked), 4.80 (traversable, component
 2)]` — or that the nearest surface is on another floor.
@@ -889,7 +895,8 @@ all 41 links and the upper floor is `no_path`.
   walk, but its width is only tried `stair_straight_half_width` either side
   of the walked foot, and a flight that is not one plane (a switchback, a
   turning landing) still follows the walked track, drift and all.
-- A 2D backend's z = 0 goal is only right on the ground floor; upstairs it
+- A 2D backend's z = 0 goal is only right on the ground floor (or on any
+  single-layer ground, by `snap_single_layer`); where floors overlap it
   needs a real z or `goal_z_mode: start`.
 - A map switch needs its own call: `map_server/load_map` reloads the gridmap
   only, and `Octo3D` reloads on **`planner_server/Octo3D/load_map`** (see
@@ -1025,6 +1032,7 @@ ros2 launch syncai_map_server costmap_filter_info.launch.py mask_yaml:=map/other
 | `gap_cost_weight` | `1.0` | Cost factor 1 + weight × gaps / disc columns. Dynamic |
 | `heuristic_weight`, `max_iterations`, `max_planning_time` | `1.0`, `2000000`, `2.0` s | Weighted A* and the guards. Dynamic |
 | `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
+| `snap_single_layer` | `true` | Nothing within `snap_z_window` and one traversable layer within `snap_xy_radius`: snap to it at any height (sloping ground under a z = 0 goal). `false` = the window is absolute. Dynamic |
 | `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |
 | `publish_raw_plan` | `false` | Also publish the un-shortcut chain on `Octo3D/raw_plan` |
 | `dynamic.enabled`, `dynamic.topic`, `dynamic.transform_tolerance` | `true`, `pointlio/body_cloud`, `0.3` | The dynamic overlay's input (see **Dynamic obstacles**); `false` = no mark ever, every path valid, no detour (the 2026-10-20 behaviour). Startup only |

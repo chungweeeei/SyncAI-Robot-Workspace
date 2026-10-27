@@ -137,6 +137,7 @@ void OctomapPlanner3D::initialize(
   dp("max_planning_time", rclcpp::ParameterValue(search_params_.max_planning_time));
   dp("snap_xy_radius", rclcpp::ParameterValue(search_params_.snap_xy_radius));
   dp("snap_z_window", rclcpp::ParameterValue(search_params_.snap_z_window));
+  dp("snap_single_layer", rclcpp::ParameterValue(search_params_.snap_single_layer));
   dp("stair_cost_multiplier", rclcpp::ParameterValue(search_params_.stair_cost_multiplier));
   // Dynamic obstacles (the overlay; its six doubles are dynamic).
   dp("dynamic.enabled", rclcpp::ParameterValue(dynamic_enabled_));
@@ -208,6 +209,7 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".max_planning_time", search_params_.max_planning_time);
   node->get_parameter(name + ".snap_xy_radius", search_params_.snap_xy_radius);
   node->get_parameter(name + ".snap_z_window", search_params_.snap_z_window);
+  node->get_parameter(name + ".snap_single_layer", search_params_.snap_single_layer);
   node->get_parameter(name + ".stair_cost_multiplier", search_params_.stair_cost_multiplier);
   node->get_parameter(name + ".dynamic.enabled", dynamic_enabled_);
   node->get_parameter(name + ".dynamic.topic", dynamic_topic_);
@@ -886,6 +888,19 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     return fail(
       g.outside ? o3d::PlanFailure::GoalOutsideMap : o3d::PlanFailure::GoalUnavailable, g.detail);
   }
+  // Said every time: a goal whose z is this far off is one the backend or
+  // the console placed without the ground's height, and on a map whose
+  // floors overlap elsewhere the same goal would have failed.
+  if (s.z_fallback || g.z_fallback) {
+    const o3d::SnapResult & f = g.z_fallback ? g : s;
+    const double hint = g.z_fallback ? goal_z : start_z;
+    RCLCPP_WARN(
+      logger_,
+      "[OctomapPlanner3D][createPlan] %s z hint %.2f, ground there at z %.2f (%.2f m off, beyond "
+      "snap_z_window %.2f): snapped to it as the only floor within %.2f m (snap_single_layer)",
+      g.z_fallback ? "goal" : "start", hint, hint + f.dz, std::fabs(f.dz),
+      search_params_.snap_z_window, search_params_.snap_xy_radius);
+  }
 
   o3d::PlanResult r = astar_->plan(s.cell, g.cell, search_params_, blocked);
   if (r.failure != o3d::PlanFailure::None) {
@@ -1196,6 +1211,8 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
     } else if (type == rclcpp::ParameterType::PARAMETER_BOOL) {
       if (key == "shortcut") {
         shortcut_ = p.as_bool();
+      } else if (key == "snap_single_layer") {
+        search_params_.snap_single_layer = p.as_bool();
       } else {
         result.successful = false;
         result.reason = key + " cannot be changed at runtime";

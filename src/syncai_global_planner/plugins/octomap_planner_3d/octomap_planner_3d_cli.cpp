@@ -160,6 +160,8 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     sp.snap_xy_radius = v;
   } else if (k == "snap_z_window") {
     sp.snap_z_window = v;
+  } else if (k == "snap_single_layer") {
+    sp.snap_single_layer = v != 0.0;
   } else if (k == "stair_cost_multiplier") {
     sp.stair_cost_multiplier = v;
   } else if (k == "stair_min_rise") {
@@ -788,9 +790,9 @@ int runPlan(
   m.cellXY(g.cell, gxc, gyc);
   std::printf(
     "plan: start snapped to (%.2f, %.2f, %.2f) [%.2f m xy, %+.2f m z], goal to "
-    "(%.2f, %.2f, %.2f) [%.2f m xy, %+.2f m z], component %u\n",
+    "(%.2f, %.2f, %.2f) [%.2f m xy, %+.2f m z%s], component %u\n",
     sxc, syc, m.zTop(s.cell), s.xy_dist, s.dz, gxc, gyc, m.zTop(g.cell), g.xy_dist, g.dz,
-    m.cells[s.cell].component);
+    g.z_fallback ? ", single layer" : "", m.cells[s.cell].component);
   PlanResult r = astar.plan(s.cell, g.cell, sp, blocked);
   if (r.failure != PlanFailure::None) {
     std::printf(

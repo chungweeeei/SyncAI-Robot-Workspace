@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <queue>
 #include <sstream>
 
@@ -106,47 +107,71 @@ SnapResult SurfaceAStar::snap(
                           : prefer_component;
   CellId best = kNoCell, best_other = kNoCell;
   double best_xy = 0, best_dz = 0, other_xy = 0;
-  for (int dy = -r; dy <= r; ++dy) {
-    for (int dx = -r; dx <= r; ++dx) {
-      const int ix = cx + dx, iy = cy + dy;
-      if (!m.inGrid(ix, iy)) {
-        continue;
-      }
-      const double xy = std::hypot(m.cx(ix) - x, m.cy(iy) - y);
-      if (xy > p.snap_xy_radius) {
-        continue;
-      }
-      const uint32_t c = m.col(ix, iy);
-      for (uint32_t i = m.col_begin[c], e = m.col_begin[c + 1]; i < e; ++i) {
-        if (!m.traversable(i)) {
+  // Whether a column within the radius holds more than one traversable
+  // surface: then the hint is what tells the floors apart, and nothing
+  // outside its window may be taken.
+  bool layered = false;
+  const auto scan = [&](double z_window) {
+    best = best_other = kNoCell;
+    best_xy = best_dz = other_xy = 0;
+    n_marked = n_zoned = 0;
+    for (int dy = -r; dy <= r; ++dy) {
+      for (int dx = -r; dx <= r; ++dx) {
+        const int ix = cx + dx, iy = cy + dy;
+        if (!m.inGrid(ix, iy)) {
           continue;
         }
-        const double dz = m.zTop(i) - z_hint;
-        if (std::fabs(dz) > p.snap_z_window) {
+        const double xy = std::hypot(m.cx(ix) - x, m.cy(iy) - y);
+        if (xy > p.snap_xy_radius) {
           continue;
         }
-        if (blocked && blocked->blocked(m, i)) {
-          // A cell both refuse counts as a zone's: the zone is permanent and
-          // the one the operator can do something about.
-          (blocked->blockedByZone(m, i) ? n_zoned : n_marked)++;
-          continue;
-        }
-        if (prefer_component != kNoComponent && reach(i) != want) {
-          if (best_other == kNoCell || xy < other_xy) {
-            best_other = i;
-            other_xy = xy;
+        const uint32_t c = m.col(ix, iy);
+        int traversable_in_column = 0;
+        for (uint32_t i = m.col_begin[c], e = m.col_begin[c + 1]; i < e; ++i) {
+          if (!m.traversable(i)) {
+            continue;
           }
-          continue;
-        }
-        if (
-          best == kNoCell || xy < best_xy - 1e-9 ||
-          (std::fabs(xy - best_xy) <= 1e-9 && std::fabs(dz) < std::fabs(best_dz))) {
-          best = i;
-          best_xy = xy;
-          best_dz = dz;
+          if (++traversable_in_column > 1) {
+            layered = true;
+          }
+          const double dz = m.zTop(i) - z_hint;
+          if (std::fabs(dz) > z_window) {
+            continue;
+          }
+          if (blocked && blocked->blocked(m, i)) {
+            // A cell both refuse counts as a zone's: the zone is permanent and
+            // the one the operator can do something about.
+            (blocked->blockedByZone(m, i) ? n_zoned : n_marked)++;
+            continue;
+          }
+          if (prefer_component != kNoComponent && reach(i) != want) {
+            if (best_other == kNoCell || xy < other_xy) {
+              best_other = i;
+              other_xy = xy;
+            }
+            continue;
+          }
+          if (
+            best == kNoCell || xy < best_xy - 1e-9 ||
+            (std::fabs(xy - best_xy) <= 1e-9 && std::fabs(dz) < std::fabs(best_dz))) {
+            best = i;
+            best_xy = xy;
+            best_dz = dz;
+          }
         }
       }
     }
+  };
+  scan(p.snap_z_window);
+  // Nothing within the window, and the ground here is one layer: the hint
+  // is only off in height (a goal sent at z = 0, or at a floor's nominal
+  // height, on ground that slopes away from the map origin -- outdoor_1027
+  // is 1.4 m below it 50 m out), so the one surface there is the one meant.
+  // Where floors overlap the hint still decides, and a surface in the
+  // window on another component is still refused, not traded for this.
+  if (best == kNoCell && best_other == kNoCell && !layered && p.snap_single_layer) {
+    scan(std::numeric_limits<double>::infinity());
+    out.z_fallback = best != kNoCell;
   }
   if (best != kNoCell) {
     out.cell = best;
@@ -183,6 +208,11 @@ SnapResult SurfaceAStar::snap(
   if (n_zoned > 0) {
     out.detail +=
       "; " + std::to_string(n_zoned) + " traversable cells within the radius are in keepout zones";
+  }
+  if (layered && best_other == kNoCell) {
+    out.detail +=
+      "; the ground within the radius has more than one floor, so the z hint must "
+      "pick one";
   }
   return out;
 }

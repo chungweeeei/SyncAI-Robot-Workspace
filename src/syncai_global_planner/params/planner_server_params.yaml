@@ -412,6 +412,12 @@
       # is far below the spacing of two floors (~5.7 m here).
       snap_xy_radius: 0.5
       snap_z_window: 1.0
+      # Nothing within snap_z_window and only one traversable layer within
+      # snap_xy_radius: snap to it at any height. A goal at z = 0 (the
+      # backend) on ground that slopes away from the map origin otherwise
+      # fails goal_unavailable once the ground is 1 m off -- outdoor_1027's
+      # far end is 1.4 m below it. Where floors overlap the hint still picks.
+      snap_single_layer: true
       # Factor on a stair link's 3D length: a level detour up to this many
       # times longer wins over the stairs. >= 1 (keeps the heuristic admissible).
       stair_cost_multiplier: 2.0
