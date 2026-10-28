@@ -14,14 +14,12 @@
 # What it does not prove: anything that needs data. There is no lidar, gait
 # controller or camera here, so nothing localizes, plans or moves.
 #
-# The nav session is brought up twice (2026-10-19): on a 2D map (gridmap.yaml
-# + map.pcd, the fixture below) and on a 3D-only map (octomap.bt + map.pcd,
-# no gridmap.yaml), the kind OctomapPlanner3D navigates on. A 3D-only map
-# took map_server down in its constructor and left the keepout pane with
-# nothing to start until 397f264 -- a green build and a green 2D smoke said
-# nothing about it. Besides "nothing died", the 3D pass checks that those
-# two panes came up idle on purpose and that Octo3D built its surface map
-# (EXPECT_3D). The map is switched between passes by rewriting the INI's
+# The nav session is brought up on a 3D-only map (octomap.bt + map.pcd, no
+# gridmap.yaml), the kind OctomapPlanner3D navigates on. From 2026-10-19 it
+# was brought up twice, on a 2D map too; the 2D pass went with the nav
+# session's map_server window on 2026-10-28, the first step of deprecating 2D
+# navigation. Besides "nothing died", the pass checks that Octo3D built its
+# surface map (EXPECT_3D). The map is switched for it by rewriting the INI's
 # `name:` line in place, as the backend's map switch does.
 #
 # The panes are read from the specs themselves, not from a list kept here, so
@@ -47,7 +45,6 @@ MAP_NAME=ci_smoke
 MAP_NAME_3D=ci_smoke_3d
 OUT=log/smoke
 # What the 3D-only pass must also show, as "<log> <TAB> <extended regex>":
-# the idle starts of 397f264 (rather than a pane that merely did not crash),
 # Octo3D's surface map built from the fixture's octomap.bt, and the
 # task_runner having heard Octo3D's map_available and switched its goals to
 # the *_3d.xml trees (the per-goal tree choice, wired end to end), and Octo3D
@@ -55,8 +52,6 @@ OUT=log/smoke
 # the file beside the tree and the summary line, which the gtests never
 # touch since they parse strings).
 EXPECT_3D="$(printf '%s\t%s\n' \
-    map_server  'Starting map_server idle' \
-    keepout     'Starting filter_mask_server idle' \
     planner     'surface map: [0-9]+ x [0-9]+ columns' \
     planner     'keepout zones from .*keepout\.json: 1 zones, [0-9]+ cells blocked \([0-9]+ core\), 0 stair links cut' \
     task_runner '3D map \(.*map_available\) -- goals run the \*_3d\.xml trees')"
@@ -82,26 +77,15 @@ set -u
 # --- fixture map -------------------------------------------------------------
 # syncai_localizer opens its map in the constructor and dies without one (and
 # its launch starts nothing when the pcd is missing), so the nav session needs
-# a map on disk; map_server only idles without a gridmap since 397f264, which
-# the 3D-only pass below checks. A 5 x 5 m walled room:
-# the gridmap is free inside with a lethal border, the pcd is the same walls
-# 2 m high, with intensity because the localizer loads PointXYZI. Generated
-# rather than committed: map/ is gitignored and these are throwaway.
-# keepout.yaml is left out on purpose -- costmap_filter_info writes a blank one,
-# and that path is part of what is being tested.
+# a map on disk. A 5 x 5 m walled room, 2 m high, with intensity because the
+# localizer loads PointXYZI; the mapping and calibration passes run on it too,
+# though neither reads it. Generated rather than committed: map/ is gitignored
+# and these are throwaway. It has no gridmap since 2026-10-28: nothing in the
+# nav session serves one any more.
 mkdir -p "map/${MAP_NAME}"
 python3 - "map/${MAP_NAME}" <<'EOF'
 import sys
 d = sys.argv[1]
-n, res = 100, 0.05
-rows = []
-for y in range(n):
-    rows.append(bytes(0 if x in (0, n - 1) or y in (0, n - 1) else 254 for x in range(n)))
-with open(f"{d}/gridmap.pgm", "wb") as f:
-    f.write(b"P5\n%d %d\n255\n" % (n, n) + b"".join(rows))
-with open(f"{d}/gridmap.yaml", "w") as f:
-    f.write("image: gridmap.pgm\nmode: trinary\nresolution: 0.05\n"
-            "origin: [-2.5, -2.5, 0.0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n")
 pts = []
 steps = [i * 0.05 - 2.5 for i in range(101)]
 for z in [i * 0.05 for i in range(41)]:
@@ -243,7 +227,6 @@ EOF
 }
 
 set_map_name "${MAP_NAME}" || die "cannot set the INI's [map] name"
-run_spec config/sessions/start_nav.yaml
 run_spec config/sessions/start_mapping.yaml
 set_map_name "${MAP_NAME_3D}" || die "cannot set the INI's [map] name"
 run_spec config/sessions/start_nav.yaml start_nav_3d "${EXPECT_3D}"
@@ -256,4 +239,4 @@ if [ "${failures}" -gt 0 ]; then
     echo "smoke test: ${failures} session pass(es) had a node that did not come up."
     exit 1
 fi
-echo "smoke test: every node came up in all four passes (nav 2D, mapping, nav 3D-only, calibration)."
+echo "smoke test: every node came up in all three passes (mapping, nav 3D-only, calibration)."

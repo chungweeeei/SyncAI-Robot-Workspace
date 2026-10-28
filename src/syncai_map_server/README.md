@@ -238,10 +238,14 @@ ros2 launch syncai_map_server map_saver.launch.py
 ros2 launch syncai_map_server costmap_filter_info.launch.py
 ```
 
-`map_server` is the first pane of the `map_server` window of the nav session
+**No session runs this package any more** (2026-10-28): the nav session's
+`map_server` window, which ran `map_server.launch.py` and
+`costmap_filter_info.launch.py`, was removed as the first step of deprecating 2D
+navigation, and the package is built only until a later step deletes it. Until
+then `map_server` was the first pane of that window
 (`config/sessions/start_nav.yaml`, its own window since 2026-09-30 — before
 that it shared `localization` with pointlio and the localizer)
-and must come up **before** the planner, whose global costmap static layer blocks
+and had to come up **before** the planner, whose global costmap static layer blocks
 on the latched map. The mapping session (`start_mapping.yaml`) does not run it at
 all — it runs `pgo` (`syncai_mapping`) to *build* the map that this node needs to exist.
 When `[map] map` names a gridmap that does not exist — a 3D-only map — the

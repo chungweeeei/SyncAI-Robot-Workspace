@@ -322,13 +322,13 @@ things trip a fresh checkout:
 Nothing has to be launched by hand. The robot container's main process is
 `ros2 launch syncai_sys_manager sys_manager.launch.py`; on start it builds the
 **AUTO** byobu session (`syncai-dev`) from `config/sessions/start_nav.yaml`:
-bringup → map_server + keepout → pointlio + localizer → lio_bridge → planner +
-controller → task_runner → driver_manager → robot_state → camera_feeder, with `sleep` offsets
-standing in for the missing lifecycle manager. The `keepout` pane serves
-`map/<name>/keepout.yaml` to the planner's costmap filter, writing a blank
-(all-unknown) one of the gridmap's size first when the map has none yet. Draw a
-mask as the forbidden area only — the filter inflates it with the robot's
-footprint itself, so a hand-drawn margin is applied twice.
+bringup → pointlio + localizer → lio_bridge → planner + controller →
+task_runner → driver_manager → robot_state → camera_feeder, with `sleep` offsets
+standing in for the missing lifecycle manager. The session navigates on 3D maps
+(`map/<name>/octomap.bt`) only: it has no map_server since 2026-10-28, so a 2D
+gridmap is no longer served. Forbidden zones are `map/<name>/keepout.json`,
+read by the 3D planner beside the tree — draw them as the forbidden area only,
+the planner keeps the robot's radius off them itself.
 
 ```bash
 # from the HOST: attach to whichever session is live (syncai-dev in AUTO,

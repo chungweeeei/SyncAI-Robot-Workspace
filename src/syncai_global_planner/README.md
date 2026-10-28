@@ -989,10 +989,10 @@ meaning no per-robot launch override, but also that it only works after
 The global costmap runs the **keepout filter** (`filters: ["keepout_filter"]`,
 since 2026-09). Its mask comes from `map/<name>/keepout.yaml`, served by
 `syncai_map_server`'s `costmap_filter_info.launch.py` in the nav session's
-`map_server` window (pane `keepout`); when a map has no mask yet that launch
-writes a blank one of the gridmap's geometry first (all unknown, so the filter
-changes nothing), which is why the mask server is up on every map and "Filter
-mask was not received" in this log now means the pane is actually down. Two
+`map_server` window (pane `keepout`) until 2026-10-28, when that window was
+removed as the first step of deprecating 2D navigation: nothing serves the mask
+now, so "Filter mask was not received" in this log is expected on every boot,
+as it was on a 3D-only map, and only `GridBased` ever read the filter. Two
 things to know before drawing a mask: filters run *after* inflation, so the
 `KeepoutFilter` inflates the mask itself with this costmap's inscribed radius
 and `inflation_layer` values (2026-10 — draw the forbidden area only, no
