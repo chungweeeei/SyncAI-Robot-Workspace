@@ -35,12 +35,6 @@ public:
    */
   inline geometry_msgs::msg::Twist getTwist() { return vel_smooth_.twist; }
 
-  /**
-   * @brief Get twist stamped msg from smoother
-   * @return twist TwistStamped msg
-   */
-  inline geometry_msgs::msg::TwistStamped getTwistStamped() { return vel_smooth_; }
-
 protected:
   /**
    * @brief Callback of odometry subscriber to process

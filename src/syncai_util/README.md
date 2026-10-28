@@ -20,7 +20,6 @@ uses.
 | `odometry_utils.hpp` | compiled | `OdomSmoother` — time-windowed average twist | task_runner |
 | `odom_subscriber.hpp` | header-only | `OdomSubscriber` — latest planar twist | controller |
 | `line_iterator.hpp` | header-only | Bresenham ray tracing | costmap_2d |
-| `string_utils.hpp` | compiled | `split`, `strip_leading_slash` | *nobody* — no consumer left in `src/`; kept from the `nav2_util` port (its user was AMCL, which went with the 2D bringup) |
 | `path_height.hpp` | header-only | `pathHasHeight` (a path whose poses do not all share one z: OctomapPlanner3D's) and `lookupGroundZ` (the ground under the robot = the lidar frame's z minus its height, since `base_link` is planar). Moved here from `syncai_controller` on 2026-10-20 so MPPI could share it | controller (server goal check, RPP 3D), mppi_controller, costmap_2d (`TerrainLayer`) |
 | `stair_mode.hpp` | compiled | `StairMode` — the stair state machine both controllers run on a path with heights: detects a climbing stretch, switches the gait policy over `set_policy_mode` standing still, settles, reports on the latched `stair_mode`. `initialize()` for a node (parameters under the plugin's name), `configure()` with callbacks for a test (`test/test_stair_mode.cpp`). Lifted out of RPP 3D on 2026-10-20; the climb itself stays each controller's. `findCorner()` (static, 2026-10-21) finds the first landing corner of a plan for both controllers' stair carrots. `setPlan()` keeps the plan with `medianHeights()` applied (static, 2026-10-24: each inner z the median of three poses), so a one-voxel spike or dip in the planner's heights no longer makes a ramp read as a stair — on dp's arched ramp one -0.5 pose read 0.3 m of rise for a 0.2 m slope; a flight's monotonic heights pass unchanged | controller (RPP 3D), mppi_controller |
 
@@ -92,8 +91,12 @@ Small functions with outsized consequences:
   standard "where is the robot" lookup, used by the costmap, the controller, the
   task runner's feedback and `syncai_robot_state`. Returns `false` rather than
   throwing on a TF failure, which is why those callers all degrade gracefully.
-- `transformPoseInTargetFrame`, the two `getTransform` overloads (same-time and
-  cross-time), and `validateTwist` (NaN/inf guard).
+- `transformPoseInTargetFrame`.
+
+Removed on 2026-10-28 as never called: the two `getTransform` overloads,
+`validateTwist`, `string_utils.hpp` (`split`, `strip_leading_slash`; AMCL's,
+gone with the 2D bringup), the `Pose2D` overload of `euclidean_distance` and
+the two odometry helpers' `getTwistStamped()`.
 
 ## The two odometry helpers
 
@@ -116,8 +119,8 @@ quadruped's gait sway, and there is no smoother in that path. See
 Header-only and all `inline`:
 
 - `orientationAroundZAxis(yaw)` → `geometry_msgs/Quaternion`
-- `euclidean_distance(...)` overloaded for `Point`, `Pose`, `PoseStamped` and
-  `Pose2D`, each with an `is_3d` flag (default 2D)
+- `euclidean_distance(...)` overloaded for `Point`, `Pose` and `PoseStamped`,
+  each with an `is_3d` flag (default planar)
 - `calculate_path_length(path, start_index)` — the remaining-distance primitive
   behind the controller's feedback, the task runner's `distance_remaining`, and
   the controller's patrol-loop goal gate

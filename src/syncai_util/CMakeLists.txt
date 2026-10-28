@@ -38,7 +38,6 @@ add_library(${PROJECT_NAME} SHARED
   src/odometry_utils.cpp
   src/robot_utils.cpp
   src/stair_mode.cpp
-  src/string_utils.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

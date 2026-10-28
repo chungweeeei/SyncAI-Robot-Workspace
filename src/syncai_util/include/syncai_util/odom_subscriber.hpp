@@ -84,12 +84,6 @@ public:
     return odom_vel_.twist;
   }
 
-  inline geometry_msgs::msg::TwistStamped getTwistStamped()
-  {
-    std::lock_guard<std::mutex> lock(odom_mutex_);
-    return odom_vel_;
-  }
-
 protected:
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
