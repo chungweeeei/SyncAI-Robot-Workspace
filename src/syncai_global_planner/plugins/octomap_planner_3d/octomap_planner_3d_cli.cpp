@@ -81,7 +81,9 @@ void usage()
     "  --no-shortcut            keep the raw A* cell chain\n"
     "  --no-stair-links         no stair links at all: neither the --poses track's flights\n"
     "                           nor the stairs detected off the map (--param stair_detect=0\n"
-    "                           keeps the track's only)\n"
+    "                           keeps the track's only), nor the kerb links (--param\n"
+    "                           kerb_links=0 drops those alone: a kerb is then crossed cell\n"
+    "                           to cell at any angle, as before 2026-10-29)\n"
     "  --dump-html <out.html>   self-contained three.js viewer of the surface map, the planned "
     "paths and (with --poses) the stair links\n"
     "  --write-bt <out.bt>      write the tree (a --synthetic scene, say) as an OctoMap .bt; "
@@ -124,11 +126,14 @@ bool readPoses(const std::string & path, std::vector<Pose> & out)
 }
 
 // "kf 2221 -> 2358" for a stair the track found, "detected at (5.9, -12.2)"
-// (its first point) for one found off the map.
+// (its first point) for one found off the map, "kerb at (5.9, -12.2)" (the
+// cell the crossing steps up from) for a kerb link.
 std::string linkName(const StairLink & l, const char * arrow = "->")
 {
   char buf[80];
-  if (l.detected) {
+  if (l.kerb) {
+    std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
+  } else if (l.detected) {
     std::snprintf(buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
   } else {
     std::snprintf(buf, sizeof buf, "kf %zu %s %zu", l.kf_a, arrow, l.kf_b);
@@ -164,6 +169,24 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     sp.snap_single_layer = v != 0.0;
   } else if (k == "stair_cost_multiplier") {
     sp.stair_cost_multiplier = v;
+  } else if (k == "step_edge_cost_weight") {
+    sp.step_edge_cost_weight = v;
+  } else if (k == "step_edge_cost_scaling") {
+    sp.step_edge_cost_scaling = v;
+  } else if (k == "step_edge_one_cell") {
+    sp.step_edge_one_cell = v;
+  } else if (k == "kerb_cost_multiplier") {
+    sp.kerb_cost_multiplier = v;
+  } else if (k == "kerb_links") {
+    st.kerb_links = v != 0.0;
+  } else if (k == "kerb_lead") {
+    st.kerb_lead = v;
+  } else if (k == "kerb_fit_radius") {
+    st.kerb_fit_radius = v;
+  } else if (k == "kerb_min_length") {
+    p.kerb_min_length = v;
+  } else if (k == "kerb_min_sure_cells") {
+    p.kerb_min_sure_cells = static_cast<int>(v);
   } else if (k == "stair_min_rise") {
     st.min_rise = v;
   } else if (k == "stair_max_length") {
@@ -234,6 +257,8 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     p.hole_fill_passes = static_cast<int>(v);
   } else if (k == "clearance_cost_radius") {
     p.clearance_cost_radius = v;
+  } else if (k == "step_edge_cost_radius") {
+    p.step_edge_cost_radius = v;
   } else if (k == "footprint_min_support") {
     p.footprint_min_support = v;
   } else if (k == "gap_cost_weight") {
@@ -262,6 +287,11 @@ void printStats(const SurfaceMap & m, const BuildStats & s)
     std::printf("%s%zu", i == 0 ? "  sizes: " : ", ", s.component_sizes[i]);
   }
   std::printf("\n");
+  std::printf(
+    "step edges: %zu traversable cells next to a step (%zu of %d cells or more); kerbs: %zu "
+    "lines of %zu cells (>= %.1f m long with >= %d sure cells); cost band %.2f m\n",
+    s.step_edges, s.sure_step_edges, kSureStepCells, s.kerb_lines, s.kerb_cells,
+    m.params.kerb_min_length, m.params.kerb_min_sure_cells, m.params.step_edge_cost_radius);
   // Height histogram of the traversable cells: on a multi-floor map this is
   // where the floors are (and what a goal's z has to be near).
   std::map<int, size_t> hist;
@@ -278,9 +308,9 @@ void printStats(const SurfaceMap & m, const BuildStats & s)
   }
   std::printf(
     "build: columns %.2fs, candidates %.2fs, hole-fill %.2fs, step %.2fs, footprint %.2fs, "
-    "components %.2fs, clearance %.2fs, total %.2fs\n",
+    "components %.2fs, clearance %.2fs, step edges %.2fs, total %.2fs\n",
     s.t_columns, s.t_candidates, s.t_hole_fill, s.t_step, s.t_footprint, s.t_components,
-    s.t_clearance, s.t_total);
+    s.t_clearance, s.t_step_edges, s.t_total);
 }
 
 // Recomputes N random columns the slow way (OcTree::search per voxel) and
@@ -844,8 +874,9 @@ int runPlan(
   for (const LinkUse & u : r.links) {
     const StairLink & l = astar.links()->links[u.link];
     std::printf(
-      "plan:   stairs %s: z %.2f -> %.2f, %.1f m\n", linkName(l, u.reversed ? "<-" : "->").c_str(),
-      m.zTop(u.reversed ? l.b : l.a), m.zTop(u.reversed ? l.a : l.b), l.length);
+      "plan:   %s %s: z %.2f -> %.2f, %.1f m\n", l.kerb ? "kerb" : "stairs",
+      linkName(l, u.reversed ? "<-" : "->").c_str(), m.zTop(u.reversed ? l.b : l.a),
+      m.zTop(u.reversed ? l.a : l.b), l.length);
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1373,16 +1404,22 @@ int main(int argc, char ** argv)
     inspect(*map, poses[i].x, poses[i].y, poses[i].z - lidar_height);
   }
   std::shared_ptr<const StairLinks> links;
-  if (stair_links && (!poses.empty() || stair_params.detect)) {
+  if (stair_links && (!poses.empty() || stair_params.detect || stair_params.kerb_links)) {
     std::vector<Waypoint> track;
     track.reserve(poses.size());
     for (const Pose & p : poses) {
       track.push_back({p.x, p.y, p.z - lidar_height});
     }
     links = buildStairLinks(*map, track, stair_params, tree.get());
+    size_t kerb_links = 0;
+    for (const StairLink & l : links->links) {
+      kerb_links += l.kerb ? 1 : 0;
+    }
     std::printf(
-      "stair links: %zu (min_rise %.2f m, %zu straight flights)\n", links->links.size(),
-      stair_params.min_rise, links->flights.size());
+      "stair links: %zu (min_rise %.2f m, %zu straight flights); kerb links: %zu over %zu of the "
+      "map's %zu kerbs (lead %.1f m)\n",
+      links->links.size() - kerb_links, stair_params.min_rise, links->flights.size(), kerb_links,
+      links->kerbs, map->kerb_lines.size(), stair_params.kerb_lead);
     for (const StairFlight & f : links->flights) {
       const StairLink & l = links->links[f.first];
       std::printf(

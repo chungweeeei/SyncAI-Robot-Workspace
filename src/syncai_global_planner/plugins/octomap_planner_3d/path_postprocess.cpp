@@ -11,7 +11,7 @@ namespace syncai_global_planner::octomap_planner_3d
 
 bool lineOfSight(
   const SurfaceMap & m, CellId a, CellId b, float min_clearance, std::vector<CellId> * out,
-  const BlockedView * blocked)
+  const BlockedView * blocked, const StairLinks * links)
 {
   const int ax = m.colIx(m.cell_col[a]), ay = m.colIy(m.cell_col[a]);
   const int bx = m.colIx(m.cell_col[b]), by = m.colIy(m.cell_col[b]);
@@ -32,6 +32,9 @@ bool lineOfSight(
     if (clearance < min_clearance) {
       return false;
     }
+    if (links && last != kNoCell && links->kerbCrossing(m, last, c)) {
+      return false;  // a kerb is crossed on its link, not by a shortcut
+    }
     kz = m.cells[c].kz;
     if (c != last && out) {
       out->push_back(c);
@@ -43,7 +46,8 @@ bool lineOfSight(
 }
 
 std::vector<CellId> shortcutPath(
-  const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked)
+  const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked,
+  const StairLinks * links)
 {
   std::vector<CellId> out;
   if (cells.size() < 3) {
@@ -60,7 +64,8 @@ std::vector<CellId> shortcutPath(
     float min_clear = std::min(clearOf(cells[anchor]), clearOf(cells[j]));
     while (j + 1 < cells.size()) {
       const float next_clear = std::min(min_clear, clearOf(cells[j + 1]));
-      if (!lineOfSight(m, cells[anchor], cells[j + 1], next_clear - 1e-4f, nullptr, blocked)) {
+      if (!lineOfSight(
+            m, cells[anchor], cells[j + 1], next_clear - 1e-4f, nullptr, blocked, links)) {
         break;
       }
       min_clear = next_clear;
@@ -368,7 +373,7 @@ std::vector<Waypoint> buildPath(
     const std::vector<CellId> seg(
       cells.begin() + static_cast<std::ptrdiff_t>(from),
       cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
-    chains.push_back(shortcut ? shortcutPath(m, seg, blocked) : seg);
+    chains.push_back(shortcut ? shortcutPath(m, seg, blocked, links) : seg);
     from = to + 1;
   };
   for (const LinkUse & u : uses) {
@@ -383,8 +388,8 @@ std::vector<Waypoint> buildPath(
   if (shortcut) {
     for (size_t i = 0; i < uses.size(); ++i) {
       const StairLink & link = links->links[uses[i].link];
-      if (!link.straight) {
-        continue;
+      if (!link.straight || link.kerb) {
+        continue;  // a kerb link's own points are the crossing (see the header)
       }
       std::vector<CellId> & A = chains[i];
       std::vector<CellId> & B = chains[i + 1];

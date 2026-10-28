@@ -19,7 +19,13 @@
 // ends of each stair the robot walked while mapping: a link is one move whose
 // cost is its 3D length times stair_cost_multiplier (>= 1, so the heuristic
 // stays admissible), and two cells are reachable when their components are in
-// the same linked group rather than the same component.
+// the same linked group rather than the same component. The kerb links of
+// the same object (2026-10-29) are moves too, at kerb_cost_multiplier, and
+// where they exist the plain move over the kerb is not one: a step of
+// kSureStepCells or more between two cells a kerb link crosses is refused,
+// so the route takes the kerb square on the link's lead-in. A step edge's
+// band (SurfaceCell::step_d) is paid for like the clearance band, so running
+// along a kerb costs more than keeping off it.
 //
 // With a BlockedView (dynamic_overlay.hpp, 2026-10-21) the search also keeps
 // off the cells the dynamic overlay has marked: a blocked cell is never
@@ -86,6 +92,21 @@ struct SearchParams
   // the same length of floor, so a level detour up to this many times longer
   // wins. Clamped to >= 1.
   double stair_cost_multiplier = 2.0;
+  // Factor on a move inside a step edge's band (SurfaceCell::step_d, out to
+  // SurfaceMapParams::step_edge_cost_radius): 1 + weight * exp(-scaling *
+  // step_d), the clearance curve again. 5.0 brings it to 1.14 at the band's
+  // 0.4 m edge from 2.0 on the edge itself. What it has to beat: on
+  // outdoor_1027 the pavement shortcut along the kerb saved 0.36 m of 72,
+  // over ~4 m of edge; at 1.3-1.5 along those 4 m the road wins by a metre.
+  // A one-cell edge, as often a slope's contour line as a kerb
+  // (kSureStepCells), gets one_cell of the weight, so a route still
+  // crosses contour lines as it likes and only stops running along them.
+  double step_edge_cost_weight = 1.0;
+  double step_edge_cost_scaling = 5.0;
+  double step_edge_one_cell = 0.5;
+  // Factor on a kerb link's length: a kerb is taken slower than floor (the
+  // feet have to clear it) but it is not a flight. Clamped to >= 1.
+  double kerb_cost_multiplier = 1.5;
 };
 
 enum class PlanFailure {

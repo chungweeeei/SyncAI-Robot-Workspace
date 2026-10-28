@@ -1634,6 +1634,231 @@ void detectStairs(
   }
 }
 
+// ---- Kerbs (2026-10-29; see the header) ----
+
+// The direction of the line through points (xs, ys) by its principal axis:
+// (tx, ty) unit, and the spread of the points along it (m). False with fewer
+// than three points, or when they are a blob rather than a line (the minor
+// axis holds more than half the major one's spread).
+bool fitLine(
+  const std::vector<double> & xs, const std::vector<double> & ys, double & tx, double & ty,
+  double & extent)
+{
+  const size_t n = xs.size();
+  if (n < 3) {
+    return false;
+  }
+  double mx = 0, my = 0;
+  for (size_t i = 0; i < n; ++i) {
+    mx += xs[i];
+    my += ys[i];
+  }
+  mx /= n;
+  my /= n;
+  double sxx = 0, syy = 0, sxy = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const double dx = xs[i] - mx, dy = ys[i] - my;
+    sxx += dx * dx;
+    syy += dy * dy;
+    sxy += dx * dy;
+  }
+  const double theta = 0.5 * std::atan2(2 * sxy, sxx - syy);
+  tx = std::cos(theta);
+  ty = std::sin(theta);
+  double lo = 1e300, hi = -1e300, lo2 = 1e300, hi2 = -1e300;
+  for (size_t i = 0; i < n; ++i) {
+    const double s = (xs[i] - mx) * tx + (ys[i] - my) * ty;
+    const double q = -(xs[i] - mx) * ty + (ys[i] - my) * tx;
+    lo = std::min(lo, s);
+    hi = std::max(hi, s);
+    lo2 = std::min(lo2, q);
+    hi2 = std::max(hi2, q);
+  }
+  extent = hi - lo;
+  return extent > 0 && (hi2 - lo2) <= 0.5 * extent + 1e-9;
+}
+
+// Lays the kerb links (see the header): at each low-side cell of every kerb
+// the surface map found, a straight crossing square to the kerb, as far as
+// the lead either side runs over level traversable ground. Runs last, after
+// the stairs: a stair's first riser is never a kerb (the flight's cells are
+// all rejected, so no traversable cell steps up onto it).
+void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out)
+{
+  out.kerb_edge.assign(m.cells.size(), 0);
+  if (!p.kerb_links) {
+    return;
+  }
+  const double lead = std::max(p.kerb_lead, m.res);
+  const double half_step = m.res / 2;
+  std::unordered_map<uint64_t, uint8_t> laid;  // (a, b) pairs already linked
+  std::vector<double> xs, ys;
+  for (const std::vector<CellId> & cells : m.kerb_lines) {
+    int rise = 0;
+    size_t links_here = 0;
+    double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
+    for (const CellId c : cells) {
+      const int kz = m.cells[c].kz;
+      double cx, cy;
+      m.cellXY(c, cx, cy);
+      xmin = std::min(xmin, cx);
+      xmax = std::max(xmax, cx);
+      ymin = std::min(ymin, cy);
+      ymax = std::max(ymax, cy);
+      // The way up: the mean offset to the higher orthogonal neighbours,
+      // which also orients the normal below.
+      double hx = 0, hy = 0;
+      m.forEachMove(c, [&](CellId nb, int k) {
+        if ((k & 1) == 0 && m.cells[nb].kz > kz) {
+          hx += SurfaceMap::kDx8[k];
+          hy += SurfaceMap::kDy8[k];
+          rise = std::max(rise, m.cells[nb].kz - kz);
+        }
+      });
+      if (std::hypot(hx, hy) < 1e-9) {
+        continue;  // two high neighbours opposite each other: a one-cell gutter, no way across
+      }
+      // The line's direction here: a fit over its cells within the radius;
+      // a stretch too short to fit (a corner's few cells) takes the step's
+      // own direction.
+      xs.clear();
+      ys.clear();
+      for (const CellId o : cells) {
+        double ox, oy;
+        m.cellXY(o, ox, oy);
+        if (std::hypot(ox - cx, oy - cy) <= p.kerb_fit_radius) {
+          xs.push_back(ox);
+          ys.push_back(oy);
+        }
+      }
+      double lx, ly, local_extent;
+      double ux, uy;
+      if (fitLine(xs, ys, lx, ly, local_extent) && local_extent >= 2 * m.res) {
+        ux = -ly;
+        uy = lx;
+        if (ux * hx + uy * hy < 0) {
+          ux = -ux;
+          uy = -uy;
+        }
+      } else {
+        const double h = std::hypot(hx, hy);
+        ux = hx / h;
+        uy = hy / h;
+      }
+      // March the crossing: from lead before the edge (half a cell past
+      // this cell's centre, the way up) to lead past it, half a cell at a
+      // time, column by column, each resolved to its layer within one step
+      // of the last. Up to and including this cell's column the ground must
+      // stay within a cell of this cell's height, the first column past it
+      // must be higher, and from there on the ground must stay within a
+      // cell of that: a second step, a drop or a wall within the lead means
+      // no link here. The samples sit a quarter cell off the half-cell
+      // grid, so none lands on a column boundary, where floor() and the
+      // rounding of -lead + k * half_step would decide the column between
+      // them.
+      const double ex = cx + half_step * ux, ey = cy + half_step * uy;
+      const uint32_t col_c = m.cell_col[c];
+      CellId a = kNoCell, b = kNoCell, before = kNoCell, after = kNoCell;
+      uint32_t last_col = ~uint32_t(0);
+      int kz_prev = kz, kz_hi = kz;
+      bool ok = true, passed = false;
+      for (double s = -lead + half_step / 2; s <= lead; s += half_step) {
+        const double x = ex + s * ux, y = ey + s * uy;
+        const int ix = m.ixOf(x), iy = m.iyOf(y);
+        if (!m.inGrid(ix, iy)) {
+          ok = false;
+          break;
+        }
+        const uint32_t col = m.col(ix, iy);
+        if (col == last_col) {
+          continue;
+        }
+        last_col = col;
+        const CellId cell = m.layerNear(col, kz_prev, m.step_cells);
+        if (cell == kNoCell || !m.traversable(cell)) {
+          ok = false;
+          break;
+        }
+        const int kzc = m.cells[cell].kz;
+        if (col == col_c) {
+          passed = true;
+          before = cell;
+        } else if (!passed) {
+          if (std::abs(kzc - kz) > 1) {
+            ok = false;
+            break;
+          }
+          before = cell;
+        } else if (after == kNoCell) {
+          if (kzc <= kz) {
+            ok = false;  // the first column past the edge is not higher: no kerb here
+            break;
+          }
+          after = cell;
+          kz_hi = kzc;
+        } else if (std::abs(kzc - kz_hi) > 1) {
+          ok = false;
+          break;
+        }
+        kz_prev = kzc;
+        if (a == kNoCell) {
+          a = cell;
+        }
+        b = cell;
+      }
+      if (!ok || !passed || before == kNoCell || after == kNoCell || a == b) {
+        continue;
+      }
+      const uint64_t key = (static_cast<uint64_t>(a) << 32) | b;
+      if (laid.count(key)) {
+        continue;
+      }
+      laid[key] = 1;
+      StairLink link;
+      link.a = a;
+      link.b = b;
+      link.kerb = true;
+      link.straight = true;
+      link.detected = true;
+      link.up_x = ux;
+      link.up_y = uy;
+      double ax, ay, bx, by;
+      m.cellXY(a, ax, ay);
+      m.cellXY(b, bx, by);
+      link.pts.push_back({ax, ay, m.zTop(a)});
+      link.pts.push_back({cx, cy, m.zTop(before)});
+      link.pts.push_back({cx + m.res * ux, cy + m.res * uy, m.zTop(after)});
+      link.pts.push_back({bx, by, m.zTop(b)});
+      addLink(m, std::move(link), out);
+      ++links_here;
+      // The crossing is a link's from here on: this cell, the high
+      // neighbours it steps up to, and the two cells the march stepped
+      // between.
+      out.kerb_edge[c] = 1;
+      out.kerb_edge[before] = 1;
+      out.kerb_edge[after] = 1;
+      m.forEachMove(c, [&](CellId nb, int k) {
+        if ((k & 1) == 0 && m.cells[nb].kz > kz) {
+          out.kerb_edge[nb] = 1;
+        }
+      });
+    }
+    if (links_here > 0) {
+      ++out.kerbs;
+    } else {
+      double x, y;
+      m.cellXY(cells.front(), x, y);
+      char buf[200];
+      std::snprintf(
+        buf, sizeof buf,
+        "kerb at (%.1f, %.1f) (%.1f m long, %d cells high): no straight crossing of %.1f m either "
+        "side could be laid, so it is crossed as before",
+        x, y, std::max(xmax - xmin, ymax - ymin) + m.res, rise, lead);
+      out.notes.push_back(buf);
+    }
+  }
+}
+
 }  // namespace
 
 std::shared_ptr<const StairLinks> buildStairLinks(
@@ -1756,6 +1981,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
   if (params.detect) {
     detectStairs(m, tree, params, comp_cells, min_cells, *out);
   }
+  kerbLinks(m, params, *out);
   for (uint32_t i = 0; i < ncomp; ++i) {
     out->group[i] = findRoot(out->group, i);
   }

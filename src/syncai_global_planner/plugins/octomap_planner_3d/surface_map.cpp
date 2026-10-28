@@ -670,6 +670,221 @@ void computeClearance(SurfaceMap & m)
   }
 }
 
+// ---- stage 8: step edges and kerbs (2026-10-29; see the header) -------------
+
+// Every traversable cell's largest height change to a neighbour the move rule
+// allows; the low-side cells strung into lines and the lines that are kerbs;
+// then a second distance field from the cells that have a step, the
+// clearance field's twin: the sources are the edge cells themselves (at
+// distance 0), each cell reached keeps its own Euclidean xy distance to the
+// nearest source and that source's rise, and the propagation runs over the
+// surface graph as the clearance one does. Over the edge as well as along
+// it, since the move rule allows the step: both sides of a kerb are in its
+// band, which is the point -- the band is where a route straddles it.
+void computeStepEdges(SurfaceMap & m, BuildStats & stats)
+{
+  const float radius = static_cast<float>(m.params.step_edge_cost_radius);
+  const size_t n = m.cells.size();
+  for (SurfaceCell & c : m.cells) {
+    c.step_rise = 0;
+    c.edge_rise = 0;
+    c.step_d = radius;
+    c.flags &= static_cast<uint8_t>(~kKerb);
+  }
+  m.kerb_lines.clear();
+  // The heights the steps are read from are the median of each cell's own
+  // and its movable neighbours': the floor's returns scatter a few cm, so
+  // one column in ten sits a voxel above its neighbours, and read raw the
+  // map is salt and pepper -- 38 000 step cells on outdoor_1027, the band
+  // over most of its road, and a kerb that is no line at all. The median
+  // drops a lone voxel and keeps an edge two cells wide on either side. The
+  // traversability rules read the raw heights as before.
+  std::vector<int16_t> fkz(n, 0);
+  for (CellId c = 0; c < n; ++c) {
+    fkz[c] = m.cells[c].kz;
+    if (!m.traversable(c)) {
+      continue;
+    }
+    int16_t v[9];
+    int cnt = 0;
+    v[cnt++] = m.cells[c].kz;
+    m.forEachMove(c, [&](CellId nb, int) { v[cnt++] = m.cells[nb].kz; });
+    std::sort(v, v + cnt);
+    fkz[c] = v[cnt / 2];
+  }
+  // The rise of each cell, and for the cells on the low side of a step --
+  // an orthogonal neighbour higher by a cell or more -- which way the step
+  // faces (the mean offset to those neighbours) and how high it is at most.
+  std::vector<int8_t> hx(n, 0), hy(n, 0);
+  std::vector<uint8_t> up(n, 0);
+  for (CellId c = 0; c < n; ++c) {
+    if (!m.traversable(c)) {
+      continue;
+    }
+    const int kz = fkz[c];
+    int rise = 0, highest = 0;
+    int sx = 0, sy = 0;
+    m.forEachMove(c, [&](CellId nb, int k) {
+      const int dkz = fkz[nb] - kz;
+      rise = std::max(rise, std::abs(dkz));
+      if ((k & 1) == 0 && dkz >= 1) {
+        sx += SurfaceMap::kDx8[k];
+        sy += SurfaceMap::kDy8[k];
+        highest = std::max(highest, dkz);
+      }
+    });
+    if (rise == 0) {
+      continue;
+    }
+    m.cells[c].step_rise = static_cast<uint8_t>(std::min(rise, 255));
+    ++stats.step_edges;
+    if (rise >= kSureStepCells) {
+      ++stats.sure_step_edges;
+    }
+    if (highest > 0 && (sx != 0 || sy != 0)) {
+      hx[c] = static_cast<int8_t>(sx);
+      hy[c] = static_cast<int8_t>(sy);
+      up[c] = static_cast<uint8_t>(std::min(highest, 255));
+    }
+  }
+  // Whether the ground past the step stays level: a kerb has a pavement
+  // behind it, a stair's first riser has the next riser 0.3 m on (the
+  // flight's own cells are rejected, but its first tread often passes, as
+  // an island joined to the floor by the step rule, and the floor's edge
+  // along it would read as a kerb). Four cells on, along the step's
+  // dominant direction, within a cell of the first cell past the step.
+  std::vector<uint8_t> level(n, 0);
+  for (CellId c = 0; c < n; ++c) {
+    if (up[c] == 0) {
+      continue;
+    }
+    const int dx = std::abs(hx[c]) >= std::abs(hy[c]) ? (hx[c] > 0 ? 1 : -1) : 0;
+    const int dy = dx == 0 ? (hy[c] > 0 ? 1 : -1) : 0;
+    const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+    int kz = m.cells[c].kz, kz_hi = 0;
+    bool ok = true;
+    for (int j = 1; j <= 4 && ok; ++j) {
+      const CellId h = m.traversableNeighbour(ix + j * dx, iy + j * dy, kz);
+      ok = h != kNoCell && (j == 1 ? fkz[h] > fkz[c] : std::abs(fkz[h] - kz_hi) <= 1);
+      if (ok) {
+        kz = m.cells[h].kz;
+        if (j == 1) {
+          kz_hi = fkz[h];
+        }
+      }
+    }
+    level[c] = ok ? 1 : 0;
+  }
+  // Lines: low-side cells joined to their 8-neighbours (over the move rule)
+  // whose step faces within ~45 deg of the same way. A contour line of a
+  // slope that runs into a kerb meets it square, so it is a line of its own
+  // and never lends the kerb its cells, nor the kerb it its name.
+  std::vector<uint32_t> line_of(n, kNoComponent);
+  std::vector<CellId> stack;
+  const auto same_way = [&](CellId a, CellId b) {
+    const double la = std::hypot(hx[a], hy[a]), lb = std::hypot(hx[b], hy[b]);
+    return (hx[a] * hx[b] + hy[a] * hy[b]) > 0.75 * la * lb;
+  };
+  for (CellId seed = 0; seed < n; ++seed) {
+    if (up[seed] == 0 || line_of[seed] != kNoComponent) {
+      continue;
+    }
+    std::vector<CellId> cells;
+    line_of[seed] = static_cast<uint32_t>(m.kerb_lines.size());
+    stack.push_back(seed);
+    int sure = 0, levels = 0;
+    double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
+    while (!stack.empty()) {
+      const CellId c = stack.back();
+      stack.pop_back();
+      cells.push_back(c);
+      sure += up[c] >= kSureStepCells ? 1 : 0;
+      levels += level[c];
+      double x, y;
+      m.cellXY(c, x, y);
+      xmin = std::min(xmin, x);
+      xmax = std::max(xmax, x);
+      ymin = std::min(ymin, y);
+      ymax = std::max(ymax, y);
+      m.forEachMove(c, [&](CellId nb, int) {
+        if (up[nb] > 0 && line_of[nb] == kNoComponent && same_way(c, nb)) {
+          line_of[nb] = line_of[seed];
+          stack.push_back(nb);
+        }
+      });
+    }
+    // The extent is the bounding box's diagonal at least: a line is as long
+    // as its box's longer side, a ring (the rim of a raised slab) is its
+    // diameter, either way what the length threshold means.
+    const double extent = std::max(xmax - xmin, ymax - ymin) + m.res;
+    if (
+      extent < m.params.kerb_min_length || sure < m.params.kerb_min_sure_cells ||
+      2 * levels < static_cast<int>(cells.size())) {
+      for (const CellId c : cells) {
+        line_of[c] = kNoComponent - 1;  // judged, not a kerb
+      }
+      continue;
+    }
+    for (const CellId c : cells) {
+      m.cells[c].flags |= kKerb;
+    }
+    stats.kerb_cells += cells.size();
+    m.kerb_lines.push_back(std::move(cells));
+  }
+  stats.kerb_lines = m.kerb_lines.size();
+
+  struct Item
+  {
+    float d;
+    CellId cell;
+    int src_ix, src_iy;
+    uint8_t rise;
+    bool operator>(const Item & o) const { return d > o.d; }
+  };
+  std::priority_queue<Item, std::vector<Item>, std::greater<Item>> q;
+  for (CellId c = 0; c < n; ++c) {
+    if (m.cells[c].step_rise == 0) {
+      continue;
+    }
+    const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+    // A kerb's cells, and the high side the step leads to, are sure steps in
+    // the band whatever the voxels say of this one cell.
+    uint8_t rise = m.cells[c].step_rise;
+    if (m.cells[c].flags & kKerb) {
+      rise = std::max<uint8_t>(rise, kSureStepCells);
+    } else {
+      const int kz = fkz[c];
+      m.forEachMove(c, [&](CellId nb, int k) {
+        if ((k & 1) == 0 && (m.cells[nb].flags & kKerb) && fkz[nb] < kz) {
+          rise = std::max<uint8_t>(rise, kSureStepCells);
+        }
+      });
+    }
+    q.push({0.f, c, ix, iy, rise});
+  }
+  std::vector<uint8_t> done(m.cells.size(), 0);
+  while (!q.empty()) {
+    const Item it = q.top();
+    q.pop();
+    if (done[it.cell]) {
+      continue;
+    }
+    done[it.cell] = 1;
+    m.cells[it.cell].step_d = it.d;
+    m.cells[it.cell].edge_rise = it.rise;
+    m.forEachMove(it.cell, [&](CellId n, int) {
+      if (done[n]) {
+        return;
+      }
+      const int nix = m.colIx(m.cell_col[n]), niy = m.colIy(m.cell_col[n]);
+      const float d = static_cast<float>(std::hypot(nix - it.src_ix, niy - it.src_iy) * m.res);
+      if (d < radius) {
+        q.push({d, n, it.src_ix, it.src_iy, it.rise});
+      }
+    });
+  }
+}
+
 }  // namespace
 
 std::shared_ptr<const SurfaceMap> buildSurfaceMap(
@@ -766,6 +981,10 @@ std::shared_ptr<const SurfaceMap> buildSurfaceMap(
   t = Clock::now();
   computeClearance(m);
   stats.t_clearance = since(t);
+
+  t = Clock::now();
+  computeStepEdges(m, stats);
+  stats.t_step_edges = since(t);
 
   stats.t_total = since(t_start);
   return map;

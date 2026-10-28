@@ -32,6 +32,31 @@
 // never that close (the body-clearance band of the lower one forbids it), so
 // the pick is unique and a floor never "connects" to the floor above it.
 //
+// A step the rule allows is still a step (2026-10-29). The kerb between a
+// road and its pavement is within max_step_height, so the two are one piece
+// of ground and a route used to run along the kerb's edge with one pair of
+// feet on each side -- on outdoor_1027 the G23 fell twice at the same kerb,
+// where the shortest line to the goal cut the pavement's corner and followed
+// the edge at ~15 deg (sim, 2026-10-28). So every traversable cell records
+// the largest height change to a neighbour it can move to (step_rise) and
+// its distance to the nearest cell with one (step_d, a second distance field
+// like the clearance one, out to step_edge_cost_radius), and the search pays
+// for moving inside that band (SearchParams::step_edge_cost_weight), so
+// running along an edge costs more than keeping off it. At 0.1 m voxels a
+// one-cell step is as often a slope's contour line as a kerb
+// (kSureStepCells), so the cells on the low side of a step are also strung
+// into **lines** -- neighbours whose step faces the same way, so a contour
+// line that runs into a kerb stays its own line -- and a line at least
+// kerb_min_length long that holds kerb_min_sure_cells cells of two cells or
+// more is a **kerb** (kKerb, SurfaceMap::kerb_lines): a real step of 0.1 m
+// or more somewhere along it, which no slope under max_slope_deg makes, and
+// the one-cell stretches are the same kerb where the road has not fallen
+// quite a voxel's worth (outdoor_1027's 12 cm kerb: one cell along most of
+// its length, two where the road is lowest). A kerb's cells count as sure
+// steps in the band, and stair_links.hpp crosses a kerb on kerb links only,
+// square to it. Nothing else in the map changes: the components, the
+// clearance and what is traversable are as before.
+//
 // ROS-free on purpose: this header, surface_astar.hpp and path_postprocess.hpp
 // depend on octomap and the STL only, so the same code is run offline by
 // octomap_planner_3d_cli (on a workstation with homebrew/apt octomap, no ROS)
@@ -55,6 +80,16 @@ namespace syncai_global_planner::octomap_planner_3d
 using CellId = uint32_t;
 constexpr CellId kNoCell = ~CellId(0);
 constexpr uint32_t kNoComponent = ~uint32_t(0);
+
+// A height change of this many cells between two neighbouring columns is a
+// step the map is sure of: a slope within max_slope_deg (20 deg) rises
+// 0.036 m over one 0.1 m column, so it changes the voxel top by one cell at
+// most, and a flat floor read cell by cell flickers by one cell too; two
+// cells (0.1-0.3 m of true height) never come from either. A one-cell change
+// may be a kerb or a slope's contour line, and the two cannot be told apart
+// at this resolution (outdoor_1027's 12 cm kerb shows as one cell along most
+// of its length, two where the road has fallen a little further).
+constexpr int kSureStepCells = 2;
 
 // A point of a path or of a stair link: x, y and the ground's height.
 struct Waypoint
@@ -233,6 +268,19 @@ struct SurfaceMapParams
   // boundary, which already sits robot_radius from the wall, so 0.55 puts
   // the band edge 0.8 m from the wall -- the 2D costmap's inflation_radius.
   double clearance_cost_radius = 0.55;
+  // How far from a step edge (a traversable cell with a traversable
+  // neighbour at another height, see the header) the step-edge cost reaches:
+  // robot_radius plus a foot's reach beyond the body (the feet land ~0.15 m
+  // outside the padded footprint in a turn), so a route the band has pushed
+  // out keeps every foot on one side of the kerb.
+  double step_edge_cost_radius = 0.4;
+  // A line of step cells (see the header) is a kerb when it is at least this
+  // long (m; shorter is a pothole's rim, a drain cover or noise, left to the
+  // band cost) and holds at least this many cells whose step is
+  // kSureStepCells or more (one such cell is a stone; three in a line, 0.3 m
+  // of a step the map is sure of, is a kerb).
+  double kerb_min_length = 1.0;
+  int kerb_min_sure_cells = 3;
 };
 
 // Why a surface cell is not traversable. Kept per cell so the CLI dump and a
@@ -254,6 +302,7 @@ const char * rejectName(Reject r);
 enum CellFlag : uint8_t {
   kTraversable = 1u << 0,
   kInferred = 1u << 1,  // hole-fill put it here; no voxel was ever observed
+  kKerb = 1u << 2,      // on the low side of a kerb line (see the header); SurfaceMap::kerb_lines
 };
 
 struct SurfaceCell
@@ -266,6 +315,14 @@ struct SurfaceCell
   float
     clearance_d;  // xy distance (m) to the nearest non-traversable cell, clamped to clearance_cost_radius
   uint32_t component;  // 8-connected component id among traversable cells, kNoComponent otherwise
+  // The step edges (see the header): the largest height change, in cells, to
+  // a traversable neighbour the move rule allows (0 on level ground); the xy
+  // distance (m) to the nearest cell with one, clamped to
+  // step_edge_cost_radius; and that cell's rise (0 beyond the band), a kerb
+  // line's cells counting as kSureStepCells whatever their own step.
+  uint8_t step_rise;
+  uint8_t edge_rise;
+  float step_d;
 };
 
 struct BuildStats
@@ -273,9 +330,11 @@ struct BuildStats
   size_t leaves = 0, occupied_leaves = 0, free_leaves = 0;
   size_t columns = 0, candidates = 0, inferred = 0, traversable = 0, components = 0;
   size_t rejected[static_cast<size_t>(Reject::Count_)] = {};
-  std::vector<size_t> component_sizes;  // descending
+  std::vector<size_t> component_sizes;         // descending
+  size_t step_edges = 0, sure_step_edges = 0;  // cells with step_rise >= 1, >= kSureStepCells
+  size_t kerb_lines = 0, kerb_cells = 0;       // kerbs (see the header) and their low-side cells
   double t_columns = 0, t_candidates = 0, t_hole_fill = 0, t_step = 0, t_footprint = 0,
-         t_components = 0, t_clearance = 0, t_total = 0;
+         t_components = 0, t_clearance = 0, t_step_edges = 0, t_total = 0;
 };
 
 class SurfaceMap
@@ -293,6 +352,9 @@ public:
   std::vector<uint32_t> col_begin;
   std::vector<SurfaceCell> cells;
   std::vector<uint32_t> cell_col;
+  // The kerbs (see the header): each the low-side cells of one line, the
+  // cells flagged kKerb. What stair_links.hpp lays its kerb links along.
+  std::vector<std::vector<CellId>> kerb_lines;
 
   size_t columns() const { return static_cast<size_t>(nx) * ny; }
   bool inGrid(int ix, int iy) const { return ix >= 0 && iy >= 0 && ix < nx && iy < ny; }

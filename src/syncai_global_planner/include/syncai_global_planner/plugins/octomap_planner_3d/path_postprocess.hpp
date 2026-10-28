@@ -38,6 +38,13 @@
 // the climb is blind by decision); a link the zones cut never reaches here,
 // since the search does not take it.
 //
+// With the links (2026-10-29) the shortcut also refuses to span a kerb a
+// kerb link crosses (StairLinks::kerbCrossing, the search's own rule), so a
+// straightened floor stretch cannot put the diagonal back over the kerb that
+// the search took square; the kerb link's own points, a's centre, the kerb,
+// b's centre, are spliced in like a walked flight's (stairCrossing does not
+// apply: a kerb's two sides are one component).
+//
 // ROS-free (see surface_map.hpp).
 
 #include <vector>
@@ -58,16 +65,19 @@ constexpr double kStairCrossingToleranceDeg = 15.0;
 
 // True if the straight segment between the centres of a and b runs over
 // traversable cells only (step-continuous from a) with clearance_d >=
-// min_clearance everywhere. With out set, the cells visited, a first.
+// min_clearance everywhere, and, with links, over no kerb a kerb link
+// crosses. With out set, the cells visited, a first.
 bool lineOfSight(
   const SurfaceMap & m, CellId a, CellId b, float min_clearance,
-  std::vector<CellId> * out = nullptr, const BlockedView * blocked = nullptr);
+  std::vector<CellId> * out = nullptr, const BlockedView * blocked = nullptr,
+  const StairLinks * links = nullptr);
 
 // Greedy forward shortcut: from an anchor, extend the segment while the next
 // cell is still in sight, then anchor there. The result is a sub-sequence of
 // the input (first and last cells kept).
 std::vector<CellId> shortcutPath(
-  const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked = nullptr);
+  const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked = nullptr,
+  const StairLinks * links = nullptr);
 
 // Points every `spacing` metres (xy) along the polyline through the cell
 // centres, first and last cell included. z is the top face of the surface
