@@ -25,7 +25,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_mppi_controller/critic_data.hpp"
 #include "syncai_mppi_controller/critic_function.hpp"
 #include "syncai_mppi_controller/tools/parameters_handler.hpp"
@@ -55,12 +55,12 @@ public:
     * @brief Configure critic manager on bringup and load plugins
     * @param parent WeakPtr to node
     * @param name Name of plugin
-    * @param costmap_ros Costmap2DROS object of environment
+    * @param costmap_ros CostmapROS object of environment
     * @param dynamic_parameter_handler Parameter handler object
     */
   void on_configure(
     rclcpp::Node::WeakPtr parent, const std::string & name,
-    std::shared_ptr<syncai_costmap::Costmap2DROS>, ParametersHandler *);
+    std::shared_ptr<syncai_costmap::CostmapROS>, ParametersHandler *);
 
   /**
     * @brief Score trajectories by the set of loaded critic functions
@@ -86,7 +86,7 @@ protected:
 
 protected:
   rclcpp::Node::WeakPtr parent_;
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
   std::string name_;
 
   ParametersHandler * parameters_handler_;

@@ -222,7 +222,7 @@ public:
   // (ox, oy). Drops every sample.
   void resize(int nx, int ny, double res, double ox, double oy);
   // Move the window to a new lower-left corner, keeping the samples of the
-  // cells that stay inside it (Costmap2D::updateOrigin's shift).
+  // cells that stay inside it (Costmap::updateOrigin's shift).
   void updateOrigin(double ox, double oy);
   void clear();
 
@@ -253,7 +253,7 @@ public:
   // ground `robot_ground_z`, which is also the estimate for cells that have
   // none. Writes one costmap value per cell (cost_values.hpp:
   // LETHAL_OBSTACLE, FREE_SPACE or NO_INFORMATION) to `cost`, sized nx * ny,
-  // row-major as Costmap2D is.
+  // row-major as Costmap is.
   //
   // The reach rule: a surface is floor only if the robot can get onto it
   // over steps the legs take, so the cells are flooded from the robot's own

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 
 namespace syncai_costmap
 {
@@ -18,8 +18,7 @@ using ClearExceptRegion = nav2_msgs::srv::ClearCostmapExceptRegion;
 using ClearAroundRobot = nav2_msgs::srv::ClearCostmapAroundRobot;
 using ClearEntirely = nav2_msgs::srv::ClearEntireCostmap;
 
-ClearCostmapService::ClearCostmapService(
-  const rclcpp::Node::SharedPtr & node, Costmap2DROS & costmap)
+ClearCostmapService::ClearCostmapService(const rclcpp::Node::SharedPtr & node, CostmapROS & costmap)
 : costmap_(costmap)
 {
   logger_ = node->get_logger();
@@ -105,7 +104,7 @@ void ClearCostmapService::clearLayerRegion(
   shared_ptr<CostmapLayer> & costmap, double pose_x, double pose_y, double reset_distance,
   bool invert)
 {
-  std::unique_lock<Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(costmap->getMutex()));
 
   double start_point_x = pose_x - reset_distance / 2;
   double start_point_y = pose_y - reset_distance / 2;
@@ -125,7 +124,7 @@ void ClearCostmapService::clearLayerRegion(
 
 void ClearCostmapService::clearEntirely()
 {
-  std::unique_lock<Costmap2D::mutex_t> lock(*(costmap_.getCostmap()->getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(costmap_.getCostmap()->getMutex()));
   costmap_.resetLayers();
 }
 

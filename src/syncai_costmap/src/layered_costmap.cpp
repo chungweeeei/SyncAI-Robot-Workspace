@@ -47,7 +47,7 @@ LayeredCostmap::~LayeredCostmap()
 
 void LayeredCostmap::addPlugin(std::shared_ptr<Layer> plugin)
 {
-  std::unique_lock<Costmap2D::mutex_t> lock(*(combined_costmap_.getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(combined_costmap_.getMutex()));
   plugins_.push_back(plugin);
 }
 
@@ -55,7 +55,7 @@ void LayeredCostmap::resizeMap(
   unsigned int size_x, unsigned int size_y, double resolution, double origin_x, double origin_y,
   bool size_locked)
 {
-  std::unique_lock<Costmap2D::mutex_t> lock(*(combined_costmap_.getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(combined_costmap_.getMutex()));
   size_locked_ = size_locked;
   combined_costmap_.resizeMap(size_x, size_y, resolution, origin_x, origin_y);
   for (vector<std::shared_ptr<Layer>>::iterator plugin = plugins_.begin(); plugin != plugins_.end();
@@ -74,7 +74,7 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
 {
   // Lock for the remainder of this function, some plugins (e.g. VoxelLayer)
   // implement thread unsafe updateBounds() functions.
-  std::unique_lock<Costmap2D::mutex_t> lock(*(combined_costmap_.getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(combined_costmap_.getMutex()));
 
   // if we're using a rolling buffer costmap...
   // we need to update the origin using the robot's position
@@ -92,7 +92,7 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
     const double oy = combined_costmap_.getOriginY();
     if (out_of_bounds) {
       RCLCPP_WARN(
-        rclcpp::get_logger("nav2_costmap_2d"),
+        rclcpp::get_logger("syncai_costmap"),
         "Robot at (%.2f, %.2f) is out of bounds of the costmap (%.2f, %.2f) to (%.2f, %.2f) in "
         "%s; said once until it is back. Expected for the planner's global costmap, which has "
         "no layers and stays at its default size (Octo3D reads no cells)",
@@ -100,7 +100,7 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
         oy + combined_costmap_.getSizeInMetersY(), global_frame_.c_str());
     } else {
       RCLCPP_INFO(
-        rclcpp::get_logger("nav2_costmap_2d"),
+        rclcpp::get_logger("syncai_costmap"),
         "Robot at (%.2f, %.2f) is back inside the costmap in %s", robot_x, robot_y,
         global_frame_.c_str());
     }
@@ -122,7 +122,7 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
     (*plugin)->updateBounds(robot_x, robot_y, robot_yaw, &minx_, &miny_, &maxx_, &maxy_);
     if (minx_ > prev_minx || miny_ > prev_miny || maxx_ < prev_maxx || maxy_ < prev_maxy) {
       RCLCPP_WARN(
-        rclcpp::get_logger("nav2_costmap_2d"),
+        rclcpp::get_logger("syncai_costmap"),
         "Illegal bounds change, was [tl: (%f, %f), br: (%f, %f)], but "
         "is now [tl: (%f, %f), br: (%f, %f)]. The offending layer is %s",
         prev_minx, prev_miny, prev_maxx, prev_maxy, minx_, miny_, maxx_, maxy_,
@@ -139,7 +139,7 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
   yn = std::min(static_cast<int>(combined_costmap_.getSizeInCellsY()), yn + 1);
 
   RCLCPP_DEBUG(
-    rclcpp::get_logger("nav2_costmap_2d"), "Updating area x: [%d, %d] y: [%d, %d]", x0, xn, y0, yn);
+    rclcpp::get_logger("syncai_costmap"), "Updating area x: [%d, %d] y: [%d, %d]", x0, xn, y0, yn);
 
   if (xn < x0 || yn < y0) {
     return;

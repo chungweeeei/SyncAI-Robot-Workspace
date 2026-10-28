@@ -56,7 +56,7 @@ public:
   // Standard GoalChecker Interface
   void initialize(
     const rclcpp::Node::SharedPtr & parent, const std::string & plugin_name,
-    const std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
+    const std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
   bool isGoalReached(
     const geometry_msgs::msg::Pose & query_pose, const geometry_msgs::msg::Pose & goal_pose,
     const geometry_msgs::msg::Twist & velocity) override;

@@ -9,7 +9,7 @@
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d.hpp"
+#include "syncai_costmap/costmap.hpp"
 #include "syncai_util/robot_utils.hpp"
 
 namespace syncai_costmap

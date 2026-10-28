@@ -123,7 +123,7 @@ double FootprintCollisionChecker<CostmapT>::footprintCostAtPose(
 }
 
 // declare our valid template parameters
-template class FootprintCollisionChecker<std::shared_ptr<syncai_costmap::Costmap2D>>;
-template class FootprintCollisionChecker<syncai_costmap::Costmap2D *>;
+template class FootprintCollisionChecker<std::shared_ptr<syncai_costmap::Costmap>>;
+template class FootprintCollisionChecker<syncai_costmap::Costmap *>;
 
 }  // namespace syncai_costmap

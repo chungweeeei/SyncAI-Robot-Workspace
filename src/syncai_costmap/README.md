@@ -4,8 +4,12 @@ Named `syncai_costmap_2d` until 2026-10-28: the package, its include directory
 (`syncai_costmap/…`), the C++ namespace (`syncai_costmap::`) and the pluginlib
 names (`syncai_costmap::TerrainLayer`, base `syncai_costmap::Layer`) were
 renamed once 2D navigation had left it, so the name stops suggesting a 2D
-stack. The classes keep upstream's names (`Costmap2D`, `Costmap2DROS`, …): the
-grid itself is still 2D. A workspace built before the rename keeps
+stack. The core classes followed: upstream's `Costmap2D`, `Costmap2DROS` and
+`Costmap2DPublisher` are `Costmap`, `CostmapROS` and `CostmapPublisher`, in
+`costmap.hpp` / `costmap_ros.hpp` / `costmap_publisher.hpp` (the grid is still
+a 2D grid; the name just no longer says so, and `nav2_msgs::msg::Costmap`, the
+`…/costmap/raw` message, is always written fully qualified beside it). A
+workspace built before the rename keeps
 `build/syncai_costmap_2d` + `install/syncai_costmap_2d`; delete them.
 
 The occupancy representation the planner and controller both plan against: a
@@ -16,7 +20,7 @@ the static and obstacle layers, the keepout filter and the standalone test
 harness are gone (git history has them).
 
 It is used as a **library, not a node**. `syncai_global_planner` and `syncai_controller`
-each construct their own `Costmap2DROS` inside their own process:
+each construct their own `CostmapROS` inside their own process:
 
 | Owner | Costmap | Typical config |
 |---|---|---|
@@ -29,11 +33,11 @@ launch files went with the 2D layers they exercised.
 ## Layout
 
 ```
-src/costmap_2d.cpp              the raw grid: cells, world↔map conversion, raytracing
+src/costmap.cpp              the raw grid: cells, world↔map conversion, raytracing
 src/layered_costmap.cpp         the layer pipeline
 src/layer.cpp, costmap_layer.cpp  Layer base classes (+ joinWithParentNamespace)
-src/costmap_2d_ros.cpp          the ROS wrapper node — most of the local complexity
-src/costmap_2d_publisher.cpp    OccupancyGrid / Costmap / update publishing
+src/costmap_ros.cpp          the ROS wrapper node — most of the local complexity
+src/costmap_publisher.cpp    OccupancyGrid / Costmap / update publishing
 src/clear_costmap_service.cpp   the three clear_* services
 src/terrain_grid.cpp            the ROS-free 2.5D grid behind TerrainLayer (gtest: test/test_terrain_grid.cpp)
 src/footprint.cpp, footprint_collision_checker.cpp, costmap_math.cpp, array_parser.cpp
@@ -52,7 +56,7 @@ points at the same `.so`.
 
 ## Core objects
 
-**`Costmap2D`** — the grid itself: an `unsigned char[]` plus resolution and
+**`Costmap`** — the grid itself: an `unsigned char[]` plus resolution and
 origin, with world↔cell conversion, Bresenham raytracing, window copy and a
 recursive mutex. No ROS.
 
@@ -78,7 +82,7 @@ and `isCurrent()` is true: that is the planner's global costmap.
 `CostmapLayer` adds a private grid plus the merge helpers
 (`updateWithMax`, `updateWithOverwrite`, `updateWithTrueOverwrite`, …).
 
-**`Costmap2DROS`** — the ROS wrapper. This is where the local design decisions
+**`CostmapROS`** — the ROS wrapper. This is where the local design decisions
 live, below.
 
 ### Cost values
@@ -100,13 +104,13 @@ layer merges into the master:
 | `1` | `Max` — keep the larger; a known value overrides unknown | `TerrainLayer` (`updateWithMax`) |
 | `2` | `MaxWithoutUnknownOverwrite` — as Max, but master's unknown stays unknown | Preserving "unknown means unknown" |
 
-## Costmap2DROS: no lifecycle, so what changes
+## CostmapROS: no lifecycle, so what changes
 
 **Three-phase construction.** There is no lifecycle manager in this stack, so
 nav2's transitions are exposed as ordinary calls the owner makes by hand:
 
 ```cpp
-auto costmap = std::make_shared<Costmap2DROS>("local_costmap", "/robot01", "local_costmap");
+auto costmap = std::make_shared<CostmapROS>("local_costmap", "/robot01", "local_costmap");
 costmap->init();       // ≈ on_configure : tf, plugins, publishers, services, executor thread
 costmap->activate();   // ≈ on_activate  : wait for TF, start the update thread, dyn params
 // ... later
@@ -386,7 +390,7 @@ set (`TerrainLayer` drops its costs and keeps its returns, see above).
 `reset_distance` centred on the robot; `clear_except_` clears everything outside
 that square.
 
-## Key parameters (`Costmap2DROS` itself)
+## Key parameters (`CostmapROS` itself)
 
 | Parameter | Default | Notes |
 |---|---|---|
@@ -409,7 +413,7 @@ that square.
 `lethal_cost_threshold`, `unknown_cost_value`, `trinary_costmap`,
 `use_maximum`, `map_topic` and `observation_sources` are no longer declared
 (2026-10-28): they were the static and obstacle layers' parameters. A params
-file that still sets one is ignored. `Costmap2D`'s OccupancyGrid constructor
+file that still sets one is ignored. `Costmap`'s OccupancyGrid constructor
 and `copyWindow()` went too (their users were `CostmapSubscriber` and the
 filter pipeline).
 

@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d.hpp"
+#include "syncai_costmap/costmap.hpp"
 #include "syncai_costmap/layered_costmap.hpp"
 #include "tf2_ros/buffer.h"
 
@@ -62,7 +62,7 @@ public:
    * @brief Actually update the underlying costmap, only within the bounds
    *        calculated during UpdateBounds().
    */
-  virtual void updateCosts(Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j) = 0;
+  virtual void updateCosts(Costmap & master_grid, int min_i, int min_j, int max_i, int max_j) = 0;
 
   /** @brief Implement this to make this layer match the size of the parent costmap. */
   virtual void matchSize() {}

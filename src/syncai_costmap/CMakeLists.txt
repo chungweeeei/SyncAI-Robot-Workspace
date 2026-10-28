@@ -46,9 +46,9 @@ set(dependencies
 add_library(${PROJECT_NAME} SHARED
   src/array_parser.cpp
   src/clear_costmap_service.cpp
-  src/costmap_2d.cpp
-  src/costmap_2d_publisher.cpp
-  src/costmap_2d_ros.cpp
+  src/costmap.cpp
+  src/costmap_publisher.cpp
+  src/costmap_ros.cpp
   src/costmap_layer.cpp
   src/costmap_math.cpp
   src/footprint.cpp

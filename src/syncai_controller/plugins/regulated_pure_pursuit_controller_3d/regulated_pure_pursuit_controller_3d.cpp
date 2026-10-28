@@ -34,7 +34,7 @@ constexpr double NO_SPEED_LIMIT = 0.0;
 
 void RegulatedPurePursuitController3D::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros_->getCostmap();
@@ -253,7 +253,7 @@ void RegulatedPurePursuitController3D::initialize(
 
   // initialize collision checker and set costmap
   collision_checker_ =
-    std::make_unique<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *>>(
+    std::make_unique<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *>>(
       costmap_);
   collision_checker_->setCostmap(costmap_);
 
@@ -327,8 +327,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed,
   syncai_nav_core::GoalChecker * goal_checker)
 {
-  syncai_costmap::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap::mutex_t> lock(*(costmap->getMutex()));
 
   // Update for the current goal checker's state
   geometry_msgs::msg::Pose pose_tolerance;

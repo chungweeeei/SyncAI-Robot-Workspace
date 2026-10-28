@@ -165,7 +165,7 @@ registered against it regardless of which package the plugin lives in.
   type always works, the lookup name only when the XML declares `name=` — but
   copying a params line between packages will not work unchanged.
 - **`syncai_nav_core` depends on `syncai_costmap`,** because three of the four
-  interfaces take a `Costmap2DROS`. So "interfaces only" does not mean
+  interfaces take a `CostmapROS`. So "interfaces only" does not mean
   dependency-free — the costmap package has to build first.
 
 Upstream reference: [`nav2_core`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_core).

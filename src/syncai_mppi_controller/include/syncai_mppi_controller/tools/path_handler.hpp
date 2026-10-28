@@ -26,7 +26,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_mppi_controller/tools/parameters_handler.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "tf2_ros/buffer.h"
@@ -59,13 +59,13 @@ public:
     * @brief Initialize path handler on bringup
     * @param parent WeakPtr to node
     * @param name Name of plugin
-    * @param costmap_ros Costmap2DROS object of environment
+    * @param costmap_ros CostmapROS object of environment
     * @param tf TF buffer for transformations
     * @param dynamic_parameter_handler Parameter handler object
     */
   void initialize(
     rclcpp::Node::WeakPtr parent, const std::string & name,
-    std::shared_ptr<syncai_costmap::Costmap2DROS>, std::shared_ptr<tf2_ros::Buffer>,
+    std::shared_ptr<syncai_costmap::CostmapROS>, std::shared_ptr<tf2_ros::Buffer>,
     ParametersHandler *);
 
   /**
@@ -171,7 +171,7 @@ protected:
   bool isWithinInversionTolerances(const geometry_msgs::msg::PoseStamped & robot_pose);
 
   std::string name_;
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   ParametersHandler * parameters_handler_;
 

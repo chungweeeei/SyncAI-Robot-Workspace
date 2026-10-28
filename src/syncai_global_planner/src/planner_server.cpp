@@ -63,9 +63,9 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
     }
   }
 
-  // Setup the global costmap. The Costmap2DROS constructor only declares
+  // Setup the global costmap. The CostmapROS constructor only declares
   // parameters; the heavy setup happens in its init() called from configure().
-  costmap_ros_ = std::make_shared<syncai_costmap::Costmap2DROS>(
+  costmap_ros_ = std::make_shared<syncai_costmap::CostmapROS>(
     "global_costmap", std::string{get_namespace()}, "global_costmap");
 }
 

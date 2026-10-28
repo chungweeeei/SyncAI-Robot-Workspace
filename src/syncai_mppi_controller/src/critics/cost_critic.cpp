@@ -73,7 +73,7 @@ void CostCritic::initialize()
     "footprint" : "circular");
 }
 
-float CostCritic::findCircumscribedCost(std::shared_ptr<syncai_costmap::Costmap2DROS> costmap)
+float CostCritic::findCircumscribedCost(std::shared_ptr<syncai_costmap::CostmapROS> costmap)
 {
   bool inflation_layer_found = false;
   double result = -1.0;

@@ -81,7 +81,7 @@ Small functions with outsized consequences:
   rather than degrading.
 - **`copy_all_parameters(parent, child)`** — used by `BtActionServer` to clone the
   host node's parameters onto the internal BT client node.
-- **`add_namespaces(top, sub)`** — how `Costmap2DROS` builds its
+- **`add_namespaces(top, sub)`** — how `CostmapROS` builds its
   `/<robot_id>/global_costmap` sub-namespace.
 - `sanitize_node_name`, `generate_internal_node_name`, `generate_internal_node`,
   `time_to_string` — for creating internal helper nodes with unique, legal names.
@@ -136,10 +136,10 @@ Header-only and all `inline`:
   layer, on 2026-10-28.
 - **`node_thread.hpp`** — RAII: construct it with a node or executor and it spins
   on a background thread; the destructor cancels and joins. Both costmap owners
-  use it so `Costmap2DROS` runs independently of its host's executor.
+  use it so `CostmapROS` runs independently of its host's executor.
 - `occ_grid_values.hpp` (the `nav_msgs/OccupancyGrid` −1 / 0 / 100
   convention) went on 2026-10-28 with its last users, `syncai_map_server` and
-  `Costmap2D`'s OccupancyGrid constructor.
+  `Costmap`'s OccupancyGrid constructor.
 
 ## Build
 

@@ -1,5 +1,5 @@
-#ifndef SYNCAI_COSTMAP__COSTMAP_2D_ROS_HPP_
-#define SYNCAI_COSTMAP__COSTMAP_2D_ROS_HPP_
+#ifndef SYNCAI_COSTMAP__COSTMAP_ROS_HPP_
+#define SYNCAI_COSTMAP__COSTMAP_ROS_HPP_
 
 #include <atomic>
 #include <memory>
@@ -15,7 +15,7 @@
 #include "rcl_interfaces/msg/parameter_event.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d_publisher.hpp"
+#include "syncai_costmap/costmap_publisher.hpp"
 #include "syncai_costmap/footprint.hpp"
 #include "syncai_costmap/layer.hpp"
 #include "syncai_costmap/layered_costmap.hpp"
@@ -27,20 +27,20 @@ namespace syncai_costmap
 {
 class ClearCostmapService;
 
-class Costmap2DROS : public rclcpp::Node
+class CostmapROS : public rclcpp::Node
 {
 public:
   /**
    * @brief  Constructor for the wrapper
    * @param options Additional options to control creation of the node.
    */
-  Costmap2DROS(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  CostmapROS(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   /**
    * @brief  Constructor for the wrapper, the node will be placed in a namespace equal to the node's name
    * @param name Name of the costmap ROS node
    */
-  explicit Costmap2DROS(const std::string & name);
+  explicit CostmapROS(const std::string & name);
 
   /**
    * @brief Constructor for the wrapper, with explicit parent / local namespaces
@@ -48,20 +48,20 @@ public:
    * @param parent_namespace Namespace of the parent node (e.g. "/")
    * @param local_namespace Local namespace for this costmap
    */
-  Costmap2DROS(
+  CostmapROS(
     const std::string & name, const std::string & parent_namespace,
     const std::string & local_namespace);
 
   /**
    * @brief A destructor
    */
-  ~Costmap2DROS();
+  ~CostmapROS();
 
   /**
    * @brief Initialize the costmap after construction (manual on_configure).
    *
    * Must be called once after the node is held by a std::shared_ptr (i.e.
-   * after std::make_shared<Costmap2DROS>()), since it relies on
+   * after std::make_shared<CostmapROS>()), since it relies on
    * shared_from_this() for parameter declaration, the tf listener and
    * plugin initialization. Reads parameters, creates the tf buffer/listener,
    * builds the LayeredCostmap, loads and initializes the configured layer
@@ -150,7 +150,7 @@ public:
    *
    * Same as calling getLayeredCostmap()->getCostmap().
    */
-  Costmap2D * getCostmap() { return layered_costmap_->getCostmap(); }
+  Costmap * getCostmap() { return layered_costmap_->getCostmap(); }
 
   /**
    * @brief  Returns the global frame of the costmap
@@ -259,7 +259,7 @@ public:
 
 protected:
   rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_pub_;
-  std::unique_ptr<Costmap2DPublisher> costmap_publisher_{nullptr};
+  std::unique_ptr<CostmapPublisher> costmap_publisher_{nullptr};
 
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr footprint_sub_;
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr parameter_sub_;
@@ -338,4 +338,4 @@ protected:
 };
 }  // namespace syncai_costmap
 
-#endif  // SYNCAI_COSTMAP__COSTMAP_2D_ROS_HPP_
+#endif  // SYNCAI_COSTMAP__COSTMAP_ROS_HPP_

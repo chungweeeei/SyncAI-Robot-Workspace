@@ -13,7 +13,7 @@
 
 namespace syncai_costmap
 {
-class Costmap2DROS;
+class CostmapROS;
 
 /**
  * @class ClearCostmapService
@@ -25,7 +25,7 @@ public:
   /**
    * @brief A constructor. Creates the clear costmap services on the given node.
    */
-  ClearCostmapService(const rclcpp::Node::SharedPtr & node, Costmap2DROS & costmap);
+  ClearCostmapService(const rclcpp::Node::SharedPtr & node, CostmapROS & costmap);
 
   /**
    * @brief A destructor. Shuts the services down.
@@ -51,7 +51,7 @@ private:
   rclcpp::Logger logger_{rclcpp::get_logger("syncai_costmap")};
 
   // The costmap to clear
-  Costmap2DROS & costmap_;
+  CostmapROS & costmap_;
 
   // Clearing parameters
   unsigned char reset_value_;

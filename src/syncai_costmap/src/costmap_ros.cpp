@@ -1,4 +1,4 @@
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 
 #include <chrono>
 #include <memory>
@@ -19,17 +19,16 @@ using std::placeholders::_1;
 
 namespace syncai_costmap
 {
-Costmap2DROS::Costmap2DROS(const rclcpp::NodeOptions & options)
-: Costmap2DROS("costmap", "/", "costmap")
+CostmapROS::CostmapROS(const rclcpp::NodeOptions & options) : CostmapROS("costmap", "/", "costmap")
 {
   (void)options;
 }
 
-Costmap2DROS::Costmap2DROS(const std::string & name) : Costmap2DROS(name, "/", name)
+CostmapROS::CostmapROS(const std::string & name) : CostmapROS(name, "/", name)
 {
 }
 
-Costmap2DROS::Costmap2DROS(
+CostmapROS::CostmapROS(
   const std::string & name, const std::string & parent_namespace,
   const std::string & local_namespace)
 : rclcpp::Node(
@@ -40,7 +39,7 @@ Costmap2DROS::Costmap2DROS(
     // published_footprint, get_costmap, ...) do not collide with another costmap
     // living in the same parent namespace (e.g. the controller's local_costmap).
     // NodeOptions arguments take precedence over the process-level command-line
-    // remaps. Mirrors nav2_costmap_2d::Costmap2DROS. Input topics that must stay
+    // remaps. Mirrors nav2_costmap_2d::CostmapROS. Input topics that must stay
     // in the parent namespace (map, scan) are handled via joinWithParentNamespace
     // in the layers.
     rclcpp::NodeOptions().arguments(
@@ -57,7 +56,7 @@ Costmap2DROS::Costmap2DROS(
   default_plugins_{},
   default_types_{}
 {
-  RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] Creating Costmap", __func__);
+  RCLCPP_INFO(this->get_logger(), "[CostmapROS][%s] Creating Costmap", __func__);
 
   this->declare_parameter("always_send_full_costmap", rclcpp::ParameterValue(false));
   this->declare_parameter("footprint_padding", rclcpp::ParameterValue(0.01f));
@@ -82,7 +81,7 @@ Costmap2DROS::Costmap2DROS(
   this->declare_parameter("update_frequency", rclcpp::ParameterValue(5.0));
 }
 
-Costmap2DROS::~Costmap2DROS()
+CostmapROS::~CostmapROS()
 {
   // on_deactivate equivalent: stop the update thread before tearing anything down
   // (a joinable std::thread destructed without join() would call std::terminate,
@@ -104,7 +103,7 @@ Costmap2DROS::~Costmap2DROS()
   tf_buffer_.reset();
 }
 
-void Costmap2DROS::init()
+void CostmapROS::init()
 {
   RCLCPP_INFO(this->get_logger(), "Initializing Costmap");
 
@@ -151,13 +150,13 @@ void Costmap2DROS::init()
   // Then load and add the plug-ins to the costmap
   for (unsigned int i = 0; i < plugin_names_.size(); ++i) {
     RCLCPP_INFO(
-      this->get_logger(), "[Costmap2DROS][%s] Using plugin \"%s\"", __func__,
+      this->get_logger(), "[CostmapROS][%s] Using plugin \"%s\"", __func__,
       plugin_names_[i].c_str());
 
     std::shared_ptr<Layer> plugin = plugin_loader_.createSharedInstance(plugin_types_[i]);
 
     // lock the costmap because no update is allowed until the plugin is initialized
-    std::unique_lock<Costmap2D::mutex_t> lock(*(layered_costmap_->getCostmap()->getMutex()));
+    std::unique_lock<Costmap::mutex_t> lock(*(layered_costmap_->getCostmap()->getMutex()));
 
     layered_costmap_->addPlugin(plugin);
 
@@ -168,19 +167,19 @@ void Costmap2DROS::init()
     lock.unlock();
 
     RCLCPP_INFO(
-      this->get_logger(), "[Costmap2DROS][%s] Initialized plugin \"%s\"", __func__,
+      this->get_logger(), "[CostmapROS][%s] Initialized plugin \"%s\"", __func__,
       plugin_names_[i].c_str());
   }
 
   // Create publishers and subscribers
   footprint_sub_ = create_subscription<geometry_msgs::msg::Polygon>(
     "footprint", rclcpp::SystemDefaultsQoS(),
-    std::bind(&Costmap2DROS::setRobotFootprintPolygon, this, std::placeholders::_1), sub_options);
+    std::bind(&CostmapROS::setRobotFootprintPolygon, this, std::placeholders::_1), sub_options);
 
   footprint_pub_ = create_publisher<geometry_msgs::msg::PolygonStamped>(
     "published_footprint", rclcpp::SystemDefaultsQoS());
 
-  costmap_publisher_ = std::make_unique<Costmap2DPublisher>(
+  costmap_publisher_ = std::make_unique<CostmapPublisher>(
     shared_from_this(), layered_costmap_->getCostmap(), global_frame_, "costmap",
     always_send_full_costmap_);
 
@@ -204,19 +203,19 @@ void Costmap2DROS::init()
   executor_->add_callback_group(callback_group_, this->get_node_base_interface());
   executor_thread_ = std::make_unique<syncai_util::NodeThread>(executor_);
 
-  RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] Costmap initialized", __func__);
+  RCLCPP_INFO(this->get_logger(), "[CostmapROS][%s] Costmap initialized", __func__);
 }
 
-void Costmap2DROS::activate()
+void CostmapROS::activate()
 {
-  RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] Activating", __func__);
+  RCLCPP_INFO(this->get_logger(), "[CostmapROS][%s] Activating", __func__);
 
   // Block until the robot transform (global_frame -> robot_base_frame) is
   // available. updateMap() relies on it, and the data arrives on executor_thread_
   // which is already spinning, so this will resolve once tf starts flowing.
   std::string tf_error;
   RCLCPP_INFO(
-    this->get_logger(), "[Costmap2DROS][%s] Checking transform %s -> %s", __func__,
+    this->get_logger(), "[CostmapROS][%s] Checking transform %s -> %s", __func__,
     robot_base_frame_.c_str(), global_frame_.c_str());
   rclcpp::Rate r(2.0);
   while (rclcpp::ok() && !tf_buffer_->canTransform(
@@ -224,7 +223,7 @@ void Costmap2DROS::activate()
                            tf2::durationFromSec(0.1), &tf_error)) {
     RCLCPP_INFO_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
-      "[Costmap2DROS][%s] Timed out waiting for transform %s -> %s to become available, "
+      "[CostmapROS][%s] Timed out waiting for transform %s -> %s to become available, "
       "tf error: %s",
       __func__, robot_base_frame_.c_str(), global_frame_.c_str(), tf_error.c_str());
     tf_error.clear();
@@ -244,7 +243,7 @@ void Costmap2DROS::activate()
   if (!rclcpp::ok()) {
     RCLCPP_INFO(
       this->get_logger(),
-      "[Costmap2DROS][%s] Shutdown requested while waiting for transform %s -> %s; "
+      "[CostmapROS][%s] Shutdown requested while waiting for transform %s -> %s; "
       "not activating",
       __func__, robot_base_frame_.c_str(), global_frame_.c_str());
     return;
@@ -255,18 +254,18 @@ void Costmap2DROS::activate()
   stopped_ = true;  // force start() to (re)activate the layer plugins
   stop_updates_ = false;
   map_update_thread_ = std::make_unique<std::thread>(
-    std::bind(&Costmap2DROS::mapUpdateLoop, this, map_update_frequency_));
+    std::bind(&CostmapROS::mapUpdateLoop, this, map_update_frequency_));
 
   start();
 
   // Register the dynamic-parameter callback only once we are active.
   dyn_params_handler = this->add_on_set_parameters_callback(
-    std::bind(&Costmap2DROS::dynamicParametersCallback, this, std::placeholders::_1));
+    std::bind(&CostmapROS::dynamicParametersCallback, this, std::placeholders::_1));
 }
 
-void Costmap2DROS::deactivate()
+void CostmapROS::deactivate()
 {
-  RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] Deactivating", __func__);
+  RCLCPP_INFO(this->get_logger(), "[CostmapROS][%s] Deactivating", __func__);
 
   dyn_params_handler.reset();
 
@@ -280,28 +279,28 @@ void Costmap2DROS::deactivate()
   map_update_thread_.reset();
 }
 
-void Costmap2DROS::getParameters()
+void CostmapROS::getParameters()
 {
-  RCLCPP_DEBUG(this->get_logger(), "[Costmap2DROS][%s] Getting parameters", __func__);
+  RCLCPP_DEBUG(this->get_logger(), "[CostmapROS][%s] Getting parameters", __func__);
 
   this->get_parameter("always_send_full_costmap", always_send_full_costmap_);
   RCLCPP_INFO(
-    this->get_logger(), "[Costmap2DROS][%s] always_send_full_costmap: %s", __func__,
+    this->get_logger(), "[CostmapROS][%s] always_send_full_costmap: %s", __func__,
     always_send_full_costmap_ ? "true" : "false");
 
   this->get_parameter("footprint", footprint_);
-  RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] footprint: %s", __func__, footprint_.c_str());
+  RCLCPP_INFO(this->get_logger(), "[CostmapROS][%s] footprint: %s", __func__, footprint_.c_str());
 
   this->get_parameter("footprint_padding", footprint_padding_);
   RCLCPP_INFO(
-    this->get_logger(), "[Costmap2DROS][%s] footprint_padding: %f", __func__, footprint_padding_);
+    this->get_logger(), "[CostmapROS][%s] footprint_padding: %f", __func__, footprint_padding_);
 
   this->get_parameter("global_frame", global_frame_);
   RCLCPP_INFO(
-    this->get_logger(), "[Costmap2DROS][%s] global_frame: %s", __func__, global_frame_.c_str());
+    this->get_logger(), "[CostmapROS][%s] global_frame: %s", __func__, global_frame_.c_str());
   this->get_parameter("robot_base_frame", robot_base_frame_);
   RCLCPP_INFO(
-    this->get_logger(), "[Costmap2DROS][%s] robot_base_frame: %s", __func__,
+    this->get_logger(), "[CostmapROS][%s] robot_base_frame: %s", __func__,
     robot_base_frame_.c_str());
 
   this->get_parameter("height", map_height_meters_);
@@ -312,16 +311,15 @@ void Costmap2DROS::getParameters()
   this->get_parameter("resolution", resolution_);
   RCLCPP_INFO(
     this->get_logger(),
-    "[Costmap2DROS][%s] map size (meters): %d X %d, map origin: (%f, %f), resolution: %f", __func__,
+    "[CostmapROS][%s] map size (meters): %d X %d, map origin: (%f, %f), resolution: %f", __func__,
     map_width_meters_, map_height_meters_, origin_x_, origin_y_, resolution_);
 
   this->get_parameter("publish_frequency", map_publish_frequency_);
   RCLCPP_INFO(
-    this->get_logger(), "[Costmap2DROS][%s] publish_frequency: %f", __func__,
-    map_publish_frequency_);
+    this->get_logger(), "[CostmapROS][%s] publish_frequency: %f", __func__, map_publish_frequency_);
 
   this->get_parameter("robot_radius", robot_radius_);
-  RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] robot_radius: %f", __func__, robot_radius_);
+  RCLCPP_INFO(this->get_logger(), "[CostmapROS][%s] robot_radius: %f", __func__, robot_radius_);
 
   this->get_parameter("rolling_window", rolling_window_);
   this->get_parameter("track_unknown_space", track_unknown_space_);
@@ -364,13 +362,13 @@ void Costmap2DROS::getParameters()
       // Footprint provided but invalid, so stay with the radius
       RCLCPP_ERROR(
         this->get_logger(),
-        "[Costmap2DROS][%s] The footprint parameter is invalid: \"%s\", using radius (%lf) instead",
+        "[CostmapROS][%s] The footprint parameter is invalid: \"%s\", using radius (%lf) instead",
         __func__, footprint_.c_str(), robot_radius_);
     }
   }
 }
 
-void Costmap2DROS::setRobotFootprint(const std::vector<geometry_msgs::msg::Point> & points)
+void CostmapROS::setRobotFootprint(const std::vector<geometry_msgs::msg::Point> & points)
 {
   unpadded_footprint_ = points;
   padded_footprint_ = points;
@@ -378,12 +376,12 @@ void Costmap2DROS::setRobotFootprint(const std::vector<geometry_msgs::msg::Point
   layered_costmap_->setFootprint(padded_footprint_);
 }
 
-void Costmap2DROS::setRobotFootprintPolygon(const geometry_msgs::msg::Polygon::SharedPtr footprint)
+void CostmapROS::setRobotFootprintPolygon(const geometry_msgs::msg::Polygon::SharedPtr footprint)
 {
   setRobotFootprint(toPointVector(footprint));
 }
 
-void Costmap2DROS::getOrientedFootprint(std::vector<geometry_msgs::msg::Point> & oriented_footprint)
+void CostmapROS::getOrientedFootprint(std::vector<geometry_msgs::msg::Point> & oriented_footprint)
 {
   geometry_msgs::msg::PoseStamped global_pose;
   if (!getRobotPose(global_pose)) {
@@ -396,7 +394,7 @@ void Costmap2DROS::getOrientedFootprint(std::vector<geometry_msgs::msg::Point> &
     oriented_footprint);
 }
 
-void Costmap2DROS::mapUpdateLoop(double frequency)
+void CostmapROS::mapUpdateLoop(double frequency)
 {
   RCLCPP_DEBUG(this->get_logger(), "mapUpdateLoop frequency: %lf", frequency);
 
@@ -448,14 +446,14 @@ void Costmap2DROS::mapUpdateLoop(double frequency)
     if (r.period() > tf2::durationFromSec(1 / frequency)) {
       RCLCPP_WARN(
         get_logger(),
-        "Costmap2DROS: Map update loop missed its desired rate of %.4fHz... "
+        "CostmapROS: Map update loop missed its desired rate of %.4fHz... "
         "the loop actually took %.4f seconds", frequency, r.period());
     }
 #endif
   }
 }
 
-void Costmap2DROS::updateMap()
+void CostmapROS::updateMap()
 {
   RCLCPP_DEBUG(this->get_logger(), "Updating map...");
 
@@ -481,7 +479,7 @@ void Costmap2DROS::updateMap()
   }
 }
 
-void Costmap2DROS::start()
+void CostmapROS::start()
 {
   RCLCPP_INFO(this->get_logger(), "start");
   std::vector<std::shared_ptr<Layer>> * plugins = layered_costmap_->getPlugins();
@@ -505,7 +503,7 @@ void Costmap2DROS::start()
   }
 }
 
-void Costmap2DROS::stop()
+void CostmapROS::stop()
 {
   stop_updates_ = true;
   // layered_costmap_ is set only if on_configure has been called
@@ -522,13 +520,13 @@ void Costmap2DROS::stop()
   stopped_ = true;
 }
 
-void Costmap2DROS::pause()
+void CostmapROS::pause()
 {
   stop_updates_ = true;
   initialized_ = false;
 }
 
-void Costmap2DROS::resume()
+void CostmapROS::resume()
 {
   stop_updates_ = false;
 
@@ -539,9 +537,9 @@ void Costmap2DROS::resume()
   }
 }
 
-void Costmap2DROS::resetLayers()
+void CostmapROS::resetLayers()
 {
-  Costmap2D * top = layered_costmap_->getCostmap();
+  Costmap * top = layered_costmap_->getCostmap();
   top->resetMap(0, 0, top->getSizeInCellsX(), top->getSizeInCellsY());
 
   // Reset each of the plugins
@@ -552,13 +550,13 @@ void Costmap2DROS::resetLayers()
   }
 }
 
-bool Costmap2DROS::getRobotPose(geometry_msgs::msg::PoseStamped & global_pose)
+bool CostmapROS::getRobotPose(geometry_msgs::msg::PoseStamped & global_pose)
 {
   return syncai_util::getCurrentPose(
     global_pose, *tf_buffer_, global_frame_, robot_base_frame_, transform_tolerance_);
 }
 
-bool Costmap2DROS::transformPoseToGlobalFrame(
+bool CostmapROS::transformPoseToGlobalFrame(
   const geometry_msgs::msg::PoseStamped & input_pose,
   geometry_msgs::msg::PoseStamped & transformed_pose)
 {
@@ -571,7 +569,7 @@ bool Costmap2DROS::transformPoseToGlobalFrame(
   }
 }
 
-rcl_interfaces::msg::SetParametersResult Costmap2DROS::dynamicParametersCallback(
+rcl_interfaces::msg::SetParametersResult CostmapROS::dynamicParametersCallback(
   std::vector<rclcpp::Parameter> parameters)
 {
   auto result = rcl_interfaces::msg::SetParametersResult();

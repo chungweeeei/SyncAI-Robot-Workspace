@@ -13,7 +13,7 @@ namespace syncai_costmap
  * Rather than just a layer, this object also contains an internal
  * costmap object to populate and maintain state.
  */
-class CostmapLayer : public Layer, public Costmap2D
+class CostmapLayer : public Layer, public Costmap
 {
 public:
   /**
@@ -64,7 +64,7 @@ protected:
    * is written into the master grid.
    */
   void updateWithTrueOverwrite(
-    syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j);
+    syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j);
 
   /*
    * Updates the master_grid within the specified
@@ -74,7 +74,7 @@ protected:
    * is written into the master grid (does not copy NO_INFORMATION)
    */
   void updateWithOverwrite(
-    syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j);
+    syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j);
 
   /*
    * Updates the master_grid within the specified
@@ -86,7 +86,7 @@ protected:
    * the master value does not change.
    */
   void updateWithMax(
-    syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j);
+    syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j);
 
   /*
    * Updates the master_grid within the specified
@@ -101,7 +101,7 @@ protected:
    * the master value is set to (INSCRIBED_INFLATED_OBSTACLE - 1).
    */
   void updateWithAddition(
-    syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j);
+    syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j);
 
   /**
    * Updates the bounding box specified in the parameters to include

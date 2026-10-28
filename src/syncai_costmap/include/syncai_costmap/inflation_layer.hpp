@@ -83,7 +83,7 @@ public:
    * @param max_j Y max map coord of the window to update
    */
   void updateCosts(
-    syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j) override;
+    syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j) override;
 
   /**
    * @brief Match the size of the master costmap

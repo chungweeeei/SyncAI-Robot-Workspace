@@ -75,8 +75,8 @@ void InflationLayer::onInitialize()
 
 void InflationLayer::matchSize()
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
-  syncai_costmap::Costmap2D * costmap = layered_costmap_->getCostmap();
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
+  syncai_costmap::Costmap * costmap = layered_costmap_->getCostmap();
   resolution_ = costmap->getResolution();
   cell_inflation_radius_ = cellDistance(inflation_radius_);
   computeCaches();
@@ -87,7 +87,7 @@ void InflationLayer::updateBounds(
   double /*robot_x*/, double /*robot_y*/, double /*robot_yaw*/, double * min_x, double * min_y,
   double * max_x, double * max_y)
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   if (need_reinflation_) {
     last_min_x_ = *min_x;
     last_min_y_ = *min_y;
@@ -117,7 +117,7 @@ void InflationLayer::updateBounds(
 
 void InflationLayer::onFootprintChanged()
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   inscribed_radius_ = layered_costmap_->getInscribedRadius();
   cell_inflation_radius_ = cellDistance(inflation_radius_);
   computeCaches();
@@ -141,9 +141,9 @@ void InflationLayer::onFootprintChanged()
 }
 
 void InflationLayer::updateCosts(
-  syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
+  syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   if (!enabled_ || (cell_inflation_radius_ == 0)) {
     return;
   }
@@ -291,7 +291,7 @@ void InflationLayer::enqueue(
 
 void InflationLayer::computeCaches()
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   if (cell_inflation_radius_ == 0) {
     return;
   }
@@ -367,7 +367,7 @@ int InflationLayer::generateIntegerDistances()
 rcl_interfaces::msg::SetParametersResult InflationLayer::dynamicParametersCallback(
   std::vector<rclcpp::Parameter> parameters)
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   rcl_interfaces::msg::SetParametersResult result;
 
   bool need_cache_recompute = false;

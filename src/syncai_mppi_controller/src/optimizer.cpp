@@ -36,7 +36,7 @@ using xt::evaluation_strategy::immediate;
 
 void Optimizer::initialize(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros, ParametersHandler * param_handler)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros, ParametersHandler * param_handler)
 {
   parent_ = parent;
   name_ = name;

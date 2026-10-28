@@ -17,7 +17,7 @@
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/empty.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
 #include "syncai_util/simple_action_server.hpp"
@@ -209,7 +209,7 @@ protected:
   // Global Costmap, spun on its own executor thread. It has no layers since
   // 2026-10-28: it is here for its global frame, TF buffer, robot pose and
   // callback group (Octo3D's TF filter runs on it), not for its cells.
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
   std::unique_ptr<syncai_util::NodeThread> costmap_thread_;
 
   // Publisher for the path

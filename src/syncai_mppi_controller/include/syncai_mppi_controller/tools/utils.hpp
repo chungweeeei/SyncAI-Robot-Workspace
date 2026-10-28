@@ -359,7 +359,7 @@ inline void setPathFurthestPointIfNotSet(CriticData & data)
  * @param data Data to use
  */
 inline void findPathCosts(
-  CriticData & data, std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
+  CriticData & data, std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   auto * costmap = costmap_ros->getCostmap();
   unsigned int map_x, map_y;
@@ -391,7 +391,7 @@ inline void findPathCosts(
   // footprintCost() reads an off-map vertex as LETHAL.
   const bool check_footprint = !costmap_ros->getUseRadius();
   const auto & footprint = costmap_ros->getRobotFootprint();
-  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *> checker(costmap);
+  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *> checker(costmap);
   const double edge = costmap_ros->getLayeredCostmap()->getCircumscribedRadius();
   const double min_x = costmap->getOriginX() + edge;
   const double min_y = costmap->getOriginY() + edge;
@@ -445,7 +445,7 @@ inline void findPathCosts(
  * @param data Data to use
  */
 inline void setPathCostsIfNotSet(
-  CriticData & data, std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
+  CriticData & data, std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   if (!data.path_pts_valid) {
     findPathCosts(data, costmap_ros);

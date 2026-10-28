@@ -51,11 +51,11 @@ public:
    * @param node The node that hosts the controller server
    * @param name Name of plugin
    * @param tf TF buffer
-   * @param costmap_ros Costmap2DROS object of environment
+   * @param costmap_ros CostmapROS object of environment
    */
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   /**
    * @brief Compute the best command given the current pose and velocity, with possible debug information
@@ -258,8 +258,8 @@ protected:
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros_;
-  syncai_costmap::Costmap2D * costmap_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
+  syncai_costmap::Costmap * costmap_;
   rclcpp::Logger logger_{rclcpp::get_logger("RegulatedPurePursuitController3D")};
   rclcpp::Clock::SharedPtr clock_;
 
@@ -352,7 +352,7 @@ protected:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr carrot_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr carrot_arc_pub_;
-  std::unique_ptr<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *>>
+  std::unique_ptr<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *>>
     collision_checker_;
 
   // Dynamic parameters handler

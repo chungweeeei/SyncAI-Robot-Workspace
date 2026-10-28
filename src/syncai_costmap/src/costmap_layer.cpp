@@ -17,7 +17,7 @@ void CostmapLayer::touch(
 
 void CostmapLayer::matchSize()
 {
-  Costmap2D * master = layered_costmap_->getCostmap();
+  Costmap * master = layered_costmap_->getCostmap();
   resizeMap(
     master->getSizeInCellsX(), master->getSizeInCellsY(), master->getResolution(),
     master->getOriginX(), master->getOriginY());
@@ -69,7 +69,7 @@ void CostmapLayer::useExtraBounds(double * min_x, double * min_y, double * max_x
 }
 
 void CostmapLayer::updateWithMax(
-  syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
+  syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   if (!enabled_) {
     return;
@@ -96,7 +96,7 @@ void CostmapLayer::updateWithMax(
 }
 
 void CostmapLayer::updateWithTrueOverwrite(
-  syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
+  syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   if (!enabled_) {
     return;
@@ -119,7 +119,7 @@ void CostmapLayer::updateWithTrueOverwrite(
 }
 
 void CostmapLayer::updateWithOverwrite(
-  syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
+  syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   if (!enabled_) {
     return;
@@ -139,7 +139,7 @@ void CostmapLayer::updateWithOverwrite(
 }
 
 void CostmapLayer::updateWithAddition(
-  syncai_costmap::Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
+  syncai_costmap::Costmap & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   if (!enabled_) {
     return;

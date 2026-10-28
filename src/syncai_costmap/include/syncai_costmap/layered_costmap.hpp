@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "syncai_costmap/cost_values.hpp"
-#include "syncai_costmap/costmap_2d.hpp"
+#include "syncai_costmap/costmap.hpp"
 #include "syncai_costmap/layer.hpp"
 
 namespace syncai_costmap
@@ -65,7 +65,7 @@ public:
   /**
    * @brief Get the costmap pointer to the master costmap
    */
-  Costmap2D * getCostmap() { return &combined_costmap_; }
+  Costmap * getCostmap() { return &combined_costmap_; }
 
   /**
    * @brief If this costmap is rolling or not
@@ -141,7 +141,7 @@ private:
   // One grid. Upstream keeps a primary_costmap_ beside it for its costmap
   // filters to run after the layers; the filter pipeline went with the 2D
   // keepout filter (2026-10-28), so the layers write the master directly.
-  Costmap2D combined_costmap_;
+  Costmap combined_costmap_;
   std::string global_frame_;
 
   bool rolling_window_;

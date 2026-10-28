@@ -8,7 +8,7 @@
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
 #include "tf2_ros/buffer.h"
 
@@ -41,7 +41,7 @@ public:
    */
   virtual void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) = 0;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) = 0;
 
   /**
    * @brief local setPlan - Sets the global plan

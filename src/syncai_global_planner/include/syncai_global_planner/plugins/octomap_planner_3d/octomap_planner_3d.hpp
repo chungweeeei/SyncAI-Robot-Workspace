@@ -19,7 +19,7 @@
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/empty.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
@@ -129,7 +129,7 @@ public:
 
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,

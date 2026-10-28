@@ -257,7 +257,7 @@ void TerrainLayer::updateBounds(
     path = pathPoses();
   }
 
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   std::lock_guard<std::mutex> lock(terrain_mutex_);
   if (rolling_window_) {
     updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
@@ -314,9 +314,9 @@ void TerrainLayer::updateFootprint(
   }
 }
 
-void TerrainLayer::updateCosts(Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
+void TerrainLayer::updateCosts(Costmap & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
-  std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
+  std::lock_guard<Costmap::mutex_t> guard(*getMutex());
   if (!enabled_) {
     return;
   }

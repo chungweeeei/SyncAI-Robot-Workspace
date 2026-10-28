@@ -1,4 +1,4 @@
-#include "syncai_costmap/costmap_2d.hpp"
+#include "syncai_costmap/costmap.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -9,7 +9,7 @@
 
 namespace syncai_costmap
 {
-Costmap2D::Costmap2D(
+Costmap::Costmap(
   unsigned int cells_size_x, unsigned int cells_size_y, double resolution, double origin_x,
   double origin_y, unsigned char default_value)
 : resolution_(resolution),
@@ -25,7 +25,7 @@ Costmap2D::Costmap2D(
   resetMaps();
 };
 
-void Costmap2D::deleteMaps()
+void Costmap::deleteMaps()
 {
   // clean up data
   std::unique_lock<mutex_t> lock(*access_);
@@ -33,7 +33,7 @@ void Costmap2D::deleteMaps()
   costmap_ = NULL;
 }
 
-void Costmap2D::initMaps(unsigned int size_x, unsigned int size_y)
+void Costmap::initMaps(unsigned int size_x, unsigned int size_y)
 {
   std::unique_lock<mutex_t> lock(*access_);
   delete[] costmap_;
@@ -42,7 +42,7 @@ void Costmap2D::initMaps(unsigned int size_x, unsigned int size_y)
   costmap_ = new unsigned char[size_x_ * size_y_];
 };
 
-void Costmap2D::resizeMap(
+void Costmap::resizeMap(
   unsigned int size_x, unsigned int size_y, double resolution, double origin_x, double origin_y)
 {
   resolution_ = resolution;
@@ -55,7 +55,7 @@ void Costmap2D::resizeMap(
   resetMaps();
 }
 
-void Costmap2D::resetMaps()
+void Costmap::resetMaps()
 {
   std::unique_lock<mutex_t> lock(*access_);
 
@@ -63,12 +63,12 @@ void Costmap2D::resetMaps()
   memset(costmap_, default_value_, size_x_ * size_y_ * sizeof(unsigned char));
 }
 
-void Costmap2D::resetMap(unsigned int x0, unsigned int y0, unsigned int xn, unsigned int yn)
+void Costmap::resetMap(unsigned int x0, unsigned int y0, unsigned int xn, unsigned int yn)
 {
   resetMapToValue(x0, y0, xn, yn, default_value_);
 }
 
-void Costmap2D::resetMapToValue(
+void Costmap::resetMapToValue(
   unsigned int x0, unsigned int y0, unsigned int xn, unsigned int yn, unsigned char value)
 {
   std::unique_lock<mutex_t> lock(*access_);
@@ -79,8 +79,8 @@ void Costmap2D::resetMapToValue(
   }
 }
 
-bool Costmap2D::copyCostmapWindow(
-  const Costmap2D & map, double win_origin_x, double win_origin_y, double win_size_x,
+bool Costmap::copyCostmapWindow(
+  const Costmap & map, double win_origin_x, double win_origin_y, double win_size_x,
   double win_size_y)
 {
   if (this == &map) {
@@ -115,7 +115,7 @@ bool Costmap2D::copyCostmapWindow(
   return true;
 }
 
-Costmap2D & Costmap2D::operator=(const Costmap2D & map)
+Costmap & Costmap::operator=(const Costmap & map)
 {
   if (this == &map) {
     return *this;
@@ -140,57 +140,57 @@ Costmap2D & Costmap2D::operator=(const Costmap2D & map)
   return *this;
 }
 
-Costmap2D::Costmap2D(const Costmap2D & map) : costmap_(NULL)
+Costmap::Costmap(const Costmap & map) : costmap_(NULL)
 {
   access_ = new mutex_t();
   *this = map;
 }
 
-Costmap2D::Costmap2D()
+Costmap::Costmap()
 : size_x_(0), size_y_(0), resolution_(0.0), origin_x_(0.0), origin_y_(0.0), costmap_(NULL)
 {
   access_ = new mutex_t();
 }
 
-Costmap2D::~Costmap2D()
+Costmap::~Costmap()
 {
   deleteMaps();
   delete access_;
 }
 
-unsigned int Costmap2D::cellDistance(double world_dist)
+unsigned int Costmap::cellDistance(double world_dist)
 {
   double cells_dist = std::max(0.0, ceil(world_dist / resolution_));
   return (unsigned int)cells_dist;
 }
 
-unsigned char * Costmap2D::getCharMap() const
+unsigned char * Costmap::getCharMap() const
 {
   return costmap_;
 }
 
-unsigned char Costmap2D::getCost(unsigned int mx, unsigned int my) const
+unsigned char Costmap::getCost(unsigned int mx, unsigned int my) const
 {
   return costmap_[getIndex(mx, my)];
 }
 
-unsigned char Costmap2D::getCost(unsigned int undex) const
+unsigned char Costmap::getCost(unsigned int undex) const
 {
   return costmap_[undex];
 }
 
-void Costmap2D::setCost(unsigned int mx, unsigned int my, unsigned char cost)
+void Costmap::setCost(unsigned int mx, unsigned int my, unsigned char cost)
 {
   costmap_[getIndex(mx, my)] = cost;
 }
 
-void Costmap2D::mapToWorld(unsigned int mx, unsigned int my, double & wx, double & wy) const
+void Costmap::mapToWorld(unsigned int mx, unsigned int my, double & wx, double & wy) const
 {
   wx = origin_x_ + (mx + 0.5) * resolution_;
   wy = origin_y_ + (my + 0.5) * resolution_;
 }
 
-bool Costmap2D::worldToMap(double wx, double wy, unsigned int & mx, unsigned int & my) const
+bool Costmap::worldToMap(double wx, double wy, unsigned int & mx, unsigned int & my) const
 {
   if (wx < origin_x_ || wy < origin_y_) {
     return false;
@@ -205,7 +205,7 @@ bool Costmap2D::worldToMap(double wx, double wy, unsigned int & mx, unsigned int
   return false;
 }
 
-bool Costmap2D::worldToMapContinuous(double wx, double wy, float & mx, float & my) const
+bool Costmap::worldToMapContinuous(double wx, double wy, float & mx, float & my) const
 {
   if (wx < origin_x_ || wy < origin_y_) {
     return false;
@@ -220,13 +220,13 @@ bool Costmap2D::worldToMapContinuous(double wx, double wy, float & mx, float & m
   return false;
 }
 
-void Costmap2D::worldToMapNoBounds(double wx, double wy, int & mx, int & my) const
+void Costmap::worldToMapNoBounds(double wx, double wy, int & mx, int & my) const
 {
   mx = static_cast<int>((wx - origin_x_) / resolution_);
   my = static_cast<int>((wy - origin_y_) / resolution_);
 }
 
-void Costmap2D::worldToMapEnforceBounds(double wx, double wy, int & mx, int & my) const
+void Costmap::worldToMapEnforceBounds(double wx, double wy, int & mx, int & my) const
 {
   // Here we avoid doing any math to wx,wy before comparing them to
   // the bounds, so their values can go out to the max and min values
@@ -248,7 +248,7 @@ void Costmap2D::worldToMapEnforceBounds(double wx, double wy, int & mx, int & my
   }
 }
 
-void Costmap2D::updateOrigin(double new_origin_x, double new_origin_y)
+void Costmap::updateOrigin(double new_origin_x, double new_origin_y)
 {
   int cell_ox, cell_oy;
   cell_ox = static_cast<int>((new_origin_x - origin_x_) / resolution_);
@@ -300,7 +300,7 @@ void Costmap2D::updateOrigin(double new_origin_x, double new_origin_y)
   delete[] local_map;
 }
 
-bool Costmap2D::setConvexPolygonCost(
+bool Costmap::setConvexPolygonCost(
   const std::vector<geometry_msgs::msg::Point> & polygon, unsigned char cost_value)
 {
   std::vector<MapLocation> map_polygon;
@@ -326,7 +326,7 @@ bool Costmap2D::setConvexPolygonCost(
   return true;
 }
 
-void Costmap2D::polygonOutlineCells(
+void Costmap::polygonOutlineCells(
   const std::vector<MapLocation> & polygon, std::vector<MapLocation> & polygon_cells)
 {
   PolygonOutlineCells cell_gatherer(*this, costmap_, polygon_cells);
@@ -341,7 +341,7 @@ void Costmap2D::polygonOutlineCells(
   }
 }
 
-void Costmap2D::convexFillCells(
+void Costmap::convexFillCells(
   const std::vector<MapLocation> & polygon, std::vector<MapLocation> & polygon_cells)
 {
   if (polygon.size() < 3) {
@@ -408,42 +408,42 @@ void Costmap2D::convexFillCells(
   }
 }
 
-unsigned int Costmap2D::getSizeInCellsX() const
+unsigned int Costmap::getSizeInCellsX() const
 {
   return size_x_;
 }
 
-unsigned int Costmap2D::getSizeInCellsY() const
+unsigned int Costmap::getSizeInCellsY() const
 {
   return size_y_;
 }
 
-double Costmap2D::getSizeInMetersX() const
+double Costmap::getSizeInMetersX() const
 {
   return (size_x_ - 1 + 0.5) * resolution_;
 }
 
-double Costmap2D::getSizeInMetersY() const
+double Costmap::getSizeInMetersY() const
 {
   return (size_y_ - 1 + 0.5) * resolution_;
 }
 
-double Costmap2D::getOriginX() const
+double Costmap::getOriginX() const
 {
   return origin_x_;
 }
 
-double Costmap2D::getOriginY() const
+double Costmap::getOriginY() const
 {
   return origin_y_;
 }
 
-double Costmap2D::getResolution() const
+double Costmap::getResolution() const
 {
   return resolution_;
 }
 
-bool Costmap2D::saveMap(std::string file_name)
+bool Costmap::saveMap(std::string file_name)
 {
   FILE * fp = fopen(file_name.c_str(), "w");
 

@@ -20,7 +20,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
 
 namespace syncai_controller
@@ -38,7 +38,7 @@ public:
 
   void initialize(
     const rclcpp::Node::SharedPtr & parent, const std::string & plugin_name,
-    const std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
+    const std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   void reset() override;
 

@@ -441,7 +441,7 @@
 # costmap GridBased (SmacPlanner2D) planned on and is_path_valid judged 2D
 # paths on; that went with 2D navigation, together with map_server and the
 # keepout mask server that fed it. `plugins` is left out on purpose: the
-# default is no layer (Costmap2DROS), and an empty YAML list cannot be typed.
+# default is no layer (CostmapROS), and an empty YAML list cannot be typed.
 # With no layer the grid stays at its 5 x 5 m default and never changes.
 /**/global_costmap:
   ros__parameters:

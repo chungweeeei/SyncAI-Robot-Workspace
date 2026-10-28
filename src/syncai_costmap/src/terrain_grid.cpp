@@ -45,7 +45,7 @@ void TerrainGrid::clear()
 
 void TerrainGrid::updateOrigin(double ox, double oy)
 {
-  // Whole cells only, as Costmap2D::updateOrigin: the grid's cells stay
+  // Whole cells only, as Costmap::updateOrigin: the grid's cells stay
   // aligned with the costmap's, which lands each sample in the same cell
   // after the shift as before it.
   const int dx = static_cast<int>(std::floor((ox - ox_) / res_ + 1e-9));

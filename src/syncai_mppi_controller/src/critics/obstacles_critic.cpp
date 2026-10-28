@@ -63,7 +63,7 @@ void ObstaclesCritic::initialize()
     "footprint" : "circular");
 }
 
-float ObstaclesCritic::findCircumscribedCost(std::shared_ptr<syncai_costmap::Costmap2DROS> costmap)
+float ObstaclesCritic::findCircumscribedCost(std::shared_ptr<syncai_costmap::CostmapROS> costmap)
 {
   double result = -1.0;
   bool inflation_layer_found = false;

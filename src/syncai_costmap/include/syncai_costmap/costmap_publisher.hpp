@@ -1,5 +1,5 @@
-#ifndef SYNCAI_COSTMAP__COSTMAP_2D_PUBLISHER_HPP_
-#define SYNCAI_COSTMAP__COSTMAP_2D_PUBLISHER_HPP_
+#ifndef SYNCAI_COSTMAP__COSTMAP_PUBLISHER_HPP_
+#define SYNCAI_COSTMAP__COSTMAP_PUBLISHER_HPP_
 
 #include <algorithm>
 #include <memory>
@@ -10,7 +10,7 @@
 #include "nav2_msgs/srv/get_costmap.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d.hpp"
+#include "syncai_costmap/costmap.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/transform_datatypes.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -19,22 +19,22 @@ namespace syncai_costmap
 {
 
 /**
-  * @brief A tool to periodically publish "visualization" data from a Costmap2D
+  * @brief A tool to periodically publish "visualization" data from a Costmap
 */
-class Costmap2DPublisher
+class CostmapPublisher
 {
 public:
   /**
-   * @brief  Constructor for the Costmap2DPublisher
+   * @brief  Constructor for the CostmapPublisher
    */
-  Costmap2DPublisher(
-    const rclcpp::Node::SharedPtr & node, Costmap2D * costmap, std::string global_frame,
+  CostmapPublisher(
+    const rclcpp::Node::SharedPtr & node, Costmap * costmap, std::string global_frame,
     std::string topic_name, bool always_send_full_costmap = false);
 
   /**
    * @brief  Destructor
    */
-  ~Costmap2DPublisher();
+  ~CostmapPublisher();
 
   /** 
     * @brief Include the given bounds in the changed-rectangle. 
@@ -66,7 +66,7 @@ private:
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::Logger logger_{rclcpp::get_logger("syncai_costmap")};
 
-  Costmap2D * costmap_;
+  Costmap * costmap_;
   std::string global_frame_;
   std::string topic_name_;
   unsigned int x0_, y0_, xn_, yn_;
@@ -94,4 +94,4 @@ private:
 
 }  // namespace syncai_costmap
 
-#endif  // SYNCAI_COSTMAP__COSTMAP_2D_PUBLISHER_HPP_
+#endif  // SYNCAI_COSTMAP__COSTMAP_PUBLISHER_HPP_

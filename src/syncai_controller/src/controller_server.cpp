@@ -77,7 +77,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("dock_approach_timeout", rclcpp::ParameterValue(60.0));
 
   // The costmap node is used in the implementation of the controller
-  costmap_ros_ = std::make_shared<syncai_costmap::Costmap2DROS>(
+  costmap_ros_ = std::make_shared<syncai_costmap::CostmapROS>(
     "local_costmap", std::string{get_namespace()}, "local_costmap");
 }
 

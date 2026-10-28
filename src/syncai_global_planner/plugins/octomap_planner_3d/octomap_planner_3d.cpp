@@ -61,7 +61,7 @@ std::string OctomapPlanner3D::fileBeside(const std::string & octomap_file, const
 
 void OctomapPlanner3D::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   node_ = node;
   tf_ = tf;
@@ -297,7 +297,7 @@ void OctomapPlanner3D::initialize(
       &OctomapPlanner3D::clearOverlayCallback, this, std::placeholders::_1, std::placeholders::_2));
   if (dynamic_enabled_) {
     // On the global costmap's callback group, the one its executor thread
-    // spins for the /tf listener that fills tf_ (costmap_2d_ros.cpp), as the
+    // spins for the /tf listener that fills tf_ (costmap_ros.cpp), as the
     // costmap layers' own filters on that buffer are. From 2026-10-21 to
     // 2026-10-22 the subscription had a group and thread of its own, so the
     // filter ran on two threads: add() on this one (registering a

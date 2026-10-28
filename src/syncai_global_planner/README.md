@@ -43,7 +43,7 @@ Two structural notes carry over from the rest of the stack:
    Both load through pluginlib against `syncai_nav_core` / `syncai_costmap`
    respectively, and both are configured from the same params file under two
    different node keys. The global costmap loads no layer today
-   (`Costmap2DROS`'s default plugin list is empty since 2026-10-28, and the
+   (`CostmapROS`'s default plugin list is empty since 2026-10-28, and the
    params leave `plugins` out, since an empty YAML list cannot be typed).
 
 ## Layout
@@ -795,7 +795,7 @@ a 2D path, RPP's own collision test, at the path heading ± 0.35 rad).
 `global_frame: map`, `robot_base_frame` (the launch file prefixes it),
 `transform_tolerance`, `rolling_window: false`, `track_unknown_space: true`,
 `resolution`, and 1 Hz update / publish. `plugins` is left out of the YAML on
-purpose: `Costmap2DROS`'s default is now no layer (upstream's is a static
+purpose: `CostmapROS`'s default is now no layer (upstream's is a static
 layer), an empty YAML list cannot be typed, and `LayeredCostmap` skips the
 update and reads current with nothing loaded. The node stays because the
 server and `Octo3D` take its global frame, TF buffer, `getRobotPose()` /
@@ -889,7 +889,7 @@ ros2 run syncai_global_planner octomap_planner_3d_cli map/<name>/octomap.bt --st
 ```
 
 The nav session starts it in the `plan_ctrl` window after `sleep 4` —
-`Costmap2DROS::activate()` blocks on TF. (The offset also used to let the
+`CostmapROS::activate()` blocks on TF. (The offset also used to let the
 static layer find `map_server`'s latched map; there is no map_server in the
 session since 2026-10-28.)
 

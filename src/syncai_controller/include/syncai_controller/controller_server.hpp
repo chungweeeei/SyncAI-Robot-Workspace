@@ -16,7 +16,7 @@
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "syncai_common/action/dock_to_pose.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
 #include "syncai_nav_core/progress_checker.hpp"
@@ -277,7 +277,7 @@ protected:
   std::timed_mutex dynamic_params_lock_;
 
   // The controller needs a costmap node
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
   std::unique_ptr<syncai_util::NodeThread> costmap_thread_;
 
   // Publishers and subscribers

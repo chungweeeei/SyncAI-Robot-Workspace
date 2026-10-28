@@ -1,4 +1,4 @@
-#include "syncai_costmap/costmap_2d_publisher.hpp"
+#include "syncai_costmap/costmap_publisher.hpp"
 
 #include <memory>
 #include <string>
@@ -8,10 +8,10 @@
 
 namespace syncai_costmap
 {
-char * Costmap2DPublisher::cost_translation_table_ = NULL;
+char * CostmapPublisher::cost_translation_table_ = NULL;
 
-Costmap2DPublisher::Costmap2DPublisher(
-  const rclcpp::Node::SharedPtr & node, Costmap2D * costmap, std::string global_frame,
+CostmapPublisher::CostmapPublisher(
+  const rclcpp::Node::SharedPtr & node, Costmap * costmap, std::string global_frame,
   std::string topic_name, bool always_send_full_costmap)
 : costmap_(costmap),
   global_frame_(global_frame),
@@ -36,7 +36,7 @@ Costmap2DPublisher::Costmap2DPublisher(
   // Create a service that will use the callback function to handle requests.
   costmap_service_ = node->create_service<nav2_msgs::srv::GetCostmap>(
     "get_costmap", std::bind(
-                     &Costmap2DPublisher::costmap_service_callback, this, std::placeholders::_1,
+                     &CostmapPublisher::costmap_service_callback, this, std::placeholders::_1,
                      std::placeholders::_2, std::placeholders::_3));
 
   if (cost_translation_table_ == NULL) {
@@ -60,13 +60,13 @@ Costmap2DPublisher::Costmap2DPublisher(
   y0_ = costmap_->getSizeInCellsY();
 }
 
-Costmap2DPublisher::~Costmap2DPublisher()
+CostmapPublisher::~CostmapPublisher()
 {
 }
 
-void Costmap2DPublisher::prepareGrid()
+void CostmapPublisher::prepareGrid()
 {
-  std::unique_lock<Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(costmap_->getMutex()));
   grid_resolution = costmap_->getResolution();
   grid_width = costmap_->getSizeInCellsX();
   grid_height = costmap_->getSizeInCellsY();
@@ -97,9 +97,9 @@ void Costmap2DPublisher::prepareGrid()
   }
 }
 
-void Costmap2DPublisher::prepareCostmap()
+void CostmapPublisher::prepareCostmap()
 {
-  std::unique_lock<Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
+  std::unique_lock<Costmap::mutex_t> lock(*(costmap_->getMutex()));
   double resolution = costmap_->getResolution();
 
   costmap_raw_ = std::make_unique<nav2_msgs::msg::Costmap>();
@@ -128,7 +128,7 @@ void Costmap2DPublisher::prepareCostmap()
   }
 }
 
-void Costmap2DPublisher::publishCostmap()
+void CostmapPublisher::publishCostmap()
 {
   if (costmap_raw_pub_->get_subscription_count() > 0) {
     prepareCostmap();
@@ -146,7 +146,7 @@ void Costmap2DPublisher::publishCostmap()
     }
   } else if (x0_ < xn_) {
     if (costmap_update_pub_->get_subscription_count() > 0) {
-      std::unique_lock<Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
+      std::unique_lock<Costmap::mutex_t> lock(*(costmap_->getMutex()));
       // Publish Just an Update
       auto update = std::make_unique<map_msgs::msg::OccupancyGridUpdate>();
       update->header.stamp = rclcpp::Time();
@@ -172,7 +172,7 @@ void Costmap2DPublisher::publishCostmap()
   y0_ = costmap_->getSizeInCellsY();
 }
 
-void Costmap2DPublisher::costmap_service_callback(
+void CostmapPublisher::costmap_service_callback(
   const std::shared_ptr<rmw_request_id_t> /*request_header*/,
   const std::shared_ptr<nav2_msgs::srv::GetCostmap::Request> /*request*/,
   const std::shared_ptr<nav2_msgs::srv::GetCostmap::Response> response)

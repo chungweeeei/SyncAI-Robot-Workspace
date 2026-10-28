@@ -7,7 +7,7 @@
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 
 namespace syncai_nav_core
 {
@@ -36,7 +36,7 @@ public:
    */
   virtual void initialize(
     const rclcpp::Node::SharedPtr & node, const std::string & plugin_name,
-    const std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) = 0;
+    const std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) = 0;
 
   virtual void reset() = 0;
 

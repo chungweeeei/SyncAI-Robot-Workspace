@@ -33,7 +33,7 @@ namespace syncai_mppi_controller
 
 void MPPIController::initialize(
   const rclcpp::Node::SharedPtr & parent, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   parent_ = parent;
   costmap_ros_ = costmap_ros;
@@ -1095,8 +1095,8 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
   // resolution along a straight line at the end heading -- under
   // approach_rotate_min_angle the arc stays within a cell or two of that
   // line over the few decimetres it runs.
-  syncai_costmap::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap::mutex_t> costmap_lock(*(costmap->getMutex()));
   const auto & footprint = costmap_ros_->getRobotFootprint();
   const bool tracking_unknown = costmap_ros_->getLayeredCostmap()->isTrackingUnknown();
   const auto in_collision = [&](double px, double py, double ptheta) {
@@ -1146,8 +1146,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
   nav_msgs::msg::Path transformed_plan = path_handler_.transformPath(robot_pose);
 
-  syncai_costmap::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap::mutex_t> costmap_lock(*(costmap->getMutex()));
 
   geometry_msgs::msg::TwistStamped cmd = optimizer_.evalControl(
     robot_pose, robot_speed, transformed_plan, path_handler_.transformedGoal(), goal_checker);

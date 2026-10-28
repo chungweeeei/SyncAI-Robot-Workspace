@@ -68,15 +68,14 @@ protected:
   /**
     * @brief Find the min cost of the inflation decay function for which the robot MAY be
     * in collision in any orientation
-    * @param costmap Costmap2DROS to get minimum inscribed cost (e.g. 128 in inflation layer documentation)
+    * @param costmap CostmapROS to get minimum inscribed cost (e.g. 128 in inflation layer documentation)
     * @return double circumscribed cost, any higher than this and need to do full footprint collision checking
     * since some element of the robot could be in collision
     */
-  float findCircumscribedCost(std::shared_ptr<syncai_costmap::Costmap2DROS> costmap);
+  float findCircumscribedCost(std::shared_ptr<syncai_costmap::CostmapROS> costmap);
 
 protected:
-  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *> collision_checker_{
-    nullptr};
+  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *> collision_checker_{nullptr};
   float possibly_inscribed_cost_;
 
   bool consider_footprint_{true};

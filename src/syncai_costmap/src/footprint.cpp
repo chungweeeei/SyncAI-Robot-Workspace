@@ -143,10 +143,10 @@ bool makeFootprintFromString(
 
   if (error != "") {
     RCLCPP_ERROR(
-      rclcpp::get_logger("nav2_costmap_2d"), "Error parsing footprint parameter: '%s'",
+      rclcpp::get_logger("syncai_costmap"), "Error parsing footprint parameter: '%s'",
       error.c_str());
     RCLCPP_ERROR(
-      rclcpp::get_logger("nav2_costmap_2d"), "  Footprint string was '%s'.",
+      rclcpp::get_logger("syncai_costmap"), "  Footprint string was '%s'.",
       footprint_string.c_str());
     return false;
   }
@@ -154,7 +154,7 @@ bool makeFootprintFromString(
   // convert vvf into points.
   if (vvf.size() < 3) {
     RCLCPP_ERROR(
-      rclcpp::get_logger("nav2_costmap_2d"),
+      rclcpp::get_logger("syncai_costmap"),
       "You must specify at least three points for the robot footprint, reverting to previous "
       "footprint.");  //NOLINT
     return false;
@@ -170,7 +170,7 @@ bool makeFootprintFromString(
       footprint.push_back(point);
     } else {
       RCLCPP_ERROR(
-        rclcpp::get_logger("nav2_costmap_2d"),
+        rclcpp::get_logger("syncai_costmap"),
         "Points in the footprint specification must be pairs of numbers. Found a point with %d "
         "numbers.",  //NOLINT
         static_cast<int>(vvf[i].size()));

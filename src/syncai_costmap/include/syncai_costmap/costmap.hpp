@@ -1,5 +1,5 @@
-#ifndef SYNCAI_NAV2_COSTMAP_2D_COSTMAP_2D_HPP_
-#define SYNCAI_NAV2_COSTMAP_2D_COSTMAP_2D_HPP_
+#ifndef SYNCAI_COSTMAP__COSTMAP_HPP_
+#define SYNCAI_COSTMAP__COSTMAP_HPP_
 
 #include <limits.h>
 #include <stdio.h>
@@ -24,10 +24,10 @@ struct MapLocation
 };
 
 /**
- * @class Costmap2D
+ * @class Costmap
  * @brief A 2D costmap provides a mapping between points in the world and their associated "costs".
  */
-class Costmap2D
+class Costmap
 {
 public:
   /**
@@ -39,7 +39,7 @@ public:
    * @param  origin_y The y origin of the map
    * @param  default_value Default Value
    */
-  Costmap2D(
+  Costmap(
     unsigned int cells_size_x, unsigned int cells_size_y, double resolution, double origin_x,
     double origin_y, unsigned char default_value = 0);
 
@@ -47,17 +47,17 @@ public:
    * @brief  Copy constructor for a costmap, creates a copy efficiently
    * @param map The costmap to copy
    */
-  Costmap2D(const Costmap2D & map);
+  Costmap(const Costmap & map);
 
   /**
    * @brief  Overloaded assignment operator
    * @param  map The costmap to copy
    * @return A reference to the map after the copy has finished
    */
-  Costmap2D & operator=(const Costmap2D & map);
+  Costmap & operator=(const Costmap & map);
 
   /**
-   * @brief  Copy a rectangular "window" region out of another costmap so that this Costmap2D
+   * @brief  Copy a rectangular "window" region out of another costmap so that this Costmap
    *         object becomes a copy of that window.
    * @param  map The costmap to copy
    * @param win_origin_x The x origin (lower left corner) for the window to copy, in meters
@@ -66,22 +66,22 @@ public:
    * @param win_size_y The y size of the window, in meters
    */
   bool copyCostmapWindow(
-    const Costmap2D & map, double win_origin_x, double win_origin_y, double win_size_x,
+    const Costmap & map, double win_origin_x, double win_origin_y, double win_size_x,
     double win_size_y);
 
-  // No Costmap2D(const OccupancyGrid &) and no copyWindow() since 2026-10-28:
+  // No Costmap(const OccupancyGrid &) and no copyWindow() since 2026-10-28:
   // their users, CostmapSubscriber and the costmap filter pipeline, went with
   // 2D navigation.
 
   /**
    * @brief  Default constructor
    */
-  Costmap2D();
+  Costmap();
 
   /**
    * @brief  Destructor
    */
-  virtual ~Costmap2D();
+  virtual ~Costmap();
 
   /**
    * @brief  Get the cost of a cell in the costmap
@@ -361,8 +361,7 @@ protected:
   {
   public:
     PolygonOutlineCells(
-      const Costmap2D & costmap, const unsigned char * /*char_map*/,
-      std::vector<MapLocation> & cells)
+      const Costmap & costmap, const unsigned char * /*char_map*/, std::vector<MapLocation> & cells)
     : costmap_(costmap), cells_(cells)
     {
     }
@@ -375,11 +374,11 @@ protected:
     }
 
   private:
-    const Costmap2D & costmap_;
+    const Costmap & costmap_;
     std::vector<MapLocation> & cells_;
   };
 };
 
 }  // namespace syncai_costmap
 
-#endif  // SYNCAI_NAV2_COSTMAP_2D_COSTMAP_2D_HPP_
+#endif  // SYNCAI_COSTMAP__COSTMAP_HPP_
