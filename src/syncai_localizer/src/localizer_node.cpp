@@ -239,8 +239,8 @@ void LocalizerNode::loadParameters()
     declare_parameter<double>("guess_timeout_sec", m_config.guess_timeout_sec);
   // Back-off while lost; NodeConfig has the argument.
   m_config.lost_backoff_after_rounds = std::max(
-    1, static_cast<int>(declare_parameter<int>(
-         "lost_backoff.after_rounds", m_config.lost_backoff_after_rounds)));
+    1, static_cast<int>(
+         declare_parameter<int>("lost_backoff.after_rounds", m_config.lost_backoff_after_rounds)));
   m_config.lost_backoff_interval =
     declare_parameter<double>("lost_backoff.interval", m_config.lost_backoff_interval);
 
