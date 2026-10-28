@@ -270,8 +270,9 @@ void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
   // stood there until the progress checker aborted 30 s later (see
   // GoalAngleCritic in controller_server_params.yaml). MPPI tapers its turn
   // as the heading error closes, so near the goal yaw it lands under the
-  // floor every time. A VelocityDeadbandCritic would score below-floor
-  // samples down, but it penalises zero too, so it would fight stopping.
+  // floor every time. Upstream's VelocityDeadbandCritic (not in this port
+  // since 2026-10-28) would score below-floor samples down, but it penalises
+  // zero too, so it would fight stopping.
   //
   // Only in place (|vx| < in_place_vx_max): while walking, a small wz is a
   // gentle arc, and raising it to the floor would weave a straight line.
@@ -688,7 +689,7 @@ bool MPPIController::climbStairs(
   const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd)
 {
   // Not upstream (2026-10-20): RPP 3D's stair mode, so that one controller
-  // serves a 2D map and a 3D one. A stretch of a path with heights
+  // follows level paths and stairs alike. A stretch of a path with heights
   // (OctomapPlanner3D's stair links) that rises stair_min_rise within reach
   // is climbed standing still for the policy switch and then on a short
   // pure-pursuit carrot at stair_linear_vel -- not by the optimizer, and
@@ -715,8 +716,8 @@ bool MPPIController::climbStairs(
   // of the flight's lethal cells when the optimizer takes over again.
   //
   // A plan without heights never asks for stairs (StairMode::setPlan() reads
-  // pathHasHeight()), and is not even transformed here, so a 2D map's cycle
-  // is what it was before this existed; the one exception is a robot left in
+  // pathHasHeight()), and is not even transformed here, so a level plan's
+  // cycle is what it was before this existed; the one exception is a robot left in
   // stair mode by a cancelled goal, which the next level plan takes back out.
   if (!stair_mode_.enabled()) {
     return false;

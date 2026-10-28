@@ -484,7 +484,8 @@
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
-      # No VelocityDeadbandCritic, although the gait controller has a floor
+      # No VelocityDeadbandCritic (deleted from the port, 2026-10-28), although
+      # the gait controller has a floor
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
       # zero*, so it would also fight stopping and turning in place. MPPI's
       # slow commands did turn out not to move the robot (0.13 m/s, robot01,

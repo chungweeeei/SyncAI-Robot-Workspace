@@ -416,17 +416,13 @@ geometry_msgs::msg::TwistStamped Optimizer::getControlFromSequenceAsTwist(
 
 void Optimizer::setMotionModel(const std::string & model)
 {
+  // DiffDrive only (2026-10-28; Omni and Ackermann were never configured,
+  // see motion_models.hpp).
   if (model == "DiffDrive") {
     motion_model_ = std::make_shared<DiffDriveMotionModel>();
-  } else if (model == "Omni") {
-    motion_model_ = std::make_shared<OmniMotionModel>();
-  } else if (model == "Ackermann") {
-    motion_model_ = std::make_shared<AckermannMotionModel>(parameters_handler_, name_);
   } else {
     throw std::runtime_error(
-            std::string(
-              "Model " + model + " is not valid! Valid options are DiffDrive, Omni, "
-              "or Ackermann"));
+      std::string("Model " + model + " is not valid! The only option is DiffDrive"));
   }
 }
 

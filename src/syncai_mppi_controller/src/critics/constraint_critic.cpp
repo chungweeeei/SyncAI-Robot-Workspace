@@ -51,22 +51,6 @@ void ConstraintCritic::score(CriticData & data)
   auto out_of_max_bounds_motion = xt::maximum(vel_total - max_vel_, 0);
   auto out_of_min_bounds_motion = xt::maximum(min_vel_ - vel_total, 0);
 
-  auto acker = dynamic_cast<AckermannMotionModel *>(data.motion_model.get());
-  if (acker != nullptr) {
-    auto & vx = data.state.vx;
-    auto & wz = data.state.wz;
-    auto out_of_turning_rad_motion = xt::maximum(
-      acker->getMinTurningRadius() - (xt::fabs(vx) / xt::fabs(wz)), 0.0);
-
-    data.costs += xt::pow(
-      xt::sum(
-        (std::move(out_of_max_bounds_motion) +
-        std::move(out_of_min_bounds_motion) +
-        std::move(out_of_turning_rad_motion)) *
-        data.model_dt, {1}, immediate) * weight_, power_);
-    return;
-  }
-
   data.costs += xt::pow(
     xt::sum(
       (std::move(out_of_max_bounds_motion) +
