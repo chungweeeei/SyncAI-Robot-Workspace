@@ -227,7 +227,7 @@ This package starts **no camera** since 2026-10-17. `bringup.launch.py` used to
 start the TechNexion VCS-AR0234-C through `vizionsdk_ros2` under
 `use_camera:=true` (off by default), with a `/**/vizionsdk_camera` block in
 `params/bringup.yaml`. It was removed because the V4L2 device admits exactly one
-streaming opener and `syncai_camera_feeder` — the nav session's
+streaming opener and `syncai_camera_feeder` — the sessions'
 `camera_feeder` window, teeing the MJPEG to the WebRTC worker and to
 `image_raw/compressed` — is it; a second opener in window 0 could only ever
 crash-loop the feeder on `Device or resource busy`. git history has the node,

@@ -159,9 +159,8 @@ windows:
   # the node every 2 s, a busy device shows here as a crash loop rather than as
   # a dead pane. `fuser -v /dev/video*` on the host names the holder.
   #
-  # start_mapping.yaml does not carry this window, so a switch to MANUAL takes
-  # the camera (and the console's WebRTC view) down with the rest of the
-  # session.
+  # start_mapping.yaml carries the same window (2026-10-28), so a switch to
+  # MANUAL restarts the camera rather than taking it down for the run.
   - name: camera_feeder
     panes:
       - cmd: ros2 launch syncai_camera_feeder camera_feeder.launch.py

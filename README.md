@@ -65,7 +65,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_driver_manager` | UDP bridge to the gait controller: `cmd_vel` out (with per-direction velocity scales), telemetry in, safety lock. **Not tracked here**, see below |
 | `syncai_robot_state` | Aggregates odom / battery / wifi / motors / TF into `syncai_common/RobotState`. **Not tracked here**, see below |
 | `syncai_sys_manager` | Python. Wifi, mDNS, host monitoring, and the **byobu session manager** (`switch_mode` / `get_mode`) — the robot container's main process |
-| `syncai_camera_feeder` | Sole owner of `/dev/syncai/camera0`: its MJPEG stream, undecoded, as RTP/JPEG to the WebRTC worker and as `image_raw/compressed` to ROS. Started by the nav session only. **Not tracked here**, see below |
+| `syncai_camera_feeder` | Sole owner of `/dev/syncai/camera0`: its MJPEG stream, undecoded, as RTP/JPEG to the WebRTC worker and as `image_raw/compressed` to ROS. Started by the nav and mapping sessions (and the calibration one). **Not tracked here**, see below |
 
 Six packages in the table are **not tracked in this repo**. Each lives in its
 own repository and is imported back into `src/` by vcstool (see "Getting
@@ -423,8 +423,8 @@ heights", "Stairs"), `syncai_mppi_controller/README.md`,
 `syncai_task_runner/README.md` ("The behavior tree") have the details.
 
 **Mapping loop.** Switch to MANUAL — the mapping session runs bringup +
-pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state, and none of
-the localization / planning nodes. A run is bracketed by two service calls:
+pointlio + pgo (`syncai_mapping`) + driver_manager + robot_state +
+camera_feeder, and none of the localization / planning nodes. A run is bracketed by two service calls:
 with the robot **standing still** press *Start mapping* (`pgo/start_mapping`;
 pgo comes up idle and banks nothing until then), drive the robot, then save.
 `pgo/save_maps` writes `map/<name>/` — `map.pcd`, `poses.txt`, `patches/` — and
@@ -448,10 +448,12 @@ too, and all write into this repo's `map/` (renaming the map the stack is
 running on is refused with 409 `map_active`, since the localizer and `Octo3D`
 loaded its files at launch).
 
-**Camera.** The nav session's `camera_feeder` window (`syncai_camera_feeder`)
-owns the camera: it opens `/dev/syncai/camera0` and tees the MJPEG, undecoded,
+**Camera.** The `camera_feeder` window (`syncai_camera_feeder`) of the nav and
+the mapping session owns the camera: it opens `/dev/syncai/camera0` and tees the MJPEG, undecoded,
 to the WebRTC worker (RTP/JPEG on `127.0.0.1:5008`) and to
-`image_raw/compressed`. The mapping session has no camera window. Nothing else
+`image_raw/compressed`. The mapping session has had the same window since
+2026-10-28, so the console's camera view stays up while driving a mapping run;
+a mode switch never runs two sessions at once. Nothing else
 opens the camera: the V4L2 device takes one streaming opener. Both former
 owners were removed in 2026-10 — the `vizionsdk_ros2` node `bringup.launch.py`
 started under `use_camera:=true`, and the host-side
