@@ -9,8 +9,7 @@ consumed in completely different ways:
 | | What | How it reaches a consumer |
 |---|---|---|
 | **Engine + base classes** | `BehaviorTreeEngine`, `BtActionServer`, `BtActionNode`, `BtServiceNode`, `bt_conversions` | `libsyncai_behavior_tree.so` + headers, linked at **build** time |
-| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, `InitialPoseReceived` | one shared library each, `dlopen`ed by **name at runtime** |
-| **A standalone demo** | `examples/demo.cpp` | `ros2 run syncai_behavior_tree demo` |
+| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, and the docking nodes (below) | one shared library each, `dlopen`ed by **name at runtime** |
 
 Nothing here is a ROS node. The only consumer today is **`syncai_task_runner`**,
 which builds a `BtActionServer<nav2_msgs::action::NavigateToPose>` and ticks
@@ -41,8 +40,6 @@ include/syncai_behavior_tree/
   plugins/{action,control,condition,decorator}/…
 src/behavior_tree_engine.cpp
 plugins/…                      one .cpp per plugin library; each ends in BT_REGISTER_NODES
-examples/demo.cpp
-docs/                          design notes (English) — see "Further reading"
 ```
 
 ## BehaviorTreeEngine
@@ -141,7 +138,6 @@ constructor — a missing one is a runtime throw, not a compile error.
 | `wait_for_service_timeout` | `milliseconds` | `BtActionServer` | ditto |
 | `tf_buffer` | `shared_ptr<tf2_ros::Buffer>` | `syncai_task_runner::Navigator` | frame-aware nodes |
 | `odom_smoother` | `shared_ptr<syncai_util::OdomSmoother>` | ditto | nodes needing current speed |
-| `initial_pose_received` | `bool` | ditto | `InitialPoseReceived` condition |
 | `number_recoveries` | `int` | ditto (init) | incremented by `increment_recovery_count()` in recovery nodes; surfaced as action feedback |
 | `failed_node` / `failure_msg` | `std::string` | ditto (init, and reset per goal) | written by `BtActionNode::report_failure()` — `ComputePathToPose`, `FollowPath` and `DockToPose` on abort, the base class on an unacknowledged / rejected goal (with an empty `failed_node`) — and, since 2026-10, by `BtServiceNode`'s copy of it (`SetMotionKey` on a refused key; unattributed on a timeout) and by `ComputeStagingPose` / `Wait` by hand; read by the navigator in `goalCompleted()` to fill `NavigateToGoal`'s `error_code` / `error_msg`. Last writer wins; `move.xml`'s header has why that names the branch that failed the tree, `dock.xml`'s has the docking case. Constants in `blackboard_keys.hpp` |
 | `number_plans` | `int` | ditto (init, reset per goal) | incremented by `ComputePathToPose` on success; the navigator reports `plans − 1` as `number_of_replans` |
@@ -255,7 +251,6 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
 | `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout`, `blocked_time` (s, default 0; `move.xml` / `dock.xml` set 10), `blocked_match_distance` (m, default 0.5) |
 | `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
-| `InitialPoseReceived` | condition | `syncai_initial_pose_received_condition_bt_node` | reads blackboard `initial_pose_received` |
 
 Semantics of the non-obvious ones:
 
@@ -411,15 +406,14 @@ BT nodes and the behavior server are not ported yet.
 
 ```bash
 colcon build --packages-select syncai_behavior_tree
-source install/setup.bash
-ros2 run syncai_behavior_tree demo
 ```
 
-`examples/demo.cpp` is a **standalone BT.CPP tutorial**, not part of the nav
-stack: it builds its own factory with a few `SyncActionNode`s, shows a custom
-`convertFromString` for a user struct, port ⇄ blackboard remapping, an
-`ActionNodeBase` that returns `RUNNING`, and a `<SubTree>` pulled in via
-`<include>`. It does not use `BehaviorTreeEngine`, any plugin, or any ROS action.
+Every node library it builds is one `syncai_task_runner` loads. Removed on
+2026-10-28 as unused: the `InitialPoseReceived` condition (nav2's AMCL-era
+"wait for an initial pose" gate, built but never loaded, with the
+`initial_pose_received` blackboard key the navigator seeded for it) and
+`examples/demo.cpp`, a standalone BT.CPP tutorial executable (`demo`) that
+used none of this package.
 
 Only the ament linters run under `colcon test`; there are no unit tests.
 
@@ -450,23 +444,9 @@ Only the ament linters run under `colcon test`; there are no unit tests.
 
 ## Further reading
 
-`docs/` holds longer design notes (in English) written while porting:
-
-- [`docs/behavior_tree_tick_notes.md`](docs/behavior_tree_tick_notes.md) — how
-  `tickRoot()` → `executeTick()` → `tick()` recursion works, `SequenceNode`'s
-  `current_child_idx_` progress memory, and when `loopTimeout` actually matters.
-- [`docs/action_node_types.md`](docs/action_node_types.md) — `SyncActionNode` vs
-  `StatefulActionNode` vs `AsyncActionNode`, threading and cancellation for each,
-  and why real ROS actions use `BtActionNode` instead.
-- [`docs/bt_service_node.md`](docs/bt_service_node.md) — a line-by-line walk
-  through `BtServiceNode`: the template-method structure, the two timeouts,
-  why `spin_until_future_complete` is required for the future to progress, and
-  the resulting latency analysis.
-
-Note: the first two documents refer to `examples/sync_action_demo.cpp`,
-`stateful_action_demo.cpp` and `async_action_demo.cpp`, which are not in the tree
-— only `examples/demo.cpp` exists. The explanations stand on their own; the file
-references do not.
+The porting-time design notes that were in `docs/` (BT.CPP's tick recursion,
+the three action-node types, a walk through `BtServiceNode`) were removed on
+2026-10-28; git history has them.
 
 Upstream reference: [`nav2_behavior_tree`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_behavior_tree)
 and the [BehaviorTree.CPP v3 docs](https://www.behaviortree.dev/). The vendored
