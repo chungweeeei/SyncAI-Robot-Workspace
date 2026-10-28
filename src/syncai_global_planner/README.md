@@ -40,7 +40,7 @@ Two structural notes carry over from the rest of the stack:
    `configure()`, which `main.cpp` calls once the node is owned by a
    `shared_ptr`. nav2's `on_configure` **and** `on_activate` are merged there.
 2. **The planner plugins and the costmap layers are separate plugin systems.**
-   Both load through pluginlib against `syncai_nav_core` / `syncai_costmap_2d`
+   Both load through pluginlib against `syncai_nav_core` / `syncai_costmap`
    respectively, and both are configured from the same params file under two
    different node keys. The global costmap loads no layer today
    (`Costmap2DROS`'s default plugin list is empty since 2026-10-28, and the

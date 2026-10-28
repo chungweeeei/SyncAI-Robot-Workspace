@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "syncai_costmap_2d/costmap_filters/filter_values.hpp"
+#include "syncai_costmap/costmap_filters/filter_values.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 
 namespace mppi
@@ -36,8 +36,7 @@ using xt::evaluation_strategy::immediate;
 
 void Optimizer::initialize(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros,
-  ParametersHandler * param_handler)
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros, ParametersHandler * param_handler)
 {
   parent_ = parent;
   name_ = name;
@@ -435,7 +434,7 @@ void Optimizer::setMotionModel(const std::string & model)
 void Optimizer::setSpeedLimit(double speed_limit, bool percentage)
 {
   auto & s = settings_;
-  if (speed_limit == syncai_costmap_2d::NO_SPEED_LIMIT) {
+  if (speed_limit == syncai_costmap::NO_SPEED_LIMIT) {
     s.constraints.vx_max = s.base_constraints.vx_max;
     s.constraints.vx_min = s.base_constraints.vx_min;
     s.constraints.vy = s.base_constraints.vy;

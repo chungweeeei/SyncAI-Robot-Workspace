@@ -15,12 +15,13 @@
 #ifndef SYNCAI_CONTROLLER__PLUGINS__POSITION_GOAL_CHECKER_HPP_
 #define SYNCAI_CONTROLLER__PLUGINS__POSITION_GOAL_CHECKER_HPP_
 
-#include <string>
 #include <memory>
+#include <string>
 #include <vector>
+
 #include "rclcpp/rclcpp.hpp"
+#include "syncai_costmap/costmap_2d_ros.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
 
 namespace syncai_controller
 {
@@ -36,9 +37,8 @@ public:
   ~PositionGoalChecker() override = default;
 
   void initialize(
-    const rclcpp::Node::SharedPtr & parent,
-    const std::string & plugin_name,
-    const std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    const rclcpp::Node::SharedPtr & parent, const std::string & plugin_name,
+    const std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
 
   void reset() override;
 

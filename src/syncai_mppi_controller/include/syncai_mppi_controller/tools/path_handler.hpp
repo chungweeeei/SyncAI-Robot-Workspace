@@ -17,20 +17,19 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__TOOLS__PATH_HANDLER_HPP_
 #define SYNCAI_MPPI_CONTROLLER__TOOLS__PATH_HANDLER_HPP_
 
-#include <vector>
-#include <utility>
-#include <string>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "rclcpp/rclcpp.hpp"
-#include "tf2_ros/buffer.h"
+#include "builtin_interfaces/msg/time.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
-#include "builtin_interfaces/msg/time.hpp"
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
-#include "syncai_util/geometry_utils.hpp"
-
+#include "rclcpp/rclcpp.hpp"
+#include "syncai_costmap/costmap_2d_ros.hpp"
 #include "syncai_mppi_controller/tools/parameters_handler.hpp"
+#include "syncai_util/geometry_utils.hpp"
+#include "tf2_ros/buffer.h"
 
 namespace mppi
 {
@@ -66,8 +65,8 @@ public:
     */
   void initialize(
     rclcpp::Node::WeakPtr parent, const std::string & name,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS>,
-    std::shared_ptr<tf2_ros::Buffer>, ParametersHandler *);
+    std::shared_ptr<syncai_costmap::Costmap2DROS>, std::shared_ptr<tf2_ros::Buffer>,
+    ParametersHandler *);
 
   /**
     * @brief Set new reference path
@@ -172,7 +171,7 @@ protected:
   bool isWithinInversionTolerances(const geometry_msgs::msg::PoseStamped & robot_pose);
 
   std::string name_;
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_;
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   ParametersHandler * parameters_handler_;
 

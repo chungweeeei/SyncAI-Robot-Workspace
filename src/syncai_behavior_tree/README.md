@@ -26,7 +26,7 @@ syncai_task_runner (rclcpp::Node)
                  ├─ PipelineSequence / RateController / RecoveryNode   ← plugins
                  ├─ ComputePathToPose  ──action──►  syncai_global_planner
                  ├─ FollowPath         ──action──►  syncai_controller
-                 └─ ClearEntireCostmap ──service─►  syncai_costmap_2d
+                 └─ ClearEntireCostmap ──service─►  syncai_costmap
 ```
 
 ## Layout

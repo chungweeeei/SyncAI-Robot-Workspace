@@ -57,7 +57,7 @@ constexpr double kDockingPlanPeriod = 0.5;
 
 void DockingController::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
 {
   // Frame names only. No getCostmap(), no collision checker: see the header.
   costmap_ros_ = costmap_ros;

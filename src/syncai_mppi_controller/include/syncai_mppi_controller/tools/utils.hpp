@@ -33,7 +33,7 @@
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap_2d/footprint_collision_checker.hpp"
+#include "syncai_costmap/footprint_collision_checker.hpp"
 #include "syncai_mppi_controller/critic_data.hpp"
 #include "syncai_mppi_controller/models/control_sequence.hpp"
 #include "syncai_mppi_controller/models/optimizer_settings.hpp"
@@ -359,8 +359,7 @@ inline void setPathFurthestPointIfNotSet(CriticData & data)
  * @param data Data to use
  */
 inline void findPathCosts(
-  CriticData & data,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  CriticData & data, std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
 {
   auto * costmap = costmap_ros->getCostmap();
   unsigned int map_x, map_y;
@@ -392,7 +391,7 @@ inline void findPathCosts(
   // footprintCost() reads an off-map vertex as LETHAL.
   const bool check_footprint = !costmap_ros->getUseRadius();
   const auto & footprint = costmap_ros->getRobotFootprint();
-  syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> checker(costmap);
+  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *> checker(costmap);
   const double edge = costmap_ros->getLayeredCostmap()->getCircumscribedRadius();
   const double min_x = costmap->getOriginX() + edge;
   const double min_y = costmap->getOriginY() + edge;
@@ -415,7 +414,7 @@ inline void findPathCosts(
     }
 
     switch (costmap->getCost(map_x, map_y)) {
-      using namespace syncai_costmap_2d; // NOLINT
+      using namespace syncai_costmap;  // NOLINT
       case (LETHAL_OBSTACLE):
         (*data.path_pts_valid)[idx] = false;
         continue;
@@ -428,7 +427,7 @@ inline void findPathCosts(
     }
 
     if (check_footprint && path_x > min_x && path_x < max_x && path_y > min_y && path_y < max_y) {
-      using namespace syncai_costmap_2d;  // NOLINT
+      using namespace syncai_costmap;  // NOLINT
       const auto cost =
         static_cast<unsigned char>(checker.footprintCostAtPose(path_x, path_y, heading, footprint));
       if (cost == LETHAL_OBSTACLE || (cost == NO_INFORMATION && !is_tracking_unknown)) {
@@ -446,8 +445,7 @@ inline void findPathCosts(
  * @param data Data to use
  */
 inline void setPathCostsIfNotSet(
-  CriticData & data,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  CriticData & data, std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
 {
   if (!data.path_pts_valid) {
     findPathCosts(data, costmap_ros);

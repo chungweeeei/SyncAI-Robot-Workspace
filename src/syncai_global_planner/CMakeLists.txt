@@ -19,11 +19,11 @@ find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
-find_package(syncai_costmap_2d REQUIRED)
+find_package(syncai_costmap REQUIRED)
 find_package(syncai_nav_core REQUIRED)
 # OctomapPlanner3D's dynamic overlay subscribes the lidar cloud through a TF
 # message filter and transforms it into the map frame (2026-10-21). All three
-# came in transitively through syncai_costmap_2d before, but a target that
+# came in transitively through syncai_costmap before, but a target that
 # includes their headers has to name them.
 find_package(sensor_msgs REQUIRED)
 find_package(message_filters REQUIRED)
@@ -56,7 +56,7 @@ set(dependencies
   tf2_ros
   pluginlib
   syncai_util
-  syncai_costmap_2d
+  syncai_costmap
   syncai_nav_core
   sensor_msgs
   message_filters

@@ -13,7 +13,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap_2d/footprint_collision_checker.hpp"
+#include "syncai_costmap/footprint_collision_checker.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/stair_mode.hpp"
@@ -55,7 +55,7 @@ public:
    */
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
 
   /**
    * @brief Compute the best command given the current pose and velocity, with possible debug information
@@ -258,8 +258,8 @@ protected:
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
-  syncai_costmap_2d::Costmap2D * costmap_;
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros_;
+  syncai_costmap::Costmap2D * costmap_;
   rclcpp::Logger logger_{rclcpp::get_logger("RegulatedPurePursuitController3D")};
   rclcpp::Clock::SharedPtr clock_;
 
@@ -352,7 +352,7 @@ protected:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr carrot_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr carrot_arc_pub_;
-  std::unique_ptr<syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *>>
+  std::unique_ptr<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *>>
     collision_checker_;
 
   // Dynamic parameters handler

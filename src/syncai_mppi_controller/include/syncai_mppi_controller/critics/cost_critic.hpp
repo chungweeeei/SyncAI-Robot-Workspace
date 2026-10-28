@@ -18,9 +18,8 @@
 #include <memory>
 #include <string>
 
-#include "syncai_costmap_2d/footprint_collision_checker.hpp"
-#include "syncai_costmap_2d/inflation_layer.hpp"
-
+#include "syncai_costmap/footprint_collision_checker.hpp"
+#include "syncai_costmap/inflation_layer.hpp"
 #include "syncai_mppi_controller/critic_function.hpp"
 #include "syncai_mppi_controller/models/state.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
@@ -73,11 +72,11 @@ protected:
     * @return double circumscribed cost, any higher than this and need to do full footprint collision checking
     * since some element of the robot could be in collision
     */
-  float findCircumscribedCost(std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap);
+  float findCircumscribedCost(std::shared_ptr<syncai_costmap::Costmap2DROS> costmap);
 
 protected:
-  syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *>
-  collision_checker_{nullptr};
+  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap2D *> collision_checker_{
+    nullptr};
   float possibly_inscribed_cost_;
 
   bool consider_footprint_{true};

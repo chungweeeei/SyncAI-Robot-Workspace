@@ -30,7 +30,7 @@ RViz "2D Goal Pose" ──/goal_pose topic────────────�
                                               ┌───────────────────┴───────────────────┐
                                               ▼                                       ▼
                                   ComputePathToPose ──► syncai_global_planner    FollowPath ──► syncai_controller
-                                  ClearEntireCostmap ─► syncai_costmap_2d (both costmaps)
+                                  ClearEntireCostmap ─► syncai_costmap (both costmaps)
 ```
 
 ## Structure

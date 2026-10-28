@@ -30,7 +30,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                  syncai_global_planner                         syncai_controller
                                        (Octo3D)                        (MPPI / RPP 3D / Docking)
                                            │                                   │
-                                           └───────── syncai_costmap_2d ───────┘
+                                           └───────── syncai_costmap ───────┘
                                                 (global / local costmaps)          cmd_vel ──▶ syncai_driver_manager ──UDP──▶ gait controller
 
    livox_ros_driver2 ──▶ syncai_pointlio ──▶ syncai_localizer ──▶ syncai_lio_bridge ──▶ odom → base_link TF, map → odom, /odom
@@ -51,7 +51,7 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SwitchMode`, `SetMotionKey`, `ExecuteTask`, …). **Not tracked here**, see below |
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils); on this branch also `path_height.hpp` (a path's heights, the ground under the robot) and `StairMode`, the stair state machine both 3D-aware controllers run (`test/test_stair_mode.cpp`) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
-| `syncai_costmap_2d` | The local costmap's layers: a **terrain layer**, a rolling 2.5D grid of the lidar's returns that marks low obstacles, drop-offs and ledges and judges a stair lethal, and inflation. The planner's global costmap has no layers at all (Octo3D reads no cells). The static and obstacle layers and the keepout filter went with 2D navigation (2026-10-28) |
+| `syncai_costmap` | The local costmap's layers: a **terrain layer**, a rolling 2.5D grid of the lidar's returns that marks low obstacles, drop-offs and ledges and judges a stair lethal, and inflation. The planner's global costmap has no layers at all (Octo3D reads no cells). The static and obstacle layers and the keepout filter went with 2D navigation (2026-10-28) |
 | `syncai_global_planner` | `compute_path_to_pose` action server with one planner, `Octo3D` (OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`); it keeps a dynamic-obstacle overlay of the lidar cloud, on which it answers `is_path_valid` and detours when it replans, and reads the map's forbidden zones from `keepout.json`. NavFn, StraightLine and SmacPlanner2D (`GridBased`) went with 2D navigation (2026-10-28) |
 | `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap. RPP 3D (`RegulatedPurePursuitController3D`; the 2D RPP it was copied from went with 2D navigation) and the goal check follow paths with heights in 3D, and both RPP 3D and MPPI climb stairs in a *stair mode* (`syncai_util::StairMode`) that switches the gait controller's RL policy. The trees name MPPI (`FollowPath`); RPP 3D is the A/B |
 | `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan`. It also matches a path with heights in 3D and climbs stairs in the shared stair mode — blind, without the optimizer or the costmap |
@@ -419,7 +419,7 @@ costmap meanwhile, and at one that closes the way the four `FollowPath`
 retries are the wait before the goal fails. The check judges only the floor
 stretch the robot is on and never replans mid-stair. `syncai_controller/README.md` ("Paths with
 heights", "Stairs"), `syncai_mppi_controller/README.md`,
-`syncai_costmap_2d/README.md`, `syncai_global_planner/README.md` and
+`syncai_costmap/README.md`, `syncai_global_planner/README.md` and
 `syncai_task_runner/README.md` ("The behavior tree") have the details.
 
 **Mapping loop.** Switch to MANUAL — the mapping session runs bringup +
@@ -475,7 +475,7 @@ colcon test-result --verbose
 
 Four ROS-free gtests: `syncai_global_planner`'s `test_surface_map` (surface
 map, search, stair links, dynamic overlay), `syncai_util`'s `test_stair_mode`,
-`syncai_costmap_2d`'s `test_terrain_grid` and `syncai_localizer`'s
+`syncai_costmap`'s `test_terrain_grid` and `syncai_localizer`'s
 `test_localizability`; `syncai_sys_manager` adds `test_wifi_manager.py`. The
 rest are the template ament linter tests, which are not enforced. The large
 pytest suite that used to live here went with `syncai_backend`.

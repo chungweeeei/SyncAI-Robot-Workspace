@@ -78,7 +78,7 @@ public:
    */
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros) override;
 
   /**
    * @brief One control cycle: the (v, w) that drives the robot toward the dock
@@ -178,7 +178,7 @@ protected:
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
   // Frame names and the TF buffer only. Nothing in this plugin reads a cost.
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros_;
   rclcpp::Logger logger_{rclcpp::get_logger("DockingController")};
   rclcpp::Clock::SharedPtr clock_;
 

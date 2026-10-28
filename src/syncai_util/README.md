@@ -21,7 +21,6 @@ uses.
 | `odom_subscriber.hpp` | header-only | `OdomSubscriber` — latest planar twist | controller |
 | `line_iterator.hpp` | header-only | Bresenham ray tracing | costmap_2d |
 | `string_utils.hpp` | compiled | `split`, `strip_leading_slash` | *nobody* — no consumer left in `src/`; kept from the `nav2_util` port (its user was AMCL, which went with the 2D bringup) |
-| `occ_grid_values.hpp` | header-only | `OCC_GRID_UNKNOWN/FREE/OCCUPIED` (−1 / 0 / 100) | costmap_2d (`Costmap2D`'s OccupancyGrid conversion; `syncai_map_server` read them too until it went with 2D navigation, 2026-10-28) |
 | `path_height.hpp` | header-only | `pathHasHeight` (a path whose poses do not all share one z: OctomapPlanner3D's) and `lookupGroundZ` (the ground under the robot = the lidar frame's z minus its height, since `base_link` is planar). Moved here from `syncai_controller` on 2026-10-20 so MPPI could share it | controller (server goal check, RPP 3D), mppi_controller, costmap_2d (`TerrainLayer`) |
 | `stair_mode.hpp` | compiled | `StairMode` — the stair state machine both controllers run on a path with heights: detects a climbing stretch, switches the gait policy over `set_policy_mode` standing still, settles, reports on the latched `stair_mode`. `initialize()` for a node (parameters under the plugin's name), `configure()` with callbacks for a test (`test/test_stair_mode.cpp`). Lifted out of RPP 3D on 2026-10-20; the climb itself stays each controller's. `findCorner()` (static, 2026-10-21) finds the first landing corner of a plan for both controllers' stair carrots. `setPlan()` keeps the plan with `medianHeights()` applied (static, 2026-10-24: each inner z the median of three poses), so a one-voxel spike or dip in the planner's heights no longer makes a ramp read as a stair — on dp's arched ramp one -0.5 pose read 0.3 m of rise for a 0.2 m slope; a flight's monotonic heights pass unchanged | controller (RPP 3D), mppi_controller |
 
@@ -138,9 +137,9 @@ Header-only and all `inline`:
 - **`node_thread.hpp`** — RAII: construct it with a node or executor and it spins
   on a background thread; the destructor cancels and joins. Both costmap owners
   use it so `Costmap2DROS` runs independently of its host's executor.
-- **`occ_grid_values.hpp`** — the `nav_msgs/OccupancyGrid` value convention
-  (−1 unknown, 0 free, 100 occupied), distinct from `syncai_costmap_2d`'s
-  internal 0–255 cost scale.
+- `occ_grid_values.hpp` (the `nav_msgs/OccupancyGrid` −1 / 0 / 100
+  convention) went on 2026-10-28 with its last users, `syncai_map_server` and
+  `Costmap2D`'s OccupancyGrid constructor.
 
 ## Build
 
@@ -168,7 +167,7 @@ colcon build --packages-above syncai_util
   the goal — there is no "come back later" mode. A callback that throws
   terminates all goals and stops the worker thread.
 - **Include guards still carry `nav2_util` / `NAV2_UTIL` names** in
-  `node_thread.hpp` and `occ_grid_values.hpp`. Harmless in practice — nav2_util
+  `node_thread.hpp`. Harmless in practice — nav2_util
   is not in this workspace — but it would collide if both were ever included in
   one translation unit.
 - **`OdomSubscriber` silently drops non-planar twist components.** Vertical or

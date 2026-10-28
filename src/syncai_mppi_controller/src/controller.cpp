@@ -21,7 +21,7 @@
 #include <cmath>
 #include <iterator>
 
-#include "syncai_costmap_2d/cost_values.hpp"
+#include "syncai_costmap/cost_values.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
@@ -32,9 +32,8 @@ namespace syncai_mppi_controller
 {
 
 void MPPIController::initialize(
-  const rclcpp::Node::SharedPtr & parent,
-  std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  const rclcpp::Node::SharedPtr & parent, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
 {
   parent_ = parent;
   costmap_ros_ = costmap_ros;
@@ -1096,16 +1095,16 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
   // resolution along a straight line at the end heading -- under
   // approach_rotate_min_angle the arc stays within a cell or two of that
   // line over the few decimetres it runs.
-  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap2D * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
   const auto & footprint = costmap_ros_->getRobotFootprint();
   const bool tracking_unknown = costmap_ros_->getLayeredCostmap()->isTrackingUnknown();
   const auto in_collision = [&](double px, double py, double ptheta) {
     const double cost = collision_checker_.footprintCostAtPose(px, py, ptheta, footprint);
-    if (cost == static_cast<double>(syncai_costmap_2d::NO_INFORMATION) && tracking_unknown) {
+    if (cost == static_cast<double>(syncai_costmap::NO_INFORMATION) && tracking_unknown) {
       return false;
     }
-    return cost >= static_cast<double>(syncai_costmap_2d::LETHAL_OBSTACLE);
+    return cost >= static_cast<double>(syncai_costmap::LETHAL_OBSTACLE);
   };
 
   const double resolution = costmap->getResolution();
@@ -1147,8 +1146,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
   nav_msgs::msg::Path transformed_plan = path_handler_.transformPath(robot_pose);
 
-  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap2D * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
 
   geometry_msgs::msg::TwistStamped cmd = optimizer_.evalControl(
     robot_pose, robot_speed, transformed_plan, path_handler_.transformedGoal(), goal_checker);

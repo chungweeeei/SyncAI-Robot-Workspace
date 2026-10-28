@@ -160,11 +160,11 @@ registered against it regardless of which package the plugin lives in.
 - **The two packages spell plugin names differently in params.** `syncai_global_planner`
   uses the pluginlib *lookup name* (`syncai_global_planner/OctomapPlanner3D`, declared via
   the `name=` attribute in its XML), while `syncai_controller` and
-  `syncai_costmap_2d` use the fully-qualified *type*
+  `syncai_costmap` use the fully-qualified *type*
   (`syncai_controller::RegulatedPurePursuitController3D`). Both are valid — the
   type always works, the lookup name only when the XML declares `name=` — but
   copying a params line between packages will not work unchanged.
-- **`syncai_nav_core` depends on `syncai_costmap_2d`,** because three of the four
+- **`syncai_nav_core` depends on `syncai_costmap`,** because three of the four
   interfaces take a `Costmap2DROS`. So "interfaces only" does not mean
   dependency-free — the costmap package has to build first.
 

@@ -61,7 +61,7 @@ std::string OctomapPlanner3D::fileBeside(const std::string & octomap_file, const
 
 void OctomapPlanner3D::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
 {
   node_ = node;
   tf_ = tf;

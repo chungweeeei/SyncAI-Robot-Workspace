@@ -56,9 +56,8 @@ StoppedGoalChecker::StoppedGoalChecker()
 }
 
 void StoppedGoalChecker::initialize(
-  const rclcpp::Node::SharedPtr & parent,
-  const std::string & plugin_name,
-  const std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  const rclcpp::Node::SharedPtr & parent, const std::string & plugin_name,
+  const std::shared_ptr<syncai_costmap::Costmap2DROS> costmap_ros)
 {
   plugin_name_ = plugin_name;
   SimpleGoalChecker::initialize(parent, plugin_name, costmap_ros);

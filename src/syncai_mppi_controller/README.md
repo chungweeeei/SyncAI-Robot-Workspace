@@ -58,7 +58,7 @@ Everything under `src/critics/`, the optimizer, the motion models, the noise
 generator, the path handler and `tools/utils.hpp` is upstream code with
 renamed symbols only:
 
-- `nav2_costmap_2d` → `syncai_costmap_2d`
+- `nav2_costmap_2d` → `syncai_costmap`
 - `nav2_core` → `syncai_nav_core`
 - `nav2_util` → `syncai_util`
 - `rclcpp_lifecycle::LifecycleNode` → `rclcpp::Node`

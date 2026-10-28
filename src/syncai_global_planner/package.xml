@@ -21,7 +21,7 @@
   <depend>tf2_ros</depend>
   <depend>pluginlib</depend>
   <depend>syncai_util</depend>
-  <depend>syncai_costmap_2d</depend>
+  <depend>syncai_costmap</depend>
   <depend>syncai_nav_core</depend>
 
   <!-- OctomapPlanner3D reads map/<name>/octomap.bt (octomap::OcTree). The

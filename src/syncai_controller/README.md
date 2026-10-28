@@ -284,7 +284,7 @@ and so is the braking, done with each one's own acceleration clamp:
    collision check is **off** from the hold before the stair (`stair_standoff`
    back since 2026-10-22, so the floor up to it too) to the hold
    past its top — the climb is blind, by decision, in both controllers: on a
-   3D map the local costmap runs `TerrainLayer` (`syncai_costmap_2d`), which
+   3D map the local costmap runs `TerrainLayer` (`syncai_costmap`), which
    judges the flight itself lethal and opens nothing along the path, so the
    check would refuse every stair. Nothing on the stairs is avoided.
    **Corners** (2026-10-21): OctomapPlanner3D lays a switchback stairwell as

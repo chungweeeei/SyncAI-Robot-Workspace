@@ -21,7 +21,7 @@ find_package(std_msgs REQUIRED)
 # SyncAI-Robot-Interface, so that repo's dev branch must carry
 # DockToPose.action before this package configures.
 find_package(syncai_common REQUIRED)
-find_package(syncai_costmap_2d REQUIRED)
+find_package(syncai_costmap REQUIRED)
 find_package(syncai_nav_core REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(tf2 REQUIRED)
@@ -39,7 +39,7 @@ set(dependencies
   rclcpp_action
   std_msgs
   syncai_common
-  syncai_costmap_2d
+  syncai_costmap
   syncai_nav_core
   syncai_util
   tf2

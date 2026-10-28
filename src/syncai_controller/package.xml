@@ -23,7 +23,7 @@
        SyncAI-Robot-Interface (dependencies.repos, branch dev); its
        DockToPose.action must be merged there before this package builds. -->
   <depend>syncai_common</depend>
-  <depend>syncai_costmap_2d</depend>
+  <depend>syncai_costmap</depend>
   <depend>syncai_nav_core</depend>
   <depend>syncai_util</depend>
   <depend>tf2</depend>

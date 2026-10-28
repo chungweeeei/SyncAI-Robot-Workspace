@@ -964,7 +964,7 @@
     # obstacle layer and the gate went with 2D navigation.
     plugins: ["terrain_layer", "inflation_layer"]
 
-    # TerrainLayer (2026-10-20; syncai_costmap_2d/terrain_grid.hpp
+    # TerrainLayer (2026-10-20; syncai_costmap/terrain_grid.hpp
     # has the design): the lidar cloud judged against the ground under each cell with
     # OctomapPlanner3D's own rules -- the four geometry values below are
     # SurfaceMapParams' (planner_server_params.yaml, Octo3D), one calibration
@@ -979,7 +979,7 @@
     # mode (FollowPath's / FollowPathRPP3D's) climbs a flight without reading
     # the costmap -- no obstacle avoidance on stairs, by decision.
     terrain_layer:
-      plugin: "syncai_costmap_2d::TerrainLayer"
+      plugin: "syncai_costmap::TerrainLayer"
       enabled: true
       footprint_clearing_enabled: true
       # Relative name: /<robot_id>/pointlio/body_cloud. The cloud's own frame
@@ -1094,7 +1094,7 @@
     # at 0.30 / 0.35 / 0.40, nearly free at a 0.7 m door's centre line), which
     # left MPPI nothing to steer by until a candidate collided.
     inflation_layer:
-      plugin: "syncai_costmap_2d::InflationLayer"
+      plugin: "syncai_costmap::InflationLayer"
       enabled: true
       inflation_radius: 0.45
       cost_scaling_factor: 3.0

@@ -16,7 +16,7 @@
 
 #include "syncai_mppi_controller/tools/path_handler.hpp"
 
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_2d_ros.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/path_height.hpp"
@@ -26,8 +26,8 @@ namespace mppi
 
 void PathHandler::initialize(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap,
-  std::shared_ptr<tf2_ros::Buffer> buffer, ParametersHandler * param_handler)
+  std::shared_ptr<syncai_costmap::Costmap2DROS> costmap, std::shared_ptr<tf2_ros::Buffer> buffer,
+  ParametersHandler * param_handler)
 {
   name_ = name;
   costmap_ = costmap;

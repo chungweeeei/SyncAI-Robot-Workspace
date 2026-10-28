@@ -30,7 +30,7 @@ set(dependencies
   nav_msgs
   pluginlib
   rclcpp
-  syncai_costmap_2d
+  syncai_costmap
   syncai_nav_core
   syncai_util
   tf2
