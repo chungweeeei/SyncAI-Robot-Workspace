@@ -403,7 +403,8 @@ straight off disk, and the backend's map switch refuses a 2D map with
 Sessions are built **detached** — the caller is a ROS node with no TTY. Neither
 spec has a backend, frontend or rviz2 window: the first two run in their own
 containers (so a mode switch interrupts neither), and the robot has no display
-(`config/rviz2/<robot_id>.rviz` is for a workstation).
+(the workstation rviz config `config/rviz2/` went on 2026-10-28 unused; the
+console shows the same topics).
 
 The specs are counterparts, not variants. `start_nav.yaml` *localizes* against
 an existing map — `syncai_localizer` loads one during construction and dies

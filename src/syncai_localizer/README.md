@@ -733,7 +733,7 @@ replay-A runs on the same `syncai_pointlio` build.
 ## Gotchas
 
 - **The namespace is `/<robot_id>`, not `/<robot_id>/localizer`.** See above.
-  The rviz config in `config/rviz2/` reads `/<robot_id>/map_cloud`.
+  A viewer reads `/<robot_id>/map_cloud`.
 - **`relocalize` success is a receipt.** Poll `relocalize_check`. A guess
   the timer cannot converge on is withdrawn after `guess_timeout_sec` (10 s)
   since 2026-10, so `relocalize_check` answering `false` ten seconds later

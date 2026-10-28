@@ -133,8 +133,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
 │   ├── instances/robot.ini       # the robot's identity: [system] robot_id, [map], [initial_pose], [sensor.lidar]
 │   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL), calib_lidar_camera.yaml (CALIBRATION)
-│   ├── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1
-│   └── rviz2/robot01.rviz        # for running rviz2 from a workstation (no display on the robot)
+│   └── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1
 ├── scripts/
 │   ├── attach.sh                 # host-side: attach to whichever byobu session is live in the container
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml

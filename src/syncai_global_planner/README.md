@@ -526,9 +526,9 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
 ```
 
-**Seeing a route.** Online, rviz2 from a workstation with
-`config/rviz2/<robot_id>.rviz` already shows `plan` (`nav_msgs/Path`) over
-the localizer's latched `map_cloud`, and the poses carry the floor's z, so an
+**Seeing a route.** Online, the console (or rviz2 from a workstation) shows
+`plan` (`nav_msgs/Path`) over the localizer's latched `map_cloud`, and the
+poses carry the floor's z, so an
 `Octo3D` route lies on the floor of the point cloud. (`Octo3D/raw_plan`, the
 un-shortcut chain behind `publish_raw_plan`, was removed on 2026-10-28; the
 CLI's `--plan` reports the raw chain's length, and `--no-shortcut` keeps it.) Offline, `--dump-html`

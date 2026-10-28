@@ -410,8 +410,8 @@ FROM base AS dev
 
 # Build toolchain, PCL/ROS build deps, and operator conveniences.
 #
-# There is no rviz2 (removed 2026-10): the robot has no display, and rviz2 is
-# run from a workstation against config/rviz2/<robot_id>.rviz. (The costmap
+# There is no rviz2 (removed 2026-10): the robot has no display, and rviz2, if
+# used at all, runs on a workstation (config/rviz2/ went 2026-10-28). (The costmap
 # package's `rviz:=true` test launch, its last caller in the workspace, went
 # with 2D navigation on 2026-10-28.) Dropping it saved
 # only ~50 MB: the bulk of this layer is VTK + Qt5, which libpcl-dev hard-
