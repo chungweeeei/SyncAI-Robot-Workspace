@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/srv/is_path_valid.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -42,8 +41,6 @@ class PlannerServer : public rclcpp::Node
 public:
   using ActionToPose = nav2_msgs::action::ComputePathToPose;
   using ActionServerToPose = syncai_util::SimpleActionServer<ActionToPose>;
-  using ActionThroughPoses = nav2_msgs::action::ComputePathThroughPoses;
-  using ActionServerThroughPoses = syncai_util::SimpleActionServer<ActionThroughPoses>;
   using PlannerMap = std::unordered_map<std::string, syncai_nav_core::GlobalPlanner::Ptr>;
 
   /**
@@ -133,13 +130,6 @@ protected:
   void computePlan();
 
   /**
-   * @brief The action server callback which calls planner to get a path through
-   * an ordered set of goals (start -> goal[0] -> goal[1] -> ...), concatenating
-   * each segment into a single path.
-   */
-  void computePlanThroughPoses();
-
-  /**
    * @brief The is_path_valid service callback: is the part of a path still
    * ahead of the robot free? Asked of the planner that made the last plan
    * (GlobalPlanner::isPathValid(); Octo3D answers on its dynamic overlay).
@@ -190,8 +180,8 @@ protected:
   // Our action server implements the ComputePathToPose action
   std::unique_ptr<ActionServerToPose> action_server_pose_;
 
-  // Our action server implements the ComputePathThroughPoses action
-  std::unique_ptr<ActionServerThroughPoses> action_server_poses_;
+  // No compute_path_through_poses (2026-10-28): nav2's waypoint action,
+  // which no BT node, backend or console route ever called.
 
   // Planner
   PlannerMap planners_;

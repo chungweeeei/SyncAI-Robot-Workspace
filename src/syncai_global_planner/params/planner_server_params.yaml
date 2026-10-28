@@ -426,8 +426,6 @@
       shortcut: true
       interpolation_resolution: 0.1
       path_z_offset: 0.0
-      # Publish the un-shortcut chain on Octo3D/raw_plan for comparison.
-      publish_raw_plan: false
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").

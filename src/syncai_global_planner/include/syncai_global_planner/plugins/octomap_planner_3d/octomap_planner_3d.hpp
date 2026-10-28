@@ -17,7 +17,6 @@
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
-#include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
@@ -75,12 +74,9 @@ namespace syncai_global_planner
  * (what the backend's switch to a 2D map sends; no 2D map navigates since
  * 2026-10-28). See loadMapCallback().
  *
- * `<planner_server>/<id>/map_available` (std_msgs/Bool, latched) says
- * whether this planner has a map, built or being built. From 2026-10-19 the
+ * There is no `map_available` topic since 2026-10-28: from 2026-10-19 the
  * task_runner picked the 3D or the 2D trees by it, and the local costmap its
- * sensor layer; both went with 2D navigation (2026-10-28), so it has no
- * reader in this repo and stays as a status to look at. See
- * publishMapAvailable().
+ * sensor layer; both went with 2D navigation and left it with no reader.
  *
  * Dynamic obstacles (2026-10-21): the surface map is static, so on its own
  * a replan returns the route a person is standing on, and the 2D global
@@ -191,14 +187,6 @@ protected:
   // beside octomap.bt.
   static std::string fileBeside(const std::string & octomap_file, const char * name);
 
-  // Latch `available` on map_available: true from the moment a build starts
-  // (boot or load_map) until one fails, false with no octomap_file or after a
-  // failed build. "Being built" counts as available because the map's type is
-  // what the reader wanted (the task_runner, until 2026-10-28): a goal sent
-  // mid-build belonged to the 3D tree, whose plan then fails with
-  // map_loading.
-  void publishMapAvailable(bool available);
-
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
   bool startHeightHint(double & z) const;
 
@@ -216,7 +204,7 @@ protected:
   // Parameters (see planner_server_params.yaml for the reasoning).
   std::string octomap_file_, poses_file_, body_frame_, goal_z_mode_;
   double lidar_height_{0.481}, interpolation_resolution_{0.1}, path_z_offset_{0.0};
-  bool shortcut_{true}, publish_raw_plan_{false}, stair_links_{true};
+  bool shortcut_{true}, stair_links_{true};
   octomap_planner_3d::SurfaceMapParams map_params_;
   octomap_planner_3d::StairLinkParams stair_params_;
   octomap_planner_3d::SearchParams search_params_;
@@ -272,8 +260,6 @@ protected:
   // members it uses go.
   std::unique_ptr<syncai_util::NodeThread> load_map_thread_;
 
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raw_plan_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr map_available_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 
   // The overlay's input: the cloud through a TF message filter to the map
