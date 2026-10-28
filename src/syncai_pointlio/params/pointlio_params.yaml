@@ -28,6 +28,18 @@
     body_frame: "pointlio_body"
     print_time_cost: false
 
+    # Scan backlog guard (2026-10-28; NodeConfig in pointlio_node.hpp has the
+    # whole argument). When the buffered scans span more than
+    # max_lidar_backlog seconds, the oldest are skipped -- at most
+    # max_lidar_skip in a row, their IMU samples still fused -- so a CPU that
+    # cannot keep up costs scans instead of an odometry that falls further
+    # behind for good (robot01 2026-10-28: over 5 minutes behind, at 0.65x real
+    # time). 0.3 s is three scans of slack before anything is skipped; at 2 the
+    # node catches up while it runs faster than 1/3 of real time. A float, see
+    # cube_len below; <= 0.0 processes every scan however late.
+    max_lidar_backlog: 0.3
+    max_lidar_skip: 2
+
     # 0: livox CustomMsg (per-point time -> full point-by-point update),
     # 1: sensor_msgs/PointCloud2 (no per-point time -> one batch update per scan)
     lidar_type: 0

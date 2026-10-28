@@ -15,6 +15,8 @@ namespace
 {
 // See imuCB.
 constexpr double kImuGapWarnSec = 0.030;
+// See reportBacklog: one line per window, not one per skipped scan.
+constexpr double kBacklogReportSec = 5.0;
 }  // namespace
 
 PointLIONode::PointLIONode() : Node("pointlio_node")
@@ -125,6 +127,11 @@ void PointLIONode::loadParameters()
   m_node_config.lidar_type = this->declare_parameter("lidar_type", m_node_config.lidar_type);
   m_node_config.imu_acc_scale =
     this->declare_parameter("imu_acc_scale", m_node_config.imu_acc_scale);
+  // The backlog guard; NodeConfig has the argument.
+  m_node_config.max_lidar_backlog =
+    this->declare_parameter("max_lidar_backlog", m_node_config.max_lidar_backlog);
+  m_node_config.max_lidar_skip =
+    this->declare_parameter("max_lidar_skip", m_node_config.max_lidar_skip);
 
   // config for map builder
   m_builder_config.lidar_filter_num =
@@ -298,6 +305,27 @@ bool PointLIONode::syncPackage()
   // A lidar frame is not processed as soon as it arrives; it has to wait until the IMU data
   // has caught up to the end-of-scan time.
   if (!m_state_data.lidar_pushed) {
+    // The backlog guard (NodeConfig::max_lidar_backlog): drop the oldest scans
+    // while the buffer spans too much, at most max_lidar_skip of them before
+    // the next one is processed. Only lidar_buffer is touched -- the skipped
+    // scans' IMU samples are drained into this package below, so the filter
+    // runs through the gap on the IMU. Measured on the lidar's own stamps,
+    // never against the wall clock, which the sensor's need not share.
+    if (m_node_config.max_lidar_backlog > 0.0) {
+      auto span = [this]() {
+        return m_state_data.lidar_buffer.back().first - m_state_data.lidar_buffer.front().first;
+      };
+      m_backlog_max_seen = std::max(m_backlog_max_seen, span());
+      int skipped = 0;
+      while (skipped < m_node_config.max_lidar_skip && m_state_data.lidar_buffer.size() > 1 &&
+             span() > m_node_config.max_lidar_backlog) {
+        m_state_data.lidar_buffer.pop_front();
+        m_state_data.lidar_dense_buffer.pop_front();
+        ++skipped;
+      }
+      m_backlog_skipped += skipped;
+    }
+
     m_package.cloud = m_state_data.lidar_buffer.front().second;
     m_package.dense_cloud = m_state_data.lidar_dense_buffer.front();
 
@@ -435,7 +463,11 @@ void PointLIONode::broadCastTF(
 
 void PointLIONode::timerCB()
 {
-  if (!syncPackage()) return;
+  const bool synced = syncPackage();
+  // Every tick, not only the ones that process a scan: the all-clear has to
+  // go out while the node is idle between scans too.
+  reportBacklog();
+  if (!synced) return;
 
   auto t1 = std::chrono::steady_clock::now();
   m_builder->process(m_package);
@@ -453,6 +485,35 @@ void PointLIONode::timerCB()
       this->get_logger(), "Time cost: process %.2f ms, total %.2f ms", ms(t2 - t1).count(),
       ms(t3 - t1).count());
   }
+}
+
+void PointLIONode::reportBacklog()
+{
+  const auto now = std::chrono::steady_clock::now();
+  const double window = std::chrono::duration<double>(now - m_last_backlog_report).count();
+  if (window < kBacklogReportSec) return;
+  // The odometry is late by at least the backlog, and nothing downstream can
+  // see that (every stamp is the scan's own), so this line is the only place
+  // it shows.
+  if (m_backlog_skipped > 0) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[PointLIONode][%s] lidar backlog up to %.2f s (max_lidar_backlog %.2f s): skipped %d "
+      "scans in the last %.0f s, the IMU fused across each gap. Point-LIO is not keeping up with "
+      "the lidar -- is the CPU saturated?",
+      __func__, m_backlog_max_seen, m_node_config.max_lidar_backlog, m_backlog_skipped, window);
+    m_backlog_warned = true;
+  } else if (m_backlog_warned) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[PointLIONode][%s] lidar backlog back under max_lidar_backlog: no scan skipped in the "
+      "last %.0f s",
+      __func__, window);
+    m_backlog_warned = false;
+  }
+  m_backlog_skipped = 0;
+  m_backlog_max_seen = 0.0;
+  m_last_backlog_report = now;
 }
 
 void PointLIONode::publishResults()

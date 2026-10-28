@@ -172,6 +172,25 @@ struct NodeConfig
   // (handOverAndAwait), this timeout does not touch them. <= 0 keeps the old
   // behaviour.
   double guess_timeout_sec = 10.0;
+  // Back-off while lost (2026-10-28). A round whose align() does not converge
+  // leaves last_reg_time where it was, so the motion gate never holds a lost
+  // robot back: the timer retries at update_hz for as long as it stays lost,
+  // and every one of those rounds runs the rough stage to its iteration cap.
+  // On robot01 on 2026-10-28 that was ~1.2 cores for 750+ rounds on a CPU
+  // already ~90 % busy, and Point-LIO, which began falling behind ~30 s after
+  // the localizer lost track, never caught up (syncai_pointlio's
+  // max_lidar_backlog has that half). After lost_backoff_after_rounds
+  // consecutive rounds that did not converge, a round with no guess pending
+  // and outside a settle window runs at most every lost_backoff_interval
+  // seconds, until one converges. A pending guess (relocalize, initialpose,
+  // the INI, auto_localize, reset_odometry) and its settle window always run
+  // at update_hz: those are the ways out, and auto_localize / reset_odometry
+  // have deadlines. 25 rounds is 5 s at 5 Hz, well past the longest
+  // non-converged streak of a robot that was tracking (10 rounds on the dp1f
+  // replay, and that with the old rough eps -- see the README's "Gotchas").
+  // An interval <= 0 disables it.
+  int lost_backoff_after_rounds = 25;
+  double lost_backoff_interval = 1.0;
   // Per-direction use of a registration result: GICP's correction is taken
   // only along the directions its Hessian says the scan constrained, the rest
   // stays with odometry. localizers/localizability.h has the whole argument;
@@ -296,6 +315,11 @@ struct NodeState
   bool guess_seen_valid = false;
   M4F guess_seen = M4F::Identity();
   rclcpp::Time guess_seen_since{0, 0, RCL_SYSTEM_TIME};
+  // lost_backoff bookkeeping (timer thread only): consecutive rounds whose
+  // align() did not converge, and when the last of them ran. A converged
+  // align() clears the streak, whatever the gates after it decide.
+  int not_converged_streak = 0;
+  rclcpp::Time last_not_converged_time{0, 0, RCL_SYSTEM_TIME};
   // service_mutex. True while the pending guess belongs to auto_localize /
   // reset_odometry, which withdraw it on their own deadline
   // (handOverAndAwait); the timer's guess_timeout_sec leaves such a guess

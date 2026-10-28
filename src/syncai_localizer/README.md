@@ -416,6 +416,28 @@ offset + odometry; `relocalize_check` keeps answering `false` for it, as
 before. `auto_localize` and `reset_odometry` own their guesses and keep their
 own deadlines, unchanged. `<= 0` restores the old behaviour.
 
+### Back-off while lost
+
+A round that does not converge leaves the motion gate's reference where it
+was, so a lost robot is never gated: until 2026-10-28 the timer retried at
+`update_hz` for as long as it stayed lost, every round running the rough stage
+to its iteration cap. On robot01 that day it lost track at 19:17 and spent ~1.2
+cores on 750+ such rounds, on a CPU already ~90 % busy; Point-LIO began falling
+behind ~30 s later and never caught up (`syncai_pointlio`'s "Falling behind"
+has that half).
+
+Since then, after `lost_backoff.after_rounds` (25, i.e. 5 s at 5 Hz)
+consecutive rounds that did not converge, a round with **no guess pending and
+outside a settle window** runs at most every `lost_backoff.interval` (1 s)
+until one converges. A guess from `relocalize`, `initialpose`, the INI,
+`auto_localize` or `reset_odometry`, and the settle window after it, always
+run at `update_hz`: those are the ways out, and the last two have deadlines.
+The cost is re-acquisition: when the scan starts matching again on its own,
+the first converged round comes up to one interval later. The streak counts
+`align()` failures only — a round that converged but was dropped by the inlier
+gate, the localizability check or the jump gate clears it. `interval <= 0`
+restores the old behaviour.
+
 ## Parameters
 
 `params/localizer_params.yaml`, keyed `/**/localizer_node:` so it applies at
@@ -441,6 +463,7 @@ throwing. The launch layers the instance values on top.
 | `track_accum_scans` | `3` | | Body clouds composed into the tracking round's source (above); `1` = single scan, the pre-2026-10 path |
 | `min_inlier_ratio` | `0.0` (off) | | Refine inlier-ratio gate; the ratio is logged every round, set it from off-site data |
 | `guess_timeout_sec` | `10.0` s | | Withdraw an un-owned guess the timer cannot converge on; `<= 0` retries forever |
+| `lost_backoff.{after_rounds, interval}` | `25`, `1.0` s | | Back-off while lost (above): after that many non-converged rounds in a row, retry every `interval` while no guess is pending; `interval <= 0` disables it |
 | `localizability.{enabled, ratio_none, ratio_partial, min_eig_per_inlier, partial_gain}` | `true`, `0.02`, `0.1`, `0.0`, `0.3` | | Per-direction projection of the correction (above). The thresholds are **first guesses**, to be set from the `loc:` log |
 | `jump_gate.{enabled, max_speed, max_rot_speed, max_reject_streak}` | `true`, `1.5` m/s, `1.5` rad/s, `5` | | Against the last accepted body pose (above); the streak cap is what keeps it from freezing the TF |
 | `num_threads` | `4` | | GICP covariance / KD-tree / reduction threads. Read **once**: `RegistrationPCL` builds the tree at `setInputTarget`. Shares the CPU with pointlio |
@@ -557,6 +580,8 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `round degenerate: no translation direction constrained` | All three translation directions NONE; odometry only this round |
 | `jump rejected (n/5): body moved … m / … deg in … s` | The jump gate dropped the round; `accepting a … jump after 5 rejected rounds` is the streak cap letting the next one through |
 | `guess withdrawn: no converged registration within 10.0 s` | `guess_timeout_sec`; back to the previous offset + odometry, `relocalize_check` stays `false` |
+| `25 rounds in a row did not converge: registering every 1.0 s instead of at 5.0 Hz …` | Lost; `lost_backoff` is on until a round converges or a guess arrives. Relocalize, or `auto_localize` if the robot was moved |
+| `a round converged again after N that did not; back to 5.0 Hz (lost_backoff off)` | Tracking again |
 | `loc stats (since start): run=… accepted=… not_converged=… degenerate=… jump_rejected=… projected=…` | Once a minute, the round counters — a replay's acceptance rate without counting lines |
 | `coarse: N candidates … best 0.xx, K kept for GICP` | `auto_localize` coarse stage; one `fine: …` line per kept candidate follows |
 | `search failed …: ambiguous, a distinct pose scores alike` | Symmetric surroundings; move the robot somewhere more distinctive and retry |
@@ -773,6 +798,13 @@ replay-A runs on the same `syncai_pointlio` build.
   would then register the new scan with the previous scan's covariances.
 - **`num_threads` is read once, at construction.** Changing it at runtime does
   not rebuild the KD-tree.
+- **The nav session runs it at `nice -n 10`** (`config/sessions/start_nav.yaml`,
+  2026-10-28), so on a saturated CPU the localizer yields to `syncai_pointlio`
+  rather than the other way round — on robot01 on 2026-10-28 a lost localizer
+  at 5 Hz was what tipped pointlio into falling minutes behind. It changes
+  nothing while the CPU has headroom. Started by hand (`ros2 launch` in a
+  shell), it runs at the shell's niceness, so a CPU benchmark of the node
+  outside the session is not what the robot sees under load.
 - **Three-thread `MultiThreadedExecutor`, and it is load-bearing.** The timer +
   subscriptions sit on the default group; `relocalize`, `relocalize_check`,
   `auto_localize`, `reset_odometry` and `initialpose` on their own

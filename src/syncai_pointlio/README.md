@@ -158,6 +158,31 @@ parameters / extrinsics stay as launched. The comments in
 `SyncAI-Robot-Interface` since the pgo port) are the specification; the client
 is `syncai_mapping`'s `pgo_node`.
 
+### Falling behind
+
+The timer takes one scan per 20 ms tick, and the sensor callbacks only buffer.
+A scan that costs more than the lidar's 100 ms therefore leaves the next one
+waiting, and until 2026-10-28 nothing bounded the wait: on robot01 that day,
+with the eight online cores ~90 % busy (Jetson in `MODE_30W`, the
+`robotdog-ai` inference workers beside the stack), the node ran at ~0.65× real
+time and its output fell **more than five minutes** behind the lidar, the
+buffers growing ~125 MB a minute. Nothing downstream can see that — every
+stamp is the scan's own — so the localizer, `lio_bridge` and the costmaps all
+worked on minutes-old data, and only a restart recovered it.
+
+The backlog guard (`max_lidar_backlog`, `max_lidar_skip`) turns that into
+a degradation: when the buffered scans span more than 0.3 s, the oldest are
+skipped before the next one is taken, at most two in a row. A skipped scan loses
+its points only; its IMU samples go into the next package, so the filter
+predicts and IMU-updates through the ~0.2 s gap, and it catches up whenever it
+runs faster than a third of real time. It never skips straight to the newest
+scan: seconds of IMU-only propagation on a walking robot put the next scan's
+points on the wrong planes, and a diverged solution is worse than a late one.
+Below a third of real time the backlog still grows, and the WARN it logs every
+5 s while it skips (see "Running") is the only sign of it — that is a CPU
+problem, not a tuning one. An offline replay that wants every scan processed
+however late sets `max_lidar_backlog: 0.0`.
+
 ## Parameters
 
 `params/pointlio_params.yaml`, keyed `/**/pointlio_node:` so it applies at any
@@ -172,6 +197,7 @@ The launch layers the two frame names on top.
 | `lidar_type` | `0` | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
 | `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is fixed at 9.81. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |
+| `max_lidar_backlog` / `max_lidar_skip` | `0.3` / `2` | | The backlog guard (see "Falling behind"): beyond `max_lidar_backlog` seconds of buffered scans the oldest are skipped, at most `max_lidar_skip` in a row, their IMU still fused. **Write a float** for the first. `<= 0.0` processes every scan however late |
 | `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
@@ -224,6 +250,8 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 | `PointCloud2 input has no per-point time` | `lidar_type: 1` — batch update per scan, expected on Isaac |
 | `[resetCB] LIO reset; re-initialising IMU (robot must be still).` | A `reset` landed (normally from `pgo/reset_mapping`) |
 | `t_il needs 3 elements` / `r_il needs 9 elements` | Malformed extrinsic in the params file; the default was kept |
+| `lidar backlog up to 0.45 s (max_lidar_backlog 0.30 s): skipped N scans in the last 5 s …` | The node is not keeping up with the lidar and the guard is skipping scans (every 5 s while it lasts). A backlog that keeps growing from one line to the next means it is below 1 / (`max_lidar_skip` + 1) of real time — look at the CPU |
+| `lidar backlog back under max_lidar_backlog` | No scan skipped for a whole window after a WARN above |
 
 ## Gotchas
 
