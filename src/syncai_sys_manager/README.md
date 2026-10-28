@@ -245,7 +245,7 @@ windows:
 ```
 
 `sleep` is where the startup ordering lives, since there is no lifecycle
-manager: map_server / LIO → lio_bridge → planner/controller → task_runner.
+manager: LIO / localizer → lio_bridge → planner/controller → task_runner.
 `log` names a directory under `log/stack/<robot_id>/` that a `pipe-pane |
 multilog t s16777215 n10 '!gzip'` tap writes into (`current` plus gzipped
 rotations, 16 MiB × 10). `enter: false` types the command without executing
