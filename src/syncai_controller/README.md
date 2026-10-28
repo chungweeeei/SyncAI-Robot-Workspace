@@ -86,10 +86,7 @@ plugins/
     smooth_control_law.cpp               Park & Kuipers' law, ported from nav2_graceful_controller
     (ego_polar_coords.hpp in include/)   its polar coordinates, header-only
   simple_progress_checker.cpp          ProgressChecker
-  pose_progress_checker.cpp            ProgressChecker (adds rotation)
   simple_goal_checker.cpp              GoalChecker
-  stopped_goal_checker.cpp             GoalChecker (adds "must be stopped")
-  position_goal_checker.cpp            GoalChecker (position only)
 plugins.xml                      pluginlib manifest, exported to syncai_nav_core
 params/controller_server_params.yaml       the only params file (the former 2D/sim and
                                            3D/real-robot variants were merged back into it)
@@ -740,7 +737,9 @@ The IDs are what a goal's `controller_id` field selects.
 | Plugin | Fails when |
 |---|---|
 | `SimpleProgressChecker` | The robot has not moved `required_movement_radius` metres within `movement_time_allowance` seconds |
-| `PoseProgressChecker` | Same, but rotating by `required_movement_angle` also counts as progress — useful when a long in-place rotation would otherwise trip the checker |
+
+`PoseProgressChecker` (rotation also counts as progress) was deleted on
+2026-10-28: ported, built, never loaded.
 
 **Goal checkers** (`syncai_nav_core::GoalChecker`, parameter
 `goal_checker_plugins` — a list; a `FollowPath` goal's `goal_checker_id` selects
@@ -749,8 +748,10 @@ one):
 | Plugin | Checks |
 |---|---|
 | `SimpleGoalChecker` | xy distance, then yaw. `stateful: true` latches the xy check once satisfied, so the final in-place rotation cannot fail it by drifting. `symmetric_yaw_tolerance` also accepts goal yaw + 180° for symmetric robots. |
-| `StoppedGoalChecker` | `SimpleGoalChecker` **and** speed below `trans_stopped_velocity` / `rot_stopped_velocity` |
-| `PositionGoalChecker` | Position only — orientation ignored entirely |
+
+`StoppedGoalChecker` (also requires the robot to have stopped) and
+`PositionGoalChecker` (position only) were deleted on 2026-10-28: ported,
+built, never loaded.
 
 Two `SimpleGoalChecker` instances are configured: `goal_checker` (0.15 m /
 0.1 rad, navigation) and `dock_goal_checker` (0.05 m / 0.1 rad, docking; the
@@ -786,7 +787,6 @@ Server-level (`/**/controller_server`):
 | `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
 | `lidar_height` | `0.481` | `body_frame`'s height above the feet — the planner's `Octo3D.lidar_height`; change both together |
 | `goal_z_tolerance` | `0.5` | Paths with heights: how far the ground under the robot may be from the end pose's height for the goal to count. Dynamically reconfigurable |
-| `speed_limit_topic` | `speed_limit` | `nav2_msgs/SpeedLimit`, forwarded to every controller's `setSpeedLimit()` (the docking controller raises a limit below its gait floor to the floor, with a warning) |
 | `default_dock_controller_id` | `Docking` | What a `DockToPose` goal's empty `controller_id` resolves to; must be in `controller_plugins`, or the server warns at startup and refuses such goals with `INVALID_PLUGIN` (FollowPath keeps working) |
 | `default_dock_goal_checker_id` | `dock_goal_checker` | Same for `goal_checker_id` |
 | `dock_approach_timeout` | `60.0` | Seconds a dock goal with `timeout <= 0` gets before `TIMEOUT`; dynamically reconfigurable |

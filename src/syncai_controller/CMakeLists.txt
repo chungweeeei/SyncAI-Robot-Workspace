@@ -53,10 +53,7 @@ set(executable_name controller_server)
 # Controller / progress checker / goal checker plugins
 add_library(${library_name}_plugins SHARED
   plugins/simple_progress_checker.cpp
-  plugins/pose_progress_checker.cpp
   plugins/simple_goal_checker.cpp
-  plugins/stopped_goal_checker.cpp
-  plugins/position_goal_checker.cpp
   plugins/regulated_pure_pursuit_controller_3d/regulated_pure_pursuit_controller_3d.cpp
   plugins/docking_controller/smooth_control_law.cpp
   plugins/docking_controller/docking_controller.cpp

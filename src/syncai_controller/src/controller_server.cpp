@@ -57,8 +57,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("min_y_velocity_threshold", rclcpp::ParameterValue(0.0001));
   declare_parameter("min_theta_velocity_threshold", rclcpp::ParameterValue(0.0001));
 
-  declare_parameter("speed_limit_topic", rclcpp::ParameterValue("speed_limit"));
-
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
   declare_parameter("goal_reached_max_remaining_path", rclcpp::ParameterValue(1.0));
@@ -86,7 +84,6 @@ ControllerServer::~ControllerServer()
   action_server_.reset();
   dock_action_server_.reset();
   dyn_params_handler_.reset();
-  speed_limit_sub_.reset();
   odom_sub_.reset();
   // Plugin maps must be cleared before their class loaders (members declared
   // earlier in the header) are destroyed
@@ -141,8 +138,6 @@ void ControllerServer::configure()
   get_parameter("min_theta_velocity_threshold", min_theta_velocity_threshold_);
   RCLCPP_INFO(get_logger(), "Controller frequency set to %.4fHz", controller_frequency_);
 
-  std::string speed_limit_topic;
-  get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("publish_zero_velocity", publish_zero_velocity_);
   get_parameter("goal_reached_max_remaining_path", goal_reached_max_remaining_path_);
@@ -257,10 +252,9 @@ void ControllerServer::configure()
     shared_from_this(), "dock_to_pose", std::bind(&ControllerServer::dockControl, this), nullptr,
     std::chrono::milliseconds(500), true);
 
-  // Set subscribtion to the speed limiting topic
-  speed_limit_sub_ = create_subscription<nav2_msgs::msg::SpeedLimit>(
-    speed_limit_topic, rclcpp::QoS(10),
-    std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
+  // No speed_limit subscription (2026-10-28): nav2_msgs/SpeedLimit was
+  // upstream's speed-filter channel, nothing in the stack or the backend
+  // ever published it, and the costmap filters it came with are gone.
 
   // Activation phase (nav2 on_activate)
   costmap_ros_->activate();
@@ -1031,14 +1025,6 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
   }
   pose = current_pose;
   return true;
-}
-
-void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg)
-{
-  ControllerMap::iterator it;
-  for (it = controllers_.begin(); it != controllers_.end(); ++it) {
-    it->second->setSpeedLimit(msg->speed_limit, msg->percentage);
-  }
 }
 
 rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCallback(

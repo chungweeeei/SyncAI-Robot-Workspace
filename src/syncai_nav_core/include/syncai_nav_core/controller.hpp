@@ -86,14 +86,8 @@ public:
     const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
     syncai_nav_core::GoalChecker * goal_checker) = 0;
 
-  /**
-   * @brief Limits the maximum linear speed of the robot.
-   * @param speed_limit expressed in absolute value (in m/s)
-   * or in percentage from maximum robot speed.
-   * @param percentage Setting speed limit in percentage if true
-   * or in absolute values in false case.
-   */
-  virtual void setSpeedLimit(const double & speed_limit, const bool & percentage) = 0;
+  // No setSpeedLimit() (2026-10-28): it was nav2's speed-filter hook, fed by
+  // a speed_limit topic nothing ever published.
 };
 
 }  // namespace syncai_nav_core

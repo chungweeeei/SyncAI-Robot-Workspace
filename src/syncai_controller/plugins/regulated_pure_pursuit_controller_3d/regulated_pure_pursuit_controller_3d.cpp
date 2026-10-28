@@ -29,9 +29,6 @@ using rcl_interfaces::msg::ParameterType;
 namespace syncai_controller
 {
 
-// nav2_msgs/SpeedLimit's "no limit" (upstream's nav2_costmap_2d::NO_SPEED_LIMIT).
-constexpr double NO_SPEED_LIMIT = 0.0;
-
 void RegulatedPurePursuitController3D::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
   std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
@@ -52,7 +49,6 @@ void RegulatedPurePursuitController3D::initialize(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".desired_linear_vel", rclcpp::ParameterValue(0.5));
   node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
-  base_desired_linear_vel_ = desired_linear_vel_;
   RCLCPP_INFO(
     logger_, "[RegulatedPurePursuitController3D][%s] desired_linear_vel: %f", __func__,
     desired_linear_vel_);
@@ -1019,23 +1015,6 @@ void RegulatedPurePursuitController3D::reset()
   stair_corner_latched_ = false;
 }
 
-void RegulatedPurePursuitController3D::setSpeedLimit(
-  const double & speed_limit, const bool & percentage)
-{
-  if (speed_limit == NO_SPEED_LIMIT) {
-    // Restore default value
-    desired_linear_vel_ = base_desired_linear_vel_;
-  } else {
-    if (percentage) {
-      // Speed limit is expressed in % from maximum speed of robot
-      desired_linear_vel_ = base_desired_linear_vel_ * speed_limit / 100.0;
-    } else {
-      // Speed limit is expressed in absolute value
-      desired_linear_vel_ = speed_limit;
-    }
-  }
-}
-
 nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
   const geometry_msgs::msg::PoseStamped & pose)
 {
@@ -1212,7 +1191,6 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         inflation_cost_scaling_factor_ = parameter.as_double();
       } else if (name == plugin_name_ + ".desired_linear_vel") {
         desired_linear_vel_ = parameter.as_double();
-        base_desired_linear_vel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".lookahead_dist") {
         lookahead_dist_ = parameter.as_double();
       } else if (name == plugin_name_ + ".max_lookahead_dist") {

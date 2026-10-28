@@ -1215,11 +1215,6 @@ void MPPIController::setPlan(const nav_msgs::msg::Path & path)
   back_out_used_ = false;
 }
 
-void MPPIController::setSpeedLimit(const double & speed_limit, const bool & percentage)
-{
-  optimizer_.setSpeedLimit(speed_limit, percentage);
-}
-
 }  // namespace syncai_mppi_controller
 
 #include "pluginlib/class_list_macros.hpp"

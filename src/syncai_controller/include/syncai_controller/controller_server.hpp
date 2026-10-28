@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "nav2_msgs/action/follow_path.hpp"
-#include "nav2_msgs/msg/speed_limit.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -287,7 +286,6 @@ protected:
   // the console. The plugin publishes the plan but is never told the goal is
   // over, so every way out of dockControl() clears it here instead.
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr docking_plan_clear_pub_;
-  rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
 
   // Progress Checker Plugin
   pluginlib::ClassLoader<syncai_nav_core::ProgressChecker> progress_checker_loader_;
@@ -359,13 +357,6 @@ protected:
   rclcpp::Time dock_start_time_;
   geometry_msgs::msg::PoseStamped last_dock_robot_pose_;
   bool have_last_dock_robot_pose_{false};
-
-private:
-  /**
-    * @brief Callback for speed limiting messages
-    * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
-    */
-  void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
 };
 
 }  // namespace syncai_controller

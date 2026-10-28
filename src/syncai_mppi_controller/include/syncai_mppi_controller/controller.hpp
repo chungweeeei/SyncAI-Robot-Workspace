@@ -92,13 +92,6 @@ public:
     */
   void setPlan(const nav_msgs::msg::Path & path) override;
 
-  /**
-    * @brief Set new speed limit from callback
-    * @param speed_limit Speed limit to use
-    * @param percentage Bool if the speed limit is absolute or relative
-    */
-  void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
-
 protected:
   /**
     * @brief Visualize trajectories

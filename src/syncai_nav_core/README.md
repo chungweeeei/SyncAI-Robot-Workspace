@@ -23,8 +23,8 @@ depend on, so neither has to depend on the other.
 |---|---|---|
 | `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `OctomapPlanner3D` (id `Octo3D`) — the only one since 2026-10-28, when `NavfnPlanner`, `StraightLinePlanner` and `SmacPlanner2D` (id `GridBased`) went with 2D navigation |
 | `controller.hpp` | `Controller` | `syncai_mppi_controller`: `MPPIController` (id `FollowPath`); `syncai_controller`: `RegulatedPurePursuitController3D` (`FollowPathRPP3D`), `DockingController` (`Docking` / `Undocking`) |
-| `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker`, `StoppedGoalChecker`, `PositionGoalChecker` |
-| `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker`, `PoseProgressChecker` |
+| `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker` (`StoppedGoalChecker` and `PositionGoalChecker`, never loaded, were deleted 2026-10-28) |
+| `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker` (`PoseProgressChecker` likewise) |
 | `exceptions.hpp` | `PlannerException` | thrown by the controller path |
 
 **`GlobalPlanner`** — `initialize(node, name, tf, costmap_ros)` then
@@ -42,8 +42,10 @@ asking it. Only `GridBased` read the costmap, and the hook went with it; the
 global costmap has had no layers since.
 
 **`Controller`** — `initialize(node, name, tf, costmap_ros)`, `setPlan(path)`,
-`reset()`, `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`,
-and `setSpeedLimit(limit, percentage)`. The goal checker is passed **into** the
+`reset()` and `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`.
+`setSpeedLimit(limit, percentage)` was removed on 2026-10-28: it was nav2's
+speed-filter hook, fed by the controller server's `speed_limit` subscription,
+and nothing in the stack or the backend ever published `speed_limit`. The goal checker is passed **into** the
 controller so it can read the tolerances (RPP 3D uses the xy tolerance to decide
 when to switch into rotate-to-goal-heading) — the two plugins are coupled by
 design, through this interface rather than directly.

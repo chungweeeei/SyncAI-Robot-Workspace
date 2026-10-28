@@ -111,13 +111,6 @@ public:
    */
   void reset() override;
 
-  /**
-   * @brief Limit v_linear_max, absolute or in percent; NO_SPEED_LIMIT (0.0)
-   * restores the configured value. A limit below v_linear_min is raised to
-   * it with a warning, because a command below the gait floor is a stall.
-   */
-  void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
-
 protected:
   /**
    * @brief The body of computeVelocityCommands(), run with mutex_ held by the
@@ -190,7 +183,7 @@ protected:
   double beta_;
   double lambda_;
   double v_linear_min_;
-  double v_linear_max_, base_v_linear_max_;
+  double v_linear_max_;
   double v_angular_max_;
   double v_angular_min_;
   double slowdown_radius_;
@@ -257,8 +250,8 @@ protected:
   rclcpp::Time last_docking_plan_time_;
   bool have_last_docking_plan_{false};
 
-  // Serialises computeVelocityCommands() / setSpeedLimit() against the
-  // dynamic-parameter callback, which runs on the node's executor thread.
+  // Serialises computeVelocityCommands() against the dynamic-parameter
+  // callback, which runs on the node's executor thread.
   std::mutex mutex_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 };

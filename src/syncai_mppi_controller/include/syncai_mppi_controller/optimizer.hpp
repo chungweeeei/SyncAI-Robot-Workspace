@@ -108,13 +108,6 @@ public:
   xt::xtensor<float, 2> getOptimizedTrajectory();
 
   /**
-   * @brief Set the maximum speed based on the speed limits callback
-   * @param speed_limit Limit of the speed for use
-   * @param percentage Whether the speed limit is absolute or relative
-   */
-  void setSpeedLimit(double speed_limit, bool percentage);
-
-  /**
    * @brief Reset the optimization problem to initial conditions
    */
   void reset();
