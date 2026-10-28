@@ -230,7 +230,8 @@ TEST(TerrainGrid, ObstacleForgetsAfterObstacleMemoryAndGroundRemembersLonger)
   // The floor was seen 6 s ago (inside ground_memory 10 s); a person stood
   // at x = 1 until 3 s ago (outside obstacle_memory 2 s).
   Scene old;
-  old.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  old.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   for (double z = 0.1; z < 0.9; z += 0.03) {
     old.grid.addSample(1.0, 0.0, z, kNow - 3.0);
   }
@@ -239,7 +240,8 @@ TEST(TerrainGrid, ObstacleForgetsAfterObstacleMemoryAndGroundRemembersLonger)
   EXPECT_GT(old.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
   // 12 s ago: the floor is forgotten too.
   Scene gone;
-  gone.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 12.0);
+  gone.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 12.0);
   gone.classify();
   EXPECT_GT(gone.share(-1.9, 1.9, -1.9, 1.9, NO_INFORMATION), 0.98);
 }
@@ -271,7 +273,8 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
   auto underside = [](double x, double) { return 1.0 + 0.4 * (x + 1.0) / 2.9; };
   {
     Scene s;
-    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
     s.surface(-1.0, -kOrigin, kOrigin, -kOrigin, underside, 40, 0.5);
     auto st = s.classify();
     EXPECT_EQ(st.lethal_island + st.lethal_step + st.lethal_slope + st.lethal_obstacle, 0u);
@@ -281,7 +284,8 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
     EXPECT_NEAR(s.grid.lastGround()[s.grid.index(ix, iy)], 0.0, 0.05);
 
     // Under it, a box is still a box.
-    s.surface(0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
+    s.surface(
+      0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
     s.wall(0.8, -0.2, 0.2, 0.0, 0.30, 0.5);
     st = s.classify();
     EXPECT_GT(s.share(0.8, 1.2, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
@@ -293,7 +297,8 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
     // the floor's, not lifted by max_ground_lift.
     Scene s;
     s.surface(-1.0, -kOrigin, kOrigin, -kOrigin, underside, 40, 3.0);
-    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 1.0);
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 1.0);
     s.classify();
     EXPECT_GT(s.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
     int ix, iy;
@@ -304,8 +309,10 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
     // An underside lower than body_clearance -- a stair's foot, 0.5 m up --
     // is not overhead: the robot does not fit under it.
     Scene s;
-    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
-    s.surface(1.0, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.5; }, 40, 0.5);
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
+    s.surface(
+      1.0, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.5; }, 40, 0.5);
     s.classify();
     EXPECT_GT(s.share(1.05, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
     EXPECT_GT(s.share(-1.9, 0.5, -1.9, 1.9, FREE_SPACE), 0.98);
@@ -320,7 +327,8 @@ TEST(TerrainGrid, OverheadWithNoFloorSeenUnderItIsStillASurface)
   // own floor beside it stays free.
   Scene s;
   s.floor(kOrigin, -1.0, kOrigin, -kOrigin);
-  s.surface(-0.5, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 1.2; }, 40, 0.5);
+  s.surface(
+    -0.5, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 1.2; }, 40, 0.5);
   const auto st = s.classify(0.0, -1.5, 0.0);
   EXPECT_GT(st.lethal_island, 0u);
   EXPECT_GT(s.share(-0.4, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.98);
@@ -458,7 +466,8 @@ TEST(TerrainGrid, RayClearingForgetsAPersonWhoWalkedOnAtTheNextScan)
   // The floor seen 6 s ago; the person stood here half a second ago, well
   // inside obstacle_memory.
   Scene s;
-  s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  s.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   legs(s, 0.5);
   s.classify();
   EXPECT_EQ(s.at(kLegX, kLegY), LETHAL_OBSTACLE);
@@ -484,7 +493,8 @@ TEST(TerrainGrid, RayClearingForgetsAPersonWhoWalkedOnAtTheNextScan)
   // Clearing off (tolerance 0): the memory alone, as before.
   Scene off;
   off.grid.params.ray_clear_tolerance = 0.0;
-  off.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  off.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   legs(off, 0.5);
   seeThroughLegs(off);
   off.classify();
@@ -520,7 +530,8 @@ TEST(TerrainGrid, RayClearingSparesTheSurfacesARayPassesOver)
   // none of them is evidence against it.
   {
     Scene s;
-    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+    s.surface(
+      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
     s.classify();
     for (double ye = -1.9; ye < 1.9; ye += 0.05) {
       for (double xe = 0.5; xe < 1.95; xe += 0.05) {
@@ -576,7 +587,8 @@ TEST(TerrainGrid, RayClearingSparesTheSurfacesARayPassesOver)
     // the top is its ground, passed over, kept; the box stays lethal.
     Scene s;
     s.floor();
-    s.surface(0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
+    s.surface(
+      0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
     s.classify();
     EXPECT_EQ(s.at(1.0, 0.0), LETHAL_OBSTACLE);
     for (double ye = -0.2; ye < 0.2; ye += 0.025) {
@@ -596,7 +608,8 @@ TEST(TerrainGrid, RayClearingStopsShortOfTheRaysEnd)
   // through where they stood end inside the margin, and clear nothing --
   // obstacle_memory is what forgets them.
   Scene s;
-  s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  s.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   legs(s, 0.5);
   for (double ze = 0.0; ze < 1.4; ze += 0.02) {
     ray(s, 1.325, kLegY * 1.325 / kLegX, ze);
@@ -675,17 +688,20 @@ TEST(TerrainGrid, SparseCellsAreNeverJudgedOnABoxTopOrAStairTread)
   };
   // A 0.25 m box on floor never seen, its top sparse.
   const auto box = [](Scene & s) {
-    sparse(s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
+    sparse(
+      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
   };
   // The same box on a seen floor.
   const auto box_on_floor = [](Scene & s) {
     s.floor();
-    sparse(s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
+    sparse(
+      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
   };
   // A flight seen from its foot, its first treads sparse, with and without
   // the stair link's path climbing it.
   const auto flight = [](Scene & s) {
-    sparse(s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
+    sparse(
+      s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
     s.surface(0.56, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); });
   };
   const auto flight_with_path = [&](Scene & s) {
