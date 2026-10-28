@@ -9,7 +9,8 @@
 // Ported into the workspace from SyncAI-Fast-LIO2's `pointlio` package in
 // 2026-09 with the ROS surface unchanged: node name `pointlio_node`, namespace
 // /<robot_id>/pointlio (set by the launch), topics lio_odom / body_cloud /
-// world_cloud / lio_path, service `reset`, TF world_frame -> body_frame. The
+// world_cloud (lio_path, an accumulated trajectory nothing subscribed to, was
+// dropped on 2026-10-28), service `reset`, TF world_frame -> body_frame. The
 // only rename is the service *type*, which moved from that repo's `interface`
 // package to syncai_common when server and client stopped sharing a repo.
 
@@ -17,7 +18,6 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <nav_msgs/msg/path.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -82,8 +82,6 @@ struct StateData
   // The dense cloud of each lidar_buffer entry, same index; pushed, popped and
   // cleared together with it.
   std::deque<pcl::PointCloud<pcl::PointXYZINormal>::Ptr> lidar_dense_buffer;
-
-  nav_msgs::msg::Path path;
 };
 
 class PointLIONode : public rclcpp::Node
@@ -117,9 +115,6 @@ public:
   void publishOdometry(
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub, std::string frame_id,
     std::string child_frame, const double & time);
-  void publishPath(
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub, std::string frame_id,
-    const double & time);
   void broadCastTF(
     std::shared_ptr<tf2_ros::TransformBroadcaster> broad_caster, std::string frame_id,
     std::string child_frame, const double & time);
@@ -127,7 +122,7 @@ public:
   // 20 ms wall timer: sync, process, publish.
   void timerCB();
   // The publish half of timerCB, once the builder is MAPPING: TF, odometry,
-  // the deskewed clouds and the path, all for m_package.
+  // the deskewed clouds, all for m_package.
   void publishResults();
 
   // The `reset` service: throw the whole solution away and start over, in
@@ -145,7 +140,6 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_body_cloud_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_world_cloud_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_body_cloud_dense_pub;
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr m_path_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr m_odom_pub;
 
   // The lidar / IMU subscriptions only; timer and reset stay in the default

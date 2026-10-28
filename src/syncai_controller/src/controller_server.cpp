@@ -660,8 +660,8 @@ void ControllerServer::dockControl()
         // (2026-10-15): the robot01 dock at 14:26 that day was cancelled after
         // 40 s with nothing logged between acceptance and the cancel, so how
         // close it got, and whether it was still moving, was lost -- the
-        // feedback reaches only the BT node, and Point-LIO's lio_path keeps no
-        // history while nobody subscribes. The robot pose (odom, the frame
+        // feedback reaches only the BT node, and Point-LIO publishes no
+        // trajectory. The robot pose (odom, the frame
         // the dock is tracked in) is logged rather than the odom twist: the
         // raw twist carries the gait's +/-0.2-0.5 m/s sway, so one sample
         // cannot tell 0.05 m/s from standing, while the pose difference

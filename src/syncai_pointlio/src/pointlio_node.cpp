@@ -78,15 +78,10 @@ PointLIONode::PointLIONode() : Node("pointlio_node")
   // subscriber should lose old scans rather than queue minutes of them.
   m_body_cloud_dense_pub =
     this->create_publisher<sensor_msgs::msg::PointCloud2>("body_cloud_dense", 10);
-  m_path_pub = this->create_publisher<nav_msgs::msg::Path>("lio_path", 10000);
   m_odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("lio_odom", 10000);
 
   // register transform broadcaster
   m_tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
-
-  // clear state data
-  m_state_data.path.poses.clear();
-  m_state_data.path.header.frame_id = m_node_config.world_frame;
 
   // initialize EKF & Map builder
   m_kf = std::make_shared<PointEKF>();
@@ -414,26 +409,6 @@ void PointLIONode::publishOdometry(
   odom_pub->publish(odom);
 }
 
-void PointLIONode::publishPath(
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub, std::string frame_id,
-  const double & time)
-{
-  if (path_pub->get_subscription_count() <= 0) return;
-  geometry_msgs::msg::PoseStamped pose;
-  pose.header.frame_id = frame_id;
-  pose.header.stamp = Utils::getTime(time);
-  pose.pose.position.x = m_kf->x().t_wi.x();
-  pose.pose.position.y = m_kf->x().t_wi.y();
-  pose.pose.position.z = m_kf->x().t_wi.z();
-  Eigen::Quaterniond q(m_kf->x().r_wi);
-  pose.pose.orientation.x = q.x();
-  pose.pose.orientation.y = q.y();
-  pose.pose.orientation.z = q.z();
-  pose.pose.orientation.w = q.w();
-  m_state_data.path.poses.push_back(pose);
-  path_pub->publish(m_state_data.path);
-}
-
 void PointLIONode::broadCastTF(
   std::shared_ptr<tf2_ros::TransformBroadcaster> broad_caster, std::string frame_id,
   std::string child_frame, const double & time)
@@ -522,9 +497,6 @@ void PointLIONode::publishResults()
     publishCompactCloud(
       m_body_cloud_dense_pub, *dense, m_node_config.body_frame, m_package.cloud_end_time);
   }
-
-  // odom path
-  publishPath(m_path_pub, m_node_config.world_frame, m_package.cloud_end_time);
 }
 
 // Throw the whole solution away and start over, in place.
@@ -585,12 +557,6 @@ void PointLIONode::resetCB(
   m_package.dense_cloud.reset();
   m_package.cloud_start_time = 0.0;
   m_package.cloud_end_time = 0.0;
-
-  // Published unconditionally, unlike publishPath's subscriber-gated send: an
-  // empty Path is what makes rviz drop the old trajectory instead of drawing
-  // the new run appended to the end of the old one.
-  m_state_data.path.poses.clear();
-  m_path_pub->publish(m_state_data.path);
 
   // The reset proper. Same two lines as the constructor: MapBuilder's ctor
   // re-runs setConfig on the EKF (which re-identities its covariance), builds
