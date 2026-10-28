@@ -237,6 +237,12 @@ void LocalizerNode::loadParameters()
     declare_parameter<double>("min_inlier_ratio", m_config.min_inlier_ratio);
   m_config.guess_timeout_sec =
     declare_parameter<double>("guess_timeout_sec", m_config.guess_timeout_sec);
+  // Back-off while lost; NodeConfig has the argument.
+  m_config.lost_backoff_after_rounds = std::max(
+    1, static_cast<int>(declare_parameter<int>(
+         "lost_backoff.after_rounds", m_config.lost_backoff_after_rounds)));
+  m_config.lost_backoff_interval =
+    declare_parameter<double>("lost_backoff.interval", m_config.lost_backoff_interval);
 
   // Localizability projection (localizers/localizability.h) and the jump gate;
   // NodeConfig has the rationale, the YAML the tuning state.
@@ -520,6 +526,19 @@ void LocalizerNode::timerCB()
   }
   const bool settling = now < m_state.settle_until;
 
+  // lost_backoff (NodeConfig): a lost robot with no guess to try registers
+  // every lost_backoff_interval instead of at update_hz. Skipped like a
+  // motion-gated tick -- the previous offset rebroadcast, no GICP -- and
+  // last_send_tf_time has already moved on, so the next try is still paced
+  // by update_hz underneath.
+  if (
+    !service_pending && !settling && m_config.lost_backoff_interval > 0.0 &&
+    m_state.not_converged_streak >= m_config.lost_backoff_after_rounds &&
+    (now - m_state.last_not_converged_time).seconds() < m_config.lost_backoff_interval) {
+    sendBroadCastTF(current_time);
+    return;
+  }
+
   double alpha = 1.0;
   if (!service_pending && !settling) {
     const double moved_trans = (current_local_t - m_state.last_reg_t).norm();
@@ -566,11 +585,35 @@ void LocalizerNode::timerCB()
   AlignInfo info;
   const bool result = m_localizer->align(initial_guess, info);
   ++m_state.rounds_run;
+  const bool backing_off = m_config.lost_backoff_interval > 0.0 &&
+                           m_state.not_converged_streak >= m_config.lost_backoff_after_rounds;
   if (!result) {
     ++m_state.rounds_not_converged;
+    ++m_state.not_converged_streak;
+    m_state.last_not_converged_time = now;
+    // Once per streak, on the round that crosses the threshold. It may land
+    // while a guess is still being tried at full rate; the back-off applies
+    // from the round after that guess is gone.
+    if (
+      m_config.lost_backoff_interval > 0.0 &&
+      m_state.not_converged_streak == m_config.lost_backoff_after_rounds) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "%d rounds in a row did not converge: registering every %.1f s instead of at %.1f Hz "
+        "until one does (lost_backoff); a relocalize / initialpose / auto_localize / "
+        "reset_odometry guess still runs at full rate",
+        m_state.not_converged_streak, m_config.lost_backoff_interval, m_config.update_hz);
+    }
     finish();
     return;
   }
+  if (backing_off) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "a round converged again after %d that did not; back to %.1f Hz (lost_backoff off)",
+      m_state.not_converged_streak, m_config.update_hz);
+  }
+  m_state.not_converged_streak = 0;
 
   M3D map_body_r = initial_guess.block<3, 3>(0, 0).cast<double>();
   V3D map_body_t = initial_guess.block<3, 1>(0, 3).cast<double>();

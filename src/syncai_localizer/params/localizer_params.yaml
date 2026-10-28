@@ -178,6 +178,20 @@
     # within the settle window.
     guess_timeout_sec: 10.0
 
+    # Back-off while lost (2026-10-28; NodeConfig has the whole argument).
+    # After after_rounds consecutive rounds that did not converge, a round with
+    # no guess pending runs at most every `interval` seconds instead of at
+    # update_hz, until one converges. Lost at 5 Hz, every round runs the rough
+    # stage to its iteration cap: ~1.2 cores on robot01 on 2026-10-28, on a CPU
+    # already ~90 % busy, and Point-LIO fell behind ~30 s later and never
+    # caught up. A relocalize / initialpose / auto_localize / reset_odometry
+    # guess and its settle window always run at full rate. 25 rounds is 5 s at
+    # 5 Hz, past any streak seen while tracking. Re-acquiring once the scan
+    # matches again costs at most `interval` more. interval <= 0.0 disables it.
+    lost_backoff:
+      after_rounds: 25
+      interval: 1.0
+
     # Localizability (2026-10; localizers/localizability.h has the whole
     # argument). GICP's final 6x6 Hessian says which directions the scan
     # constrained: its eigenvalues, per inlier and in the map frame, are
