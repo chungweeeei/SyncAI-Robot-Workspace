@@ -44,15 +44,6 @@ OctomapPlanner3D::~OctomapPlanner3D()
   }
 }
 
-void OctomapPlanner3D::publishMapAvailable(bool available)
-{
-  if (map_available_pub_) {
-    std_msgs::msg::Bool msg;
-    msg.data = available;
-    map_available_pub_->publish(msg);
-  }
-}
-
 std::string OctomapPlanner3D::fileBeside(const std::string & octomap_file, const char * name)
 {
   const auto slash = octomap_file.find_last_of('/');
@@ -61,7 +52,7 @@ std::string OctomapPlanner3D::fileBeside(const std::string & octomap_file, const
 
 void OctomapPlanner3D::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   node_ = node;
   tf_ = tf;
@@ -87,7 +78,6 @@ void OctomapPlanner3D::initialize(
   dp("interpolation_resolution", rclcpp::ParameterValue(interpolation_resolution_));
   dp("path_z_offset", rclcpp::ParameterValue(path_z_offset_));
   dp("shortcut", rclcpp::ParameterValue(shortcut_));
-  dp("publish_raw_plan", rclcpp::ParameterValue(publish_raw_plan_));
   // Surface map (build time).
   dp("robot_radius", rclcpp::ParameterValue(map_params_.robot_radius));
   dp("body_clearance", rclcpp::ParameterValue(map_params_.body_clearance));
@@ -161,7 +151,6 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".interpolation_resolution", interpolation_resolution_);
   node->get_parameter(name + ".path_z_offset", path_z_offset_);
   node->get_parameter(name + ".shortcut", shortcut_);
-  node->get_parameter(name + ".publish_raw_plan", publish_raw_plan_);
   node->get_parameter(name + ".robot_radius", map_params_.robot_radius);
   node->get_parameter(name + ".body_clearance", map_params_.body_clearance);
   node->get_parameter(name + ".max_step_height", map_params_.max_step_height);
@@ -238,9 +227,6 @@ void OctomapPlanner3D::initialize(
       __func__, goal_z_mode_.c_str());
     goal_z_mode_ = "request";
   }
-  if (publish_raw_plan_) {
-    raw_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>(name + "/raw_plan", 1);
-  }
   // The dynamic overlay (see the class comment and dynamic_overlay.hpp)
   // exists before anything that can reach it -- the parameter callback
   // (setParams), load_map (setMap) and the boot build -- and with no map,
@@ -256,7 +242,7 @@ void OctomapPlanner3D::initialize(
     map_params_.body_clearance, map_params_.max_step_height, map_params_.max_slope_deg,
     goal_z_mode_.c_str());
 
-  // Registered last, like SmacPlanner2D: nothing above should run under it.
+  // Registered last: nothing above should run under it.
   dyn_params_handler_ = node->add_on_set_parameters_callback(
     std::bind(&OctomapPlanner3D::dynamicParametersCallback, this, std::placeholders::_1));
 
@@ -282,10 +268,6 @@ void OctomapPlanner3D::initialize(
     rmw_qos_profile_services_default, load_map_group_);
   clear_plan_client_ =
     node->create_client<std_srvs::srv::Empty>("clear_plan", rmw_qos_profile_services_default);
-  // Latched: the task_runner reads the last value whenever it subscribes.
-  map_available_pub_ = node->create_publisher<std_msgs::msg::Bool>(
-    std::string(node->get_name()) + "/" + name_ + "/map_available",
-    rclcpp::QoS(1).reliable().transient_local());
   load_map_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   load_map_executor_->add_callback_group(load_map_group_, node->get_node_base_interface());
   load_map_thread_ = std::make_unique<syncai_util::NodeThread>(load_map_executor_);
@@ -297,7 +279,7 @@ void OctomapPlanner3D::initialize(
       &OctomapPlanner3D::clearOverlayCallback, this, std::placeholders::_1, std::placeholders::_2));
   if (dynamic_enabled_) {
     // On the global costmap's callback group, the one its executor thread
-    // spins for the /tf listener that fills tf_ (costmap_2d_ros.cpp), as the
+    // spins for the /tf listener that fills tf_ (costmap_ros.cpp), as the
     // costmap layers' own filters on that buffer are. From 2026-10-21 to
     // 2026-10-22 the subscription had a group and thread of its own, so the
     // filter ran on two threads: add() on this one (registering a
@@ -361,7 +343,6 @@ void OctomapPlanner3D::initialize(
       "every plan with planner_id %s will fail with map_not_loaded until %s/load_map gives one",
       __func__, name_.c_str(), name_.c_str());
     build_error_ = "no octomap_file was given";
-    publishMapAvailable(false);
     return;
   }
   // The build takes seconds on a site map (the tree alone is 200-300 MB to
@@ -369,7 +350,6 @@ void OctomapPlanner3D::initialize(
   // it the other planner ids' action servers. Plans arriving meanwhile fail
   // with map_loading.
   building_ = true;
-  publishMapAvailable(true);
   build_thread_ = std::thread(
     [this, octomap_file = octomap_file_, poses_file = poses_file_, keepout_file = keepout_file_]() {
       std::string error;
@@ -422,10 +402,11 @@ void OctomapPlanner3D::loadMapCallback(
   RCLCPP_INFO(
     logger_, "[OctomapPlanner3D][%s] load_map request for '%s'", __func__, octomap_file.c_str());
 
-  // An empty map_url unloads (2026-10-19): the switch to a 2D map. Without
-  // it the 3D map stayed loaded across that switch, map_available stayed
-  // true, and the task_runner kept running the 3D trees on the previous
-  // site's octree -- a route through the wrong building, not a failure.
+  // An empty map_url unloads (2026-10-19): the backend's switch to a 2D map.
+  // Without it the 3D map stayed loaded across that switch and goals kept
+  // planning on the previous site's octree -- a route through the wrong
+  // building, not a failure. With nothing to navigate a 2D map on since
+  // 2026-10-28, an unloaded planner fails every goal with map_not_loaded.
   // Waits for a boot build still running, as a load does.
   if (octomap_file.empty()) {
     if (build_thread_.joinable()) {
@@ -445,7 +426,6 @@ void OctomapPlanner3D::loadMapCallback(
       build_error_ = "no 3D map loaded (unloaded by load_map for a 2D map)";
       building_ = false;
     }
-    publishMapAvailable(false);
     if (auto node = node_.lock()) {
       updating_file_params_ = true;
       node->set_parameters(
@@ -507,7 +487,6 @@ void OctomapPlanner3D::loadMapCallback(
     build_error_.clear();
     building_ = true;
   }
-  publishMapAvailable(true);
 
   std::string error;
   const bool ok = buildMap(octomap_file, poses_file, keepout_file, error);
@@ -582,7 +561,6 @@ bool OctomapPlanner3D::buildMap(
       build_error_ = error;
       building_ = false;
     }
-    publishMapAvailable(false);
     return false;
   }
   const auto rej = [&](o3d::Reject r) { return stats.rejected[static_cast<size_t>(r)]; };
@@ -787,7 +765,7 @@ void OctomapPlanner3D::loadKeepoutCallback(
   }
   writeBack(file);
   // No clear_plan: the current route is judged against the new zones by the
-  // next is_path_valid (1 Hz), and move_3d.xml replans after blocked_time.
+  // next is_path_valid (1 Hz), and move.xml replans after blocked_time.
   response->result = LoadMap::Response::RESULT_SUCCESS;
 }
 
@@ -928,14 +906,6 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     }
   };
 
-  if (raw_plan_pub_) {
-    nav_msgs::msg::Path raw;
-    raw.header = path.header;
-    toPoses(
-      o3d::buildPath(*map_, links_.get(), r.cells, r.links, false, map_->res, nullptr, &blocked),
-      raw);
-    raw_plan_pub_->publish(raw);
-  }
   size_t vertices = 0;
   const auto wps = o3d::buildPath(
     *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &vertices,

@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "syncai_costmap_2d/cost_values.hpp"
+#include "syncai_costmap/cost_values.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
@@ -23,18 +23,15 @@ using syncai_util::declare_parameter_if_not_declared;
 using syncai_util::lookupGroundZ;
 using syncai_util::pathHasHeight;
 using syncai_util::geometry_utils::euclidean_distance;
-using namespace syncai_costmap_2d;  // NOLINT
+using namespace syncai_costmap;  // NOLINT
 using rcl_interfaces::msg::ParameterType;
 
 namespace syncai_controller
 {
 
-// nav2_costmap_2d::NO_SPEED_LIMIT from costmap_filters/filter_values.hpp.
-constexpr double NO_SPEED_LIMIT = 0.0;
-
 void RegulatedPurePursuitController3D::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros_->getCostmap();
@@ -52,7 +49,6 @@ void RegulatedPurePursuitController3D::initialize(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".desired_linear_vel", rclcpp::ParameterValue(0.5));
   node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
-  base_desired_linear_vel_ = desired_linear_vel_;
   RCLCPP_INFO(
     logger_, "[RegulatedPurePursuitController3D][%s] desired_linear_vel: %f", __func__,
     desired_linear_vel_);
@@ -253,7 +249,7 @@ void RegulatedPurePursuitController3D::initialize(
 
   // initialize collision checker and set costmap
   collision_checker_ =
-    std::make_unique<syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *>>(
+    std::make_unique<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *>>(
       costmap_);
   collision_checker_->setCostmap(costmap_);
 
@@ -327,8 +323,8 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed,
   syncai_nav_core::GoalChecker * goal_checker)
 {
-  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap::mutex_t> lock(*(costmap->getMutex()));
 
   // Update for the current goal checker's state
   geometry_msgs::msg::Pose pose_tolerance;
@@ -1019,23 +1015,6 @@ void RegulatedPurePursuitController3D::reset()
   stair_corner_latched_ = false;
 }
 
-void RegulatedPurePursuitController3D::setSpeedLimit(
-  const double & speed_limit, const bool & percentage)
-{
-  if (speed_limit == NO_SPEED_LIMIT) {
-    // Restore default value
-    desired_linear_vel_ = base_desired_linear_vel_;
-  } else {
-    if (percentage) {
-      // Speed limit is expressed in % from maximum speed of robot
-      desired_linear_vel_ = base_desired_linear_vel_ * speed_limit / 100.0;
-    } else {
-      // Speed limit is expressed in absolute value
-      desired_linear_vel_ = speed_limit;
-    }
-  }
-}
-
 nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
   const geometry_msgs::msg::PoseStamped & pose)
 {
@@ -1212,7 +1191,6 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         inflation_cost_scaling_factor_ = parameter.as_double();
       } else if (name == plugin_name_ + ".desired_linear_vel") {
         desired_linear_vel_ = parameter.as_double();
-        base_desired_linear_vel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".lookahead_dist") {
         lookahead_dist_ = parameter.as_double();
       } else if (name == plugin_name_ + ".max_lookahead_dist") {

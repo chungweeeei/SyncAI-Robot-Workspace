@@ -133,10 +133,9 @@ public:
 
     // Set basic values into the BT::Blackboard
     BT::Blackboard::Ptr blackboard = bt_action_server_->getBlackboard();
-    blackboard->set<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer", feedback_utils.tf);
-    blackboard->set<bool>("initial_pose_received", false);
+    // No tf_buffer / odom_smoother keys (nav2 seeds both for its nodes; none
+    // of ours reads them, 2026-10-28): the navigator uses both directly.
     blackboard->set<int>("number_recoveries", 0);
-    blackboard->set<std::shared_ptr<syncai_util::OdomSmoother>>("odom_smoother", odom_smoother);
     // The failure-attribution, plan-count and status keys the BT nodes write
     // (blackboard_keys.hpp): created here so a get<> before the first write
     // finds them, reset per goal by the subclass.

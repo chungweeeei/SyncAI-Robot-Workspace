@@ -12,7 +12,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pluginlib REQUIRED)
-find_package(syncai_costmap_2d REQUIRED)
+find_package(syncai_costmap REQUIRED)
 
 set(dependencies
   rclcpp
@@ -20,7 +20,7 @@ set(dependencies
   nav_msgs
   tf2_ros
   pluginlib
-  syncai_costmap_2d
+  syncai_costmap
 )
 
 # Header-only package: no library target, just install and export the headers.

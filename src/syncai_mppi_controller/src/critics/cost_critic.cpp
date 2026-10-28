@@ -73,8 +73,7 @@ void CostCritic::initialize()
     "footprint" : "circular");
 }
 
-float CostCritic::findCircumscribedCost(
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap)
+float CostCritic::findCircumscribedCost(std::shared_ptr<syncai_costmap::CostmapROS> costmap)
 {
   bool inflation_layer_found = false;
   double result = -1.0;
@@ -89,7 +88,7 @@ float CostCritic::findCircumscribedCost(
     layer != costmap->getLayeredCostmap()->getPlugins()->end();
     ++layer)
   {
-    auto inflation_layer = std::dynamic_pointer_cast<syncai_costmap_2d::InflationLayer>(*layer);
+    auto inflation_layer = std::dynamic_pointer_cast<syncai_costmap::InflationLayer>(*layer);
     if (!inflation_layer ||
       (!inflation_layer_name_.empty() &&
       inflation_layer->getName() != inflation_layer_name_))
@@ -161,7 +160,7 @@ void CostCritic::score(CriticData & data)
       // Let near-collision trajectory points be punished severely
       // Note that we collision check based on the footprint actual,
       // but score based on the center-point cost regardless
-      using namespace syncai_costmap_2d; // NOLINT
+      using namespace syncai_costmap;  // NOLINT
       if (pose_cost >= INSCRIBED_INFLATED_OBSTACLE) {
         repulsive_cost[i] += critical_cost_;
       } else if (!near_goal) {  // Generally prefer trajectories further from obstacles
@@ -199,7 +198,7 @@ bool CostCritic::inCollision(float cost, float x, float y, float theta)
   }
 
   switch (static_cast<unsigned char>(cost)) {
-    using namespace syncai_costmap_2d; // NOLINT
+    using namespace syncai_costmap;  // NOLINT
     case (LETHAL_OBSTACLE):
       return true;
     case (INSCRIBED_INFLATED_OBSTACLE):
@@ -213,10 +212,10 @@ bool CostCritic::inCollision(float cost, float x, float y, float theta)
 
 float CostCritic::costAtPose(float x, float y)
 {
-  using namespace syncai_costmap_2d;   // NOLINT
+  using namespace syncai_costmap;  // NOLINT
   unsigned int x_i, y_i;
   if (!collision_checker_.worldToMap(x, y, x_i, y_i)) {
-    return syncai_costmap_2d::NO_INFORMATION;
+    return syncai_costmap::NO_INFORMATION;
   }
 
   return collision_checker_.pointCost(x_i, y_i);

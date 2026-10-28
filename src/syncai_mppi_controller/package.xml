@@ -14,7 +14,7 @@
   <depend>nav_msgs</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
-  <depend>syncai_costmap_2d</depend>
+  <depend>syncai_costmap</depend>
   <depend>syncai_nav_core</depend>
   <depend>syncai_util</depend>
   <depend>tf2</depend>

@@ -76,10 +76,10 @@ class NodeManager:
     CALIBRATION the lidar-camera calibration session from calib_lidar_camera.yaml.
     Switching mode therefore means killing every known session and building the
     target one — there is no shared subset kept alive across the switch, because
-    the specs disagree about which nodes may run at all (map_server and the
-    localizer die without a finished map, so they cannot be up while one is
-    being built; the calibration session's livox driver publishes PointCloud2
-    on the topic pointlio reads as CustomMsg).
+    the specs disagree about which nodes may run at all (the localizer dies
+    without a finished map, so it cannot be up while one is being built; the
+    calibration session's livox driver publishes PointCloud2 on the topic
+    pointlio reads as CustomMsg).
 
     The current mode is never stored. It is derived on demand from which session
     byobu actually has, which keeps it correct across a sys_manager restart and
@@ -100,8 +100,8 @@ class NodeManager:
                 enter: <bool, default true>                # optional
 
     `sleep` is how the startup ordering is encoded — there is no lifecycle
-    manager in this stack, so map_server / LIO must be up before lio_bridge,
-    which must be up before planner / controller, and so on.
+    manager in this stack, so LIO must be up before lio_bridge, which must be
+    up before planner / controller, and so on.
     """
 
     def __init__(self, node: Node, conf_manager: ConfManager):

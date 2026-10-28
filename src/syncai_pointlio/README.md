@@ -19,8 +19,8 @@ the `pointlio_odom → pointlio_body` TF that everything downstream consumes.
           ▼               ▼                 ▼                  ▼
    pgo_node (mapping) localizer_node   syncai_lio_bridge   costmaps / backend
    lio_odom+body_cloud lio_odom+body_cloud   lio_odom         body_cloud
-   calls `reset`      map→pointlio_odom   → odom/base_link   obstacle layers,
-                                                             live cloud WS
+   calls `reset`      map→pointlio_odom   → odom/base_link   terrain layer, Octo3D
+                                                             overlay, live cloud WS
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pointlio` package in
@@ -69,7 +69,6 @@ on having a subscriber; the TF is not.
 | `body_cloud` | `sensor_msgs/PointCloud2` in `body_frame` | The scan (every `lidar_filter_num`-th point), **motion-compensated into the body frame at the end-of-scan stamp** — the frame and stamp `lio_odom` carries (see "Deskew" below). What the `localizer`, both costmaps' obstacle layers and the backend's live-cloud WebSocket read. |
 | `body_cloud_dense` | `sensor_msgs/PointCloud2` in `body_frame`, depth 10 | The same deskewed scan decimated by `dense_filter_num` (3× the points at the defaults), x / y / z / intensity only (16 B a point, ~0.12 MB a scan). For mapping: `pgo` (`syncai_mapping`) keyframes are taken from it. Never seen by the filter, so the LIO solution does not depend on it; built in the same ingest pass and published only while subscribed. |
 | `world_cloud` | `sensor_msgs/PointCloud2` in `world_frame` | Display only: the deskewed `body_cloud` moved with the end-of-scan pose. |
-| `lio_path` | `nav_msgs/Path` | Accumulated trajectory for rviz. Published empty, ungated, on a reset so rviz drops the old run. |
 | TF `world_frame → body_frame` | `<robot_id>/pointlio_odom → <robot_id>/pointlio_body` | Broadcast from the timer once the builder reaches `MAPPING`. |
 | `reset` | `syncai_common/srv/ResetLIO` | Start over in place — see below. |
 
@@ -194,12 +193,12 @@ The launch layers the two frame names on top.
 
 ```bash
 ros2 launch syncai_pointlio pointlio.launch.py                       # config/system.ini from ~/robot_ws
-ros2 launch syncai_pointlio pointlio.launch.py system_config:=/path/to/robot01.ini
+ros2 launch syncai_pointlio pointlio.launch.py system_config:=/path/to/robot.ini
 ```
 
 The session specs run it in a pane of its own, immediately before the node
 that consumes it: `localization` window in `start_nav.yaml` (**pointlio** →
-localizer, after the `map_server` window) and `lio` window in `start_mapping.yaml`
+localizer, right after `bringup`) and `lio` window in `start_mapping.yaml`
 (**pointlio** → `syncai_mapping`). The logs are `log/stack/<robot_id>/pointlio/`
 and `log/stack/<robot_id>/mapping/pointlio/`. Both the fork's old `pgo_launch.py`
 and `localizer_launch.py` used to `include()` this launch; neither

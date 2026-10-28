@@ -20,17 +20,14 @@ uses.
 | `odometry_utils.hpp` | compiled | `OdomSmoother` — time-windowed average twist | task_runner |
 | `odom_subscriber.hpp` | header-only | `OdomSubscriber` — latest planar twist | controller |
 | `line_iterator.hpp` | header-only | Bresenham ray tracing | costmap_2d |
-| `validate_messages.hpp` | header-only | NaN/inf/consistency checks for common msgs | costmap_2d (only `plugins/static_layer.cpp`) |
-| `string_utils.hpp` | compiled | `split`, `strip_leading_slash` | *nobody* — no consumer left in `src/`; kept from the `nav2_util` port (its user was AMCL, which went with the 2D bringup) |
-| `occ_grid_values.hpp` | header-only | `OCC_GRID_UNKNOWN/FREE/OCCUPIED` (−1 / 0 / 100) | costmap_2d, map_server |
 | `path_height.hpp` | header-only | `pathHasHeight` (a path whose poses do not all share one z: OctomapPlanner3D's) and `lookupGroundZ` (the ground under the robot = the lidar frame's z minus its height, since `base_link` is planar). Moved here from `syncai_controller` on 2026-10-20 so MPPI could share it | controller (server goal check, RPP 3D), mppi_controller, costmap_2d (`TerrainLayer`) |
 | `stair_mode.hpp` | compiled | `StairMode` — the stair state machine both controllers run on a path with heights: detects a climbing stretch, switches the gait policy over `set_policy_mode` standing still, settles, reports on the latched `stair_mode`. `initialize()` for a node (parameters under the plugin's name), `configure()` with callbacks for a test (`test/test_stair_mode.cpp`). Lifted out of RPP 3D on 2026-10-20; the climb itself stays each controller's. `findCorner()` (static, 2026-10-21) finds the first landing corner of a plan for both controllers' stair carrots. `setPlan()` keeps the plan with `medianHeights()` applied (static, 2026-10-24: each inner z the median of three poses), so a one-voxel spike or dip in the planner's heights no longer makes a ramp read as a stair — on dp's arched ramp one -0.5 pose read 0.3 m of rise for a 0.2 m slope; a flight's monotonic heights pass unchanged | controller (RPP 3D), mppi_controller |
 
 ## SimpleActionServer
 
 The largest and most load-bearing piece (635 lines). Every action server in the
-stack — `NavigateToPose`, `ComputePathToPose`, `ComputePathThroughPoses`,
-`FollowPath` — is a `SimpleActionServer<ActionT>`.
+stack — `NavigateToPose`, `ComputePathToPose`, `FollowPath`, `DockToPose` —
+is a `SimpleActionServer<ActionT>`.
 
 It wraps `rclcpp_action::Server` with a **single worker thread and a one-slot
 pending-goal queue**, which is what turns "handle N concurrent goals" into the
@@ -83,7 +80,7 @@ Small functions with outsized consequences:
   rather than degrading.
 - **`copy_all_parameters(parent, child)`** — used by `BtActionServer` to clone the
   host node's parameters onto the internal BT client node.
-- **`add_namespaces(top, sub)`** — how `Costmap2DROS` builds its
+- **`add_namespaces(top, sub)`** — how `CostmapROS` builds its
   `/<robot_id>/global_costmap` sub-namespace.
 - `sanitize_node_name`, `generate_internal_node_name`, `generate_internal_node`,
   `time_to_string` — for creating internal helper nodes with unique, legal names.
@@ -94,8 +91,12 @@ Small functions with outsized consequences:
   standard "where is the robot" lookup, used by the costmap, the controller, the
   task runner's feedback and `syncai_robot_state`. Returns `false` rather than
   throwing on a TF failure, which is why those callers all degrade gracefully.
-- `transformPoseInTargetFrame`, the two `getTransform` overloads (same-time and
-  cross-time), and `validateTwist` (NaN/inf guard).
+- `transformPoseInTargetFrame`.
+
+Removed on 2026-10-28 as never called: the two `getTransform` overloads,
+`validateTwist`, `string_utils.hpp` (`split`, `strip_leading_slash`; AMCL's,
+gone with the 2D bringup), the `Pose2D` overload of `euclidean_distance` and
+the two odometry helpers' `getTwistStamped()`.
 
 ## The two odometry helpers
 
@@ -108,8 +109,8 @@ Easy to confuse, and the difference matters:
 | Used by | `syncai_controller` | `syncai_task_runner` (feedback ETA) |
 
 The controller deliberately takes the *unsmoothed* one — which is exactly why
-`RegulatedPurePursuitController` clamps acceleration against its own previous
-command rather than the measured twist: the raw Point-LIO twist carries the
+the controllers (MPPI, `RegulatedPurePursuitController3D`) clamp acceleration
+against their own previous command rather than the measured twist: the raw Point-LIO twist carries the
 quadruped's gait sway, and there is no smoother in that path. See
 `syncai_controller`'s README.
 
@@ -118,8 +119,8 @@ quadruped's gait sway, and there is no smoother in that path. See
 Header-only and all `inline`:
 
 - `orientationAroundZAxis(yaw)` → `geometry_msgs/Quaternion`
-- `euclidean_distance(...)` overloaded for `Point`, `Pose`, `PoseStamped` and
-  `Pose2D`, each with an `is_3d` flag (default 2D)
+- `euclidean_distance(...)` overloaded for `Point`, `Pose` and `PoseStamped`,
+  each with an `is_3d` flag (default planar)
 - `calculate_path_length(path, start_index)` — the remaining-distance primitive
   behind the controller's feedback, the task runner's `distance_remaining`, and
   the controller's patrol-loop goal gate
@@ -129,20 +130,19 @@ Header-only and all `inline`:
 
 ## The rest
 
-- **`line_iterator.hpp`** — Bresenham ray tracing, used by the costmap's obstacle
-  layer for marking and clearing along a beam.
-- **`validate_messages.hpp`** — overloaded `validateMsg()` for `double`,
-  `std::array<double, N>`, `Time`, `Header`, `Point`, `Quaternion`, `Pose`,
-  `PoseWithCovariance(Stamped)`, `MapMetaData`, `OccupancyGrid`. Rejects NaN/inf,
-  empty `frame_id`s, non-unit quaternions and grids whose `data` size does not
-  match their metadata — the guard against a malformed message poisoning the
-  costmap or AMCL.
+- **`line_iterator.hpp`** — Bresenham ray tracing, used by the costmap's
+  footprint collision checkers (line cost along a footprint edge). The
+  obstacle layer's marking and clearing along a beam used it too, until that
+  layer went with 2D navigation (2026-10-28).
+- `validate_messages.hpp` (the `validateMsg()` overloads for `OccupancyGrid`
+  and the messages inside it) went with its only user, the costmap's static
+  layer, on 2026-10-28.
 - **`node_thread.hpp`** — RAII: construct it with a node or executor and it spins
   on a background thread; the destructor cancels and joins. Both costmap owners
-  use it so `Costmap2DROS` runs independently of its host's executor.
-- **`occ_grid_values.hpp`** — the `nav_msgs/OccupancyGrid` value convention
-  (−1 unknown, 0 free, 100 occupied), distinct from `syncai_costmap_2d`'s
-  internal 0–255 cost scale.
+  use it so `CostmapROS` runs independently of its host's executor.
+- `occ_grid_values.hpp` (the `nav_msgs/OccupancyGrid` −1 / 0 / 100
+  convention) went on 2026-10-28 with its last users, `syncai_map_server` and
+  `Costmap`'s OccupancyGrid constructor.
 
 ## Build
 
@@ -170,7 +170,7 @@ colcon build --packages-above syncai_util
   the goal — there is no "come back later" mode. A callback that throws
   terminates all goals and stops the worker thread.
 - **Include guards still carry `nav2_util` / `NAV2_UTIL` names** in
-  `node_thread.hpp` and `occ_grid_values.hpp`. Harmless in practice — nav2_util
+  `node_thread.hpp`. Harmless in practice — nav2_util
   is not in this workspace — but it would collide if both were ever included in
   one translation unit.
 - **`OdomSubscriber` silently drops non-planar twist components.** Vertical or

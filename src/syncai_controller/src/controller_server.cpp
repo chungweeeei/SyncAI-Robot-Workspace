@@ -42,7 +42,9 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   default_goal_checker_types_{"syncai_controller::SimpleGoalChecker"},
   lp_loader_("syncai_nav_core", "syncai_nav_core::Controller"),
   default_ids_{"FollowPath"},
-  default_types_{"syncai_controller::RegulatedPurePursuitController"}
+  // MPPI, what controller_server_params.yaml loads as FollowPath; the 2D RPP
+  // that was the default went with 2D navigation (2026-10-28).
+  default_types_{"syncai_mppi_controller::MPPIController"}
 {
   RCLCPP_INFO(get_logger(), "Creating controller server");
 
@@ -54,8 +56,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("min_x_velocity_threshold", rclcpp::ParameterValue(0.0001));
   declare_parameter("min_y_velocity_threshold", rclcpp::ParameterValue(0.0001));
   declare_parameter("min_theta_velocity_threshold", rclcpp::ParameterValue(0.0001));
-
-  declare_parameter("speed_limit_topic", rclcpp::ParameterValue("speed_limit"));
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
@@ -75,7 +75,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("dock_approach_timeout", rclcpp::ParameterValue(60.0));
 
   // The costmap node is used in the implementation of the controller
-  costmap_ros_ = std::make_shared<syncai_costmap_2d::Costmap2DROS>(
+  costmap_ros_ = std::make_shared<syncai_costmap::CostmapROS>(
     "local_costmap", std::string{get_namespace()}, "local_costmap");
 }
 
@@ -84,7 +84,6 @@ ControllerServer::~ControllerServer()
   action_server_.reset();
   dock_action_server_.reset();
   dyn_params_handler_.reset();
-  speed_limit_sub_.reset();
   odom_sub_.reset();
   // Plugin maps must be cleared before their class loaders (members declared
   // earlier in the header) are destroyed
@@ -139,8 +138,6 @@ void ControllerServer::configure()
   get_parameter("min_theta_velocity_threshold", min_theta_velocity_threshold_);
   RCLCPP_INFO(get_logger(), "Controller frequency set to %.4fHz", controller_frequency_);
 
-  std::string speed_limit_topic;
-  get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("publish_zero_velocity", publish_zero_velocity_);
   get_parameter("goal_reached_max_remaining_path", goal_reached_max_remaining_path_);
@@ -255,10 +252,9 @@ void ControllerServer::configure()
     shared_from_this(), "dock_to_pose", std::bind(&ControllerServer::dockControl, this), nullptr,
     std::chrono::milliseconds(500), true);
 
-  // Set subscribtion to the speed limiting topic
-  speed_limit_sub_ = create_subscription<nav2_msgs::msg::SpeedLimit>(
-    speed_limit_topic, rclcpp::QoS(10),
-    std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
+  // No speed_limit subscription (2026-10-28): nav2_msgs/SpeedLimit was
+  // upstream's speed-filter channel, nothing in the stack or the backend
+  // ever published it, and the costmap filters it came with are gone.
 
   // Activation phase (nav2 on_activate)
   costmap_ros_->activate();
@@ -664,8 +660,8 @@ void ControllerServer::dockControl()
         // (2026-10-15): the robot01 dock at 14:26 that day was cancelled after
         // 40 s with nothing logged between acceptance and the cancel, so how
         // close it got, and whether it was still moving, was lost -- the
-        // feedback reaches only the BT node, and Point-LIO's lio_path keeps no
-        // history while nobody subscribes. The robot pose (odom, the frame
+        // feedback reaches only the BT node, and Point-LIO publishes no
+        // trajectory. The robot pose (odom, the frame
         // the dock is tracked in) is logged rather than the odom twist: the
         // raw twist carries the gait's +/-0.2-0.5 m/s sway, so one sample
         // cannot tell 0.05 m/s from standing, while the pose difference
@@ -1029,14 +1025,6 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
   }
   pose = current_pose;
   return true;
-}
-
-void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg)
-{
-  ControllerMap::iterator it;
-  for (it = controllers_.begin(); it != controllers_.end(); ++it) {
-    it->second->setSpeedLimit(msg->speed_limit, msg->percentage);
-  }
 }
 
 rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCallback(

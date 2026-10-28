@@ -38,8 +38,8 @@ evidence for each choice and the [results](#robot01-2026-10-20) are at the end.
   the tools' `--pattern` counts — with 21 mm squares. Measure a printed square: its size only
   scales the board distances, not K or the distortion, but `--square` should still be right. Keep
   it flat; a sheet held by one edge bends (see lesson 6).
-- **Mode.** The intrinsics need only the camera, so AUTO (the nav session) or CALIBRATION, both of
-  which start the feeder. The extrinsic needs CALIBRATION: it is the only mode whose lidar
+- **Mode.** The intrinsics need only the camera, so AUTO (the nav session), MANUAL (the mapping
+  session) or CALIBRATION, all of which start the feeder. The extrinsic needs CALIBRATION: it is the only mode whose lidar
   publishes `PointCloud2`, which dvlc reads.
 
 ## Part 1 — intrinsics

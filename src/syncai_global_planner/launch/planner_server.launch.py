@@ -3,13 +3,12 @@
 #
 # robot_id is read from the system config INI at launch time (same convention
 # as sys_manager.launch.py) and is used both as the node namespace and to
-# rewrite the global costmap TF frame parameters (robot_base_frame /
-# sensor_frame), since TF frame names are not namespaced by ROS. The costmap's
+# rewrite the global costmap's robot_base_frame, since TF frame names are
+# not namespaced by ROS. The costmap's
 # global_frame stays "map" (the shared global frame) and is not rewritten.
 #
 # The same INI's [map] pcd locates the map directory, from which the OctoMap
-# planner's octomap.bt is derived (the way costmap_filter_info.launch.py
-# derives keepout.yaml from [map] map): no new INI key, so the backend's
+# planner's octomap.bt is derived: no new INI key, so the backend's
 # one-line map switch is unaffected. A map without the file still launches;
 # the Octo3D plugin then logs one error and fails its own plans only.
 
@@ -128,12 +127,6 @@ def launch_setup(context, *args, **kwargs):
                 # yaml defaults with the robot_id prefix here. Later entries
                 # in this list take precedence over the params file.
                 "robot_base_frame": f"{robot_id}/base_link",
-                # The frame a scan is stamped with, as in controller_server's
-                # launch. It was "<robot_id>/laser" until 2026-10, a frame
-                # nothing broadcast (the Livox driver only stamped clouds with
-                # it, and stamps lidar_top now), so a scan, had one ever
-                # arrived, could not have been raytraced.
-                "obstacle_layer.scan.sensor_frame": f"{robot_id}/scan",
                 # OctomapPlanner3D (planner id Octo3D): the tree next to the
                 # map's pcd, and the LIO body frame it reads the robot's real
                 # height from (map -> base_link is planar, z = 0).

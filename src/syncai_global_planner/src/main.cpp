@@ -13,7 +13,7 @@ int main(int argc, char ** argv)
   node->configure();
 
   // configure() returns early on a shutdown that arrives while the costmap is
-  // still waiting for its first transform (Costmap2DROS::activate()). Building
+  // still waiting for its first transform (CostmapROS::activate()). Building
   // the executor on the dead context then throws RCLError "failed to create
   // guard condition" out of main(), and the process aborts (exit 134) instead
   // of exiting cleanly.

@@ -25,7 +25,6 @@
 #include <string>
 #include <vector>
 
-#include "syncai_costmap_2d/costmap_filters/filter_values.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 
 namespace mppi
@@ -36,8 +35,7 @@ using xt::evaluation_strategy::immediate;
 
 void Optimizer::initialize(
   rclcpp::Node::WeakPtr parent, const std::string & name,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros,
-  ParametersHandler * param_handler)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros, ParametersHandler * param_handler)
 {
   parent_ = parent;
   name_ = name;
@@ -418,44 +416,13 @@ geometry_msgs::msg::TwistStamped Optimizer::getControlFromSequenceAsTwist(
 
 void Optimizer::setMotionModel(const std::string & model)
 {
+  // DiffDrive only (2026-10-28; Omni and Ackermann were never configured,
+  // see motion_models.hpp).
   if (model == "DiffDrive") {
     motion_model_ = std::make_shared<DiffDriveMotionModel>();
-  } else if (model == "Omni") {
-    motion_model_ = std::make_shared<OmniMotionModel>();
-  } else if (model == "Ackermann") {
-    motion_model_ = std::make_shared<AckermannMotionModel>(parameters_handler_, name_);
   } else {
     throw std::runtime_error(
-            std::string(
-              "Model " + model + " is not valid! Valid options are DiffDrive, Omni, "
-              "or Ackermann"));
-  }
-}
-
-void Optimizer::setSpeedLimit(double speed_limit, bool percentage)
-{
-  auto & s = settings_;
-  if (speed_limit == syncai_costmap_2d::NO_SPEED_LIMIT) {
-    s.constraints.vx_max = s.base_constraints.vx_max;
-    s.constraints.vx_min = s.base_constraints.vx_min;
-    s.constraints.vy = s.base_constraints.vy;
-    s.constraints.wz = s.base_constraints.wz;
-  } else {
-    if (percentage) {
-      // Speed limit is expressed in % from maximum speed of robot
-      double ratio = speed_limit / 100.0;
-      s.constraints.vx_max = s.base_constraints.vx_max * ratio;
-      s.constraints.vx_min = s.base_constraints.vx_min * ratio;
-      s.constraints.vy = s.base_constraints.vy * ratio;
-      s.constraints.wz = s.base_constraints.wz * ratio;
-    } else {
-      // Speed limit is expressed in absolute value
-      double ratio = speed_limit / s.base_constraints.vx_max;
-      s.constraints.vx_max = s.base_constraints.vx_max * ratio;
-      s.constraints.vx_min = s.base_constraints.vx_min * ratio;
-      s.constraints.vy = s.base_constraints.vy * ratio;
-      s.constraints.wz = s.base_constraints.wz * ratio;
-    }
+      std::string("Model " + model + " is not valid! The only option is DiffDrive"));
   }
 }
 

@@ -42,7 +42,7 @@
 # No camera. This file could start the TechNexion camera through vizionsdk_ros2
 # (use_camera:=true, off by default) until 2026-10-17, when that node was
 # removed: the V4L2 device admits exactly one streaming opener, and
-# syncai_camera_feeder — the nav session's camera_feeder window — is it, teeing
+# syncai_camera_feeder — the sessions' camera_feeder window — is it, teeing
 # the MJPEG to the WebRTC worker and to image_raw/compressed. A second opener
 # here could only ever crash-loop the feeder. git history has the node, its
 # arguments and its params block. The camera_optical_frame joint stays in the

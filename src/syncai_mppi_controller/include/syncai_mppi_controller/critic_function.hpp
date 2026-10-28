@@ -15,14 +15,13 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__CRITIC_FUNCTION_HPP_
 #define SYNCAI_MPPI_CONTROLLER__CRITIC_FUNCTION_HPP_
 
-#include <string>
 #include <memory>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
-
-#include "syncai_mppi_controller/tools/parameters_handler.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_mppi_controller/critic_data.hpp"
+#include "syncai_mppi_controller/tools/parameters_handler.hpp"
 
 namespace mppi::critics
 {
@@ -59,15 +58,12 @@ public:
     * @param parent WeakPtr to node
     * @param parent_name name of the controller
     * @param name Name of plugin
-    * @param costmap_ros Costmap2DROS object of environment
+    * @param costmap_ros CostmapROS object of environment
     * @param dynamic_parameter_handler Parameter handler object
     */
   void on_configure(
-    rclcpp::Node::WeakPtr parent,
-    const std::string & parent_name,
-    const std::string & name,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros,
-    ParametersHandler * param_handler)
+    rclcpp::Node::WeakPtr parent, const std::string & parent_name, const std::string & name,
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros, ParametersHandler * param_handler)
   {
     parent_ = parent;
     logger_ = parent_.lock()->get_logger();
@@ -106,8 +102,8 @@ protected:
   bool enabled_;
   std::string name_, parent_name_;
   rclcpp::Node::WeakPtr parent_;
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
-  syncai_costmap_2d::Costmap2D * costmap_{nullptr};
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
+  syncai_costmap::Costmap * costmap_{nullptr};
 
   ParametersHandler * parameters_handler_;
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};

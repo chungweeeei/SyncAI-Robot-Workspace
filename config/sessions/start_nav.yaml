@@ -10,8 +10,18 @@
 #
 # This is a *localization* stack, the counterpart to start_mapping.yaml rather
 # than a variant of it: the localizer loads an existing map during
-# construction and dies without one (map_server only idles without a gridmap),
-# so this spec cannot build the map it needs. See start_mapping.yaml for the other half of that loop.
+# construction and dies without one, so this spec cannot build the map it
+# needs. See start_mapping.yaml for the other half of that loop.
+#
+# 3D ONLY (2026-10-28): the nav session navigates on octomap.bt and nothing
+# else. The map_server window (map_server + the keepout mask server, both
+# serving the 2D gridmap) went first, then the rest of 2D navigation:
+# syncai_map_server, the 2D planners (GridBased / NavFn / StraightLine), the
+# 2D RPP, the static / obstacle layers and the keepout filter, and the 2D
+# trees. Octo3D plans on the tree alone (the planner's global costmap has no
+# layers) and reads its zones from keepout.json beside the tree. The backend
+# already treats a missing map_server as a 3D session: its map switch skips
+# map_server/load_map and refuses a 2D map with stack_not_ready.
 #
 # There is no frontend window and no backend window: `syncai_frontend` left this
 # workspace in 2026-09 and `syncai_backend` followed it, so nothing in this
@@ -22,8 +32,8 @@
 # takes it down along with the session. There is no rviz2 window either: on the
 # robot itself there is no display, and the console covers the same ground.
 #
-# Startup order matters (there is no lifecycle manager): map_server / keepout
-# -> pointlio / localizer -> lio_bridge -> planner/controller -> task_runner,
+# Startup order matters (there is no lifecycle manager): pointlio / localizer
+# -> lio_bridge -> planner/controller -> task_runner,
 # which is what the `sleep:` fields encode. pointlio has its own pane since 2026-09, when it
 # moved out of FASTLIO2_ROS2 into src/syncai_pointlio; before that the fork's
 # localizer_launch.py include()d it, so both came up in the localizer pane. The
@@ -62,36 +72,11 @@ windows:
       - cmd: ros2 launch syncai_bringup bringup.launch.py
         log: bringup
 
-  # ---------- Window 1: map_server + keepout (the map on disk, served) -------
-  # The two map servers, in start order. Both read the same [map] map from the
-  # INI, so this window is the one to read when "the map is not there". On a
-  # 3D-only map (no gridmap.yaml) both start idle since 2026-10-19 -- no map,
-  # no mask, load_map still served -- and say so in a warning; until then
-  # map_server died in its constructor and the keepout pane started nothing. Split out of `localization`
-  # on 2026-09-30: the localizer window is about the lidar and the pose, this
-  # one is about files, and a map problem and a lidar problem should not
-  # scroll past each other in one window.
+  # ---------- Window 1: LIO front end / LIO localizer ----------
+  # Window 1 was map_server + keepout (the 2D gridmap and its keepout mask)
+  # until 2026-10-28; see the header. There is no map window any more: the
+  # localizer reads map.pcd and Octo3D octomap.bt straight off disk.
   #
-  # The second pane is the keepout (forbidden-zone) source for the planner's
-  # global costmap: costmap_filter_info_server plus a second map_server named
-  # filter_mask_server, serving map/<name>/keepout.yaml -- the launch derives
-  # that path from the same [map] map the first pane reads. On a map without a
-  # keepout the launch first writes a blank mask of the gridmap's geometry (all
-  # unknown, so the planner sees no change) and serves that, so this pane stays
-  # up like every other one; "Filter mask was not received" in the planner log
-  # means it is actually down -- or, on a 3D-only map, idle on purpose. Until 2026-09-30 it exited on purpose instead.
-  # `sleep: 1` is log ordering only -- the KeepoutFilter's two subscriptions
-  # are transient-local, so the planner may come up before or after this pane
-  # and still receive both latched messages.
-  - name: map_server
-    panes:
-      - cmd: ros2 launch syncai_map_server map_server.launch.py
-        log: map_server
-      - cmd: ros2 launch syncai_map_server costmap_filter_info.launch.py
-        sleep: 1
-        log: keepout
-
-  # ---------- Window 2: LIO front end / LIO localizer ----------
   # Two panes, in start order. pointlio (syncai_pointlio) is the front end
   # the localizer (syncai_localizer, in-tree since 2026-09) registers against;
   # its launch is the single definition of how pointlio_node is configured, and
@@ -114,14 +99,14 @@ windows:
         sleep: 3
         log: localizer
 
-  # ---------- Window 3: lio_bridge (map -> <robot_id>/odom) ----
+  # ---------- Window 2: lio_bridge (map -> <robot_id>/odom) ----
   - name: lio_bridge
     panes:
       - cmd: ros2 launch syncai_lio_bridge lio_bridge.launch.py
         sleep: 4
         log: lio_bridge
 
-  # ---------- Window 4: planner / controller ----------
+  # ---------- Window 3: planner / controller ----------
   - name: plan_ctrl
     panes:
       - cmd: ros2 launch syncai_global_planner planner_server.launch.py
@@ -131,14 +116,14 @@ windows:
         sleep: 4
         log: controller
 
-  # ---------- Window 5: task_runner (needs planner/controller action servers) --
+  # ---------- Window 4: task_runner (needs planner/controller action servers) --
   - name: task_runner
     panes:
       - cmd: ros2 launch syncai_task_runner task_runner.launch.py
         sleep: 10
         log: task_runner
 
-  # ---------- Window 6: driver_manager (own window: shutdown path is manual) --
+  # ---------- Window 5: driver_manager (own window: shutdown path is manual) --
   # Kept on a window of its own rather than split with sys_manager, because
   # this is the pane you Ctrl-C by hand when you want the safe-shutdown path
   # (safety lock + MODE X / lie down) to run — easy to hit the wrong pane in a
@@ -149,7 +134,7 @@ windows:
         log: driver_manager
 
 
-  # ---------- Window 7: robot_state ----------
+  # ---------- Window 6: robot_state ----------
   # A single pane: both processes that used to follow robot_state here — the
   # backend, and the frontend dev server before it — are served from their own
   # containers now (see the header). robot_state stays because it is what
@@ -160,7 +145,7 @@ windows:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py
         log: robot_state
 
-  # ---------- Window 8: camera_feeder (sole opener of /dev/syncai/camera0) ----
+  # ---------- Window 7: camera_feeder (sole opener of /dev/syncai/camera0) ----
   # syncai_camera_feeder holds the camera and tees its MJPEG, undecoded, to the
   # WebRTC worker (RTP/JPEG on 127.0.0.1:5008) and to image_raw/compressed.
   # Nothing in the nav stack consumes either, so there is no ordering and no
@@ -174,9 +159,8 @@ windows:
   # the node every 2 s, a busy device shows here as a crash loop rather than as
   # a dead pane. `fuser -v /dev/video*` on the host names the holder.
   #
-  # start_mapping.yaml does not carry this window, so a switch to MANUAL takes
-  # the camera (and the console's WebRTC view) down with the rest of the
-  # session.
+  # start_mapping.yaml carries the same window (2026-10-28), so a switch to
+  # MANUAL restarts the camera rather than taking it down for the run.
   - name: camera_feeder
     panes:
       - cmd: ros2 launch syncai_camera_feeder camera_feeder.launch.py

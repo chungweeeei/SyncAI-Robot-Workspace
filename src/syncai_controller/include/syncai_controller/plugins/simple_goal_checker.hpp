@@ -26,7 +26,7 @@ public:
   // Standard GoalChecker Interface
   void initialize(
     const rclcpp::Node::SharedPtr & node, const std::string & plugin_name,
-    const std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    const std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
   void reset() override;
 
   // Returns true if the goal is reached, false otherwise.

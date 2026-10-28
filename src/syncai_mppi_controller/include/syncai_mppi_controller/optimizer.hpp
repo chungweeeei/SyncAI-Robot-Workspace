@@ -15,31 +15,28 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__OPTIMIZER_HPP_
 #define SYNCAI_MPPI_CONTROLLER__OPTIMIZER_HPP_
 
-#include <string>
-#include <memory>
-
 #include <xtensor/xtensor.hpp>
 #include <xtensor/xview.hpp>
 
-#include "rclcpp/rclcpp.hpp"
+#include <memory>
+#include <string>
 
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
-#include "syncai_nav_core/goal_checker.hpp"
-
-#include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
-
-#include "syncai_mppi_controller/models/optimizer_settings.hpp"
-#include "syncai_mppi_controller/motion_models.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_mppi_controller/critic_manager.hpp"
+#include "syncai_mppi_controller/models/optimizer_settings.hpp"
+#include "syncai_mppi_controller/models/path.hpp"
 #include "syncai_mppi_controller/models/state.hpp"
 #include "syncai_mppi_controller/models/trajectories.hpp"
-#include "syncai_mppi_controller/models/path.hpp"
+#include "syncai_mppi_controller/motion_models.hpp"
 #include "syncai_mppi_controller/tools/noise_generator.hpp"
 #include "syncai_mppi_controller/tools/parameters_handler.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
+#include "syncai_nav_core/goal_checker.hpp"
 
 #ifdef __APPLE__
   #include "syncai_mppi_controller/tools/apple_utils.hpp"
@@ -65,17 +62,16 @@ public:
    */
   ~Optimizer() {shutdown();}
 
-
   /**
    * @brief Initializes optimizer on startup
    * @param parent WeakPtr to node
    * @param name Name of plugin
-   * @param costmap_ros Costmap2DROS object of environment
+   * @param costmap_ros CostmapROS object of environment
    * @param dynamic_parameter_handler Parameter handler object
    */
   void initialize(
     rclcpp::Node::WeakPtr parent, const std::string & name,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros,
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros,
     ParametersHandler * dynamic_parameters_handler);
 
   /**
@@ -110,13 +106,6 @@ public:
    * @return Optimal trajectory
    */
   xt::xtensor<float, 2> getOptimizedTrajectory();
-
-  /**
-   * @brief Set the maximum speed based on the speed limits callback
-   * @param speed_limit Limit of the speed for use
-   * @param percentage Whether the speed limit is absolute or relative
-   */
-  void setSpeedLimit(double speed_limit, bool percentage);
 
   /**
    * @brief Reset the optimization problem to initial conditions
@@ -242,8 +231,8 @@ protected:
 
 protected:
   rclcpp::Node::WeakPtr parent_;
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
-  syncai_costmap_2d::Costmap2D * costmap_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
+  syncai_costmap::Costmap * costmap_;
   std::string name_;
 
   std::shared_ptr<MotionModel> motion_model_;

@@ -80,58 +80,6 @@ public:
 };
 
 /**
- * @class mppi::AckermannMotionModel
- * @brief Ackermann motion model
- */
-class AckermannMotionModel : public MotionModel
-{
-public:
-  /**
-    * @brief Constructor for mppi::AckermannMotionModel
-    */
-  explicit AckermannMotionModel(ParametersHandler * param_handler, const std::string & name)
-  {
-    auto getParam = param_handler->getParamGetter(name + ".AckermannConstraints");
-    getParam(min_turning_r_, "min_turning_r", 0.2);
-  }
-
-  /**
-   * @brief Whether the motion model is holonomic, using Y axis
-   * @return Bool If holonomic
-   */
-  bool isHolonomic() override
-  {
-    return false;
-  }
-
-  /**
-   * @brief Apply hard vehicle constraints to a control sequence
-   * @param control_sequence Control sequence to apply constraints to
-   */
-  void applyConstraints(models::ControlSequence & control_sequence) override
-  {
-    auto & wz = control_sequence.wz;
-    auto abs_vx = xt::fabs(control_sequence.vx);
-    auto abs_wz = xt::fabs(wz);
-
-    for (size_t i = 0; i < wz.size(); ++i) {
-      if ((abs_vx[i] / abs_wz[i]) < min_turning_r_) {
-        wz[i] = std::copysign(abs_vx[i] / min_turning_r_, wz[i]);
-      }
-    }
-  }
-
-  /**
-   * @brief Get minimum turning radius of ackermann drive
-   * @return Minimum turning radius
-   */
-  float getMinTurningRadius() {return min_turning_r_;}
-
-private:
-  float min_turning_r_{0};
-};
-
-/**
  * @class mppi::DiffDriveMotionModel
  * @brief Differential drive motion model
  */
@@ -153,27 +101,11 @@ public:
   }
 };
 
-/**
- * @class mppi::OmniMotionModel
- * @brief Omnidirectional motion model
- */
-class OmniMotionModel : public MotionModel
-{
-public:
-  /**
-    * @brief Constructor for mppi::OmniMotionModel
-    */
-  OmniMotionModel() = default;
-
-  /**
-   * @brief Whether the motion model is holonomic, using Y axis
-   * @return Bool If holonomic
-   */
-  bool isHolonomic() override
-  {
-    return true;
-  }
-};
+// DiffDrive is the only model (2026-10-28): upstream's Omni and Ackermann
+// were never configured. isHolonomic() and the vy paths behind it stay, so
+// restoring Omni (the quadruped can strafe; see the README's motion_model
+// row) is a subclass returning true plus its branch in
+// Optimizer::setMotionModel().
 
 }  // namespace mppi
 

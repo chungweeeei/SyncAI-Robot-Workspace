@@ -245,7 +245,7 @@ windows:
 ```
 
 `sleep` is where the startup ordering lives, since there is no lifecycle
-manager: map_server / LIO → lio_bridge → planner/controller → task_runner.
+manager: LIO / localizer → lio_bridge → planner/controller → task_runner.
 `log` names a directory under `log/stack/<robot_id>/` that a `pipe-pane |
 multilog t s16777215 n10 '!gzip'` tap writes into (`current` plus gzipped
 rotations, 16 MiB × 10). `enter: false` types the command without executing
@@ -299,11 +299,11 @@ By hand, inside the container:
 ```bash
 ros2 launch syncai_sys_manager sys_manager.launch.py
 ros2 launch syncai_sys_manager sys_manager.launch.py \
-    system_config:=config/instances/robot01.ini
+    system_config:=config/instances/robot.ini
 ```
 
 The `system_config` default is the **absolute** `~/robot_ws/config/system.ini`
-(inside the container, the bind-mount of `config/instances/robotNN.ini`), so
+(inside the container, the bind-mount of `config/instances/robot.ini`), so
 unlike the other launch files this one does not depend on the cwd.
 
 ```bash
@@ -421,8 +421,9 @@ their sources.
   calibrated reading.
 - **There is no map manager here.** The `map_manager.py` placeholder was
   deleted in `9e1772f` after sitting empty since the package was written — map
-  handling lives in `syncai_map_server` and the backend's map router, and a
-  mapping run's lifecycle (save, and now reset) is `pgo_node`'s.
+  handling is the backend's map router (and was `syncai_map_server`'s until
+  that went with 2D navigation, 2026-10-28), and a mapping run's lifecycle
+  (save, and now reset) is `pgo_node`'s.
 - **NodeManager gotchas.** `switch_mode` kills the byobu session the backend is
   a pane of, so a `POST /api/v1/robot/mode` normally ends in a dropped connection
   rather than a response — the backend treats "dispatched, no answer" as

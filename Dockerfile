@@ -63,17 +63,15 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 # against the HOST avahi-daemon (via the mounted D-Bus socket); no daemon runs
 # in the container. tzdata: containers default to UTC — set local time so log
 # timestamps (ros2 launch, byobu panes) match the host / operators.
-# ompl: Dubins/Reeds-Shepp state spaces for syncai_global_planner's smac plugins —
-# libsyncai_global_planner.so links libompl.so, so it is a runtime dep, not dev-only.
+# Removed 2026-10-28 with 2D navigation: ros-humble-ompl (Smac's smoother, the
+# only OMPL user), ros-humble-nav-2d-msgs and ros-humble-dwb-msgs (nothing in
+# the workspace read either); no package needs them.
 RUN apt-get update && apt-get install -y \
     ros-humble-ros-base \
     ros-humble-tf2-tools \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-nav2-msgs \
     ros-humble-angles \
-    ros-humble-ompl \
-    ros-humble-nav-2d-msgs \
-    ros-humble-dwb-msgs \
     python3-pip \
     iputils-ping \
     avahi-utils \
@@ -412,10 +410,10 @@ FROM base AS dev
 
 # Build toolchain, PCL/ROS build deps, and operator conveniences.
 #
-# There is no rviz2 (removed 2026-10): the robot has no display, and rviz2 is
-# run from a workstation against config/rviz2/<robot_id>.rviz.
-# syncai_costmap_2d's optional `rviz:=true` test launch is its only caller in
-# the workspace -- run that one where rviz2 is installed. Dropping it saved
+# There is no rviz2 (removed 2026-10): the robot has no display, and rviz2, if
+# used at all, runs on a workstation (config/rviz2/ went 2026-10-28). (The costmap
+# package's `rviz:=true` test launch, its last caller in the workspace, went
+# with 2D navigation on 2026-10-28.) Dropping it saved
 # only ~50 MB: the bulk of this layer is VTK + Qt5, which libpcl-dev hard-
 # Depends on (libvtk9-dev / libvtk9-qt-dev, and through them python3-vtk9,
 # libvtk9-java, libgdal-dev, MPI). No workspace binary links either (ldd,
@@ -458,7 +456,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # System deps for workspace packages that have no ament/CMake config:
-#   - libgraphicsmagick++1-dev: syncai_map_server (located via pkg-config)
 #   - libzmq3-dev / libncurses-dev: behaviortree_cpp
 #   - nlohmann-json3-dev: header-only JSON library (rosdep key
 #     nlohmann-json-dev). Its consumer is syncai_mapping (imported by
@@ -475,15 +472,14 @@ RUN apt-get update && apt-get install -y \
 #     its own at the end of this stage while the underlay was built in dev,
 #     so that adding it did not re-run that build; the underlay is a stage of
 #     its own now, so it lives here with the other build deps.
-#   - ros-humble-map-msgs: syncai_costmap_2d <depend>s on it (the costmap
+#   - ros-humble-map-msgs: syncai_costmap <depend>s on it (the costmap
 #     update topics). It used to arrive only transitively, through
 #     rviz2's default plugins, so dropping rviz2 in 2026-10 failed that
 #     package's configure; `rosdep check` names it if it goes missing again.
-#   - ros-humble-laser-geometry: the same story, for syncai_costmap_2d's
-#     obstacle layer (LaserScan -> PointCloud2). It came in through
-#     ros-humble-pointcloud-to-laserscan, removed in the same change.
+# Removed 2026-10-28 with 2D navigation: libgraphicsmagick++1-dev
+# (syncai_map_server's map_io, pkg-config) and ros-humble-laser-geometry (the
+# costmap's obstacle layer, LaserScan -> PointCloud2); no package needs them.
 RUN apt-get update && apt-get install -y \
-    libgraphicsmagick++1-dev \
     libzmq3-dev \
     libncurses-dev \
     nlohmann-json3-dev \
@@ -494,7 +490,6 @@ RUN apt-get update && apt-get install -y \
     libeigen3-dev \
     ros-humble-octomap \
     ros-humble-map-msgs \
-    ros-humble-laser-geometry \
     && rm -rf /var/lib/apt/lists/*
 
 # xtensor / xsimd: syncai_mppi_controller (the MPPI port) evaluates its batch
@@ -689,7 +684,7 @@ RUN echo "source ${ROS2_RUST_UNDERLAY}/install/setup.bash" >> /home/syncrobotic/
 
 # ccache, for CI (2026-10): every CI run is a clean `colcon build` of ~11 min,
 # almost all of it recompiling sources that did not change, and the critical
-# path (syncai_common -> util -> costmap_2d -> mppi) is most of that, so more
+# path (syncai_common -> util -> costmap -> mppi) is most of that, so more
 # cores do not help. The workflow turns it on through CMake's
 # CMAKE_<LANG>_COMPILER_LAUNCHER environment variables (CMake >= 3.17 reads
 # them at a fresh configure) and keeps the cache in the Actions cache. Nothing

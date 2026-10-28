@@ -102,7 +102,6 @@ robot_id = robot01
 [map]
 name = <map name>
 pcd = /home/syncrobotic/robot_ws/map/<map name>/map.pcd
-map = /home/syncrobotic/robot_ws/map/<map name>/gridmap.yaml
 
 [initial_pose]
 x = 0.0

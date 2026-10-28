@@ -8,7 +8,7 @@
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
 #include "tf2_ros/buffer.h"
 
@@ -41,7 +41,7 @@ public:
    */
   virtual void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) = 0;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) = 0;
 
   /**
    * @brief local setPlan - Sets the global plan
@@ -86,14 +86,8 @@ public:
     const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & velocity,
     syncai_nav_core::GoalChecker * goal_checker) = 0;
 
-  /**
-   * @brief Limits the maximum linear speed of the robot.
-   * @param speed_limit expressed in absolute value (in m/s)
-   * or in percentage from maximum robot speed.
-   * @param percentage Setting speed limit in percentage if true
-   * or in absolute values in false case.
-   */
-  virtual void setSpeedLimit(const double & speed_limit, const bool & percentage) = 0;
+  // No setSpeedLimit() (2026-10-28): it was nav2's speed-filter hook, fed by
+  // a speed_limit topic nothing ever published.
 };
 
 }  // namespace syncai_nav_core

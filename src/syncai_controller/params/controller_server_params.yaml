@@ -52,17 +52,14 @@
     # in all since 2026-10-14, sized to outlast IsPathValid's 10 s
     # blocked_time); a Wait/RoundRobin recovery is not ported, and this knob is not
     # it. Do not go below ~2.5: the worst case above would no longer fit.
-    # The replanned detour above is the 2D tree's. A 3D map's move_3d.xml
-    # (Octo3D + FollowPath) has no IsPathValid and plans once per goal, so
-    # the only detour there is MPPI's own, inside the local costmap; at a
-    # blocker that closes the way it stops, and those retries (~16 s) are
-    # the whole wait before the goal fails.
+    # Since 2026-10-21 the replanned detour comes from Octo3D's dynamic
+    # overlay (is_path_valid judged by the planner), and since 2026-10-28
+    # there is no other tree.
     # MPPI's "Optimizer fail to compute path" reaches this window only since
     # 2026-10-21: until then the optimizer threw Humble's std::runtime_error,
     # which the server does not tolerate, so FollowPath aborted on the first
     # such cycle (three aborts in 4.4 s beside one blocker on robot01).
     failure_tolerance: 3.0
-    speed_limit_topic: "speed_limit"
     publish_zero_velocity: true
     # Gate the goal check on path progress: only consult the goal checker once
     # the remaining path length (from the path pose closest to the robot) is
@@ -115,25 +112,18 @@
     # Four controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
     # local costmap and bends round a blocker inside it, which RPP cannot --
-    # RPP tracks the path and refuses to drive when the path is blocked.
-    # FollowPathRPP is the RPP that was FollowPath until then, kept loaded so
-    # the A/B is move.xml's controller_id="FollowPathRPP" with no rebuild, and
-    # as the fallback while MPPI is unproven on the robot. Docking and
-    # Undocking (2026-10) are two instances of the pose-to-pose docking
-    # controller that the dock_to_pose action drives, differing only in
-    # direction (see their blocks). Only the controller a goal names runs;
-    # the others cost memory, not CPU. FollowPathRPP3D is
-    # feature/octomap-planner-3d's: the RPP above plus 3D matching of a path
-    # with heights and the stair mode, as a plugin of its own so FollowPathRPP
-    # stays dev's 2D RPP. Since 2026-10-20 FollowPath (MPPI) matches a path
-    # with heights in 3D and climbs stairs the same way (one state machine,
-    # syncai_util::StairMode, for both), so a 3D map's trees (move_3d.xml,
-    # dock_3d.xml's staging leg) name FollowPath as the 2D trees do, and
-    # FollowPathRPP3D is the A/B on a 3D map as FollowPathRPP is on a 2D
-    # one. One controller for both map types: a path without heights (every
-    # 2D planner) takes MPPI's planar code path unchanged. Only FollowPathRPP
-    # matches on x / y alone.
-    controller_plugins: ["FollowPath", "FollowPathRPP", "FollowPathRPP3D", "Docking", "Undocking"]
+    # RPP tracks the path and refuses to drive when the path is blocked. It
+    # matches a path with heights in 3D and climbs stairs (2026-10-20,
+    # syncai_util::StairMode), and is what move.xml and dock.xml's staging
+    # leg name. FollowPathRPP3D is RPP with the same 3D matching and stair
+    # mode, kept loaded so the A/B is move.xml's
+    # controller_id="FollowPathRPP3D" with no rebuild. Docking and Undocking
+    # (2026-10) are two instances of the pose-to-pose docking controller that
+    # the dock_to_pose action drives, differing only in direction (see their
+    # blocks). Only the controller a goal names runs; the others cost memory,
+    # not CPU. FollowPathRPP, dev's 2D RPP (the FollowPath until MPPI), went
+    # with 2D navigation on 2026-10-28.
+    controller_plugins: ["FollowPath", "FollowPathRPP3D", "Docking", "Undocking"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -208,8 +198,9 @@
       # Starting values, not a tuning: nothing below has driven the robot yet.
       # Upstream's README example, except where a line says otherwise.
       #
-      # Velocity bounds are the RPP calibration (FollowPathRPP's
-      # desired_linear_vel 0.60 / rotate_to_heading_angular_vel 0.65) and with
+      # Velocity bounds are the RPP calibration (the 2D FollowPathRPP's
+      # desired_linear_vel 0.60 -- removed 2026-10-28; FollowPathRPP3D runs
+      # 0.8 -- / rotate_to_heading_angular_vel 0.65) and with
       # it driver_manager's scale_fwd / scale_turn_*: one calibration, change
       # them together. vx_min 0.0 disables reversing, as RPP's
       # allow_reversing: false does; PathAngleCritic then forces
@@ -239,7 +230,7 @@
       # command with |vx| between in_place_vx_max and this is raised to it,
       # keeping its sign; under in_place_vx_max it is a stop or an in-place
       # turn and is left alone. Applied before the acceleration clamp, so a
-      # stop still ramps down. 0.30 is FollowPathRPP's
+      # stop still ramps down. 0.30 is FollowPathRPP3D's
       # min_approach_linear_velocity / regulated_linear_scaling_min_speed --
       # the floor RPP has driven the robot with, pre-scale like every value
       # here; change them together. The cost: MPPI's slow approaches (goal,
@@ -264,7 +255,7 @@
       # two; the floor itself is somewhere in 0.3-0.65 and unmeasured. 0.3
       # dated from 2026-10-15, as the cmd_vel value of a gait floor quoted as
       # ~0.3, and 0.21 = 0.3 / scale_turn 1.40 for a day before that.
-      # Same value as FollowPathRPP's / FollowPathRPP3D's
+      # Same value as FollowPathRPP3D's
       # rotate_to_heading_min_angular_vel; change them together. 0 disables
       # it.
       in_place_wz_min: 0.45
@@ -274,7 +265,7 @@
       # goal_checker.xy_goal_tolerance of the path's end, MPPI stops
       # optimising and turns in place to the goal heading, RPP's
       # rotate-to-goal-heading with RPP's numbers: up to this rate
-      # (FollowPathRPP's rotate_to_heading_angular_vel), ramped at
+      # (FollowPathRPP3D's rotate_to_heading_angular_vel), ramped at
       # max_angular_accel, capped to stop on the heading, never under
       # in_place_wz_min; vx ramps to 0. Left to the optimizer, GoalCritic
       # (the exact point) and GoalAngleCritic (the yaw) pulled against each
@@ -307,7 +298,7 @@
       # disables it. Unverified on the robot: the controller log says
       # "approaching it directly" when it opens.
       approach_dist: 0.5
-      # FollowPathRPP's rotate_to_heading_min_angle: change them together.
+      # FollowPathRPP3D's rotate_to_heading_min_angle: change them together.
       # Over it the approach turns in place, under it it walks the arc. The
       # walk's wz is capped at final_rotation_wz, so a short walk off a wide
       # bearing runs a wider arc than the one through the goal point (a few
@@ -341,8 +332,8 @@
       # 0.83 m diagonal turns. 0 disables. Unmeasured on the robot: the
       # controller log says "backing out".
       back_out_dist: 0.3
-      # Stair mode (2026-10-20): RPP 3D's, in MPPI, so one controller serves
-      # a 2D map and a 3D one. Detection and the policy switch are
+      # Stair mode (2026-10-20): RPP 3D's, in MPPI, so one controller follows
+      # flat paths and stairs alike. Detection and the policy switch are
       # syncai_util::StairMode's (shared with FollowPathRPP3D), with the
       # SAME values as that block's -- one calibration of one gait; change
       # them together, and the notes there are the record. On a path with
@@ -493,7 +484,8 @@
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
-      # No VelocityDeadbandCritic, although the gait controller has a floor
+      # No VelocityDeadbandCritic (deleted from the port, 2026-10-28), although
+      # the gait controller has a floor
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
       # zero*, so it would also fight stopping and turning in place. MPPI's
       # slow commands did turn out not to move the robot (0.13 m/s, robot01,
@@ -563,7 +555,7 @@
         # the same, so one of the two had to give. The price of this one:
         # MPPI stalls before doors and corridors narrower than ~1.0 m (0.9 m
         # at the old 0.40 radius; extrapolated from that model, not rerun),
-        # and a route through one needs FollowPathRPP (move.xml's
+        # and a route through one needs FollowPathRPP3D (move.xml's
         # controller_id), which checks LETHAL only. Collisions are
         # collision_cost's (1e6 x weight / time_steps, decisive) on the
         # footprint either way. Unmeasured on the robot.
@@ -632,84 +624,18 @@
         cost_power: 1
         cost_weight: 5.0
 
-    # FollowPath until 2026-10; unchanged since, apart from the id.
-    FollowPathRPP:
-      plugin: "syncai_controller::RegulatedPurePursuitController"
-      # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
-      # so pure pursuit was computing its arcs (w = v * curvature) for a speed
-      # a quarter higher than reality. driver_manager's scale_fwd now corrects
-      # the gain, but the gait controller's response falls off as the command
-      # grows and nobody has swept it properly yet, so keep the command in the
-      # range that has been measured. Raise this only together with a fresh
-      # scale_fwd measurement at the new speed — the two are one calibration.
-      desired_linear_vel: 0.60
-      lookahead_dist: 0.6
-      # Raised from 0.3: pure pursuit steering gain scales with 1/lookahead^2,
-      # so the short low-speed lookahead made startup oscillate (weaving until
-      # the velocity-scaled lookahead grew with speed).
-      min_lookahead_dist: 0.5
-      max_lookahead_dist: 1.2
-      lookahead_time: 1.5
-      use_velocity_scaled_lookahead_dist: true
-      transform_tolerance: 0.2
-      min_approach_linear_velocity: 0.3
-      approach_velocity_scaling_dist: 0.6
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 0.9
-      # Raised to 0.3 to keep the robot from crawling while tracking a path.
-      # Caveat (this floor was previously lowered to 0.1 for this reason): a
-      # value this high overrides curvature regulation right after
-      # rotate-to-heading exits, where the arc is sharpest, so watch for
-      # corner-cutting / weaving on tight turns. Now that desired_linear_vel is
-      # 0.60 this floor is half the top speed, so curvature regulation has only
-      # a 0.30-0.60 band to work in — lower it before raising it if corner
-      # cutting persists.
-      regulated_linear_scaling_min_speed: 0.3
-      use_rotate_to_heading: true
-      # Lowered from 0.785 (45 deg): exiting rotation that far off-heading made
-      # the robot drive away from the path and trigger another rotation.
-      # 0.25 rad (~14 deg) hands over to path tracking nearly aligned.
-      rotate_to_heading_min_angle: 0.25
-      # Lowered from 1.3, where the robot only delivered 0.695 rad/s (ratio
-      # 0.53). The controller therefore believed every in-place turn was
-      # finishing about twice as fast as it was, exited rotate-to-heading still
-      # off-heading, and had to re-enter — the weave. At 0.65 with
-      # scale_turn_* the measured rate lands within ~20% of the command, which
-      # is the whole point: rotate-to-heading's exit test only means something
-      # if the commanded rate is the real one.
-      rotate_to_heading_angular_vel: 0.65
-      # Not upstream: the in-place turn floor (2026-10-14), FollowPath's
-      # in_place_wz_min for the rotate-to-heading branch -- same value, pre-scale
-      # (0.3 until 2026-10-21 and 0.21 for a day before that, see there);
-      # change them together. Lifts the acceleration ramp's first cycle (0.16)
-      # and the last hundredths of a radian of the stop cap, the two places a
-      # rotation dips under it. 0 disables it.
-      rotate_to_heading_min_angular_vel: 0.45
-      max_angular_accel: 3.2
-      # No velocity smoother in this stack: the controller clamps linear
-      # acceleration itself (0 -> 0.60 m/s ramps over ~0.6 s).
-      max_linear_accel: 1.0
-      allow_reversing: false
-      use_interpolation: true
-      cost_scaling_dist: 0.6
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 3.0
-      max_robot_pose_search_dist: 10.0
-
-    # RPP 3D (2026-10, feature/octomap-planner-3d): FollowPathRPP plus 3D
-    # matching of a path with heights (OctomapPlanner3D) and the stair mode
-    # below -- a copy of the 2D plugin, not a subclass, so FollowPathRPP is
-    # exactly dev's. Every value down to max_robot_pose_search_dist is
-    # FollowPathRPP's and is one calibration with it (and with
-    # driver_manager's scales): change them together -- except
-    # desired_linear_vel, 0.8 here against 0.60 there since 2026-10-19 (see
-    # its note). A path without heights (all z = 0, any 2D planner) is
-    # followed as FollowPathRPP follows it, at that speed, stair mode never
-    # engaging. Not named by any tree since 2026-10-20 (FollowPath climbs
-    # stairs too); kept loaded as the A/B on a 3D map.
+    # RPP 3D (2026-10, feature/octomap-planner-3d): Regulated Pure Pursuit
+    # plus 3D matching of a path with heights (OctomapPlanner3D) and the
+    # stair mode below. It began as a copy of the 2D RPP (FollowPathRPP, the
+    # FollowPath until MPPI), not a subclass, so the 2D one stayed exactly
+    # dev's; the 2D plugin went with 2D navigation on 2026-10-28, and this
+    # copy is the only RPP. Every value down to max_robot_pose_search_dist is
+    # the 2D RPP's and is one calibration with driver_manager's scales:
+    # change them together -- except desired_linear_vel, 0.8 here against
+    # the 2D RPP's 0.60 since 2026-10-19 (see its note). A path without
+    # heights is followed with stair mode never engaging. Not named by any
+    # tree since 2026-10-20 (FollowPath climbs stairs too); kept loaded as
+    # the A/B.
     FollowPathRPP3D:
       plugin: "syncai_controller::RegulatedPurePursuitController3D"
       # Lowered from 0.8. At 0.8 the robot actually made 0.62 m/s (ratio 0.78),
@@ -721,7 +647,7 @@
       # scale_fwd measurement at the new speed — the two are one calibration.
       # RPP 3D only: raised 0.60 -> 0.8 on 2026-10-19, asked for after the
       # stair tests (1.0 was asked first and taken back the same day) --
-      # FollowPathRPP above keeps dev's 0.60. NOT yet measured on the robot:
+      # the 2D FollowPathRPP (removed 2026-10-28) kept dev's 0.60. NOT yet measured on the robot:
       # with scale_fwd 1.40 the gait is commanded 1.12 m/s, past anything
       # swept, so check the real speed against cmd_vel (and the weaving the
       # regulated_linear_scaling_min_speed note warns about) on the first
@@ -896,7 +822,7 @@
       # Below the 0.60 calibration point so the gait tracks it, above the floor
       # so the slowdown has a band to work in.
       v_linear_max: 0.40
-      # The stack's calibrated in-place rate (FollowPathRPP's
+      # The stack's calibrated in-place rate (FollowPathRPP3D's
       # rotate_to_heading_angular_vel, MPPI's wz_max): one calibration with
       # driver_manager's scale_turn_*, change them together.
       v_angular_max: 0.65
@@ -1020,42 +946,25 @@
     height: 4
     resolution: 0.05
 
-    # Robot footprint: rectangular chassis half-extents 0.35 x 0.22 — the SAME
-    # rectangle as the global_costmap in planner_server_params.yaml; change
-    # both or neither. (Until 2026-10 this one was still the older 0.28 x 0.20
-    # after the global one grew.)
-    #
-    # The padding differs on purpose: 0.01 here vs 0.03 on the global costmap.
-    # The planner's is_path_valid runs the same perimeter-on-LETHAL test RPP
-    # runs here (2026-10), with the global padding; the 0.02 m gap is what
-    # makes that test the stricter of the two, so a path it passes is one RPP
-    # will drive, and a path RPP would refuse is replanned before RPP meets
-    # it. The ordering holds only between those two perimeter tests. Until
-    # 2026-10 the global side tested the centre cell alone and this comment
-    # said the gap kept "the planner the conservative side" -- it did not:
-    # the centre test bounds the centre's distance to lethal (0.25 m), not
-    # the corners' (0.455 m), so RPP refused paths the planner had passed and
-    # nothing replanned. The gap absorbs ~3 degrees of heading error, not the
-    # 14 degrees RPP tracks with; is_path_valid.heading_margin covers that.
-    # Never raise this padding to or above the global one.
+    # Robot footprint: rectangular chassis half-extents 0.35 x 0.22. Until
+    # 2026-10-28 the global costmap carried the same rectangle with a 0.03
+    # padding, so that the planner's is_path_valid perimeter test (2D paths)
+    # was stricter than the one RPP runs here; the global costmap has no
+    # footprint test since (Octo3D judges its own paths, with robot_radius
+    # 0.25 = this rectangle's padded inscribed radius -- keep the two
+    # together).
     footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
     footprint_padding: 0.01
 
-    # Layer stack -- order matters: sensor (mark) -> inflation. Two sensor
-    # layers are loaded and exactly ONE runs, picked per map (2026-10-20):
-    # obstacle_layer on a 2D map (dev's local costmap, unchanged), terrain_layer
-    # on a 3D one. Each has a map_type ("2d" / "3d") read against the
-    # planner's latched planner_server/Octo3D/map_available -- the signal the
-    # task_runner picks move.xml / move_3d.xml by, so the tree and the costmap
-    # switch together, and a map switch over Octo3D/load_map switches the
-    # layer with no restart (syncai_costmap_2d/map_type_gate.hpp). Never both
-    # at once: they disagree on a ramp (free in the terrain layer, a wall in
-    # the obstacle layer's band) and the max of the two is the wall. The map
-    # reads 2D until the planner says otherwise, as it does for the
-    # task_runner. MPPI (FollowPath) is the controller on both.
-    plugins: ["obstacle_layer", "terrain_layer", "inflation_layer"]
+    # Layer stack -- order matters: sensor (mark) -> inflation. One sensor
+    # layer, terrain_layer, since 2026-10-28. From 2026-10-20 it ran beside
+    # obstacle_layer, exactly one of the two picked per map by the planner's
+    # Octo3D map_available (MapTypeGate; never both, since they disagree on a
+    # ramp): obstacle_layer on a 2D map, terrain_layer on a 3D one. The
+    # obstacle layer and the gate went with 2D navigation.
+    plugins: ["terrain_layer", "inflation_layer"]
 
-    # TerrainLayer (2026-10-20, 3D maps only; syncai_costmap_2d/terrain_grid.hpp
+    # TerrainLayer (2026-10-20; syncai_costmap/terrain_grid.hpp
     # has the design): the lidar cloud judged against the ground under each cell with
     # OctomapPlanner3D's own rules -- the four geometry values below are
     # SurfaceMapParams' (planner_server_params.yaml, Octo3D), one calibration
@@ -1070,12 +979,8 @@
     # mode (FollowPath's / FollowPathRPP3D's) climbs a flight without reading
     # the costmap -- no obstacle avoidance on stairs, by decision.
     terrain_layer:
-      plugin: "syncai_costmap_2d::TerrainLayer"
+      plugin: "syncai_costmap::TerrainLayer"
       enabled: true
-      map_type: "3d"
-      # Relative: /<robot_id>/planner_server/Octo3D/map_available. Same
-      # value as the task_runner's map_3d_topic; change them together.
-      map_3d_topic: planner_server/Octo3D/map_available
       footprint_clearing_enabled: true
       # Relative name: /<robot_id>/pointlio/body_cloud. The cloud's own frame
       # (pointlio_body, the lidar) is the robot's height reference: its z
@@ -1174,78 +1079,6 @@
       max_slope_deg: 20.0
       slope_min_known: 0.5
 
-    # dev's local obstacle source, unchanged but for map_type (2026-10-20):
-    # it runs on a 2D map and is off on a 3D one, where terrain_layer runs.
-    obstacle_layer:
-      plugin: "syncai_costmap_2d::ObstacleLayer"
-      enabled: true
-      map_type: "2d"
-      map_3d_topic: planner_server/Octo3D/map_available
-      footprint_clearing_enabled: true
-      # Layer-wide cap, applied after each source's own band. For the
-      # pointcloud source (height_reference: sensor) it reads as height above
-      # the robot's ground too, so it must stay >= that source's 1.98.
-      max_obstacle_height: 2.0
-      combination_method: 1            # 0=Overwrite, 1=Maximum
-      observation_sources: scan pointcloud
-      scan:
-        # Merged 360deg scan from ros2_laser_scan_merger (-> /<robot_id>/scan);
-        # absent on the real 3D stack, so this source simply stays silent.
-        topic: scan
-        # TF frame (overridden by the launch file with <robot_id>/ prefix)
-        sensor_frame: scan
-        data_type: "LaserScan"
-        marking: true
-        clearing: true
-        min_obstacle_height: 0.0
-        max_obstacle_height: 2.0
-        obstacle_max_range: 2.5
-        obstacle_min_range: 0.0
-        raytrace_max_range: 3.0
-        raytrace_min_range: 0.0
-        inf_is_valid: false
-
-      # 3D LiDAR obstacle source: Point-LIO's per-scan body cloud — the only
-      # live source on the real robot. Mirrors the global costmap's pointcloud
-      # source in planner_server_params.yaml.
-      pointcloud:
-        # Relative name: resolves to /<robot_id>/pointlio/body_cloud in the
-        # robot_id-namespaced launch.
-        topic: pointlio/body_cloud
-        # Leave sensor_frame empty on purpose: the observation buffer then uses
-        # the cloud's own header frame_id (<robot_id>/pointlio_body, Point-LIO's
-        # body_frame) as the raytrace origin, so this source needs no per-robot
-        # launch-file frame override. The TF chain resolves through map ->
-        # <robot_id>/pointlio_odom (localizer) and map -> odom (lio_bridge),
-        # i.e. only after relocalize.
-        sensor_frame: ""
-        data_type: "PointCloud2"
-        marking: true
-        clearing: true
-        # Heights from the ground under the robot, not from odom's z = 0
-        # (height_reference, 2026-10; ObservationBuffer). lio_bridge keeps
-        # map -> odom and odom -> base_link planar, so a point's z in odom is
-        # its height in the map, whose origin is the lidar where mapping
-        # started: the 1F floor is at about -0.48 there, and the old fixed
-        # band of 0.1-1.5 -- documented as "above the floor" -- was 0.58-1.98
-        # above it on 1F, and above everything on 2F (~5.5 m up), where this
-        # source saw nothing at all; on a stair it slid past the robot. Now the
-        # band rides with the robot: ground = the sensor's (pointlio_body's) z
-        # minus sensor_height, lidar_height in planner_server_params.yaml.
-        # The numbers below are that same 0.58-1.98 above the floor, i.e. what
-        # 1F has always actually run with, so 1F does not change; whether the
-        # local costmap should see lower things (the 0.1 the old comment meant:
-        # boxes, low carts) is a separate decision -- it would also mark ramps
-        # and kerbs the planner accepts, and MPPI would steer round them.
-        height_reference: sensor
-        sensor_height: 0.481
-        min_obstacle_height: 0.58
-        max_obstacle_height: 1.98
-        obstacle_max_range: 2.5
-        obstacle_min_range: 0.0
-        raytrace_max_range: 3.0
-        raytrace_min_range: 0.0
-
     # Read by MPPI's CostCritic (and nothing else here: RPP checks LETHAL
     # only, its cost-regulated scaling is off, docking reads no costmap).
     # inflation_radius 0.45 (0.4 until 2026-10-20): at least the footprint's
@@ -1261,7 +1094,7 @@
     # at 0.30 / 0.35 / 0.40, nearly free at a 0.7 m door's centre line), which
     # left MPPI nothing to steer by until a candidate collided.
     inflation_layer:
-      plugin: "syncai_costmap_2d::InflationLayer"
+      plugin: "syncai_costmap::InflationLayer"
       enabled: true
       inflation_radius: 0.45
       cost_scaling_factor: 3.0

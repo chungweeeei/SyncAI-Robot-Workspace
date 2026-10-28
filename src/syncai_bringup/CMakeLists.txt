@@ -13,7 +13,7 @@ find_package(ament_cmake REQUIRED)
 # maps/ and rviz/ used to be installed here as empty .gitkeep placeholders, a
 # leftover of the nav2_bringup skeleton this package started from. They were
 # removed: maps live in the repo-root map/ directory referenced from
-# config/instances/robotNN.ini (resolved against the workspace cwd, never a
+# config/instances/robot.ini (resolved against the workspace cwd, never a
 # package share dir), and no RViz config is checked in. Don't re-add them
 # speculatively — a map that belongs to a robot instance does not belong in a
 # package share.

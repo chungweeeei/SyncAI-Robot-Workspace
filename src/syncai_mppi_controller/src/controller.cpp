@@ -21,7 +21,7 @@
 #include <cmath>
 #include <iterator>
 
-#include "syncai_costmap_2d/cost_values.hpp"
+#include "syncai_costmap/cost_values.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
@@ -32,9 +32,8 @@ namespace syncai_mppi_controller
 {
 
 void MPPIController::initialize(
-  const rclcpp::Node::SharedPtr & parent,
-  std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  const rclcpp::Node::SharedPtr & parent, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   parent_ = parent;
   costmap_ros_ = costmap_ros;
@@ -271,8 +270,9 @@ void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
   // stood there until the progress checker aborted 30 s later (see
   // GoalAngleCritic in controller_server_params.yaml). MPPI tapers its turn
   // as the heading error closes, so near the goal yaw it lands under the
-  // floor every time. A VelocityDeadbandCritic would score below-floor
-  // samples down, but it penalises zero too, so it would fight stopping.
+  // floor every time. Upstream's VelocityDeadbandCritic (not in this port
+  // since 2026-10-28) would score below-floor samples down, but it penalises
+  // zero too, so it would fight stopping.
   //
   // Only in place (|vx| < in_place_vx_max): while walking, a small wz is a
   // gentle arc, and raising it to the floor would weave a straight line.
@@ -689,7 +689,7 @@ bool MPPIController::climbStairs(
   const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd)
 {
   // Not upstream (2026-10-20): RPP 3D's stair mode, so that one controller
-  // serves a 2D map and a 3D one. A stretch of a path with heights
+  // follows level paths and stairs alike. A stretch of a path with heights
   // (OctomapPlanner3D's stair links) that rises stair_min_rise within reach
   // is climbed standing still for the policy switch and then on a short
   // pure-pursuit carrot at stair_linear_vel -- not by the optimizer, and
@@ -716,8 +716,8 @@ bool MPPIController::climbStairs(
   // of the flight's lethal cells when the optimizer takes over again.
   //
   // A plan without heights never asks for stairs (StairMode::setPlan() reads
-  // pathHasHeight()), and is not even transformed here, so a 2D map's cycle
-  // is what it was before this existed; the one exception is a robot left in
+  // pathHasHeight()), and is not even transformed here, so a level plan's
+  // cycle is what it was before this existed; the one exception is a robot left in
   // stair mode by a cancelled goal, which the next level plan takes back out.
   if (!stair_mode_.enabled()) {
     return false;
@@ -1006,7 +1006,7 @@ bool MPPIController::startBackOut(const geometry_msgs::msg::PoseStamped & robot_
   // wall's LETHAL cells. With vx_min 0 every candidate either walks into the
   // wall or swings a corner into it within the 1.6 s horizon (1000 of 1000),
   // the turn onto the path (+1.30 rad) was blocked, and the tree has no
-  // BackUp (move_3d.xml): the four FollowPath retries and the replans all
+  // BackUp (move.xml): the four FollowPath retries and the replans all
   // started from the same pose, and the task failed; re-sent, it failed in
   // 1.2 min. Here, from a stand: as much of back_out_dist straight back as
   // is free of LETHAL (isApproachBlocked(), the direct approach's test, at
@@ -1096,16 +1096,16 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
   // resolution along a straight line at the end heading -- under
   // approach_rotate_min_angle the arc stays within a cell or two of that
   // line over the few decimetres it runs.
-  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap::mutex_t> costmap_lock(*(costmap->getMutex()));
   const auto & footprint = costmap_ros_->getRobotFootprint();
   const bool tracking_unknown = costmap_ros_->getLayeredCostmap()->isTrackingUnknown();
   const auto in_collision = [&](double px, double py, double ptheta) {
     const double cost = collision_checker_.footprintCostAtPose(px, py, ptheta, footprint);
-    if (cost == static_cast<double>(syncai_costmap_2d::NO_INFORMATION) && tracking_unknown) {
+    if (cost == static_cast<double>(syncai_costmap::NO_INFORMATION) && tracking_unknown) {
       return false;
     }
-    return cost >= static_cast<double>(syncai_costmap_2d::LETHAL_OBSTACLE);
+    return cost >= static_cast<double>(syncai_costmap::LETHAL_OBSTACLE);
   };
 
   const double resolution = costmap->getResolution();
@@ -1147,8 +1147,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
   nav_msgs::msg::Path transformed_plan = path_handler_.transformPath(robot_pose);
 
-  syncai_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
-  std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> costmap_lock(*(costmap->getMutex()));
+  syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
+  std::unique_lock<syncai_costmap::Costmap::mutex_t> costmap_lock(*(costmap->getMutex()));
 
   geometry_msgs::msg::TwistStamped cmd = optimizer_.evalControl(
     robot_pose, robot_speed, transformed_plan, path_handler_.transformedGoal(), goal_checker);
@@ -1214,11 +1214,6 @@ void MPPIController::setPlan(const nav_msgs::msg::Path & path)
   rotating_to_path_ = false;
   // One back-out per path (startBackOut()); one under way runs to its stop.
   back_out_used_ = false;
-}
-
-void MPPIController::setSpeedLimit(const double & speed_limit, const bool & percentage)
-{
-  optimizer_.setSpeedLimit(speed_limit, percentage);
 }
 
 }  // namespace syncai_mppi_controller

@@ -19,7 +19,7 @@ share/syncai_bringup/
 There is deliberately no `maps/` or `rviz/` here. Both existed as empty
 `.gitkeep` placeholders inherited from the `nav2_bringup` skeleton and were
 removed: maps live in the repo-root `map/` directory referenced from
-`config/instances/robotNN.ini` (a path resolved against the workspace cwd, not a
+`config/instances/robot.ini` (a path resolved against the workspace cwd, not a
 package share), and no RViz config is checked in.
 
 ## robot_id
@@ -27,7 +27,7 @@ package share), and no RViz config is checked in.
 The launch file uses the same helper as every other launch file in the stack:
 read `[system] robot_id` from `config/system.ini` (relative path — processes run
 with the workspace root as cwd), falling back to `default_robot` with a warning.
-Override with `system_config:=config/instances/robot02.ini`.
+Override with `system_config:=/path/to/other.ini`.
 
 The resolved value is used two different ways, and the distinction matters:
 
@@ -227,7 +227,7 @@ This package starts **no camera** since 2026-10-17. `bringup.launch.py` used to
 start the TechNexion VCS-AR0234-C through `vizionsdk_ros2` under
 `use_camera:=true` (off by default), with a `/**/vizionsdk_camera` block in
 `params/bringup.yaml`. It was removed because the V4L2 device admits exactly one
-streaming opener and `syncai_camera_feeder` — the nav session's
+streaming opener and `syncai_camera_feeder` — the sessions'
 `camera_feeder` window, teeing the MJPEG to the WebRTC worker and to
 `image_raw/compressed` — is it; a second opener in window 0 could only ever
 crash-loop the feeder on `Device or resource busy`. git history has the node,
@@ -293,7 +293,7 @@ Window 0 of `config/sessions/start_nav.yaml`, before everything else:
 ros2 launch syncai_bringup bringup.launch.py
 
 ros2 launch syncai_bringup bringup.launch.py \
-    system_config:=config/instances/robot02.ini
+    system_config:=/path/to/other.ini
 ```
 
 Check the result:
@@ -338,7 +338,7 @@ are symlinked, and edits take effect on the next launch with no rebuild at all.
   `livox_xfer_format:=0` argument instead of a YAML edit — today only
   `config/sessions/calib_lidar_camera.yaml`. `livox/lidar` keeps its name and
   only changes type there, so never set it in a session that runs pointlio.
-- **Nothing publishes `<robot_id>/scan` any more.** The 3D planner/controller
-  params still list `scan` as an obstacle observation source; it was already
-  inert on the real robot (the obstacle layers run off `pointlio/body_cloud`),
-  and now neither the topic nor its TF frame exists at all.
+- **Nothing publishes `<robot_id>/scan` any more.** Nothing reads it either
+  since 2026-10-28: the costmaps' obstacle layers, which listed it as an
+  (inert) observation source beside `pointlio/body_cloud`, went with 2D
+  navigation, and neither the topic nor its TF frame exists at all.

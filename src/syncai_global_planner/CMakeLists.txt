@@ -19,26 +19,20 @@ find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
-find_package(syncai_costmap_2d REQUIRED)
+find_package(syncai_costmap REQUIRED)
 find_package(syncai_nav_core REQUIRED)
 # OctomapPlanner3D's dynamic overlay subscribes the lidar cloud through a TF
 # message filter and transforms it into the map frame (2026-10-21). All three
-# came in transitively through syncai_costmap_2d before, but a target that
+# came in transitively through syncai_costmap before, but a target that
 # includes their headers has to name them.
 find_package(sensor_msgs REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
-# smac planner dependencies. ompl is still required after the Hybrid-A*
-# planner was dropped: Smoother uses its Dubins state space to resample the
-# boundary segments of a path. Its humble CMake config only exports classic
-# OMPL_INCLUDE_DIRS / OMPL_LIBRARIES variables (no imported target), so it is
-# linked by variable below rather than via the dependencies list.
-find_package(angles REQUIRED)
-find_package(Eigen3 REQUIRED)
-find_package(ompl REQUIRED)
-# OctomapPlanner3D: octomap's humble config also exports only the classic
+# OctomapPlanner3D: octomap's humble config exports only the classic
 # OCTOMAP_INCLUDE_DIRS / OCTOMAP_LIBRARIES variables (the imported targets
-# arrived in 1.10), so it is linked by variable like OMPL. It is the same
+# arrived in 1.10), so it is linked by variable rather than via the
+# dependencies list. (angles, Eigen and OMPL went with the 2D planners,
+# 2026-10-28: Smac's smoother was the one OMPL user.) It is the same
 # ros-humble-octomap syncai_mapping's clean_map builds against.
 find_package(octomap REQUIRED)
 # OctomapPlanner3D's keepout zones are read from map/<name>/keepout.json
@@ -62,9 +56,8 @@ set(dependencies
   tf2_ros
   pluginlib
   syncai_util
-  syncai_costmap_2d
+  syncai_costmap
   syncai_nav_core
-  angles
   sensor_msgs
   message_filters
   tf2_sensor_msgs
@@ -73,17 +66,9 @@ set(dependencies
 set(library_name ${PROJECT_NAME})
 set(executable_name planner_server)
 
+# One planner plugin since 2026-10-28, OctomapPlanner3D; NavFn,
+# StraightLine and SmacPlanner2D went with 2D navigation.
 add_library(${library_name} SHARED
-  plugins/navfn_planner/navfn.cpp
-  plugins/navfn_planner/navfn_planner.cpp
-  plugins/straight_line_planner/straight_line_planner.cpp
-  plugins/smac_planner/a_star.cpp
-  plugins/smac_planner/collision_checker.cpp
-  plugins/smac_planner/costmap_downsampler.cpp
-  plugins/smac_planner/node_2d.cpp
-  plugins/smac_planner/node_basic.cpp
-  plugins/smac_planner/smac_planner_2d.cpp
-  plugins/smac_planner/smoother.cpp
   plugins/octomap_planner_3d/surface_map.cpp
   plugins/octomap_planner_3d/surface_astar.cpp
   plugins/octomap_planner_3d/path_postprocess.cpp
@@ -98,19 +83,17 @@ target_include_directories(${library_name} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-# SYSTEM keeps the workspace-wide -Wpedantic from flagging OMPL's headers,
-# which were never written against it.
-target_include_directories(${library_name} SYSTEM PUBLIC ${OMPL_INCLUDE_DIRS} ${OCTOMAP_INCLUDE_DIRS})
+# SYSTEM keeps the workspace-wide -Wpedantic from flagging octomap's headers.
+target_include_directories(${library_name} SYSTEM PUBLIC ${OCTOMAP_INCLUDE_DIRS})
 
 ament_target_dependencies(${library_name} ${dependencies})
 target_link_libraries(${library_name}
-  ${OMPL_LIBRARIES}
   ${OCTOMAP_LIBRARIES}
-  Eigen3::Eigen
   nlohmann_json::nlohmann_json
 )
-# The smac A* search is the hot path and upstream always builds it -O3; plan
-# latency is user-visible, so force it regardless of the workspace build type.
+# The surface-map A* search is the hot path (as Smac's was, which upstream
+# always builds -O3); plan latency is user-visible, so force it regardless of
+# the workspace build type.
 target_compile_options(${library_name} PRIVATE -O3)
 
 pluginlib_export_plugin_description_file(syncai_nav_core global_planner_plugin.xml)

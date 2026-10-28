@@ -106,10 +106,6 @@ add_library(syncai_recovery_node_bt_node SHARED
 list(APPEND plugin_libs syncai_recovery_node_bt_node)
 
 # Behavior Tree condition node plugins
-add_library(syncai_initial_pose_received_condition_bt_node SHARED
-  plugins/condition/initial_pose_received_condition.cpp)
-list(APPEND plugin_libs syncai_initial_pose_received_condition_bt_node)
-
 add_library(syncai_is_path_valid_condition_bt_node SHARED
   plugins/condition/is_path_valid_condition.cpp)
 list(APPEND plugin_libs syncai_is_path_valid_condition_bt_node)
@@ -138,16 +134,6 @@ install(
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
-)
-
-# Example executables
-add_executable(demo examples/demo.cpp)
-target_link_libraries(demo ${library_name})
-ament_target_dependencies(demo ${dependencies})
-
-install(
-  TARGETS demo
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(

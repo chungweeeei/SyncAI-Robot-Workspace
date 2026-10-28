@@ -17,9 +17,8 @@
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
-#include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/empty.hpp"
-#include "syncai_costmap_2d/costmap_2d_ros.hpp"
+#include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
@@ -71,27 +70,27 @@ namespace syncai_global_planner
  * once (plans fail with map_loading, never on the old site's map), builds the
  * new one and answers when it is in -- success is a result, not a receipt. A
  * failed build leaves no map at all, not the old one. A missing file is
- * refused before anything is dropped. An empty map_url unloads the map --
- * the switch to a 2D map. See loadMapCallback().
+ * refused before anything is dropped. An empty map_url unloads the map
+ * (what the backend's switch to a 2D map sends; no 2D map navigates since
+ * 2026-10-28). See loadMapCallback().
  *
- * `<planner_server>/<id>/map_available` (std_msgs/Bool, latched) says
- * whether this planner has a map, built or being built: the task_runner
- * reads it per goal to run the 3D trees (move_3d.xml, dock_3d.xml) on a 3D
- * map and the 2D ones otherwise (2026-10-19). See publishMapAvailable().
+ * There is no `map_available` topic since 2026-10-28: from 2026-10-19 the
+ * task_runner picked the 3D or the 2D trees by it, and the local costmap its
+ * sensor layer; both went with 2D navigation and left it with no reader.
  *
  * Dynamic obstacles (2026-10-21): the surface map is static, so on its own
- * a replan returns the route a person is standing on, and is_path_valid,
- * judged on the 2D costmap, cannot see a 3D path. The plugin therefore keeps
+ * a replan returns the route a person is standing on, and the 2D global
+ * costmap (layerless since 2026-10-28) could not judge a 3D path. The plugin therefore keeps
  * a dynamic overlay of its own (dynamic_overlay.hpp): the lidar cloud
  * (`dynamic.topic`, pointlio/body_cloud) in the map frame, every return in
  * the band above the surface it lies on a mark on that cell, rays clearing
  * the marks they cross, marks aging out after dynamic.obstacle_memory. A
  * plan reads a snapshot of it (the search and the shortcut keep off the
  * marks and their block_radius ring, and pay for the band beyond as for a
- * wall), and isPathValid() -- which the planner server calls instead of its
- * costmap test for the planner that made the last plan -- reads the same
- * snapshot for the path ahead, so move_3d.xml runs move.xml's
- * IsPathValid / blocked_time / replan machinery unchanged. The overlay has
+ * wall), and isPathValid() -- which the planner server calls for the
+ * planner that made the last plan -- reads the same snapshot for the path
+ * ahead, so move.xml's IsPathValid / blocked_time / replan machinery works
+ * on it. The overlay has
  * its own lock, and its scans arrive on the global costmap's TF thread (see
  * initialize()); nothing of it waits behind mutex_.
  * `<planner_server>/<id>/clear_overlay` (nav2_msgs/srv/
@@ -126,16 +125,11 @@ public:
 
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
-
-  // The 2D costmap gives this planner its frame id and nothing else, so a
-  // goal must not wait for it: a 3D-only map has no gridmap.yaml, and its
-  // global costmap never turns current.
-  bool usesCostmap() const override { return false; }
 
   // The part of `path` ahead of the robot against the dynamic overlay and
   // the keepout zones, on the floor stretch the robot is on (see the .cpp
@@ -193,14 +187,6 @@ protected:
   // beside octomap.bt.
   static std::string fileBeside(const std::string & octomap_file, const char * name);
 
-  // Latch `available` on map_available: true from the moment a build starts
-  // (boot or load_map) until one fails, false with no octomap_file or after a
-  // failed build. "Being built" counts as available because the map's type is
-  // what the reader wants: a goal sent mid-build belongs to the 3D tree, whose
-  // plan then fails with map_loading, not to the 2D one, whose GridBased has
-  // no map on a 3D-only map.
-  void publishMapAvailable(bool available);
-
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
   bool startHeightHint(double & z) const;
 
@@ -208,7 +194,7 @@ protected:
     std::vector<rclcpp::Parameter> parameters);
 
   // Weak: the planner server owns the node and us; a strong pointer here
-  // would be an ownership cycle (same as SmacPlanner2D).
+  // would be an ownership cycle.
   rclcpp::Node::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   rclcpp::Clock::SharedPtr clock_;
@@ -218,7 +204,7 @@ protected:
   // Parameters (see planner_server_params.yaml for the reasoning).
   std::string octomap_file_, poses_file_, body_frame_, goal_z_mode_;
   double lidar_height_{0.481}, interpolation_resolution_{0.1}, path_z_offset_{0.0};
-  bool shortcut_{true}, publish_raw_plan_{false}, stair_links_{true};
+  bool shortcut_{true}, stair_links_{true};
   octomap_planner_3d::SurfaceMapParams map_params_;
   octomap_planner_3d::StairLinkParams stair_params_;
   octomap_planner_3d::SearchParams search_params_;
@@ -274,8 +260,6 @@ protected:
   // members it uses go.
   std::unique_ptr<syncai_util::NodeThread> load_map_thread_;
 
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raw_plan_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr map_available_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 
   // The overlay's input: the cloud through a TF message filter to the map

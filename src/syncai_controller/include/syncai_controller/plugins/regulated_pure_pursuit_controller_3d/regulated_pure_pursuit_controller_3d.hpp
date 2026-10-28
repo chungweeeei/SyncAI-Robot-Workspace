@@ -13,7 +13,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap_2d/footprint_collision_checker.hpp"
+#include "syncai_costmap/footprint_collision_checker.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/stair_mode.hpp"
@@ -24,14 +24,14 @@ namespace syncai_controller
 /**
  * @class syncai_controller::RegulatedPurePursuitController3D
  *
- * RegulatedPurePursuitController (the 2D RPP, `FollowPathRPP`) plus what a path
- * with heights from OctomapPlanner3D needs: matching the robot to the plan in
- * 3D (path_height.hpp) and the stair mode. It is a copy rather than a subclass
- * on purpose (2026-10): the 2D RPP is the plugin `dev` runs and stays
- * byte-for-byte what it was, and the stair logic is woven through
+ * Regulated Pure Pursuit plus what a path with heights from OctomapPlanner3D
+ * needs: matching the robot to the plan in 3D (path_height.hpp) and the stair
+ * mode. It began (2026-10) as a copy of the 2D RegulatedPurePursuitController
+ * (`FollowPathRPP`) rather than a subclass, so that plugin stayed
+ * byte-for-byte `dev`'s; the stair logic is woven through
  * computeVelocityCommands() (lookahead, speed cap, braking hold), which the 2D
- * class has no hooks for. A fix to the shared pursuit / regulation / collision
- * code therefore has to be made in both files.
+ * class had no hooks for. The 2D plugin went with 2D navigation on 2026-10-28,
+ * so this is the only RPP and has nothing to keep in step with.
  */
 class RegulatedPurePursuitController3D : public syncai_nav_core::Controller
 {
@@ -51,11 +51,11 @@ public:
    * @param node The node that hosts the controller server
    * @param name Name of plugin
    * @param tf TF buffer
-   * @param costmap_ros Costmap2DROS object of environment
+   * @param costmap_ros CostmapROS object of environment
    */
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   /**
    * @brief Compute the best command given the current pose and velocity, with possible debug information
@@ -84,15 +84,6 @@ public:
    * first command of a new goal ramps up from a standstill.
    */
   void reset() override;
-
-  /**
-   * @brief Limits the maximum linear speed of the robot.
-   * @param speed_limit expressed in absolute value (in m/s)
-   * or in percentage from maximum robot speed.
-   * @param percentage Setting speed limit in percentage if true
-   * or in absolute values in false case.
-   */
-  void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
 
 protected:
   /**
@@ -258,12 +249,12 @@ protected:
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
-  syncai_costmap_2d::Costmap2D * costmap_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
+  syncai_costmap::Costmap * costmap_;
   rclcpp::Logger logger_{rclcpp::get_logger("RegulatedPurePursuitController3D")};
   rclcpp::Clock::SharedPtr clock_;
 
-  double desired_linear_vel_, base_desired_linear_vel_;
+  double desired_linear_vel_;
   double lookahead_dist_;
   double rotate_to_heading_angular_vel_;
   // Not upstream: the gait's in-place turn floor (see rotateToHeading()).
@@ -352,7 +343,7 @@ protected:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr carrot_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr carrot_arc_pub_;
-  std::unique_ptr<syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *>>
+  std::unique_ptr<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *>>
     collision_checker_;
 
   // Dynamic parameters handler

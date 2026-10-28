@@ -9,8 +9,7 @@ consumed in completely different ways:
 | | What | How it reaches a consumer |
 |---|---|---|
 | **Engine + base classes** | `BehaviorTreeEngine`, `BtActionServer`, `BtActionNode`, `BtServiceNode`, `bt_conversions` | `libsyncai_behavior_tree.so` + headers, linked at **build** time |
-| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, `InitialPoseReceived` | one shared library each, `dlopen`ed by **name at runtime** |
-| **A standalone demo** | `examples/demo.cpp` | `ros2 run syncai_behavior_tree demo` |
+| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, and the docking nodes (below) | one shared library each, `dlopen`ed by **name at runtime** |
 
 Nothing here is a ROS node. The only consumer today is **`syncai_task_runner`**,
 which builds a `BtActionServer<nav2_msgs::action::NavigateToPose>` and ticks
@@ -26,7 +25,7 @@ syncai_task_runner (rclcpp::Node)
                  ├─ PipelineSequence / RateController / RecoveryNode   ← plugins
                  ├─ ComputePathToPose  ──action──►  syncai_global_planner
                  ├─ FollowPath         ──action──►  syncai_controller
-                 └─ ClearEntireCostmap ──service─►  syncai_costmap_2d
+                 └─ ClearEntireCostmap ──service─►  syncai_costmap
 ```
 
 ## Layout
@@ -41,8 +40,6 @@ include/syncai_behavior_tree/
   plugins/{action,control,condition,decorator}/…
 src/behavior_tree_engine.cpp
 plugins/…                      one .cpp per plugin library; each ends in BT_REGISTER_NODES
-examples/demo.cpp
-docs/                          design notes (English) — see "Further reading"
 ```
 
 ## BehaviorTreeEngine
@@ -139,10 +136,7 @@ constructor — a missing one is a runtime throw, not a compile error.
 | `server_timeout` | `milliseconds` | `BtActionServer` | ditto (overridable per node via the `server_timeout` port) |
 | `bt_loop_duration` | `milliseconds` | `BtActionServer` | ditto, to derive `max_timeout_` |
 | `wait_for_service_timeout` | `milliseconds` | `BtActionServer` | ditto |
-| `tf_buffer` | `shared_ptr<tf2_ros::Buffer>` | `syncai_task_runner::Navigator` | frame-aware nodes |
-| `odom_smoother` | `shared_ptr<syncai_util::OdomSmoother>` | ditto | nodes needing current speed |
-| `initial_pose_received` | `bool` | ditto | `InitialPoseReceived` condition |
-| `number_recoveries` | `int` | ditto (init) | incremented by `increment_recovery_count()` in recovery nodes; surfaced as action feedback |
+| `number_recoveries` | `int` | `syncai_task_runner::Navigator` (init) | incremented by `increment_recovery_count()` in recovery nodes; surfaced as action feedback |
 | `failed_node` / `failure_msg` | `std::string` | ditto (init, and reset per goal) | written by `BtActionNode::report_failure()` — `ComputePathToPose`, `FollowPath` and `DockToPose` on abort, the base class on an unacknowledged / rejected goal (with an empty `failed_node`) — and, since 2026-10, by `BtServiceNode`'s copy of it (`SetMotionKey` on a refused key; unattributed on a timeout) and by `ComputeStagingPose` / `Wait` by hand; read by the navigator in `goalCompleted()` to fill `NavigateToGoal`'s `error_code` / `error_msg`. Last writer wins; `move.xml`'s header has why that names the branch that failed the tree, `dock.xml`'s has the docking case. Constants in `blackboard_keys.hpp` |
 | `number_plans` | `int` | ditto (init, reset per goal) | incremented by `ComputePathToPose` on success; the navigator reports `plans − 1` as `number_of_replans` |
 | `nav_status_msg` | `std::string` | ditto (init; set per goal to `kStatusPlanning`) | one English sentence of what the navigator is doing, for `NavigateToGoal`'s `status_msg` feedback (2026-10). Written by `IsPathValid` ("Path blocked; rerouting if it is still blocked after 10 s" while it keeps a blocked path (the number is `blocked_time`), "Path blocked; replanning" when it gives it up, "Following the path" over its own first sentence when the path clears; on a service answer only), `GlobalUpdatedGoal` ("Goal changed; replanning", once the goal has had a path), `ComputePathToPose` ("Following the path" on success, a retry sentence on abort), `FollowPath` (a retry sentence on abort, "Following the path" when the retry goes out), `DockToPose` ("Approaching the dock", "Docking: 0.42 m from the dock" from the controller's feedback, "Docked", and the undock counterparts) and the docking trees themselves through BT.CPP's built-in `SetBlackboard` ("Switching the gait to MPC for docking" — written by the tree because `SetMotionKey` is generic and does not know why it is sending a key; `output_key` is the **bare** key name there). Last writer wins; the `ClearEntireCostmap` nodes write nothing. Free text, never branched on |
@@ -255,7 +249,6 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
 | `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout`, `blocked_time` (s, default 0; `move.xml` / `dock.xml` set 10), `blocked_match_distance` (m, default 0.5) |
 | `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
-| `InitialPoseReceived` | condition | `syncai_initial_pose_received_condition_bt_node` | reads blackboard `initial_pose_received` |
 
 Semantics of the non-obvious ones:
 
@@ -284,12 +277,13 @@ Semantics of the non-obvious ones:
   `server_timeout` and never returns `RUNNING`. An empty path answers `FAILURE`
   without a call; a timeout answers `SUCCESS` with a WARN (2026-10) — in doubt
   the tree **keeps** the path, because a replan replaces a route nobody has
-  shown to be blocked (and the 2D-raytraced global costmap can have forgotten
-  the blocker the detour was for), while a kept one is re-checked in a second
-  and RPP stops the robot meanwhile. The timeout is the global costmap's 1 Hz
-  update holding the costmap mutex past `server_timeout`; a WARN every tick
-  means the two loops phase-locked and `server_timeout` in `move.xml` must go
-  up, not that the answer should flip back. Not upstream (2026-10): a
+  shown to be blocked, while a kept one is re-checked in a second and the
+  controller holds the robot meanwhile. Until 2026-10-28 the usual cause was
+  the 2D global costmap's 1 Hz update holding its mutex past
+  `server_timeout`; the check is answered by `Octo3D` on its dynamic overlay
+  since, so a WARN every tick now means that answer is slower than
+  `server_timeout` and the timeout in `move.xml` must go up, not that the
+  answer should flip back. Not upstream (2026-10): a
   `false` answers `FAILURE` only once the same spot (a blocked pose within
   `blocked_match_distance` of one blocked last time) of the same path (stamp +
   size) has been answered blocked for `blocked_time` seconds (steady clock,
@@ -326,18 +320,17 @@ specialisation shows up as an XML parse error at tree-load time.
 
 ## The tree in use
 
-`syncai_task_runner/behavior_trees/move.xml`. Below is the `PipelineSequence`
-of the 2D tree on `dev` (the new-goal `ClearEntireCostmap` that precedes it is
-left out) — replanning only when the path becomes invalid or the goal changes. On
-`feature/octomap-planner-3d` a 3D map runs `move_3d.xml` instead (picked per
-goal by the task_runner): the same tree with `planner_id="Octo3D"`,
-`controller_id="FollowPath"` (MPPI, 3D-aware) and both `ClearEntireCostmap`
-nodes on `planner_server/Octo3D/clear_overlay`, the planner's dynamic-obstacle
-memory — which is also what its `IsPathValid` is judged on, since
-planner_server asks the planner itself for an `Octo3D` path (2026-10-21; from
-2026-10-19 until then a `number_plans == 0` `BlackboardCheckInt` stood in for
-`IsPathValid` there and the tree planned once per goal). Both with contextual
-recovery (the why is in the XML header and `syncai_task_runner`'s README):
+`syncai_task_runner/behavior_trees/move.xml`. Below is its `PipelineSequence`
+(the new-goal `ClearEntireCostmap` on `planner_server/Octo3D/clear_overlay`
+that precedes it is left out) — replanning only when the path becomes invalid
+or the goal changes, with contextual recovery (the why is in the XML header
+and `syncai_task_runner`'s README). `planner_id="Octo3D"`,
+`controller_id="FollowPath"` (MPPI, 3D-aware), and the planner branch's
+`ClearEntireCostmap` on `clear_overlay`, the planner's dynamic-obstacle memory
+— which is also what its `IsPathValid` is judged on, since planner_server asks
+the planner that made the last plan (2026-10-21). This was `move_3d.xml` until
+2026-10-28; the 2D `move.xml` it replaced (`GridBased`, clears on
+`global_costmap/clear_entirely_global_costmap`) went with 2D navigation.
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">
@@ -350,9 +343,9 @@ recovery (the why is in the XML header and `syncai_task_runner`'s README):
           </Inverter>
           <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
         </ReactiveSequence>
-        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
       </Fallback>
-      <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+      <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
     </RecoveryNode>
   </RateController>
   <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
@@ -411,15 +404,14 @@ BT nodes and the behavior server are not ported yet.
 
 ```bash
 colcon build --packages-select syncai_behavior_tree
-source install/setup.bash
-ros2 run syncai_behavior_tree demo
 ```
 
-`examples/demo.cpp` is a **standalone BT.CPP tutorial**, not part of the nav
-stack: it builds its own factory with a few `SyncActionNode`s, shows a custom
-`convertFromString` for a user struct, port ⇄ blackboard remapping, an
-`ActionNodeBase` that returns `RUNNING`, and a `<SubTree>` pulled in via
-`<include>`. It does not use `BehaviorTreeEngine`, any plugin, or any ROS action.
+Every node library it builds is one `syncai_task_runner` loads. Removed on
+2026-10-28 as unused: the `InitialPoseReceived` condition (nav2's AMCL-era
+"wait for an initial pose" gate, built but never loaded, with the
+`initial_pose_received` blackboard key the navigator seeded for it) and
+`examples/demo.cpp`, a standalone BT.CPP tutorial executable (`demo`) that
+used none of this package.
 
 Only the ament linters run under `colcon test`; there are no unit tests.
 
@@ -450,23 +442,9 @@ Only the ament linters run under `colcon test`; there are no unit tests.
 
 ## Further reading
 
-`docs/` holds longer design notes (in English) written while porting:
-
-- [`docs/behavior_tree_tick_notes.md`](docs/behavior_tree_tick_notes.md) — how
-  `tickRoot()` → `executeTick()` → `tick()` recursion works, `SequenceNode`'s
-  `current_child_idx_` progress memory, and when `loopTimeout` actually matters.
-- [`docs/action_node_types.md`](docs/action_node_types.md) — `SyncActionNode` vs
-  `StatefulActionNode` vs `AsyncActionNode`, threading and cancellation for each,
-  and why real ROS actions use `BtActionNode` instead.
-- [`docs/bt_service_node.md`](docs/bt_service_node.md) — a line-by-line walk
-  through `BtServiceNode`: the template-method structure, the two timeouts,
-  why `spin_until_future_complete` is required for the future to progress, and
-  the resulting latency analysis.
-
-Note: the first two documents refer to `examples/sync_action_demo.cpp`,
-`stateful_action_demo.cpp` and `async_action_demo.cpp`, which are not in the tree
-— only `examples/demo.cpp` exists. The explanations stand on their own; the file
-references do not.
+The porting-time design notes that were in `docs/` (BT.CPP's tick recursion,
+the three action-node types, a walk through `BtServiceNode`) were removed on
+2026-10-28; git history has them.
 
 Upstream reference: [`nav2_behavior_tree`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_behavior_tree)
 and the [BehaviorTree.CPP v3 docs](https://www.behaviortree.dev/). The vendored

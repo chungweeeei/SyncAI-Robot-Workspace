@@ -2,9 +2,10 @@
 #define SYNCAI_GLOBAL_PLANNER__PLUGINS__OCTOMAP_PLANNER_3D__DYNAMIC_OVERLAY_HPP_
 
 // The dynamic-obstacle overlay of OctomapPlanner3D (2026-10-21): what the 2D
-// global costmap's obstacle layer is to GridBased, in the surface map's own
-// terms, so that a 3D map gets the 2D stack's "path blocked for 10 s ->
-// replan round it" and not only the controller's local detour.
+// global costmap's obstacle layer was to GridBased (until 2026-10-28), in the
+// surface map's own terms, so that a 3D map gets the "path blocked for 10 s
+// -> replan round it" the 2D stack had, and not only the controller's local
+// detour.
 //
 // Why it exists. The surface map is static: it is the octree the map was
 // saved with, reduced once at load. A person standing in a corridor is not

@@ -485,14 +485,14 @@ int64 override and the node dies with `InvalidParameterTypeException`.
 
 ```bash
 ros2 launch syncai_localizer localizer.launch.py                        # ~/robot_ws/config/system.ini
-ros2 launch syncai_localizer localizer.launch.py system_config:=/path/to/robot01.ini
+ros2 launch syncai_localizer localizer.launch.py system_config:=/path/to/robot.ini
 ```
 
 `system_config:=` has one trap the other launches do not: a **relative**
 `[map] pcd` (the instance INIs write `map/%(name)s/map.pcd`) is resolved
 against *two directories above the INI*, because on the robot the INI is
 `config/system.ini` and that is the workspace root. Pointing the argument at
-`config/instances/robot01.ini` therefore looks for `config/map/<name>/map.pcd`
+`config/instances/robot.ini` therefore looks for `config/map/<name>/map.pcd`
 and starts nothing (`[map] pcd '…/config/map/dp2f/map.pcd' does not exist`).
 For a bare run, use an INI whose `pcd` is absolute, or one that sits at
 `<workspace>/config/`.
@@ -733,7 +733,7 @@ replay-A runs on the same `syncai_pointlio` build.
 ## Gotchas
 
 - **The namespace is `/<robot_id>`, not `/<robot_id>/localizer`.** See above.
-  The rviz config in `config/rviz2/` reads `/<robot_id>/map_cloud`.
+  A viewer reads `/<robot_id>/map_cloud`.
 - **`relocalize` success is a receipt.** Poll `relocalize_check`. A guess
   the timer cannot converge on is withdrawn after `guess_timeout_sec` (10 s)
   since 2026-10, so `relocalize_check` answering `false` ten seconds later

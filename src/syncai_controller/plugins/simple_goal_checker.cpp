@@ -32,7 +32,7 @@ SimpleGoalChecker::SimpleGoalChecker()
 
 void SimpleGoalChecker::initialize(
   const rclcpp::Node::SharedPtr & node, const std::string & plugin_name,
-  const std::shared_ptr<syncai_costmap_2d::Costmap2DROS> /*costmap_ros*/)
+  const std::shared_ptr<syncai_costmap::CostmapROS> /*costmap_ros*/)
 {
   plugin_name_ = plugin_name;
 

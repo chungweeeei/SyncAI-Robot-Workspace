@@ -36,9 +36,6 @@ namespace syncai_controller
 
 namespace
 {
-// nav2_costmap_2d::NO_SPEED_LIMIT from costmap_filters/filter_values.hpp.
-constexpr double kNoSpeedLimit = 0.0;
-
 // Horizon and step of the rviz preview (publishPreview()). Not parameters on
 // purpose: the preview is a picture, the control law never reads it and
 // nothing is checked against it, so there is nothing to tune.
@@ -57,7 +54,7 @@ constexpr double kDockingPlanPeriod = 0.5;
 
 void DockingController::initialize(
   const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros)
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros)
 {
   // Frame names only. No getCostmap(), no collision checker: see the header.
   costmap_ros_ = costmap_ros;
@@ -125,7 +122,6 @@ void DockingController::initialize(
   node->get_parameter("controller_frequency", control_frequency);
 
   control_duration_ = 1.0 / control_frequency;
-  base_v_linear_max_ = v_linear_max_;
 
   // Upstream's rule: an initial rotation turns the nose toward the target,
   // which is the opposite of what a reversing approach wants.
@@ -143,7 +139,6 @@ void DockingController::initialize(
       logger_, "[DockingController][%s] v_linear_min %.2f > v_linear_max %.2f; raising the max",
       plugin_name_.c_str(), v_linear_min_, v_linear_max_);
     v_linear_max_ = v_linear_min_;
-    base_v_linear_max_ = v_linear_max_;
   }
   if (v_angular_min_ > v_angular_max_) {
     RCLCPP_WARN(
@@ -547,32 +542,6 @@ void DockingController::publishDockingPlan(
   have_last_docking_plan_ = true;
 }
 
-void DockingController::setSpeedLimit(const double & speed_limit, const bool & percentage)
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  if (speed_limit == kNoSpeedLimit) {
-    v_linear_max_ = base_v_linear_max_;
-  } else if (percentage) {
-    v_linear_max_ = base_v_linear_max_ * speed_limit / 100.0;
-  } else {
-    v_linear_max_ = speed_limit;
-  }
-
-  // A limit below the gait floor cannot be honoured: a command below the
-  // floor is a stall, not a slow approach, and a silent stall is worse than
-  // an ignored limit.
-  if (v_linear_max_ < v_linear_min_) {
-    RCLCPP_WARN_THROTTLE(
-      logger_, *clock_, 5000,
-      "[DockingController][%s] speed limit %.2f m/s is below the gait floor v_linear_min %.2f; "
-      "driving at the floor",
-      plugin_name_.c_str(), v_linear_max_, v_linear_min_);
-    v_linear_max_ = v_linear_min_;
-  }
-  control_law_->setSpeedLimit(v_linear_min_, v_linear_max_, v_angular_max_);
-}
-
 rcl_interfaces::msg::SetParametersResult DockingController::dynamicParametersCallback(
   std::vector<rclcpp::Parameter> parameters)
 {
@@ -608,7 +577,6 @@ rcl_interfaces::msg::SetParametersResult DockingController::dynamicParametersCal
           continue;
         }
         v_linear_max_ = parameter.as_double();
-        base_v_linear_max_ = parameter.as_double();
       } else if (name == plugin_name_ + ".v_angular_max") {
         v_angular_max_ = parameter.as_double();
       } else if (name == plugin_name_ + ".v_angular_min") {

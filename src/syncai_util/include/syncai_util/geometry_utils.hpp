@@ -87,21 +87,6 @@ inline double euclidean_distance(
 }
 
 /**
- * @brief Get the L2 distance between 2 geometry_msgs::Pose2D
- * @param pos1 First pose
- * @param pos1 Second pose
- * @return double L2 distance
- */
-inline double euclidean_distance(
-  const geometry_msgs::msg::Pose2D & pos1, const geometry_msgs::msg::Pose2D & pos2)
-{
-  double dx = pos1.x - pos2.x;
-  double dy = pos1.y - pos2.y;
-
-  return std::hypot(dx, dy);
-}
-
-/**
  * Find element in iterator with the minimum calculated value
  */
 template <typename Iter, typename Getter>

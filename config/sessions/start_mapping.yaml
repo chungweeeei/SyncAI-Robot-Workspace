@@ -4,9 +4,9 @@
 #         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
 #
 # This is the counterpart to start_nav.yaml, not a variant of it. start_nav.yaml
-# is a *localization* stack: map_server and the FAST-LIO2 localizer both load an
-# existing map during construction and die without one, so it cannot be used to
-# create the map it needs. This spec is the other half of that loop.
+# is a *localization* stack: the localizer loads an existing map during
+# construction and dies without one, so it cannot be used to create the map it
+# needs. This spec is the other half of that loop.
 #
 # The pipeline (from §5 of the FAST-LIO2 PGO pipeline note, no longer in doc/):
 #
@@ -48,7 +48,6 @@
 # tilts the new map permanently.
 #
 # Deliberately NOT here, all for the same reason — they need a finished map:
-#   * map_server  — loads [map] map in its constructor and throws if absent
 #   * localizer   — its launch returns [] and starts nothing without [map] pcd
 #   * lio_bridge  — its map->odom stage waits on a TF only the localizer emits
 #                   after relocalize; nothing in a mapping run consumes odom
@@ -95,7 +94,7 @@
 #
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
 # starts in the workspace root so the relative config/system.ini resolves. In
-# the container that path is the bind-mount of config/instances/robotNN.ini, so
+# the container that path is the bind-mount of config/instances/robot.ini, so
 # no system_config:= argument is needed (start_nav.yaml passes none either).
 #
 # Logs go to log/stack/<robot_id>/mapping/ — a subtree of its own, so this spec
@@ -173,7 +172,7 @@ windows:
   # motors / wifi and above all for RobotState.mode, which the console polls to
   # know the switch to MANUAL landed.
   #
-  # This is the last window, and it is one pane rather than two because both
+  # It is one pane rather than two because both
   # processes that used to follow robot_state here are served from elsewhere
   # now: the frontend dev server left in 2026-09 with `syncai_frontend`, the
   # backend right after it with `syncai_backend`. Neither is a pane of either
@@ -183,3 +182,21 @@ windows:
     panes:
       - cmd: ros2 launch syncai_robot_state robot_state.launch.py
         log: mapping/robot_state
+
+  # ---------- Window 4: camera_feeder (sole opener of /dev/syncai/camera0) ----
+  # The same window as start_nav.yaml's (2026-10-28; until then a switch to
+  # MANUAL took the camera, and the console's WebRTC view, down for the whole
+  # mapping run): syncai_camera_feeder tees the MJPEG, undecoded, to the
+  # WebRTC worker (RTP/JPEG on 127.0.0.1:5008) and to image_raw/compressed, so
+  # the operator driving the run sees where the robot is going. Nothing in the
+  # mapping chain consumes either, so there is no ordering and no `sleep:`.
+  #
+  # Still the camera's only opener: switch_mode kills every session before
+  # building the next, so this window and the nav or calibration session's
+  # never run at once. A busy device (a host-side opener) shows here as a
+  # 2 s respawn loop, as in the nav session; `fuser -v /dev/video*` on the
+  # host names the holder.
+  - name: camera_feeder
+    panes:
+      - cmd: ros2 launch syncai_camera_feeder camera_feeder.launch.py
+        log: mapping/camera_feeder

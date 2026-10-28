@@ -20,7 +20,7 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
-#include "syncai_costmap_2d/footprint_collision_checker.hpp"
+#include "syncai_costmap/footprint_collision_checker.hpp"
 #include "syncai_mppi_controller/models/constraints.hpp"
 #include "syncai_mppi_controller/optimizer.hpp"
 #include "syncai_mppi_controller/tools/path_handler.hpp"
@@ -52,7 +52,7 @@ public:
     * @param parent Node hosting the plugin (the controller server)
     * @param name Name of plugin
     * @param tf TF buffer to use
-    * @param costmap_ros Costmap2DROS object of environment
+    * @param costmap_ros CostmapROS object of environment
     *
     * syncai_nav_core has no lifecycle, so upstream's configure() and
     * activate() run back to back here: publishers are live and the dynamic
@@ -61,9 +61,8 @@ public:
     * noise generator's thread down.
     */
   void initialize(
-    const rclcpp::Node::SharedPtr & parent,
-    std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    const rclcpp::Node::SharedPtr & parent, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   /**
     * @brief Reset the optimizer's warm start
@@ -92,13 +91,6 @@ public:
     * @param path Path to track
     */
   void setPlan(const nav_msgs::msg::Path & path) override;
-
-  /**
-    * @brief Set new speed limit from callback
-    * @param speed_limit Speed limit to use
-    * @param percentage Bool if the speed limit is absolute or relative
-    */
-  void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
 
 protected:
   /**
@@ -254,7 +246,7 @@ protected:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_plan_pub_;
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
 
   std::unique_ptr<ParametersHandler> parameters_handler_;
@@ -344,8 +336,7 @@ protected:
   bool climbing_stairs_{false};
   // The direct approach's and the stair carrot's only obstacle test (see
   // isApproachBlocked()).
-  syncai_costmap_2d::FootprintCollisionChecker<syncai_costmap_2d::Costmap2D *> collision_checker_{
-    nullptr};
+  syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *> collision_checker_{nullptr};
   double control_duration_{0.05};
   // The last command returned, the clamp's reference; zeroed by reset() and
   // by any throw out of computeVelocityCommands().

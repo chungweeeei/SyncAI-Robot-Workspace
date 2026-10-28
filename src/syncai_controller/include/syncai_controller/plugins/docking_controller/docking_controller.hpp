@@ -78,7 +78,7 @@ public:
    */
   void initialize(
     const rclcpp::Node::SharedPtr & node, std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
-    std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros) override;
+    std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros) override;
 
   /**
    * @brief One control cycle: the (v, w) that drives the robot toward the dock
@@ -110,13 +110,6 @@ public:
    * whose robot-pose lookup failed, for the same reason.
    */
   void reset() override;
-
-  /**
-   * @brief Limit v_linear_max, absolute or in percent; NO_SPEED_LIMIT (0.0)
-   * restores the configured value. A limit below v_linear_min is raised to
-   * it with a warning, because a command below the gait floor is a stall.
-   */
-  void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
 
 protected:
   /**
@@ -178,7 +171,7 @@ protected:
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
   // Frame names and the TF buffer only. Nothing in this plugin reads a cost.
-  std::shared_ptr<syncai_costmap_2d::Costmap2DROS> costmap_ros_;
+  std::shared_ptr<syncai_costmap::CostmapROS> costmap_ros_;
   rclcpp::Logger logger_{rclcpp::get_logger("DockingController")};
   rclcpp::Clock::SharedPtr clock_;
 
@@ -190,7 +183,7 @@ protected:
   double beta_;
   double lambda_;
   double v_linear_min_;
-  double v_linear_max_, base_v_linear_max_;
+  double v_linear_max_;
   double v_angular_max_;
   double v_angular_min_;
   double slowdown_radius_;
@@ -257,8 +250,8 @@ protected:
   rclcpp::Time last_docking_plan_time_;
   bool have_last_docking_plan_{false};
 
-  // Serialises computeVelocityCommands() / setSpeedLimit() against the
-  // dynamic-parameter callback, which runs on the node's executor thread.
+  // Serialises computeVelocityCommands() against the dynamic-parameter
+  // callback, which runs on the node's executor thread.
   std::mutex mutex_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 };
