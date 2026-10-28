@@ -1,11 +1,10 @@
 # Launch the non-lifecycle controller server (FollowPath action) with its
-# internal local costmap and the RPP controller plugin.
+# internal local costmap and its controller plugins.
 #
 # robot_id is read from the system config INI at launch time (same convention
 # as sys_manager.launch.py) and is used both as the node namespace and to
 # rewrite the local costmap TF frame parameters (global_frame /
-# robot_base_frame / sensor_frame), since TF frame names are not namespaced
-# by ROS.
+# robot_base_frame), since TF frame names are not namespaced by ROS.
 
 import configparser
 import os
@@ -81,7 +80,6 @@ def launch_setup(context, *args, **kwargs):
                 # in this list take precedence over the params file.
                 "global_frame": f"{robot_id}/odom",
                 "robot_base_frame": f"{robot_id}/base_link",
-                "obstacle_layer.scan.sensor_frame": f"{robot_id}/scan",
                 # Point-LIO's body (the lidar): the one frame that still
                 # climbs, for tracking paths with heights (path_height.hpp).
                 "body_frame": f"{robot_id}/pointlio_body",

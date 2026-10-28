@@ -1,41 +1,42 @@
 # syncai_costmap_2d
 
 The occupancy representation the planner and controller both plan against: a
-layered 2D costmap with pluginlib layers, sensor-driven obstacle marking and
-clearing, inflation, and costmap filters. Port of `nav2_costmap_2d`.
+layered 2D costmap with pluginlib layers: a terrain layer judging the lidar
+against the ground under each cell, and inflation. Port of `nav2_costmap_2d`,
+cut down to what 3D navigation uses: since 2026-10-28 (2D navigation removed)
+the static and obstacle layers, the keepout filter and the standalone test
+harness are gone (git history has them).
 
 It is used as a **library, not a node**. `syncai_global_planner` and `syncai_controller`
 each construct their own `Costmap2DROS` inside their own process:
 
 | Owner | Costmap | Typical config |
 |---|---|---|
-| `syncai_global_planner` | `global_costmap` | Full-map, `global_frame: map`, static + obstacle + inflation (+ keepout filter) |
-| `syncai_controller` | `local_costmap` | 4×4 m rolling window (3×3 until MPPI, 2026-10), `global_frame: odom`, obstacle + inflation |
+| `syncai_global_planner` | `global_costmap` | **No layers**, `global_frame: map`: Octo3D reads no cells; the planner uses it for its frame, TF buffer, robot pose and callback group. Static + obstacle + inflation + keepout filter until 2026-10-28 |
+| `syncai_controller` | `local_costmap` | 4×4 m rolling window (3×3 until MPPI, 2026-10), `global_frame: odom`, terrain + inflation |
 
-`costmap_2d_node` also exists as a standalone runner, used only by the three test
-launch files in this package.
+There is no standalone runner any more: `costmap_2d_node` and its three test
+launch files went with the 2D layers they exercised.
 
 ## Layout
 
 ```
 src/costmap_2d.cpp              the raw grid: cells, world↔map conversion, raytracing
-src/layered_costmap.cpp         the layer/filter pipeline
+src/layered_costmap.cpp         the layer pipeline
 src/layer.cpp, costmap_layer.cpp  Layer base classes (+ joinWithParentNamespace)
 src/costmap_2d_ros.cpp          the ROS wrapper node — most of the local complexity
 src/costmap_2d_publisher.cpp    OccupancyGrid / Costmap / update publishing
 src/clear_costmap_service.cpp   the three clear_* services
-src/observation_buffer.cpp      TF-transformed, time-windowed sensor readings
 src/terrain_grid.cpp            the ROS-free 2.5D grid behind TerrainLayer (gtest: test/test_terrain_grid.cpp)
-src/map_type_gate.cpp           a layer's map_type: obstacle layer on a 2D map, terrain layer on a 3D one
 src/footprint.cpp, footprint_collision_checker.cpp, costmap_math.cpp, array_parser.cpp
-plugins/static_layer.cpp        ┐
-plugins/obstacle_layer.cpp      │
-plugins/terrain_layer.cpp       ├ pluginlib layers
+plugins/terrain_layer.cpp       ┐ pluginlib layers
 plugins/inflation_layer.cpp     ┘
-plugins/costmap_filters/{costmap_filter,keepout_filter}.cpp
-src/costmap_2d_node.cpp         standalone runner
-launch/, params/, rviz/, scripts/fake_scan.py   standalone tests
+include/.../costmap_filters/filter_values.hpp   constants only (NO_SPEED_LIMIT, read by MPPI)
 ```
+
+No `launch/`, `params/`, `rviz/` or `scripts/`: the costmaps are configured by
+their owners' params files (`planner_server_params.yaml`,
+`controller_server_params.yaml`).
 
 Everything builds into **one** shared library, `libsyncai_costmap_2d.so`, which
 is both the linked library and the pluginlib plugin library — `costmap_plugins.xml`
@@ -47,20 +48,22 @@ points at the same `.so`.
 origin, with world↔cell conversion, Bresenham raytracing, window copy and a
 recursive mutex. No ROS.
 
-**`LayeredCostmap`** — owns the master costmap and two ordered lists: **plugins**
-(layers) and **filters**. Its `updateMap(x, y, yaw)` is the whole pipeline:
+**`LayeredCostmap`** — owns the master costmap and one ordered list of
+**plugins** (layers). Its `updateMap(x, y, yaw)` is the whole pipeline:
 
 1. If `rolling_window`, re-centre the origin on the robot.
-2. Ask every layer, then every filter, for its dirty region (`updateBounds`),
-   accumulating a bounding box. A layer that *shrinks* the box is logged as an
-   "Illegal bounds change".
-3. Clamp the box to the grid and write costs:
-   - **No filters:** `resetMap(window)` on the master, then each layer's
-     `updateCosts()` writes into it, in order.
-   - **With filters:** layers write into a separate `primary_costmap_`, that
-     window is copied into the master, and filters then run on the master. The
-     point is that filter output never feeds back into the layers on the next
-     cycle — a keepout zone does not become an obstacle the layers can see.
+2. Ask every layer for its dirty region (`updateBounds`), accumulating a
+   bounding box. A layer that *shrinks* the box is logged as an "Illegal
+   bounds change".
+3. Clamp the box to the grid, `resetMap(window)` on the master, then each
+   layer's `updateCosts()` writes into it, in order.
+
+Upstream's second list, the **costmap filters** (with a `primary_costmap_`
+the layers wrote into, copied to the master before the filters ran on it, so
+filter output never fed back into the layers), went with its only plugin, the
+2D keepout filter, on 2026-10-28 (3D zones are Octo3D's own); `filters` is no
+longer a parameter. With **no layer** `updateMap()` returns right after step 1,
+and `isCurrent()` is true: that is the planner's global costmap.
 
 **`Layer` / `CostmapLayer`** — the plugin interface. `Layer` is the bare
 `updateBounds`/`updateCosts`/`activate`/`deactivate`/`reset` contract;
@@ -85,8 +88,8 @@ layer merges into the master:
 
 | Value | Name | Used by |
 |---|---|---|
-| `0` | `Overwrite` — replace, except `NO_INFORMATION` | Static layer (the map is ground truth) |
-| `1` | `Max` — keep the larger; a known value overrides unknown | Obstacle layer (**default**) |
+| `0` | `Overwrite` — replace, except `NO_INFORMATION` | (the static layer, until 2026-10-28) |
+| `1` | `Max` — keep the larger; a known value overrides unknown | `TerrainLayer` (`updateWithMax`) |
 | `2` | `MaxWithoutUnknownOverwrite` — as Max, but master's unknown stays unknown | Preserving "unknown means unknown" |
 
 ## Costmap2DROS: no lifecycle, so what changes
@@ -126,11 +129,13 @@ throws the same way ("failed to create guard condition").
 that, two costmaps in one robot namespace would collide on `costmap`,
 `published_footprint`, `get_costmap` and the clear services.
 
-That creates a problem for **input** topics: `map` and `scan` are published in the
-parent namespace, not the costmap's sub-namespace. `Layer::joinWithParentNamespace()`
-solves it by stripping the last segment of the node namespace before resolving a
-relative topic — so `scan` in the params becomes `/robot01/scan`, not
-`/robot01/local_costmap/scan`. Absolute topic names are passed through untouched.
+That creates a problem for **input** topics: `pointlio/body_cloud` and `plan`
+are published in the parent namespace, not the costmap's sub-namespace.
+`Layer::joinWithParentNamespace()` solves it by stripping the last segment of
+the node namespace before resolving a relative topic — so `pointlio/body_cloud`
+in the params becomes `/robot01/pointlio/body_cloud`, not
+`/robot01/local_costmap/pointlio/body_cloud`. Absolute topic names are passed
+through untouched.
 
 **A dedicated callback group and executor thread.** TF, the footprint
 subscription and the layers' sensor subscriptions all run on one
@@ -161,95 +166,26 @@ backwards, which happens when switching to sim time.
 ## Layers
 
 Selected by the `plugins` list (each entry an ID whose `<id>.plugin` names the
-type); filters by the separate `filters` list.
+type). Two layers are left, both in the
+controller's local costmap: `TerrainLayer` (the sensor layer) and
+`InflationLayer`. The default `plugins` is **empty** (2026-10-28; upstream's is a
+static layer), which the planner's global costmap relies on by leaving the key
+out — an empty YAML list cannot be typed.
 
-### StaticLayer
-
-Subscribes to an `OccupancyGrid` and writes it into the costmap, resizing the
-master to match the incoming map when not rolling.
-
-| Parameter | Default | Notes |
-|---|---|---|
-| `map_topic` | `""` | Falls back to the costmap's own `map_topic`; resolved against the parent namespace |
-| `map_subscribe_transient_local` | `true` | Must match the latched map server, or the map never arrives |
-| `subscribe_to_updates` | `false` | Also subscribe to `<map_topic>_updates` |
-| `footprint_clearing_enabled` | `false` | |
-| `transform_tolerance` | `0.0` | |
-
-### ObstacleLayer
-
-Marks and clears from sensor data. Each entry in `observation_sources` gets its
-own sub-namespace of parameters, its own `ObservationBuffer`, and a
-`tf2_ros::MessageFilter` so readings are only processed once their transform is
-available.
-
-Per-source parameters: `topic`, `sensor_frame`, `data_type` (`LaserScan` or
-`PointCloud2`), `marking`, `clearing`, `min_obstacle_height` /
-`max_obstacle_height`, `obstacle_min_range` / `obstacle_max_range` (marking
-range), `raytrace_min_range` / `raytrace_max_range` (clearing range),
-`observation_persistence`, `expected_update_rate`, `inf_is_valid`, and two that
-are not upstream, `height_reference` / `sensor_height` (below).
-
-**`height_reference`** (2026-10): `global` (default, upstream) measures
-`min_obstacle_height` / `max_obstacle_height` from the global frame's `z = 0`;
-`sensor` measures them from the ground under the sensor — its origin's z in the
-global frame minus `sensor_height`. The buffered cloud (and its origin) are
-stored with z relative to that ground, so the layer-level
-`min_obstacle_height` / `max_obstacle_height` read the same way for that source;
-nothing downstream of the buffer reads z in a 2D costmap. It exists because
-lio_bridge keeps `odom` planar, so z in `odom` is height in the map, whose origin
-is the lidar where mapping started: the 1F floor sits at about -0.48, and on 2F
-(~5.5 m up) a fixed band sees nothing. The controller's `pointcloud` source uses
-`sensor` with `sensor_height: 0.481` and a band chosen to equal what 1F already
-ran with; the global costmap's sources are still `global`.
-
-Two things worth internalising:
-
-- **Marking and clearing use different ranges.** Clearing raytraces from the
-  sensor origin out to `raytrace_max_range`; marking only accepts returns within
-  `obstacle_max_range`. Clearing range should be the larger of the two, or
-  obstacles get marked in a band the layer can never clear again.
-- **Leaving `sensor_frame` empty is meaningful,** not a mistake: the observation
-  buffer then takes the raytrace origin from the message header's `frame_id`.
-  That is how the 3D config consumes `pointlio/body_cloud` without needing a
-  per-robot launch-file frame override.
-
-`expected_update_rate` is what drives `isCurrent()`: a source that stops
-publishing eventually marks the layer not-current, and both the planner and the
-controller wait on `isCurrent()` before using the costmap.
-
-Since 2026-10-20 the **local** costmap runs this layer on a **2D map only**;
-on a 3D map `TerrainLayer` (next) runs in its place — see "Which sensor layer
-runs". The global costmap keeps it on every map.
-
-### Which sensor layer runs (`map_type`)
-
-The local costmap loads both `obstacle_layer` and `terrain_layer` (2026-10-20,
-`feature/octomap-planner-3d`) and exactly one of them runs, picked by the map:
-the obstacle layer on a 2D map — `dev`'s local costmap, unchanged — and the
-terrain layer on a 3D one. Never both: they disagree on a ramp (free in the
-terrain layer, a wall in the band) and the max of the two is the wall. MPPI
-(`FollowPath`) drives on either.
-
-Each layer has a `map_type` parameter — `"any"` (the default for the obstacle
-layer, so the global costmap and every other use are upstream's), `"2d"` or
-`"3d"` — read by `MapTypeGate` (`map_type_gate.hpp`) against `map_3d_topic`,
-the planner's latched `planner_server/Octo3D/map_available`. That is the topic
-the task_runner picks `move.xml` / `move_3d.xml` by, so the tree and the
-costmap switch together, and since `Octo3D/load_map` switches maps without a
-restart, the layer switches at the next update too. The map reads 2D until the
-first message, as it does for the task_runner. On a switch either layer
-empties itself and puts its whole window in the update bounds once, so the
-master grid loses what the other layer had marked. A gated-off layer counts as
-current (a costmap clear would otherwise leave it not-current, and the
-controller waiting on it), and the terrain layer takes no samples while off.
-The gate does not touch `enabled`, which stays the operator's.
+Removed 2026-10-28 with 2D navigation: `StaticLayer` (the gridmap from
+`map_server`), `ObstacleLayer` with its `ObservationBuffer` (height-band
+marking and raytrace clearing of `scan` / `pointlio/body_cloud`), the
+`KeepoutFilter` / `CostmapFilter` (the 2D keepout mask, inflated by the
+filter itself), and `MapTypeGate`, which from 2026-10-20 ran the obstacle layer
+on a 2D map and the terrain layer on a 3D one in the local costmap — never
+both, since they disagree on a ramp (free here, a wall in the band).
 
 ### TerrainLayer
 
-The local costmap's sensor source on a **3D map** (2026-10-20), in place of
-the obstacle layer's height band. The band — every return between 0.58 and
-1.98 m above the robot's own ground — could not see a box, a cart's base, a
+The local costmap's only sensor layer, on every map since 2026-10-28 (on a 3D
+map only from 2026-10-20, beside the obstacle layer). It replaced the obstacle
+layer's height band, which — every return between 0.58 and 1.98 m above the
+robot's own ground — could not see a box, a cart's base, a
 kerb's wall, a drop-off or a stair tread, and read a ramp as a wall after a
 metre, so MPPI had nothing to avoid low. Every
 quadruped stack on this kind of hardware (CMU's `terrain_analysis` on the Go2,
@@ -273,8 +209,7 @@ and judges every cell on each update:
    MID360's −7° lower FOV never sees the floor within ~3.9 m of the robot, so
    the floor under and ahead of it was seen 5–13 s earlier, from further off.
    A cell with fewer than `min_ground_samples` returns borrows the robot's own
-   ground (the lidar frame's z minus `sensor_height`, the obstacle layer's
-   `height_reference: sensor`) — except in the obstacle rule below, where a
+   ground (the lidar frame's z minus `sensor_height`) — except in the obstacle rule below, where a
    cell that has a few returns judges them against the nearest known ground
    within `sparse_ground_radius` (0.4 m) **that the robot can walk onto from
    where it stands** (a second reach flood, from its own cell only), when
@@ -336,8 +271,8 @@ and judges every cell on each update:
    step (a level floor with a kerb is not fitted) and at least
    `slope_min_known` of it has a ground.
 6. Nothing seen → NO_INFORMATION; the rest FREE. Then `updateWithMax`, the
-   footprint cleared as the obstacle layer clears it, and the
-   `InflationLayer` inflates it all as before.
+   footprint cleared (its floor is never seen and the robot's legs are in the
+   cloud), and the `InflationLayer` inflates it all.
 
 The four geometry values are `SurfaceMapParams`' (Octo3D), one calibration of
 the legs; change them together.
@@ -379,7 +314,9 @@ behind). Ray clearing within a cell is by height, so a ray just over a box top
 clears the top returns it passes within the tolerance of; the returns that
 end on the box in the same scan are kept, and the cell is an obstacle while
 one return a scan lands in its band. Dynamic parameters are not handled: a
-change needs a restart.
+change needs a restart. There is no `map_type` / `map_3d_topic` any more
+(2026-10-28): the layer runs whatever the map, and a stale entry in a params
+file is ignored.
 
 ### InflationLayer
 
@@ -393,78 +330,13 @@ clearance without a full footprint check.
 | `inflate_unknown` | `false` | |
 | `inflate_around_unknown` | `false` | |
 
-RPP inverts this exact curve to recover a distance-to-obstacle for its cost
-regulator, so `cost_scaling_factor` and `inflation_cost_scaling_factor` in
-`syncai_controller`'s params must be kept **the same value**; they are two ends of
-one equation.
-
-### KeepoutFilter
-
-A *filter*, not a layer: listed under `filters`, and it runs after the layers on
-the combined costmap (see the pipeline above).
-
-It subscribes to a `nav2_msgs/CostmapFilterInfo` on `filter_info_topic`
-(transient-local), learns the mask topic from it, then subscribes to that
-`OccupancyGrid` mask and writes the mask's occupancy into the costmap. Both
-subscriptions are transient-local, matching the latched publishers in
-`syncai_map_server`.
-
-Frames are handled two ways: if the mask frame equals the costmap's global frame,
-it iterates only the overlap of the mask and the update window; otherwise it
-looks up the transform per cell region. `base` and `multiplier` in the filter info
-must stay at their defaults (0.0 / 1.0) for keepout semantics — anything else is
-logged as an error.
-
-It is enabled on the planner's global costmap (`filters: ["keepout_filter"]` in
-`syncai_global_planner`'s `planner_server_params.yaml`, 2026-09) and not on the
-controller's local costmap. The mask is `map/<name>/keepout.yaml`, served by
-`syncai_map_server`'s `costmap_filter_info.launch.py` from the nav session,
-which writes a blank all-unknown mask of the gridmap's geometry when a map has
-none yet. Unknown is the right blank: `process()` skips unknown mask cells but
-lets a free mask cell overwrite an unknown costmap cell, so an all-*free* mask
-would silently turn unexplored space plannable.
-
-**The filter inflates the mask itself** (2026-10). Filters run after the layer
-stack, inflation included, so upstream's keepout lands as a bare LETHAL cell:
-no INSCRIBED band, no gradient. SmacPlanner2D collision-checks the robot's
-centre cell against INSCRIBED, so two zones one free cell apart were a
-plannable corridor — `dp2f` had a 0.25 m gap between two zones that the planner
-routed a 0.44 m wide robot through. The documented rule used to be "draw the
-footprint margin into the mask"; it bakes the robot's size into per-map data,
-the editor does not do it, and a hand-drawn band has no gradient to steer the
-cost-aware search off the edge. So `inflateMask()` runs on every mask arrival
-and on every `onFootprintChanged()` (`LayeredCostmap::setFootprint` calls it
-on filters too), never per update cycle:
-
-- Radii come from the costmap the filter is attached to, not from parameters
-  of its own: the inscribed radius from `LayeredCostmap::getInscribedRadius()`
-  (the padded footprint), `inflation_radius` / `cost_scaling_factor` read off
-  the costmap's `InflationLayer` the way `syncai_global_planner`'s
-  `findCircumscribedCost()` finds it. A zone therefore carries exactly the band
-  and gradient a wall does. No `InflationLayer` → the INSCRIBED disc only, with
-  a warning.
-- Same curve as `InflationLayer::computeCost()` but in metres, because the
-  mask has its own map_server and need not share the costmap's resolution. A
-  disc kernel is stamped (max) around each zone's boundary cells only.
-- Drawn cells keep upstream semantics (free overwrites unknown). **Cells
-  produced by inflation never overwrite an unknown master cell**: a gradient
-  is a derived cost, not a rule about the cell, and writing it would turn
-  unexplored space into known, plannable cost. `process()` tells the two apart
-  by comparing the inflated mask against the raw one.
-- `updateBounds()` now grows the window to the mask's own extents once per
-  rebuild. Upstream pushed the mask's cell count through the *costmap's*
-  `mapToWorld`, which is only right when mask and costmap share origin and
-  resolution.
-
-A mask is therefore "the forbidden area", nothing more. A mask that still
-carries a hand-drawn margin now gets that margin twice.
-
-The filter/layer distinction exists only at the config level. In
-`costmap_plugins.xml` `KeepoutFilter` is registered with
-`base_class_type="syncai_costmap_2d::Layer"`, exactly like `StaticLayer` — there
-is no separate `CostmapFilter` base class for pluginlib to key on. What makes it
-a filter is the `filters:` list it is named in, which decides *when* it runs
-(after the layers, on the combined grid) and that `clear*` never touches it.
+RPP 3D inverts this exact curve to recover a distance-to-obstacle for its cost
+regulator, so `cost_scaling_factor` and its `inflation_cost_scaling_factor` in
+`syncai_controller`'s params must be kept **the same value**; they are two ends
+of one equation (the regulator is off there today,
+`use_cost_regulated_linear_velocity_scaling: false`, but the pair still
+matches). MPPI's `CostCritic` reads the inflated costs directly. The planner's
+global costmap has no inflation layer since 2026-10-28.
 
 ## Interfaces
 
@@ -501,8 +373,8 @@ ros2 service call /robot01/local_costmap/clear_entirely_local_costmap \
 
 Clearing rewrites the grid of every **clearable** layer to the master costmap's
 default value — `FREE_SPACE`, or `NO_INFORMATION` when `track_unknown_space` is
-set. Costmap filters are never cleared: a keepout zone is a rule, not an
-observation, so it must survive a recovery. `clear_around_` clears a square of
+set (`TerrainLayer` drops its costs and keeps its returns, see above).
+`clear_around_` clears a square of
 `reset_distance` centred on the robot; `clear_except_` clears everything outside
 that square.
 
@@ -523,40 +395,19 @@ that square.
 | `robot_radius` | `0.1` | Circular fallback |
 | `footprint_padding` | `0.01` | |
 | `transform_tolerance` | `0.3` | |
-| `plugins` / `filters` | `["static_layer"]` / `[]` | |
-| `map_topic` | `<parent>/map` | Default for the static layer |
+| `plugins` | `[]` | Empty since 2026-10-28 (was `["static_layer"]`); `filters` is no longer declared |
 | `always_send_full_costmap` | `false` | Full grid every publish instead of incremental updates |
-| `lethal_cost_threshold` | `100` | Read by `StaticLayer::interpretValue`: an occupancy value `>=` this becomes `LETHAL_OBSTACLE`. Declared on the costmap node, not the layer, so it is shared by every static layer the node hosts |
-| `unknown_cost_value` | `255` (`0xff`) | The occupancy byte the static layer treats as "unknown" — `-1` in `OccupancyGrid` arrives as `255` once cast to `unsigned char`. It becomes `NO_INFORMATION` with `track_unknown_space`, `FREE_SPACE` without |
-| `trinary_costmap` | `true` | Static layer collapses everything below the lethal threshold to `FREE_SPACE`. Set `false` to keep a linear ramp (`value / lethal_cost_threshold × 254`) — only useful for maps that already encode a cost gradient, which `syncai_map_server` does not produce |
-| `use_maximum` | `false` | Static layer writes its cells with **true overwrite** (the map wins, even over a higher cost already in the master grid). `true` switches to a max-merge so earlier plugins' obstacles survive under the map's free space |
-| `observation_sources` | `""` | **Dead at this level.** Carried over from nav2, where the node-level declaration is a legacy; the `ObstacleLayer` declares and reads its own `<layer>.observation_sources`, and nothing reads the node-level one. Set it on the layer |
 
-`observation_sources` aside, the last four all belong to the static layer's map
-interpretation, yet are declared on the costmap node rather than under
-`static_layer.` — a nav2 inheritance, kept so that copied nav2 params files keep
-working. Put them at the costmap level, not under the layer name, or they are
-silently ignored.
+`lethal_cost_threshold`, `unknown_cost_value`, `trinary_costmap` and
+`use_maximum` are still declared on the node (a nav2 inheritance), but their
+reader — the static layer's map interpretation — went on 2026-10-28, so nothing
+reads them; `map_topic` and `observation_sources` went with it.
 
 An invalid `footprint` string does not fail — it logs an error and silently falls
 back to `robot_radius`, which is a much smaller robot. Check the startup log if
 paths start passing suspiciously close to walls.
 
-## Standalone tests
-
-Three launch files bring the costmap up on its own, without the nav stack:
-
-```bash
-# static layer only: map_server + a parked robot TF + the costmap
-ros2 launch syncai_costmap_2d static_layer_test.launch.py map_yaml:=map/testmap.yaml
-
-# static + obstacle + inflation, optionally with a synthetic scan and RViz
-ros2 launch syncai_costmap_2d three_layer_test.launch.py use_fake_scan:=true rviz:=true
-
-# static layer + keepout filter (mask map server + filter info server)
-ros2 launch syncai_costmap_2d keepout_filter_test.launch.py \
-    map_yaml:=map/testmap.yaml mask_yaml:=map/keepout_mask_test.yaml
-```
+## Tests
 
 `test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
 syncai_costmap_2d`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
@@ -564,16 +415,6 @@ step, drop-off, ramp, slope, box, person, wall foot, a stair's underside
 overhead (and with no floor seen under it), a stair lethal with and
 without a climbing path, the window moving — with no ROS; it also builds on a workstation
 with plain `clang++` against `include/` and googletest.
-
-`scripts/fake_scan.py` publishes a 50-beam forward scan at 2 m. Its timestamps
-are deliberately current: `tf2_ros::MessageFilter` drops messages older than the
-TF cache, so a zero-stamped scan from `ros2 topic pub` never reaches the obstacle
-layer — worth remembering when hand-testing.
-
-The default `map_yaml` in `static_layer_test` and `three_layer_test` is an
-absolute host path (`/home/syncrobotic/Documents/…/map/testmap.yaml`); pass
-`map_yaml:=` explicitly when running elsewhere. `keepout_filter_test` already uses
-workspace-relative paths.
 
 ## Not wired into the stack
 
@@ -586,18 +427,14 @@ correctly); renaming it means touching its two includes.
 
 ## Gotchas
 
-- **Four "missing" warnings are logged once per state change, not
-  repeatedly** (2026-10-19): `StaticLayer`'s "no map received",
-  `LayeredCostmap`'s "Robot … is out of bounds of the costmap",
-  `ObstacleLayer`'s "Sensor origin … is out of map bounds" and
-  `KeepoutFilter`'s "Filter mask was not received" each warn once on
-  entering the state and log an info on leaving it. Until then they
-  repeated every 1–10 s (the static layer's counter was a function-local
-  `static`, shared by every `StaticLayer` in the process), and on a 3D-only
-  map — no `gridmap.yaml`, so the global costmap never gets a map and stays
-  at its 5 × 5 m default for good — they were most of the planner log. So
-  read the log from the top: a warning that appeared once still holds until
-  its info says otherwise.
+- **"Missing" warnings are logged once per state change, not repeatedly**
+  (2026-10-19): `LayeredCostmap`'s "Robot … is out of bounds of the costmap"
+  warns once on entering the state and logs an info on leaving it (the static
+  layer's, obstacle layer's and keepout filter's did the same until they went,
+  2026-10-28). The planner's layerless global costmap stays at its 5 × 5 m
+  default at the map origin, so a robot outside it logs that warning once —
+  expected, since nothing reads its cells. So read the log from the top: a
+  warning that appeared once still holds until its info says otherwise.
 
 - **Params need `/**/` wildcard keys.** The costmap node's fully-qualified name is
   `/<robot_id>/<costmap_name>`, and the hosting process must declare its `Node`
@@ -606,28 +443,22 @@ correctly); renaming it means touching its two includes.
   parameter and runs on defaults.
 - **`width`/`height` are integer metres.** Setting `width: 0.5` for a fine local
   costmap gives you 0.
-- **QoS must match latched publishers.** `map_subscribe_transient_local` and the
-  keepout filter's transient-local subscriptions have to match `syncai_map_server`,
-  or the topic connects and never delivers.
 - **`update_frequency: 0.0` disables the update thread** — the costmap is created,
-  publishes nothing, and never becomes current, which reads like a TF problem.
-- **Footprints must agree across costmaps; paddings deliberately do not.** The
-  planner's global costmap (`syncai_global_planner/params/planner_server_params.yaml`)
-  and the controller's local costmap
-  (`syncai_controller/params/controller_server_params.yaml`) both carry
-  `[[0.35,0.22],…]` (reconciled 2026-10; the local one had been left at
-  `[[0.28,0.20],…]`). `footprint_padding` is 0.03 global vs 0.01 local: the
-  planner's `is_path_valid` walks the padded perimeter against LETHAL exactly
-  as RPP does (2026-10), and the padding gap is what keeps the planner's copy
-  of that test the stricter of the two, so a path it passes is one RPP will
-  drive. (The centre-cell test the planner used alone before then never
-  ordered against RPP's perimeter test at all, whatever the padding.) Change
-  the rectangle in both files or neither.
-- **`inflation_radius` smaller than the inscribed radius** leaves lethal cells the
-  planner will happily route the robot's corners through.
+  publishes nothing, and a layered one never becomes current, which reads like
+  a TF problem.
+- **The footprint lives in the local costmap only** (`[[0.35,0.22],…]`,
+  padding 0.01, `controller_server_params.yaml`). Until 2026-10-28 the
+  planner's global costmap carried the same rectangle with padding 0.03, so
+  its `is_path_valid` perimeter test on 2D paths was stricter than RPP's; that
+  test went with 2D navigation. Octo3D's `robot_radius` (0.25) and the terrain
+  layer's are the padded rectangle's inscribed radius: change them with it.
+- **`inflation_radius` smaller than the circumscribed radius** leaves lethal
+  cells MPPI's `CostCritic` cannot see from the centre cell, so a corner clips
+  them (the local costmap's 0.45, `controller_server_params.yaml`).
 - `package.xml` still carries `TODO: Package description` and
   `TODO: License declaration`, unlike every other package in the workspace.
 
 Upstream reference: [`nav2_costmap_2d`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_costmap_2d)
 and the [nav2 costmap configuration guide](https://docs.nav2.org/configuration/packages/configuring-costmaps.html),
-which documents every layer parameter in more detail than is repeated here.
+which documents the core costmap and inflation parameters in more detail than
+is repeated here.

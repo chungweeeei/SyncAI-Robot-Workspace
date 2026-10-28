@@ -28,14 +28,13 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
                                            ┌─────────────────┴─────────────────┐
                                            ▼                                   ▼
                                  syncai_global_planner                         syncai_controller
-                              (SmacPlanner2D / Octo3D)                (MPPI / RPP plugins)
+                                       (Octo3D)                        (MPPI / RPP 3D / Docking)
                                            │                                   │
                                            └───────── syncai_costmap_2d ───────┘
                                                 (global / local costmaps)          cmd_vel ──▶ syncai_driver_manager ──UDP──▶ gait controller
 
    livox_ros_driver2 ──▶ syncai_pointlio ──▶ syncai_localizer ──▶ syncai_lio_bridge ──▶ odom → base_link TF, map → odom, /odom
                                         └──▶ syncai_mapping (pgo_node, mapping mode) ──▶ map/<name>/, pgo/map_cloud_file
-   syncai_map_server ──▶ static gridmap (map)
 ```
 
 - **Localization is 3D.** `syncai_lio_bridge` is the only odometry source: it
@@ -52,13 +51,12 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SwitchMode`, `SetMotionKey`, `ExecuteTask`, …). **Not tracked here**, see below |
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils); on this branch also `path_height.hpp` (a path's heights, the ground under the robot) and `StairMode`, the stair state machine both 3D-aware controllers run (`test/test_stair_mode.cpp`) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
-| `syncai_costmap_2d` | Global / local costmaps with layered plugins (static / obstacle / inflation / keepout filter, and on this branch a terrain layer); an obstacle source can measure its height band from the ground under the robot (`height_reference: sensor`) instead of the global frame's `z = 0`. On this branch the local costmap loads both an obstacle and a **terrain layer** and runs exactly one by the map's type: the obstacle layer on a 2D map, as on `dev`; on a 3D map the terrain layer, a rolling 2.5D grid of the lidar's returns that marks low obstacles, drop-offs and ledges, and judges a stair lethal |
-| `syncai_global_planner` | `compute_path_to_pose` action server; NavFn, StraightLine, SmacPlanner2D and OctomapPlanner3D plugins (Smac is configured as `GridBased`; OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`, is loaded beside it as `Octo3D`, which a 3D map's trees ask for on this branch (`move_3d.xml` / `dock_3d.xml`, picked per goal); since 2026-10-21 `Octo3D` keeps a dynamic-obstacle overlay of the lidar cloud, on which it answers `is_path_valid` for its own paths and detours when it replans) |
-| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath`, its own Regulated Pure Pursuit as `FollowPathRPP` and, on this branch, RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap. RPP 3D (`RegulatedPurePursuitController3D`, a separate plugin so `FollowPathRPP` stays `dev`'s 2D RPP) and the goal check follow paths with heights (`Octo3D`) in 3D, and both RPP 3D and MPPI climb stairs in a *stair mode* (`syncai_util::StairMode`) that switches the gait controller's RL policy. A 3D map's trees name MPPI (`FollowPath`) since 2026-10-20; RPP 3D is the A/B |
-| `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan`. On this branch it also matches a path with heights in 3D and climbs stairs in the shared stair mode — blind, without the optimizer or the costmap — so a 3D map's trees run it as the 2D ones do |
+| `syncai_costmap_2d` | The local costmap's layers: a **terrain layer**, a rolling 2.5D grid of the lidar's returns that marks low obstacles, drop-offs and ledges and judges a stair lethal, and inflation. The planner's global costmap has no layers at all (Octo3D reads no cells). The static and obstacle layers and the keepout filter went with 2D navigation (2026-10-28) |
+| `syncai_global_planner` | `compute_path_to_pose` action server with one planner, `Octo3D` (OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`); it keeps a dynamic-obstacle overlay of the lidar cloud, on which it answers `is_path_valid` and detours when it replans, and reads the map's forbidden zones from `keepout.json`. NavFn, StraightLine and SmacPlanner2D (`GridBased`) went with 2D navigation (2026-10-28) |
+| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). Also `dock_to_pose` (`syncai_common/DockToPose`, 2026-10): the last metre onto or off a dock with its own `DockingController` (`Docking` / `Undocking`), tracked in odom, no costmap. RPP 3D (`RegulatedPurePursuitController3D`; the 2D RPP it was copied from went with 2D navigation) and the goal check follow paths with heights in 3D, and both RPP 3D and MPPI climb stairs in a *stair mode* (`syncai_util::StairMode`) that switches the gait controller's RL policy. The trees name MPPI (`FollowPath`); RPP 3D is the A/B |
+| `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan`. It also matches a path with heights in 3D and climbs stairs in the shared stair mode — blind, without the optimizer or the costmap |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`), plus the docking nodes `DockToPose`, `SetMotionKey`, `ComputeStagingPose`, `ComputeBackOutPose`, `Wait`, `WaitForMotionState` (2026-10) |
-| `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` — or `dock.xml` / `undock.xml` when the goal names them; on a 3D map (this branch) `move_3d.xml` / `dock_3d.xml` in their place |
-| `syncai_map_server` | Map server, map saver, costmap-filter-info server |
+| `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` (Octo3D + MPPI) — or `dock.xml` / `undock.xml` when the goal names them |
 | `syncai_pointlio` | Point-LIO front end (`pointlio_node`): LIO odometry, the body-frame cloud (deskewed to the end of the scan; plus `body_cloud_dense` for mapping), the `pointlio_odom → pointlio_body` TF, and `reset` |
 | `syncai_mapping` | Mapping back end (`pgo_node`): keyframes, GTSAM loop closure, the live map-cloud hand-off, and the run lifecycle — `start_mapping` / `save_maps` / `reset_mapping`, state latched on `mapping_status`; plus `clean_map`, the post-save job that removes people from `map.pcd`. **Not tracked here**, see below |
 | `syncai_localizer` | Map-based relocalization (`localizer_node`): two-stage GICP of the body cloud against `map.pcd`, the `map → pointlio_odom` correction, `relocalize` / `relocalize_check` and `initialpose` |
@@ -363,18 +361,12 @@ that API. A raw `nav2_msgs/NavigateToPose` goal to `/<robot_id>/navigate_to_pose
 which also says why a failed goal failed) works as well, and is the route that
 needs nothing outside this repo.
 
-**3D navigation and stairs (prototype).** On this branch
-(`feature/octomap-planner-3d`) a map is either 2D (`gridmap.yaml`) or 3D
-(`octomap.bt`), never both, and each goal runs the trees for the map it is on
-(2026-10-19): on a 2D map `move.xml` / `dock.xml`, exactly `dev`'s —
-`GridBased` (SmacPlanner2D), `FollowPath` (MPPI), `IsPathValid`; on a 3D map
-`move_3d.xml` / `dock_3d.xml`, which ask for `planner_id="Octo3D"`
+**3D navigation and stairs.** Every map is 3D (`map/<name>/octomap.bt`) since
+2026-10-28, when 2D navigation (a `gridmap.yaml` planned on by SmacPlanner2D)
+was removed. `move.xml` / `dock.xml` ask for `planner_id="Octo3D"`
 (OctomapPlanner3D on the map's `octomap.bt`) and `controller_id="FollowPath"`
-(MPPI, 3D-aware since 2026-10-20; `FollowPathRPP3D` the day before, now the
-A/B), so a MOVE plans on the octree and can climb the stairs the robot walked
-while mapping. Which one is the planner's call: the task_runner reads
-`planner_server/Octo3D/map_available` per goal (`syncai_task_runner/README.md`,
-"2D or 3D: which tree a goal runs"). On a 3D map:
+(MPPI, 3D-aware since 2026-10-20; `FollowPathRPP3D` is the A/B), so a MOVE
+plans on the octree and can climb the stairs the robot walked while mapping:
 
 - `Octo3D` plans across floors over *stair links* taken from `poses.txt`; a
   goal's z picks the floor (z = 0 lands on 1F). The walk only says where the
@@ -382,8 +374,7 @@ while mapping. Which one is the planner's call: the task_runner reads
   width (2026-10-19), and a switchback stairwell as straight flights joined
   by explicit 90° landing corners read off the map (2026-10-21). What cannot
   be read that way keeps the walked link, centred in the well.
-- MPPI and RPP 3D (a plugin of its own; `FollowPathRPP` is `dev`'s 2D RPP,
-  unchanged) match the robot to the path in 3D (its height is
+- MPPI and RPP 3D match the robot to the path in 3D (its height is
   `<robot_id>/pointlio_body`'s z minus `lidar_height`, since `base_link` is
   planar), and a goal only counts within `goal_z_tolerance` (0.5 m) of the end
   pose's height.
@@ -406,19 +397,20 @@ while mapping. Which one is the planner's call: the task_runner reads
 - **No obstacle avoidance on stairs**, by decision (2026-10-20): from the hold
   at the stair's foot to the hold past its top the climb reads no costmap.
   On the flat the local costmap runs the terrain layer, which sees low
-  obstacles, drop-offs and ledges the 2D obstacle layer's height band missed,
+  obstacles, drop-offs and ledges the old obstacle layer's height band missed,
   clears an obstacle as soon as a later ray passes through it, and judges a
   stair lethal, which also keeps MPPI off a stair it was not routed over.
-- **No forbidden zones (keepout).** `Octo3D` does not read the 2D costmap
-  a keepout mask is drawn into, nothing else keeps the robot out of a zone,
-  and a 3D map has no mask at all. Not supported in 3D for now (decided
-  2026-10-19); on a 2D map the keepout works as on `dev`.
+- **Forbidden zones** are `map/<name>/keepout.json` beside the tree (polygons
+  in the map frame, each with a z band naming its floor), read by `Octo3D`
+  with the tree and reloaded with `planner_server/Octo3D/load_keepout`; the
+  planner keeps the robot's radius off them itself, so draw the forbidden area
+  only. The 2D keepout mask (`keepout.yaml` / `.pgm`) is read by nothing here.
 
 Climbing has **not** been run on the robot: whether HIMLOCO takes the
 stairwell, its landing turns and the backwards descent, and whether a switch
 standing still is enough, are open. Test it attended, ESTOP in hand, from a
-short goal near the stair foot. The tree checks its path once a second as
-the 2D one does (`IsPathValid`, 10 s `blocked_time`), judged by `Octo3D` on
+short goal near the stair foot. The tree checks its path once a second
+(`IsPathValid`, 10 s `blocked_time`), judged by `Octo3D` on
 its **dynamic overlay** — the lidar cloud in the map frame, every return
 0.1–0.6 m above the surface it lies on a mark on that cell, raytrace-cleared,
 forgotten after 30 s (2026-10-21) — so a person standing in the way for 10 s
@@ -446,14 +438,15 @@ replaces `map.pcd` with a copy without people and one-off returns.
 gridmap converted before `ok` was made from the raw map. `patches/` stay raw,
 so `ros2 run syncai_mapping clean_map map/<name>` re-cleans by hand.
 
-From a shell you get those files and no gridmap: both pcd → gridmap
-recipes left with the backend, so the console's save button
-(`POST /api/v1/maps`) is what calls the service and converts in one step. Then
-point the robot at the new map — `[map] name` in the instance INI, or the
-console's map switch, which does the same live. Rebuilding a gridmap,
-hand-editing it and renaming a map are backend routes too, and all write into
-this repo's `map/` (renaming the map the stack is running on is refused with 409
-`map_active`, since map_server and the localizer loaded its files at launch).
+From a shell you get those files and no `octomap.bt`: `clean_map --octomap 1`
+writes it, which is what the console's save button (`POST /api/v1/maps`)
+drives; the backend's pcd → gridmap recipes still run for its 2D editor, but
+nothing here navigates on a gridmap since 2026-10-28. Then point the robot at
+the new map — `[map] name` in the instance INI, or the console's map switch,
+which does the same live. Editing zones and renaming a map are backend routes
+too, and all write into this repo's `map/` (renaming the map the stack is
+running on is refused with 409 `map_active`, since the localizer and `Octo3D`
+loaded its files at launch).
 
 **Camera.** The nav session's `camera_feeder` window (`syncai_camera_feeder`)
 owns the camera: it opens `/dev/syncai/camera0` and tees the MJPEG, undecoded,
@@ -490,7 +483,7 @@ pytest suite that used to live here went with `syncai_backend`.
 CI (`.github/workflows/ci.yml`) runs ruff and clang-format on changed lines,
 then on an arm64 runner builds the robot image and the workspace, runs
 `test_wifi_manager.py`, and smoke-tests every pane of the three session specs
-against generated 2D and 3D fixture maps (`.github/scripts/smoke_test.sh`).
+against a generated 3D fixture map (`.github/scripts/smoke_test.sh`).
 
 ## Notes
 

@@ -24,11 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
-# System dependencies for syncai_map_server (GraphicsMagick++ is used by map_io)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgraphicsmagick++1-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # nlohmann-json3-dev: for syncai_mapping's clean_map (map_clean.recipe.json),
 # imported by dependencies.repos. It was syncai_robot_state's until that
 # package left in 2026-10 for serde_json -- see the robot image's note.

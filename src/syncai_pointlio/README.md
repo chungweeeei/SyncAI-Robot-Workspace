@@ -19,8 +19,8 @@ the `pointlio_odom → pointlio_body` TF that everything downstream consumes.
           ▼               ▼                 ▼                  ▼
    pgo_node (mapping) localizer_node   syncai_lio_bridge   costmaps / backend
    lio_odom+body_cloud lio_odom+body_cloud   lio_odom         body_cloud
-   calls `reset`      map→pointlio_odom   → odom/base_link   obstacle layers,
-                                                             live cloud WS
+   calls `reset`      map→pointlio_odom   → odom/base_link   terrain layer, Octo3D
+                                                             overlay, live cloud WS
 ```
 
 Ported into the workspace from `SyncAI-Fast-LIO2`'s `pointlio` package in

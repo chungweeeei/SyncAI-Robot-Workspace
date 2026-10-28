@@ -47,33 +47,17 @@ public:
     const geometry_msgs::msg::PoseStamped & goal) = 0;
 
   /**
-   * @brief Whether createPlan() reads the costmap's cells.
-   *
-   * The planner server waits for the costmap to be current before calling a
-   * planner that does, and skips the wait for one that does not. A planner
-   * that takes only the frame id from the costmap must say so: on a map with
-   * no gridmap.yaml the static layer never gets a map and the costmap never
-   * turns current, so every goal hung in that wait (no timeout until
-   * 2026-10-19) and, since then, fails at once for want of a static map. A default body rather than pure
-   * virtual, for the same reason as Controller::reset().
-   */
-  virtual bool usesCostmap() const { return true; }
-
-  /**
    * @brief Is the part of `path` still ahead of `robot_pose` free, in this
    * planner's own representation of the world?
    *
-   * The planner server's is_path_valid service judges a path on the 2D
-   * global costmap, which is right for a planner that planned on it and
-   * wrong for one that did not: an OctomapPlanner3D path upstairs lies over
-   * the ground floor's gridmap, and on a 3D-only map the costmap is a 5 x 5 m
-   * default grid at the origin. So the server asks the planner that made the
-   * last plan (usesCostmap() false) instead of its costmap, and the planner
-   * answers from whatever it keeps about dynamic obstacles -- for
-   * OctomapPlanner3D, a map-frame overlay of lidar returns above its surface
-   * map (2026-10-21). A planner that uses the costmap is never asked; the
-   * default body says "valid" for one that keeps nothing, so the BT keeps
-   * its path, as it does when the costmap cannot tell.
+   * The planner server's is_path_valid service asks the planner that made
+   * the last plan, and the planner answers from whatever it keeps about
+   * dynamic obstacles -- for OctomapPlanner3D, a map-frame overlay of lidar
+   * returns above its surface map (2026-10-21). The default body says
+   * "valid" for one that keeps nothing, so the BT keeps its path. Until
+   * 2026-10-28 a planner that read the costmap (usesCostmap(), removed with
+   * GridBased) was never asked: the server judged its path on the 2D global
+   * costmap, which has no layers since.
    *
    * Appends the index of every blocked pose to invalid_pose_indices and
    * returns false if there is one. Must answer fast (the BT calls it at 1 Hz

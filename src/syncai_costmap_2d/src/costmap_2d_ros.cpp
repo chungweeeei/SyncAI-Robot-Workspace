@@ -49,8 +49,13 @@ Costmap2DROS::Costmap2DROS(
        "--ros-args", "-r", name + ":" + std::string("__node:=") + name})),
   name_(name),
   parent_namespace_(parent_namespace),
-  default_plugins_{"static_layer"},
-  default_types_{"syncai_costmap_2d::StaticLayer"}
+  // No layer by default (2026-10-28): upstream's default is a static layer,
+  // which went with 2D navigation. The planner's global costmap relies on
+  // it -- it runs with no layer at all, for its frame, TF buffer, robot pose
+  // and callback group (Octo3D reads no cells) -- and LayeredCostmap skips
+  // the update and reads current with no layer loaded.
+  default_plugins_{},
+  default_types_{}
 {
   RCLCPP_INFO(this->get_logger(), "[Costmap2DROS][%s] Creating Costmap", __func__);
 
@@ -62,16 +67,11 @@ Costmap2DROS::Costmap2DROS(
   this->declare_parameter("width", rclcpp::ParameterValue(5));
   this->declare_parameter("lethal_cost_threshold", rclcpp::ParameterValue(100));
 
-  this->declare_parameter(
-    "map_topic",
-    rclcpp::ParameterValue(
-      (parent_namespace_ == "/" ? "/" : parent_namespace_ + "/") + std::string("map")));
-
-  this->declare_parameter("observation_sources", rclcpp::ParameterValue(std::string("")));
+  // No node-level map_topic / observation_sources (2026-10-28): they were
+  // the static and obstacle layers' fallbacks, and both layers are gone.
   this->declare_parameter("origin_x", rclcpp::ParameterValue(0.0));
   this->declare_parameter("origin_y", rclcpp::ParameterValue(0.0));
   this->declare_parameter("plugins", rclcpp::ParameterValue(default_plugins_));
-  this->declare_parameter("filters", rclcpp::ParameterValue(std::vector<std::string>()));
   this->declare_parameter("publish_frequency", rclcpp::ParameterValue(1.0));
   this->declare_parameter("resolution", rclcpp::ParameterValue(0.1));
   this->declare_parameter("robot_base_frame", rclcpp::ParameterValue(std::string("base_link")));
@@ -176,30 +176,6 @@ void Costmap2DROS::init()
       plugin_names_[i].c_str());
   }
 
-  // and costmap filters as well
-  for (unsigned int i = 0; i < filter_names_.size(); ++i) {
-    RCLCPP_INFO(
-      this->get_logger(), "[Costmap2DROS][%s] Using costmap filter \"%s\"", __func__,
-      filter_names_[i].c_str());
-
-    std::shared_ptr<Layer> filter = plugin_loader_.createSharedInstance(filter_types_[i]);
-
-    // lock the costmap because no update is allowed until the filter is initialized
-    std::unique_lock<Costmap2D::mutex_t> lock(*(layered_costmap_->getCostmap()->getMutex()));
-
-    layered_costmap_->addFilter(filter);
-
-    filter->initialize(
-      layered_costmap_.get(), filter_names_[i], tf_buffer_.get(), this->shared_from_this(),
-      callback_group_);
-
-    lock.unlock();
-
-    RCLCPP_INFO(
-      this->get_logger(), "[Costmap2DROS][%s] Initialized costmap filter \"%s\"", __func__,
-      filter_names_[i].c_str());
-  }
-
   // Create publishers and subscribers
   footprint_sub_ = create_subscription<geometry_msgs::msg::Polygon>(
     "footprint", rclcpp::SystemDefaultsQoS(),
@@ -247,11 +223,9 @@ void Costmap2DROS::activate()
     this->get_logger(), "[Costmap2DROS][%s] Checking transform %s -> %s", __func__,
     robot_base_frame_.c_str(), global_frame_.c_str());
   rclcpp::Rate r(2.0);
-  while (rclcpp::ok() &&
-         !tf_buffer_->canTransform(
-           global_frame_, robot_base_frame_, tf2::TimePointZero, tf2::durationFromSec(0.1),
-           &tf_error))
-  {
+  while (rclcpp::ok() && !tf_buffer_->canTransform(
+                           global_frame_, robot_base_frame_, tf2::TimePointZero,
+                           tf2::durationFromSec(0.1), &tf_error)) {
     RCLCPP_INFO_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
       "[Costmap2DROS][%s] Timed out waiting for transform %s -> %s to become available, "
@@ -282,7 +256,7 @@ void Costmap2DROS::activate()
 
   // Create the thread that periodically updates and publishes the costmap.
   map_update_thread_shutdown_ = false;
-  stopped_ = true;        // force start() to (re)activate the layer plugins
+  stopped_ = true;  // force start() to (re)activate the layer plugins
   stop_updates_ = false;
   map_update_thread_ = std::make_unique<std::thread>(
     std::bind(&Costmap2DROS::mapUpdateLoop, this, map_update_frequency_));
@@ -359,7 +333,6 @@ void Costmap2DROS::getParameters()
   this->get_parameter("update_frequency", map_update_frequency_);
 
   this->get_parameter("plugins", plugin_names_);
-  this->get_parameter("filters", filter_names_);
 
   if (plugin_names_ == default_plugins_) {
     for (size_t i = 0; i < default_plugins_.size(); ++i) {
@@ -369,14 +342,10 @@ void Costmap2DROS::getParameters()
     }
   }
   plugin_types_.resize(plugin_names_.size());
-  filter_types_.resize(filter_names_.size());
 
   // 1. All plugins must have 'plugin' param defined in their namespace to define the plugin type
   for (size_t i = 0; i < plugin_names_.size(); ++i) {
     plugin_types_[i] = syncai_util::get_plugin_type_param(this, plugin_names_[i]);
-  }
-  for (size_t i = 0; i < filter_names_.size(); ++i) {
-    filter_types_[i] = syncai_util::get_plugin_type_param(this, filter_names_[i]);
   }
 
   // 2. The map publish frequency cannot be 0 (to avoid a divde-by-zero)
@@ -520,7 +489,6 @@ void Costmap2DROS::start()
 {
   RCLCPP_INFO(this->get_logger(), "start");
   std::vector<std::shared_ptr<Layer>> * plugins = layered_costmap_->getPlugins();
-  std::vector<std::shared_ptr<Layer>> * filters = layered_costmap_->getFilters();
 
   // check if we're stopped or just paused
   if (stopped_) {
@@ -528,10 +496,6 @@ void Costmap2DROS::start()
     for (std::vector<std::shared_ptr<Layer>>::iterator plugin = plugins->begin();
          plugin != plugins->end(); ++plugin) {
       (*plugin)->activate();
-    }
-    for (std::vector<std::shared_ptr<Layer>>::iterator filter = filters->begin();
-         filter != filters->end(); ++filter) {
-      (*filter)->activate();
     }
     stopped_ = false;
   }
@@ -551,16 +515,11 @@ void Costmap2DROS::stop()
   // layered_costmap_ is set only if on_configure has been called
   if (layered_costmap_) {
     std::vector<std::shared_ptr<Layer>> * plugins = layered_costmap_->getPlugins();
-    std::vector<std::shared_ptr<Layer>> * filters = layered_costmap_->getFilters();
 
     // unsubscribe from topics
     for (std::vector<std::shared_ptr<Layer>>::iterator plugin = plugins->begin();
          plugin != plugins->end(); ++plugin) {
       (*plugin)->deactivate();
-    }
-    for (std::vector<std::shared_ptr<Layer>>::iterator filter = filters->begin();
-         filter != filters->end(); ++filter) {
-      (*filter)->deactivate();
     }
   }
   initialized_ = false;
@@ -591,14 +550,9 @@ void Costmap2DROS::resetLayers()
 
   // Reset each of the plugins
   std::vector<std::shared_ptr<Layer>> * plugins = layered_costmap_->getPlugins();
-  std::vector<std::shared_ptr<Layer>> * filters = layered_costmap_->getFilters();
   for (std::vector<std::shared_ptr<Layer>>::iterator plugin = plugins->begin();
        plugin != plugins->end(); ++plugin) {
     (*plugin)->reset();
-  }
-  for (std::vector<std::shared_ptr<Layer>>::iterator filter = filters->begin();
-       filter != filters->end(); ++filter) {
-    (*filter)->reset();
   }
 }
 

@@ -1006,7 +1006,7 @@ bool MPPIController::startBackOut(const geometry_msgs::msg::PoseStamped & robot_
   // wall's LETHAL cells. With vx_min 0 every candidate either walks into the
   // wall or swings a corner into it within the 1.6 s horizon (1000 of 1000),
   // the turn onto the path (+1.30 rad) was blocked, and the tree has no
-  // BackUp (move_3d.xml): the four FollowPath retries and the replans all
+  // BackUp (move.xml): the four FollowPath retries and the replans all
   // started from the same pose, and the task failed; re-sent, it failed in
   // 1.2 min. Here, from a stand: as much of back_out_dist straight back as
   // is free of LETHAL (isApproachBlocked(), the direct approach's test, at

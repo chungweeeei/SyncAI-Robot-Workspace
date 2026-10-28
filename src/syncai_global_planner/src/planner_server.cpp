@@ -1,8 +1,6 @@
 #include "syncai_global_planner/planner_server.hpp"
 
 #include <chrono>
-#include <cmath>
-#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
@@ -10,12 +8,8 @@
 #include <vector>
 
 #include "builtin_interfaces/msg/duration.hpp"
-#include "syncai_costmap_2d/cost_values.hpp"
-#include "syncai_costmap_2d/footprint.hpp"
-#include "syncai_costmap_2d/static_layer.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
-#include "tf2/utils.h"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -46,42 +40,13 @@ size_t closestPoseIndex(
   return closest_idx;
 }
 
-// Heading the footprint test uses at pose i: the direction to the next pose
-// that is not on top of this one, the previous segment's for the last pose,
-// and the pose's own yaw only for a single-pose path. Not the orientation
-// field, which is meaningful only by accident: SmacPlanner2D writes identity
-// into every pose, its smoother then overwrites segments of more than ten
-// poses with this same direction, so a short path, a short segment, a
-// coincident pair or a NavFn / StraightLine path still carries w = 1 -- and
-// the last pose always carries the goal yaw, which is where the robot ends
-// up, not how it arrives there, and nothing a replan could change.
-double headingAt(const std::vector<geometry_msgs::msg::PoseStamped> & poses, size_t i)
-{
-  constexpr double kSameSpot = 1e-4;  // m; closer than this is one point, not a direction
-  for (size_t j = i + 1; j < poses.size(); ++j) {
-    const double dx = poses[j].pose.position.x - poses[i].pose.position.x;
-    const double dy = poses[j].pose.position.y - poses[i].pose.position.y;
-    if (std::abs(dx) > kSameSpot || std::abs(dy) > kSameSpot) {
-      return std::atan2(dy, dx);
-    }
-  }
-  for (size_t j = i; j > 0; --j) {
-    const double dx = poses[i].pose.position.x - poses[j - 1].pose.position.x;
-    const double dy = poses[i].pose.position.y - poses[j - 1].pose.position.y;
-    if (std::abs(dx) > kSameSpot || std::abs(dy) > kSameSpot) {
-      return std::atan2(dy, dx);
-    }
-  }
-  return tf2::getYaw(poses[i].pose.orientation);
-}
-
 }  // namespace
 
 PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
 : rclcpp::Node("planner_server", options),
   gp_loader_("syncai_nav_core", "syncai_nav_core::GlobalPlanner"),
-  default_ids_{"GridBased"},
-  default_types_{"syncai_global_planner/NavfnPlanner"}
+  default_ids_{"Octo3D"},
+  default_types_{"syncai_global_planner/OctomapPlanner3D"}
 {
   RCLCPP_INFO(this->get_logger(), "[PlannerServer][%s] Creating PlannerServer", __func__);
 
@@ -90,11 +55,6 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   this->declare_parameter("expected_planner_frequency", 1.0);
   this->declare_parameter("plan_republish_rate", 1.0);
   this->declare_parameter("plan_idle_clear_time", 30.0);
-  this->declare_parameter("is_path_valid.footprint_check", true);
-  this->declare_parameter("is_path_valid.heading_margin", 0.35);
-  this->declare_parameter("costmap_wait_timeout", 5.0);
-  path_check_footprint_ = this->get_parameter("is_path_valid.footprint_check").as_bool();
-  path_check_heading_margin_ = this->get_parameter("is_path_valid.heading_margin").as_double();
 
   this->get_parameter("planner_plugins", planner_ids_);
   if (planner_ids_ == default_ids_) {
@@ -119,7 +79,6 @@ PlannerServer::~PlannerServer()
     costmap_ros_->deactivate();
   }
   costmap_thread_.reset();
-  costmap_ = nullptr;
 }
 
 void PlannerServer::configure()
@@ -127,15 +86,9 @@ void PlannerServer::configure()
   RCLCPP_INFO(this->get_logger(), "[PlannerServer][%s] Configuring PlannerServer", __func__);
 
   costmap_ros_->init();
-  costmap_ = costmap_ros_->getCostmap();
-  collision_checker_.setCostmap(costmap_);
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<syncai_util::NodeThread>(costmap_ros_);
-
-  RCLCPP_DEBUG(
-    this->get_logger(), "[PlannerServer][%s] Costmap size: %d,%d", __func__,
-    costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
 
   tf_ = costmap_ros_->getTfBuffer();
 
@@ -182,7 +135,6 @@ void PlannerServer::configure()
       __func__, expected_planner_frequency);
     max_planner_duration_ = 0.0;
   }
-  get_parameter("costmap_wait_timeout", costmap_wait_timeout_);
 
   // Initialize pubs & subs
   plan_publisher_ = this->create_publisher<nav_msgs::msg::Path>("plan", 1);
@@ -251,88 +203,6 @@ bool PlannerServer::isServerInactive()
   }
 
   return false;
-}
-
-template <typename ServerT, typename GoalT>
-PlannerServer::CostmapWait PlannerServer::waitForCostmap(
-  ServerT & server, std::shared_ptr<const GoalT> & goal, std::string & reason)
-{
-  // Don't compute a plan until costmap is valid (after clear costmap). Every
-  // way out but Ready is the caller's to report and terminate.
-  const auto started = std::chrono::steady_clock::now();
-  rclcpp::Rate r(100);
-  while (rclcpp::ok()) {
-    if (server.is_cancel_requested()) {
-      return CostmapWait::Cancelled;
-    }
-    // A preempt is taken during the wait, not only after it (upstream): the new
-    // goal may name a planner that does not read the costmap (Octo3D), and then
-    // there is nothing to wait for.
-    if (server.is_preempt_requested()) {
-      goal = server.accept_pending_goal();
-    }
-    if (!plannerUsesCostmap(goal->planner_id)) {
-      return CostmapWait::Ready;
-    }
-    // Before isCurrent(): a static layer without a map is never current, and
-    // on a 3D-only map (map_server idle, no gridmap.yaml) no map is coming, so
-    // the timeout would only delay the same failure. A map_server that is
-    // merely slow at boot is not this case in practice: its latched map
-    // reaches the static layer within a second of the planner coming up,
-    // long before a goal. A clear (reset()) keeps the layer's map.
-    const std::string layer = staticLayerWithoutMap();
-    if (!layer.empty()) {
-      reason = "static layer '" + layer +
-               "' has no map (none published on its map topic; a 3D-only map has no "
-               "gridmap.yaml, so map_server runs idle) -- planner '" +
-               goal->planner_id + "' plans on that costmap";
-      return CostmapWait::NoStaticMap;
-    }
-    if (costmap_ros_->isCurrent()) {
-      return CostmapWait::Ready;
-    }
-    const double waited =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    if (costmap_wait_timeout_ > 0.0 && waited > costmap_wait_timeout_) {
-      // The global costmap updates at 1 Hz, so a clear repopulates within
-      // ~1 s; staying stale past the timeout means a layer is not getting its
-      // data (a sensor source past its expected_update_rate, a TF gap).
-      char buf[160];
-      std::snprintf(
-        buf, sizeof(buf),
-        "global costmap not current after %.1f s (costmap_wait_timeout); a layer is not "
-        "receiving its data",
-        costmap_wait_timeout_);
-      reason = buf;
-      return CostmapWait::TimedOut;
-    }
-    r.sleep();
-  }
-  reason = "shutting down";
-  return CostmapWait::Cancelled;
-}
-
-std::string PlannerServer::staticLayerWithoutMap() const
-{
-  // Read without the costmap mutex: the layer list is fixed after init(), and
-  // isMapReceived() is atomic.
-  for (const auto & layer : *costmap_ros_->getLayeredCostmap()->getPlugins()) {
-    auto static_layer = std::dynamic_pointer_cast<syncai_costmap_2d::StaticLayer>(layer);
-    if (static_layer && static_layer->isEnabled() && !static_layer->isMapReceived()) {
-      return static_layer->getName();
-    }
-  }
-  return "";
-}
-
-bool PlannerServer::plannerUsesCostmap(const std::string & planner_id) const
-{
-  // Resolved exactly as getPlan() resolves it.
-  auto it = planners_.find(planner_id);
-  if (it == planners_.end() && planners_.size() == 1 && planner_id.empty()) {
-    it = planners_.begin();
-  }
-  return it != planners_.end() && it->second->usesCostmap();
 }
 
 bool PlannerServer::isCancelRequested()
@@ -412,15 +282,11 @@ void PlannerServer::isPathValid(
   // "Can't tell" has two answers here, and which one is right depends on what
   // the caller does with each. The BT (move.xml) replans on invalid and keeps
   // the path on valid. A wrong "invalid" therefore replaces a route nobody
-  // has shown to be blocked -- and since the 2D-raytraced global costmap
-  // forgets a blocker as soon as the robot sees past it, the replacement can
-  // be the very route that ran into it, which is the oscillation this
-  // service exists to stop. A wrong "valid" delays one check by a second,
-  // with RPP's own collision check holding the robot meanwhile. So the
-  // configuration faults (empty path, wrong frame) answer invalid, loudly,
-  // and a momentary TF miss answers valid: the alternative was a replan whose
-  // getStartPose() fails on the same miss and whose RecoveryNode then clears
-  // the global costmap of the marks that justified the current detour.
+  // has shown to be blocked, which is the oscillation this service exists to
+  // stop; a wrong "valid" delays one check by a second. So the configuration
+  // faults (empty path, wrong frame) answer invalid, loudly, and a momentary
+  // TF miss answers valid: the alternative was a replan whose getStartPose()
+  // fails on the same miss.
   response->is_valid = false;
 
   const auto & poses = request->path.poses;
@@ -450,16 +316,14 @@ void PlannerServer::isPathValid(
   }
 
   // The request carries no planner id, but the path the BT checks is the
-  // last plan this server handed out, so the planner that made it is known.
-  // One that reads no costmap cells (Octo3D) is the one the costmap test
-  // below is wrong for -- a 3D path upstairs lies over the ground floor's
-  // gridmap, and on a 3D-only map the costmap is a 5 x 5 m default grid at
-  // the origin -- and it judges its own paths, on its dynamic overlay
-  // (2026-10-21). pathHasHeight() is not the detector: a path on one flat
-  // floor has no z span. An id this server has never planned with (no plan
-  // yet, or after clear_plan) falls through to the costmap test as before.
-  // The empty-id case mirrors getPlan(): with one plugin loaded it is that
-  // plugin.
+  // last plan this server handed out, so the planner that made it is known
+  // and judges its own path (2026-10-21; Octo3D on its dynamic overlay). The
+  // empty-id case mirrors getPlan(): with one plugin loaded it is that
+  // plugin, which also covers a check after clear_plan (Octo3D calls it on a
+  // map switch). Until 2026-10-28 a path of a planner that reads the costmap
+  // (GridBased) was judged here on the global costmap instead -- centre cell
+  // against INSCRIBED, padded footprint perimeter against LETHAL -- and that
+  // went with 2D navigation and the costmap's layers.
   std::string planner_id;
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
@@ -469,180 +333,24 @@ void PlannerServer::isPathValid(
   if (planner_it == planners_.end() && planner_id.empty() && planners_.size() == 1) {
     planner_it = planners_.begin();
   }
-  if (planner_it != planners_.end() && !planner_it->second->usesCostmap()) {
-    response->is_valid =
-      planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
-    if (!response->is_valid && !response->invalid_pose_indices.empty()) {
-      const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
-      RCLCPP_INFO(
-        get_logger(),
-        "[PlannerServer][%s] Path blocked by planner %s: %zu poses, first at index %zu (%.2f, "
-        "%.2f)",
-        __func__, planner_it->first.c_str(), response->invalid_pose_indices.size(), first_idx,
-        poses[first_idx].pose.position.x, poses[first_idx].pose.position.y);
-    }
+  if (planner_it == planners_.end()) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "[PlannerServer][%s] No planner to judge the path (last plan's planner '%s'; loaded: %s); "
+      "answering blocked so the BT replans",
+      __func__, planner_id.c_str(), planner_ids_concat_.c_str());
     return;
   }
-
-  // Only what is still ahead of the robot matters: the part already driven
-  // may well be blocked now (by the robot's own trail of marks, or by the
-  // obstacle it just went around) without that saying anything about the
-  // route forward.
-  const size_t closest_idx = closestPoseIndex(request->path, robot_pose);
-
-  // Two tests per pose, and they are not nested. The centre cell against
-  // INSCRIBED is SmacPlanner2D's own expansion test: it covers unknown
-  // (allow_unknown: false -- flip that and unknown has to pass here too, or
-  // every path into unexplored space reads blocked), off the map, the
-  // keepout filter's inscribed band, and any lethal cell within the
-  // inscribed radius (0.25 m) of the centre, including one strictly inside
-  // the rectangle, which a perimeter walk cannot see. The padded footprint's
-  // perimeter against LETHAL is the test RPP applies on the local costmap
-  // before it drives (inCollision() -> footprintCostAtPose() >= LETHAL). The
-  // perimeter reaches 0.25 m sideways at the path heading and 0.455 m at the
-  // corners, so a blocker 0.25-0.45 m off the path centre passed the first
-  // test, RPP refused the path, nothing replanned, and FollowPath aborted on
-  // failure_tolerance without a detour ever being tried (2026-10). Running
-  // RPP's test here, on the global costmap while the blocker is still
-  // obstacle_max_range (2.5 m) out, turns that into a replan the robot can
-  // follow without stopping. The heading is tested at +-heading_margin as
-  // well: RPP tracks with up to rotate_to_heading_min_angle (0.25 rad) of
-  // heading error before it rotates in place, and the gait adds yaw sway.
-  //
-  // "Valid" therefore means "RPP will not refuse this for a lethal cell the
-  // global costmap already knows about". Not covered: marks only the local
-  // costmap holds (5 Hz against 1 Hz here, and no static layer there), the
-  // in-place rotation sweep RPP checks, heading error beyond the margin.
-  //
-  // Unknown under the perimeter is deliberately not a block: the local
-  // costmap does not track unknown, so RPP drives those poses, and counting
-  // it would reject every path along the mapping limit -- which Smac returns
-  // again, a 1 Hz replan loop with the robot driving fine. A perimeter vertex
-  // off the map skips the footprint test for that pose for the same reason;
-  // the centre test already rejects an off-map centre.
-  //
-  // The pose under the robot is included. A robot standing within its
-  // inscribed radius of a wall, or with a corner on a lethal cell, gets
-  // "invalid" on every call and replans once per BT tick -- the old
-  // behaviour, not a new failure, and a replan cannot move the start.
-  const bool footprint_check = path_check_footprint_;
-  const double margin = path_check_heading_margin_;
-  const auto footprint = costmap_ros_->getRobotFootprint();  // padded, 0.38 x 0.25
-  response->is_valid = true;
-  int first_cost = -1;  // centre cost under the first blocked pose; -1: off the map
-  bool first_by_footprint = false;
-  double first_heading = 0.0;
-  {
-    std::unique_lock<syncai_costmap_2d::Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
-    for (size_t i = closest_idx; i < poses.size(); ++i) {
-      const double px = poses[i].pose.position.x;
-      const double py = poses[i].pose.position.y;
-      unsigned int mx = 0;
-      unsigned int my = 0;
-      const bool on_map = costmap_->worldToMap(px, py, mx, my);
-      const unsigned char cost = on_map ? costmap_->getCost(mx, my) : 0;
-      bool blocked = !on_map || cost >= syncai_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
-      bool by_footprint = false;
-      double heading = 0.0;
-      if (!blocked && footprint_check) {
-        const double along = headingAt(poses, i);
-        for (const double offset : {0.0, -margin, margin}) {
-          if (footprintTouchesLethal(px, py, along + offset, footprint)) {
-            blocked = true;
-            by_footprint = true;
-            heading = along + offset;
-            break;
-          }
-          if (margin == 0.0) {
-            break;
-          }
-        }
-      }
-      if (blocked) {
-        if (response->is_valid) {
-          first_cost = on_map ? cost : -1;
-          first_by_footprint = by_footprint;
-          first_heading = heading;
-        }
-        response->is_valid = false;
-        response->invalid_pose_indices.push_back(static_cast<int32_t>(i));
-      }
-    }
-  }
-
-  // Every "invalid" here becomes a replan, and a replan nobody can explain is
-  // the one thing this service exists to prevent, so say which test tripped
-  // and why. The centre costs point at different causes: 254 a marked
-  // obstacle (real, or lidar noise / self-hits in the 0.1-1.5 m band), 253
-  // the path grazing an inflated obstacle's inscribed core, 255 unknown --
-  // which neither A* nor the smoother enters with allow_unknown: false
-  // (2026-10), so it means the map under a kept path changed (a reload) or
-  // the robot's own spot. "ahead 0.00 m" means the robot's own spot (see
-  // above).
-  if (!response->is_valid) {
+  response->is_valid =
+    planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
+  if (!response->is_valid && !response->invalid_pose_indices.empty()) {
     const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
-    double ahead = 0.0;
-    for (size_t i = closest_idx; i < first_idx; ++i) {
-      ahead += syncai_util::geometry_utils::euclidean_distance(poses[i], poses[i + 1]);
-    }
-    if (first_by_footprint) {
-      RCLCPP_INFO(
-        get_logger(),
-        "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
-        "ahead of the robot, (%.2f, %.2f): footprint perimeter on LETHAL at heading %.2f rad "
-        "(centre cost %d)",
-        __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx,
-        ahead, poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_heading,
-        first_cost);
-    } else {
-      RCLCPP_INFO(
-        get_logger(),
-        "[PlannerServer][%s] Path blocked: %zu of %zu poses ahead; first at index %zu, %.2f m "
-        "ahead of the robot, (%.2f, %.2f): centre cost %d",
-        __func__, response->invalid_pose_indices.size(), poses.size() - closest_idx, first_idx,
-        ahead, poses[first_idx].pose.position.x, poses[first_idx].pose.position.y, first_cost);
-    }
+    RCLCPP_INFO(
+      get_logger(),
+      "[PlannerServer][%s] Path blocked by planner %s: %zu poses, first at index %zu (%.2f, %.2f)",
+      __func__, planner_it->first.c_str(), response->invalid_pose_indices.size(), first_idx,
+      poses[first_idx].pose.position.x, poses[first_idx].pose.position.y);
   }
-}
-
-bool PlannerServer::footprintTouchesLethal(
-  double x, double y, double theta, const std::vector<geometry_msgs::msg::Point> & footprint)
-{
-  std::vector<geometry_msgs::msg::Point> oriented;
-  syncai_costmap_2d::transformFootprint(x, y, theta, footprint, oriented);
-  if (oriented.size() < 2) {
-    return false;
-  }
-
-  // Every vertex first, so one off the map skips the whole pose (see
-  // isPathValid()) instead of reading as LETHAL the way footprintCost() has it.
-  std::vector<std::pair<int, int>> cells(oriented.size());
-  for (size_t k = 0; k < oriented.size(); ++k) {
-    unsigned int mx = 0;
-    unsigned int my = 0;
-    if (!costmap_->worldToMap(oriented[k].x, oriented[k].y, mx, my)) {
-      return false;
-    }
-    cells[k] = {static_cast<int>(mx), static_cast<int>(my)};
-  }
-
-  // Edge by edge, closing the polygon. lineCost() returns LETHAL the moment it
-  // meets one and the maximum otherwise, and the maximum is where
-  // footprintCost() goes wrong for this purpose: NO_INFORMATION (255) under
-  // one edge outranks LETHAL (254) under another, and this costmap tracks
-  // unknown (track_unknown_space: true) while the local costmap RPP checks
-  // does not. Comparing each edge to LETHAL exactly keeps unknown out of it.
-  for (size_t k = 0; k < cells.size(); ++k) {
-    const auto & a = cells[k];
-    const auto & b = cells[(k + 1) % cells.size()];
-    // lineCost(x0, x1, y0, y1): the x pair first, then the y pair.
-    if (
-      collision_checker_.lineCost(a.first, b.first, a.second, b.second) ==
-      static_cast<double>(syncai_costmap_2d::LETHAL_OBSTACLE)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 void PlannerServer::computePlan()
@@ -662,32 +370,9 @@ void PlannerServer::computePlan()
 
     getPreemptedGoalIfRequested(goal);
 
-    // Only a planner that reads the cells waits for them (upstream waits for
-    // every one, before taking a preempt). Octo3D does not: on a 3D-only map
-    // with no gridmap.yaml this wait never ends, and every goal hung here
-    // without reaching the planner. Since 2026-10-19 the wait itself can end
-    // without the costmap: a cancel, a static layer with no map (a GridBased
-    // goal on a 3D-only map, which hung the action thread for good until
-    // then) or costmap_wait_timeout. An aborted ComputePathToPose is what the
-    // task_runner reports as PLAN_FAILED.
-    std::string wait_reason;
-    switch (waitForCostmap(*action_server_pose_, goal, wait_reason)) {
-      case CostmapWait::Ready:
-        break;
-      case CostmapWait::Cancelled:
-        RCLCPP_INFO(
-          get_logger(), "[PlannerServer][%s] Goal was canceled while waiting for the costmap.",
-          __func__);
-        action_server_pose_->terminate_all();
-        return;
-      case CostmapWait::NoStaticMap:
-      case CostmapWait::TimedOut:
-        RCLCPP_WARN(
-          get_logger(), "[PlannerServer][%s] Cannot plan to (%.2f, %.2f): %s", __func__,
-          goal->goal.pose.position.x, goal->goal.pose.position.y, wait_reason.c_str());
-        action_server_pose_->terminate_current();
-        return;
-    }
+    // No wait for the costmap to be current (upstream's, and GridBased's
+    // until 2026-10-28): no loaded planner reads its cells, and it has no
+    // layers to be current with.
 
     // Use start pose if provided otherwise use current robot pose
     geometry_msgs::msg::PoseStamped start;
@@ -760,25 +445,10 @@ void PlannerServer::computePlanThroughPoses()
       return;
     }
 
-    // Same rule as computePlan(): only a planner that reads the cells waits,
-    // and the wait ends on a cancel, a missing static map or the timeout.
-    std::string wait_reason;
-    switch (waitForCostmap(*action_server_poses_, goal, wait_reason)) {
-      case CostmapWait::Ready:
-        break;
-      case CostmapWait::Cancelled:
-        RCLCPP_INFO(
-          get_logger(), "[PlannerServer][%s] Goal was canceled while waiting for the costmap.",
-          __func__);
-        action_server_poses_->terminate_all();
-        return;
-      case CostmapWait::NoStaticMap:
-      case CostmapWait::TimedOut:
-        RCLCPP_WARN(
-          get_logger(), "[PlannerServer][%s] Cannot plan through poses: %s", __func__,
-          wait_reason.c_str());
-        action_server_poses_->terminate_current();
-        return;
+    // A preempt is taken here, as computePlan() takes one; until 2026-10-28
+    // it was taken inside the wait for the costmap, which is gone.
+    if (action_server_poses_->is_preempt_requested()) {
+      goal = action_server_poses_->accept_pending_goal();
     }
 
     if (goal->goals.empty()) {
@@ -1041,22 +711,6 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
             __func__, parameter.as_double());
           max_planner_duration_ = 0.0;
         }
-      } else if (name == "costmap_wait_timeout") {
-        costmap_wait_timeout_ = parameter.as_double();
-      } else if (name == "is_path_valid.heading_margin") {
-        // Dynamic so the on-robot A/B (footprint_check on / off, margin up /
-        // down) needs no rebuild. Beyond a right angle the "margin" would test
-        // headings the controller never drives.
-        if (parameter.as_double() < 0.0 || parameter.as_double() > M_PI_2) {
-          result.successful = false;
-          result.reason = "is_path_valid.heading_margin must be within [0, pi/2] rad";
-          return result;
-        }
-        path_check_heading_margin_ = parameter.as_double();
-      }
-    } else if (type == ParameterType::PARAMETER_BOOL) {
-      if (name == "is_path_valid.footprint_check") {
-        path_check_footprint_ = parameter.as_bool();
       }
     }
   }

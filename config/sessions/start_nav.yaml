@@ -15,14 +15,13 @@
 #
 # 3D ONLY (2026-10-28): the nav session navigates on octomap.bt and nothing
 # else. The map_server window (map_server + the keepout mask server, both
-# serving the 2D gridmap) is gone, the first step of deprecating 2D
-# navigation: every boot is now what a 3D-only map's boot was -- no `map`, no
-# keepout mask, the planner's global costmap with no static layer data. Octo3D
-# plans without them (usesCostmap() false) and reads its zones from
-# keepout.json beside the tree. The backend already treats a missing
-# map_server as a 3D session (its map switch skips map_server/load_map and
-# refuses a 2D map with stack_not_ready); syncai_map_server itself, the 2D
-# planners and the 2D trees are still built and are removed in later steps.
+# serving the 2D gridmap) went first, then the rest of 2D navigation:
+# syncai_map_server, the 2D planners (GridBased / NavFn / StraightLine), the
+# 2D RPP, the static / obstacle layers and the keepout filter, and the 2D
+# trees. Octo3D plans on the tree alone (the planner's global costmap has no
+# layers) and reads its zones from keepout.json beside the tree. The backend
+# already treats a missing map_server as a 3D session: its map switch skips
+# map_server/load_map and refuses a 2D map with stack_not_ready.
 #
 # There is no frontend window and no backend window: `syncai_frontend` left this
 # workspace in 2026-09 and `syncai_backend` followed it, so nothing in this
@@ -75,7 +74,8 @@ windows:
 
   # ---------- Window 1: LIO front end / LIO localizer ----------
   # Window 1 was map_server + keepout (the 2D gridmap and its keepout mask)
-  # until 2026-10-28; see the header.
+  # until 2026-10-28; see the header. There is no map window any more: the
+  # localizer reads map.pcd and Octo3D octomap.bt straight off disk.
   #
   # Two panes, in start order. pointlio (syncai_pointlio) is the front end
   # the localizer (syncai_localizer, in-tree since 2026-09) registers against;

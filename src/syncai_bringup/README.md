@@ -338,7 +338,7 @@ are symlinked, and edits take effect on the next launch with no rebuild at all.
   `livox_xfer_format:=0` argument instead of a YAML edit — today only
   `config/sessions/calib_lidar_camera.yaml`. `livox/lidar` keeps its name and
   only changes type there, so never set it in a session that runs pointlio.
-- **Nothing publishes `<robot_id>/scan` any more.** The 3D planner/controller
-  params still list `scan` as an obstacle observation source; it was already
-  inert on the real robot (the obstacle layers run off `pointlio/body_cloud`),
-  and now neither the topic nor its TF frame exists at all.
+- **Nothing publishes `<robot_id>/scan` any more.** Nothing reads it either
+  since 2026-10-28: the costmaps' obstacle layers, which listed it as an
+  (inert) observation source beside `pointlio/body_cloud`, went with 2D
+  navigation, and neither the topic nor its TF frame exists at all.

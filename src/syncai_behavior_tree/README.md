@@ -284,12 +284,13 @@ Semantics of the non-obvious ones:
   `server_timeout` and never returns `RUNNING`. An empty path answers `FAILURE`
   without a call; a timeout answers `SUCCESS` with a WARN (2026-10) — in doubt
   the tree **keeps** the path, because a replan replaces a route nobody has
-  shown to be blocked (and the 2D-raytraced global costmap can have forgotten
-  the blocker the detour was for), while a kept one is re-checked in a second
-  and RPP stops the robot meanwhile. The timeout is the global costmap's 1 Hz
-  update holding the costmap mutex past `server_timeout`; a WARN every tick
-  means the two loops phase-locked and `server_timeout` in `move.xml` must go
-  up, not that the answer should flip back. Not upstream (2026-10): a
+  shown to be blocked, while a kept one is re-checked in a second and the
+  controller holds the robot meanwhile. Until 2026-10-28 the usual cause was
+  the 2D global costmap's 1 Hz update holding its mutex past
+  `server_timeout`; the check is answered by `Octo3D` on its dynamic overlay
+  since, so a WARN every tick now means that answer is slower than
+  `server_timeout` and the timeout in `move.xml` must go up, not that the
+  answer should flip back. Not upstream (2026-10): a
   `false` answers `FAILURE` only once the same spot (a blocked pose within
   `blocked_match_distance` of one blocked last time) of the same path (stamp +
   size) has been answered blocked for `blocked_time` seconds (steady clock,
@@ -326,18 +327,17 @@ specialisation shows up as an XML parse error at tree-load time.
 
 ## The tree in use
 
-`syncai_task_runner/behavior_trees/move.xml`. Below is the `PipelineSequence`
-of the 2D tree on `dev` (the new-goal `ClearEntireCostmap` that precedes it is
-left out) — replanning only when the path becomes invalid or the goal changes. On
-`feature/octomap-planner-3d` a 3D map runs `move_3d.xml` instead (picked per
-goal by the task_runner): the same tree with `planner_id="Octo3D"`,
-`controller_id="FollowPath"` (MPPI, 3D-aware) and both `ClearEntireCostmap`
-nodes on `planner_server/Octo3D/clear_overlay`, the planner's dynamic-obstacle
-memory — which is also what its `IsPathValid` is judged on, since
-planner_server asks the planner itself for an `Octo3D` path (2026-10-21; from
-2026-10-19 until then a `number_plans == 0` `BlackboardCheckInt` stood in for
-`IsPathValid` there and the tree planned once per goal). Both with contextual
-recovery (the why is in the XML header and `syncai_task_runner`'s README):
+`syncai_task_runner/behavior_trees/move.xml`. Below is its `PipelineSequence`
+(the new-goal `ClearEntireCostmap` on `planner_server/Octo3D/clear_overlay`
+that precedes it is left out) — replanning only when the path becomes invalid
+or the goal changes, with contextual recovery (the why is in the XML header
+and `syncai_task_runner`'s README). `planner_id="Octo3D"`,
+`controller_id="FollowPath"` (MPPI, 3D-aware), and the planner branch's
+`ClearEntireCostmap` on `clear_overlay`, the planner's dynamic-obstacle memory
+— which is also what its `IsPathValid` is judged on, since planner_server asks
+the planner that made the last plan (2026-10-21). This was `move_3d.xml` until
+2026-10-28; the 2D `move.xml` it replaced (`GridBased`, clears on
+`global_costmap/clear_entirely_global_costmap`) went with 2D navigation.
 
 ```xml
 <PipelineSequence name="NavigateWithReplanning">
@@ -350,9 +350,9 @@ recovery (the why is in the XML header and `syncai_task_runner`'s README):
           </Inverter>
           <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
         </ReactiveSequence>
-        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
       </Fallback>
-      <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+      <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
     </RecoveryNode>
   </RateController>
   <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">

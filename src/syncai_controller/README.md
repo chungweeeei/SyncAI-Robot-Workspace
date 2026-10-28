@@ -5,39 +5,35 @@ a rolling local costmap and drives a pluggable controller at a fixed rate. Porte
 from `nav2_controller`, with `nav2_regulated_pure_pursuit_controller` merged in
 as a plugin of this package.
 
-Three path followers are loaded on this branch (two on `dev`, 2026-10):
+Two path followers are loaded (2026-10-28):
 
 - **`FollowPath` is MPPI**, from `syncai_mppi_controller` (its README has the
   port). It does local obstacle avoidance: it samples (v, ω) sequences on the
-  local costmap and bends round a blocker beside the path.
-- **`FollowPathRPP` is RPP**, which this README mostly describes. RPP tracks
-  the path and stops when the path is blocked. It was `FollowPath` until then.
-  It is `dev`'s plugin, unchanged: it matches a path on x / y only.
-- **`FollowPathRPP3D` is RPP 3D** (`RegulatedPurePursuitController3D`,
-  `feature/octomap-planner-3d`): the same RPP plus 3D matching of a path with
-  heights and the stair mode (both below). It is a **copy** of the 2D plugin,
-  not a subclass — the stair logic runs through `computeVelocityCommands()`,
-  which the 2D class has no hooks for, and keeping `FollowPathRPP` exactly
-  `dev`'s was the point of the split (2026-10-19; until then both lived in
-  `FollowPathRPP`). A fix to the shared pursuit / regulation / collision code
-  has to be made in both files, and its params block repeats `FollowPathRPP`'s
-  values (one calibration — change them together), except `desired_linear_vel`:
-  **0.8 m/s** against `FollowPathRPP`'s 0.60 since 2026-10-19, unmeasured on the
-  robot (× `scale_fwd` 1.40 = 1.12 m/s to the gait). On a path without heights
-  it behaves as `FollowPathRPP`, at that speed. Since 2026-10-20 its stair
-  state machine is `syncai_util::StairMode`, shared with MPPI (below).
+  local costmap and bends round a blocker beside the path. It matches a path
+  with heights in 3D and climbs stairs (since 2026-10-20).
+- **`FollowPathRPP3D` is RPP 3D** (`RegulatedPurePursuitController3D`), the
+  Regulated Pure Pursuit this README mostly describes: RPP tracks the path and
+  stops when the path is blocked, plus 3D matching of a path with heights and
+  the stair mode (both below). It began (2026-10-19) as a **copy** of the 2D
+  `RegulatedPurePursuitController` (`FollowPathRPP`, the `FollowPath` before
+  MPPI, `dev`'s plugin unchanged), not a subclass — the stair logic runs
+  through `computeVelocityCommands()`, which the 2D class had no hooks for.
+  The 2D plugin went with 2D navigation on 2026-10-28, so RPP 3D is the only
+  RPP and there is no second file to keep in step. Its values are the 2D
+  RPP's calibration (one with `syncai_driver_manager`'s scales — change them
+  together), except `desired_linear_vel`: **0.8 m/s** against the 2D RPP's
+  0.60 since 2026-10-19, unmeasured on the robot (× `scale_fwd` 1.40 =
+  1.12 m/s to the gait). Since 2026-10-20 its stair state machine is
+  `syncai_util::StairMode`, shared with MPPI (below).
 
 The FollowPath goal's `controller_id` picks between them, so
-`controller_id` in `move.xml` is the whole A/B. `move.xml` (the 2D tree,
-`dev`'s) names `FollowPath` (MPPI) with `GridBased`; on this branch a 3D map
-runs `move_3d.xml` instead, which names **`FollowPath` too** with
-`planner_id="Octo3D"` (since 2026-10-20; `FollowPathRPP3D` for the day
-before): MPPI matches a path with heights in 3D and climbs stairs with the
-same `StairMode`, with its optimizer skipped on the flight and running
-everywhere else, so the local detours it gives the 2D tree are the 3D tree's
-too — one controller for both map types, a path without heights taking its
-planar code path unchanged. `FollowPathRPP3D` is the A/B on a 3D map, as
-`FollowPathRPP` is on a 2D one; only `FollowPathRPP` matches on x / y alone.
+`controller_id` in `move.xml` is the whole A/B. `move.xml` names `FollowPath`
+(MPPI) with `planner_id="Octo3D"`: MPPI matches a path with heights in 3D and
+climbs stairs with the same `StairMode`, with its optimizer skipped on the
+flight and running everywhere else, and a path without heights (a level
+floor) takes its planar code path, `dev`'s, unchanged. Until 2026-10-28 that
+tree was `move_3d.xml`, run on a 3D map in place of the 2D `move.xml`
+(`GridBased`), where `FollowPathRPP` was the A/B.
 
 Since 2026-10 the same node also serves a **second action, `DockToPose`**
 (`syncai_common`, on `dock_to_pose`): drive to ONE pose and stop there, the
@@ -53,8 +49,7 @@ syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server  ◄
                           ▼                        ▼                        ▼
                   progress checker           goal checkers           Controller plugins
               "still moving?"           goal_checker        FollowPath    = MPPI
-                                        dock_goal_checker   FollowPathRPP = RPP
-                                                            FollowPathRPP3D = RPP 3D
+                                        dock_goal_checker   FollowPathRPP3D = RPP 3D
                                                             Docking       = DockingController (forward)
                                                             Undocking     = DockingController (reverse)
                           └────────────────────────┼────────────────────────┘
@@ -223,8 +218,8 @@ path with heights fails RPP 3D's cycle (the server holds the robot for
 `failure_tolerance`) and never reaches its goal, rather than being followed on
 x / y. MPPI (`FollowPath`) matches the same way since 2026-10-20 (its
 `PathHandler`, with the same `lookupGroundZ` and the same failure); the 2D RPP
-(`FollowPathRPP`) is **not** height-aware and matches the path in 2D. The
-server's goal check is shared, so it applies to a path with heights whichever
+(`FollowPathRPP`, removed 2026-10-28) was not height-aware. The server's goal
+check is shared, so it applies to a path with heights whichever
 controller follows it.
 
 Climbing itself is the stair mode, next.
@@ -345,7 +340,7 @@ policy the gait controller is on — and the next goal's first level cycle switc
 back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
 
 **Run on robot01**: HIMLOCO climbs the stair with the policy switched standing
-still (no `Stand` first) and the settle time above. `FollowPathRPP` has no stair mode and no 3D matching. The state
+still (no `Stand` first) and the settle time above. The state
 machine is unit-tested in `syncai_util/test/test_stair_mode.cpp` on a
 synthetic flight (enter, hold, send, settle, leave, the replan-before-send
 cancel, the reset-after-send completion, a missing service, a level path).
@@ -459,7 +454,7 @@ cycles that never reach RPP, while these throws happen inside RPP mid-goal.
 The reset lives in `reset()` and **not** in `setPlan()`, which is the bug this
 cost us once: `setPlan()` is also the mid-navigation replan path. Every replan
 in `move.xml` (once a second until 2026-10, only when `IsPathValid` reports the
-path blocked since; in `move_3d.xml` only when the goal changes)
+path blocked since)
 hands `FollowPath` a fresh path, which reaches the server
 as an action preempt and lands in
 `updateGlobalPath() → setPlannerPath() → setPlan()`. Zeroing the baseline there
@@ -719,13 +714,13 @@ interfaces. Selection is by ID: the parameter names an ID, and `<id>.plugin`
 names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
-five entries on this branch (four on `dev`):
+four entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
+2D navigation):
 
 | ID | Plugin | Used by |
 |---|---|---|
 | `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, dock.xml's staging leg) |
-| `FollowPathRPP` | `syncai_controller::RegulatedPurePursuitController` | `follow_path`, the A/B |
-| `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, move_3d.xml / dock_3d.xml's staging leg (Octo3D paths, stairs) |
+| `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, the A/B (`controller_id` in move.xml) |
 | `Docking` | `syncai_controller::DockingController` (forward) | `dock_to_pose`, dock.xml |
 | `Undocking` | `syncai_controller::DockingController` (`allow_backward`) | `dock_to_pose`, undock.xml |
 
@@ -785,7 +780,7 @@ Server-level (`/**/controller_server`):
 | `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
-| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) on a global costmap that updates at 1 Hz out of phase with it, up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and since `is_path_valid` runs RPP's own footprint test a refused path is replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
+| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) — then on a 2D global costmap that updated at 1 Hz out of phase with it, on `Octo3D`'s dynamic overlay since 2026-10-21 — up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and while `is_path_valid` ran RPP's own footprint test on the 2D costmap (until 2026-10-28) a refused path was replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
 | `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
@@ -869,15 +864,13 @@ real-robot ones:
 | `use_sim_time` | `false` | No `/clock` on the real robot |
 | `xy_goal_tolerance` | `0.15` | The robot's floor speed is ~0.3 m/s, so it cannot creep into a 5 cm window (the old sim value). Raised from `0.15` to `0.3` on 2026-10-14 after MPPI's decelerating approach stalled the robot 0.23 m and 0.29 m short, and lowered back the same day because 0.3 ended an ordinary MOVE too far from its goal — nothing has fixed those stalls, so they can return. Equal to MPPI `GoalAngleCritic.threshold_to_consider` so the final turn starts only once the position is accepted; change the two together |
 | `yaw_goal_tolerance` | `0.2` | The gait controller does not turn below ~0.3 rad/s, so the final rotation cannot slow into a narrow window. Raised from `0.1` (2026-10-14): ±0.2 rad takes ~1.3 s to cross at that floor, enough for the command latency and the stop of a heavy body. Estimated, not measured |
-| Local costmap sources | 2D map: `obstacle_layer` (`scan` **and** `pointlio/body_cloud`); 3D map: `terrain_layer` (`pointlio/body_cloud`) | The 3D stack has no laser scan. Both layers are loaded and exactly one runs, by `map_type` against the planner's latched `planner_server/Octo3D/map_available` (2026-10-20; `syncai_costmap_2d`'s README, "Which sensor layer runs") — the signal the task_runner picks its trees by, so a map switch switches the layer with no restart. Never both: they disagree on a ramp |
+| Local costmap sources | `terrain_layer` (`pointlio/body_cloud`) | The only sensor layer since 2026-10-28. From 2026-10-20 it ran beside an `obstacle_layer` (`scan` and `pointlio/body_cloud` in a height band), exactly one of the two picked per map by `map_type` against the planner's `map_available` (`MapTypeGate`; never both, since they disagree on a ramp); the obstacle layer and the gate went with 2D navigation |
 
-On the real 3D robot the `scan` source receives nothing (no scan merger runs
-there); it is kept for setups that do publish one. The pointcloud source
-deliberately leaves `sensor_frame` empty so the observation buffer uses the
-cloud's own header frame as the raytrace origin — meaning it needs no per-robot
-launch override, but also that it only works **after** `syncai_localizer` has
-established the TF chain (`/<robot_id>/relocalize`, the INI's `[initial_pose]`
-or an `initialpose` message).
+The terrain layer takes the cloud's own header frame (`<robot_id>/pointlio_body`)
+as its height reference, so it needs no per-robot launch override, but it only
+works **after** `syncai_localizer` has established the TF chain
+(`/<robot_id>/relocalize`, the INI's `[initial_pose]` or an `initialpose`
+message).
 
 ## Running
 
@@ -898,7 +891,7 @@ The launch file does two namespace-related things, both load-bearing:
   parameter. The params file uses `/**/` wildcard keys so both match at any
   namespace.
 - **TF frames are overridden explicitly** (`global_frame`, `robot_base_frame`,
-  `obstacle_layer.scan.sensor_frame`) with the `<robot_id>/` prefix, because ROS
+  `body_frame`) with the `<robot_id>/` prefix, because ROS
   namespaces topics but not frame ids. These land under the `/**` wildcard and so
   reach the costmap node; `controller_server` ignores them as undeclared.
 
@@ -936,20 +929,14 @@ ros2 topic echo /<robot_id>/docking_plan         # the approach the console draw
   the robot physically fails to track the command, the clamp will not notice and
   will keep ramping. That is intentional (gait noise), but it means the clamp is
   not a safety feature.
-- **The footprint is shared with the global costmap; the padding is not.** Both
-  costmaps use `[[0.35,0.22],…]` (reconciled 2026-10 — this file had been left
-  at `[[0.28,0.20],…]`). `footprint_padding` is 0.01 here and 0.03 in
-  `syncai_global_planner`'s `global_costmap`, deliberately: the planner's
-  `is_path_valid` runs the same perimeter-on-LETHAL test RPP runs here
-  (2026-10), and the 0.02 m gap makes the planner's the stricter of the two, so
-  a path it passes is one RPP will drive and one RPP would refuse is replanned
-  2.5 m out. That ordering holds between the two *perimeter* tests only — the
-  centre-cell test the planner used alone before then never bounded the
-  corners, so RPP refused paths the planner had passed and nothing replanned
-  (the goal aborted with no detour). The gap absorbs ~3° of heading error, not
-  the 14° RPP tracks with; `is_path_valid.heading_margin` covers that. Change
-  the rectangle in both files together, and never raise this padding to the
-  global one.
+- **The footprint's padded inscribed radius is the planner's `robot_radius`.**
+  The local costmap's `[[0.35,0.22],…]` with `footprint_padding` 0.01 is
+  ~0.23–0.25 m to the side, the 0.25 m that `Octo3D` (`robot_radius`) and the
+  terrain layer (`robot_radius`) keep from walls; change them together. Until
+  2026-10-28 the global costmap carried the same rectangle with padding 0.03,
+  so that the planner's `is_path_valid` perimeter-on-LETHAL test (2D paths)
+  was stricter than the one RPP runs here; the global costmap has had no
+  layers and no footprint test since, and `Octo3D` judges its own paths.
 - **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
   spin has no timeout: if an observation source stops publishing, the control
   loop stalls there with the goal still active rather than failing. The dock

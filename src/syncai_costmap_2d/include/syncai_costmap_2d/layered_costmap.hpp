@@ -86,19 +86,9 @@ public:
   std::vector<std::shared_ptr<Layer>> * getPlugins() { return &plugins_; }
 
   /**
-   * @brief Get the vector of pointers to the costmap filters
-   */
-  std::vector<std::shared_ptr<Layer>> * getFilters() { return &filters_; }
-
-  /**
    * @brief Add a new plugin to the plugins vector to process
    */
   void addPlugin(std::shared_ptr<Layer> plugin);
-
-  /**
-   * @brief Add a new costmap filter plugin to the filters vector to process
-   */
-  void addFilter(std::shared_ptr<Layer> filter);
 
   /**
    * @brief Get if the size of the costmap is locked
@@ -148,7 +138,10 @@ public:
   bool isOutofBounds(double robot_x, double robot_y);
 
 private:
-  Costmap2D primary_costmap_, combined_costmap_;
+  // One grid. Upstream keeps a primary_costmap_ beside it for its costmap
+  // filters to run after the layers; the filter pipeline went with the 2D
+  // keepout filter (2026-10-28), so the layers write the master directly.
+  Costmap2D combined_costmap_;
   std::string global_frame_;
 
   bool rolling_window_;
@@ -165,7 +158,6 @@ private:
   unsigned int bx0_, bxn_, by0_, byn_;
 
   std::vector<std::shared_ptr<Layer>> plugins_;
-  std::vector<std::shared_ptr<Layer>> filters_;
 
   bool initialized_;
   bool size_locked_;

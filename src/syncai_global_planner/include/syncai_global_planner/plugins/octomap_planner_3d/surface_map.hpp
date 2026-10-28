@@ -164,8 +164,8 @@ struct SurfaceMapParams
   // Hard clearance: every column within this radius of a cell must hold a
   // usable surface, otherwise the cell is footprint_blocked. This is the
   // implicit inflation of walls, drop-offs and unfillable holes. 0.25 m is the
-  // 2D global costmap's inscribed radius (padded half-width of the G23
-  // footprint), so Octo3D and GridBased refuse the same gaps.
+  // padded half-width of the G23 footprint (the 2D global costmap's inscribed
+  // radius until 2026-10-28, so Octo3D and GridBased refused the same gaps).
   double robot_radius = 0.25;
   // Height of non-occupied voxels needed above a surface for the body to fit.
   // The lidar top is ~0.55 m above the ground; 0.6 = 6 cells at 0.1 m.

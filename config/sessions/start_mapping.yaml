@@ -4,9 +4,9 @@
 #         src/syncai_sys_manager/syncai_sys_manager/managers/node_manager.py
 #
 # This is the counterpart to start_nav.yaml, not a variant of it. start_nav.yaml
-# is a *localization* stack: map_server and the FAST-LIO2 localizer both load an
-# existing map during construction and die without one, so it cannot be used to
-# create the map it needs. This spec is the other half of that loop.
+# is a *localization* stack: the localizer loads an existing map during
+# construction and dies without one, so it cannot be used to create the map it
+# needs. This spec is the other half of that loop.
 #
 # The pipeline (from §5 of the FAST-LIO2 PGO pipeline note, no longer in doc/):
 #
@@ -48,7 +48,6 @@
 # tilts the new map permanently.
 #
 # Deliberately NOT here, all for the same reason — they need a finished map:
-#   * map_server  — loads [map] map in its constructor and throws if absent
 #   * localizer   — its launch returns [] and starts nothing without [map] pcd
 #   * lio_bridge  — its map->odom stage waits on a TF only the localizer emits
 #                   after relocalize; nothing in a mapping run consumes odom

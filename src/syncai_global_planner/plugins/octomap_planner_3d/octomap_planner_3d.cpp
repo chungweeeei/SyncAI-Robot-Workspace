@@ -256,7 +256,7 @@ void OctomapPlanner3D::initialize(
     map_params_.body_clearance, map_params_.max_step_height, map_params_.max_slope_deg,
     goal_z_mode_.c_str());
 
-  // Registered last, like SmacPlanner2D: nothing above should run under it.
+  // Registered last: nothing above should run under it.
   dyn_params_handler_ = node->add_on_set_parameters_callback(
     std::bind(&OctomapPlanner3D::dynamicParametersCallback, this, std::placeholders::_1));
 
@@ -787,7 +787,7 @@ void OctomapPlanner3D::loadKeepoutCallback(
   }
   writeBack(file);
   // No clear_plan: the current route is judged against the new zones by the
-  // next is_path_valid (1 Hz), and move_3d.xml replans after blocked_time.
+  // next is_path_valid (1 Hz), and move.xml replans after blocked_time.
   response->result = LoadMap::Response::RESULT_SUCCESS;
 }
 

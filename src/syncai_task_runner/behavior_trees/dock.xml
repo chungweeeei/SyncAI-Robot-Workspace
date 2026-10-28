@@ -1,4 +1,14 @@
 <!--
+  The only dock tree since 2026-10-28. From 2026-10-19 this was dock_3d.xml,
+  run in place of a 2D dock.xml (a GridBased staging leg) while the
+  planner's Octo3D had a map; 2D navigation was removed and this tree took
+  the plain name, which is what the backend's DOCK step sends. The staging
+  leg is move.xml's (planner_id="Octo3D", its recovery's ClearEntireCostmap
+  on planner_server/Octo3D/clear_overlay, FollowPath = MPPI); the MPC half
+  and the last metre do not care which map planned it: the docking
+  controller tracks the dock pose in the planar odom frame and reads no
+  costmap.
+
   Dock: navigate to a staging pose in front of the dock with move.xml's
   machinery, switch the gait to MPC, wait, hand the last metre to the
   controller's DockToPose, and end there, standing on the dock in MPC.
@@ -13,8 +23,8 @@
   the last metre on purpose, because the dock is itself a lethal cell in the
   local costmap and any footprint test refuses the final half metre of every
   dock -- so it must start from a pose it can reach by going straight,
-  roughly in front of the dock, roughly facing it, in space the costmap-aware
-  navigation has just certified clear. ComputeStagingPose derives that pose
+  roughly in front of the dock, roughly facing it, in space the
+  obstacle-aware navigation has just certified clear. ComputeStagingPose derives that pose
   from the dock pose (back along the dock's yaw by `distance`), and the
   staging subtree below is move.xml's tree with goal="{staging_pose}": same
   replanning rule (replan only when the path is blocked or the goal changed),
@@ -126,14 +136,15 @@
                 <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
+                <!-- Judged by Octo3D on its dynamic overlay (see move.xml) -->
                 <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
               </ReactiveSequence>
               <Sequence name="PlanToStaging">
                 <ComputeStagingPose dock_pose="{goal}" distance="1.0" staging_pose="{staging_pose}"/>
-                <ComputePathToPose goal="{staging_pose}" path="{path}" planner_id="GridBased"/>
+                <ComputePathToPose goal="{staging_pose}" path="{path}" planner_id="Octo3D"/>
               </Sequence>
             </Fallback>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">

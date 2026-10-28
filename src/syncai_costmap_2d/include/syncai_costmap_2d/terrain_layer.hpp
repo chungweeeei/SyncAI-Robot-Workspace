@@ -7,16 +7,13 @@
 // verdict -- LETHAL for a wall foot, a box, a person, a step the legs cannot
 // take, a drop-off, a slope too steep or a stair; FREE for the floor, a kerb
 // and a ramp; NO_INFORMATION where nothing has been seen -- into its
-// costmap, which the InflationLayer then inflates as it does the obstacle
-// layer's.
+// costmap, which the InflationLayer then inflates.
 //
-// The local costmap loads it beside ObstacleLayer, with `map_type: "3d"`
-// against the obstacle layer's "2d" (MapTypeGate): exactly one runs, picked
-// by the planner's Octo3D map_available as the task_runner picks its trees,
-// so a 2D map keeps dev's obstacle layer unchanged. Never both at once: they
-// disagree on a ramp (free here, a wall there), and the max of the two is
-// the wall. The global costmap keeps the obstacle layer alone: its planner
-// judges 2D maps on it, and Octo3D reads no cells at all.
+// The local costmap's only sensor layer since 2026-10-28. Until then it ran
+// beside ObstacleLayer, one or the other by map type (MapTypeGate: never
+// both, since they disagree on a ramp -- free here, a wall there); the
+// obstacle layer and the gate went with 2D navigation. The global costmap
+// has no layer of this kind: Octo3D reads no cells at all.
 //
 // A stair is lethal here and stays so: the controllers' stair mode climbs a
 // flight without reading the costmap (no obstacle avoidance on stairs, by
@@ -38,7 +35,6 @@
 #include "syncai_costmap_2d/costmap_layer.hpp"
 #include "syncai_costmap_2d/footprint.hpp"
 #include "syncai_costmap_2d/layered_costmap.hpp"
-#include "syncai_costmap_2d/map_type_gate.hpp"
 #include "syncai_costmap_2d/terrain_grid.hpp"
 
 namespace syncai_costmap_2d
@@ -105,10 +101,6 @@ protected:
   double robot_ground_z_{0.0};
   TerrainStats last_stats_;
   rclcpp::Time last_stats_log_;
-
-  // Which map type this layer runs on (`map_type`, "3d" in the local
-  // costmap). Gated off, it takes no samples and writes nothing.
-  MapTypeGate map_gate_;
 };
 
 }  // namespace syncai_costmap_2d

@@ -421,8 +421,9 @@ their sources.
   calibrated reading.
 - **There is no map manager here.** The `map_manager.py` placeholder was
   deleted in `9e1772f` after sitting empty since the package was written — map
-  handling lives in `syncai_map_server` and the backend's map router, and a
-  mapping run's lifecycle (save, and now reset) is `pgo_node`'s.
+  handling is the backend's map router (and was `syncai_map_server`'s until
+  that went with 2D navigation, 2026-10-28), and a mapping run's lifecycle
+  (save, and now reset) is `pgo_node`'s.
 - **NodeManager gotchas.** `switch_mode` kills the byobu session the backend is
   a pane of, so a `POST /api/v1/robot/mode` normally ends in a dropped connection
   rather than a response — the backend treats "dispatched, no answer" as

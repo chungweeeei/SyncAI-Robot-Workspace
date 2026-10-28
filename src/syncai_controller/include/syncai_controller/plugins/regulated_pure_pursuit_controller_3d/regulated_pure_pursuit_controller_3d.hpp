@@ -24,14 +24,14 @@ namespace syncai_controller
 /**
  * @class syncai_controller::RegulatedPurePursuitController3D
  *
- * RegulatedPurePursuitController (the 2D RPP, `FollowPathRPP`) plus what a path
- * with heights from OctomapPlanner3D needs: matching the robot to the plan in
- * 3D (path_height.hpp) and the stair mode. It is a copy rather than a subclass
- * on purpose (2026-10): the 2D RPP is the plugin `dev` runs and stays
- * byte-for-byte what it was, and the stair logic is woven through
+ * Regulated Pure Pursuit plus what a path with heights from OctomapPlanner3D
+ * needs: matching the robot to the plan in 3D (path_height.hpp) and the stair
+ * mode. It began (2026-10) as a copy of the 2D RegulatedPurePursuitController
+ * (`FollowPathRPP`) rather than a subclass, so that plugin stayed
+ * byte-for-byte `dev`'s; the stair logic is woven through
  * computeVelocityCommands() (lookahead, speed cap, braking hold), which the 2D
- * class has no hooks for. A fix to the shared pursuit / regulation / collision
- * code therefore has to be made in both files.
+ * class had no hooks for. The 2D plugin went with 2D navigation on 2026-10-28,
+ * so this is the only RPP and has nothing to keep in step with.
  */
 class RegulatedPurePursuitController3D : public syncai_nav_core::Controller
 {

@@ -71,27 +71,30 @@ namespace syncai_global_planner
  * once (plans fail with map_loading, never on the old site's map), builds the
  * new one and answers when it is in -- success is a result, not a receipt. A
  * failed build leaves no map at all, not the old one. A missing file is
- * refused before anything is dropped. An empty map_url unloads the map --
- * the switch to a 2D map. See loadMapCallback().
+ * refused before anything is dropped. An empty map_url unloads the map
+ * (what the backend's switch to a 2D map sends; no 2D map navigates since
+ * 2026-10-28). See loadMapCallback().
  *
  * `<planner_server>/<id>/map_available` (std_msgs/Bool, latched) says
- * whether this planner has a map, built or being built: the task_runner
- * reads it per goal to run the 3D trees (move_3d.xml, dock_3d.xml) on a 3D
- * map and the 2D ones otherwise (2026-10-19). See publishMapAvailable().
+ * whether this planner has a map, built or being built. From 2026-10-19 the
+ * task_runner picked the 3D or the 2D trees by it, and the local costmap its
+ * sensor layer; both went with 2D navigation (2026-10-28), so it has no
+ * reader in this repo and stays as a status to look at. See
+ * publishMapAvailable().
  *
  * Dynamic obstacles (2026-10-21): the surface map is static, so on its own
- * a replan returns the route a person is standing on, and is_path_valid,
- * judged on the 2D costmap, cannot see a 3D path. The plugin therefore keeps
+ * a replan returns the route a person is standing on, and the 2D global
+ * costmap (layerless since 2026-10-28) could not judge a 3D path. The plugin therefore keeps
  * a dynamic overlay of its own (dynamic_overlay.hpp): the lidar cloud
  * (`dynamic.topic`, pointlio/body_cloud) in the map frame, every return in
  * the band above the surface it lies on a mark on that cell, rays clearing
  * the marks they cross, marks aging out after dynamic.obstacle_memory. A
  * plan reads a snapshot of it (the search and the shortcut keep off the
  * marks and their block_radius ring, and pay for the band beyond as for a
- * wall), and isPathValid() -- which the planner server calls instead of its
- * costmap test for the planner that made the last plan -- reads the same
- * snapshot for the path ahead, so move_3d.xml runs move.xml's
- * IsPathValid / blocked_time / replan machinery unchanged. The overlay has
+ * wall), and isPathValid() -- which the planner server calls for the
+ * planner that made the last plan -- reads the same snapshot for the path
+ * ahead, so move.xml's IsPathValid / blocked_time / replan machinery works
+ * on it. The overlay has
  * its own lock, and its scans arrive on the global costmap's TF thread (see
  * initialize()); nothing of it waits behind mutex_.
  * `<planner_server>/<id>/clear_overlay` (nav2_msgs/srv/
@@ -131,11 +134,6 @@ public:
   nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
-
-  // The 2D costmap gives this planner its frame id and nothing else, so a
-  // goal must not wait for it: a 3D-only map has no gridmap.yaml, and its
-  // global costmap never turns current.
-  bool usesCostmap() const override { return false; }
 
   // The part of `path` ahead of the robot against the dynamic overlay and
   // the keepout zones, on the floor stretch the robot is on (see the .cpp
@@ -196,9 +194,9 @@ protected:
   // Latch `available` on map_available: true from the moment a build starts
   // (boot or load_map) until one fails, false with no octomap_file or after a
   // failed build. "Being built" counts as available because the map's type is
-  // what the reader wants: a goal sent mid-build belongs to the 3D tree, whose
-  // plan then fails with map_loading, not to the 2D one, whose GridBased has
-  // no map on a 3D-only map.
+  // what the reader wanted (the task_runner, until 2026-10-28): a goal sent
+  // mid-build belonged to the 3D tree, whose plan then fails with
+  // map_loading.
   void publishMapAvailable(bool available);
 
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
@@ -208,7 +206,7 @@ protected:
     std::vector<rclcpp::Parameter> parameters);
 
   // Weak: the planner server owns the node and us; a strong pointer here
-  // would be an ownership cycle (same as SmacPlanner2D).
+  // would be an ownership cycle.
   rclcpp::Node::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   rclcpp::Clock::SharedPtr clock_;

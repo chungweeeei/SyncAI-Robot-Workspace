@@ -19,7 +19,6 @@ find_package(map_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(laser_geometry REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -38,7 +37,6 @@ set(dependencies
   rcl_interfaces
   syncai_util
   sensor_msgs
-  laser_geometry
   message_filters
   tf2_sensor_msgs
   std_srvs
@@ -59,15 +57,9 @@ add_library(${PROJECT_NAME} SHARED
   src/footprint_subscriber.cpp
   src/layer.cpp
   src/layered_costmap.cpp
-  src/map_type_gate.cpp
-  src/observation_buffer.cpp
   src/terrain_grid.cpp
-  plugins/static_layer.cpp
   plugins/inflation_layer.cpp
-  plugins/obstacle_layer.cpp
   plugins/terrain_layer.cpp
-  plugins/costmap_filters/costmap_filter.cpp
-  plugins/costmap_filters/keepout_filter.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -77,13 +69,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 ament_target_dependencies(${PROJECT_NAME} ${dependencies})
 
-# Register the costmap layer plugins (e.g. StaticLayer) with pluginlib
+# Register the costmap layer plugins (TerrainLayer, InflationLayer) with pluginlib
 pluginlib_export_plugin_description_file(syncai_costmap_2d costmap_plugins.xml)
-
-# Standalone node to run the costmap (manual configure/activate, non-lifecycle)
-add_executable(costmap_2d_node src/costmap_2d_node.cpp)
-target_link_libraries(costmap_2d_node ${PROJECT_NAME})
-ament_target_dependencies(costmap_2d_node ${dependencies})
 
 install(
   TARGETS ${PROJECT_NAME}
@@ -94,24 +81,15 @@ install(
 )
 
 install(
-  TARGETS costmap_2d_node
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
-)
-
-install(
   DIRECTORY include/
   DESTINATION include
 )
 
-install(
-  DIRECTORY launch params rviz
-  DESTINATION share/${PROJECT_NAME}
-)
-
-install(
-  PROGRAMS scripts/fake_scan.py
-  DESTINATION lib/${PROJECT_NAME}
-)
+# No launch / params / rviz / scripts any more (2026-10-28): they were the
+# standalone 2D costmap harness (costmap_2d_node with the static / obstacle
+# layers and the keepout filter, a fake LaserScan), removed with 2D
+# navigation. The costmaps run inside planner_server and controller_server,
+# configured by those packages' params.
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

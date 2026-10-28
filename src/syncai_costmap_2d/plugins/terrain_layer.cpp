@@ -24,14 +24,8 @@ void TerrainLayer::onInitialize()
     throw std::runtime_error{"Failed to get node in TerrainLayer"};
   }
   bool track_unknown_space = false;
-  std::string map_type, map_3d_topic;
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("footprint_clearing_enabled", rclcpp::ParameterValue(true));
-  // MapTypeGate: "any" would run it on a 2D map too; the local costmap says
-  // "3d", with the obstacle layer as "2d".
-  declareParameter("map_type", rclcpp::ParameterValue(std::string("3d")));
-  declareParameter(
-    "map_3d_topic", rclcpp::ParameterValue(std::string("planner_server/Octo3D/map_available")));
   declareParameter("topic", rclcpp::ParameterValue(std::string("pointlio/body_cloud")));
   declareParameter("sensor_height", rclcpp::ParameterValue(sensor_height_));
   declareParameter("max_range", rclcpp::ParameterValue(max_range_));
@@ -57,8 +51,6 @@ void TerrainLayer::onInitialize()
 
   node_->get_parameter(name_ + ".enabled", enabled_);
   node_->get_parameter(name_ + ".footprint_clearing_enabled", footprint_clearing_enabled_);
-  node_->get_parameter(name_ + ".map_type", map_type);
-  node_->get_parameter(name_ + ".map_3d_topic", map_3d_topic);
   node_->get_parameter(name_ + ".topic", cloud_topic_);
   node_->get_parameter(name_ + ".sensor_height", sensor_height_);
   node_->get_parameter(name_ + ".max_range", max_range_);
@@ -84,12 +76,11 @@ void TerrainLayer::onInitialize()
   node_->get_parameter("transform_tolerance", transform_tolerance_);
 
   // The costmap node lives in its own sub-namespace; every input is the
-  // robot's (/<robot_id>/pointlio/body_cloud, /<robot_id>/plan,
-  // /<robot_id>/planner_server/Octo3D/map_available).
+  // robot's (/<robot_id>/pointlio/body_cloud, /<robot_id>/plan). It runs on
+  // every map: until 2026-10-28 a MapTypeGate ran it on a 3D map only, with
+  // the obstacle layer on a 2D one, and both went with 2D navigation.
   cloud_topic_ = joinWithParentNamespace(cloud_topic_);
   plan_topic_ = joinWithParentNamespace(plan_topic_);
-  map_gate_.initialize(
-    node_, name_, map_type, joinWithParentNamespace(map_3d_topic), callback_group_);
 
   rolling_window_ = layered_costmap_->isRolling();
   default_value_ = track_unknown_space ? NO_INFORMATION : FREE_SPACE;
@@ -167,12 +158,6 @@ void TerrainLayer::reset()
 
 void TerrainLayer::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
 {
-  // On a 2D map the obstacle layer runs instead; keep no samples (a cloud is
-  // tens of thousands of points, ten times a second). The grid starts empty
-  // on the switch to a 3D map and fills within ground_memory.
-  if (!map_gate_.active()) {
-    return;
-  }
   geometry_msgs::msg::TransformStamped tf;
   try {
     tf = tf_->lookupTransform(
@@ -267,9 +252,8 @@ void TerrainLayer::updateBounds(
 {
   // Before the costmap's own mutex: pathPoses() takes TF and the plan's
   // mutex, neither of which needs the costmap.
-  const bool active = map_gate_.active();
   std::vector<TerrainPathPose> path;
-  if (enabled_ && active) {
+  if (enabled_) {
     path = pathPoses();
   }
 
@@ -280,23 +264,8 @@ void TerrainLayer::updateBounds(
     // After the costmap's own whole-cell rounding, so the two stay aligned.
     terrain_.updateOrigin(getOriginX(), getOriginY());
   }
-  // MapTypeGate: on a switch either way, start from an empty layer and
-  // grid, and put the whole window in the update bounds once so the master
-  // grid is reset there (ObstacleLayer::updateBounds() does the same).
-  const bool switched = map_gate_.changed();
-  if (switched) {
-    resetMaps();
-    terrain_.clear();
-    has_cloud_ = false;
-  }
-  if (!enabled_ || !active) {
-    if (switched) {
-      *min_x = std::min(*min_x, getOriginX());
-      *min_y = std::min(*min_y, getOriginY());
-      *max_x = std::max(*max_x, getOriginX() + getSizeInMetersX());
-      *max_y = std::max(*max_y, getOriginY() + getSizeInMetersY());
-    }
-    // Off counts as current (see ObstacleLayer::updateBounds()).
+  if (!enabled_) {
+    // Off counts as current, or the costmap never is.
     current_ = true;
     was_reset_ = false;
     return;
@@ -348,7 +317,7 @@ void TerrainLayer::updateFootprint(
 void TerrainLayer::updateCosts(Costmap2D & master_grid, int min_i, int min_j, int max_i, int max_j)
 {
   std::lock_guard<Costmap2D::mutex_t> guard(*getMutex());
-  if (!enabled_ || !map_gate_.active()) {
+  if (!enabled_) {
     return;
   }
   if (!current_ && was_reset_) {
@@ -357,7 +326,7 @@ void TerrainLayer::updateCosts(Costmap2D & master_grid, int min_i, int min_j, in
   }
   if (footprint_clearing_enabled_) {
     // The floor under the robot is never seen (and its legs are in the
-    // cloud): the footprint is free, as the obstacle layer has it.
+    // cloud): the footprint is free.
     setConvexPolygonCost(transformed_footprint_, FREE_SPACE);
   }
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);

@@ -21,34 +21,30 @@ depend on, so neither has to depend on the other.
 
 | Header | Class | Implemented by |
 |---|---|---|
-| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `NavfnPlanner`, `StraightLinePlanner`, `SmacPlanner2D` (id `GridBased`), `OctomapPlanner3D` (id `Octo3D`) |
-| `controller.hpp` | `Controller` | `syncai_controller`: `RegulatedPurePursuitController` |
+| `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `OctomapPlanner3D` (id `Octo3D`) — the only one since 2026-10-28, when `NavfnPlanner`, `StraightLinePlanner` and `SmacPlanner2D` (id `GridBased`) went with 2D navigation |
+| `controller.hpp` | `Controller` | `syncai_mppi_controller`: `MPPIController` (id `FollowPath`); `syncai_controller`: `RegulatedPurePursuitController3D` (`FollowPathRPP3D`), `DockingController` (`Docking` / `Undocking`) |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker`, `StoppedGoalChecker`, `PositionGoalChecker` |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker`, `PoseProgressChecker` |
 | `exceptions.hpp` | `PlannerException` | thrown by the controller path |
 
 **`GlobalPlanner`** — `initialize(node, name, tf, costmap_ros)` then
 `createPlan(start, goal) → nav_msgs::msg::Path`. An empty path means failure;
-there is no separate error channel. `usesCostmap()` (not in nav2_core,
-2026-10-15) tells the planner server whether to wait for the costmap to be
-current before `createPlan()`; it defaults to `true`, and a planner that takes
-only the frame id from the costmap (`OctomapPlanner3D`) returns `false`, so a
-map with no `gridmap.yaml` — whose costmap never turns current — does not fail
-its goals in that wait. (A planner that does read it now fails there at once
-on such a map, rather than hanging the action thread as it did until
-2026-10-19.) `isPathValid(path, robot_pose, invalid_pose_indices)`
-(2026-10-21) is the validity test for such a planner: the planner server's
-`is_path_valid` service asks the planner that made the last plan instead of
-its costmap when that planner's `usesCostmap()` is `false`, since the costmap
-test is wrong for a path the costmap did not plan. The default body says
-"valid" (a planner with no dynamic knowledge has nothing to say);
-`OctomapPlanner3D` judges on its dynamic-obstacle overlay. It must answer
-fast and never wait behind a `createPlan()` in progress.
+there is no separate error channel. `isPathValid(path, robot_pose,
+invalid_pose_indices)` (not in nav2_core, 2026-10-21) is the validity test:
+the planner server's `is_path_valid` service asks the planner that made the
+last plan. The default body says "valid" (a planner with no dynamic knowledge
+has nothing to say); `OctomapPlanner3D` judges on its dynamic-obstacle
+overlay. It must answer fast and never wait behind a `createPlan()` in
+progress. Until 2026-10-28 there was also `usesCostmap()` (2026-10-15): the
+server waited for the costmap to be current before calling a planner that
+read it, and judged such a planner's paths on the global costmap instead of
+asking it. Only `GridBased` read the costmap, and the hook went with it; the
+global costmap has had no layers since.
 
 **`Controller`** — `initialize(node, name, tf, costmap_ros)`, `setPlan(path)`,
 `reset()`, `computeVelocityCommands(pose, velocity, goal_checker) → TwistStamped`,
 and `setSpeedLimit(limit, percentage)`. The goal checker is passed **into** the
-controller so it can read the tolerances (RPP uses the xy tolerance to decide
+controller so it can read the tolerances (RPP 3D uses the xy tolerance to decide
 when to switch into rotate-to-goal-heading) — the two plugins are coupled by
 design, through this interface rather than directly.
 
@@ -162,10 +158,10 @@ registered against it regardless of which package the plugin lives in.
   `pluginlib::PluginlibException`, so a typo in a `.plugin` string takes the
   whole process down at startup.
 - **The two packages spell plugin names differently in params.** `syncai_global_planner`
-  uses the pluginlib *lookup name* (`syncai_global_planner/NavfnPlanner`, declared via
+  uses the pluginlib *lookup name* (`syncai_global_planner/OctomapPlanner3D`, declared via
   the `name=` attribute in its XML), while `syncai_controller` and
   `syncai_costmap_2d` use the fully-qualified *type*
-  (`syncai_controller::RegulatedPurePursuitController`). Both are valid — the
+  (`syncai_controller::RegulatedPurePursuitController3D`). Both are valid — the
   type always works, the lookup name only when the XML declares `name=` — but
   copying a params line between packages will not work unchanged.
 - **`syncai_nav_core` depends on `syncai_costmap_2d`,** because three of the four

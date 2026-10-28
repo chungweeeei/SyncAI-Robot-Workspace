@@ -57,7 +57,6 @@ add_library(${library_name}_plugins SHARED
   plugins/simple_goal_checker.cpp
   plugins/stopped_goal_checker.cpp
   plugins/position_goal_checker.cpp
-  plugins/regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.cpp
   plugins/regulated_pure_pursuit_controller_3d/regulated_pure_pursuit_controller_3d.cpp
   plugins/docking_controller/smooth_control_law.cpp
   plugins/docking_controller/docking_controller.cpp

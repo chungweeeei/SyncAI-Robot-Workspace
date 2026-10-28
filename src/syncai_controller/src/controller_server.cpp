@@ -42,7 +42,9 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   default_goal_checker_types_{"syncai_controller::SimpleGoalChecker"},
   lp_loader_("syncai_nav_core", "syncai_nav_core::Controller"),
   default_ids_{"FollowPath"},
-  default_types_{"syncai_controller::RegulatedPurePursuitController"}
+  // MPPI, what controller_server_params.yaml loads as FollowPath; the 2D RPP
+  // that was the default went with 2D navigation (2026-10-28).
+  default_types_{"syncai_mppi_controller::MPPIController"}
 {
   RCLCPP_INFO(get_logger(), "Creating controller server");
 

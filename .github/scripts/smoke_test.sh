@@ -45,16 +45,14 @@ MAP_NAME=ci_smoke
 MAP_NAME_3D=ci_smoke_3d
 OUT=log/smoke
 # What the 3D-only pass must also show, as "<log> <TAB> <extended regex>":
-# Octo3D's surface map built from the fixture's octomap.bt, and the
-# task_runner having heard Octo3D's map_available and switched its goals to
-# the *_3d.xml trees (the per-goal tree choice, wired end to end), and Octo3D
+# Octo3D's surface map built from the fixture's octomap.bt, and Octo3D
 # having read the fixture's keepout.json (the 3D zones: the derivation of
 # the file beside the tree and the summary line, which the gtests never
-# touch since they parse strings).
+# touch since they parse strings). The task_runner's "goals run the
+# *_3d.xml trees" line went with the per-goal tree choice (2026-10-28).
 EXPECT_3D="$(printf '%s\t%s\n' \
     planner     'surface map: [0-9]+ x [0-9]+ columns' \
-    planner     'keepout zones from .*keepout\.json: 1 zones, [0-9]+ cells blocked \([0-9]+ core\), 0 stair links cut' \
-    task_runner '3D map \(.*map_available\) -- goals run the \*_3d\.xml trees')"
+    planner     'keepout zones from .*keepout\.json: 1 zones, [0-9]+ cells blocked \([0-9]+ core\), 0 stair links cut')"
 
 # A node that dies in ros2 launch is reported as "process has died"; the rest
 # are what a crash in a constructor or a dlopen() looks like before it does.
