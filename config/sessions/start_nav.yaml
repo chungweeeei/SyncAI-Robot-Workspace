@@ -90,12 +90,27 @@ windows:
   # every offset in this file counts from session build time on one timeline,
   # whichever window it sits in. The log directory stays `localizer`: the node
   # is still called localizer_node and every doc names it that way.
+  #
+  # The localizer runs at `nice -n 10` (2026-10-28), so when the two compete
+  # for a saturated CPU it is the localizer that slows, never pointlio. On
+  # robot01 on 2026-10-28 the localizer lost track, spent ~1.2 cores retrying
+  # at 5 Hz on a CPU already ~90 % busy, and pointlio fell behind ~30 s later
+  # and never caught up -- leaving every consumer, the localizer included, on
+  # minutes-old odometry. A late pointlio breaks everything downstream; a slow
+  # localizer only delays a correction that Point-LIO's own odometry covers in
+  # the meantime. syncai_localizer's lost_backoff cuts how much CPU it takes
+  # while lost; this decides who yields when that is still too much. 10 is
+  # CFS weight 110 against pointlio's 1024: idle cores still go to it in full,
+  # so nothing changes while the CPU has headroom. Raising a niceness needs no
+  # privilege; lowering pointlio's instead would need CAP_SYS_NICE in the
+  # container. Every process the launch spawns inherits it, the GICP
+  # num_threads workers included.
   - name: localization
     panes:
       - cmd: ros2 launch syncai_pointlio pointlio.launch.py
         sleep: 2
         log: pointlio
-      - cmd: ros2 launch syncai_localizer localizer.launch.py
+      - cmd: nice -n 10 ros2 launch syncai_localizer localizer.launch.py
         sleep: 3
         log: localizer
 

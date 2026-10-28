@@ -798,6 +798,13 @@ replay-A runs on the same `syncai_pointlio` build.
   would then register the new scan with the previous scan's covariances.
 - **`num_threads` is read once, at construction.** Changing it at runtime does
   not rebuild the KD-tree.
+- **The nav session runs it at `nice -n 10`** (`config/sessions/start_nav.yaml`,
+  2026-10-28), so on a saturated CPU the localizer yields to `syncai_pointlio`
+  rather than the other way round — on robot01 on 2026-10-28 a lost localizer
+  at 5 Hz was what tipped pointlio into falling minutes behind. It changes
+  nothing while the CPU has headroom. Started by hand (`ros2 launch` in a
+  shell), it runs at the shell's niceness, so a CPU benchmark of the node
+  outside the session is not what the robot sees under load.
 - **Three-thread `MultiThreadedExecutor`, and it is load-bearing.** The timer +
   subscriptions sit on the default group; `relocalize`, `relocalize_check`,
   `auto_localize`, `reset_odometry` and `initialpose` on their own
