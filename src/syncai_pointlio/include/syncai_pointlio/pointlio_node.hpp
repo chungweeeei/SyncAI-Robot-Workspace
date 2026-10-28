@@ -24,6 +24,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -65,6 +66,30 @@ struct NodeConfig
   // (see CLAUDE.md, "The live merge is a file"). <= 0 or >= lidar_filter_num:
   // body_cloud_dense carries body_cloud's points.
   int dense_filter_num = 2;
+  // The scan backlog guard (2026-10-28). timerCB takes one scan per 20 ms
+  // tick and lidar_buffer has no bound, so once a scan costs more than the
+  // lidar's 100 ms the node falls behind for good: on robot01 on 2026-10-28,
+  // with the 8 online cores ~90 % busy, Point-LIO ran at ~0.65x real time,
+  // lio_odom / body_cloud fell more than 5 minutes behind the lidar's own
+  // stamps, the buffers grew ~125 MB a minute, and every consumer (localizer,
+  // lio_bridge, the costmaps) worked on minutes-old data with no error
+  // anywhere. Restarting the node was the only way out.
+  //
+  // When the buffered scans span more than max_lidar_backlog seconds,
+  // syncPackage() skips the oldest before taking the next, at most
+  // max_lidar_skip in a row. A skipped scan loses its points only: its IMU
+  // samples stay in imu_buffer and go into the next package, so the filter
+  // predicts and IMU-updates straight through the gap (~0.2 s at 2). It then
+  // catches up whenever it runs faster than 1 / (max_lidar_skip + 1) of real
+  // time; slower than that the backlog still grows, and the WARN says so.
+  // Never one long skip down to the newest scan: seconds of IMU-only
+  // propagation on a walking robot would put the next scan's points on the
+  // wrong planes, and a diverged solution is worse than a late one. 0.3 s is
+  // three scans of slack before anything is skipped. <= 0 disables the guard
+  // (every scan processed however late: an offline replay that wants them
+  // all).
+  double max_lidar_backlog = 0.3;
+  int max_lidar_skip = 2;
 };
 
 struct StateData
@@ -121,6 +146,9 @@ public:
 
   // 20 ms wall timer: sync, process, publish.
   void timerCB();
+  // The backlog guard's report, every few seconds from timerCB: a WARN while
+  // scans are being skipped, an INFO once they no longer are.
+  void reportBacklog();
   // The publish half of timerCB, once the builder is MAPPING: TF, odometry,
   // the deskewed clouds, all for m_package.
   void publishResults();
@@ -152,6 +180,14 @@ private:
   // only so resetCB can hand it to pgo as the boundary between the two runs;
   // 0.0 until MAPPING is first reached, and again after every reset.
   double m_last_odom_time = 0.0;
+  // The backlog guard's bookkeeping (NodeConfig::max_lidar_backlog), touched
+  // only from timerCB (syncPackage runs inside it): scans skipped and the
+  // widest backlog seen since the last report, when that report went out, and
+  // whether it was a WARN still waiting for its all-clear.
+  int m_backlog_skipped = 0;
+  double m_backlog_max_seen = 0.0;
+  std::chrono::steady_clock::time_point m_last_backlog_report = std::chrono::steady_clock::now();
+  bool m_backlog_warned = false;
   StateData m_state_data;
   SyncPackage m_package;
   NodeConfig m_node_config;
