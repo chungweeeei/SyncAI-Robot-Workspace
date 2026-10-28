@@ -29,7 +29,7 @@ using rcl_interfaces::msg::ParameterType;
 namespace syncai_controller
 {
 
-// nav2_costmap_2d::NO_SPEED_LIMIT from costmap_filters/filter_values.hpp.
+// nav2_msgs/SpeedLimit's "no limit" (upstream's nav2_costmap_2d::NO_SPEED_LIMIT).
 constexpr double NO_SPEED_LIMIT = 0.0;
 
 void RegulatedPurePursuitController3D::initialize(

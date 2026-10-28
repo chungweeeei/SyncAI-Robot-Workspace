@@ -43,7 +43,6 @@ src/terrain_grid.cpp            the ROS-free 2.5D grid behind TerrainLayer (gtes
 src/footprint.cpp, footprint_collision_checker.cpp, costmap_math.cpp, array_parser.cpp
 plugins/terrain_layer.cpp       ┐ pluginlib layers
 plugins/inflation_layer.cpp     ┘
-include/.../costmap_filters/filter_values.hpp   constants only (NO_SPEED_LIMIT, read by MPPI)
 ```
 
 No `launch/`, `params/`, `rviz/` or `scripts/`: the costmaps are configured by

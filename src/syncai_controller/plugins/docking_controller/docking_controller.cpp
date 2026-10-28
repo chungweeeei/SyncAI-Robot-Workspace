@@ -36,7 +36,7 @@ namespace syncai_controller
 
 namespace
 {
-// nav2_costmap_2d::NO_SPEED_LIMIT from costmap_filters/filter_values.hpp.
+// nav2_msgs/SpeedLimit's "no limit" (upstream's nav2_costmap_2d::NO_SPEED_LIMIT).
 constexpr double kNoSpeedLimit = 0.0;
 
 // Horizon and step of the rviz preview (publishPreview()). Not parameters on
