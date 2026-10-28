@@ -365,7 +365,7 @@ that list fails both trees the same way.
 ```bash
 ros2 launch syncai_task_runner task_runner.launch.py
 ros2 launch syncai_task_runner task_runner.launch.py \
-    system_config:=config/instances/robot02.ini
+    system_config:=/path/to/other.ini
 ```
 
 Both byobu sessions start it after `sleep 10` — the longest delay in the stack,

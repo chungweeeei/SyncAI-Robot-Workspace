@@ -193,7 +193,7 @@ The launch layers the two frame names on top.
 
 ```bash
 ros2 launch syncai_pointlio pointlio.launch.py                       # config/system.ini from ~/robot_ws
-ros2 launch syncai_pointlio pointlio.launch.py system_config:=/path/to/robot01.ini
+ros2 launch syncai_pointlio pointlio.launch.py system_config:=/path/to/robot.ini
 ```
 
 The session specs run it in a pane of its own, immediately before the node

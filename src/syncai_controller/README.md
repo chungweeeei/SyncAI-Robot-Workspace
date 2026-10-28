@@ -877,7 +877,7 @@ message).
 ```bash
 ros2 launch syncai_controller controller_server.launch.py
 ros2 launch syncai_controller controller_server.launch.py \
-    system_config:=config/instances/robot02.ini
+    system_config:=/path/to/other.ini
 ```
 
 Both byobu sessions start it in the `plan_ctrl` window after `sleep 4`; the

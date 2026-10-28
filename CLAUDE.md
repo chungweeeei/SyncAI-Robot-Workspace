@@ -179,13 +179,16 @@ Every launch file reads `[system] robot_id` from **`config/system.ini`** via a
 resolved value is used as the **node namespace**.
 
 `config/system.ini` is tracked but **empty**. Per-robot identity comes from
-`config/instances/robotNN.ini`, which docker-compose bind-mounts over
-`config/system.ini` inside the container. That file has exactly four sections:
-`[system]` (`robot_id`), `[map]` (`name`, plus `pcd` / `map` paths written with
-configparser interpolation as `map/%(name)s/map.pcd` and
-`map/%(name)s/gridmap.yaml` — `map` is read by nothing in this repo since
-`syncai_map_server` went (2026-10-28) and stays for the backend — so switching
-maps is a one-line `name:` edit —
+`config/instances/robot.ini` (`robot01.ini` until 2026-10-28), which
+docker-compose bind-mounts over `config/system.ini` inside the container — the
+backend's compose mounts the same file, named by its `ROBOT_INSTANCE`
+(default `robot` since 2026-10-28; a name with no file is mounted as an empty
+directory, silently, so keep the two repos in step). That file has exactly four
+sections: `[system]` (`robot_id`), `[map]` (`name`, plus the `pcd` path written
+with configparser interpolation as `map/%(name)s/map.pcd`, so switching maps is
+a one-line `name:` edit; the `map` key, `map/%(name)s/gridmap.yaml`, went on
+2026-10-28 — nothing here read it since `syncai_map_server` went, and the
+backend reads it only as a fallback for a file with no `name`) —
 which is what the backend's map-switch route writes, in place, without
 round-tripping the file through configparser. Nothing in this repo writes this
 file; that it stays rewritable one line at a time is part of the contract with
@@ -462,7 +465,7 @@ it actually uses:
 | `reset_odometry` (`syncai_localizer`, bare name) | `POST /api/v1/localization/auto`, with `skip_seed: true`: reset Point-LIO, then the global search — so finding a kidnapped robot always zeroes the odometry, and `odom → base_link` jumps to the origin once. Blocks up to 17 s (32 s with `global_fallback`, 27 s with `skip_seed`; the backend waits 40 s); the caller must have stopped the robot, nothing enforces it |
 | `pgo/start_mapping`, `pgo/save_maps`, `pgo/reset_mapping`, `pgo/mapping_status`, `pgo/map_cloud_file` (`syncai_mapping`) | begin a run, save a map (which ends the run), start over mid-run, the run state (latched), the live merge (a PCD in the shared `/dev/shm/syncai_pgo/<robot_id>`, named by the notice — needs `ipc: host` on both containers; `pgo/map_cloud` is rviz-only) |
 | `pointlio/body_cloud` (`syncai_pointlio`) | the live cloud WebSocket |
-| `config/instances/robotNN.ini` (`[map] name`, `[initial_pose]`) | the only file in this repo the backend **writes** |
+| `config/instances/robot.ini` (`[map] name`, `[initial_pose]`) | the only file in this repo the backend **writes**; its compose mounts it as `config/instances/${ROBOT_INSTANCE:-robot}.ini` |
 | `map/<name>/` on disk | the map catalogue: `map.pcd`, `poses.txt`, `patches/`, `octomap.bt`, `map_clean.recipe.json`, and optionally the forbidden zones, **`keepout.json`** (`{"version": 1, "zones": [{"id", "points": [{"x", "y"}, …], "name"?, "z_min"?, "z_max"?}]}`, metres in the map frame, the optional z band naming the floor — `floor_z ± 0.5`, absent = every floor — `id` required and unique, no margin either; the full rules in `syncai_global_planner`'s README). It is the file the backend already writes for its 2D zone editor (from which it rasterises `keepout.yaml` + `keepout.pgm`, the mask nothing here reads since 2026-10-28), `points` shape, plus the three optional keys — so an editor file works on a 3D map, and the backend must keep `name` / `z_min` / `z_max` when its editor rewrites it. The stack writes nothing into a map directory (absent `keepout.json` = no zones); `gridmap.*` and `keepout.yaml` / `.pgm` there are the backend's own. The backend writes `keepout.json` for 2D maps today but not for 3D-only ones; `planner_server/Octo3D/load_keepout` is the reload path, and a map switch needs none, since `load_map` reads the new map's `keepout.json` itself |
 
 **Facts about this stack the backend depends on.** These belong here because

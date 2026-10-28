@@ -301,7 +301,7 @@ jobs:
       # telemetry_recv_ip) and die on a runner that lacks it, so it is added to
       # lo -- nothing answers on it, which is the no-hardware case the test is
       # about. The INI is mounted over config/system.ini the way compose mounts
-      # robotNN.ini, and robot_id ci_smoke is what the script insists on before
+      # robot.ini, and robot_id ci_smoke is what the script insists on before
       # starting anything. Read-write since 2026-10-19: the script rewrites its
       # `name:` line in place between the 2D and the 3D-only nav pass, as the
       # backend's map switch does on a robot.
@@ -315,7 +315,6 @@ jobs:
           [map]
           name: ci_smoke
           pcd: map/%(name)s/map.pcd
-          map: map/%(name)s/gridmap.yaml
 
           [initial_pose]
           x: 0.0

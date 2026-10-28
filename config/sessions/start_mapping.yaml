@@ -94,7 +94,7 @@
 #
 # ROS env comes from ~/.bashrc (ros humble + install/setup.bash); every pane
 # starts in the workspace root so the relative config/system.ini resolves. In
-# the container that path is the bind-mount of config/instances/robotNN.ini, so
+# the container that path is the bind-mount of config/instances/robot.ini, so
 # no system_config:= argument is needed (start_nav.yaml passes none either).
 #
 # Logs go to log/stack/<robot_id>/mapping/ — a subtree of its own, so this spec

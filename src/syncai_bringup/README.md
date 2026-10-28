@@ -19,7 +19,7 @@ share/syncai_bringup/
 There is deliberately no `maps/` or `rviz/` here. Both existed as empty
 `.gitkeep` placeholders inherited from the `nav2_bringup` skeleton and were
 removed: maps live in the repo-root `map/` directory referenced from
-`config/instances/robotNN.ini` (a path resolved against the workspace cwd, not a
+`config/instances/robot.ini` (a path resolved against the workspace cwd, not a
 package share), and no RViz config is checked in.
 
 ## robot_id
@@ -27,7 +27,7 @@ package share), and no RViz config is checked in.
 The launch file uses the same helper as every other launch file in the stack:
 read `[system] robot_id` from `config/system.ini` (relative path — processes run
 with the workspace root as cwd), falling back to `default_robot` with a warning.
-Override with `system_config:=config/instances/robot02.ini`.
+Override with `system_config:=/path/to/other.ini`.
 
 The resolved value is used two different ways, and the distinction matters:
 
@@ -293,7 +293,7 @@ Window 0 of `config/sessions/start_nav.yaml`, before everything else:
 ros2 launch syncai_bringup bringup.launch.py
 
 ros2 launch syncai_bringup bringup.launch.py \
-    system_config:=config/instances/robot02.ini
+    system_config:=/path/to/other.ini
 ```
 
 Check the result:

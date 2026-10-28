@@ -299,11 +299,11 @@ By hand, inside the container:
 ```bash
 ros2 launch syncai_sys_manager sys_manager.launch.py
 ros2 launch syncai_sys_manager sys_manager.launch.py \
-    system_config:=config/instances/robot01.ini
+    system_config:=config/instances/robot.ini
 ```
 
 The `system_config` default is the **absolute** `~/robot_ws/config/system.ini`
-(inside the container, the bind-mount of `config/instances/robotNN.ini`), so
+(inside the container, the bind-mount of `config/instances/robot.ini`), so
 unlike the other launch files this one does not depend on the cwd.
 
 ```bash

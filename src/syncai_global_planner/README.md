@@ -860,7 +860,7 @@ went (2026-10-28).
 ```bash
 ros2 launch syncai_global_planner planner_server.launch.py
 ros2 launch syncai_global_planner planner_server.launch.py \
-    system_config:=config/instances/robot02.ini
+    system_config:=/path/to/other.ini
 ```
 
 A plan without the task runner (the planner the BT asks for), and the same

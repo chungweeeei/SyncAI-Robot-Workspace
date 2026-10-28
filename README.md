@@ -131,7 +131,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   └── third-party/              # six upstream repos, checked out by vcstool
 ├── config/
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
-│   ├── instances/robot01.ini     # per-robot identity: [system] robot_id, [map], [initial_pose], [sensor.lidar]
+│   ├── instances/robot.ini       # the robot's identity: [system] robot_id, [map], [initial_pose], [sensor.lidar]
 │   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL), calib_lidar_camera.yaml (CALIBRATION)
 │   ├── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1
 │   └── rviz2/robot01.rviz        # for running rviz2 from a workstation (no display on the robot)
@@ -239,7 +239,8 @@ local edits — in all six checkouts, not only this one), then rebuild.
 
 Every launch file reads `[system] robot_id` from `config/system.ini`, which is
 tracked **empty**. `docker-compose.robots.yml` bind-mounts
-`config/instances/robot01.ini` over it inside the container. That INI also names
+`config/instances/robot.ini` over it inside the container (the backend's compose
+mounts the same file, `ROBOT_INSTANCE` defaulting to `robot`). That INI also names
 the map to localize against (`[map] name`), the initial pose, and the lidar's IP
 and model (`[sensor.lidar] type: mid360 | mid360s` — a wrong model yields no
 point cloud and no error).
