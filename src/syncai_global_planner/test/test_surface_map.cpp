@@ -13,6 +13,9 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <fstream>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1469,4 +1472,132 @@ TEST(Kerbs, ARouteTakesTheKerbOnALinkAndNeverAlongIt)
   const PlanResult old = plain.plan(a.cell, b.cell, p);
   ASSERT_EQ(old.failure, PlanFailure::None) << old.detail;
   EXPECT_TRUE(old.links.empty());
+}
+
+// ---- The measured floor (2026-10-29) ---------------------------------------
+//
+// A 12 cm kerb whose voxel tops are one cell apart -- outdoor_1027's, where
+// the G23 fell a third time with the kerb links in -- is no kerb to the
+// voxels, and becomes one with the cloud's heights; a 15 deg ramp's one-cell
+// contour lines vanish with them. The clouds are written here, a few
+// jittered points per column inside its top voxel, as clean_map's map.pcd
+// would hold them.
+
+namespace
+{
+
+// height(x, y) -> the true floor.
+using Height = std::function<double(double, double)>;
+
+// A floor scanned: four points per 0.1 m column at the true floor +-1 cm,
+// and the tree built from them as clean_map builds it, each column's top
+// voxel the one its highest point lies in.
+struct ScannedFloor
+{
+  std::vector<float> points;  // x y z ...
+  std::unique_ptr<octomap::OcTree> tree;
+};
+
+ScannedFloor scanFloor(const Height & height)
+{
+  ScannedFloor f;
+  std::map<std::pair<int, int>, double> top;
+  for (double y = 0.025; y < 8.0; y += 0.05) {
+    for (double x = 0.025; x < 12.0; x += 0.05) {
+      const double z = height(x, y) + 0.01 * std::sin(37.0 * x + 91.0 * y);
+      f.points.insert(
+        f.points.end(), {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+      const auto key = std::make_pair(
+        static_cast<int>(std::floor(x / 0.1)), static_cast<int>(std::floor(y / 0.1)));
+      const auto it = top.find(key);
+      top[key] = it == top.end() ? z : std::max(it->second, z);
+    }
+  }
+  synthetic::SceneBuilder b(0.1);
+  // SceneBuilder puts the occupied voxel at h - res / 2.
+  b.floor(0, 12.0, 0, 8.0, [&](double x, double y) {
+    return top.at({static_cast<int>(std::floor(x / 0.1)), static_cast<int>(std::floor(y / 0.1))}) +
+           0.05;
+  });
+  f.tree = b.finish();
+  return f;
+}
+
+// The points as a PCD with an intensity field, binary or ascii.
+std::string writeCloud(const std::vector<float> & xyz, const std::string & name, bool binary)
+{
+  const std::string path = ::testing::TempDir() + name;
+  std::ofstream out(path, std::ios::binary);
+  const size_t n = xyz.size() / 3;
+  out << "# .PCD v0.7\nVERSION 0.7\nFIELDS x y z intensity\nSIZE 4 4 4 4\nTYPE F F F F\n"
+         "COUNT 1 1 1 1\nWIDTH "
+      << n << "\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS " << n << "\nDATA "
+      << (binary ? "binary" : "ascii") << "\n";
+  for (size_t i = 0; i < n; ++i) {
+    const float p[4] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2], 7.0f};
+    if (binary) {
+      out.write(reinterpret_cast<const char *>(p), sizeof p);
+    } else {
+      out << p[0] << ' ' << p[1] << ' ' << p[2] << ' ' << p[3] << '\n';
+    }
+  }
+  return path;
+}
+
+}  // namespace
+
+TEST(MeasuredFloor, AOneCellKerbIsAKerbOnlyWithTheCloud)
+{
+  // -0.04 and +0.08 (+-1 cm): tops 0.0 and 0.1, one cell, 12 cm of true height.
+  const auto kerb = scanFloor([](double x, double) { return x < 6.0 ? -0.04 : 0.08; });
+  const auto & tree = kerb.tree;
+  BuildStats voxels;
+  buildSurfaceMap(*tree, SurfaceMapParams{}, &voxels);
+  EXPECT_EQ(voxels.kerb_lines, 0u);
+  EXPECT_EQ(voxels.sure_step_edges, 0u);
+
+  BuildStats s;
+  const auto m =
+    buildSurfaceMap(*tree, SurfaceMapParams{}, &s, writeCloud(kerb.points, "kerb.pcd", true));
+  EXPECT_TRUE(s.floor_error.empty()) << s.floor_error;
+  EXPECT_GT(s.floor_cells, s.traversable * 9 / 10);
+  EXPECT_EQ(s.kerb_lines, 1u);
+  const CellId low = cellAt(*m, 5.95, 4.0, 0.0), high = cellAt(*m, 6.05, 4.0, 0.1);
+  ASSERT_NE(low, kNoCell);
+  ASSERT_NE(high, kNoCell);
+  EXPECT_NEAR(m->cells[low].floor_z, -0.04, 0.011);
+  EXPECT_NEAR(m->cells[high].floor_z, 0.08, 0.011);
+  EXPECT_TRUE(m->cells[low].flags & kKerb);
+  EXPECT_EQ(m->stepCells(low, high, m->cells[low].kz, m->cells[high].kz), 2);
+  // And the links cross it square, as the two-cell kerb's do.
+  const auto links = buildStairLinks(*m, {}, StairLinkParams{});
+  EXPECT_EQ(links->kerbs, 1u);
+  EXPECT_TRUE(links->kerbCrossing(*m, low, high));
+}
+
+TEST(MeasuredFloor, ARampsContourLinesVanishAndABadCloudFallsBackToTheVoxels)
+{
+  const double t = std::tan(15.0 * M_PI / 180.0);
+  const auto ramp = scanFloor(
+    [t](double x, double) { return x < 4.0 ? -0.05 : (x < 8.0 ? (x - 4.0) * t : 4.0 * t) - 0.05; });
+  const auto & tree = ramp.tree;
+  BuildStats voxels;
+  buildSurfaceMap(*tree, SurfaceMapParams{}, &voxels);
+  EXPECT_GT(voxels.step_edges, 0u);  // one-cell contour lines
+  BuildStats s;
+  buildSurfaceMap(*tree, SurfaceMapParams{}, &s, writeCloud(ramp.points, "ramp.pcd", false));
+  EXPECT_TRUE(s.floor_error.empty()) << s.floor_error;
+  EXPECT_EQ(s.step_edges, 0u);
+  EXPECT_EQ(s.kerb_lines, 0u);
+
+  // A missing file: said so, and every height is the voxels' again.
+  BuildStats missing;
+  const auto m =
+    buildSurfaceMap(*tree, SurfaceMapParams{}, &missing, ::testing::TempDir() + "no_such.pcd");
+  EXPECT_FALSE(missing.floor_error.empty());
+  EXPECT_EQ(missing.floor_cells, 0u);
+  EXPECT_EQ(missing.step_edges, voxels.step_edges);
+  for (const SurfaceCell & c : m->cells) {
+    EXPECT_TRUE(std::isnan(c.floor_z));
+  }
 }

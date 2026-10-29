@@ -1709,10 +1709,11 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       // which also orients the normal below.
       double hx = 0, hy = 0;
       m.forEachMove(c, [&](CellId nb, int k) {
-        if ((k & 1) == 0 && m.cells[nb].kz > kz) {
+        const int up = m.stepCells(c, nb, kz, m.cells[nb].kz);
+        if ((k & 1) == 0 && up > 0) {
           hx += SurfaceMap::kDx8[k];
           hy += SurfaceMap::kDy8[k];
-          rise = std::max(rise, m.cells[nb].kz - kz);
+          rise = std::max(rise, up);
         }
       });
       if (std::hypot(hx, hy) < 1e-9) {
@@ -1751,7 +1752,9 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       // of the last. Up to and including this cell's column the ground must
       // stay within a cell of this cell's height, the first column past it
       // must be higher, and from there on the ground must stay within a
-      // cell of that: a second step, a drop or a wall within the lead means
+      // cell of that (SurfaceMap::stepCells: metric heights where both
+      // cells have a measured floor, which never allow a step inside the
+      // lead): a second step, a drop or a wall within the lead means
       // no link here. The samples sit a quarter cell off the half-cell
       // grid, so none lands on a column boundary, where floor() and the
       // rounding of -lead + k * half_step would decide the column between
@@ -1760,7 +1763,7 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       const uint32_t col_c = m.cell_col[c];
       CellId a = kNoCell, b = kNoCell, before = kNoCell, after = kNoCell;
       uint32_t last_col = ~uint32_t(0);
-      int kz_prev = kz, kz_hi = kz;
+      int kz_prev = kz;
       bool ok = true, passed = false;
       for (double s = -lead + half_step / 2; s <= lead; s += half_step) {
         const double x = ex + s * ux, y = ey + s * uy;
@@ -1784,19 +1787,18 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
           passed = true;
           before = cell;
         } else if (!passed) {
-          if (std::abs(kzc - kz) > 1) {
+          if (std::abs(m.stepCells(c, cell, kz, kzc)) > 1) {
             ok = false;
             break;
           }
           before = cell;
         } else if (after == kNoCell) {
-          if (kzc <= kz) {
+          if (m.stepCells(c, cell, kz, kzc) <= 0) {
             ok = false;  // the first column past the edge is not higher: no kerb here
             break;
           }
           after = cell;
-          kz_hi = kzc;
-        } else if (std::abs(kzc - kz_hi) > 1) {
+        } else if (std::abs(m.stepCells(after, cell, m.cells[after].kz, kzc)) > 1) {
           ok = false;
           break;
         }
@@ -1838,7 +1840,7 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       out.kerb_edge[before] = 1;
       out.kerb_edge[after] = 1;
       m.forEachMove(c, [&](CellId nb, int k) {
-        if ((k & 1) == 0 && m.cells[nb].kz > kz) {
+        if ((k & 1) == 0 && m.stepCells(c, nb, kz, m.cells[nb].kz) > 0) {
           out.kerb_edge[nb] = 1;
         }
       });

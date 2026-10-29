@@ -93,6 +93,9 @@ void OctomapPlanner3D::initialize(
   dp("step_edge_cost_radius", rclcpp::ParameterValue(map_params_.step_edge_cost_radius));
   dp("kerb_min_length", rclcpp::ParameterValue(map_params_.kerb_min_length));
   dp("kerb_min_sure_cells", rclcpp::ParameterValue(map_params_.kerb_min_sure_cells));
+  dp("measured_floor", rclcpp::ParameterValue(measured_floor_));
+  dp("step_edge_min_rise", rclcpp::ParameterValue(map_params_.step_edge_min_rise));
+  dp("floor_same_surface", rclcpp::ParameterValue(map_params_.floor_same_surface));
   // Stair links (build time).
   dp("stair_links", rclcpp::ParameterValue(stair_links_));
   dp("stair_min_rise", rclcpp::ParameterValue(stair_params_.min_rise));
@@ -176,6 +179,9 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".step_edge_cost_radius", map_params_.step_edge_cost_radius);
   node->get_parameter(name + ".kerb_min_length", map_params_.kerb_min_length);
   node->get_parameter(name + ".kerb_min_sure_cells", map_params_.kerb_min_sure_cells);
+  node->get_parameter(name + ".measured_floor", measured_floor_);
+  node->get_parameter(name + ".step_edge_min_rise", map_params_.step_edge_min_rise);
+  node->get_parameter(name + ".floor_same_surface", map_params_.floor_same_surface);
   node->get_parameter(name + ".stair_links", stair_links_);
   node->get_parameter(name + ".stair_min_rise", stair_params_.min_rise);
   node->get_parameter(name + ".stair_max_length", stair_params_.max_length);
@@ -566,7 +572,24 @@ bool OctomapPlanner3D::buildMap(
         logger_, "[OctomapPlanner3D][%s] loaded %s: %zu nodes at %.3f m in %.2f s", __func__,
         octomap_file.c_str(), tree->size(), tree->getResolution(),
         std::chrono::duration<double>(Clock::now() - t0).count());
-      map = o3d::buildSurfaceMap(*tree, map_params_, &stats);
+      // The measured floor reads the map.pcd beside the tree (see
+      // surface_map.hpp): the same directory, as poses.txt and keepout.json.
+      const std::string pcd = measured_floor_ ? fileBeside(octomap_file, "map.pcd") : "";
+      map = o3d::buildSurfaceMap(*tree, map_params_, &stats, pcd);
+      if (!stats.floor_error.empty()) {
+        RCLCPP_WARN(
+          logger_,
+          "[OctomapPlanner3D][%s] measured floor: %s; the step edges and kerbs read the voxel "
+          "tops, so a kerb under ~0.2 m is not told from a slope's contour line",
+          __func__, stats.floor_error.c_str());
+      } else if (!pcd.empty()) {
+        RCLCPP_INFO(
+          logger_,
+          "[OctomapPlanner3D][%s] measured floor from %s: %zu points, %zu in traversable cells, "
+          "%zu of %zu traversable cells measured, in %.2f s",
+          __func__, pcd.c_str(), stats.floor_points, stats.floor_points_kept, stats.floor_cells,
+          stats.traversable, stats.t_floor);
+      }
     }
   } catch (const std::exception & e) {
     error = std::string("building the surface map threw: ") + e.what();

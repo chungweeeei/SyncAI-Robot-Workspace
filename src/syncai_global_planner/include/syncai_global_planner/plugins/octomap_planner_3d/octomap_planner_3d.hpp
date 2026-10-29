@@ -205,6 +205,8 @@ protected:
   std::string octomap_file_, poses_file_, body_frame_, goal_z_mode_;
   double lidar_height_{0.481}, interpolation_resolution_{0.1}, path_z_offset_{0.0};
   bool shortcut_{true}, stair_links_{true};
+  // Read map/<name>/map.pcd for the measured floor (surface_map.hpp).
+  bool measured_floor_{true};
   octomap_planner_3d::SurfaceMapParams map_params_;
   octomap_planner_3d::StairLinkParams stair_params_;
   octomap_planner_3d::SearchParams search_params_;

@@ -320,7 +320,8 @@ public:
   std::vector<std::string> notes;
   // Kerbs (see the header): per cell of the map, whether it lies on a kerb
   // a link crosses, either side of the step; a move between two cells at
-  // different heights with such a cell at either end is a crossing, which
+  // different heights (SurfaceMap::stepCells) with such a cell at either end
+  // is a crossing, which
   // the search takes on a link only. Empty without kerb links.
   std::vector<uint8_t> kerb_edge;
   size_t kerbs = 0;  // kerb lines at least one link crosses
@@ -331,7 +332,8 @@ public:
   }
   bool kerbCrossing(const SurfaceMap & m, CellId a, CellId b) const
   {
-    return !kerb_edge.empty() && (kerb_edge[a] || kerb_edge[b]) && m.cells[a].kz != m.cells[b].kz;
+    return !kerb_edge.empty() && (kerb_edge[a] || kerb_edge[b]) &&
+           m.stepCells(a, b, m.cells[a].kz, m.cells[b].kz) != 0;
   }
 };
 

@@ -177,6 +177,22 @@
       step_edge_cost_radius: 0.4
       kerb_min_length: 1.0
       kerb_min_sure_cells: 3
+      # The measured floor (2026-10-29): outdoor_1027's 12 cm kerb is one
+      # voxel along its whole length, no kerb above, and the G23 fell at it a
+      # third time in the sim with the kerb links in. map.pcd beside the tree
+      # holds the true heights, so each traversable cell gets the median of
+      # the cloud's points in its top voxel, smoothed over its neighbours
+      # within floor_same_surface of it, and between two measured cells a
+      # step is metric: under step_edge_min_rise level (a 20 deg slope rises
+      # 0.036 m per column; the contour lines vanish), from it a sure step
+      # (the kerb is a kerb along its whole length). Only the points in
+      # traversable cells' voxels are kept while the file streams: +0.12 s
+      # on outdoor_1027 (4.2 M points), +0.64 s on dp_1028 (24 M), both on
+      # the Mac's sim container. A missing or unreadable map.pcd logs a
+      # warning and the voxels are read as before; false skips it.
+      measured_floor: true
+      step_edge_min_rise: 0.06
+      floor_same_surface: 0.05
 
       # ---- stair links (baked in at startup) ----
       # The geometry rules refuse every stair (step and slope), and relaxing

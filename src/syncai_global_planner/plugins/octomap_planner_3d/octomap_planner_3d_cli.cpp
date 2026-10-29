@@ -53,8 +53,11 @@ void usage()
     "  --poses <poses.txt>      keyframe poses (name x y z qw qx qy qz), the map's own track\n"
     "  --check-poses            how many keyframe ground points lie on a traversable cell\n"
     "  --lidar-height <m>       height of the keyframe poses above the ground (0.481)\n"
+    "  --floor-pcd <map.pcd>    the cloud the measured floor is read from (surface_map.hpp);\n"
+    "                           default the map.pcd beside the .bt, as the plugin reads it\n"
+    "  --no-floor-pcd           no measured floor: the step edges and kerbs read the voxels\n"
     "  --dump-pcd <out.pcd>     every surface cell as an ASCII PCD (x y z label reject unknown "
-    "clearance component)\n"
+    "clearance component floor_z step_rise kerb)\n"
     "  --dump-image <out.bmp>   top-down raster of the layer nearest --image-z (default: the "
     "lowest floor)\n"
     "  --image-z <z>            reference height for --dump-image and --inspect\n"
@@ -259,6 +262,10 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     p.clearance_cost_radius = v;
   } else if (k == "step_edge_cost_radius") {
     p.step_edge_cost_radius = v;
+  } else if (k == "step_edge_min_rise") {
+    p.step_edge_min_rise = v;
+  } else if (k == "floor_same_surface") {
+    p.floor_same_surface = v;
   } else if (k == "footprint_min_support") {
     p.footprint_min_support = v;
   } else if (k == "gap_cost_weight") {
@@ -308,9 +315,9 @@ void printStats(const SurfaceMap & m, const BuildStats & s)
   }
   std::printf(
     "build: columns %.2fs, candidates %.2fs, hole-fill %.2fs, step %.2fs, footprint %.2fs, "
-    "components %.2fs, clearance %.2fs, step edges %.2fs, total %.2fs\n",
+    "components %.2fs, clearance %.2fs, measured floor %.2fs, step edges %.2fs, total %.2fs\n",
     s.t_columns, s.t_candidates, s.t_hole_fill, s.t_step, s.t_footprint, s.t_components,
-    s.t_clearance, s.t_step_edges, s.t_total);
+    s.t_clearance, s.t_floor, s.t_step_edges, s.t_total);
 }
 
 // Recomputes N random columns the slow way (OcTree::search per voxel) and
@@ -752,22 +759,24 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
   }
   out << "# .PCD v0.7 - surface map of OctomapPlanner3D\n"
          "VERSION 0.7\n"
-         "FIELDS x y z label reject unknown clearance component\n"
-         "SIZE 4 4 4 4 4 4 4 4\n"
-         "TYPE F F F I I I F I\n"
-         "COUNT 1 1 1 1 1 1 1 1\n"
+         "FIELDS x y z label reject unknown clearance component floor_z step_rise kerb\n"
+         "SIZE 4 4 4 4 4 4 4 4 4 4 4\n"
+         "TYPE F F F I I I F I F I I\n"
+         "COUNT 1 1 1 1 1 1 1 1 1 1 1\n"
          "WIDTH "
       << m.cells.size() << "\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS " << m.cells.size()
       << "\nDATA ascii\n";
-  char line[160];
+  char line[200];
   for (CellId c = 0; c < m.cells.size(); ++c) {
     double x, y;
     m.cellXY(c, x, y);
     const int label = m.traversable(c) ? (m.inferred(c) ? 2 : 1) : 0;
+    // floor_z: the measured floor, nan where there is none (PCL reads "nan").
     std::snprintf(
-      line, sizeof line, "%.3f %.3f %.3f %d %d %d %.3f %d\n", x, y, m.zTop(c), label,
+      line, sizeof line, "%.3f %.3f %.3f %d %d %d %.3f %d %.3f %d %d\n", x, y, m.zTop(c), label,
       m.cells[c].reject, m.cells[c].unknown_cnt, m.cells[c].clearance_d,
-      m.cells[c].component == kNoComponent ? -1 : static_cast<int>(m.cells[c].component));
+      m.cells[c].component == kNoComponent ? -1 : static_cast<int>(m.cells[c].component),
+      m.cells[c].floor_z, m.cells[c].step_rise, (m.cells[c].flags & kKerb) ? 1 : 0);
     out << line;
   }
   return static_cast<bool>(out);
@@ -1171,7 +1180,8 @@ renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, came
 
 int main(int argc, char ** argv)
 {
-  std::string bt_path, scene, poses_path, pcd_path, image_path;
+  std::string bt_path, scene, poses_path, pcd_path, image_path, floor_pcd;
+  bool no_floor_pcd = false;
   bool stats = false, self_test = false, check_poses = false, have_image_z = false,
        do_inspect = false;
   size_t self_test_n = 5000, inspect_misses = 0;
@@ -1269,6 +1279,10 @@ int main(int argc, char ** argv)
       shortcut = false;
     } else if (a == "--no-stair-links") {
       stair_links = false;
+    } else if (a == "--floor-pcd") {
+      floor_pcd = next("--floor-pcd");
+    } else if (a == "--no-floor-pcd") {
+      no_floor_pcd = true;
     } else if (a == "--inspect-kf") {
       inspect_kf.push_back(std::strtoul(next("--inspect-kf").c_str(), nullptr, 10));
     } else if (a == "--image-region") {
@@ -1347,8 +1361,30 @@ int main(int argc, char ** argv)
     }
   }
 
+  // The measured floor: the map.pcd beside the .bt unless told otherwise,
+  // so a --plan here is the plugin's plan. None for a synthetic scene.
+  if (no_floor_pcd) {
+    floor_pcd.clear();
+  } else if (floor_pcd.empty() && scene.empty()) {
+    const auto slash = bt_path.find_last_of('/');
+    const std::string beside =
+      (slash == std::string::npos ? std::string() : bt_path.substr(0, slash + 1)) + "map.pcd";
+    if (std::ifstream(beside).good()) {
+      floor_pcd = beside;
+    }
+  }
   BuildStats build_stats;
-  const auto map = buildSurfaceMap(*tree, params, &build_stats);
+  const auto map = buildSurfaceMap(*tree, params, &build_stats, floor_pcd);
+  if (!build_stats.floor_error.empty()) {
+    std::fprintf(
+      stderr, "measured floor: %s; reading the voxels\n", build_stats.floor_error.c_str());
+  } else if (!floor_pcd.empty()) {
+    std::printf(
+      "measured floor: %s, %zu points, %zu in traversable cells, %zu of %zu traversable cells "
+      "measured, %.2fs\n",
+      floor_pcd.c_str(), build_stats.floor_points, build_stats.floor_points_kept,
+      build_stats.floor_cells, build_stats.traversable, build_stats.t_floor);
+  }
   if (stats) {
     printStats(*map, build_stats);
   }

@@ -6,10 +6,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <limits>
 #include <numeric>
 #include <queue>
 #include <sstream>
+#include <string>
 #include <utility>
 
 namespace syncai_global_planner::octomap_planner_3d
@@ -670,6 +673,245 @@ void computeClearance(SurfaceMap & m)
   }
 }
 
+// ---- stage 7b: the measured floor (2026-10-29; see the header) -------------
+
+// Streams the x / y / z of every point of a PCD to visit(x, y, z): the
+// header's FIELDS / SIZE / TYPE / COUNT say where x, y and z sit in a point,
+// which must be 4-byte floats; DATA binary or ascii (syncai_mapping writes
+// binary; binary_compressed is LZF and is refused). A chunk at a time, never
+// the whole file: dp_1028's map.pcd is 380 MB. Counts the points into
+// *points. False with error set on anything it cannot read.
+template <typename Fn>
+bool streamPcdXyz(const std::string & path, size_t * points, std::string & error, Fn && visit)
+{
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    error = "cannot open " + path;
+    return false;
+  }
+  std::vector<std::string> fields, types;
+  std::vector<int> sizes, counts;
+  size_t npoints = 0;
+  std::string data, line;
+  while (data.empty() && std::getline(in, line)) {
+    std::istringstream ls(line);
+    std::string key;
+    ls >> key;
+    if (key.empty() || key[0] == '#') {
+      continue;
+    }
+    std::string v;
+    if (key == "FIELDS") {
+      while (ls >> v) {
+        fields.push_back(v);
+      }
+    } else if (key == "SIZE" || key == "COUNT") {
+      auto & out = key == "SIZE" ? sizes : counts;
+      while (ls >> v) {
+        out.push_back(std::atoi(v.c_str()));
+      }
+    } else if (key == "TYPE") {
+      while (ls >> v) {
+        types.push_back(v);
+      }
+    } else if (key == "POINTS") {
+      ls >> npoints;
+    } else if (key == "DATA") {
+      ls >> data;
+    }
+  }
+  if (counts.empty()) {
+    counts.assign(fields.size(), 1);
+  }
+  if (
+    data.empty() || fields.empty() || sizes.size() != fields.size() ||
+    types.size() != fields.size() || counts.size() != fields.size()) {
+    error = path + ": not a PCD file (no DATA line, or FIELDS / SIZE / TYPE / COUNT disagree)";
+    return false;
+  }
+  // Byte offset and value index of x, y and z within a point.
+  int off[3] = {-1, -1, -1}, idx[3] = {-1, -1, -1};
+  int point_size = 0, values = 0;
+  for (size_t f = 0; f < fields.size(); ++f) {
+    const int axis = fields[f] == "x" ? 0 : fields[f] == "y" ? 1 : fields[f] == "z" ? 2 : -1;
+    if (axis >= 0) {
+      if (types[f] != "F" || sizes[f] != 4) {
+        error = path + ": field " + fields[f] + " is not a 4-byte float";
+        return false;
+      }
+      off[axis] = point_size;
+      idx[axis] = values;
+    }
+    point_size += sizes[f] * counts[f];
+    values += counts[f];
+  }
+  if (off[0] < 0 || off[1] < 0 || off[2] < 0) {
+    error = path + ": no x / y / z fields";
+    return false;
+  }
+  size_t n = 0;
+  if (data == "binary") {
+    constexpr size_t kChunk = 65536;  // points per read: 1 MB of a 16-byte point
+    std::vector<char> buf(kChunk * point_size);
+    while (n < npoints) {
+      const size_t want = std::min(kChunk, npoints - n);
+      in.read(buf.data(), static_cast<std::streamsize>(want * point_size));
+      const size_t got = static_cast<size_t>(in.gcount()) / point_size;
+      for (size_t i = 0; i < got; ++i) {
+        const char * p = buf.data() + i * point_size;
+        float xyz[3];
+        for (int a = 0; a < 3; ++a) {
+          std::memcpy(&xyz[a], p + off[a], sizeof(float));
+        }
+        visit(xyz[0], xyz[1], xyz[2]);
+      }
+      n += got;
+      if (got < want) {
+        break;
+      }
+    }
+  } else if (data == "ascii") {
+    std::vector<float> v(values);
+    while (n < npoints && std::getline(in, line)) {
+      std::istringstream ls(line);
+      int k = 0;
+      while (k < values && ls >> v[k]) {
+        ++k;
+      }
+      if (k < values) {
+        continue;
+      }
+      visit(v[idx[0]], v[idx[1]], v[idx[2]]);
+      ++n;
+    }
+  } else {
+    error = path + ": DATA " + data + " is not supported (binary or ascii)";
+    return false;
+  }
+  *points = n;
+  if (n < npoints) {
+    error =
+      path + ": truncated, " + std::to_string(n) + " of " + std::to_string(npoints) + " points";
+    return false;
+  }
+  return true;
+}
+
+// Every traversable cell's floor_z (see the header). A point counts for the
+// cell whose top voxel it falls in -- the voxel the tree marked occupied
+// because of points like it -- and the raw floor of a cell is the median of
+// its points. Each traversable cell then takes the median of the raw floors
+// within two columns on its own surface (layerNear within one step) that
+// are within floor_same_surface of its own -- edge-preserving: the far side
+// of a kerb never votes, and a lone return (a leaf, a foot) is outvoted. A
+// cell with no point of its own votes with the raw floors that lie inside
+// its own voxel (its true floor does, or the voxel would not be its top).
+// Fewer than three votes leave it NaN: the voxels are read there.
+void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & stats)
+{
+  for (SurfaceCell & c : m.cells) {
+    c.floor_z = std::numeric_limits<float>::quiet_NaN();
+  }
+  if (pcd.empty() || m.cells.empty()) {
+    return;
+  }
+  // (cell, z) of every point in a traversable cell's top voxel; the rest of
+  // the cloud (walls, ceilings, trees, the floors under rejected cells) is
+  // dropped as it is read.
+  std::vector<std::pair<CellId, float>> kept;
+  std::string error;
+  const bool ok = streamPcdXyz(pcd, &stats.floor_points, error, [&](float x, float y, float z) {
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      return;
+    }
+    const int ix = m.ixOf(x), iy = m.iyOf(y);
+    if (!m.inGrid(ix, iy)) {
+      return;
+    }
+    const uint32_t col = m.col(ix, iy);
+    const int kz = static_cast<int>(std::floor((z - m.z0) / m.res));
+    for (uint32_t i = m.col_begin[col], e = m.col_begin[col + 1]; i < e; ++i) {
+      if (m.cells[i].kz == kz) {
+        if (m.traversable(i)) {
+          kept.emplace_back(i, z);
+        }
+        return;
+      }
+    }
+  });
+  if (!ok) {
+    stats.floor_error = error;
+    return;
+  }
+  stats.floor_points_kept = kept.size();
+  // Raw floor per cell: a counting sort by cell, then the median of each run.
+  const size_t n = m.cells.size();
+  std::vector<uint32_t> begin(n + 1, 0);
+  for (const auto & k : kept) {
+    ++begin[k.first + 1];
+  }
+  for (size_t c = 0; c < n; ++c) {
+    begin[c + 1] += begin[c];
+  }
+  std::vector<float> zs(kept.size());
+  {
+    std::vector<uint32_t> fill(begin.begin(), begin.end() - 1);
+    for (const auto & k : kept) {
+      zs[fill[k.first]++] = k.second;
+    }
+  }
+  std::vector<std::pair<CellId, float>>().swap(kept);
+  std::vector<float> raw(n, std::numeric_limits<float>::quiet_NaN());
+  for (CellId c = 0; c < n; ++c) {
+    if (begin[c] == begin[c + 1]) {
+      continue;
+    }
+    float * lo = zs.data() + begin[c];
+    float * hi = zs.data() + begin[c + 1];
+    float * mid = lo + (hi - lo) / 2;
+    std::nth_element(lo, mid, hi);
+    raw[c] = *mid;
+  }
+  const float same = static_cast<float>(m.params.floor_same_surface);
+  std::vector<float> votes;
+  for (CellId c = 0; c < n; ++c) {
+    if (!m.traversable(c)) {
+      continue;
+    }
+    const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+    const int kz = m.cells[c].kz;
+    // A cell's own floor, or the voxel its floor must lie in.
+    float lo, hi;
+    if (!std::isnan(raw[c])) {
+      lo = raw[c] - same;
+      hi = raw[c] + same;
+    } else {
+      lo = static_cast<float>(m.z0 + kz * m.res);
+      hi = static_cast<float>(m.z0 + (kz + 1) * m.res);
+    }
+    votes.clear();
+    for (int dy = -2; dy <= 2; ++dy) {
+      for (int dx = -2; dx <= 2; ++dx) {
+        if (!m.inGrid(ix + dx, iy + dy)) {
+          continue;
+        }
+        const CellId nb = m.layerNear(m.col(ix + dx, iy + dy), kz, m.step_cells);
+        if (nb == kNoCell || std::isnan(raw[nb]) || raw[nb] < lo || raw[nb] > hi) {
+          continue;
+        }
+        votes.push_back(raw[nb]);
+      }
+    }
+    if (votes.size() < 3) {
+      continue;
+    }
+    auto mid = votes.begin() + votes.size() / 2;
+    std::nth_element(votes.begin(), mid, votes.end());
+    m.cells[c].floor_z = *mid;
+    ++stats.floor_cells;
+  }
+}
+
 // ---- stage 8: step edges and kerbs (2026-10-29; see the header) -------------
 
 // Every traversable cell's largest height change to a neighbour the move rule
@@ -698,7 +940,9 @@ void computeStepEdges(SurfaceMap & m, BuildStats & stats)
   // map is salt and pepper -- 38 000 step cells on outdoor_1027, the band
   // over most of its road, and a kerb that is no line at all. The median
   // drops a lone voxel and keeps an edge two cells wide on either side. The
-  // traversability rules read the raw heights as before.
+  // traversability rules read the raw heights as before. Between two cells
+  // with a measured floor (stage 7b) the metric heights are read instead
+  // (SurfaceMap::stepCells), and these only where either has none.
   std::vector<int16_t> fkz(n, 0);
   for (CellId c = 0; c < n; ++c) {
     fkz[c] = m.cells[c].kz;
@@ -721,11 +965,10 @@ void computeStepEdges(SurfaceMap & m, BuildStats & stats)
     if (!m.traversable(c)) {
       continue;
     }
-    const int kz = fkz[c];
     int rise = 0, highest = 0;
     int sx = 0, sy = 0;
     m.forEachMove(c, [&](CellId nb, int k) {
-      const int dkz = fkz[nb] - kz;
+      const int dkz = m.stepCells(c, nb, fkz[c], fkz[nb]);
       rise = std::max(rise, std::abs(dkz));
       if ((k & 1) == 0 && dkz >= 1) {
         sx += SurfaceMap::kDx8[k];
@@ -761,15 +1004,17 @@ void computeStepEdges(SurfaceMap & m, BuildStats & stats)
     const int dx = std::abs(hx[c]) >= std::abs(hy[c]) ? (hx[c] > 0 ? 1 : -1) : 0;
     const int dy = dx == 0 ? (hy[c] > 0 ? 1 : -1) : 0;
     const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
-    int kz = m.cells[c].kz, kz_hi = 0;
+    int kz = m.cells[c].kz;
+    CellId first = kNoCell;  // the first cell past the step
     bool ok = true;
     for (int j = 1; j <= 4 && ok; ++j) {
       const CellId h = m.traversableNeighbour(ix + j * dx, iy + j * dy, kz);
-      ok = h != kNoCell && (j == 1 ? fkz[h] > fkz[c] : std::abs(fkz[h] - kz_hi) <= 1);
+      ok = h != kNoCell && (j == 1 ? m.stepCells(c, h, fkz[c], fkz[h]) > 0
+                                   : std::abs(m.stepCells(first, h, fkz[first], fkz[h])) <= 1);
       if (ok) {
         kz = m.cells[h].kz;
         if (j == 1) {
-          kz_hi = fkz[h];
+          first = h;
         }
       }
     }
@@ -855,7 +1100,7 @@ void computeStepEdges(SurfaceMap & m, BuildStats & stats)
     } else {
       const int kz = fkz[c];
       m.forEachMove(c, [&](CellId nb, int k) {
-        if ((k & 1) == 0 && (m.cells[nb].flags & kKerb) && fkz[nb] < kz) {
+        if ((k & 1) == 0 && (m.cells[nb].flags & kKerb) && m.stepCells(c, nb, kz, fkz[nb]) < 0) {
           rise = std::max<uint8_t>(rise, kSureStepCells);
         }
       });
@@ -888,7 +1133,8 @@ void computeStepEdges(SurfaceMap & m, BuildStats & stats)
 }  // namespace
 
 std::shared_ptr<const SurfaceMap> buildSurfaceMap(
-  const octomap::OcTree & tree, const SurfaceMapParams & params, BuildStats * stats_out)
+  const octomap::OcTree & tree, const SurfaceMapParams & params, BuildStats * stats_out,
+  const std::string & floor_pcd)
 {
   BuildStats local;
   BuildStats & stats = stats_out ? *stats_out : local;
@@ -981,6 +1227,10 @@ std::shared_ptr<const SurfaceMap> buildSurfaceMap(
   t = Clock::now();
   computeClearance(m);
   stats.t_clearance = since(t);
+
+  t = Clock::now();
+  computeMeasuredFloor(floor_pcd, m, stats);
+  stats.t_floor = since(t);
 
   t = Clock::now();
   computeStepEdges(m, stats);
