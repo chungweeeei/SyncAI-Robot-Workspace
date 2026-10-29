@@ -184,7 +184,9 @@ checkouts — each tracks its repo's `dev`, and no commit here records where it
 is. Use `scripts/sync.sh` instead of a bare `git pull`: it pulls the workspace,
 fast-forwards every checkout that is on its pinned branch, clones any that is
 missing, fetches only (and says so) for one on another branch, and needs only
-git on the host.
+git on the host. It also moves every `src/third-party/` checkout to its
+`third-party.repos` pin when a pull has bumped one (submodules included, the
+livox `package.xml` restored), leaving one you have put on a branch alone.
 
 **On an existing robot**, the pull that moves a package out deletes its
 directory and nothing puts it back: run `scripts/sync.sh` (or
