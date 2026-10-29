@@ -161,9 +161,9 @@ void DockingController::initialize(
   preview_pub_ = node->create_publisher<nav_msgs::msg::Path>("local_plan", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("docking_target", 1);
   if (publish_docking_plan_) {
-    // Same topic and QoS as controller_server's clear (kDockingPlanTopic
-    // there): the server owns the "approach over" message, this plugin the
-    // plan itself.
+    // Same topic and QoS as controller_server's clear
+    // (docking_plan_clear_pub_ there): the server owns the "approach over"
+    // message, this plugin the plan itself.
     docking_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("docking_plan", 1);
   }
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
@@ -644,8 +645,14 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
     // computeVelocityCommands() zeroes the accel-clamp baseline on the way out, which is
     // what keeps the cycle after the all-clear from lurching off the stale pre-collision
     // speed. The numbers that bought that are in the wrapper's comment.
-    throw syncai_nav_core::PlannerException(
-      "RegulatedPurePursuitController3D detected collision ahead!");
+    char buf[256];
+    std::snprintf(
+      buf, sizeof(buf),
+      "RegulatedPurePursuitController3D detected collision ahead: the footprint touches LETHAL "
+      "%.2f m along the arc of v %.2f m/s, w %.2f rad/s (carrot %.2f m)%s",
+      collision_dist_, linear_vel, angular_vel, carrot_dist,
+      collision_dist_ == 0.0 ? ", where the robot stands now" : "");
+    throw syncai_nav_core::PlannerException(buf);
   }
 
   // populate and return message
@@ -789,6 +796,7 @@ bool RegulatedPurePursuitController3D::isCollisionImminent(
   if (inCollision(
         robot_pose.pose.position.x, robot_pose.pose.position.y,
         tf2::getYaw(robot_pose.pose.orientation))) {
+    collision_dist_ = 0.0;
     return true;
   }
 
@@ -848,6 +856,7 @@ bool RegulatedPurePursuitController3D::isCollisionImminent(
     // whether the robot footprint at the projected pose would be in collision with obstacles on the costmap
     // it would publish the projected arc for visualization
     if (inCollision(curr_pose.x, curr_pose.y, curr_pose.theta)) {
+      collision_dist_ = hypot(curr_pose.x - robot_xy.x, curr_pose.y - robot_xy.y);
       carrot_arc_pub_->publish(arc_pts_msg);
       return true;
     }
@@ -888,10 +897,9 @@ double RegulatedPurePursuitController3D::costAtPose(const double & x, const doub
   unsigned int mx, my;
 
   if (!costmap_->worldToMap(x, y, mx, my)) {
-    RCLCPP_FATAL(
-      logger_,
-      "The dimensions of the costmap is too small to fully include your robot's footprint, "
-      "thusly the robot cannot proceed further");
+    // No log of its own: the server logs the exception, under
+    // failure_tolerance once per cycle -- upstream's extra FATAL here was a
+    // second line per cycle, at a severity for a process that is going down.
     throw syncai_nav_core::PlannerException(
       "RegulatedPurePursuitController3D: Dimensions of the costmap are too small "
       "to encapsulate the robot footprint at current speeds!");
@@ -1036,7 +1044,8 @@ nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
     throw syncai_nav_core::PlannerException(
-      "Unable to transform robot pose into global plan's frame");
+      "Unable to transform robot pose from '" + pose.header.frame_id + "' into the plan's frame '" +
+      global_plan_.header.frame_id + "'");
   }
 
   // A plan with heights (OctomapPlanner3D) is matched in 3D: robot_pose comes from the
@@ -1156,7 +1165,9 @@ bool RegulatedPurePursuitController3D::transformPose(
     out_pose.header.frame_id = frame;
     return true;
   } catch (tf2::TransformException & ex) {
-    RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
+    // Throttled: transformGlobalPlan() calls this once per plan pose, so one
+    // missing transform was a line per pose per cycle (hundreds a second).
+    RCLCPP_ERROR_THROTTLE(logger_, *clock_, 1000, "Exception in transformPose: %s", ex.what());
   }
   return false;
 }

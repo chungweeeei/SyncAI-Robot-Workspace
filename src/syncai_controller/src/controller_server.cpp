@@ -32,6 +32,18 @@ using syncai_util::pathHasHeight;
 namespace syncai_controller
 {
 
+namespace
+{
+// "3.05", for durations in exception messages (std::to_string prints
+// "3.050000").
+std::string seconds(double s)
+{
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.2f", s);
+  return buf;
+}
+}  // namespace
+
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : rclcpp::Node("controller_server", options),
   progress_checker_loader_("syncai_nav_core", "syncai_nav_core::ProgressChecker"),
@@ -111,7 +123,6 @@ void ControllerServer::configure()
       rclcpp::ParameterValue(default_progress_checker_type_));
   }
 
-  RCLCPP_INFO(get_logger(), "getting goal checker plugins..");
   get_parameter("goal_checker_plugins", goal_checker_ids_);
   if (goal_checker_ids_ == default_goal_checker_ids_) {
     for (size_t i = 0; i < default_goal_checker_ids_.size(); ++i) {
@@ -281,7 +292,7 @@ bool ControllerServer::findControllerId(
     } else {
       RCLCPP_ERROR(
         get_logger(),
-        "FollowPath called with controller name %s, "
+        "Action called with controller name %s, "
         "which does not exist. Available controllers are: %s.",
         c_name.c_str(), controller_ids_concat_.c_str());
       return false;
@@ -349,8 +360,6 @@ void ControllerServer::computeControl()
     return;
   }
 
-  RCLCPP_INFO(get_logger(), "Received a goal, begin computing control effort.");
-
   try {
     std::string c_name = action_server_->get_current_goal()->controller_id;
     std::string current_controller;
@@ -378,6 +387,7 @@ void ControllerServer::computeControl()
 
     setPlannerPath(action_server_->get_current_goal()->path);
     progress_checker_->reset();
+    logPath("FollowPath goal", current_path_);
 
     last_valid_cmd_time_ = now();
     rclcpp::WallRate loop_rate(controller_frequency_);
@@ -395,8 +405,18 @@ void ControllerServer::computeControl()
       }
 
       // Don't compute a trajectory until costmap is valid (after clear costmap)
+      // Logged, because nothing else is while it lasts: a layer that stops
+      // getting data (terrain_layer: no pointlio/body_cloud) holds the loop
+      // here with no command published, no feedback and no error, and the
+      // goal only ends when the BT gives up on it.
       rclcpp::Rate r(100);
+      const rclcpp::Time costmap_wait_start = now();
       while (!costmap_ros_->isCurrent()) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Waiting %.1f s for the local costmap to be current (a layer has no fresh data -- is "
+          "pointlio/body_cloud publishing?); no command is computed meanwhile",
+          (now() - costmap_wait_start).seconds());
         r.sleep();
       }
 
@@ -405,23 +425,29 @@ void ControllerServer::computeControl()
       computeAndPublishVelocity();
 
       if (isGoalReached()) {
-        RCLCPP_INFO(get_logger(), "Reached the goal!");
         break;
       }
 
       if (!loop_rate.sleep()) {
-        RCLCPP_WARN(
-          get_logger(), "Control loop missed its desired rate of %.4fHz", controller_frequency_);
+        // Throttled: on a saturated CPU every cycle misses, and 20 lines a
+        // second bury the log that says why.
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000, "Control loop missed its desired rate of %.4fHz",
+          controller_frequency_);
         loop_rate.reset();
       }
     }
   } catch (syncai_nav_core::PlannerException & e) {
-    RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+    RCLCPP_ERROR(
+      get_logger(), "FollowPath aborted (controller '%s'): %s", current_controller_.c_str(),
+      e.what());
     publishZeroVelocity();
     action_server_->terminate_current();
     return;
   } catch (std::exception & e) {
-    RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+    RCLCPP_ERROR(
+      get_logger(), "FollowPath aborted by an unexpected exception (controller '%s'): %s",
+      current_controller_.c_str(), e.what());
     publishZeroVelocity();
     std::shared_ptr<Action::Result> result = std::make_shared<Action::Result>();
     action_server_->terminate_current(result);
@@ -488,7 +514,6 @@ void ControllerServer::computeAndPublishVelocity()
     syncai_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
   action_server_->publish_feedback(feedback);
 
-  RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
   publishVelocity(cmd_vel_2d);
 }
 
@@ -515,22 +540,33 @@ bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
     // the first cycle after the TF came back would clamp around the speed held
     // before the outage and step 0 -> ~0.55 m/s in 50 ms, the lurch the
     // catch-all exists to prevent.
+    // The TF error itself is logged by getCurrentPose(); this says what it
+    // costs the goal.
+    const double without_cmd = (now() - last_valid_cmd_time_).seconds();
+    const std::string frames =
+      costmap_ros_->getBaseFrameID() + " in " + costmap_ros_->getGlobalFrameID();
     if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
-      RCLCPP_WARN(get_logger(), "Failed to obtain robot pose");
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Robot pose (%s) unavailable: commanding zero, %.1f s without a valid command "
+        "(failure_tolerance %.1f s)",
+        frames.c_str(), without_cmd, failure_tolerance_);
       controllers_[current_controller_]->reset();
-      if (
-        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
-        failure_tolerance_ != -1.0) {
-        throw syncai_nav_core::PlannerException("Controller patience exceeded");
+      if (without_cmd > failure_tolerance_ && failure_tolerance_ != -1.0) {
+        throw syncai_nav_core::PlannerException(
+          "Controller patience exceeded: robot pose (" + frames + ") unavailable, " +
+          seconds(without_cmd) + " s without a valid command");
       }
       publishZeroVelocity();
       return false;
     }
-    throw syncai_nav_core::PlannerException("Failed to obtain robot pose");
+    throw syncai_nav_core::PlannerException("Failed to obtain robot pose (" + frames + ")");
   }
 
   if (!progress_checker_->check(pose)) {
-    throw syncai_nav_core::PlannerException("Failed to make progress");
+    // The checker logs where the robot stood and for how long.
+    throw syncai_nav_core::PlannerException(
+      "Failed to make progress (progress checker '" + progress_checker_id_ + "')");
   }
 
   geometry_msgs::msg::Twist twist = getThresholdedTwist(odom_sub_->getTwist());
@@ -543,7 +579,15 @@ bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
     last_valid_cmd_time_ = now();
   } catch (syncai_nav_core::PlannerException & e) {
     if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
-      RCLCPP_WARN(this->get_logger(), "%s", e.what());
+      const double without_cmd = (now() - last_valid_cmd_time_).seconds();
+      // Throttled: a blocked path fails every cycle (20 Hz) for the whole
+      // window. The abort below repeats the last error, so the line that
+      // decided the goal is never lost to the throttle.
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Controller '%s' failed: %s -- commanding zero, %.1f s without a valid command "
+        "(failure_tolerance %.1f s)",
+        current_controller_.c_str(), e.what(), without_cmd, failure_tolerance_);
       cmd_vel_2d.twist.angular.x = 0;
       cmd_vel_2d.twist.angular.y = 0;
       cmd_vel_2d.twist.angular.z = 0;
@@ -552,10 +596,10 @@ bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
       cmd_vel_2d.twist.linear.z = 0;
       cmd_vel_2d.header.frame_id = costmap_ros_->getBaseFrameID();
       cmd_vel_2d.header.stamp = now();
-      if (
-        (now() - last_valid_cmd_time_).seconds() > failure_tolerance_ &&
-        failure_tolerance_ != -1.0) {
-        throw syncai_nav_core::PlannerException("Controller patience exceeded");
+      if (without_cmd > failure_tolerance_ && failure_tolerance_ != -1.0) {
+        throw syncai_nav_core::PlannerException(
+          "Controller patience exceeded: no valid command for " + seconds(without_cmd) +
+          " s; last error: " + e.what());
       }
     } else {
       throw syncai_nav_core::PlannerException(e.what());
@@ -684,20 +728,24 @@ void ControllerServer::dockControl()
       }
 
       if (!loop_rate.sleep()) {
-        RCLCPP_WARN(
-          get_logger(), "Dock control loop missed its desired rate of %.4fHz",
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000, "Dock control loop missed its desired rate of %.4fHz",
           controller_frequency_);
         loop_rate.reset();
       }
     }
   } catch (syncai_nav_core::PlannerException & e) {
-    RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+    RCLCPP_ERROR(
+      get_logger(), "dock_to_pose aborted (controller '%s'): %s", current_controller_.c_str(),
+      e.what());
     publishZeroVelocity();
     dock_action_server_->terminate_current(
       makeDockResult(DockAction::Result::FAILED_TO_CONTROL, e.what()));
     return;
   } catch (std::exception & e) {
-    RCLCPP_ERROR(this->get_logger(), "%s", e.what());
+    RCLCPP_ERROR(
+      get_logger(), "dock_to_pose aborted by an unexpected exception (controller '%s'): %s",
+      current_controller_.c_str(), e.what());
     publishZeroVelocity();
     dock_action_server_->terminate_current(makeDockResult(
       DockAction::Result::FAILED_TO_CONTROL, std::string("unexpected: ") + e.what()));
@@ -865,7 +913,6 @@ std::shared_ptr<ControllerServer::DockAction::Result> ControllerServer::makeDock
 void ControllerServer::updateGlobalPath()
 {
   if (action_server_->is_preempt_requested()) {
-    RCLCPP_INFO(get_logger(), "Passing new path to controller.");
     auto goal = action_server_->accept_pending_goal();
     std::string current_controller;
     if (findControllerId(goal->controller_id, current_controller)) {
@@ -901,6 +948,7 @@ void ControllerServer::updateGlobalPath()
     // for a live blocker to leave is the BT's retry budget (move.xml), not
     // this timer.
     setPlannerPath(goal->path);
+    logPath("FollowPath replan", current_path_);
   }
 }
 
@@ -942,10 +990,18 @@ bool ControllerServer::isGoalReached()
   geometry_msgs::msg::PoseStamped end_pose_latest = end_pose_;
   end_pose_latest.header.stamp = rclcpp::Time(0);
 
+  // Checked: unchecked, a failed transform left transformed_end_pose at the
+  // origin of the costmap's frame, and the goal was judged against that.
   geometry_msgs::msg::PoseStamped transformed_end_pose;
-  syncai_util::transformPoseInTargetFrame(
-    end_pose_latest, transformed_end_pose, *costmap_ros_->getTfBuffer(),
-    costmap_ros_->getGlobalFrameID(), costmap_ros_->getTransformTolerance());
+  if (!syncai_util::transformPoseInTargetFrame(
+        end_pose_latest, transformed_end_pose, *costmap_ros_->getTfBuffer(),
+        costmap_ros_->getGlobalFrameID(), costmap_ros_->getTransformTolerance())) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Goal not checked: cannot transform the end pose from %s to %s",
+      end_pose_.header.frame_id.c_str(), costmap_ros_->getGlobalFrameID().c_str());
+    return false;
+  }
 
   // A path with heights (OctomapPlanner3D) can end right above a stretch of
   // itself: a 2F goal over the 1F corridor that leads to the stairs, or any
@@ -968,6 +1024,20 @@ bool ControllerServer::isGoalReached()
       return false;
     }
     if (std::abs(ground_z - end_pose_.pose.position.z) > goal_z_tolerance_) {
+      // Said only near the end pose in x / y, where it is the reason the
+      // goal is not reached: a robot standing on its goal with the ground
+      // estimate off (lidar_height, the LIO's z drift) otherwise waits
+      // silently for the progress checker.
+      const double dxy = std::hypot(
+        pose.pose.position.x - transformed_end_pose.pose.position.x,
+        pose.pose.position.y - transformed_end_pose.pose.position.y);
+      if (dxy < 1.0) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "%.2f m from the end pose but on another level: ground z %.2f vs end pose z %.2f "
+          "(goal_z_tolerance %.2f); goal not reached",
+          dxy, ground_z, end_pose_.pose.position.z, goal_z_tolerance_);
+      }
       return false;
     }
   }
@@ -1013,8 +1083,35 @@ bool ControllerServer::isGoalReached()
     }
   }
 
-  return goal_checkers_[current_goal_checker_]->isGoalReached(
-    pose.pose, transformed_end_pose.pose, velocity);
+  if (!goal_checkers_[current_goal_checker_]->isGoalReached(
+        pose.pose, transformed_end_pose.pose, velocity)) {
+    return false;
+  }
+  RCLCPP_INFO(
+    get_logger(), "Reached the goal: %.3f m and %+.3f rad from the end pose (goal checker '%s')",
+    std::hypot(
+      pose.pose.position.x - transformed_end_pose.pose.position.x,
+      pose.pose.position.y - transformed_end_pose.pose.position.y),
+    angles::shortest_angular_distance(
+      tf2::getYaw(pose.pose.orientation), tf2::getYaw(transformed_end_pose.pose.orientation)),
+    current_goal_checker_.c_str());
+  return true;
+}
+
+void ControllerServer::logPath(const char * what, const nav_msgs::msg::Path & path)
+{
+  // What the controller was handed, so a log line after it can be read
+  // against it: which plugins, how long a path, in which frame, whether it
+  // is tracked in 3D, and where it ends.
+  const auto & end = path.poses.back().pose;
+  RCLCPP_INFO(
+    get_logger(),
+    "%s: controller '%s', goal checker '%s'; %zu poses, %.2f m in '%s'%s, ending at (%.2f, %.2f, "
+    "%.2f) yaw %+.3f",
+    what, current_controller_.c_str(), current_goal_checker_.c_str(), path.poses.size(),
+    syncai_util::geometry_utils::calculate_path_length(path, 0), path.header.frame_id.c_str(),
+    pathHasHeight(path) ? " with heights" : "", end.position.x, end.position.y, end.position.z,
+    tf2::getYaw(end.orientation));
 }
 
 bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)

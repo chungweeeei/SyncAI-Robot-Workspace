@@ -342,11 +342,12 @@ clearance without a full footprint check.
 | `inflate_around_unknown` | `false` | |
 
 RPP 3D inverts this exact curve to recover a distance-to-obstacle for its cost
-regulator, so `cost_scaling_factor` and its `inflation_cost_scaling_factor` in
-`syncai_controller`'s params must be kept **the same value**; they are two ends
-of one equation (the regulator is off there today,
-`use_cost_regulated_linear_velocity_scaling: false`, but the pair still
-matches). MPPI's `CostCritic` reads the inflated costs directly. The planner's
+regulator, so `cost_scaling_factor` and RPP 3D's `inflation_cost_scaling_factor`
+must be kept **the same value**; they are two ends of one equation. The
+regulator is off today (`use_cost_regulated_linear_velocity_scaling: false`),
+so `syncai_controller`'s params no longer set it and it sits at its code
+default, 3.0 — which still matches; write it back there if the regulator is
+turned on with a different `cost_scaling_factor`. MPPI's `CostCritic` reads the inflated costs directly. The planner's
 global costmap has no inflation layer since 2026-10-28.
 
 ## Interfaces
