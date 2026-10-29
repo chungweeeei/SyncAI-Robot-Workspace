@@ -65,6 +65,9 @@ void MPPIController::initialize(
   // over to the other.
   getParam(approach_dist_, "approach_dist", 0.0);
   getParam(approach_rotate_min_angle_, "approach_rotate_min_angle", 0.25);
+  // Not upstream; see applyApproachScaling(). <= 0 disables it, and so does
+  // walk_vx_min <= 0: it scales down to that floor.
+  getParam(approach_velocity_scaling_dist_, "approach_velocity_scaling_dist", 0.0);
   // Not upstream; see rotateToPath(). rotate_to_path_min_angle <= 0 disables
   // it, and so does final_rotation_wz <= 0: it turns at that rate.
   getParam(rotate_to_path_min_angle_, "rotate_to_path_min_angle", 0.0);
@@ -90,6 +93,10 @@ void MPPIController::initialize(
 
   // Configure composed objects
   optimizer_.initialize(parent_, name_, costmap_ros_, parameters_handler_.get());
+  // The optimizer's own vx_max, which applyApproachScaling() scales down
+  // from. Static: ParametersHandler keeps one dynamic callback per name, the
+  // optimizer's, so a runtime change of vx_max would not reach this copy.
+  getParam(vx_max_, "vx_max", 0.5, ParameterType::Static);
   path_handler_.initialize(parent_, name_, costmap_ros_, tf_buffer_, parameters_handler_.get());
   collision_checker_.setCostmap(costmap_ros_->getCostmap());
   trajectory_visualizer_.on_configure(
@@ -192,6 +199,7 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
       return cmd;
     }
     applyWalkFloor(cmd.twist);
+    applyApproachScaling(cmd.twist);
     clampAcceleration(cmd.twist);
     applyTurnFloor(cmd.twist);
     last_cmd_vel_ = cmd.twist;
@@ -261,6 +269,52 @@ void MPPIController::applyWalkFloor(geometry_msgs::msg::Twist & cmd) const
   if (vx >= in_place_vx_max_ && vx < walk_vx_min_) {
     cmd.linear.x = std::copysign(walk_vx_min_, cmd.linear.x);
   }
+}
+
+void MPPIController::applyApproachScaling(geometry_msgs::msg::Twist & cmd) const
+{
+  // Not upstream (2026-10-29): MPPI does not slow down for the goal. On
+  // robot01 it entered xy_goal_tolerance (0.15) at 0.08-0.13 m from the goal
+  // and stopped 0.26-0.38 m past it -- the stateful goal checker had latched
+  // the position, so each goal still succeeded -- while the one approach that
+  // came in at walk_vx_min (the direct approach) stopped 0.08 m out. Inside
+  // GoalCritic's threshold_to_consider it is the main pull, and it scores
+  // the mean distance to the goal over the horizon, so arriving sooner always
+  // pays; the optimizer does not model max_linear_accel either, so it plans
+  // as if it could stop at once. It came in near vx_max, and the brake only
+  // started when rotateToGoalHeading() latched: 0.32 m from 0.80 at
+  // max_linear_accel, plus the gait's latency, with scale_fwd 1.40 on top.
+  //
+  // This is RPP's approach velocity scaling (FollowPathRPP3D's
+  // approach_velocity_scaling_dist / min_approach_linear_velocity): within
+  // approach_velocity_scaling_dist of the path's end, along the path, vx is
+  // capped at vx_max * remaining / approach_velocity_scaling_dist, never
+  // under walk_vx_min, so the robot reaches the tolerance at the walking
+  // floor -- ~0.045 m of braking at max_linear_accel. Linear in the distance,
+  // the deceleration it asks for is vx_max / approach_velocity_scaling_dist
+  // x vx: at most max_linear_accel when the two ratios match (0.80 / 0.8),
+  // so the clamp after this does not bite and the ramp down is the cap's.
+  //
+  // A cap only, never a raise: a slower optimizer output (a blocker, a turn)
+  // is left as it is. wz is scaled with vx so the command keeps the arc the
+  // optimizer chose -- the curvature its rollouts were scored on -- rather
+  // than turning harder at the lower speed. Applied after the walking floor
+  // (the cap is never under it, so it cannot drop a walk into the band the
+  // floor exists for) and before the clamp, like it. The optimizer is not
+  // told, as with the clamp: its next cycle starts from measured speed.
+  if (approach_velocity_scaling_dist_ <= 0.0 || walk_vx_min_ <= 0.0 || !goal_path_dist_) {
+    return;
+  }
+  const double vx = std::fabs(cmd.linear.x);
+  const double cap =
+    std::max(walk_vx_min_, vx_max_ * *goal_path_dist_ / approach_velocity_scaling_dist_);
+  if (vx <= cap) {
+    return;
+  }
+  const double scale = cap / vx;
+  cmd.linear.x *= scale;
+  cmd.linear.y *= scale;
+  cmd.angular.z *= scale;
 }
 
 void MPPIController::applyTurnFloor(geometry_msgs::msg::Twist & cmd) const
@@ -366,6 +420,22 @@ bool MPPIController::rotateToGoalHeading(
   double vx = 0.0;
   double wz = 0.0;
   rotateInPlace(angle, vx, wz);
+  // Stop first, then turn (2026-10-29). rotateInPlace() ramps vx down and wz
+  // up in the same cycles, so a robot that came into the tolerance at speed
+  // swept out of it on an arc while still braking: on robot01 wz was already
+  // at final_rotation_wz during the 0.2-0.3 m it slid past the goal, and the
+  // yaw it stopped at sat on the edge of yaw_goal_tolerance. Until the
+  // commanded vx is under in_place_vx_max -- "in place", as applyTurnFloor()
+  // reads it -- wz ramps to 0 instead. Here and not in rotateInPlace(): stair
+  // mode sets vx itself after calling it, and the direct approach's turn
+  // starts from walk_vx_min at most, a stop of a few centimetres.
+  if (std::fabs(vx) >= in_place_vx_max_) {
+    wz = 0.0;
+    if (max_angular_accel_ > 0.0) {
+      const double dw = max_angular_accel_ * control_duration_;
+      wz = std::clamp(0.0, last_cmd_vel_.angular.z - dw, last_cmd_vel_.angular.z + dw);
+    }
+  }
 
   cmd = utils::toTwistStamped(vx, wz, robot_pose.header.stamp, costmap_ros_->getBaseFrameID());
   return true;
@@ -1146,6 +1216,22 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
 
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
   nav_msgs::msg::Path transformed_plan = path_handler_.transformPath(robot_pose);
+
+  // For applyApproachScaling(): planar, because the local path's heights are
+  // zeroed in this frame anyway, and from the path's pose nearest the robot,
+  // where transformPath() starts it. Only with the end in view: a path cut at
+  // the costmap's edge or at prune_distance is longer than anything the
+  // scaling acts on.
+  goal_path_dist_.reset();
+  if (path_handler_.transformedGoal()) {
+    double dist = 0.0;
+    for (size_t i = 1; i < transformed_plan.poses.size(); ++i) {
+      dist += std::hypot(
+        transformed_plan.poses[i].pose.position.x - transformed_plan.poses[i - 1].pose.position.x,
+        transformed_plan.poses[i].pose.position.y - transformed_plan.poses[i - 1].pose.position.y);
+    }
+    goal_path_dist_ = dist;
+  }
 
   syncai_costmap::Costmap * costmap = costmap_ros_->getCostmap();
   std::unique_lock<syncai_costmap::Costmap::mutex_t> costmap_lock(*(costmap->getMutex()));

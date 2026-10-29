@@ -145,7 +145,21 @@
       # controller log, is still this value. It is also MPPI
       # GoalAngleCritic's threshold_to_consider below, and where
       # approach_dist's walk ends: change them together.
-      xy_goal_tolerance: 0.15
+      # Lowered 0.15 -> 0.10 (2026-10-29), together with FollowPath's
+      # approach_velocity_scaling_dist. On robot01 MPPI entered 0.15 at
+      # 0.08-0.13 m from the goal near vx_max and slid on to stop 0.26 /
+      # 0.30 / 0.38 m from it ("Within ... of the goal", then "Reached the
+      # goal: X m") -- succeeded, because stateful latched the position --
+      # while the one approach that came in at the 0.30 walking floor (the
+      # direct approach) stopped 0.08 m out. With the approach scaling every
+      # goal comes in at the floor: ~0.045 m of braking at max_linear_accel
+      # plus the gait's latency, ~0.1 m, which a 0.10 window starting the
+      # brake holds within a few centimetres of the goal. Not 0.05: at the
+      # floor one control cycle is 1.5 cm and the stop ~0.1 m, the reason this
+      # was widened from 0.05 in the first place. Estimated, not measured
+      # (latency and the real speed under scale_fwd 1.40 are unmeasured): if
+      # "Reached the goal" is not steadily under 0.10, revisit both.
+      xy_goal_tolerance: 0.10
       # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
       # not turn below ~0.3 rad/s (MPPI's -0.115 rad/s left odom at zero), so
       # the final rotation cannot slow into a narrow window: a command that
@@ -298,6 +312,21 @@
       # bearing runs a wider arc than the one through the goal point (a few
       # mm wide at 0.25 rad and 0.2 m, well inside xy_goal_tolerance).
       approach_rotate_min_angle: 0.25
+      # Not upstream: approach velocity scaling (2026-10-29), RPP 3D's
+      # approach_velocity_scaling_dist. Within this distance of the path's
+      # end, along the path, the optimizer's vx is capped at
+      # vx_max * remaining / this, never under walk_vx_min (wz scaled with
+      # it, so the arc is kept). MPPI does not slow for the goal by itself
+      # (GoalCritic pays arriving sooner, and the optimizer plans as if it
+      # could stop at once): on robot01 it entered xy_goal_tolerance near
+      # vx_max and stopped 0.26-0.38 m past the goal (see goal_checker). 0.8,
+      # not RPP 3D's 0.6, because the deceleration this asks for is
+      # vx_max / this x vx: 1.0 m/s^2 at 0.80 m/s, max_linear_accel exactly,
+      # where 0.6 asks 1.07 and the clamp would cut it short -- before the
+      # gait's latency. Reaches the floor 0.3 m out, so the last ~0.2 m to
+      # the tolerance are walked at 0.30. Change it with vx_max or
+      # max_linear_accel. Needs walk_vx_min on; 0 disables it.
+      approach_velocity_scaling_dist: 0.8
       # Not upstream: the turn onto a new path (2026-10-20). From a stand
       # (commanded |vx| under in_place_vx_max), once per path, a robot more
       # than rotate_to_path_min_angle off the bearing of the first pose
@@ -497,7 +526,8 @@
         cost_weight: 5.0
         threshold_to_consider: 1.4
       # threshold_to_consider equals goal_checker.xy_goal_tolerance on purpose
-      # (lowered 0.5 -> 0.3 -> 0.15, 2026-10-14), so the robot turns to the goal
+      # (lowered 0.5 -> 0.3 -> 0.15, 2026-10-14; 0.15 -> 0.10 with it,
+      # 2026-10-29), so the robot turns to the goal
       # heading only once the position is already accepted (stateful: true
       # latches it). At 0.5 it started turning while still short; on robot01
       # it stopped 0.29 m out facing the goal yaw, with the goal ~158 deg
@@ -512,7 +542,7 @@
         enabled: true
         cost_power: 1
         cost_weight: 3.0
-        threshold_to_consider: 0.15
+        threshold_to_consider: 0.10
       PreferForwardCritic:
         enabled: true
         cost_power: 1

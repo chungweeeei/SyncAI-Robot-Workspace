@@ -35,7 +35,7 @@
   navigator swaps {goal}, GlobalUpdatedGoal fires) recomputes the staging
   pose before the replan; computed once at the top it would be stale for the
   rest of the goal. The SimpleGoalChecker ends the leg within
-  xy_goal_tolerance (0.15 m) and yaw_goal_tolerance (0.2 rad) of the staging
+  xy_goal_tolerance (0.10 m) and yaw_goal_tolerance (0.2 rad) of the staging
   pose; that residual is the docking controller's starting error.
 
   How the gait switch is checked (2026-10-14): MPC is SetMotionKey key="5"
