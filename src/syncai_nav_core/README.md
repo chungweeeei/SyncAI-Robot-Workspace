@@ -74,7 +74,7 @@ is what produced the cmd_vel sawtooth on every replan.
 **`PlannerException`** — a single `std::runtime_error` subclass. Despite the
 name it is thrown from the **controller** side: `ControllerServer` uses it for
 "Failed to obtain robot pose" / "Failed to make progress" / "Controller patience
-exceeded", and RPP for "collision ahead!" and its transform failures.
+exceeded", and RPP for "collision ahead: …" and its transform failures.
 `PlannerServer` does not throw it at all. nav2 splits these into a hierarchy of
 `PlannerException` / `ControllerException` subtypes; this port kept one.
 

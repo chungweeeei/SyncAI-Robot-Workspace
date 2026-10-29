@@ -57,6 +57,7 @@ protected:
     const geometry_msgs::msg::Pose2D &);
 
   rclcpp::Clock::SharedPtr clock_;
+  rclcpp::Logger logger_{rclcpp::get_logger("SimpleProgressChecker")};
 
   double radius_;
   rclcpp::Duration time_allowance_{0, 0};

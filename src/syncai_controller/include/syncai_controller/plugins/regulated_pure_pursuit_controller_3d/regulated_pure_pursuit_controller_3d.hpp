@@ -289,8 +289,9 @@ protected:
   // Point-LIO twist carries the quadruped's per-gait body sway (±0.2~0.5 m/s),
   // which fed back through the clamp caused the cmd_vel to oscillate sign.
   // Clamping against our own previous command keeps the command trajectory
-  // kinematically feasible without coupling to gait noise. Reset to zero on
-  // setPlan() so each new goal ramps up from a standstill.
+  // kinematically feasible without coupling to gait noise. Reset to zero by
+  // reset() (once per goal, not on setPlan()) so each new goal ramps up from
+  // a standstill.
   geometry_msgs::msg::Twist last_cmd_vel_;
   double max_robot_pose_search_dist_;
   bool use_interpolation_;
@@ -345,6 +346,11 @@ protected:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr carrot_arc_pub_;
   std::unique_ptr<syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *>>
     collision_checker_;
+  // Where isCollisionImminent() last found LETHAL under the footprint, in
+  // metres along the projected arc (0 = where the robot stands now), for the
+  // exception message: "collision ahead" alone does not say whether the robot
+  // is already touching something or will be in a metre.
+  double collision_dist_{0.0};
 
   // Dynamic parameters handler
   std::mutex mutex_;

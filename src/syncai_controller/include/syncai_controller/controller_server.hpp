@@ -210,6 +210,14 @@ protected:
   void updateGlobalPath();
 
   /**
+   * @brief One INFO line describing a path just handed to the controller (a
+   * new goal or a replan): plugins, length, frame, heights, end pose.
+   * @param what Prefix naming the occasion
+   * @param path The path, non-empty (setPlannerPath() has checked it)
+   */
+  void logPath(const char * what, const nav_msgs::msg::Path & path);
+
+  /**
    * @brief Calls velocity publisher to publish the velocity on "cmd_vel" topic
    * @param velocity Twist velocity to be published
    */
@@ -346,7 +354,7 @@ protected:
 
   // DockToPose: the plugin ids an empty controller_id / goal_checker_id
   // resolve to (findControllerId("") only falls back when exactly one plugin
-  // is loaded, and three are), and the approach timeout a goal with
+  // is loaded, and four are), and the approach timeout a goal with
   // timeout <= 0 gets.
   std::string default_dock_controller_id_;
   std::string default_dock_goal_checker_id_;

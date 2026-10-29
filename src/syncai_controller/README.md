@@ -103,8 +103,7 @@ registers against.
 
 `computeControl()` runs on the `SimpleActionServer`'s own spin thread (the
 server is created with `spin_thread=true`), so the blocking loop below never
-starves the node's main executor, which handles odom, speed-limit and parameter
-callbacks.
+starves the node's main executor, which handles odom and parameter callbacks.
 
 ```
 findControllerId / findGoalCheckerId    ← from the goal, or the sole plugin if unset
@@ -165,6 +164,27 @@ checker's "Failed to make progress", which is meant to end the goal.
 **`publishVelocity` skips publishing when nothing is subscribed** to `cmd_vel` —
 worth knowing when debugging with `ros2 topic echo`, since attaching the echo
 changes whether messages are sent at all.
+
+### Reading the log after a failed goal
+
+Every way out of a goal, and every way a goal can stall without ending, has a
+line that says why, with the numbers that decided it. In order of appearance:
+
+| Line | Level | What it tells you |
+|---|---|---|
+| `FollowPath goal: …` / `FollowPath replan: …` | INFO | What the controller was handed: controller, goal checker, pose count, length, frame, `with heights` (3D matching on), end pose. Read every later line against the last of these |
+| `Waiting N s for the local costmap to be current …` | WARN, 2 s | The loop is held before the controller runs: a costmap layer has no fresh data (on this stack, `pointlio/body_cloud`). Nothing is commanded while it lasts — see "Gotchas" |
+| `Robot pose (… in …) unavailable: commanding zero, N s …` | WARN, 1 s | `odom → base_link` missing; the TF helper's own ERROR above it has the TF reason |
+| `Controller 'X' failed: <reason> -- commanding zero, N s …` | WARN, 1 s | The plugin refused this cycle (MPPI's optimizer, RPP's collision with distance and (v, w), a stair refusal); `N` against `failure_tolerance` is how close the goal is to aborting |
+| `N m from the end pose but on another level: ground z … vs end pose z …` | WARN, 2 s | A path with heights whose end is within 1 m in x / y but not within `goal_z_tolerance` in z: the robot is on the goal and the goal is not reached (`lidar_height`, LIO z drift, or the wrong floor) |
+| `Goal not checked: cannot transform the end pose …` | WARN, 5 s | The goal check skipped for want of TF |
+| `[progress_checker] No progress: the robot stayed within R m of (x, y) for N s …` | ERROR | The progress checker's abort, with where and how long; the cause is in the controller's lines before it |
+| `FollowPath aborted (controller 'X'): <reason>` / `dock_to_pose aborted …` | ERROR | The goal's end. `Controller patience exceeded: … last error: …` repeats the error that ran the window out, so the throttled WARNs above never hide it |
+| `Reached the goal: d m and θ rad from the end pose` | INFO | Success, with the residual the goal checker accepted |
+
+The WARNs are throttled (period in the table) because each fires every 50 ms
+cycle while its condition lasts; the abort repeats the deciding error in full.
+The dock loop logs its approach once a second on its own (see "The dock loop").
 
 ### Goal checking is gated on path progress
 
@@ -365,7 +385,7 @@ variant scales `v` down for three reasons before that. Each control cycle:
    `ω = v · curvature` from the clamped `v` so the tracked arc keeps its shape.
 6. **Forward-simulate the resulting arc** on the costmap
    (`isCollisionImminent`) up to `max_allowed_time_to_collision_up_to_carrot`; a
-   predicted footprint collision throws `PlannerException("…collision ahead!")`.
+   predicted footprint collision throws `PlannerException("…collision ahead: …")`.
 
 Any throw out of that cycle — this one, or a transform failure further up —
 leaves the accel-clamp baseline at zero, because nothing was commanded; see
@@ -781,7 +801,7 @@ Server-level (`/**/controller_server`):
 | `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
-| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead!", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) — then on a 2D global costmap that updated at 1 Hz out of phase with it, on `Octo3D`'s dynamic overlay since 2026-10-21 — up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and while `is_path_valid` ran RPP's own footprint test on the 2D costmap (until 2026-10-28) a refused path was replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
+| `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) — then on a 2D global costmap that updated at 1 Hz out of phase with it, on `Octo3D`'s dynamic overlay since 2026-10-21 — up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and while `is_path_valid` ran RPP's own footprint test on the 2D costmap (until 2026-10-28) a refused path was replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
 | `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
@@ -922,6 +942,12 @@ ros2 topic echo /<robot_id>/docking_plan         # the approach the console draw
 
 ## Gotchas
 
+- **The wait for a current costmap publishes nothing.** `computeControl()`
+  spins until `costmap_ros_->isCurrent()` with no command, no zero and no
+  timeout, and `driver_manager` has no `cmd_vel` watchdog, so a sensor that
+  stops mid-drive leaves the gait on the last command until the costmap
+  recovers or the BT cancels the goal. It is logged ("Waiting N s for the local
+  costmap …") but not stopped — an open safety question, not a decision.
 - **Nothing smooths `cmd_vel`.** `max_linear_accel` / `max_angular_accel` are the
   only thing between the controller and the gait controller. Raising
   `desired_linear_vel` without checking them gives a step command.

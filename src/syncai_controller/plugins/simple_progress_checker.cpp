@@ -47,6 +47,7 @@ void SimpleProgressChecker::initialize(
   const auto & node = parent;
 
   clock_ = node->get_clock();
+  logger_ = node->get_logger();
 
   syncai_util::declare_parameter_if_not_declared(
     node, plugin_name + ".required_movement_radius", rclcpp::ParameterValue(0.5));
@@ -76,7 +77,21 @@ bool SimpleProgressChecker::check(geometry_msgs::msg::PoseStamped & current_pose
     resetBaselinePose(current_pose2d);
     return true;
   }
-  return !((clock_->now() - baseline_time_) > time_allowance_);
+  if ((clock_->now() - baseline_time_) <= time_allowance_) {
+    return true;
+  }
+  // The server aborts the goal on this, so it is said once, with what
+  // decided it: where the robot has been held and for how long. The cause
+  // (a blocker, a stair hold, a controller commanding under the gait's
+  // floor) is in the controller's lines before it.
+  RCLCPP_ERROR(
+    logger_,
+    "[%s] No progress: the robot stayed within %.2f m (required_movement_radius) of (%.2f, %.2f) "
+    "for %.1f s (movement_time_allowance %.1f s); now %.2f m from there",
+    plugin_name_.c_str(), radius_, baseline_pose_.x, baseline_pose_.y,
+    (clock_->now() - baseline_time_).seconds(), time_allowance_.seconds(),
+    pose_distance(current_pose2d, baseline_pose_));
+  return false;
 }
 
 void SimpleProgressChecker::reset()

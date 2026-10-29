@@ -1,17 +1,12 @@
 # Parameters for the syncai_controller "controller_server" node and its
-# internal local costmap node — 3D (Point-LIO) real-robot variant of
-# controller_server_params.yaml:
-#   * use_sim_time false (no /clock on the real robot)
-#   * local costmap gets a second observation source from Point-LIO's body
-#     cloud, since the 3D stack runs no scan merger (there is no
-#     /<robot_id>/scan on the real robot — the scan source below stays for
-#     setups that do publish one, it just receives nothing otherwise).
+# internal local costmap node. use_sim_time is false: there is no /clock on
+# the real robot.
 # The /**/ wildcard keys match the node names in any namespace, so the same
 # file works for any robot_id: the launch file reads robot_id from
 # config/system.ini and uses it as the node namespace. Topic values below are
 # RELATIVE names — they get the namespace prefix automatically. TF frame names
 # are NOT namespaced by ROS, so the launch file overrides global_frame /
-# robot_base_frame / sensor_frame with the <robot_id>/ prefix at launch time.
+# robot_base_frame / body_frame with the <robot_id>/ prefix at launch time.
 /**/controller_server:
   ros__parameters:
     use_sim_time: false
@@ -27,11 +22,10 @@
     # velocity, so the robot brakes and waits rather than coasting. Raised
     # 0.3 -> 3.0 so a blocked path re-routes instead of aborting. The detour
     # comes from the BT's 1 Hz IsPathValid check and the replan it triggers
-    # (move.xml RateController) on the global costmap, which itself updates
-    # at 1 Hz and is not in phase with it, so a blocker that appears inside
-    # RPP's ~0.6 m collision projection takes up to ~2.2-2.5 s (<= 1 s to be
-    # marked, <= 1 s to the next check, Smac's search, one BT tick and one
-    # control cycle) to turn into a new path. At 0.3 the FollowPath action aborted first; its RecoveryNode then
+    # (move.xml), so a blocker that appears inside RPP's ~0.6 m collision
+    # projection takes up to ~2.2-2.5 s (<= 1 s to be marked, <= 1 s to the
+    # next check, the planner's search, one BT tick and one control cycle) to
+    # turn into a new path. At 0.3 the FollowPath action aborted first; its RecoveryNode then
     # cleared the local costmap and re-sent the *same* old path (the
     # blackboard path had not changed yet), RPP refused again, and
     # PipelineSequence failed the whole NavigateToPose in ~0.6-1 s -- before
@@ -478,12 +472,11 @@
       # Same reach as RPP's max_robot_pose_search_dist: a path that loops back
       # near itself must not snap to its later leg.
       max_robot_pose_search_dist: 10.0
-      # Off: candidates are 1000 x 40 markers a cycle. local_plan (the optimal
-      # trajectory, not upstream) is published regardless.
+      # Off: candidates are 1000 x 32 markers a cycle. local_plan (the optimal
+      # trajectory, not upstream) is published regardless. The marker
+      # subsampling (TrajectoryVisualizer.trajectory_step / time_step) is
+      # left at its code defaults, 5 / 3: it only matters with this on.
       visualize: false
-      TrajectoryVisualizer:
-        trajectory_step: 5
-        time_step: 3
       # No VelocityDeadbandCritic (deleted from the port, 2026-10-28), although
       # the gait controller has a floor
       # (~0.3 m/s, see goal_checker): it penalises |v| below the band *including
@@ -668,6 +661,11 @@
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
+      # Off, and kept written out because the code default is true. Its three
+      # knobs (cost_scaling_dist 0.6, cost_scaling_gain 1.0,
+      # inflation_cost_scaling_factor 3.0 = the inflation layer's
+      # cost_scaling_factor) are left at their code defaults, which are those
+      # values; set them here again if this is turned on.
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.9
       # Raised to 0.3 to keep the robot from crawling while tracking a path.
@@ -705,9 +703,6 @@
       max_linear_accel: 1.0
       allow_reversing: false
       use_interpolation: true
-      cost_scaling_dist: 0.6
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 3.0
       max_robot_pose_search_dist: 10.0
 
       # Stair mode (2026-10; README "Stairs"; the same block under FollowPath
@@ -888,7 +883,9 @@
     # by itself when the target is behind the robot -- the staging pose sits
     # 1 m behind with the robot's own yaw, so it backs out straight; an
     # overshoot puts the target ahead and the law drives forward to fix it.
-    # Everything not repeated here is the Docking value.
+    # A parameter not set here takes the plugin's code default, NOT the
+    # Docking block's value -- the two instances are separate parameter
+    # namespaces (publish_docking_plan, for one, is off by default).
     Undocking:
       plugin: "syncai_controller::DockingController"
       k_phi: 3.0
@@ -912,8 +909,8 @@
       # Off, by the upstream rule: an initial rotation turns the nose toward
       # a target that is meant to stay behind. Also the point of backing out
       # rather than turning on the dock -- no in-place turn on the contacts.
+      # (initial_rotation_min_angle is not set: it is read only with this on.)
       initial_rotation: false
-      initial_rotation_min_angle: 0.75
       # On: end facing the dock (the staging pose's yaw), so the MOVE that
       # follows starts from a known heading.
       final_rotation: true
@@ -937,10 +934,11 @@
     publish_frequency: 2.0
 
     # Fixed-size rolling window centered on the robot. 3 -> 4 m for MPPI
-    # (2026-10): its 2.0 s horizon (1.2 m at full speed) plus the footprint
-    # has to fit inside the 2 m half-width, because a rolled-out footprint
-    # crossing the costmap edge reads as LETHAL in MPPI's CostCritic. Still inside the sensors'
-    # obstacle_max_range (2.5 m), so the extra ring is observed, not blank.
+    # (2026-10): its horizon (1.28 m at vx_max, see time_steps) plus the
+    # footprint has to fit inside the 2 m half-width, because a rolled-out
+    # footprint crossing the costmap edge reads as LETHAL in MPPI's
+    # CostCritic. Still inside terrain_layer's max_range (3.0 m), so the
+    # extra ring is observed, not blank.
     rolling_window: true
     width: 4
     height: 4
