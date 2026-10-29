@@ -244,6 +244,21 @@ the map to localize against (`[map] name`), the initial pose, and the lidar's IP
 and model (`[sensor.lidar] type: mid360 | mid360s` — a wrong model yields no
 point cloud and no error).
 
+**First deployment, no map yet:** leave `name:` empty and keep the `pcd:` line
+as it is:
+
+```ini
+[map]
+name:
+pcd: map/%(name)s/map.pcd
+```
+
+AUTO comes up anyway: the localizer holds an identity `map` frame (so the
+console shows the live scan and the robot on an empty map) and the planner
+fails every goal `map_not_loaded`. Switch to MANUAL, map the site and save it,
+wait for `clean_map` to write `octomap.bt`, then switch maps from the console
+— that writes `name:` and loads the map into the running AUTO session.
+
 ### 3. Start the containers
 
 ```bash

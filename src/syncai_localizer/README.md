@@ -87,7 +87,7 @@ silence.
 | Output | Type / QoS | Notes |
 |---|---|---|
 | TF `map → local_frame` | `<robot_id>/pointlio_odom` | Rebroadcast from a 10 ms timer on every tick, re-solved at most `update_hz` and only when the motion gate says so. `local_frame` is **adopted from the first odom message**; until then it is the launch's `<robot_id>/pointlio_odom`, the same name. |
-| `map_cloud` | `PointCloud2`, depth 1, TRANSIENT_LOCAL | The refine-resolution map, published once per `loadMap` (construction, `relocalize`, the `initialpose` fallback). For rviz; set the display's durability to Transient Local. |
+| `map_cloud` | `PointCloud2`, depth 1, TRANSIENT_LOCAL | The refine-resolution map, published once per `loadMap` (construction, `relocalize`, the `initialpose` fallback); an **empty** cloud when the node starts with no map. For rviz; set the display's durability to Transient Local. |
 | `auto_localize` | `syncai_common/srv/AutoLocalize` | Kidnap recovery, no hint. **Blocks** until a pose is found *and* the timer has registered against it, or fails with localization unchanged. See below. |
 | `reset_odometry` | `syncai_common/srv/ResetOdometry` | Zero the odometry, keep the map pose: calls `pointlio/reset` and re-seeds the new run — or, with `skip_seed`, runs `auto_localize`'s search on it (the backend's `POST /api/v1/localization/auto`). **Blocks**, robot **stationary**. See below. |
 | `relocalize_check` | `syncai_common/srv/IsValid` | `code: 1` always answers `valid: true` (liveness); anything else answers whether the first registration after the last guess converged. **The stack's only localization-quality signal.** |
@@ -450,7 +450,7 @@ throwing. The launch layers the instance values on top.
 | `cloud_topic` / `odom_topic` | `/pointlio/body_cloud` / `/pointlio/lio_odom` | `/<robot_id>/pointlio/…` | Absolute, into pointlio's namespace |
 | `map_frame` | `map` | | Never namespaced |
 | `local_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | Replaced by the first odom's `frame_id`, but the 10 ms timer broadcasts `map → local_frame` before that, so the launch sets the same name pointlio broadcasts. The YAML said `laser` until 2026-10, and that unprefixed frame was on TF until pointlio's first message |
-| `map_path` | `""` | `[map] pcd`, made absolute | Loaded in the constructor. Empty → the node runs but cannot localize until `relocalize` |
+| `map_path` | `""` | `[map] pcd`, made absolute; `""` when `[map] name` is empty or the file is missing | Loaded in the constructor. Empty → identity TF, empty `map_cloud`, no registration until `relocalize` |
 | `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from the last pose file, else `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
 | `initial_pose.{use_ground_z,ground_z}` | `false`, `0.0` | from the last pose file only | The boot guess's storey |
 | `last_pose.{file,save_interval,min_move,min_rot}` | `""`, `5.0` s, `0.05` m, `0.035` rad | `file` = `config/state/<robot_id>/last_pose.json` | The last pose file's path and write throttle |
@@ -516,7 +516,8 @@ ros2 launch syncai_localizer localizer.launch.py system_config:=/path/to/robot.i
 against *two directories above the INI*, because on the robot the INI is
 `config/system.ini` and that is the workspace root. Pointing the argument at
 `config/instances/robot.ini` therefore looks for `config/map/<name>/map.pcd`
-and starts nothing (`[map] pcd '…/config/map/dp2f/map.pcd' does not exist`).
+and starts with no map (`[map] pcd '…/config/map/dp2f/map.pcd' does not exist;
+starting the localizer with no map …`).
 For a bare run, use an INI whose `pcd` is absolute, or one that sits at
 `<workspace>/config/`.
 
@@ -524,11 +525,21 @@ The nav session (`config/sessions/start_nav.yaml`) runs it as the second pane
 of the `localization` window, after `syncai_pointlio` (map_server has its own
 window ahead of them since 2026-09-30), logging
 to `log/stack/<robot_id>/localizer/`. It is deliberately **absent** from the
-mapping session, and could not be present anyway: **the launch starts nothing
-when `[map] pcd` is missing or absent on disk** (`nothing to launch` in the
-log). That is intentional — the node loads the map in its constructor and a
-localizer with no map fails every call silently — so do not make it start
-anyway. Launching this alone starts no LIO; run `syncai_pointlio` first.
+mapping session (pgo_node owns `map → <robot_id>/pointlio_odom` there).
+
+**No map is a state, not a failure** (since 2026-10-29). With `[map] name:`
+left empty — how a robot with no map yet is configured, i.e. every first
+deployment — or a `[map] pcd` absent on disk, the launch still starts the node,
+with `map_path: ""` and no boot guess, and warns which of the two it was. The
+node then broadcasts the identity `map → <robot_id>/pointlio_odom` (as pgo_node
+does while IDLE), latches an **empty** `map_cloud`, and skips registration
+rounds rather than failing one at 5 Hz into a `lost_backoff` warning;
+`initialpose` is dropped, and `relocalize` loads a map without a restart, which
+is what the backend's map switch does. Until 2026-10-29 the launch started
+nothing here, which left a robot with no map with no `map` frame at all:
+lio_bridge had no `map → odom` and the console's 3D view could place neither
+the live scan nor the robot. Launching this alone starts no LIO; run
+`syncai_pointlio` first.
 
 ```bash
 # coarse pose in the map frame, radians; loads the PCD again as a side effect
@@ -571,6 +582,7 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 |---|---|
 | `params: cloud_topic=/robot01/pointlio/body_cloud …` | The overrides landed; `/pointlio/…` here means the launch was bypassed |
 | `map preloaded from …` | Constructor `loadMap` succeeded; `map_cloud` was published |
+| `map_path is empty: starting with no map — the identity map -> … is broadcast …` | No map configured (`[map] name:` empty, or its `map.pcd` missing — the launch's warning says which); an empty `map_cloud` was latched |
 | `initial pose from config: … (applied on first odom)` | `[initial_pose]` was read; `guess from config applied` follows on the first odom |
 | `guess from initialpose applied: … (roll/pitch/z from current estimate)` | An `initialpose` went through `applyPlanarGuess` |
 | `guess from initialpose applied: … (z from the given ground, …)` | The same, with a marked z: the storey came from the sender |

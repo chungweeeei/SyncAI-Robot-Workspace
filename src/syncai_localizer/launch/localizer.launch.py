@@ -40,8 +40,12 @@
 # timer broadcasts map -> local_frame from startup, so until then the value is
 # what lands on TF.
 #
-# The [map] pcd from the same INI is mandatory: the localizer loads it during
-# construction, so a missing file means the node is not started at all. The
+# The [map] pcd from the same INI is loaded during construction when it
+# exists. When it does not -- `[map] name:` left empty, which is how a robot
+# with no map yet is configured (first deployment), or a name whose directory
+# is gone -- the node is started anyway with an empty map_path: it broadcasts
+# an identity map -> local_frame, latches an empty map_cloud, and waits for the
+# backend's map switch to load one through `relocalize` (see launch_setup). The
 # optional [initial_pose] section (the one the retired syncai_amcl read too)
 # becomes the localizer's boot guess, so a robot standing at its known start
 # pose localizes itself without a relocalize call. Since 2026-10-23 the last
@@ -107,6 +111,18 @@ def read_map_pcd(config_path: str) -> str:
         return pcd
     workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
     return os.path.join(workspace_root, pcd)
+
+
+def read_map_name(config_path: str) -> str:
+    """[map] name from the INI, "" when it is absent or left empty.
+
+    Read on its own because an empty name still interpolates [map] pcd into a
+    non-empty `map//map.pcd`, which would be reported as a missing file rather
+    than as what it is: no map configured."""
+    config = configparser.ConfigParser()
+    if not config.read(config_path):
+        return ""
+    return config.get("map", "name", fallback="").strip()
 
 
 def read_initial_pose(config_path: str):
@@ -222,7 +238,7 @@ def localizer_overrides(
     world_frame). The node adopts the frame_id of the first odom message, but
     broadcasts map -> local_frame from startup; without the override that was
     the YAML's unprefixed placeholder until pointlio's first message. map_pcd is
-    already absolute and verified to exist (see launch_setup); initial_pose is
+    absolute and verified to exist, or "" for no map (see launch_setup); initial_pose is
     read_last_pose()'s or read_initial_pose()'s dict, or None to leave
     set_initial_pose at the params-file default (false). last_pose_file is
     where the node keeps the pose for the next start, whichever source this
@@ -243,31 +259,51 @@ def launch_setup(context, *args, **kwargs):
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
 
-    # The map is a hard requirement: the localizer calls loadMap during
-    # construction (see loadInitialMap in localizer_node.cpp), and without a map
-    # the whole 3D localization chain can do nothing. So when the file is missing
-    # no node is started at all (equivalent to returning an empty
-    # LaunchDescription) — easier to diagnose than a localizer that comes up and
-    # then fails every relocalize / initialpose. This is also what keeps the
-    # mapping session honest: start_mapping.yaml lists the localizer among the
-    # nodes deliberately absent there, and this check is why it *could* not be
-    # present anyway. The check lives here rather than in
+    # No map is a valid state, not a reason to start nothing. Until 2026-10-29
+    # a missing [map] pcd returned an empty LaunchDescription, which left a
+    # robot with no map yet -- every first deployment -- with no
+    # map -> <robot_id>/pointlio_odom at all: lio_bridge had no map -> odom and
+    # the console's 3D view, which lives in the map frame, could place neither
+    # the live scan nor the robot. The node itself has always handled an empty
+    # map_path (loadInitialMap() logs and returns): it broadcasts the identity
+    # offset, the way pgo_node does while IDLE, latches an empty map_cloud, and
+    # loads a map on the backend's map switch (`relocalize`) without a session
+    # restart. The mapping session is unaffected: start_mapping.yaml does not
+    # run this launch. The check lives here rather than in
     # generate_launch_description() because the INI path comes from the
     # system_config launch argument, whose value can only be resolved inside the
     # context.
+    map_name = read_map_name(config_path)
     map_pcd = read_map_pcd(config_path)
-    if not map_pcd:
-        logger.error(f"No [map] pcd in '{config_path}'; nothing to launch")
-        return []
-    if not os.path.isfile(map_pcd):
-        logger.error(f"[map] pcd '{map_pcd}' does not exist; nothing to launch")
-        return []
+    if not map_name:
+        logger.warning(
+            f"No [map] name in '{config_path}'; starting the localizer with no map "
+            "(identity map -> odom, empty map_cloud) until a map switch loads one"
+        )
+        map_pcd = ""
+    elif not map_pcd:
+        logger.warning(
+            f"[map] name '{map_name}' but no [map] pcd in '{config_path}'; starting "
+            "the localizer with no map until a map switch loads one"
+        )
+    elif not os.path.isfile(map_pcd):
+        logger.warning(
+            f"[map] pcd '{map_pcd}' (map '{map_name}') does not exist; starting the "
+            "localizer with no map until a map switch loads one"
+        )
+        map_pcd = ""
 
     # The last pose file first, the INI's [initial_pose] when there is none for
     # this map: the robot was last seen at the former, the latter is wherever
-    # someone last wrote it (2026-10-23; see read_last_pose).
+    # someone last wrote it (2026-10-23; see read_last_pose). Neither with no
+    # map: there is nothing to apply a guess to, and the node would only log
+    # that it skipped it.
     last_pose_file = last_pose_path(config_path, robot_id)
-    initial_pose = read_last_pose(last_pose_file, map_pcd) or read_initial_pose(config_path)
+    initial_pose = None
+    if map_pcd:
+        initial_pose = read_last_pose(last_pose_file, map_pcd) or read_initial_pose(
+            config_path
+        )
 
     # `name=` is fine here, unlike the planner / controller launches: this
     # process hosts exactly one node, so there is no second node to be remapped
