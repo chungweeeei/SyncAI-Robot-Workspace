@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
@@ -118,6 +119,14 @@ protected:
     * @param cmd Optimizer output to adjust in place, before the clamp
     */
   void applyWalkFloor(geometry_msgs::msg::Twist & cmd) const;
+
+  /**
+    * @brief Cap the optimizer's forward speed by the distance left along the
+    * path to its end (RPP's approach velocity scaling), arc kept
+    * @param cmd Optimizer output to adjust in place, after the walking floor
+    * and before the clamp
+    */
+  void applyApproachScaling(geometry_msgs::msg::Twist & cmd) const;
 
   /**
     * @brief Raise an in-place turn under the gait's turn floor to the floor
@@ -270,6 +279,13 @@ protected:
   bool rotating_to_goal_{false};
   double approach_dist_{0.0};
   double approach_rotate_min_angle_{0.25};
+  // applyApproachScaling(): the distance it starts at, the optimizer's own
+  // vx_max it scales down from, and the distance along the path to its end as
+  // of the cycle's transformPath() -- nullopt while the path in view stops
+  // short of the end (PathHandler::transformedGoal()).
+  double approach_velocity_scaling_dist_{0.0};
+  double vx_max_{0.0};
+  std::optional<double> goal_path_dist_;
   // Set when the optimizer first asks to stand inside approach_dist, cleared
   // when the final rotation takes over, when the way onto the goal is blocked,
   // and by setPlan() / reset() (see approachGoal()).
