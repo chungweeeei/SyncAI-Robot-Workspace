@@ -425,6 +425,8 @@ void OctomapPlanner3D::loadMapCallback(
   std::shared_ptr<nav2_msgs::srv::LoadMap::Response> response)
 {
   using LoadMap = nav2_msgs::srv::LoadMap;
+  using Clock = std::chrono::steady_clock;
+  const auto t0 = Clock::now();
   const std::string octomap_file = request->map_url;
   RCLCPP_INFO(
     logger_, "[OctomapPlanner3D][%s] load_map request for '%s'", __func__, octomap_file.c_str());
@@ -461,9 +463,7 @@ void OctomapPlanner3D::loadMapCallback(
          rclcpp::Parameter(name_ + ".keepout.file", std::string())});
       updating_file_params_ = false;
     }
-    if (clear_plan_client_->service_is_ready()) {
-      clear_plan_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
-    }
+    requestClearPlan();
     RCLCPP_INFO(
       logger_, "[OctomapPlanner3D][%s] empty map_url: 3D map unloaded (the map is 2D now)",
       __func__);
@@ -529,21 +529,38 @@ void OctomapPlanner3D::loadMapCallback(
     updating_file_params_ = false;
   }
 
-  // planner_server re-sends its last plan at 1 Hz; after a map switch that is
-  // a route on the old map. Fire and forget: the server's main executor
-  // answers it, and a missing service only leaves a stale drawing.
-  if (clear_plan_client_->service_is_ready()) {
-    clear_plan_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
-  }
+  requestClearPlan();
 
   if (ok) {
     response->result = LoadMap::Response::RESULT_SUCCESS;
+    // The build's own lines above have the surface map, the links and the
+    // zones; this one closes the request the backend is waiting on.
+    RCLCPP_INFO(
+      logger_, "[OctomapPlanner3D][%s] load_map '%s' done in %.2f s", __func__,
+      octomap_file.c_str(), std::chrono::duration<double>(Clock::now() - t0).count());
   } else {
     // No fallback to the old map, for the reason above: it is gone already.
     response->result = LoadMap::Response::RESULT_INVALID_MAP_DATA;
     RCLCPP_ERROR(
       logger_, "[OctomapPlanner3D][%s] reload from '%s' failed: %s", __func__, octomap_file.c_str(),
       error.c_str());
+  }
+}
+
+void OctomapPlanner3D::requestClearPlan()
+{
+  // planner_server re-sends its last plan at 1 Hz; after a map switch that is
+  // a route on the old map. Fire and forget: the server's main executor
+  // answers it, and a missing service only leaves a stale drawing -- said,
+  // so a route on the old map in the console has an explanation.
+  if (clear_plan_client_->service_is_ready()) {
+    clear_plan_client_->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
+  } else {
+    RCLCPP_WARN(
+      logger_,
+      "[OctomapPlanner3D][%s] clear_plan is not available; `plan` may show the old map's route "
+      "until the next plan or plan_idle_clear_time",
+      __func__);
   }
 }
 
@@ -820,18 +837,35 @@ void OctomapPlanner3D::loadKeepoutCallback(
   response->result = LoadMap::Response::RESULT_SUCCESS;
 }
 
-bool OctomapPlanner3D::startHeightHint(double & z) const
+bool OctomapPlanner3D::startHeightHint(double & z, std::string * error) const
 {
   if (!tf_ || body_frame_.empty()) {
+    if (error) {
+      *error = "no TF buffer or no body_frame set";
+    }
     return false;
   }
   try {
     const auto t = tf_->lookupTransform(global_frame_, body_frame_, tf2::TimePointZero);
     z = t.transform.translation.z - lidar_height_;
     return true;
-  } catch (const tf2::TransformException &) {
+  } catch (const tf2::TransformException & e) {
+    if (error) {
+      *error = e.what();
+    }
     return false;
   }
+}
+
+double OctomapPlanner3D::scanAge() const
+{
+  const double last = last_scan_steady_.load();
+  if (last < 0.0) {
+    return -1.0;
+  }
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
+           .count() -
+         last;
 }
 
 nav_msgs::msg::Path OctomapPlanner3D::createPlan(
@@ -845,12 +879,27 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   path.header.stamp = clock_->now();
   path.header.frame_id = global_frame_;
 
+  // The request as this planner sees it, appended to a failure: the
+  // detail of a search failure (no_path, disconnected, timeout) names no
+  // coordinates, and the start's z is the TF's, not the request's.
+  const auto where = [&](double start_z, double goal_z) {
+    char buf[160];
+    std::snprintf(
+      buf, sizeof buf, " [start (%.2f, %.2f, z %.2f) -> goal (%.2f, %.2f, z %.2f)]",
+      start.pose.position.x, start.pose.position.y, start_z, goal.pose.position.x,
+      goal.pose.position.y, goal_z);
+    return std::string(buf);
+  };
+  std::string request = where(start.pose.position.z, goal.pose.position.z);
+
   // An empty path is how the planner server learns of a failure; the reason
-  // goes to the log (and, through the BT's failure channel, to
-  // NavigateToGoal.error_msg as PLAN_FAILED).
+  // goes to the log, and only there: ComputePathToPose's result carries no
+  // message, so NavigateToGoal says PLAN_FAILED and that the planner
+  // aborted, nothing more.
   const auto fail = [&](o3d::PlanFailure f, const std::string & detail) {
     RCLCPP_ERROR(
-      logger_, "[OctomapPlanner3D][createPlan] %s: %s", o3d::planFailureName(f), detail.c_str());
+      logger_, "[OctomapPlanner3D][createPlan] %s: %s%s", o3d::planFailureName(f), detail.c_str(),
+      request.c_str());
     path.poses.clear();
     return path;
   };
@@ -866,16 +915,18 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   // The server's start pose is the planar map -> base_link, z = 0 always.
   double start_z = start.pose.position.z;
   double tf_z = 0.0;
-  if (startHeightHint(tf_z)) {
+  std::string tf_error;
+  if (startHeightHint(tf_z, &tf_error)) {
     start_z = tf_z;
   } else {
     RCLCPP_WARN_THROTTLE(
       logger_, *clock_, 5000,
-      "[OctomapPlanner3D][createPlan] no TF %s -> %s; using the request's start z %.2f, which is 0 "
-      "for the planar robot pose (fine on the ground floor, wrong upstairs)",
-      global_frame_.c_str(), body_frame_.c_str(), start_z);
+      "[OctomapPlanner3D][createPlan] no TF %s -> %s (%s); using the request's start z %.2f, "
+      "which is 0 for the planar robot pose (fine on the ground floor, wrong upstairs)",
+      global_frame_.c_str(), body_frame_.c_str(), tf_error.c_str(), start_z);
   }
   const double goal_z = goal_z_mode_ == "start" ? start_z : goal.pose.position.z;
+  request = where(start_z, goal_z);
 
   // The start is snapped without the overlay: the robot stands where it
   // stands, and a person beside it must not make its own cell unavailable.
@@ -969,15 +1020,26 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
     zmin = std::min(zmin, wps[i].z);
     zmax = std::max(zmax, wps[i].z);
   }
+  // The scan age says how much the dynamic marks can be trusted: "0 marks"
+  // from an overlay that has had no scan for a minute is not a clear road.
+  const double age = scanAge();
+  char scan[48];
+  if (!dynamic_enabled_) {
+    std::snprintf(scan, sizeof scan, "overlay off");
+  } else if (age < 0.0) {
+    std::snprintf(scan, sizeof scan, "no scan yet");
+  } else {
+    std::snprintf(scan, sizeof scan, "last scan %.1f s ago", age);
+  }
   RCLCPP_INFO(
     logger_,
     "[OctomapPlanner3D][createPlan] %zu poses, %.1f m, z %.2f..%.2f (start snapped %.2f m, goal "
-    "%.2f m), "
-    "%zu cells -> %zu vertices, %zu stair links, %zu dynamic marks, %zu keepout zones, %zu "
-    "iterations, search %.3f s, total %.3f s",
+    "%.2f m), %zu cells -> %zu vertices, %zu stair links, %zu dynamic marks (%s), %zu keepout "
+    "zones, %zu iterations, search %.3f s, total %.3f s%s",
     path.poses.size(), length, zmin, zmax, s.xy_dist, g.xy_dist, r.cells.size(), vertices,
-    r.links.size(), mask ? mask->marked : size_t{0}, keepout_ ? keepout_->zones : size_t{0},
-    r.iterations, r.search_s, std::chrono::duration<double>(Clock::now() - t0).count());
+    r.links.size(), mask ? mask->marked : size_t{0}, scan, keepout_ ? keepout_->zones : size_t{0},
+    r.iterations, r.search_s, std::chrono::duration<double>(Clock::now() - t0).count(),
+    request.c_str());
   return path;
 }
 
@@ -991,23 +1053,57 @@ bool OctomapPlanner3D::isPathValid(
   // and lidar_height_ (startHeightHint) and path_z_offset_ are written by
   // the parameter callback, which runs on the same executor as this
   // service, so they are read unlocked by design.
+  using Clock = std::chrono::steady_clock;
+  // Every "valid" goes through here, so the end of a blocked spell is said
+  // once, with how long it lasted -- whether the blocker left, a replan
+  // went round it, or the check stopped judging (the robot on a stair).
+  const auto valid = [&](const char * why) {
+    if (blocked_since_) {
+      RCLCPP_INFO(
+        logger_, "[OctomapPlanner3D][isPathValid] Path clear again after %.1f s blocked%s",
+        std::chrono::duration<double>(Clock::now() - *blocked_since_).count(), why);
+      blocked_since_.reset();
+    }
+    return true;
+  };
   const auto [map, keepout] = overlay_->mapAndKeepout();
   if (!map || path.poses.empty()) {
-    return true;  // no 3D map: nothing to judge against, keep the path
+    return valid(" (no 3D map loaded)");  // nothing to judge against, keep the path
+  }
+  // An overlay without scans marks nothing, so every path reads valid and
+  // move.xml never replans round anything: the robot drives into a person
+  // until MPPI stops it. Said while a navigation is checking its path (this
+  // service is called only then), at most every 10 s.
+  if (dynamic_enabled_) {
+    constexpr double kStaleScan = 2.0;  // s; body_cloud is ~10 Hz
+    const double age = scanAge();
+    if (age < 0.0 || age > kStaleScan) {
+      char since[48] = "has never had a scan";
+      if (age >= 0.0) {
+        std::snprintf(since, sizeof since, "has had no scan for %.0f s", age);
+      }
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 10000,
+        "[OctomapPlanner3D][isPathValid] dynamic overlay %s (topic %s, held until it transforms "
+        "into %s within %.2f s): paths are judged without new marks -- is pointlio publishing, "
+        "and the localizer's map frame up?",
+        since, dynamic_topic_.c_str(), global_frame_.c_str(), transform_tolerance_);
+    }
   }
   const o3d::DynamicMaskPtr mask = overlay_->snapshot(clock_->now().seconds());
   if (!mask && !keepout) {
-    return true;  // the fast path: not one mark alive and no zone
+    return valid("");  // the fast path: not one mark alive and no zone
   }
   double rz = 0.0;
-  if (!startHeightHint(rz)) {
+  std::string tf_error;
+  if (!startHeightHint(rz, &tf_error)) {
     // The server's rule for "can't tell": valid, so the path is kept.
     RCLCPP_WARN_THROTTLE(
       logger_, *clock_, 5000,
-      "[OctomapPlanner3D][%s] no TF %s -> %s; cannot place the robot on a floor, keeping the "
-      "path unchecked",
-      __func__, global_frame_.c_str(), body_frame_.c_str());
-    return true;
+      "[OctomapPlanner3D][%s] no TF %s -> %s (%s); cannot place the robot on a floor, keeping "
+      "the path unchecked",
+      __func__, global_frame_.c_str(), body_frame_.c_str(), tf_error.c_str());
+    return valid(" (TF missing: path kept unchecked)");
   }
   const o3d::SurfaceMap & m = *map;
   const auto & poses = path.poses;
@@ -1037,7 +1133,12 @@ bool OctomapPlanner3D::isPathValid(
   };
   const o3d::CellId c0 = cellOf(i0);
   if (c0 == o3d::kNoCell) {
-    return true;
+    RCLCPP_DEBUG_THROTTLE(
+      logger_, *clock_, 5000,
+      "[OctomapPlanner3D][isPathValid] no traversable cell under path pose %zu (%.2f, %.2f, z "
+      "%.2f), the nearest the robot: on a stair or off the ground, path not judged",
+      i0, poses[i0].pose.position.x, poses[i0].pose.position.y, poses[i0].pose.position.z);
+    return valid(" (robot on a stair or off the map's ground: not judged there)");
   }
   // Only the floor stretch the robot is on is judged: the check stops where
   // the path leaves traversable ground (a stair link), and the stretch
@@ -1067,22 +1168,37 @@ bool OctomapPlanner3D::isPathValid(
     }
   }
   if (!invalid_pose_indices.empty()) {
-    const size_t first = static_cast<size_t>(invalid_pose_indices.front());
-    double ahead = 0.0;
-    for (size_t i = i0; i < first; ++i) {
-      ahead += syncai_util::geometry_utils::euclidean_distance(poses[i], poses[i + 1]);
+    // Logged when the path first reads blocked, then every 5 s while it
+    // stays so (the BT asks at 1 Hz and replans after blocked_time, 10 s):
+    // where, what and for how long, without ten copies of it. A new plan
+    // (another stamp) is a new spell.
+    const auto now = Clock::now();
+    const bool new_path = path.header.stamp != blocked_path_stamp_;
+    blocked_path_stamp_ = path.header.stamp;
+    const bool first_report = !blocked_since_ || new_path;
+    if (first_report) {
+      blocked_since_ = now;
     }
-    RCLCPP_INFO(
-      logger_,
-      "[OctomapPlanner3D][%s] Path blocked: %zu of %zu poses ahead (%zu in keepout zones); first "
-      "at index %zu, %.2f m ahead of the robot, (%.2f, %.2f, z %.2f); %zu cells marked by dynamic "
-      "obstacles, %zu keepout zones",
-      __func__, invalid_pose_indices.size(), poses.size() - i0, in_zones, first, ahead,
-      poses[first].pose.position.x, poses[first].pose.position.y, poses[first].pose.position.z,
-      mask ? mask->marked : size_t{0}, keepout ? keepout->zones : size_t{0});
+    if (first_report || now - blocked_logged_ >= std::chrono::seconds(5)) {
+      blocked_logged_ = now;
+      const size_t first = static_cast<size_t>(invalid_pose_indices.front());
+      double ahead = 0.0;
+      for (size_t i = i0; i < first; ++i) {
+        ahead += syncai_util::geometry_utils::euclidean_distance(poses[i], poses[i + 1]);
+      }
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s] Path blocked for %.1f s: %zu of %zu poses ahead (%zu in keepout "
+        "zones); first at index %zu, %.2f m ahead of the robot, (%.2f, %.2f, z %.2f); %zu cells "
+        "marked by dynamic obstacles, %zu keepout zones",
+        __func__, std::chrono::duration<double>(now - *blocked_since_).count(),
+        invalid_pose_indices.size(), poses.size() - i0, in_zones, first, ahead,
+        poses[first].pose.position.x, poses[first].pose.position.y, poses[first].pose.position.z,
+        mask ? mask->marked : size_t{0}, keepout ? keepout->zones : size_t{0});
+    }
     return false;
   }
-  return true;
+  return valid("");
 }
 
 void OctomapPlanner3D::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
@@ -1120,6 +1236,8 @@ void OctomapPlanner3D::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedP
     tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z};
   const o3d::ScanStats st =
     overlay_->addScan(points, origin, rclcpp::Time(message->header.stamp).seconds());
+  last_scan_steady_ =
+    std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   RCLCPP_DEBUG_THROTTLE(
     logger_, *clock_, 5000,
     "[OctomapPlanner3D][%s] scan: %zu returns, %zu in range, %zu marked, %zu cleared; %zu cells "
@@ -1145,6 +1263,9 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
   const std::string prefix = name_ + ".";
+  // A runtime change is otherwise invisible in the log, and a plan after it
+  // is read against the values the log last showed.
+  std::string changed;
   for (const auto & p : parameters) {
     const std::string & n = p.get_name();
     if (n.rfind(prefix, 0) != 0) {
@@ -1272,6 +1393,22 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         result.reason = key + " cannot be changed at runtime";
       }
     }
+    if (!result.successful) {
+      break;
+    }
+    if (!updating_file_params_) {
+      changed += (changed.empty() ? "" : ", ") + key + " = " + p.value_to_string();
+    }
+  }
+  // rclcpp rejects the whole set on a refusal; the values before the refused
+  // one are already in the members, so say which they are.
+  if (!result.successful) {
+    RCLCPP_WARN(
+      logger_, "[OctomapPlanner3D][%s] parameter change refused: %s%s%s", __func__,
+      result.reason.c_str(),
+      changed.empty() ? "" : "; already applied in this plugin: ", changed.c_str());
+  } else if (!changed.empty()) {
+    RCLCPP_INFO(logger_, "[OctomapPlanner3D][%s] parameters set: %s", __func__, changed.c_str());
   }
   return result;
 }

@@ -159,8 +159,9 @@ protected:
   /**
    * @brief Forget the last plan and send an empty one on `plan` (repeated by
    * the timer): clear_plan's work, and the idle expiry's in republishPlan()
+   * @param reason Why, for the log line ("clear_plan called", the idle time)
    */
-  void dropPlan();
+  void dropPlan(const std::string & reason);
 
   /**
    * @brief Service callback: forget the last plan and send an empty one on

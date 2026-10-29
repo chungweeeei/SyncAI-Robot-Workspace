@@ -2,8 +2,10 @@
 #define SYNCAI_GLOBAL_PLANNER__PLUGINS__OCTOMAP_PLANNER_3D__OCTOMAP_PLANNER_3D_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -183,12 +185,20 @@ protected:
     std::vector<octomap_planner_3d::KeepoutZone> & zones,
     octomap_planner_3d::KeepoutMaskPtr & mask) const;
 
+  // Ask planner_server to drop its last plan (a route on the old map).
+  void requestClearPlan();
+
   // `name` next to the tree: map/<name>/ holds poses.txt and keepout.json
   // beside octomap.bt.
   static std::string fileBeside(const std::string & octomap_file, const char * name);
 
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
-  bool startHeightHint(double & z) const;
+  // On failure `error`, when given, gets the TF exception's message.
+  bool startHeightHint(double & z, std::string * error = nullptr) const;
+
+  // Seconds since cloudCallback() last fed the overlay a scan, or a negative
+  // value if it never has (steady clock).
+  double scanAge() const;
 
   rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
     std::vector<rclcpp::Parameter> parameters);
@@ -283,6 +293,20 @@ protected:
   // plugin is destroyed, and the disconnect is what waits for a call in
   // progress there (the filter's signal lock) and stops the next one.
   message_filters::Connection cloud_connection_;
+  // When cloudCallback() last added a scan (steady seconds; < 0 = never).
+  // The filter holds a cloud whose transform never comes without a word
+  // (tf2_ros logs its drops at DEBUG), and an overlay with no scans marks
+  // nothing: every path reads valid. This is how the log says so.
+  std::atomic<double> last_scan_steady_{-1.0};
+
+  // isPathValid()'s last answer, for logging the changes rather than every
+  // 1 Hz call: when the path it is answering for first read blocked (unset
+  // = clear), when that was last logged, and that path's stamp, which tells
+  // a replan from the path already reported. Only isPathValid() touches
+  // them, on planner_server's main executor.
+  std::optional<std::chrono::steady_clock::time_point> blocked_since_;
+  std::chrono::steady_clock::time_point blocked_logged_;
+  builtin_interfaces::msg::Time blocked_path_stamp_;
 };
 
 }  // namespace syncai_global_planner
