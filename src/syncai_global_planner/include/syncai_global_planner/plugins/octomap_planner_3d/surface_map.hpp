@@ -32,11 +32,55 @@
 // never that close (the body-clearance band of the lower one forbids it), so
 // the pick is unique and a floor never "connects" to the floor above it.
 //
+// A step the rule allows is still a step (2026-10-29). The kerb between a
+// road and its pavement is within max_step_height, so the two are one piece
+// of ground and a route used to run along the kerb's edge with one pair of
+// feet on each side -- on outdoor_1027 the G23 fell twice at the same kerb,
+// where the shortest line to the goal cut the pavement's corner and followed
+// the edge at ~15 deg (sim, 2026-10-28). So every traversable cell records
+// the largest height change to a neighbour it can move to (step_rise) and
+// its distance to the nearest cell with one (step_d, a second distance field
+// like the clearance one, out to step_edge_cost_radius), and the search pays
+// for moving inside that band (SearchParams::step_edge_cost_weight), so
+// running along an edge costs more than keeping off it. At 0.1 m voxels a
+// one-cell step is as often a slope's contour line as a kerb
+// (kSureStepCells), so the cells on the low side of a step are also strung
+// into **lines** -- neighbours whose step faces the same way, so a contour
+// line that runs into a kerb stays its own line -- and a line at least
+// kerb_min_length long that holds kerb_min_sure_cells cells of two cells or
+// more is a **kerb** (kKerb, SurfaceMap::kerb_lines): a real step of 0.1 m
+// or more somewhere along it, which no slope under max_slope_deg makes, and
+// the one-cell stretches are the same kerb where the road has not fallen
+// quite a voxel's worth (outdoor_1027's 12 cm kerb: one cell along most of
+// its length, two where the road is lowest). A kerb's cells count as sure
+// steps in the band, and stair_links.hpp crosses a kerb on kerb links only,
+// square to it. Nothing else in the map changes: the components, the
+// clearance and what is traversable are as before.
+//
+// The voxels cannot tell a 12 cm kerb from a contour line, but the map's
+// point cloud can (2026-10-29): outdoor_1027's kerb, where the G23 fell a
+// third time in the sim with the kerb links in, was one cell along its whole
+// length and no kerb to the map, while map.pcd puts it at 0.12 m. So when
+// the build is given the map.pcd beside the tree, every traversable cell
+// gets a **measured floor** (SurfaceCell::floor_z): the median height of the
+// cloud's points inside its own top voxel, smoothed edge-preserving over its
+// neighbours on the same surface (a kerb's other side never votes). Only
+// points that fall in a traversable cell's voxel are kept while the file is
+// streamed -- walls, trees and ceilings are dropped as they are read -- so
+// the cost is one pass over the file. Between two cells that both have one
+// the step edges and the kerbs read metric heights (SurfaceMap::stepCells):
+// under step_edge_min_rise is level, so a slope's contour lines vanish, and
+// above it is a sure step, so a kerb is one along its whole length. Where
+// either cell has none (no pcd, an inferred cell, a voxel with too few
+// returns) the voxel tops are read as before. The traversability rules
+// never read the measured floor.
+//
 // ROS-free on purpose: this header, surface_astar.hpp and path_postprocess.hpp
 // depend on octomap and the STL only, so the same code is run offline by
 // octomap_planner_3d_cli (on a workstation with homebrew/apt octomap, no ROS)
 // against the .bt a map was saved with, and the ROS plugin is a thin wrapper.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -55,6 +99,16 @@ namespace syncai_global_planner::octomap_planner_3d
 using CellId = uint32_t;
 constexpr CellId kNoCell = ~CellId(0);
 constexpr uint32_t kNoComponent = ~uint32_t(0);
+
+// A height change of this many cells between two neighbouring columns is a
+// step the map is sure of: a slope within max_slope_deg (20 deg) rises
+// 0.036 m over one 0.1 m column, so it changes the voxel top by one cell at
+// most, and a flat floor read cell by cell flickers by one cell too; two
+// cells (0.1-0.3 m of true height) never come from either. A one-cell change
+// may be a kerb or a slope's contour line, and the two cannot be told apart
+// at this resolution (outdoor_1027's 12 cm kerb shows as one cell along most
+// of its length, two where the road has fallen a little further).
+constexpr int kSureStepCells = 2;
 
 // A point of a path or of a stair link: x, y and the ground's height.
 struct Waypoint
@@ -233,6 +287,28 @@ struct SurfaceMapParams
   // boundary, which already sits robot_radius from the wall, so 0.55 puts
   // the band edge 0.8 m from the wall -- the 2D costmap's inflation_radius.
   double clearance_cost_radius = 0.55;
+  // How far from a step edge (a traversable cell with a traversable
+  // neighbour at another height, see the header) the step-edge cost reaches:
+  // robot_radius plus a foot's reach beyond the body (the feet land ~0.15 m
+  // outside the padded footprint in a turn), so a route the band has pushed
+  // out keeps every foot on one side of the kerb.
+  double step_edge_cost_radius = 0.4;
+  // A line of step cells (see the header) is a kerb when it is at least this
+  // long (m; shorter is a pothole's rim, a drain cover or noise, left to the
+  // band cost) and holds at least this many cells whose step is
+  // kSureStepCells or more (one such cell is a stone; three in a line, 0.3 m
+  // of a step the map is sure of, is a kerb).
+  double kerb_min_length = 1.0;
+  int kerb_min_sure_cells = 3;
+  // The measured floor (see the header). Between two cells that both have
+  // one, a height change under step_edge_min_rise is level and one at or
+  // above it is a sure step: a 20 deg slope rises 0.036 m per column, the
+  // floor's returns scatter ~1-2 cm after the smoothing, and the kerbs worth
+  // keeping a route off are 0.1 m and up. floor_same_surface is how far a
+  // neighbour's raw median may be from a cell's own to vote in its smoothing
+  // (half a kerb, so a kerb's other side never does).
+  double step_edge_min_rise = 0.06;
+  double floor_same_surface = 0.05;
 };
 
 // Why a surface cell is not traversable. Kept per cell so the CLI dump and a
@@ -254,6 +330,7 @@ const char * rejectName(Reject r);
 enum CellFlag : uint8_t {
   kTraversable = 1u << 0,
   kInferred = 1u << 1,  // hole-fill put it here; no voxel was ever observed
+  kKerb = 1u << 2,      // on the low side of a kerb line (see the header); SurfaceMap::kerb_lines
 };
 
 struct SurfaceCell
@@ -266,6 +343,17 @@ struct SurfaceCell
   float
     clearance_d;  // xy distance (m) to the nearest non-traversable cell, clamped to clearance_cost_radius
   uint32_t component;  // 8-connected component id among traversable cells, kNoComponent otherwise
+  // The step edges (see the header): the largest height change, in cells, to
+  // a traversable neighbour the move rule allows (0 on level ground); the xy
+  // distance (m) to the nearest cell with one, clamped to
+  // step_edge_cost_radius; and that cell's rise (0 beyond the band), a kerb
+  // line's cells counting as kSureStepCells whatever their own step.
+  uint8_t step_rise;
+  uint8_t edge_rise;
+  float step_d;
+  // The measured floor height (m) from map.pcd (see the header); NaN where
+  // there is none -- no pcd, an untraversable or inferred cell, too few returns.
+  float floor_z;
 };
 
 struct BuildStats
@@ -273,9 +361,16 @@ struct BuildStats
   size_t leaves = 0, occupied_leaves = 0, free_leaves = 0;
   size_t columns = 0, candidates = 0, inferred = 0, traversable = 0, components = 0;
   size_t rejected[static_cast<size_t>(Reject::Count_)] = {};
-  std::vector<size_t> component_sizes;  // descending
+  std::vector<size_t> component_sizes;         // descending
+  size_t step_edges = 0, sure_step_edges = 0;  // cells with step_rise >= 1, >= kSureStepCells
+  size_t kerb_lines = 0, kerb_cells = 0;       // kerbs (see the header) and their low-side cells
+  // The measured floor: the pcd's points, those in a traversable cell's top
+  // voxel, and the traversable cells that got a height. floor_error says why
+  // a pcd that was given was not read (the map is then built on the voxels).
+  size_t floor_points = 0, floor_points_kept = 0, floor_cells = 0;
+  std::string floor_error;
   double t_columns = 0, t_candidates = 0, t_hole_fill = 0, t_step = 0, t_footprint = 0,
-         t_components = 0, t_clearance = 0, t_total = 0;
+         t_components = 0, t_clearance = 0, t_floor = 0, t_step_edges = 0, t_total = 0;
 };
 
 class SurfaceMap
@@ -293,6 +388,9 @@ public:
   std::vector<uint32_t> col_begin;
   std::vector<SurfaceCell> cells;
   std::vector<uint32_t> cell_col;
+  // The kerbs (see the header): each the low-side cells of one line, the
+  // cells flagged kKerb. What stair_links.hpp lays its kerb links along.
+  std::vector<std::vector<CellId>> kerb_lines;
 
   size_t columns() const { return static_cast<size_t>(nx) * ny; }
   bool inGrid(int ix, int iy) const { return ix >= 0 && iy >= 0 && ix < nx && iy < ny; }
@@ -323,6 +421,23 @@ public:
     return (c != kNoCell && traversable(c)) ? c : kNoCell;
   }
   bool inferred(CellId c) const { return (cells[c].flags & kInferred) != 0; }
+  // The step from a to b, in cells, as the step edges and the kerbs read it
+  // (see the header): with a measured floor at both, 0 under
+  // step_edge_min_rise and at least kSureStepCells (signed) from there; else
+  // kz_b - kz_a, the voxel heights the caller reads (raw or filtered).
+  int stepCells(CellId a, CellId b, int kz_a, int kz_b) const
+  {
+    const float za = cells[a].floor_z, zb = cells[b].floor_z;
+    if (std::isnan(za) || std::isnan(zb)) {
+      return kz_b - kz_a;
+    }
+    const double dz = static_cast<double>(zb) - za;
+    if (std::fabs(dz) < params.step_edge_min_rise) {
+      return 0;
+    }
+    const int n = std::max(kSureStepCells, static_cast<int>(std::lround(std::fabs(dz) / res)));
+    return dz > 0 ? n : -n;
+  }
   void cellXY(CellId c, double & x, double & y) const
   {
     x = cx(colIx(cell_col[c]));
@@ -391,9 +506,13 @@ bool loadOctomapBt(const std::string & path, octomap::OcTree & tree, std::string
 
 // The one-time build. The tree is read only; the caller may free it right
 // after, which the plugin does because a 7 M node tree is ~200-300 MB and the
-// map is ~30 MB.
+// map is ~30 MB. floor_pcd, when not empty, is the map's point cloud (an
+// x y z float PCD, binary or ascii) the measured floor is read from (see the
+// header); one that cannot be read leaves every floor_z NaN and says why in
+// BuildStats::floor_error, and the map is built on the voxels alone.
 std::shared_ptr<const SurfaceMap> buildSurfaceMap(
-  const octomap::OcTree & tree, const SurfaceMapParams & params, BuildStats * stats = nullptr);
+  const octomap::OcTree & tree, const SurfaceMapParams & params, BuildStats * stats = nullptr,
+  const std::string & floor_pcd = std::string());
 
 }  // namespace syncai_global_planner::octomap_planner_3d
 

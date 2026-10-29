@@ -122,11 +122,35 @@
 // rubble, a tree against a roof) stays unlinked, and so does one narrower
 // than detect_min_width. A blob a track link already crosses is skipped.
 //
+// **Kerbs** (2026-10-29). A step within max_step_height is one piece of
+// ground to the surface map, which is right -- the legs take a kerb -- and
+// was also how the G23 fell twice at the same kerb on outdoor_1027: the
+// shortest line cut the pavement's corner and ran along the kerb's edge at
+// ~15 deg, a pair of feet on each side, in the flat gait. A kerb is crossed
+// square and once, as a stair is, so every kerb the surface map found
+// (surface_map.hpp: a line of step cells long enough and with enough cells
+// of a step the map is sure of; SurfaceMap::kerb_lines) gets **kerb
+// links**: at each of its cells the local direction of the line (a fit over
+// the line's cells within kerb_fit_radius) gives the normal, along which a
+// straight crossing of kerb_lead either side is marched over traversable
+// cells that stay level -- within a cell of the low side's height before
+// the kerb, of the high side's after it; each that gets across is a link.
+// The search then refuses the plain step over the kerb where a link
+// crosses it (StairLinks::kerbCrossing) and takes the link instead, at
+// kerb_cost_multiplier, and the line-of-sight shortcut refuses to span one
+// too, so the path is square to the kerb for kerb_lead before and after it.
+// A kerb nothing could be laid at (a wall right behind it, a second step
+// within the lead) stays crossable as before, with a note. Both ends of a
+// kerb link are in one component, so the links join nothing; the
+// controllers' stair mode does not wake for a kerb's rise (under its
+// min_rise), which is as it should be.
+//
 // What could not be linked is reported in StairLinks::notes, for the plugin
 // to log and the CLI to print: a height change on the track that stayed
 // unlinked because its stretch was longer than max_length, a flight that
-// fell back to its walked link and why, and large components at different
-// heights that no chain of links joins.
+// fell back to its walked link and why, large components at different
+// heights that no chain of links joins, and a kerb no crossing could be laid
+// at.
 //
 // ROS-free (see surface_map.hpp).
 
@@ -227,6 +251,18 @@ struct StairLinkParams
   // Smallest blob (m2) worth reading: a flight of three steps a metre wide
   // is ~1 m2 of treads.
   double detect_min_area = 0.5;
+  // Kerb links (see the header). false = a kerb is crossed cell to cell at
+  // any angle, the behaviour before 2026-10-29. Which steps are kerbs is the
+  // surface map's call (SurfaceMapParams::kerb_min_length and friends).
+  bool kerb_links = true;
+  // The straight run either side of the kerb (m): the body's length is
+  // 0.76, so half a metre lines the hind feet up before the fore feet
+  // reach the edge and keeps the route square until the hind feet are over.
+  double kerb_lead = 0.5;
+  // The line's direction at a cell is fitted to the line's cells within this
+  // of it: a kerb curves round a corner over a metre or so, and 0.5 m of
+  // cells either side reads the local direction without smoothing the turn.
+  double kerb_fit_radius = 0.5;
 };
 
 struct StairLink
@@ -236,6 +272,7 @@ struct StairLink
   double length = 0.0;              // 3D length of pts
   size_t kf_a = 0, kf_b = 0;        // the keyframes that found the stair (poses.txt line index)
   bool detected = false;            // found off the map, not the track: kf_a, kf_b mean nothing
+  bool kerb = false;                // a crossing of a kerb, not a stair (see the header)
   bool straight = false;            // a line across the fitted flight, not the walked track
   bool flights = false;             // flights + landing corners read off the map (see the header)
   std::vector<size_t> turns;        // indices into pts where the robot turns in place (flights)
@@ -281,10 +318,22 @@ public:
   std::vector<uint32_t> group;
   // What stayed unlinked, one sentence each (see the header).
   std::vector<std::string> notes;
+  // Kerbs (see the header): per cell of the map, whether it lies on a kerb
+  // a link crosses, either side of the step; a move between two cells at
+  // different heights (SurfaceMap::stepCells) with such a cell at either end
+  // is a crossing, which
+  // the search takes on a link only. Empty without kerb links.
+  std::vector<uint8_t> kerb_edge;
+  size_t kerbs = 0;  // kerb lines at least one link crosses
 
   uint32_t groupOf(uint32_t component) const
   {
     return component < group.size() ? group[component] : component;
+  }
+  bool kerbCrossing(const SurfaceMap & m, CellId a, CellId b) const
+  {
+    return !kerb_edge.empty() && (kerb_edge[a] || kerb_edge[b]) &&
+           m.stepCells(a, b, m.cells[a].kz, m.cells[b].kz) != 0;
   }
 };
 

@@ -6,10 +6,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <limits>
 #include <numeric>
 #include <queue>
 #include <sstream>
+#include <string>
 #include <utility>
 
 namespace syncai_global_planner::octomap_planner_3d
@@ -670,10 +673,468 @@ void computeClearance(SurfaceMap & m)
   }
 }
 
+// ---- stage 7b: the measured floor (2026-10-29; see the header) -------------
+
+// Streams the x / y / z of every point of a PCD to visit(x, y, z): the
+// header's FIELDS / SIZE / TYPE / COUNT say where x, y and z sit in a point,
+// which must be 4-byte floats; DATA binary or ascii (syncai_mapping writes
+// binary; binary_compressed is LZF and is refused). A chunk at a time, never
+// the whole file: dp_1028's map.pcd is 380 MB. Counts the points into
+// *points. False with error set on anything it cannot read.
+template <typename Fn>
+bool streamPcdXyz(const std::string & path, size_t * points, std::string & error, Fn && visit)
+{
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    error = "cannot open " + path;
+    return false;
+  }
+  std::vector<std::string> fields, types;
+  std::vector<int> sizes, counts;
+  size_t npoints = 0;
+  std::string data, line;
+  while (data.empty() && std::getline(in, line)) {
+    std::istringstream ls(line);
+    std::string key;
+    ls >> key;
+    if (key.empty() || key[0] == '#') {
+      continue;
+    }
+    std::string v;
+    if (key == "FIELDS") {
+      while (ls >> v) {
+        fields.push_back(v);
+      }
+    } else if (key == "SIZE" || key == "COUNT") {
+      auto & out = key == "SIZE" ? sizes : counts;
+      while (ls >> v) {
+        out.push_back(std::atoi(v.c_str()));
+      }
+    } else if (key == "TYPE") {
+      while (ls >> v) {
+        types.push_back(v);
+      }
+    } else if (key == "POINTS") {
+      ls >> npoints;
+    } else if (key == "DATA") {
+      ls >> data;
+    }
+  }
+  if (counts.empty()) {
+    counts.assign(fields.size(), 1);
+  }
+  if (
+    data.empty() || fields.empty() || sizes.size() != fields.size() ||
+    types.size() != fields.size() || counts.size() != fields.size()) {
+    error = path + ": not a PCD file (no DATA line, or FIELDS / SIZE / TYPE / COUNT disagree)";
+    return false;
+  }
+  // Byte offset and value index of x, y and z within a point.
+  int off[3] = {-1, -1, -1}, idx[3] = {-1, -1, -1};
+  int point_size = 0, values = 0;
+  for (size_t f = 0; f < fields.size(); ++f) {
+    const int axis = fields[f] == "x" ? 0 : fields[f] == "y" ? 1 : fields[f] == "z" ? 2 : -1;
+    if (axis >= 0) {
+      if (types[f] != "F" || sizes[f] != 4) {
+        error = path + ": field " + fields[f] + " is not a 4-byte float";
+        return false;
+      }
+      off[axis] = point_size;
+      idx[axis] = values;
+    }
+    point_size += sizes[f] * counts[f];
+    values += counts[f];
+  }
+  if (off[0] < 0 || off[1] < 0 || off[2] < 0) {
+    error = path + ": no x / y / z fields";
+    return false;
+  }
+  size_t n = 0;
+  if (data == "binary") {
+    constexpr size_t kChunk = 65536;  // points per read: 1 MB of a 16-byte point
+    std::vector<char> buf(kChunk * point_size);
+    while (n < npoints) {
+      const size_t want = std::min(kChunk, npoints - n);
+      in.read(buf.data(), static_cast<std::streamsize>(want * point_size));
+      const size_t got = static_cast<size_t>(in.gcount()) / point_size;
+      for (size_t i = 0; i < got; ++i) {
+        const char * p = buf.data() + i * point_size;
+        float xyz[3];
+        for (int a = 0; a < 3; ++a) {
+          std::memcpy(&xyz[a], p + off[a], sizeof(float));
+        }
+        visit(xyz[0], xyz[1], xyz[2]);
+      }
+      n += got;
+      if (got < want) {
+        break;
+      }
+    }
+  } else if (data == "ascii") {
+    std::vector<float> v(values);
+    while (n < npoints && std::getline(in, line)) {
+      std::istringstream ls(line);
+      int k = 0;
+      while (k < values && ls >> v[k]) {
+        ++k;
+      }
+      if (k < values) {
+        continue;
+      }
+      visit(v[idx[0]], v[idx[1]], v[idx[2]]);
+      ++n;
+    }
+  } else {
+    error = path + ": DATA " + data + " is not supported (binary or ascii)";
+    return false;
+  }
+  *points = n;
+  if (n < npoints) {
+    error =
+      path + ": truncated, " + std::to_string(n) + " of " + std::to_string(npoints) + " points";
+    return false;
+  }
+  return true;
+}
+
+// Every traversable cell's floor_z (see the header). A point counts for the
+// cell whose top voxel it falls in -- the voxel the tree marked occupied
+// because of points like it -- and the raw floor of a cell is the median of
+// its points. Each traversable cell then takes the median of the raw floors
+// within two columns on its own surface (layerNear within one step) that
+// are within floor_same_surface of its own -- edge-preserving: the far side
+// of a kerb never votes, and a lone return (a leaf, a foot) is outvoted. A
+// cell with no point of its own votes with the raw floors that lie inside
+// its own voxel (its true floor does, or the voxel would not be its top).
+// Fewer than three votes leave it NaN: the voxels are read there.
+void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & stats)
+{
+  for (SurfaceCell & c : m.cells) {
+    c.floor_z = std::numeric_limits<float>::quiet_NaN();
+  }
+  if (pcd.empty() || m.cells.empty()) {
+    return;
+  }
+  // (cell, z) of every point in a traversable cell's top voxel; the rest of
+  // the cloud (walls, ceilings, trees, the floors under rejected cells) is
+  // dropped as it is read.
+  std::vector<std::pair<CellId, float>> kept;
+  std::string error;
+  const bool ok = streamPcdXyz(pcd, &stats.floor_points, error, [&](float x, float y, float z) {
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      return;
+    }
+    const int ix = m.ixOf(x), iy = m.iyOf(y);
+    if (!m.inGrid(ix, iy)) {
+      return;
+    }
+    const uint32_t col = m.col(ix, iy);
+    const int kz = static_cast<int>(std::floor((z - m.z0) / m.res));
+    for (uint32_t i = m.col_begin[col], e = m.col_begin[col + 1]; i < e; ++i) {
+      if (m.cells[i].kz == kz) {
+        if (m.traversable(i)) {
+          kept.emplace_back(i, z);
+        }
+        return;
+      }
+    }
+  });
+  if (!ok) {
+    stats.floor_error = error;
+    return;
+  }
+  stats.floor_points_kept = kept.size();
+  // Raw floor per cell: a counting sort by cell, then the median of each run.
+  const size_t n = m.cells.size();
+  std::vector<uint32_t> begin(n + 1, 0);
+  for (const auto & k : kept) {
+    ++begin[k.first + 1];
+  }
+  for (size_t c = 0; c < n; ++c) {
+    begin[c + 1] += begin[c];
+  }
+  std::vector<float> zs(kept.size());
+  {
+    std::vector<uint32_t> fill(begin.begin(), begin.end() - 1);
+    for (const auto & k : kept) {
+      zs[fill[k.first]++] = k.second;
+    }
+  }
+  std::vector<std::pair<CellId, float>>().swap(kept);
+  std::vector<float> raw(n, std::numeric_limits<float>::quiet_NaN());
+  for (CellId c = 0; c < n; ++c) {
+    if (begin[c] == begin[c + 1]) {
+      continue;
+    }
+    float * lo = zs.data() + begin[c];
+    float * hi = zs.data() + begin[c + 1];
+    float * mid = lo + (hi - lo) / 2;
+    std::nth_element(lo, mid, hi);
+    raw[c] = *mid;
+  }
+  const float same = static_cast<float>(m.params.floor_same_surface);
+  std::vector<float> votes;
+  for (CellId c = 0; c < n; ++c) {
+    if (!m.traversable(c)) {
+      continue;
+    }
+    const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+    const int kz = m.cells[c].kz;
+    // A cell's own floor, or the voxel its floor must lie in.
+    float lo, hi;
+    if (!std::isnan(raw[c])) {
+      lo = raw[c] - same;
+      hi = raw[c] + same;
+    } else {
+      lo = static_cast<float>(m.z0 + kz * m.res);
+      hi = static_cast<float>(m.z0 + (kz + 1) * m.res);
+    }
+    votes.clear();
+    for (int dy = -2; dy <= 2; ++dy) {
+      for (int dx = -2; dx <= 2; ++dx) {
+        if (!m.inGrid(ix + dx, iy + dy)) {
+          continue;
+        }
+        const CellId nb = m.layerNear(m.col(ix + dx, iy + dy), kz, m.step_cells);
+        if (nb == kNoCell || std::isnan(raw[nb]) || raw[nb] < lo || raw[nb] > hi) {
+          continue;
+        }
+        votes.push_back(raw[nb]);
+      }
+    }
+    if (votes.size() < 3) {
+      continue;
+    }
+    auto mid = votes.begin() + votes.size() / 2;
+    std::nth_element(votes.begin(), mid, votes.end());
+    m.cells[c].floor_z = *mid;
+    ++stats.floor_cells;
+  }
+}
+
+// ---- stage 8: step edges and kerbs (2026-10-29; see the header) -------------
+
+// Every traversable cell's largest height change to a neighbour the move rule
+// allows; the low-side cells strung into lines and the lines that are kerbs;
+// then a second distance field from the cells that have a step, the
+// clearance field's twin: the sources are the edge cells themselves (at
+// distance 0), each cell reached keeps its own Euclidean xy distance to the
+// nearest source and that source's rise, and the propagation runs over the
+// surface graph as the clearance one does. Over the edge as well as along
+// it, since the move rule allows the step: both sides of a kerb are in its
+// band, which is the point -- the band is where a route straddles it.
+void computeStepEdges(SurfaceMap & m, BuildStats & stats)
+{
+  const float radius = static_cast<float>(m.params.step_edge_cost_radius);
+  const size_t n = m.cells.size();
+  for (SurfaceCell & c : m.cells) {
+    c.step_rise = 0;
+    c.edge_rise = 0;
+    c.step_d = radius;
+    c.flags &= static_cast<uint8_t>(~kKerb);
+  }
+  m.kerb_lines.clear();
+  // The heights the steps are read from are the median of each cell's own
+  // and its movable neighbours': the floor's returns scatter a few cm, so
+  // one column in ten sits a voxel above its neighbours, and read raw the
+  // map is salt and pepper -- 38 000 step cells on outdoor_1027, the band
+  // over most of its road, and a kerb that is no line at all. The median
+  // drops a lone voxel and keeps an edge two cells wide on either side. The
+  // traversability rules read the raw heights as before. Between two cells
+  // with a measured floor (stage 7b) the metric heights are read instead
+  // (SurfaceMap::stepCells), and these only where either has none.
+  std::vector<int16_t> fkz(n, 0);
+  for (CellId c = 0; c < n; ++c) {
+    fkz[c] = m.cells[c].kz;
+    if (!m.traversable(c)) {
+      continue;
+    }
+    int16_t v[9];
+    int cnt = 0;
+    v[cnt++] = m.cells[c].kz;
+    m.forEachMove(c, [&](CellId nb, int) { v[cnt++] = m.cells[nb].kz; });
+    std::sort(v, v + cnt);
+    fkz[c] = v[cnt / 2];
+  }
+  // The rise of each cell, and for the cells on the low side of a step --
+  // an orthogonal neighbour higher by a cell or more -- which way the step
+  // faces (the mean offset to those neighbours) and how high it is at most.
+  std::vector<int8_t> hx(n, 0), hy(n, 0);
+  std::vector<uint8_t> up(n, 0);
+  for (CellId c = 0; c < n; ++c) {
+    if (!m.traversable(c)) {
+      continue;
+    }
+    int rise = 0, highest = 0;
+    int sx = 0, sy = 0;
+    m.forEachMove(c, [&](CellId nb, int k) {
+      const int dkz = m.stepCells(c, nb, fkz[c], fkz[nb]);
+      rise = std::max(rise, std::abs(dkz));
+      if ((k & 1) == 0 && dkz >= 1) {
+        sx += SurfaceMap::kDx8[k];
+        sy += SurfaceMap::kDy8[k];
+        highest = std::max(highest, dkz);
+      }
+    });
+    if (rise == 0) {
+      continue;
+    }
+    m.cells[c].step_rise = static_cast<uint8_t>(std::min(rise, 255));
+    ++stats.step_edges;
+    if (rise >= kSureStepCells) {
+      ++stats.sure_step_edges;
+    }
+    if (highest > 0 && (sx != 0 || sy != 0)) {
+      hx[c] = static_cast<int8_t>(sx);
+      hy[c] = static_cast<int8_t>(sy);
+      up[c] = static_cast<uint8_t>(std::min(highest, 255));
+    }
+  }
+  // Whether the ground past the step stays level: a kerb has a pavement
+  // behind it, a stair's first riser has the next riser 0.3 m on (the
+  // flight's own cells are rejected, but its first tread often passes, as
+  // an island joined to the floor by the step rule, and the floor's edge
+  // along it would read as a kerb). Four cells on, along the step's
+  // dominant direction, within a cell of the first cell past the step.
+  std::vector<uint8_t> level(n, 0);
+  for (CellId c = 0; c < n; ++c) {
+    if (up[c] == 0) {
+      continue;
+    }
+    const int dx = std::abs(hx[c]) >= std::abs(hy[c]) ? (hx[c] > 0 ? 1 : -1) : 0;
+    const int dy = dx == 0 ? (hy[c] > 0 ? 1 : -1) : 0;
+    const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+    int kz = m.cells[c].kz;
+    CellId first = kNoCell;  // the first cell past the step
+    bool ok = true;
+    for (int j = 1; j <= 4 && ok; ++j) {
+      const CellId h = m.traversableNeighbour(ix + j * dx, iy + j * dy, kz);
+      ok = h != kNoCell && (j == 1 ? m.stepCells(c, h, fkz[c], fkz[h]) > 0
+                                   : std::abs(m.stepCells(first, h, fkz[first], fkz[h])) <= 1);
+      if (ok) {
+        kz = m.cells[h].kz;
+        if (j == 1) {
+          first = h;
+        }
+      }
+    }
+    level[c] = ok ? 1 : 0;
+  }
+  // Lines: low-side cells joined to their 8-neighbours (over the move rule)
+  // whose step faces within ~45 deg of the same way. A contour line of a
+  // slope that runs into a kerb meets it square, so it is a line of its own
+  // and never lends the kerb its cells, nor the kerb it its name.
+  std::vector<uint32_t> line_of(n, kNoComponent);
+  std::vector<CellId> stack;
+  const auto same_way = [&](CellId a, CellId b) {
+    const double la = std::hypot(hx[a], hy[a]), lb = std::hypot(hx[b], hy[b]);
+    return (hx[a] * hx[b] + hy[a] * hy[b]) > 0.75 * la * lb;
+  };
+  for (CellId seed = 0; seed < n; ++seed) {
+    if (up[seed] == 0 || line_of[seed] != kNoComponent) {
+      continue;
+    }
+    std::vector<CellId> cells;
+    line_of[seed] = static_cast<uint32_t>(m.kerb_lines.size());
+    stack.push_back(seed);
+    int sure = 0, levels = 0;
+    double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
+    while (!stack.empty()) {
+      const CellId c = stack.back();
+      stack.pop_back();
+      cells.push_back(c);
+      sure += up[c] >= kSureStepCells ? 1 : 0;
+      levels += level[c];
+      double x, y;
+      m.cellXY(c, x, y);
+      xmin = std::min(xmin, x);
+      xmax = std::max(xmax, x);
+      ymin = std::min(ymin, y);
+      ymax = std::max(ymax, y);
+      m.forEachMove(c, [&](CellId nb, int) {
+        if (up[nb] > 0 && line_of[nb] == kNoComponent && same_way(c, nb)) {
+          line_of[nb] = line_of[seed];
+          stack.push_back(nb);
+        }
+      });
+    }
+    // The extent is the bounding box's diagonal at least: a line is as long
+    // as its box's longer side, a ring (the rim of a raised slab) is its
+    // diameter, either way what the length threshold means.
+    const double extent = std::max(xmax - xmin, ymax - ymin) + m.res;
+    if (
+      extent < m.params.kerb_min_length || sure < m.params.kerb_min_sure_cells ||
+      2 * levels < static_cast<int>(cells.size())) {
+      for (const CellId c : cells) {
+        line_of[c] = kNoComponent - 1;  // judged, not a kerb
+      }
+      continue;
+    }
+    for (const CellId c : cells) {
+      m.cells[c].flags |= kKerb;
+    }
+    stats.kerb_cells += cells.size();
+    m.kerb_lines.push_back(std::move(cells));
+  }
+  stats.kerb_lines = m.kerb_lines.size();
+
+  struct Item
+  {
+    float d;
+    CellId cell;
+    int src_ix, src_iy;
+    uint8_t rise;
+    bool operator>(const Item & o) const { return d > o.d; }
+  };
+  std::priority_queue<Item, std::vector<Item>, std::greater<Item>> q;
+  for (CellId c = 0; c < n; ++c) {
+    if (m.cells[c].step_rise == 0) {
+      continue;
+    }
+    const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
+    // A kerb's cells, and the high side the step leads to, are sure steps in
+    // the band whatever the voxels say of this one cell.
+    uint8_t rise = m.cells[c].step_rise;
+    if (m.cells[c].flags & kKerb) {
+      rise = std::max<uint8_t>(rise, kSureStepCells);
+    } else {
+      const int kz = fkz[c];
+      m.forEachMove(c, [&](CellId nb, int k) {
+        if ((k & 1) == 0 && (m.cells[nb].flags & kKerb) && m.stepCells(c, nb, kz, fkz[nb]) < 0) {
+          rise = std::max<uint8_t>(rise, kSureStepCells);
+        }
+      });
+    }
+    q.push({0.f, c, ix, iy, rise});
+  }
+  std::vector<uint8_t> done(m.cells.size(), 0);
+  while (!q.empty()) {
+    const Item it = q.top();
+    q.pop();
+    if (done[it.cell]) {
+      continue;
+    }
+    done[it.cell] = 1;
+    m.cells[it.cell].step_d = it.d;
+    m.cells[it.cell].edge_rise = it.rise;
+    m.forEachMove(it.cell, [&](CellId n, int) {
+      if (done[n]) {
+        return;
+      }
+      const int nix = m.colIx(m.cell_col[n]), niy = m.colIy(m.cell_col[n]);
+      const float d = static_cast<float>(std::hypot(nix - it.src_ix, niy - it.src_iy) * m.res);
+      if (d < radius) {
+        q.push({d, n, it.src_ix, it.src_iy, it.rise});
+      }
+    });
+  }
+}
+
 }  // namespace
 
 std::shared_ptr<const SurfaceMap> buildSurfaceMap(
-  const octomap::OcTree & tree, const SurfaceMapParams & params, BuildStats * stats_out)
+  const octomap::OcTree & tree, const SurfaceMapParams & params, BuildStats * stats_out,
+  const std::string & floor_pcd)
 {
   BuildStats local;
   BuildStats & stats = stats_out ? *stats_out : local;
@@ -766,6 +1227,14 @@ std::shared_ptr<const SurfaceMap> buildSurfaceMap(
   t = Clock::now();
   computeClearance(m);
   stats.t_clearance = since(t);
+
+  t = Clock::now();
+  computeMeasuredFloor(floor_pcd, m, stats);
+  stats.t_floor = since(t);
+
+  t = Clock::now();
+  computeStepEdges(m, stats);
+  stats.t_step_edges = since(t);
 
   stats.t_total = since(t_start);
   return map;

@@ -1,16 +1,21 @@
 // The geometry rules of OctomapPlanner3D's surface map and search, on the
 // synthetic scenes of synthetic_octree.hpp. Each test is one promise a
 // quadruped planner has to keep: a ramp is one piece of ground, a stair is
-// not, a kerb is a wall, a wall is inflated by the robot radius, a hole in the
-// observed floor is closed but a floor edge is not extended, two floors never
-// connect, and a goal snaps to the floor the robot is on -- except over a
-// stair the robot walked, which a stair link joins in both directions while
-// a walked kerb stays a wall. The dynamic overlay's and the keepout zones'
-// cases follow, each introduced by its own banner.
+// not, a kerb is one step, a wall is inflated by the robot radius, a hole in
+// the observed floor is closed but a floor edge is not extended, two floors
+// never connect, and a goal snaps to the floor the robot is on -- except
+// over a stair the robot walked, which a stair link joins in both directions
+// while a walked kerb makes no stair link. The dynamic overlay's and the
+// keepout zones' cases follow, each introduced by its own banner, and the
+// kerbs' (2026-10-29) last: a kerb is crossed square on a kerb link and
+// never run along.
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <fstream>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -475,15 +480,18 @@ TEST(StairLinks, AStraightCrossingKeepsTheFarFloorsOwnHeight)
   EXPECT_NEAR(path.back().z, 1.32, 0.15);
 }
 
-TEST(StairLinks, AWalkedKerbMakesNoLinkAndAnUnwalkedDropIsReported)
+TEST(StairLinks, AWalkedKerbMakesNoStairLinkAndAnUnwalkedDropIsReported)
 {
-  // The kerb is one piece of ground already: walking it makes no link, and
-  // the plan over it uses none. The drop, never walked, stays two components
-  // and the notes say so.
+  // The kerb is one piece of ground already: walking it makes no stair
+  // link (its kerb links are the kerb's own, below), and the plan over it
+  // takes one kerb link, nothing else. The drop, never walked, stays two
+  // components and the notes say so.
   const auto m = build("kerb");
   const auto links = buildStairLinks(
     *m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.15; }), StairLinkParams{});
-  EXPECT_TRUE(links->links.empty());
+  for (const StairLink & l : links->links) {
+    EXPECT_TRUE(l.kerb);
+  }
   EXPECT_TRUE(links->notes.empty());
   SurfaceAStar astar(m, links);
   SearchParams p;
@@ -493,7 +501,8 @@ TEST(StairLinks, AWalkedKerbMakesNoLinkAndAnUnwalkedDropIsReported)
   ASSERT_NE(b.cell, kNoCell);
   const PlanResult r = astar.plan(a.cell, b.cell, p);
   EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
-  EXPECT_TRUE(r.links.empty());
+  ASSERT_EQ(r.links.size(), 1u);
+  EXPECT_TRUE(links->links[r.links[0].link].kerb);
 
   const auto d = build("drop");
   const auto none =
@@ -507,7 +516,8 @@ TEST(StairLinks, AStairNobodyWalkedIsDetectedAndADropIsNot)
 {
   // No track at all: the stairs scene's flight is found off the map and laid
   // as straight links across its width, as the walked one is; the drop (one
-  // 0.5 m ledge) and the kerb (one piece of ground) make no link.
+  // 0.5 m ledge) makes no link, and the kerb (one piece of ground) no stair
+  // link -- and no kerb link either when those are off.
   const auto m = build("stairs");
   const auto links = buildStairLinks(*m, {}, StairLinkParams{});
   ASSERT_EQ(links->flights.size(), 1u);
@@ -535,7 +545,9 @@ TEST(StairLinks, AStairNobodyWalkedIsDetectedAndADropIsNot)
   off.detect = false;
   EXPECT_TRUE(buildStairLinks(*m, {}, off)->links.empty());
   EXPECT_TRUE(buildStairLinks(*build("drop"), {}, StairLinkParams{})->links.empty());
-  EXPECT_TRUE(buildStairLinks(*build("kerb"), {}, StairLinkParams{})->links.empty());
+  StairLinkParams no_kerbs;
+  no_kerbs.kerb_links = false;
+  EXPECT_TRUE(buildStairLinks(*build("kerb"), {}, no_kerbs)->links.empty());
 }
 
 TEST(StairLinks, AnUnwalkedUStairIsLaidAsFlightsAndCorners)
@@ -1321,4 +1333,271 @@ TEST(BlockedView, AMarkAndAZoneCombineAsOrAndTheirClearanceAsMin)
   o.setMap(nullptr);
   o.setKeepout(zone);
   EXPECT_EQ(o.mapAndKeepout().second, nullptr);
+}
+
+// ---- Kerbs (2026-10-29) -------------------------------------------------
+//
+// The 0.15 m step of the kerb scene is one piece of ground (above), and
+// since 2026-10-29 also a kerb: its cells are step edges with a cost band,
+// its low side is one kerb line, kerb links cross it square, and a route
+// takes it on a link, never along it or diagonally. The ramp scene has
+// one-cell steps everywhere (a 15 deg slope quantised to 0.1 m voxels) and
+// no kerb; the stairs scene's first riser is not one either.
+
+namespace
+{
+
+// The heading (deg) of the path's segment through x.
+double headingAtX(const std::vector<Waypoint> & path, double x)
+{
+  for (size_t i = 1; i < path.size(); ++i) {
+    if ((path[i - 1].x - x) * (path[i].x - x) <= 0 && path[i].x != path[i - 1].x) {
+      return std::atan2(path[i].y - path[i - 1].y, path[i].x - path[i - 1].x) * 180.0 / M_PI;
+    }
+  }
+  return 1e9;
+}
+
+}  // namespace
+
+TEST(Kerbs, StepEdgesHaveABandAndOnlyTheKerbIsALine)
+{
+  BuildStats s;
+  const auto m = build("kerb", &s);
+  EXPECT_EQ(s.kerb_lines, 1u);
+  EXPECT_GE(s.kerb_cells, 70u);  // the 8 m line, less the footprint rule's rim
+  ASSERT_EQ(m->kerb_lines.size(), 1u);
+  // The low side at x = 5.95 is the line, flagged; its band reaches 0.4 m
+  // either side with the kerb's rise, and no further.
+  const CellId edge = cellAt(*m, 5.95, 4.0, 0.0);
+  ASSERT_NE(edge, kNoCell);
+  EXPECT_TRUE(m->cells[edge].flags & kKerb);
+  EXPECT_EQ(m->cells[edge].step_rise, 2);
+  EXPECT_EQ(m->cells[edge].edge_rise, 2);
+  EXPECT_NEAR(m->cells[edge].step_d, 0.0, 1e-6);
+  const CellId near = cellAt(*m, 6.25, 4.0, 0.15);
+  ASSERT_NE(near, kNoCell);
+  EXPECT_FALSE(m->cells[near].flags & kKerb);
+  EXPECT_EQ(m->cells[near].edge_rise, 2);
+  EXPECT_NEAR(m->cells[near].step_d, 0.2, 1e-6);
+  const CellId far = cellAt(*m, 3.0, 4.0, 0.0);
+  ASSERT_NE(far, kNoCell);
+  EXPECT_EQ(m->cells[far].edge_rise, 0);
+  EXPECT_NEAR(m->cells[far].step_d, m->params.step_edge_cost_radius, 1e-6);
+  // The ramp: one-cell steps all over its slope, none sure, no kerb; the
+  // stairs: the floor's edge along the first riser is not a kerb either,
+  // the next riser being 0.3 m on.
+  BuildStats r;
+  build("ramp", &r);
+  EXPECT_GT(r.step_edges, 0u);
+  EXPECT_EQ(r.sure_step_edges, 0u);
+  EXPECT_EQ(r.kerb_lines, 0u);
+  BuildStats st;
+  build("stairs", &st);
+  EXPECT_EQ(st.kerb_lines, 0u);
+}
+
+TEST(Kerbs, KerbLinksCrossSquareWithALeadEitherSide)
+{
+  const auto m = build("kerb");
+  const auto links = buildStairLinks(*m, {}, StairLinkParams{});
+  ASSERT_GE(links->links.size(), 60u);
+  EXPECT_EQ(links->kerbs, 1u);
+  EXPECT_TRUE(links->notes.empty());
+  for (const StairLink & l : links->links) {
+    EXPECT_TRUE(l.kerb && l.straight && l.detected);
+    EXPECT_NEAR(std::fabs(l.up_x), 1.0, 0.05);  // square to the kerb along y
+    ASSERT_EQ(l.pts.size(), 4u);
+    EXPECT_NEAR(l.pts.front().x, 5.5, 0.11);  // half a metre before the edge ...
+    EXPECT_NEAR(l.pts.back().x, 6.5, 0.11);   // ... and past it
+    EXPECT_NEAR(l.pts[1].z, 0.0, 1e-6);
+    EXPECT_NEAR(l.pts[2].z, 0.2, 1e-6);                           // the 0.15 m step's voxel top
+    EXPECT_EQ(m->cells[l.a].component, m->cells[l.b].component);  // joins nothing
+  }
+  // The cells the links cross are marked: a step between them is a crossing.
+  const CellId lo = cellAt(*m, 5.95, 4.0, 0.0), hi = cellAt(*m, 6.05, 4.0, 0.15);
+  ASSERT_NE(lo, kNoCell);
+  ASSERT_NE(hi, kNoCell);
+  EXPECT_TRUE(links->kerbCrossing(*m, lo, hi));
+  EXPECT_FALSE(links->kerbCrossing(*m, lo, cellAt(*m, 5.95, 4.1, 0.0)));  // along the edge
+}
+
+TEST(Kerbs, ARouteTakesTheKerbOnALinkAndNeverAlongIt)
+{
+  const auto m = build("kerb");
+  const auto links = buildStairLinks(*m, {}, StairLinkParams{});
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  // Diagonally across: the route meets the kerb square and the shortcut
+  // does not put the diagonal back.
+  const SnapResult a = astar.snap(2.0, 2.0, 0.0, p);
+  const SnapResult b = astar.snap(10.0, 6.0, 0.15, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  const PlanResult r = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  ASSERT_EQ(r.links.size(), 1u);
+  EXPECT_TRUE(links->links[r.links[0].link].kerb);
+  const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
+  EXPECT_NEAR(headingAtX(path, 6.0), 0.0, 5.0);
+  EXPECT_NEAR(headingAtX(path, 5.7), 0.0, 5.0);  // still square half a metre before ...
+  EXPECT_NEAR(headingAtX(path, 6.3), 0.0, 5.0);  // ... and after
+  for (size_t i = 1; i < path.size(); ++i) {
+    if (path[i - 1].x > 5.52 && path[i].x < 6.48) {  // on the link: one straight line
+      EXPECT_NEAR(path[i].y, path[i - 1].y, 1e-6);
+    }
+  }
+  // Along the kerb, a hand's breadth from it: the band pushes the route out
+  // to the band's edge and it never steps up.
+  const SnapResult c = astar.snap(5.85, 1.0, 0.0, p);
+  const SnapResult d = astar.snap(5.85, 7.0, 0.0, p);
+  ASSERT_NE(c.cell, kNoCell);
+  ASSERT_NE(d.cell, kNoCell);
+  const PlanResult along = astar.plan(c.cell, d.cell, p);
+  ASSERT_EQ(along.failure, PlanFailure::None) << along.detail;
+  EXPECT_TRUE(along.links.empty());
+  double xmin = 1e9;
+  for (const CellId cell : along.cells) {
+    double x, y;
+    m->cellXY(cell, x, y);
+    xmin = std::min(xmin, x);
+    EXPECT_LT(x, 6.0);
+  }
+  EXPECT_LT(xmin, 5.6);
+  // With the links off the old behaviour: the diagonal route steps over the
+  // kerb wherever it likes.
+  StairLinkParams off;
+  off.kerb_links = false;
+  SurfaceAStar plain(m, buildStairLinks(*m, {}, off));
+  const PlanResult old = plain.plan(a.cell, b.cell, p);
+  ASSERT_EQ(old.failure, PlanFailure::None) << old.detail;
+  EXPECT_TRUE(old.links.empty());
+}
+
+// ---- The measured floor (2026-10-29) ---------------------------------------
+//
+// A 12 cm kerb whose voxel tops are one cell apart -- outdoor_1027's, where
+// the G23 fell a third time with the kerb links in -- is no kerb to the
+// voxels, and becomes one with the cloud's heights; a 15 deg ramp's one-cell
+// contour lines vanish with them. The clouds are written here, a few
+// jittered points per column inside its top voxel, as clean_map's map.pcd
+// would hold them.
+
+namespace
+{
+
+// height(x, y) -> the true floor.
+using Height = std::function<double(double, double)>;
+
+// A floor scanned: four points per 0.1 m column at the true floor +-1 cm,
+// and the tree built from them as clean_map builds it, each column's top
+// voxel the one its highest point lies in.
+struct ScannedFloor
+{
+  std::vector<float> points;  // x y z ...
+  std::unique_ptr<octomap::OcTree> tree;
+};
+
+ScannedFloor scanFloor(const Height & height)
+{
+  ScannedFloor f;
+  std::map<std::pair<int, int>, double> top;
+  for (double y = 0.025; y < 8.0; y += 0.05) {
+    for (double x = 0.025; x < 12.0; x += 0.05) {
+      const double z = height(x, y) + 0.01 * std::sin(37.0 * x + 91.0 * y);
+      f.points.insert(
+        f.points.end(), {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+      const auto key = std::make_pair(
+        static_cast<int>(std::floor(x / 0.1)), static_cast<int>(std::floor(y / 0.1)));
+      const auto it = top.find(key);
+      top[key] = it == top.end() ? z : std::max(it->second, z);
+    }
+  }
+  synthetic::SceneBuilder b(0.1);
+  // SceneBuilder puts the occupied voxel at h - res / 2.
+  b.floor(0, 12.0, 0, 8.0, [&](double x, double y) {
+    return top.at({static_cast<int>(std::floor(x / 0.1)), static_cast<int>(std::floor(y / 0.1))}) +
+           0.05;
+  });
+  f.tree = b.finish();
+  return f;
+}
+
+// The points as a PCD with an intensity field, binary or ascii.
+std::string writeCloud(const std::vector<float> & xyz, const std::string & name, bool binary)
+{
+  const std::string path = ::testing::TempDir() + name;
+  std::ofstream out(path, std::ios::binary);
+  const size_t n = xyz.size() / 3;
+  out << "# .PCD v0.7\nVERSION 0.7\nFIELDS x y z intensity\nSIZE 4 4 4 4\nTYPE F F F F\n"
+         "COUNT 1 1 1 1\nWIDTH "
+      << n << "\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS " << n << "\nDATA "
+      << (binary ? "binary" : "ascii") << "\n";
+  for (size_t i = 0; i < n; ++i) {
+    const float p[4] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2], 7.0f};
+    if (binary) {
+      out.write(reinterpret_cast<const char *>(p), sizeof p);
+    } else {
+      out << p[0] << ' ' << p[1] << ' ' << p[2] << ' ' << p[3] << '\n';
+    }
+  }
+  return path;
+}
+
+}  // namespace
+
+TEST(MeasuredFloor, AOneCellKerbIsAKerbOnlyWithTheCloud)
+{
+  // -0.04 and +0.08 (+-1 cm): tops 0.0 and 0.1, one cell, 12 cm of true height.
+  const auto kerb = scanFloor([](double x, double) { return x < 6.0 ? -0.04 : 0.08; });
+  const auto & tree = kerb.tree;
+  BuildStats voxels;
+  buildSurfaceMap(*tree, SurfaceMapParams{}, &voxels);
+  EXPECT_EQ(voxels.kerb_lines, 0u);
+  EXPECT_EQ(voxels.sure_step_edges, 0u);
+
+  BuildStats s;
+  const auto m =
+    buildSurfaceMap(*tree, SurfaceMapParams{}, &s, writeCloud(kerb.points, "kerb.pcd", true));
+  EXPECT_TRUE(s.floor_error.empty()) << s.floor_error;
+  EXPECT_GT(s.floor_cells, s.traversable * 9 / 10);
+  EXPECT_EQ(s.kerb_lines, 1u);
+  const CellId low = cellAt(*m, 5.95, 4.0, 0.0), high = cellAt(*m, 6.05, 4.0, 0.1);
+  ASSERT_NE(low, kNoCell);
+  ASSERT_NE(high, kNoCell);
+  EXPECT_NEAR(m->cells[low].floor_z, -0.04, 0.011);
+  EXPECT_NEAR(m->cells[high].floor_z, 0.08, 0.011);
+  EXPECT_TRUE(m->cells[low].flags & kKerb);
+  EXPECT_EQ(m->stepCells(low, high, m->cells[low].kz, m->cells[high].kz), 2);
+  // And the links cross it square, as the two-cell kerb's do.
+  const auto links = buildStairLinks(*m, {}, StairLinkParams{});
+  EXPECT_EQ(links->kerbs, 1u);
+  EXPECT_TRUE(links->kerbCrossing(*m, low, high));
+}
+
+TEST(MeasuredFloor, ARampsContourLinesVanishAndABadCloudFallsBackToTheVoxels)
+{
+  const double t = std::tan(15.0 * M_PI / 180.0);
+  const auto ramp = scanFloor(
+    [t](double x, double) { return x < 4.0 ? -0.05 : (x < 8.0 ? (x - 4.0) * t : 4.0 * t) - 0.05; });
+  const auto & tree = ramp.tree;
+  BuildStats voxels;
+  buildSurfaceMap(*tree, SurfaceMapParams{}, &voxels);
+  EXPECT_GT(voxels.step_edges, 0u);  // one-cell contour lines
+  BuildStats s;
+  buildSurfaceMap(*tree, SurfaceMapParams{}, &s, writeCloud(ramp.points, "ramp.pcd", false));
+  EXPECT_TRUE(s.floor_error.empty()) << s.floor_error;
+  EXPECT_EQ(s.step_edges, 0u);
+  EXPECT_EQ(s.kerb_lines, 0u);
+
+  // A missing file: said so, and every height is the voxels' again.
+  BuildStats missing;
+  const auto m =
+    buildSurfaceMap(*tree, SurfaceMapParams{}, &missing, ::testing::TempDir() + "no_such.pcd");
+  EXPECT_FALSE(missing.floor_error.empty());
+  EXPECT_EQ(missing.floor_cells, 0u);
+  EXPECT_EQ(missing.step_edges, voxels.step_edges);
+  for (const SurfaceCell & c : m->cells) {
+    EXPECT_TRUE(std::isnan(c.floor_z));
+  }
 }

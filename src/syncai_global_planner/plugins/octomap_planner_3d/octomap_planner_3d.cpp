@@ -90,6 +90,12 @@ void OctomapPlanner3D::initialize(
   dp("hole_fill_min_support", rclcpp::ParameterValue(map_params_.hole_fill_min_support));
   dp("hole_fill_passes", rclcpp::ParameterValue(map_params_.hole_fill_passes));
   dp("clearance_cost_radius", rclcpp::ParameterValue(map_params_.clearance_cost_radius));
+  dp("step_edge_cost_radius", rclcpp::ParameterValue(map_params_.step_edge_cost_radius));
+  dp("kerb_min_length", rclcpp::ParameterValue(map_params_.kerb_min_length));
+  dp("kerb_min_sure_cells", rclcpp::ParameterValue(map_params_.kerb_min_sure_cells));
+  dp("measured_floor", rclcpp::ParameterValue(measured_floor_));
+  dp("step_edge_min_rise", rclcpp::ParameterValue(map_params_.step_edge_min_rise));
+  dp("floor_same_surface", rclcpp::ParameterValue(map_params_.floor_same_surface));
   // Stair links (build time).
   dp("stair_links", rclcpp::ParameterValue(stair_links_));
   dp("stair_min_rise", rclcpp::ParameterValue(stair_params_.min_rise));
@@ -118,6 +124,10 @@ void OctomapPlanner3D::initialize(
   dp("stair_detect_floor_band", rclcpp::ParameterValue(stair_params_.detect_floor_band));
   dp("stair_detect_min_width", rclcpp::ParameterValue(stair_params_.detect_min_width));
   dp("stair_detect_min_area", rclcpp::ParameterValue(stair_params_.detect_min_area));
+  // Kerb links (build time, stair_links.hpp).
+  dp("kerb_links", rclcpp::ParameterValue(stair_params_.kerb_links));
+  dp("kerb_lead", rclcpp::ParameterValue(stair_params_.kerb_lead));
+  dp("kerb_fit_radius", rclcpp::ParameterValue(stair_params_.kerb_fit_radius));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -129,6 +139,10 @@ void OctomapPlanner3D::initialize(
   dp("snap_z_window", rclcpp::ParameterValue(search_params_.snap_z_window));
   dp("snap_single_layer", rclcpp::ParameterValue(search_params_.snap_single_layer));
   dp("stair_cost_multiplier", rclcpp::ParameterValue(search_params_.stair_cost_multiplier));
+  dp("step_edge_cost_weight", rclcpp::ParameterValue(search_params_.step_edge_cost_weight));
+  dp("step_edge_cost_scaling", rclcpp::ParameterValue(search_params_.step_edge_cost_scaling));
+  dp("step_edge_one_cell", rclcpp::ParameterValue(search_params_.step_edge_one_cell));
+  dp("kerb_cost_multiplier", rclcpp::ParameterValue(search_params_.kerb_cost_multiplier));
   // Dynamic obstacles (the overlay; its six doubles are dynamic).
   dp("dynamic.enabled", rclcpp::ParameterValue(dynamic_enabled_));
   dp("dynamic.topic", rclcpp::ParameterValue(dynamic_topic_));
@@ -162,6 +176,12 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".hole_fill_min_support", map_params_.hole_fill_min_support);
   node->get_parameter(name + ".hole_fill_passes", map_params_.hole_fill_passes);
   node->get_parameter(name + ".clearance_cost_radius", map_params_.clearance_cost_radius);
+  node->get_parameter(name + ".step_edge_cost_radius", map_params_.step_edge_cost_radius);
+  node->get_parameter(name + ".kerb_min_length", map_params_.kerb_min_length);
+  node->get_parameter(name + ".kerb_min_sure_cells", map_params_.kerb_min_sure_cells);
+  node->get_parameter(name + ".measured_floor", measured_floor_);
+  node->get_parameter(name + ".step_edge_min_rise", map_params_.step_edge_min_rise);
+  node->get_parameter(name + ".floor_same_surface", map_params_.floor_same_surface);
   node->get_parameter(name + ".stair_links", stair_links_);
   node->get_parameter(name + ".stair_min_rise", stair_params_.min_rise);
   node->get_parameter(name + ".stair_max_length", stair_params_.max_length);
@@ -188,6 +208,9 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".stair_detect_floor_band", stair_params_.detect_floor_band);
   node->get_parameter(name + ".stair_detect_min_width", stair_params_.detect_min_width);
   node->get_parameter(name + ".stair_detect_min_area", stair_params_.detect_min_area);
+  node->get_parameter(name + ".kerb_links", stair_params_.kerb_links);
+  node->get_parameter(name + ".kerb_lead", stair_params_.kerb_lead);
+  node->get_parameter(name + ".kerb_fit_radius", stair_params_.kerb_fit_radius);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -200,6 +223,10 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".snap_z_window", search_params_.snap_z_window);
   node->get_parameter(name + ".snap_single_layer", search_params_.snap_single_layer);
   node->get_parameter(name + ".stair_cost_multiplier", search_params_.stair_cost_multiplier);
+  node->get_parameter(name + ".step_edge_cost_weight", search_params_.step_edge_cost_weight);
+  node->get_parameter(name + ".step_edge_cost_scaling", search_params_.step_edge_cost_scaling);
+  node->get_parameter(name + ".step_edge_one_cell", search_params_.step_edge_one_cell);
+  node->get_parameter(name + ".kerb_cost_multiplier", search_params_.kerb_cost_multiplier);
   node->get_parameter(name + ".dynamic.enabled", dynamic_enabled_);
   node->get_parameter(name + ".dynamic.topic", dynamic_topic_);
   node->get_parameter(name + ".dynamic.transform_tolerance", transform_tolerance_);
@@ -545,7 +572,24 @@ bool OctomapPlanner3D::buildMap(
         logger_, "[OctomapPlanner3D][%s] loaded %s: %zu nodes at %.3f m in %.2f s", __func__,
         octomap_file.c_str(), tree->size(), tree->getResolution(),
         std::chrono::duration<double>(Clock::now() - t0).count());
-      map = o3d::buildSurfaceMap(*tree, map_params_, &stats);
+      // The measured floor reads the map.pcd beside the tree (see
+      // surface_map.hpp): the same directory, as poses.txt and keepout.json.
+      const std::string pcd = measured_floor_ ? fileBeside(octomap_file, "map.pcd") : "";
+      map = o3d::buildSurfaceMap(*tree, map_params_, &stats, pcd);
+      if (!stats.floor_error.empty()) {
+        RCLCPP_WARN(
+          logger_,
+          "[OctomapPlanner3D][%s] measured floor: %s; the step edges and kerbs read the voxel "
+          "tops, so a kerb under ~0.2 m is not told from a slope's contour line",
+          __func__, stats.floor_error.c_str());
+      } else if (!pcd.empty()) {
+        RCLCPP_INFO(
+          logger_,
+          "[OctomapPlanner3D][%s] measured floor from %s: %zu points, %zu in traversable cells, "
+          "%zu of %zu traversable cells measured, in %.2f s",
+          __func__, pcd.c_str(), stats.floor_points, stats.floor_points_kept, stats.floor_cells,
+          stats.traversable, stats.t_floor);
+      }
     }
   } catch (const std::exception & e) {
     error = std::string("building the surface map threw: ") + e.what();
@@ -570,13 +614,14 @@ bool OctomapPlanner3D::buildMap(
     "inferred), "
     "%zu traversable in %zu components (largest %zu); rejected clearance_occupied %zu, "
     "no_free_above %zu, "
-    "clearance_unknown %zu, step %zu, footprint_blocked %zu, slope %zu, residual %zu; built in "
-    "%.2f s",
+    "clearance_unknown %zu, step %zu, footprint_blocked %zu, slope %zu, residual %zu; %zu step "
+    "edges (%zu of two cells or more), %zu kerbs of %zu cells; built in %.2f s",
     __func__, map->nx, map->ny, map->res, map->cells.size(), stats.inferred, stats.traversable,
     stats.components, stats.component_sizes.empty() ? size_t{0} : stats.component_sizes.front(),
     rej(o3d::Reject::ClearanceOccupied), rej(o3d::Reject::NoFreeAbove),
     rej(o3d::Reject::ClearanceUnknown), rej(o3d::Reject::Step), rej(o3d::Reject::FootprintBlocked),
-    rej(o3d::Reject::Slope), rej(o3d::Reject::Residual), stats.t_total);
+    rej(o3d::Reject::Slope), rej(o3d::Reject::Residual), stats.step_edges, stats.sure_step_edges,
+    stats.kerb_lines, stats.kerb_cells, stats.t_total);
   std::shared_ptr<const o3d::StairLinks> links;
   if (stair_links_) {
     std::vector<o3d::Waypoint> track;
@@ -591,22 +636,28 @@ bool OctomapPlanner3D::buildMap(
         stair_params_.detect ? "; the stairs detected off the map only"
                              : ", so the floors of this map do not connect");
     }
-    if (have_track || stair_params_.detect) {
+    if (have_track || stair_params_.detect || stair_params_.kerb_links) {
       links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
-      size_t detected = 0;
+      size_t detected = 0, kerb_links = 0;
       for (const auto & l : links->links) {
-        detected += l.detected ? 1 : 0;
+        kerb_links += l.kerb ? 1 : 0;
+        detected += (l.detected && !l.kerb) ? 1 : 0;
       }
+      const size_t stairs = links->links.size() - kerb_links;
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links: %zu from %zu keyframes of %s, %zu detected off "
-        "the map (min_rise %.2f m)",
-        __func__, links->links.size(), links->links.size() - detected, track.size(),
-        poses_file.c_str(), detected, stair_params_.min_rise);
-      // "kf 2221 -> 2358", or "detected at (6.5, -12.6)" (its first point).
+        "the map (min_rise %.2f m); %zu kerb links over %zu of the map's %zu kerbs (lead %.1f m)",
+        __func__, stairs, stairs - detected, track.size(), poses_file.c_str(), detected,
+        stair_params_.min_rise, kerb_links, links->kerbs, map->kerb_lines.size(),
+        stair_params_.kerb_lead);
+      // "kf 2221 -> 2358", "detected at (6.5, -12.6)" (its first point), or
+      // "kerb at (6.5, -12.6)" (the cell the crossing steps up from).
       const auto name = [](const o3d::StairLink & l) {
         char buf[80];
-        if (l.detected) {
+        if (l.kerb) {
+          std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
+        } else if (l.detected) {
           std::snprintf(
             buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
         } else {
@@ -1119,6 +1170,14 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         search_params_.snap_z_window = v;
       } else if (key == "stair_cost_multiplier") {
         search_params_.stair_cost_multiplier = v;
+      } else if (key == "step_edge_cost_weight") {
+        search_params_.step_edge_cost_weight = v;
+      } else if (key == "step_edge_cost_scaling") {
+        search_params_.step_edge_cost_scaling = v;
+      } else if (key == "step_edge_one_cell") {
+        search_params_.step_edge_one_cell = v;
+      } else if (key == "kerb_cost_multiplier") {
+        search_params_.kerb_cost_multiplier = v;
       } else if (key == "interpolation_resolution") {
         interpolation_resolution_ = v;
       } else if (key == "path_z_offset") {

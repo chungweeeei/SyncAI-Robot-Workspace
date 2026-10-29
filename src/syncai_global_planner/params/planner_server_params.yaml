@@ -162,6 +162,37 @@
       # 0.8 m from the wall, the 2D global costmap's inflation_radius (until
       # 2026-10-28), so both planners kept the same distance.
       clearance_cost_radius: 0.55
+      # ---- step edges and kerbs (2026-10-29, baked in at startup) ----
+      # A step within max_step_height is one piece of ground, and a route
+      # used to run along a kerb's edge with a pair of feet on each side: on
+      # outdoor_1027 the G23 fell twice at the same kerb (sim, 2026-10-28).
+      # Every traversable cell next to a step is a step edge with a cost
+      # band this far out (robot_radius and a foot's reach beyond the body),
+      # paid for by step_edge_cost_weight below, and the cells on the low
+      # side of a step are strung into lines: one at least kerb_min_length
+      # long with kerb_min_sure_cells cells of a two-cell step (0.1 m or
+      # more of true height, which no slope under max_slope_deg makes; a
+      # one-cell step is as often a slope's contour line) and level ground
+      # behind it is a kerb, crossed on kerb links only (kerb_* below).
+      step_edge_cost_radius: 0.4
+      kerb_min_length: 1.0
+      kerb_min_sure_cells: 3
+      # The measured floor (2026-10-29): outdoor_1027's 12 cm kerb is one
+      # voxel along its whole length, no kerb above, and the G23 fell at it a
+      # third time in the sim with the kerb links in. map.pcd beside the tree
+      # holds the true heights, so each traversable cell gets the median of
+      # the cloud's points in its top voxel, smoothed over its neighbours
+      # within floor_same_surface of it, and between two measured cells a
+      # step is metric: under step_edge_min_rise level (a 20 deg slope rises
+      # 0.036 m per column; the contour lines vanish), from it a sure step
+      # (the kerb is a kerb along its whole length). Only the points in
+      # traversable cells' voxels are kept while the file streams: +0.12 s
+      # on outdoor_1027 (4.2 M points), +0.64 s on dp_1028 (24 M), both on
+      # the Mac's sim container. A missing or unreadable map.pcd logs a
+      # warning and the voxels are read as before; false skips it.
+      measured_floor: true
+      step_edge_min_rise: 0.06
+      floor_same_surface: 0.05
 
       # ---- stair links (baked in at startup) ----
       # The geometry rules refuse every stair (step and slope), and relaxing
@@ -281,6 +312,18 @@
       stair_detect_min_width: 0.6
       # Smallest blob read (m2): three steps a metre wide.
       stair_detect_min_area: 0.5
+      # Kerb links (2026-10-29): at every cell of a kerb the surface map
+      # found (step edges above) a straight crossing square to it, kerb_lead
+      # either side (the body is 0.76 m long: half a metre lines the hind
+      # feet up before the fore feet reach the edge), over ground that stays
+      # level but for the kerb; the search crosses the kerb on these only and
+      # the shortcut never spans one, so the path meets a kerb square and
+      # once. The kerb's direction at a cell is fitted to its cells within
+      # kerb_fit_radius. false = a kerb is crossed cell to cell at any angle,
+      # the behaviour before 2026-10-29.
+      kerb_links: true
+      kerb_lead: 0.5
+      kerb_fit_radius: 0.5
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
@@ -314,6 +357,18 @@
       # Factor on a stair link's 3D length: a level detour up to this many
       # times longer wins over the stairs. >= 1 (keeps the heuristic admissible).
       stair_cost_multiplier: 2.0
+      # Move length x (1 + weight * exp(-scaling * step_d)) inside a step
+      # edge's band (step_edge_cost_radius): 2.0 on the edge, 1.14 at the
+      # band's 0.4 m edge. A one-cell step, a kerb or a contour line alike,
+      # gets step_edge_one_cell of the weight: a route still crosses contour
+      # lines as it likes and only stops running along them. What the band
+      # beats: outdoor_1027's pavement shortcut saved 0.36 m of 72 over ~4 m
+      # along the kerb. A kerb link's length is paid at kerb_cost_multiplier
+      # (>= 1): slower than floor, not a flight.
+      step_edge_cost_weight: 1.0
+      step_edge_cost_scaling: 5.0
+      step_edge_one_cell: 0.5
+      kerb_cost_multiplier: 1.5
 
       # ---- dynamic obstacles (2026-10-21) ----
       # The surface map is static, so on its own a replan returns the route

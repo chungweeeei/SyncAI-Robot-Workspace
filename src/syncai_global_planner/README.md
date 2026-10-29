@@ -198,7 +198,9 @@ arriving meanwhile fail with `map_loading`):
    usable one within `max_step_height` (0.17 m, the legs' step capability
    and a standard riser; rounded to two cells at 0.1 m, so a 0.15 m kerb is
    one step and a 0.5 m ledge is not). A neighbour column with no surface at
-   all is a *gap* (never observed), left to the footprint rule.
+   all is a *gap* (never observed), left to the footprint rule. A step the
+   rule allows is still a step: see **Kerbs** for what the search makes of
+   it.
 5. **Footprint**: of the columns within `robot_radius` (0.25 m, the 2D
    costmap's inscribed radius), at least `footprint_min_support` (80 %) must
    hold a usable surface inside the slope cone (tolerance grows with
@@ -351,6 +353,84 @@ the middle stair's foot to its head is 17 m. The stand-in may cross a straight
 flight anywhere more than 0.5 m in from its edges, and entries are tried
 within `stair_straight_half_width` of it, so a flight wider than ~4 m is used
 over part of its width.
+
+**Kerbs** (2026-10-29). A step within `max_step_height` is one piece of
+ground, which is right -- the legs take a kerb -- and was also how the G23
+fell twice at the same kerb on outdoor_1027 (sim, 2026-10-28): the shortest
+line to the goal cut the pavement's corner and ran along the kerb's edge at
+~15°, a pair of feet on each side, in the flat gait. Two things change
+that. Every traversable cell next to a step is a *step edge*, and a second
+distance field (`step_d`, out to `step_edge_cost_radius`, 0.4 m: the
+footprint and a foot's reach beyond it) puts a cost band round it like the
+clearance band (`step_edge_cost_weight`, the same curve), so running along
+a kerb costs more than keeping off it while crossing one costs almost
+nothing. At 0.1 m voxels a one-cell step is as often a slope's contour line
+as a kerb -- a 20° slope rises 0.036 m per column, so it can never change
+two cells between neighbours, while a 12 cm kerb shows as one cell along
+most of its length and two where the road is lowest -- so a one-cell edge
+gets `step_edge_one_cell` of the weight, and the heights the edges are read
+from are the median over each cell's movable neighbours (read raw, the
+floor's scatter made 38 000 step cells of outdoor_1027's road; the median
+leaves 17 000, the lines). The cells on the low side of a step are then
+strung into lines (neighbours whose step faces within ~45° of the same way,
+so a contour line that runs into a kerb is a line of its own), and a line
+at least `kerb_min_length` (1 m) long with `kerb_min_sure_cells` (3) cells
+of a two-cell step and level ground four cells past the step (a stair's
+first tread, an island joined to the floor by the step rule, has the next
+riser 0.3 m on) is a **kerb**, its cells sure steps in the band whatever
+their own voxels say. Each kerb then gets **kerb links** (`kerb_links`,
+`stair_links.cpp`): at every cell of it the line's local direction (a fit
+over its cells within `kerb_fit_radius`) gives the normal, along which a
+straight crossing `kerb_lead` (0.5 m, half the body's length) either side
+is marched over traversable ground that stays within a cell of the low
+side's height before the kerb and of the high side's after it; each that
+gets across is a link, four points (the lead-in, the kerb's two sides, the
+lead-out), taken at `kerb_cost_multiplier` (1.5) × its length. Where a link
+crosses, the plain step over the kerb is not a move (`kerbCrossing`,
+whichever way) and the line-of-sight shortcut refuses to span it, so the
+route meets a kerb square, holds the heading for the lead either side and
+cannot be straightened back into the diagonal; where none could be laid (a
+wall right behind, a second step within the lead) the kerb is crossed as
+before, with a startup note. Both sides of a kerb are one component, so the
+links join nothing, and a kerb's rise is under the controllers' stair
+mode's `min_rise`, so the gait does not change for it. The kerb scene
+(`--synthetic kerb`, a 0.15 m step): 74 links, a route from (2, 2) to
+(10, 6) crosses at y = 4.25 from x 5.55 to 6.45 in one straight line.
+
+**The measured floor** (2026-10-29). The voxels alone cannot do this for
+outdoor_1027's own kerb: 12 cm, one cell along its whole length in the
+0.1 m octomap, so a step edge with the one-cell band but no kerb, and the
+G23 fell at it a third time in the sim with the kerb links in (a route from
+(63.4, 29.4) to (15.9, 3.5) stepped onto the pavement's corner at
+(49.2, 19.4) and walked its south edge, 6-8 cm on one side and 15-16 on the
+other, until it fell at (49.0, 19.5)). `map.pcd`, beside the tree, holds
+the true heights. So the build (`computeMeasuredFloor`, stage 7b) streams
+it once, keeps only the points that fall in a traversable cell's top voxel
+-- walls, trees, ceilings and the floors under rejected cells are dropped
+as they are read, so the memory is the floor's points, not the file -- and
+gives every traversable cell a `floor_z`: the median of its points,
+smoothed edge-preserving (the median of the raw floors within two columns
+on its surface that lie within `floor_same_surface`, 0.05 m, of its own; a
+cell without points of its own takes those inside its own voxel; fewer than
+three votes leave it NaN). Between two cells that both have one, the step
+edges, the kerb lines, the kerb links' march and `kerbCrossing` read the
+metric height (`SurfaceMap::stepCells`): under `step_edge_min_rise`
+(0.06 m) is level, from it a sure step. A slope's contour lines vanish (a
+20° slope rises 0.036 m per column) and a 12 cm kerb is a sure step along
+its whole length; anywhere either cell has no measured floor (no
+`map.pcd`, an inferred cell, a voxel with too few returns) the voxels are
+read exactly as before, and the traversability rules never read it. On
+outdoor_1027: 107 694 of 110 073 traversable cells measured; step edges
+16 861 → 12 942, of which sure 8 → 11 313; kerbs 0 → 1 (11 links); and the
+falling route now keeps off the pavement altogether -- steps over 6 cm
+under its centre or either foot line (±0.2 m), read off the sim's own
+floor: 34 → 15, none at the fall. On dp_1028 the stairs' 9 links are
+unchanged, its ground floor indoors has 7 sure step cells, and its 3 kerbs
+are outdoors. The cost, on the Mac's sim container: +0.12 s for
+outdoor_1027's 4.2 M points, +0.64 s for dp_1028's 24 M (2.35 → 2.90 s in
+all), in the background build thread; robot01 not measured yet.
+`measured_floor: false`, or the CLI's `--no-floor-pcd`, reads the voxels
+alone, and the plan is then bit-for-bit what it was.
 
 A stretch that is not one straight flight is laid as **flights and landing
 corners** since 2026-10-21 (`stair_flights`), because the legs climb a
@@ -516,7 +596,8 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --poses map/<name>/poses.txt --check-poses                  # the map's own track on traversable ground?
    … --poses … --inspect-misses 3 / --inspect-kf 19 / --inspect x y   # ASCII map of the cells around a point
    … --dump-image out.bmp [--image-z 5.1] [--image-region x0 y0 x1 y1 --image-scale 4] [--image-components]
-   … --dump-pcd out.pcd                                          # x y z label reject unknown clearance component
+   … --dump-pcd out.pcd                                          # x y z label reject unknown clearance component floor_z step_rise kerb
+   … --no-floor-pcd / --floor-pcd other.pcd                      # the measured floor: map.pcd beside the .bt by default, as the plugin
    … --synthetic two_floors --write-bt out.bt                    # a test scene as a real .bt (the CI smoke's 3D fixture)
    … --plan sx sy sz gx gy gz --out path.csv / --plan-poses i j  # z are height hints
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
@@ -812,6 +893,10 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `max_unknown_clearance_cells`, `min_known_free_above` | `-1` (all), `1` | Unknown tolerated in the band; observed-free voxels required right above a surface. Build-time |
 | `hole_fill_radius`, `hole_fill_min_support`, `hole_fill_passes` | `0.3`, `0.5`, `2` | See the build, step 3. Build-time |
 | `clearance_cost_radius` | `0.55` | Reach of the clearance field from the traversable boundary. Build-time |
+| `step_edge_cost_radius`, `kerb_min_length`, `kerb_min_sure_cells` | `0.4`, `1.0`, `3` | The step edges' cost band, and what makes a line of step cells a kerb (see **Kerbs**). Build-time |
+| `measured_floor`, `step_edge_min_rise`, `floor_same_surface` | `true`, `0.06`, `0.05` | Read `map.pcd` beside the tree for each cell's measured floor; the metric height from which a step between two measured cells is a sure step; how far a neighbour's floor may be from a cell's own to vote in its smoothing (see **Kerbs**, *The measured floor*). Build-time |
+| `kerb_links`, `kerb_lead`, `kerb_fit_radius` | `true`, `0.5`, `0.5` | Kerb links: a straight crossing at every cell of a kerb, the lead either side, the fit of the kerb's direction (see **Kerbs**); `false` = a kerb is crossed cell to cell at any angle. Build-time |
+| `step_edge_cost_weight`, `step_edge_cost_scaling`, `step_edge_one_cell`, `kerb_cost_multiplier` | `1.0`, `5.0`, `0.5`, `1.5` | The band's cost curve, a one-cell step's share of it, and the factor on a kerb link's length (≥ 1). Dynamic |
 | `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area`, `stair_smooth_passes` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m², `2` | Stair links from the track (see **Stairs**). Build-time |
 | `stair_straight`, `stair_straight_max_flight`, `stair_straight_fit_radius`, `stair_straight_half_width`, `stair_straight_exit_reach` | `true`, `8.0`, `1.0`, `2.0`, `0.6` | Straight links across a single flight's width instead of one along the walk (see **Stairs**); `false` = the walked link only. Build-time |
 | `stair_cost_multiplier` | `2.0` | Factor on a link's 3D length (≥ 1). Dynamic |
@@ -923,6 +1008,21 @@ ros2 service call /<robot_id>/planner_server/Octo3D/clear_overlay \
 - **`Octo3D` trips the `expected_planner_frequency` warning** on a long
   plan only in theory (a 50 m search is a few ms); if it does, it is the
   canary described under Parameters, not a fault.
+- **Without `map.pcd`, a 10–13 cm kerb is invisible to the kerb links.**
+  The voxels make such a kerb a one-cell step along most of its length --
+  the same as the contour lines a gently sloping road makes every metre or
+  so -- so it is a kerb only with the measured floor (**Kerbs**), which
+  needs the `map.pcd` beside `octomap.bt`. A map directory without one
+  (or `measured_floor: false`) is planned as before 2026-10-29: the
+  startup log says `measured floor: cannot open …`, and outdoor_1027's
+  route runs along its kerb again. A keepout zone over the pavement is the
+  way to keep a route off such a kerb there.
+- **A gutter is not a kerb.** A kerb line needs level ground four cells
+  past the step, so a 0.4 m drain channel 10 cm deep (outdoor_1027 at
+  x 35.0–35.4, y 10–12) is two opposite step edges with the full band and
+  no links: a route still crosses it at whatever angle the band leaves it
+  (2026-10-29, the falling route's crossing at (35.3, 11.0)). Whether the
+  gait takes one diagonally is untested.
 
 Upstream reference: [`nav2_planner`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_planner)
 (the removed 2D plugins were ports of `nav2_navfn_planner` and

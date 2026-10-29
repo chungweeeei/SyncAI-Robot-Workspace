@@ -80,6 +80,13 @@ double SurfaceAStar::cellCostFactor(
   if (cell.gap_cnt > 0 && map_->footprint_n > 0) {
     f *= 1.0 + p.gap_cost_weight * cell.gap_cnt / static_cast<double>(map_->footprint_n);
   }
+  // The step edge's band (surface_map.hpp): a sure step's at full weight, a
+  // one-cell step's -- a kerb or a contour line -- at a share of it.
+  if (cell.edge_rise > 0 && cell.step_d < map_->params.step_edge_cost_radius) {
+    const double w =
+      p.step_edge_cost_weight * (cell.edge_rise >= kSureStepCells ? 1.0 : p.step_edge_one_cell);
+    f *= 1.0 + w * std::exp(-p.step_edge_cost_scaling * cell.step_d);
+  }
   return f;
 }
 
@@ -263,6 +270,7 @@ PlanResult SurfaceAStar::plan(
   parent_[start] = kNoCell;
   parent_link_[start] = -1;
   const double stair_factor = std::max(1.0, p.stair_cost_multiplier);
+  const double kerb_factor = std::max(1.0, p.kerb_cost_multiplier);
   open_stamp_[start] = gen;
   open.push({static_cast<float>(heuristic(start)), start});
 
@@ -315,6 +323,11 @@ PlanResult SurfaceAStar::plan(
       if (closed_stamp_[n] == gen || blocked.blocked(m, n)) {
         return;
       }
+      // Over a kerb a link crosses, the kerb is taken on the link (below),
+      // square to it, never cell to cell at whatever angle the route likes.
+      if (links_ && links_->kerbCrossing(m, c, n)) {
+        return;
+      }
       const double dz = m.zTop(n) - zc;
       const double len = std::sqrt(
         (SurfaceMap::kDx8[k] * SurfaceMap::kDx8[k] + SurfaceMap::kDy8[k] * SurfaceMap::kDy8[k]) *
@@ -343,7 +356,8 @@ PlanResult SurfaceAStar::plan(
           if (closed_stamp_[n] == gen) {
             continue;
           }
-          const float ng = g_[c] + static_cast<float>(l.length * stair_factor);
+          const float ng =
+            g_[c] + static_cast<float>(l.length * (l.kerb ? kerb_factor : stair_factor));
           if (open_stamp_[n] != gen || ng < g_[n]) {
             open_stamp_[n] = gen;
             g_[n] = ng;
