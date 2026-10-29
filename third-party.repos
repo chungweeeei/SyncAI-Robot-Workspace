@@ -3,6 +3,7 @@
 #   vcs import --recursive < third-party.repos          # populate a fresh clone
 #   vcs import --recursive < third-party.repos --force  # re-checkout after changing a pin below
 #   vcs status src                                      # what is actually checked out
+#   scripts/sync.sh                                     # follow a bumped pin (git only, no vcs)
 #
 # --recursive for direct_visual_lidar_calibration's git submodules; it is a
 # no-op for the other entries.
@@ -32,6 +33,8 @@
 # `src/third-party/` is gitignored -- these repos are materialised, not committed.
 # To bump one, edit its `version` here and commit that one-line diff; the old
 # two-commit submodule dance (checkout inside, commit the pointer outside) is gone.
+# Every other host follows it with scripts/sync.sh, which checks the new pin out
+# in place (and does the package.xml step below).
 #
 # After EVERY import, regenerate the livox driver's package.xml -- the repo ships
 # only package_ROS1.xml / package_ROS2.xml and its own build.sh is what copies one

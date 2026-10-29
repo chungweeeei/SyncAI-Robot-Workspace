@@ -661,7 +661,10 @@ something to verify or edit here.
   live — the session name follows the mode), `sync.sh` (host-side, git only:
   `git pull` of the workspace plus a fast-forward of every `dependencies.repos`
   checkout on its pinned branch — a plain pull never touches them; a checkout
-  on another branch is fetched only), `build.sh` (in-image, see Build),
+  on another branch is fetched only — and a checkout of every
+  `third-party.repos` pin, with submodules and the livox `package.xml`; a
+  third-party checkout on a branch away from its pin is left alone),
+  `build.sh` (in-image, see Build),
   `urdf2glb.py` (see "Out of tree"), `calibration/` (camera intrinsics and
   lidar-camera extrinsic; `collect_board.py` / `snapshot.py` need rclpy, the
   rest only numpy + OpenCV + PyYAML and also run on the host), and `release/`
