@@ -48,6 +48,14 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PWD=${POSTGRES_PASSWORD:-postgres}
       - POSTGRES_SEEDS=${TEMPORAL_POSTGRES_SEEDS:-postgres}
+      # How long a closed workflow stays in the `default` namespace: the
+      # backend's task history (GET /api/v1/task_history) and a closed run's
+      # detail reach back exactly this far. auto-setup's default is 24h, too
+      # short for the console's history range filter. Read only when the
+      # namespace is created (a fresh ./data/postgres); on a running stack
+      # it is `temporal operator namespace update --namespace default
+      # --retention 5d` inside the container, as the backend's README says.
+      - DEFAULT_NAMESPACE_RETENTION=${TEMPORAL_NAMESPACE_RETENTION:-5d}
     ports:
       # Temporal frontend gRPC endpoint (SDK clients connect here)
       - "7233:7233"
