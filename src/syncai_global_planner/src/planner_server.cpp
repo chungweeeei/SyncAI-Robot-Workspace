@@ -1,6 +1,7 @@
 #include "syncai_global_planner/planner_server.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
@@ -38,6 +39,16 @@ size_t closestPoseIndex(
     }
   }
   return closest_idx;
+}
+
+// "(1.23, -4.56, z 0.00) in 'map'", for the goal / start lines.
+std::string describePose(const geometry_msgs::msg::PoseStamped & p)
+{
+  char buf[128];
+  std::snprintf(
+    buf, sizeof(buf), "(%.2f, %.2f, z %.2f) in '%s'", p.pose.position.x, p.pose.position.y,
+    p.pose.position.z, p.header.frame_id.c_str());
+  return buf;
 }
 
 }  // namespace
@@ -128,9 +139,8 @@ void PlannerServer::configure()
   } else {
     RCLCPP_WARN(
       this->get_logger(),
-      "[PlannerServer][%s] The expected planner frequency parameter is %.4f Hz. The value should "
-      "to be greater"
-      " than 0.0 to turn on duration overrrun warning messages",
+      "[PlannerServer][%s] expected_planner_frequency is %.4f Hz; it must be greater than 0 for "
+      "the slow-plan warning, which is now off",
       __func__, expected_planner_frequency);
     max_planner_duration_ = 0.0;
   }
@@ -213,6 +223,9 @@ void PlannerServer::getPreemptedGoalIfRequested(std::shared_ptr<const ActionToPo
 {
   if (action_server_pose_->is_preempt_requested()) {
     goal = action_server_pose_->accept_pending_goal();
+    RCLCPP_INFO(
+      get_logger(), "[PlannerServer][%s] Preempted by a new goal to %s", __func__,
+      describePose(goal->goal).c_str());
   }
 }
 
@@ -222,6 +235,14 @@ bool PlannerServer::getStartPose(
   if (goal->use_start) {
     start = goal->start;
   } else if (!costmap_ros_->getRobotPose(start)) {
+    // The TF helper logs the lookup's own error just above; this says what
+    // it cost. A ComputePathToPose result carries no reason, so this line is
+    // the only record of why the BT's ComputePathToPose failed.
+    RCLCPP_ERROR(
+      get_logger(),
+      "[PlannerServer][%s] Plan aborted: no robot pose (%s in %s) to start from -- is the "
+      "localizer / lio_bridge publishing map -> odom -> base_link?",
+      __func__, costmap_ros_->getBaseFrameID().c_str(), costmap_ros_->getGlobalFrameID().c_str());
     action_server_pose_->terminate_current();
     return false;
   }
@@ -232,13 +253,21 @@ bool PlannerServer::getStartPose(
 bool PlannerServer::transformPosesToGlobalFrame(
   geometry_msgs::msg::PoseStamped & curr_start, geometry_msgs::msg::PoseStamped & curr_goal)
 {
-  if (
-    !costmap_ros_->transformPoseToGlobalFrame(curr_start, curr_start) ||
-    !costmap_ros_->transformPoseToGlobalFrame(curr_goal, curr_goal)) {
-    RCLCPP_WARN(
+  // Which of the two, and from which frame: a goal sent in a frame nobody
+  // publishes (a typo, a robot_id prefix on `map`) is the usual cause, and
+  // the old line did not say it was the goal.
+  const auto transform = [&](geometry_msgs::msg::PoseStamped & pose, const char * what) {
+    const std::string from = pose.header.frame_id;
+    if (costmap_ros_->transformPoseToGlobalFrame(pose, pose)) {
+      return true;
+    }
+    RCLCPP_ERROR(
       get_logger(),
-      "[PlannerServer][%s] Could not transform the start or goal pose in the costmap frame",
-      __func__);
+      "[PlannerServer][%s] Plan aborted: cannot transform the %s pose from '%s' to '%s'", __func__,
+      what, from.c_str(), costmap_ros_->getGlobalFrameID().c_str());
+    return false;
+  };
+  if (!transform(curr_start, "start") || !transform(curr_goal, "goal")) {
     action_server_pose_->terminate_current();
     return false;
   }
@@ -251,11 +280,14 @@ bool PlannerServer::validatePath(
   const std::string & planner_id)
 {
   if (path.poses.size() == 0) {
+    // The planner's own line just above has the reason (Octo3D: the
+    // failure name and the numbers); this one closes the goal.
     RCLCPP_WARN(
       get_logger(),
-      "[PlannerServer][%s] Planning algorithm %s failed to generate a valid"
-      " path to (%.2f, %.2f)",
-      __func__, planner_id.c_str(), goal.pose.position.x, goal.pose.position.y);
+      "[PlannerServer][%s] Plan failed: planner '%s' returned no path to %s (its reason is "
+      "logged above)",
+      __func__, planner_id.empty() ? "(none given)" : planner_id.c_str(),
+      describePose(goal).c_str());
     action_server_pose_->terminate_current();
     return false;
   }
@@ -283,6 +315,12 @@ void PlannerServer::isPathValid(
 
   const auto & poses = request->path.poses;
   if (poses.empty()) {
+    // One of the configuration faults above, so loud: silent, the BT replans
+    // once a second with nothing in this log to say why.
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "[PlannerServer][%s] Asked to check an empty path; answering blocked so the BT replans",
+      __func__);
     return;
   }
   // A navigation is running: its BT checks the path once a tick (1 Hz), so
@@ -333,16 +371,11 @@ void PlannerServer::isPathValid(
       __func__, planner_id.c_str(), planner_ids_concat_.c_str());
     return;
   }
+  // The planner logs a blocked path itself, with what blocks it and for how
+  // long (Octo3D: marks / zones, distance ahead); a second line here said
+  // less, every second.
   response->is_valid =
     planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
-  if (!response->is_valid && !response->invalid_pose_indices.empty()) {
-    const size_t first_idx = static_cast<size_t>(response->invalid_pose_indices.front());
-    RCLCPP_INFO(
-      get_logger(),
-      "[PlannerServer][%s] Path blocked by planner %s: %zu poses, first at index %zu (%.2f, %.2f)",
-      __func__, planner_it->first.c_str(), response->invalid_pose_indices.size(), first_idx,
-      poses[first_idx].pose.position.x, poses[first_idx].pose.position.y);
-  }
 }
 
 void PlannerServer::computePlan()
@@ -361,6 +394,15 @@ void PlannerServer::computePlan()
     }
 
     getPreemptedGoalIfRequested(goal);
+
+    // What was asked, so the planner's success or failure line below can be
+    // read against it (a ComputePathToPose result carries no reason, and the
+    // BT logs only that the node failed).
+    const std::string start_desc =
+      goal->use_start ? describePose(goal->start) : std::string("the robot pose");
+    RCLCPP_INFO(
+      get_logger(), "[PlannerServer][%s] Plan request: planner '%s', goal %s, start %s", __func__,
+      goal->planner_id.c_str(), describePose(goal->goal).c_str(), start_desc.c_str());
 
     // No wait for the costmap to be current (upstream's, and GridBased's
     // until 2026-10-28): no loaded planner reads its cells, and it has no
@@ -390,20 +432,24 @@ void PlannerServer::computePlan()
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
 
+    // Said as a duration: plans are made once per goal and on a blocked
+    // path, so "missed its desired rate" read as a loop that does not exist.
     if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
       RCLCPP_WARN(
         get_logger(),
-        "[PlannerServer][%s] Planner loop missed its desired rate of %.4f Hz. Current loop rate is "
-        "%.4f Hz",
-        __func__, 1 / max_planner_duration_, 1 / cycle_duration.seconds());
+        "[PlannerServer][%s] Plan took %.3f s, over the %.3f s of expected_planner_frequency "
+        "(%.1f Hz); a warning only",
+        __func__, cycle_duration.seconds(), max_planner_duration_, 1 / max_planner_duration_);
     }
 
     action_server_pose_->succeeded_current(result);
   } catch (std::exception & ex) {
-    RCLCPP_WARN(
+    // A plugin is meant to fail with an empty path, never to throw: ERROR.
+    RCLCPP_ERROR(
       get_logger(),
-      "[PlannerServer][%s] %s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"", __func__,
-      goal->planner_id.c_str(), goal->goal.pose.position.x, goal->goal.pose.position.y, ex.what());
+      "[PlannerServer][%s] Plan aborted: planner '%s' threw planning to %s after %.3f s: %s",
+      __func__, goal->planner_id.c_str(), describePose(goal->goal).c_str(),
+      (this->now() - start_time).seconds(), ex.what());
     action_server_pose_->terminate_current();
   }
 }
@@ -433,7 +479,7 @@ nav_msgs::msg::Path PlannerServer::getPlan(
     } else {
       RCLCPP_ERROR(
         get_logger(),
-        "[PlannerServer][%s] planner %s is not a valid planner. "
+        "[PlannerServer][%s] planner '%s' is not a valid planner. "
         "Planner names are: %s",
         __func__, planner_id.c_str(), planner_ids_concat_.c_str());
     }
@@ -480,10 +526,12 @@ void PlannerServer::republishPlan()
              std::chrono::duration<double>(plan_idle_clear_time_);
   }
   if (idle) {
-    RCLCPP_INFO(
-      get_logger(), "[PlannerServer][%s] No navigation has used the plan for %.0f s", __func__,
+    char reason[96];
+    std::snprintf(
+      reason, sizeof(reason),
+      "no navigation planned or checked it for %.0f s (plan_idle_clear_time)",
       plan_idle_clear_time_);
-    dropPlan();
+    dropPlan(reason);
     return;
   }
   if (plan_publisher_->get_subscription_count() == 0) {
@@ -531,10 +579,10 @@ void PlannerServer::clearPlan(
   // The republish would otherwise keep a finished route on `plan` for good:
   // the backend forwards it to the console, which drew the last route until
   // the next goal replaced it.
-  dropPlan();
+  dropPlan("clear_plan called");
 }
 
-void PlannerServer::dropPlan()
+void PlannerServer::dropPlan(const std::string & reason)
 {
   // An empty path is the clear both rviz and the backend's path subscriber
   // already understand. Its frame is the global frame, not empty: the backend
@@ -549,7 +597,7 @@ void PlannerServer::dropPlan()
     // the rest, one per plan_republish_rate tick (none when it is 0).
     clear_resends_left_ = kClearResends - 1;
   }
-  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared", __func__);
+  RCLCPP_INFO(get_logger(), "[PlannerServer][%s] Plan cleared: %s", __func__, reason.c_str());
 
   if (plan_publisher_->get_subscription_count() > 0) {
     auto msg = std::make_unique<nav_msgs::msg::Path>();
@@ -573,12 +621,14 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
       if (name == "expected_planner_frequency") {
         if (parameter.as_double() > 0) {
           max_planner_duration_ = 1 / parameter.as_double();
+          RCLCPP_INFO(
+            get_logger(), "[PlannerServer][%s] expected_planner_frequency set to %.4f Hz", __func__,
+            parameter.as_double());
         } else {
           RCLCPP_WARN(
             get_logger(),
-            "[PlannerServer][%s] The expected planner frequency parameter is %.4f Hz. The value "
-            "should to be greater"
-            " than 0.0 to turn on duration overrrun warning messages",
+            "[PlannerServer][%s] expected_planner_frequency is %.4f Hz; it must be greater than 0 "
+            "for the slow-plan warning, which is now off",
             __func__, parameter.as_double());
           max_planner_duration_ = 0.0;
         }

@@ -114,9 +114,9 @@ before 2026-10-19 that wait had no way out, and a `GridBased` goal on a
 Any exception from a plugin is caught and turned into `terminate_current()` with
 a warning — a planner failure fails the goal, never the process.
 
-`expected_planner_frequency` only controls a warning: if a cycle takes longer
-than its reciprocal, the server logs "Planner loop missed its desired rate". It
-does not throttle or abort anything.
+`expected_planner_frequency` only controls a warning: if a plan takes longer
+than its reciprocal, the server logs "Plan took N s, over the …". It does not
+throttle or abort anything.
 
 **`getPlan()` selects the plugin by `planner_id`.** An unknown id logs an error
 and returns an empty path; an *empty* id with exactly one plugin loaded — the
@@ -127,6 +127,36 @@ in `move.xml` / `dock.xml`.
 (plan `start → goals[0] → goals[1] → …` as concatenated segments) was ported
 but never called — the trees only use `ComputePathToPose`, and the backend
 sequences multi-stop tasks as separate `MOVE` steps. git history has it.
+
+### Reading the log after a failed plan
+
+A `ComputePathToPose` result carries no reason, so the task runner's
+`NavigateToGoal` result says `PLAN_FAILED` with "planner compute_path_to_pose
+aborted the goal" and nothing more; **the planner's log is the one place the
+reason is written.** Each plan and each way a navigation's path
+check can go has a line, with the numbers that decided it. In order of
+appearance:
+
+| Line | Level | What it tells you |
+|---|---|---|
+| `Plan request: planner 'X', goal (x, y, z) in 'frame', start …` | INFO | What the BT asked for. Read every later line against the last of these. `Preempted by a new goal to …` when a newer request replaced it before it ran |
+| `Plan aborted: no robot pose (base_link in map) …` | ERROR | `map → odom → base_link` missing; the TF helper's own ERROR above it has the TF reason |
+| `Plan aborted: cannot transform the start / goal pose from 'F' to 'map'` | ERROR | A goal (or explicit start) in a frame TF cannot reach — usually a frame-id typo |
+| `[createPlan] <failure>: <detail> [start (…) -> goal (…)]` | ERROR | `Octo3D`'s reason: `map_not_loaded` / `map_loading`, `start_outside_map` / `goal_outside_map`, `start_unavailable` / `goal_unavailable` (what the snap found in that column, and how many cells marks or zones refused), `start_in_keepout` (the zone), `disconnected` (the two components), `search_limit` / `timeout` (iterations, seconds), `no_path` (marks and zones that may have closed the way). The bracket is the request with the start's z from TF, which picks the floor |
+| `Plan failed: planner 'X' returned no path to …` | WARN | The server closing the goal; the reason is the line above |
+| `Plan aborted: planner 'X' threw …` | ERROR | A plugin threw instead of returning an empty path — a bug, with the exception text |
+| `[createPlan] N poses, L m, z … dynamic marks (last scan N s ago) …` | INFO | A plan made: length, heights, stair links taken, the marks and zones it planned round, the time, and the request |
+| `Plan took N s, over the … of expected_planner_frequency` | WARN | A slow search (a canary, not a failure; see Parameters) |
+| `[isPathValid] Path blocked for N s: …` | INFO, on change + every 5 s | The running path reads blocked: how far ahead, where, how many poses, marks vs zones. `move.xml` replans after `blocked_time` (10 s) of it |
+| `[isPathValid] Path clear again after N s blocked (…)` | INFO | The spell ended — the blocker left, a replan went round it, or the check stopped judging (robot on a stair) |
+| `[isPathValid] dynamic overlay has never had a scan / has had no scan for N s …` | WARN, 10 s | The overlay is not receiving `pointlio/body_cloud` in the map frame, so nothing new is marked and every path reads valid: the robot drives up to a blocker and leaves it to MPPI. Said only while a navigation checks its path |
+| `no TF map -> <robot_id>/pointlio_body (<tf error>) …` | WARN, 5 s | The planner cannot place the robot on a floor: a plan takes the request's z (0 — wrong upstairs) and the path check keeps the path unchecked |
+| `Plan cleared: <reason>` | INFO | `clear_plan called` (the task runner, on a success or a cancel; `load_map`) or the `plan_idle_clear_time` expiry |
+| `load_map '<file>' done in N s` / `reload from '<file>' failed: …` | INFO / ERROR | The end of a map switch, after the build's own surface-map, stair-link and keepout lines |
+| `parameters set: …` / `parameter change refused: …` | INFO / WARN | A runtime `ros2 param set` on `Octo3D.*`, with what it changed; a refusal names the values already applied before the refused one |
+
+The `is_path_valid` lines are logged on a change (and every 5 s while
+blocked) because the BT asks once a second for the whole navigation.
 
 ## Planner plugins
 
