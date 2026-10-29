@@ -446,6 +446,8 @@ public:
     std::shared_ptr<syncai_common::srv::IsValid::Response> response);
 
   void publishMapCloud(builtin_interfaces::msg::Time & time);
+  // The "no map" message on map_cloud, latched at a start with no map (loadInitialMap).
+  void publishEmptyMapCloud();
 
 private:
   // auto_localize's search half, shared with reset_odometry's fallback:

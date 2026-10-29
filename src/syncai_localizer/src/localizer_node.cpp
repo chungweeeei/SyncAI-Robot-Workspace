@@ -176,23 +176,32 @@ LocalizerNode::LocalizerNode() : Node("localizer_node")
 
 void LocalizerNode::loadInitialMap()
 {
+  // No map is a state the stack runs in, not only a failure: a robot with no map yet (first
+  // deployment, `[map] name:` left empty) gets an empty map_path from the launch. Each branch
+  // that starts without one latches an empty map_cloud, so a viewer that joins sees "no map"
+  // rather than nothing at all -- the convention pgo_node's empty merge set -- and timerCB
+  // keeps broadcasting the identity offset, so map -> base_link exists for the console.
   if (m_config.map_path.empty()) {
     RCLCPP_WARN(
       this->get_logger(),
-      "map_path is empty: starting with no map — localization stays idle until "
-      "the relocalize service loads one");
+      "map_path is empty: starting with no map — the identity map -> %s is broadcast and "
+      "registration stays idle until the relocalize service loads one",
+      m_config.local_frame.c_str());
+    publishEmptyMapCloud();
     return;
   }
   if (!std::filesystem::exists(m_config.map_path)) {
     RCLCPP_ERROR(
       this->get_logger(), "map_path '%s' does not exist: starting with no map",
       m_config.map_path.c_str());
+    publishEmptyMapCloud();
     return;
   }
   if (!m_localizer->loadMap(m_config.map_path)) {
     RCLCPP_ERROR(
       this->get_logger(), "failed to load map from '%s': starting with no map",
       m_config.map_path.c_str());
+    publishEmptyMapCloud();
     return;
   }
   setLoadedMap(m_config.map_path);
@@ -525,6 +534,16 @@ void LocalizerNode::timerCB()
     m_state.settle_until = now + rclcpp::Duration::from_seconds(m_config.post_reloc_settle);
   }
   const bool settling = now < m_state.settle_until;
+
+  // No map loaded: nothing to register against, so keep the offset (the identity until a map
+  // is loaded) on TF and skip the round. Without this the round reaches align(), which fails
+  // outright on the empty target, and after lost_backoff.after_rounds of those the node warns
+  // that it is lost -- on a robot that was never given a map. No guess can be pending here:
+  // relocalize loads its map before queueing one and initialpose is dropped without a map.
+  if (!m_localizer->isMapLoaded()) {
+    sendBroadCastTF(current_time);
+    return;
+  }
 
   // lost_backoff (NodeConfig): a lost robot with no guess to try registers
   // every lost_backoff_interval instead of at update_hz. Skipped like a
@@ -1692,6 +1711,16 @@ void LocalizerNode::publishMapCloud(builtin_interfaces::msg::Time & time)
   pcl::toROSMsg(*map_cloud, map_cloud_msg);
   map_cloud_msg.header.frame_id = m_config.map_frame;
   map_cloud_msg.header.stamp = time;
+  m_map_cloud_pub->publish(map_cloud_msg);
+}
+
+void LocalizerNode::publishEmptyMapCloud()
+{
+  // An empty cloud, latched like a loaded map's: a later relocalize replaces it.
+  sensor_msgs::msg::PointCloud2 map_cloud_msg;
+  pcl::toROSMsg(CloudType(), map_cloud_msg);
+  map_cloud_msg.header.frame_id = m_config.map_frame;
+  map_cloud_msg.header.stamp = this->now();
   m_map_cloud_pub->publish(map_cloud_msg);
 }
 

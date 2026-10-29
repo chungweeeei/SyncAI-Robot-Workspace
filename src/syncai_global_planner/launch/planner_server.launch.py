@@ -73,12 +73,23 @@ def read_map_pcd(config_path: str) -> str:
 
 
 def read_map_octomap(config_path: str) -> str:
-    """map/<name>/octomap.bt next to [map] pcd, or "" when there is no map.
+    """map/<name>/octomap.bt next to [map] pcd, or "" when there is no map
+    ([map] name empty, or no [map] pcd).
 
     The file is clean_map's (`--octomap 1` / map_clean_octomap) and is not
     written for every save, so its absence is logged, not fatal: the plugin
     is still loaded and reports map_not_loaded on its own plans.
     """
+    # An empty [map] name is a robot with no map yet (first deployment), and is
+    # said so: it still interpolates pcd into `map//map.pcd`, which would
+    # otherwise read as a missing octomap.bt under a map that does not exist.
+    config = configparser.ConfigParser()
+    if config.read(config_path) and not config.get("map", "name", fallback="").strip():
+        logger.warning(
+            f"No [map] name in '{config_path}': no map configured; the Octo3D planner "
+            "fails every plan with map_not_loaded until a map switch calls its load_map"
+        )
+        return ""
     pcd = read_map_pcd(config_path)
     if not pcd:
         logger.warning(
