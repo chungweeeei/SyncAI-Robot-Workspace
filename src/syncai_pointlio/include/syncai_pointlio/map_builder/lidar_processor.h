@@ -1,10 +1,12 @@
 #pragma once
-#include "syncai_pointlio/map_builder/commons.h"
-#include "syncai_pointlio/map_builder/point_ekf.h"
-#include "syncai_pointlio/map_builder/ikd_Tree.h"
-#include <pcl/filters/voxel_grid.h>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
+
 #include <cstdint>
+
+#include "syncai_pointlio/map_builder/commons.h"
+#include "syncai_pointlio/map_builder/ikd_Tree.h"
+#include "syncai_pointlio/map_builder/point_ekf.h"
 
 struct LocalMap
 {
