@@ -391,3 +391,33 @@
       # A registration seeds a later reset only if the odometry moved slower
       # than this since the previous one. Never affects what is broadcast.
       max_lio_speed: 3.0
+
+    # The health log (2026-10-30; NodeConfig in localizer_node.hpp has the
+    # argument, the README the states). One state -- NO_MAP / NO_ODOM /
+    # RESETTING / LOCALIZING / UNLOCALIZED / LOST / DEGRADED / OK -- logged on
+    # every change and summarised every summary_period s as a `loc health:`
+    # line; log only, nothing broadcast changes. The thresholds are first
+    # guesses from robot01's divergence of 2026-10-30, where the walking
+    # corrections ran ~1.2 cm mean / 4-6 cm max overnight and 7.6 / 35 cm in
+    # the round before Point-LIO diverged on the dock.
+    health:
+      # <= 0 turns the summary off; state changes are always logged.
+      summary_period: 10.0
+      # Seconds of rounds and LIO speeds the state is judged on.
+      window: 10.0
+      # LOST above this Point-LIO speed (m/s), measured on every cloud + odom
+      # pair. The robot tops out at 0.8; robot01's Point-LIO read 1.3-2.4 m/s
+      # on the dock ~25 s before it was gone for good.
+      max_lio_speed: 1.5
+      # DEGRADED: the tracking rounds' correction (the `loc:` line's first dt)
+      # above these, in metres, as a mean / at its largest...
+      degraded_mean_correction: 0.04
+      degraded_max_correction: 0.20
+      # ...or this many rounds dropped (not converged, low inliers,
+      # degenerate, jump rejected) in the window.
+      degraded_rejects: 2
+      # NO_ODOM after this long (s) without a cloud + odom pair.
+      odom_timeout: 1.0
+      # A better state is logged once it has held this long (s); a worse one
+      # at once. Keeps a window edge from flipping OK / DEGRADED every round.
+      recover_sec: 5.0

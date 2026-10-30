@@ -286,6 +286,23 @@ void LocalizerNode::loadParameters()
   m_config.max_lio_speed =
     declare_parameter<double>("reset_odom.max_lio_speed", m_config.max_lio_speed);
 
+  // The health log; NodeConfig has what each one decides.
+  m_config.health_summary_period =
+    declare_parameter<double>("health.summary_period", m_config.health_summary_period);
+  m_config.health_window = declare_parameter<double>("health.window", m_config.health_window);
+  m_config.health_max_lio_speed =
+    declare_parameter<double>("health.max_lio_speed", m_config.health_max_lio_speed);
+  m_config.health_degraded_mean_corr = declare_parameter<double>(
+    "health.degraded_mean_correction", m_config.health_degraded_mean_corr);
+  m_config.health_degraded_max_corr =
+    declare_parameter<double>("health.degraded_max_correction", m_config.health_degraded_max_corr);
+  m_config.health_degraded_rejects =
+    declare_parameter<int>("health.degraded_rejects", m_config.health_degraded_rejects);
+  m_config.health_odom_timeout =
+    declare_parameter<double>("health.odom_timeout", m_config.health_odom_timeout);
+  m_config.health_recover_sec =
+    declare_parameter<double>("health.recover_sec", m_config.health_recover_sec);
+
   // The nested names (initial_pose.x) line up with the retired syncai_amcl's set_initial_pose /
   // initial_pose.*; both are overridden by the launch file from the [initial_pose] section of
   // system.ini, or from the last pose file when it is for the same map (localizer.launch.py).
@@ -398,6 +415,9 @@ void LocalizerNode::loadParameters()
 
 void LocalizerNode::timerCB()
 {
+  // Before the early return, so a node that never gets odometry logs that
+  // too (NO_ODOM).
+  updateHealth(rclcpp::Clock().now().seconds());
   if (!m_state.message_received) return;
 
   // The known start pose from config: only once the first odom has arrived is there a "current
@@ -606,7 +626,14 @@ void LocalizerNode::timerCB()
   ++m_state.rounds_run;
   const bool backing_off = m_config.lost_backoff_interval > 0.0 &&
                            m_state.not_converged_streak >= m_config.lost_backoff_after_rounds;
+  // The health log's record of this round; each exit below fills in its
+  // outcome before finish().
+  HealthRound health_round;
+  health_round.time = now.seconds();
+  health_round.guess = service_pending || settling;
   if (!result) {
+    health_round.outcome = HealthRound::kNotConverged;
+    recordHealthRound(health_round);
     ++m_state.rounds_not_converged;
     ++m_state.not_converged_streak;
     m_state.last_not_converged_time = now;
@@ -648,6 +675,8 @@ void LocalizerNode::timerCB()
   const double inlier_ratio = info.inlierRatio();
   if (m_config.min_inlier_ratio > 0.0 && inlier_ratio < m_config.min_inlier_ratio) {
     ++m_state.rounds_low_inliers;
+    health_round.outcome = HealthRound::kLowInliers;
+    recordHealthRound(health_round);
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
       "round dropped: refine inlier ratio %.2f < min_inlier_ratio %.2f", inlier_ratio,
@@ -672,6 +701,8 @@ void LocalizerNode::timerCB()
       // Nothing to take from this scan. last_reg_* is not advanced, so the
       // next tick registers again instead of waiting for the motion gate.
       ++m_state.rounds_degenerate;
+      health_round.outcome = HealthRound::kDegenerate;
+      recordHealthRound(health_round);
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
         "round degenerate: no translation direction constrained (lvl=%s inl=%.2f); odometry "
@@ -741,6 +772,8 @@ void LocalizerNode::timerCB()
       ++m_state.jump_reject_streak;
       if (m_state.jump_reject_streak <= m_config.jump_reject_max_streak) {
         ++m_state.rounds_jump_rejected;
+        health_round.outcome = HealthRound::kJumpRejected;
+        recordHealthRound(health_round);
         RCLCPP_WARN(
           this->get_logger(),
           "jump rejected (%d/%d): body moved %.2f m / %.1f deg in %.2f s, over jump_gate.max_speed "
@@ -829,6 +862,15 @@ void LocalizerNode::timerCB()
   m_state.last_reg_map_body_r = map_body_r;
   m_state.last_reg_map_body_t = map_body_t;
   ++m_state.rounds_accepted;
+  // The correction is only measured on a projectable round (dt_raw / dr_raw
+  // above); a guess or settle round's is a discontinuity by design.
+  health_round.outcome = HealthRound::kAccepted;
+  health_round.has_corr = projectable;
+  health_round.corr_t = dt_raw;
+  health_round.corr_r = dr_raw;
+  health_round.inlier_ratio = inlier_ratio;
+  health_round.fitness = info.fitness_refine;
+  recordHealthRound(health_round);
 
   {
     std::lock_guard<std::mutex> lock(m_state.service_mutex);
@@ -945,6 +987,302 @@ void LocalizerNode::logRoundStats(const rclcpp::Time & now)
     static_cast<unsigned long long>(m_state.rounds_projected));
 }
 
+namespace
+{
+const char * healthName(Health h)
+{
+  switch (h) {
+    case Health::kNoMap:
+      return "NO_MAP";
+    case Health::kNoOdom:
+      return "NO_ODOM";
+    case Health::kResetting:
+      return "RESETTING";
+    case Health::kLocalizing:
+      return "LOCALIZING";
+    case Health::kUnlocalized:
+      return "UNLOCALIZED";
+    case Health::kLost:
+      return "LOST";
+    case Health::kDegraded:
+      return "DEGRADED";
+    case Health::kOk:
+      return "OK";
+  }
+  return "?";
+}
+
+// What a state says about the TF, for "is this change for the worse": a
+// worse state is logged at once, a better one after health_recover_sec. Equal
+// ranks switch at once too.
+int healthSeverity(Health h)
+{
+  switch (h) {
+    case Health::kOk:
+      return 0;
+    case Health::kLocalizing:
+    case Health::kResetting:
+      return 1;
+    case Health::kDegraded:
+      return 2;
+    case Health::kUnlocalized:
+    case Health::kNoMap:
+      return 3;
+    case Health::kLost:
+    case Health::kNoOdom:
+      return 4;
+  }
+  return 4;
+}
+
+// The states an operator has to act on, or at least look at: entered at WARN.
+// LOCALIZING / RESETTING are the way back and OK is the goal, so INFO.
+bool healthIsWarning(Health h)
+{
+  return h != Health::kOk && h != Health::kLocalizing && h != Health::kResetting;
+}
+
+// printf into a std::string, for the reason / summary fragments below.
+template <typename... Args>
+std::string strFormat(const char * fmt, Args... args)
+{
+  char buf[512];
+  std::snprintf(buf, sizeof(buf), fmt, args...);
+  return buf;
+}
+}  // namespace
+
+void LocalizerNode::recordHealthRound(const HealthRound & round)
+{
+  m_state.health_rounds.push_back(round);
+}
+
+// The health log (NodeConfig::health_*). Everything it reads is already kept
+// for something else -- the round outcomes, the lost_backoff streak, the
+// pending guess -- except Point-LIO's speed, which syncCB measures for it.
+// It judges, it does not act: the TF and relocalize_check are untouched.
+void LocalizerNode::updateHealth(double now)
+{
+  // 5 Hz is the round rate; judging faster only re-reads the same window.
+  if (now - m_state.last_health_eval < 0.2) return;
+  m_state.last_health_eval = now;
+
+  const double window = m_config.health_window;
+  while (!m_state.health_rounds.empty() && now - m_state.health_rounds.front().time > window) {
+    m_state.health_rounds.pop_front();
+  }
+
+  // The window's rounds. Guess / settle rounds are counted apart: a pending
+  // guess is LOCALIZING whatever they did.
+  int accepted = 0, not_converged = 0, low_inliers = 0, degenerate = 0, jump_rejected = 0;
+  int guess_rounds = 0, corr_n = 0, inl_n = 0;
+  double corr_sum = 0.0, corr_max = 0.0, corr_r_max = 0.0;
+  double inl_sum = 0.0, inl_min = 1.0, fit_max = 0.0;
+  double last_accepted = -1.0;
+  for (const HealthRound & r : m_state.health_rounds) {
+    if (r.outcome == HealthRound::kAccepted) last_accepted = r.time;
+    if (r.guess) {
+      ++guess_rounds;
+      continue;
+    }
+    switch (r.outcome) {
+      case HealthRound::kAccepted:
+        ++accepted;
+        ++inl_n;
+        inl_sum += r.inlier_ratio;
+        inl_min = std::min(inl_min, r.inlier_ratio);
+        fit_max = std::max(fit_max, r.fitness);
+        if (r.has_corr) {
+          ++corr_n;
+          corr_sum += r.corr_t;
+          corr_max = std::max(corr_max, r.corr_t);
+          corr_r_max = std::max(corr_r_max, r.corr_r);
+        }
+        break;
+      case HealthRound::kNotConverged:
+        ++not_converged;
+        break;
+      case HealthRound::kLowInliers:
+        ++low_inliers;
+        break;
+      case HealthRound::kDegenerate:
+        ++degenerate;
+        break;
+      case HealthRound::kJumpRejected:
+        ++jump_rejected;
+        break;
+    }
+  }
+  const double corr_mean = corr_n > 0 ? corr_sum / corr_n : 0.0;
+  const int rejects = not_converged + low_inliers + degenerate + jump_rejected;
+
+  double lio_max = 0.0, last_pair = 0.0;
+  bool received = false;
+  {
+    std::lock_guard<std::mutex> lock(m_state.message_mutex);
+    received = m_state.message_received;
+    last_pair = m_state.last_pair_wall;
+    for (const auto & s : m_state.lio_speeds) {
+      if (now - s.first <= window) lio_max = std::max(lio_max, s.second);
+    }
+  }
+  bool guess_pending = false, established = false;
+  std::string map_name;
+  {
+    std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    guess_pending = m_state.service_received;
+    established = m_state.pose_established;
+    map_name = m_state.loaded_map_name;
+  }
+
+  // The state, first match wins, with every reason that holds.
+  Health state = Health::kOk;
+  std::string why;
+  auto add = [&why](const std::string & s) { why += (why.empty() ? "" : "; ") + s; };
+  const bool lio_fast = lio_max > m_config.health_max_lio_speed;
+  const bool streak_lost = m_state.not_converged_streak >= m_config.lost_backoff_after_rounds;
+  if (!m_localizer->isMapLoaded()) {
+    state = Health::kNoMap;
+    add("no map loaded; the identity map -> local_frame is broadcast until relocalize loads one");
+  } else if (m_state.lio_resetting.load()) {
+    state = Health::kResetting;
+    add("reset_odometry is restarting Point-LIO; no registration until it is back");
+  } else if (!received || now - last_pair > m_config.health_odom_timeout) {
+    state = Health::kNoOdom;
+    add(
+      received ? strFormat(
+                   "no cloud + odom pair for %.1f s (> health.odom_timeout %.1f s)",
+                   now - last_pair, m_config.health_odom_timeout)
+               : std::string("no cloud + odom pair received yet"));
+    add("is " + m_config.odom_topic + " / " + m_config.cloud_topic + " publishing?");
+  } else if (lio_fast) {
+    // Ahead of a pending guess: a guess registered against a diverging
+    // Point-LIO does not hold, and this is the state reset_odometry is for.
+    state = Health::kLost;
+    add(strFormat(
+      "Point-LIO moved at up to %.2f m/s in the last %.0f s (> health.max_lio_speed %.2f): "
+      "diverging? reset_odometry with the robot standing still",
+      lio_max, window, m_config.health_max_lio_speed));
+    if (streak_lost) {
+      add(strFormat("%d rounds in a row did not converge", m_state.not_converged_streak));
+    }
+  } else if (guess_pending) {
+    state = Health::kLocalizing;
+    add(strFormat(
+      "a guess is pending (relocalize / initialpose / boot pose / auto_localize / "
+      "reset_odometry); %d guess rounds in the last %.0f s",
+      guess_rounds, window));
+  } else if (streak_lost) {
+    state = Health::kLost;
+    add(strFormat(
+      "%d rounds in a row did not converge (>= lost_backoff.after_rounds %d); relocalize, or "
+      "auto_localize if the robot was carried",
+      m_state.not_converged_streak, m_config.lost_backoff_after_rounds));
+  } else if (!established) {
+    state = Health::kUnlocalized;
+    add(
+      "tracking, but no guess has converged on map '" + map_name +
+      "' since it was loaded: the pose may be in the wrong place -- set an initial pose");
+  } else {
+    if (corr_n > 0 && corr_mean > m_config.health_degraded_mean_corr) {
+      add(strFormat(
+        "correction mean %.1f cm over %d rounds (> health.degraded_mean_correction %.1f cm)",
+        corr_mean * 100.0, corr_n, m_config.health_degraded_mean_corr * 100.0));
+    }
+    if (corr_n > 0 && corr_max > m_config.health_degraded_max_corr) {
+      add(strFormat(
+        "correction max %.1f cm (> health.degraded_max_correction %.1f cm)", corr_max * 100.0,
+        m_config.health_degraded_max_corr * 100.0));
+    }
+    if (rejects >= m_config.health_degraded_rejects) {
+      add(strFormat(
+        "%d rounds dropped (not converged %d, low inliers %d, degenerate %d, jump rejected %d; "
+        ">= health.degraded_rejects %d)",
+        rejects, not_converged, low_inliers, degenerate, jump_rejected,
+        m_config.health_degraded_rejects));
+    }
+    state = why.empty() ? Health::kOk : Health::kDegraded;
+  }
+
+  // Worse at once, better only once it has held health_recover_sec -- except
+  // for the event-driven states (a guess arriving, a reset starting), which
+  // are not a window edge and would only be logged late.
+  bool switch_now = false;
+  if (!m_state.health_logged) {
+    switch_now = true;
+  } else if (state == m_state.health) {
+    m_state.health_candidate_valid = false;
+    m_state.health_reason = why;
+  } else if (
+    healthSeverity(state) >= healthSeverity(m_state.health) || state == Health::kLocalizing ||
+    state == Health::kResetting) {
+    switch_now = true;
+  } else {
+    if (!m_state.health_candidate_valid || m_state.health_candidate != state) {
+      m_state.health_candidate_valid = true;
+      m_state.health_candidate = state;
+      m_state.health_candidate_since = now;
+    }
+    switch_now = now - m_state.health_candidate_since >= m_config.health_recover_sec;
+  }
+  if (switch_now) {
+    const std::string from =
+      m_state.health_logged
+        ? strFormat("%s -> ", healthName(m_state.health)) +
+            strFormat("%s after %.0f s", healthName(state), now - m_state.health_since)
+        : std::string(healthName(state));
+    const std::string text = "loc health: " + from + (why.empty() ? std::string("") : ": " + why);
+    if (healthIsWarning(state)) {
+      RCLCPP_WARN(this->get_logger(), "%s", text.c_str());
+    } else {
+      RCLCPP_INFO(this->get_logger(), "%s", text.c_str());
+    }
+    m_state.health_logged = true;
+    m_state.health = state;
+    m_state.health_since = now;
+    m_state.health_reason = why;
+    m_state.health_candidate_valid = false;
+  }
+
+  // The summary: the state and the window's numbers, whatever the state, so
+  // a trend (corrections creeping up over hours) reads off one grep.
+  if (
+    m_config.health_summary_period <= 0.0 ||
+    now - m_state.last_health_summary < m_config.health_summary_period) {
+    return;
+  }
+  m_state.last_health_summary = now;
+  M3D pose_r;
+  V3D pose_t;
+  currentMapPose(pose_r, pose_t);
+  std::string text = strFormat(
+    "loc health: %s for %.0f s | last %.0f s: %d accepted, %d not converged, %d low inliers, %d "
+    "degenerate, %d jump rejected, %d guess",
+    healthName(m_state.health), now - m_state.health_since, window, accepted, not_converged,
+    low_inliers, degenerate, jump_rejected, guess_rounds);
+  if (corr_n > 0) {
+    text += strFormat(
+      " | correction mean %.1f cm max %.1f cm rot max %.2f deg (%d rounds)", corr_mean * 100.0,
+      corr_max * 100.0, corr_r_max * 180.0 / M_PI, corr_n);
+  }
+  if (inl_n > 0) {
+    text += strFormat(
+      " | inliers mean %.2f min %.2f, fitness max %.4f", inl_sum / inl_n, inl_min, fit_max);
+  }
+  text += strFormat(" | LIO speed max %.2f m/s", lio_max);
+  if (received) text += strFormat(" | last pair %.1f s ago", now - last_pair);
+  if (last_accepted >= 0.0) text += strFormat(", last accepted %.1f s ago", now - last_accepted);
+  text += strFormat(
+    " | map '%s' pose (%.2f, %.2f, %.2f) yaw %.1f deg", map_name.c_str(), pose_t.x(), pose_t.y(),
+    pose_t.z(), std::atan2(pose_r(1, 0), pose_r(0, 0)) * 180.0 / M_PI);
+  if (!m_state.health_reason.empty()) text += " | " + m_state.health_reason;
+  if (healthIsWarning(m_state.health)) {
+    RCLCPP_WARN(this->get_logger(), "%s", text.c_str());
+  } else {
+    RCLCPP_INFO(this->get_logger(), "%s", text.c_str());
+  }
+}
+
 void LocalizerNode::syncCB(
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr & cloud_msg,
   const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg)
@@ -982,6 +1320,29 @@ void LocalizerNode::syncCB(
   m_state.last_t = V3D(
     odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y, odom_msg->pose.pose.position.z);
   m_state.last_message_time = cloud_msg->header.stamp;
+
+  // The health log's LIO speed (NodeConfig::health_max_lio_speed): Point-LIO's
+  // own position between two consecutive pairs, over their odom stamps. Here
+  // rather than in the round, because a round that does not converge never
+  // measures it, and a diverging Point-LIO is what stops them converging. A
+  // gap over a second (the node was paused, a bag skipped) is not a speed.
+  const double wall = rclcpp::Clock().now().seconds();
+  const double odom_stamp = sec(odom_msg->header.stamp);
+  if (m_state.has_prev_odom) {
+    const double dt = odom_stamp - m_state.prev_odom_stamp;
+    if (dt > 1e-3 && dt < 1.0) {
+      m_state.lio_speeds.emplace_back(wall, (m_state.last_t - m_state.prev_odom_t).norm() / dt);
+    }
+  }
+  while (!m_state.lio_speeds.empty() &&
+         wall - m_state.lio_speeds.front().first > m_config.health_window) {
+    m_state.lio_speeds.pop_front();
+  }
+  m_state.has_prev_odom = true;
+  m_state.prev_odom_t = m_state.last_t;
+  m_state.prev_odom_stamp = odom_stamp;
+  m_state.last_pair_wall = wall;
+
   m_state.recent_scans.push_back({cloud, m_state.last_r, m_state.last_t});
   // Sized for the longer of its two readers: auto_localize's search window
   // and the tracking round's source window (NodeConfig::track_accum_scans).
@@ -1513,6 +1874,11 @@ void LocalizerNode::resetOdomCB(
     // accumulate garbage, which is why auto_localize alone cannot recover
     // from a diverged Point-LIO.
     m_state.recent_scans.clear();
+    // The new run starts at Point-LIO's origin: the first pair after the
+    // boundary must not read the jump there as a speed, and the old run's
+    // speeds -- the divergence this reset is for -- no longer describe it.
+    m_state.has_prev_odom = false;
+    m_state.lio_speeds.clear();
     m_state.intake_paused = false;
     seq_at_reset = m_state.scan_seq;
   }
