@@ -438,6 +438,54 @@ the first converged round comes up to one interval later. The streak counts
 gate, the localizability check or the jump gate clears it. `interval <= 0`
 restores the old behaviour.
 
+### The health log: one state, in the log
+
+Until 2026-10-30 the node's view of its own quality was spread over per-round
+lines (`rough` / `refine` / `loc:`, up to 20 a second) and a few throttled
+warnings, and when robot01's Point-LIO diverged on the dock that morning the
+log said `LIO moved 1.22 m in 0.40 s` once and then only `lost_backoff`: the
+`LIO moved` check runs on accepted rounds, and a diverged odometry stops them
+being accepted. Reconstructing the hours before took a parse of every `loc:`
+line. Now one state is judged from the last `health.window` (10 s), logged on
+every change with the numbers that decided it, and summarised every
+`health.summary_period` (10 s):
+
+```bash
+grep 'loc health' log/stack/<robot_id>/localizer/current | tai64nlocal     # the timeline
+grep 'loc health: .* -> ' log/stack/<robot_id>/localizer/current | tai64nlocal  # changes only
+```
+
+First match wins:
+
+| State | When | Level |
+|---|---|---|
+| `NO_MAP` | No map loaded: identity `map → pointlio_odom` until `relocalize` | WARN |
+| `RESETTING` | `reset_odometry` holds the pipeline while Point-LIO restarts | INFO |
+| `NO_ODOM` | No cloud + odom pair for `health.odom_timeout` (1 s), or none yet | WARN |
+| `LOST` | Point-LIO's own position moved faster than `health.max_lio_speed` (1.5 m/s) between two pairs within the window — **diverging**, measured on every pair, so it holds while the rounds fail | WARN |
+| `LOCALIZING` | A guess is pending (relocalize, initialpose, boot pose, `auto_localize`, `reset_odometry`) | INFO |
+| `LOST` | `lost_backoff.after_rounds` (25) rounds in a row did not converge | WARN |
+| `UNLOCALIZED` | Tracking, but no guess has converged on this map since it was loaded: the pose may be anywhere | WARN |
+| `DEGRADED` | The window's tracking corrections (the `loc:` line's first `dt`, GICP against the odometry prediction) average over `health.degraded_mean_correction` (4 cm) or peak over `health.degraded_max_correction` (20 cm), or `health.degraded_rejects` (2) rounds were dropped (not converged, low inliers, degenerate, jump rejected) | WARN |
+| `OK` | None of the above | INFO |
+
+A worse state is logged at once; a better one only after it has held
+`health.recover_sec` (5 s), so a window edge does not flip `OK` / `DEGRADED`
+every round — except `LOCALIZING` and `RESETTING`, which are events, not
+window edges. Guess and settle rounds are counted apart and never make a state
+`DEGRADED`. The thresholds are first guesses from that morning: corrections
+at walking pace ran ~1.2 cm mean / 4–6 cm max overnight and 7.6 / 35 cm in the
+round before the divergence, and Point-LIO read 1.3–2.4 m/s on the dock from
+08:09:40, ~30 s before it was gone. Read against the incident's per-round
+numbers, `DEGRADED` shows in the 08:08 round and `LOST` from about 08:09:40;
+the 07:xx rounds (2.8–3.7 cm mean, 11–15 cm max) stay `OK` — lower the two
+correction thresholds if that slower creep is what should show.
+
+**Log only.** Nothing broadcast changes, nothing is stopped or reset, and
+`relocalize_check` keeps its meaning; `RobotState.localization_valid` is still
+TF presence. Acting on the state (cancel navigation, call `reset_odometry`) is
+a separate decision, after the thresholds have been read against real runs.
+
 ## Parameters
 
 `params/localizer_params.yaml`, keyed `/**/localizer_node:` so it applies at
@@ -497,6 +545,18 @@ throwing. The launch layers the instance values on top.
 | `wait_lio_timeout_sec` | `10.0` s | Wait for the first new-run odometry (IMU init) |
 | `converge_timeout_sec` | `5.0` s | Wait for the timer to register against the seed |
 | `max_lio_speed` | `3.0` m/s | A registration seeds a later reset only below this; never affects the TF |
+
+`health.*` (see "The health log"; log only, first guesses):
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `summary_period` | `10.0` s | The `loc health:` summary; `<= 0` turns it off, state changes are always logged |
+| `window` | `10.0` s | Rounds and LIO speeds the state is judged on |
+| `max_lio_speed` | `1.5` m/s | `LOST` above this Point-LIO speed, on every cloud + odom pair. Not `reset_odom.max_lio_speed`, which only decides what seeds a reset |
+| `degraded_mean_correction` / `degraded_max_correction` | `0.04` / `0.20` m | `DEGRADED` above these tracking corrections over the window |
+| `degraded_rejects` | `2` | `DEGRADED` at this many dropped rounds in the window |
+| `odom_timeout` | `1.0` s | `NO_ODOM` after this long without a pair |
+| `recover_sec` | `5.0` s | A better state is logged once it has held this long |
 
 A client's timeout must exceed the sum (17 s), plus `auto_loc`'s two (15 s)
 with `global_fallback`.
@@ -595,6 +655,8 @@ ros2 run tf2_ros tf2_echo map <robot_id>/pointlio_odom    # the correction; iden
 | `25 rounds in a row did not converge: registering every 1.0 s instead of at 5.0 Hz …` | Lost; `lost_backoff` is on until a round converges or a guess arrives. Relocalize, or `auto_localize` if the robot was moved |
 | `a round converged again after N that did not; back to 5.0 Hz (lost_backoff off)` | Tracking again |
 | `loc stats (since start): run=… accepted=… not_converged=… degenerate=… jump_rejected=… projected=…` | Once a minute, the round counters — a replay's acceptance rate without counting lines |
+| `loc health: OK -> DEGRADED after 412 s: correction max 35.0 cm (> health.degraded_max_correction 20.0 cm)` | A state change, with every reason that holds (see "The health log"); WARN into `NO_MAP` / `NO_ODOM` / `LOST` / `UNLOCALIZED` / `DEGRADED`, INFO otherwise |
+| `loc health: OK for 412 s \| last 10 s: 23 accepted, … \| correction mean 1.2 cm max 4.1 cm … \| LIO speed max 0.62 m/s \| … \| map 'dp' pose (…) yaw … deg` | Every `health.summary_period`: the state, the window's rounds, corrections, inliers / fitness, Point-LIO's top speed, how long since the last pair and the last accepted round, the map pose, and the reasons when not `OK` |
 | `coarse: N candidates … best 0.xx, K kept for GICP` | `auto_localize` coarse stage; one `fine: …` line per kept candidate follows |
 | `search failed …: ambiguous, a distinct pose scores alike` | Symmetric surroundings; move the robot somewhere more distinctive and retry |
 | `… the timer did not converge on it within …; withdrawn` | The search's pose did not hold against a fresh scan; localization is as before the call |

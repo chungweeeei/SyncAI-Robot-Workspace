@@ -50,6 +50,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "syncai_common/srv/auto_localize.hpp"
 #include "syncai_common/srv/is_valid.hpp"
@@ -235,6 +236,79 @@ struct NodeConfig
   // tops out at 0.6. Generous on purpose: this only decides what is
   // remembered, never what is broadcast.
   double max_lio_speed = 3.0;
+
+  // The health log (2026-10-30, after robot01's Point-LIO diverged on the
+  // dock and the node said so in one throttled line before going quiet). One
+  // state for the whole node -- NO_MAP, NO_ODOM, RESETTING, LOCALIZING,
+  // UNLOCALIZED, LOST, DEGRADED, OK -- logged on every change with the
+  // numbers that decided it, and a `loc health:` summary every
+  // health_summary_period seconds, so `grep 'loc health'` reads as the
+  // node's timeline. Log only: nothing here changes what is broadcast, and
+  // relocalize_check keeps its meaning. Every threshold is a first guess
+  // from that incident's localizer log (corrections at walking pace: ~1.2 cm
+  // mean, 4-6 cm max overnight; 7.6 cm mean, 35 cm max in the round that
+  // diverged).
+  //  - health_window: the rounds and LIO speeds the state is judged on.
+  //  - health_max_lio_speed: LOST when Point-LIO's own position moves faster
+  //    than this between two scans. Checked on every synchronised pair, not
+  //    only on accepted rounds as max_lio_speed is, because once the rounds
+  //    stop converging that check never runs again. The robot tops out at
+  //    0.8 m/s; a diverging Point-LIO reads 1.3-2.4 m/s minutes before it
+  //    reads 10^4.
+  //  - health_degraded_mean_corr / _max_corr: DEGRADED when the correction
+  //    of the window's tracking rounds (GICP's pose against the odometry
+  //    prediction, before the localizability projection: the `loc:` line's
+  //    first dt) is larger than this on average / at its largest.
+  //  - health_degraded_rejects: DEGRADED at this many rounds in the window
+  //    that did not converge or were dropped (low inliers, degenerate, jump
+  //    gate).
+  //  - health_odom_timeout: NO_ODOM when no synchronised pair arrived for
+  //    this long (wall clock).
+  //  - health_recover_sec: a better state is taken only once it has held
+  //    this long; a worse one at once. Without it a window edge flips OK /
+  //    DEGRADED every round.
+  // health_summary_period <= 0 turns the summary off; transitions are always
+  // logged.
+  double health_summary_period = 10.0;
+  double health_window = 10.0;
+  double health_max_lio_speed = 1.5;
+  double health_degraded_mean_corr = 0.04;
+  double health_degraded_max_corr = 0.20;
+  int health_degraded_rejects = 2;
+  double health_odom_timeout = 1.0;
+  double health_recover_sec = 5.0;
+};
+
+// The health log's states, worst first in what they say about the TF (see
+// NodeConfig::health_*). LOCALIZING and RESETTING are expected on the way to
+// OK and are logged at INFO; entering any of the others except OK is a WARN.
+enum class Health {
+  kNoMap,        // nothing to register against: identity map -> local_frame
+  kNoOdom,       // no synchronised cloud + odom within health_odom_timeout
+  kResetting,    // reset_odometry holds the pipeline while Point-LIO restarts
+  kLocalizing,   // a guess is pending (relocalize, initialpose, boot, services)
+  kUnlocalized,  // tracking, but no guess has ever converged on this map
+  kLost,         // diverging Point-LIO, or lost_backoff's streak reached
+  kDegraded,     // tracking with large corrections or dropped rounds
+  kOk,
+};
+
+// One registration round as the health log sees it. Timer thread only.
+struct HealthRound
+{
+  enum Outcome { kAccepted, kNotConverged, kLowInliers, kDegenerate, kJumpRejected };
+  double time = 0.0;  // wall seconds, the timer's clock
+  Outcome outcome = kAccepted;
+  // A guess or settle round: a discontinuity by design, so its correction
+  // and its failures say nothing about tracking quality.
+  bool guess = false;
+  // Accepted tracking rounds only: GICP's pose against the odometry
+  // prediction (m / rad), the refine inlier ratio and fitness.
+  bool has_corr = false;
+  double corr_t = 0.0;
+  double corr_r = 0.0;
+  double inlier_ratio = 0.0;
+  double fitness = 0.0;
 };
 
 // One synchronised body cloud with the odom pose it was taken at, for
@@ -338,6 +412,34 @@ struct NodeState
   uint64_t rounds_jump_rejected = 0;
   uint64_t rounds_projected = 0;
   rclcpp::Time last_stats_log{0, 0, RCL_SYSTEM_TIME};
+
+  // The health log (NodeConfig::health_*).
+  //  - health_rounds: the window's rounds, oldest first (timer thread only).
+  //  - lio_speeds (message_mutex): Point-LIO's speed between consecutive
+  //    synchronised pairs, (wall seconds, m/s), written by syncCB.
+  //  - prev_odom_* (message_mutex): the pair those speeds are measured from;
+  //    cleared at reset_odometry's boundary, where the odometry jumps to the
+  //    origin by design.
+  //  - last_pair_wall (message_mutex): when the last pair was accepted, for
+  //    NO_ODOM.
+  //  - health / health_since / health_reason: the state logged last, since
+  //    when, and why; candidate_* is a better state waiting out
+  //    health_recover_sec (timer thread only).
+  std::deque<HealthRound> health_rounds;
+  std::deque<std::pair<double, double>> lio_speeds;
+  bool has_prev_odom = false;
+  V3D prev_odom_t = V3D::Zero();
+  double prev_odom_stamp = 0.0;
+  double last_pair_wall = 0.0;
+  bool health_logged = false;
+  Health health = Health::kNoOdom;
+  double health_since = 0.0;
+  std::string health_reason;
+  bool health_candidate_valid = false;
+  Health health_candidate = Health::kOk;
+  double health_candidate_since = 0.0;
+  double last_health_eval = 0.0;
+  double last_health_summary = 0.0;
 
   // The last TRUSTED registration, map_T_body: one that converged while the
   // odometry moved plausibly (NodeConfig::max_lio_speed). reset_odometry's
@@ -467,6 +569,12 @@ private:
 
   // One `loc stats:` line a minute from the round counters in NodeState.
   void logRoundStats(const rclcpp::Time & now);
+
+  // The health log (NodeConfig::health_*): one round into the window.
+  void recordHealthRound(const HealthRound & round);
+  // Judge the state from the window, log a change, and the summary when it
+  // is due. From timerCB, at most every 0.2 s.
+  void updateHealth(double now);
 
   // Write the last trusted pose to NodeConfig::last_pose_file when the throttle allows.
   // `round_map` is the map name snapshot taken when the round started; a relocalize that
