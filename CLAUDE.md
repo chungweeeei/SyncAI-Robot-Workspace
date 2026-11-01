@@ -422,8 +422,12 @@ operator driving the run keeps the console's camera view), and deliberately
 reads it to know the switch to `MANUAL` landed. Both specs set `select:` to
 `bringup` because its log answers "is the lidar alive?".
 
-Logs: multilog writes `current` plus gzipped rotations (16 MiB × 10). There is
-no log-reading helper:
+Logs: multilog writes `current` plus gzipped rotations (16 MiB × 100, sized
+for three days of the localizer at ~20 MiB/h; `n10` held ~8 h and lost the
+first half of the 2026-10-30 incident). The cap is by size, not age, so a node
+spamming warnings rotates its history out faster — copy the logs off before
+recovering a robot. `log/` sits in the bind-mounted workspace, so it survives a
+container recreate and a host reboot. There is no log-reading helper:
 
 ```bash
 tail -f log/stack/<robot_id>/planner/current

@@ -247,8 +247,9 @@ windows:
 `sleep` is where the startup ordering lives, since there is no lifecycle
 manager: LIO / localizer → lio_bridge → planner/controller → task_runner.
 `log` names a directory under `log/stack/<robot_id>/` that a `pipe-pane |
-multilog t s16777215 n10 '!gzip'` tap writes into (`current` plus gzipped
-rotations, 16 MiB × 10). `enter: false` types the command without executing
+multilog t s16777215 n100 '!gzip'` tap writes into (`current` plus gzipped
+rotations, 16 MiB × 100: about three days of the chattiest node, the
+localizer; see `MULTILOG_ARGS` for the sizing). `enter: false` types the command without executing
 it. Sessions are built **detached** — the caller is a ROS node with no TTY.
 
 ## Interfaces
