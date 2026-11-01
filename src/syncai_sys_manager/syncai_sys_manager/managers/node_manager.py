@@ -57,10 +57,23 @@ MODE_NAMES = {
 # `zcat <dir>/@*.s`.)
 LOG_ROOT_TEMPLATE = "log/stack/{robot_id}"
 
-# 16 MiB per file x 10 rotated files, gzipped — lifted verbatim from the deleted
-# byobu_session.sh so a stack launched from here rotates identically to one
-# launched by hand.
-MULTILOG_ARGS = "t s16777215 n10 '!gzip'"
+# 16 MiB per file x 100 rotated files, gzipped. The aim is three days of every
+# node's log. n10 (lifted from the deleted byobu_session.sh) held only ~8 h of
+# the localizer, the chattiest node at ~20 MiB/h raw (one `loc:` line per
+# round): robot01's overnight run of 2026-10-29/30 had already rotated out
+# everything before 01:53 by the time its 08:10 Point-LIO divergence was
+# analysed (docs/INCIDENT_2026-10-30_robot01_pointlio_divergence.md).
+# 72 h x 20 MiB/h ~= 90 files; 100 leaves a margin.
+#
+# Cost: rotations are gzipped (text compresses ~8-10x), so a full localizer
+# directory is ~150-200 MB on disk, and n is only a cap — a quiet node never
+# reaches it. Worst case, every directory full, is ~2 GB.
+#
+# multilog rotates by size, not by age: a node that starts spamming (Point-LIO's
+# backlog warnings, a lost localizer) can burn the three days in hours, and
+# that is exactly the stretch an incident needs. Copy the logs off before
+# recovering the robot; this cap is not a guarantee.
+MULTILOG_ARGS = "t s16777215 n100 '!gzip'"
 
 # Per-invocation timeout. byobu commands are near-instant; anything that hangs
 # this long means the server is wedged and we would rather log it than block a
