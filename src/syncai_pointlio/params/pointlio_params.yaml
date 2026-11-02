@@ -40,6 +40,19 @@
     max_lidar_backlog: 0.3
     max_lidar_skip: 2
 
+    # The health log (2026-11-02, after robot01's 2026-10-30 divergence left
+    # nothing in this node's log to say how its matching had declined;
+    # NodeConfig in pointlio_node.hpp has the argument, the README "The health
+    # log" how to read it). One `lio health:` line per summary_period seconds,
+    # a WARN with its reasons when the window's speed exceeds max_speed, an IMU
+    # axis saturated, a scan matched no plane, or (min_effective_ratio > 0) a
+    # scan's matched share fell under it. 0.0 for that one until a healthy
+    # robot's ratio has been measured. Log only. summary_period <= 0.0 = off.
+    health:
+      summary_period: 1.0
+      max_speed: 1.5
+      min_effective_ratio: 0.0
+
     # 0: livox CustomMsg (per-point time -> full point-by-point update),
     # 1: sensor_msgs/PointCloud2 (no per-point time -> one batch update per scan)
     lidar_type: 0

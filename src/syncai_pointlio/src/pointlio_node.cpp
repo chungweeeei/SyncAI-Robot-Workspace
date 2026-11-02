@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <functional>
+#include <string>
 
 using namespace std::chrono_literals;
 
@@ -132,6 +135,13 @@ void PointLIONode::loadParameters()
     this->declare_parameter("max_lidar_backlog", m_node_config.max_lidar_backlog);
   m_node_config.max_lidar_skip =
     this->declare_parameter("max_lidar_skip", m_node_config.max_lidar_skip);
+  // The health log; NodeConfig has what each one decides.
+  m_node_config.health_summary_period =
+    this->declare_parameter("health.summary_period", m_node_config.health_summary_period);
+  m_node_config.health_max_speed =
+    this->declare_parameter("health.max_speed", m_node_config.health_max_speed);
+  m_node_config.health_min_effective_ratio =
+    this->declare_parameter("health.min_effective_ratio", m_node_config.health_min_effective_ratio);
 
   // config for map builder
   m_builder_config.lidar_filter_num =
@@ -467,13 +477,20 @@ void PointLIONode::timerCB()
   // Every tick, not only the ones that process a scan: the all-clear has to
   // go out while the node is idle between scans too.
   reportBacklog();
+  reportHealth();
   if (!synced) return;
 
   auto t1 = std::chrono::steady_clock::now();
+  // Read before process(): the frame that reaches MAPPING is MAP_INIT's,
+  // which only seeds the map and has no lidar update to report.
+  const bool mapping = m_builder->status() == BuilderStatus::MAPPING;
   m_builder->process(m_package);
   auto t2 = std::chrono::steady_clock::now();
   if (m_builder->status() == BuilderStatus::MAPPING) publishResults();
   auto t3 = std::chrono::steady_clock::now();
+  if (mapping) {
+    recordHealth(std::chrono::duration<double, std::milli>(t3 - t1).count());
+  }
 
   // Both numbers, because the total is the real per-scan budget: a scan
   // every 100 ms, so a total that stays above that means lidar_buffer grows
@@ -514,6 +531,159 @@ void PointLIONode::reportBacklog()
   m_backlog_skipped = 0;
   m_backlog_max_seen = 0.0;
   m_last_backlog_report = now;
+}
+
+void PointLIONode::recordHealth(double cost_ms)
+{
+  const ScanHealth & s = m_builder->health();
+  HealthWindow & w = m_health;
+  ++w.scans;
+  w.points += s.lidar.points;
+  w.near += s.lidar.near;
+  w.effective += s.lidar.effective;
+  w.residual_sum += s.lidar.residual_sum;
+  if (s.lidar.points > 0) {
+    w.effective_ratio_min =
+      std::min(w.effective_ratio_min, static_cast<double>(s.lidar.effective) / s.lidar.points);
+  }
+  w.chunks += s.lidar.chunks;
+  w.chunks_updated += s.lidar.chunks_updated;
+  if (s.lidar.chunks_updated == 0) ++w.scans_without_update;
+  w.imu_samples += s.imu_samples;
+  w.acc_saturated += s.acc_saturated;
+  w.gyro_saturated += s.gyro_saturated;
+  w.acc_abs_max = std::max(w.acc_abs_max, s.acc_abs_max);
+  w.gyro_abs_max = std::max(w.gyro_abs_max, s.gyro_abs_max);
+  // At the end of the scan, the stamp lio_odom carries. World frame, so this
+  // is the speed over ground a diverging filter runs away with.
+  w.speed_max = std::max(w.speed_max, m_kf->x().v.norm());
+  w.cost_ms_sum += cost_ms;
+  w.cost_ms_max = std::max(w.cost_ms_max, cost_ms);
+  m_health_seen_mapping = true;
+}
+
+// The `lio health:` line (NodeConfig::health_*). Every number the filter
+// already has; nothing here feeds back into it. The reasons a line is a WARN
+// are appended after " -- ", each with the number that tripped it, so
+// `grep 'lio health'` reads as the node's timeline and `grep -- 'lio health.* -- '`
+// as its trouble.
+void PointLIONode::reportHealth()
+{
+  if (m_node_config.health_summary_period <= 0.0) return;
+  const auto now = std::chrono::steady_clock::now();
+  const double window = std::chrono::duration<double>(now - m_last_health_report).count();
+  if (window < m_node_config.health_summary_period) return;
+  m_last_health_report = now;
+  const HealthWindow w = m_health;
+  m_health = HealthWindow();
+
+  // No scan in a whole window. Once, until scans come back: it repeats
+  // nothing the first line did not say. The buffers tell the causes apart --
+  // no lidar (lidar 0), the IMU not yet covering the scan's end (lidar > 0),
+  // a reset re-initialising (IMU_INIT).
+  if (w.scans == 0) {
+    if (m_health_seen_mapping && !m_health_idle_warned) {
+      size_t lidar_n = 0, imu_n = 0;
+      {
+        std::lock_guard<std::mutex> lock(m_state_data.lidar_mutex);
+        lidar_n = m_state_data.lidar_buffer.size();
+      }
+      {
+        std::lock_guard<std::mutex> lock(m_state_data.imu_mutex);
+        imu_n = m_state_data.imu_buffer.size();
+      }
+      const BuilderStatus status = m_builder->status();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "lio health: no scan processed in the last %.1f s (status %s, lidar buffer %zu scans, "
+        "IMU buffer %zu samples): no lidar arriving, or the IMU not covering the scan's end",
+        window,
+        status == BuilderStatus::MAPPING    ? "MAPPING"
+        : status == BuilderStatus::MAP_INIT ? "MAP_INIT"
+                                            : "IMU_INIT",
+        lidar_n, imu_n);
+      m_health_idle_warned = true;
+    }
+    return;
+  }
+  if (m_health_idle_warned) {
+    RCLCPP_INFO(this->get_logger(), "lio health: scans processed again");
+    m_health_idle_warned = false;
+  }
+
+  const double points = std::max<long>(w.points, 1);
+  const double near_pct = 100.0 * w.near / points;
+  const double eff_pct = 100.0 * w.effective / points;
+  const double res_cm = w.effective > 0 ? 100.0 * w.residual_sum / w.effective : 0.0;
+  // The 1-sigma of position (cm) and attitude (deg) from P's r_wi / t_wi
+  // blocks: how sure the filter is. A collapse towards zero while the
+  // residuals grow is an over-confident filter ignoring its measurements.
+  const M30D & P = m_kf->P();
+  const double std_p_cm = 100.0 * std::sqrt(std::max(0.0, P(3, 3) + P(4, 4) + P(5, 5)));
+  const double std_r_deg = std::sqrt(std::max(0.0, P(0, 0) + P(1, 1) + P(2, 2))) * 180.0 / M_PI;
+  const State & x = m_kf->x();
+
+  std::string reasons;
+  auto add = [&reasons](const std::string & r) {
+    reasons += reasons.empty() ? " -- " : "; ";
+    reasons += r;
+  };
+  char buf[256];
+  if (w.speed_max > m_node_config.health_max_speed) {
+    std::snprintf(
+      buf, sizeof(buf), "speed %.2f m/s over health.max_speed %.2f", w.speed_max,
+      m_node_config.health_max_speed);
+    add(buf);
+  }
+  if (w.acc_saturated > 0) {
+    std::snprintf(
+      buf, sizeof(buf), "%d IMU samples with |acc| %.1f >= satu_acc %.1f dropped from the update",
+      w.acc_saturated, w.acc_abs_max, m_builder_config.satu_acc);
+    add(buf);
+  }
+  if (w.gyro_saturated > 0) {
+    std::snprintf(
+      buf, sizeof(buf), "%d IMU samples with |gyro| %.2f >= satu_gyro %.2f dropped from the update",
+      w.gyro_saturated, w.gyro_abs_max, m_builder_config.satu_gyro);
+    add(buf);
+  }
+  if (w.scans_without_update > 0) {
+    std::snprintf(
+      buf, sizeof(buf), "%d of %d scans matched no plane (IMU only)", w.scans_without_update,
+      w.scans);
+    add(buf);
+  }
+  if (
+    m_node_config.health_min_effective_ratio > 0.0 &&
+    w.effective_ratio_min < m_node_config.health_min_effective_ratio) {
+    std::snprintf(
+      buf, sizeof(buf), "effective ratio down to %.0f%% under health.min_effective_ratio %.0f%%",
+      100.0 * w.effective_ratio_min, 100.0 * m_node_config.health_min_effective_ratio);
+    add(buf);
+  }
+
+  // One line, fields in a fixed order for grep / awk:
+  //  scans in the window | mean points per scan, near / effective share of
+  //  them, the worst scan's effective share, mean |residual| | update chunks
+  //  with a match / all | IMU samples, saturated samples, largest |axis| |
+  //  speed now and the window's max | position / attitude 1-sigma | bias and
+  //  gravity norms | timerCB cost per scan.
+  const double scans = w.scans;
+  char line[512];
+  std::snprintf(
+    line, sizeof(line),
+    "lio health: %d scans in %.1f s | pts %.0f near %.0f%% eff %.0f%% (min %.0f%%) res %.2f cm | "
+    "chunks %d/%d | imu %d sat acc %d gyro %d max |a| %.1f |w| %.2f | v %.2f max %.2f m/s | "
+    "std p %.2f cm r %.3f deg | |ba| %.3f |bg| %.4f |g| %.3f | cost %.1f max %.1f ms",
+    w.scans, window, w.points / scans, near_pct, eff_pct, 100.0 * w.effective_ratio_min, res_cm,
+    w.chunks_updated, w.chunks, w.imu_samples, w.acc_saturated, w.gyro_saturated, w.acc_abs_max,
+    w.gyro_abs_max, x.v.norm(), w.speed_max, std_p_cm, std_r_deg, x.ba.norm(), x.bg.norm(),
+    x.g.norm(), w.cost_ms_sum / scans, w.cost_ms_max);
+  if (reasons.empty()) {
+    RCLCPP_INFO(this->get_logger(), "%s", line);
+  } else {
+    RCLCPP_WARN(this->get_logger(), "%s%s", line, reasons.c_str());
+  }
 }
 
 void PointLIONode::publishResults()
@@ -627,6 +797,11 @@ void PointLIONode::resetCB(
   m_builder = std::make_shared<MapBuilder>(m_builder_config, m_kf);
 
   m_last_odom_time = 0.0;
+  // The old run's scans say nothing about the new one, and until it reaches
+  // MAPPING an empty window is the re-init, not a lost lidar.
+  m_health = HealthWindow();
+  m_health_seen_mapping = false;
+  m_health_idle_warned = false;
 
   response->success = true;
   response->message = "LIO reset; re-initialising IMU (robot must be still).";

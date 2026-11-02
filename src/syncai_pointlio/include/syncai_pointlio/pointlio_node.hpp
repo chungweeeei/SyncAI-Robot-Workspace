@@ -90,6 +90,53 @@ struct NodeConfig
   // all).
   double max_lidar_backlog = 0.3;
   int max_lidar_skip = 2;
+
+  // The health log (2026-11-02). On 2026-10-30 robot01's Point-LIO diverged
+  // on the dock after hours of slow degradation, and its own log said nothing
+  // until the numbers were already 10^6 m: the decline could only be read off
+  // the localizer's corrections, and why it happened not at all. Now one
+  // `lio health:` line per health_summary_period: how many scans, how well
+  // their points matched the map (near / effective / residual), the IMU's
+  // saturation, the speed and the covariance -- the numbers an incident review
+  // needs, at a resolution that shows a decline building. It is a WARN, with
+  // every reason that holds, when
+  //  - the speed exceeds health_max_speed anywhere in the window. The robot
+  //    tops out at 0.8 m/s; the localizer's health.max_lio_speed (1.5) is the
+  //    same check from outside, which stops running once its rounds fail;
+  //  - an IMU sample had an axis at or over satu_acc / satu_gyro (dropped
+  //    from the update, PointEKF::updateIMU);
+  //  - a scan's lidar update had no effective point at all (IMU only);
+  //  - health_min_effective_ratio > 0 and a scan's effective / points fell
+  //    under it. Off by default: what the ratio is on a healthy robot has not
+  //    been measured yet, and a made-up floor would only cry wolf.
+  // Log only: nothing here changes the filter or what is published.
+  // health_summary_period <= 0 turns the whole log off.
+  double health_summary_period = 1.0;
+  double health_max_speed = 1.5;
+  double health_min_effective_ratio = 0.0;
+};
+
+// The health log's tally of one summary window (NodeConfig::health_*), from
+// MapBuilder::health() after every MAPPING scan. timerCB / resetCB only.
+struct HealthWindow
+{
+  int scans = 0;
+  long points = 0;
+  long near = 0;
+  long effective = 0;
+  double residual_sum = 0.0;
+  double effective_ratio_min = 1.0;
+  int chunks = 0;
+  int chunks_updated = 0;
+  int scans_without_update = 0;
+  int imu_samples = 0;
+  int acc_saturated = 0;
+  int gyro_saturated = 0;
+  double acc_abs_max = 0.0;
+  double gyro_abs_max = 0.0;
+  double speed_max = 0.0;
+  double cost_ms_sum = 0.0;
+  double cost_ms_max = 0.0;
 };
 
 struct StateData
@@ -149,6 +196,10 @@ public:
   // The backlog guard's report, every few seconds from timerCB: a WARN while
   // scans are being skipped, an INFO once they no longer are.
   void reportBacklog();
+  // The health log (NodeConfig::health_*): one MAPPING scan into the window,
+  // and the `lio health:` line once the window is over, every timerCB tick.
+  void recordHealth(double cost_ms);
+  void reportHealth();
   // The publish half of timerCB, once the builder is MAPPING: TF, odometry,
   // the deskewed clouds, all for m_package.
   void publishResults();
@@ -188,6 +239,14 @@ private:
   double m_backlog_max_seen = 0.0;
   std::chrono::steady_clock::time_point m_last_backlog_report = std::chrono::steady_clock::now();
   bool m_backlog_warned = false;
+  // The health log's window, when it started, whether a scan has been
+  // processed in MAPPING since start / the last reset (the no-scan WARN means
+  // nothing before that), and whether that WARN is out. timerCB / resetCB
+  // only.
+  HealthWindow m_health;
+  std::chrono::steady_clock::time_point m_last_health_report = std::chrono::steady_clock::now();
+  bool m_health_seen_mapping = false;
+  bool m_health_idle_warned = false;
   StateData m_state_data;
   SyncPackage m_package;
   NodeConfig m_node_config;

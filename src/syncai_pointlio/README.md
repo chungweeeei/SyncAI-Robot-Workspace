@@ -183,6 +183,56 @@ Below a third of real time the backlog still grows, and the WARN it logs every
 problem, not a tuning one. An offline replay that wants every scan processed
 however late sets `max_lidar_backlog: 0.0`.
 
+### The health log
+
+On 2026-10-30 robot01's Point-LIO diverged on the dock (to ~10⁷ m at
+~11 km/s) after hours of slowly growing localizer corrections, and this node's
+log said nothing until it was over: it never logged how well its scans were
+matching, so the decline could only be read off the localizer's corrections,
+and its cause not at all. Since 2026-11-02 it logs one `lio health:` line per
+`health.summary_period` (1 s), from numbers the filter already has:
+
+```
+lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms
+```
+
+(Illustrative numbers: a healthy robot's have not been recorded yet.)
+
+| Field | What it is | What a decline looks like |
+|---|---|---|
+| `pts` | Mean downsampled points per scan — what the update sees | Few: open space, an occluded lidar |
+| `near` | Share with `near_search_num` map neighbours, the farthest within √5 m | Falling: the scan no longer lands on the map — the pose is already off, or the place is new |
+| `eff` / `(min …)` | Share that fit a plane and passed the residual gate, i.e. the update's rows; window mean / worst scan | `near` high but `eff` low: surroundings that are not planar (grass, foliage, people) |
+| `res` | Mean \|n·p + d\| of those points before their update | Growing: the map and the scan disagree more |
+| `chunks a/b` | Update chunks with at least one matched point / all | `a < b`: stretches of the scan that were IMU propagation only |
+| `imu`, `sat acc` / `gyro`, `max \|a\|` / `\|w\|` | IMU samples fused, samples with an axis at or over `satu_acc` / `satu_gyro` (dropped from the update), largest \|axis\| (m/s² after `imu_acc_scale`; rad/s) | Any saturation: gait impacts past the limit — the 2026-10-30 dock bag peaked at ~33 m/s² against `satu_acc` 30 |
+| `v … max …` | Speed (world frame) at the last scan, and the window's largest | Over the robot's 0.8 m/s: running away |
+| `std p` / `r` | Position / attitude 1σ from the covariance | Shrinking while `res` grows: an over-confident filter discounting its scans |
+| `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | `\|g\|` drifting from 9.81, biases walking off |
+| `cost` | `timerCB` per processed scan, mean / max, against the lidar's 100 ms | See "Falling behind" |
+
+The line is a **WARN** with every reason that holds appended after ` -- `
+(`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 31.2 >=
+satu_acc 30.0 dropped from the update`, `1 of 10 scans matched no plane (IMU
+only)`, and — only with `health.min_effective_ratio` > 0 — `effective ratio
+down to …`); otherwise INFO. A window with no scan at all after the node has
+been mapping is one WARN, `no scan processed in the last 1.0 s (status …, lidar
+buffer N scans, IMU buffer M samples)` — lidar 0 means no lidar arriving,
+lidar > 0 the IMU not covering the scan's end — and `scans processed again`
+once they are. A `reset` starts the window over. Skipped scans stay the
+backlog guard's own line.
+
+```bash
+grep 'lio health' log/stack/<robot_id>/pointlio/current | tai64nlocal   # the timeline
+grep -- 'lio health.* -- ' log/stack/<robot_id>/pointlio/current        # only the trouble
+```
+
+At 1 s it is ~300 B a second, ~26 MB a day — well inside the multilog budget
+(16 MiB × 100). It is log only: nothing here touches the filter or what is
+published. The localizer's `loc health` (its README) is the same idea from the
+other side; it stops measuring once its rounds stop converging, this one does
+not.
+
 ## Parameters
 
 `params/pointlio_params.yaml`, keyed `/**/pointlio_node:` so it applies at any
@@ -198,6 +248,7 @@ The launch layers the two frame names on top.
 | `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is fixed at 9.81. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |
 | `max_lidar_backlog` / `max_lidar_skip` | `0.3` / `2` | | The backlog guard (see "Falling behind"): beyond `max_lidar_backlog` seconds of buffered scans the oldest are skipped, at most `max_lidar_skip` in a row, their IMU still fused. **Write a float** for the first. `<= 0.0` processes every scan however late |
+| `health.summary_period` / `health.max_speed` / `health.min_effective_ratio` | `1.0` / `1.5` / `0.0` | | The health log (see "The health log"): one `lio health:` line per period (`<= 0.0` = off), a WARN when the speed exceeds `max_speed` (the robot tops out at 0.8 m/s) or a scan's matched share falls under `min_effective_ratio` (`0.0` = unchecked until a healthy robot's ratio is measured). **Write floats** |
 | `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
@@ -246,6 +297,8 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 |---|---|
 | `Lidar input: livox_ros_driver2/CustomMsg (/robot01/livox/lidar)` | The remap resolved; if this says `/robot01/pointlio/lidar` the launch was bypassed |
 | `IMU Message is out of order` / `Lidar Message is out of order` | Buffer flushed after a backwards stamp (bag loop, driver restart) |
+| `lio health: 10 scans in 1.0 s \| pts … near … eff …` | The health log, once a second (see "The health log"); a WARN with ` -- <reasons>` when one holds |
+| `lio health: no scan processed in the last 1.0 s (status …, lidar buffer N scans, IMU buffer M samples)` | Mapping stopped getting scans: lidar 0 = none arriving, lidar > 0 = the IMU not covering them. Once, until `lio health: scans processed again` |
 | `IMU gap of N ms (samples lost before this node?)` | Two consecutive IMU stamps more than 30 ms apart (throttled to 1 s). The MID360 alone stays under ~23 ms; a gap past that is samples dropped by the driver, DDS or this node's queue — the filter coasted through it without a measurement |
 | `PointCloud2 input has no per-point time` | `lidar_type: 1` — batch update per scan, expected on Isaac |
 | `[resetCB] LIO reset; re-initialising IMU (robot must be still).` | A `reset` landed (normally from `pgo/reset_mapping`) |

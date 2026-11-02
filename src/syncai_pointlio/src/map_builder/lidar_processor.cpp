@@ -170,6 +170,8 @@ void LidarProcessor::preprocess(SyncPackage &package, Vec<PointGroup> &groups)
 
     // These form five parallel arrays, all addressed by the same index
     int size = m_cloud_down_lidar->size();
+    m_stats = LidarUpdateStats();
+    m_stats.points = size;
     if (static_cast<int>(m_cloud_down_world->size()) < size)
     {
         m_cloud_down_world->resize(size);
@@ -204,9 +206,14 @@ void LidarProcessor::processGroup(const PointGroup &group)
 void LidarProcessor::updateChunk(int begin, int end)
 {
     const State &state = m_kf->x();
+    ++m_stats.chunks;
+    // A reduction, not ++m_stats.near in the loop: the loop may run on
+    // MP_PROC_NUM threads, and a shared counter would lose increments the way
+    // the vector<bool> flags lost writes (see m_point_selected_flag).
+    int near_num = 0;
 #ifdef MP_EN
     omp_set_num_threads(MP_PROC_NUM);
-#pragma omp parallel for
+#pragma omp parallel for reduction(+ : near_num)
 #endif
     for (int i = begin; i < end; i++)
     {
@@ -227,6 +234,7 @@ void LidarProcessor::updateChunk(int begin, int end)
             m_point_selected_flag[i] = false;
         if (!m_point_selected_flag[i])
             continue;
+        ++near_num;
 
         Eigen::Vector4d pabcd;
         m_point_selected_flag[i] = false;
@@ -263,10 +271,14 @@ void LidarProcessor::updateChunk(int begin, int end)
             m_H.block<1, 3>(effect_num, 9) = norm_vec.transpose() * state.r_wi;
         }
         m_z(effect_num) = norm_p.intensity;
+        m_stats.residual_sum += std::fabs(norm_p.intensity);
         effect_num++;
     }
+    m_stats.near += near_num;
+    m_stats.effective += effect_num;
     if (effect_num < 1)
         return;
+    ++m_stats.chunks_updated;
 
     m_kf->updateLidar(m_H, m_z, effect_num);
 
