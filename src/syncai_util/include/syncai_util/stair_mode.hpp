@@ -24,14 +24,31 @@
 // syncai_nav_core is the plugin interface and carries no code.
 //
 // Two ways in: initialize() for a ROS node (declares the parameters under the
-// plugin's name, creates the service client, the `mode` subscription and the
-// latched `stair_mode` publisher), configure() for a test, which injects the
-// three side effects as callbacks. Everything else is plain C++ on a Path.
+// plugin's name, creates the service client, the `mode` and `plan_crossings`
+// subscriptions and the latched `stair_mode` publisher), configure() for a
+// test, which injects the three side effects as callbacks (and the test calls
+// setCrossings() itself). Everything else is plain C++ on a Path.
+//
+// Since 2026-11-02 the planner says which stretches of its plan are stairs
+// (`plan_crossings`, syncai_util/plan_crossings.hpp), and that gates the rise
+// test: with the planner's word for the plan in hand, a rise of min_rise
+// within the window enters (or keeps) stair mode only where the window
+// overlaps a crossing the planner lays in the stair gait. A ramp, a kerb or
+// a walked gap the planner lays in the flat gait -- dp's 2F step, 0.2 m over
+// 0.5 m, a short slope at a door -- is walked in the flat gait whatever its
+// heights say. The heights still decide where: a stair crossing the planner
+// straightened (stairCrossing) starts at the floor vertex before the flight,
+// metres short of the first riser, so the span says whether and the rise
+// says where. Without the planner's word for this very plan (another
+// planner, a sidecar not yet arrived or for an older plan) the rise test
+// alone decides, as before.
 
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "geometry_msgs/msg/point.hpp"
@@ -39,7 +56,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "syncai_common/srv/set_policy_mode.hpp"
+#include "syncai_util/plan_crossings.hpp"
 
 namespace syncai_util
 {
@@ -178,9 +197,10 @@ public:
    * values is the middle one, so every riser, landing and flight edge keeps
    * its height. Not removed: a dip two poses or more wide, or a slope whose
    * two ends round 0.1 m apart the wrong way. Rejected for this: a larger
-   * min_rise (the 0.2 m ramp would still be one voxel from it), and telling
-   * stairs from slopes by the planner's stair links (the right model, but the
-   * path would have to carry which poses are on a link; not done yet).
+   * min_rise (the 0.2 m ramp would still be one voxel from it). Telling
+   * stairs from slopes by the planner's stair links, the right model, came
+   * on 2026-11-02 (plan_crossings, the class comment); the median stays for
+   * a plan the planner says nothing about.
    */
   static void medianHeights(nav_msgs::msg::Path & path);
 
@@ -234,6 +254,11 @@ public:
 
   /// The gait controller's live policy index (from `mode` data[0]).
   void setReportedPolicy(int policy) { reported_policy_.store(policy); }
+
+  /// The planner's crossings (`plan_crossings`): applied to the plan they
+  /// were made for (same stamp and pose count) whenever that is the plan
+  /// setPlan() was given, before or after this call. Any thread.
+  void setCrossings(const PlanCrossings & crossings);
 
   bool enabled() const { return params_.enabled; }
   bool onStairs() const { return on_stairs_; }
@@ -351,6 +376,13 @@ private:
   enum class Transition { None, Entering, Leaving };
 
   bool wantStairs(size_t remaining_poses, double lead) const;
+  // The pose spans of the plan the planner lays in the stair gait, when its
+  // crossings are for full_plan_ (true; possibly none), else false.
+  bool plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) const;
+  // The last pose within `dist` metres (x / y, along the path) after /
+  // before `idx`.
+  static size_t indexAhead(const nav_msgs::msg::Path & path, size_t idx, double dist);
+  static size_t indexBehind(const nav_msgs::msg::Path & path, size_t idx, double dist);
   // Ask the gait controller for `policy` (fire and forget: the driver's UDP has
   // no acknowledgement to wait for).
   void sendPolicy(int policy);
@@ -383,6 +415,14 @@ private:
   int restore_policy_{-1};
   // Written from the executor (the `mode` subscription), read in the control loop.
   std::atomic<int> reported_policy_{-1};
+
+  // The planner's last crossings, from the executor (`plan_crossings`), read
+  // in the control loop.
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr crossings_sub_;
+  mutable std::mutex crossings_mutex_;
+  PlanCrossings crossings_;
+  // A rise the planner's word suppressed was logged for this plan (once).
+  mutable bool suppressed_said_{false};
 };
 
 }  // namespace syncai_util

@@ -417,11 +417,34 @@ on a policy sent a moment earlier). `on_stairs_` outlives the goal on purpose �
 policy the gait controller is on — and the next goal's first level cycle switches
 back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
 
+**The planner's word gates the rise (2026-11-02).** The planner publishes
+which stretches of its plan are stairs on **`plan_crossings`**
+(`syncai_util/plan_crossings.hpp`: per crossing its kind, the gait it is
+taken in and its pose span on the plan, tied to the plan by stamp and pose
+count), and `StairMode` subscribes to it. With the word for the plan in hand,
+the rise test above enters or keeps stair mode only where its window overlaps
+a crossing laid in the **stair** gait; a rise the planner lays as a flat-gait
+crossing — a walked door sill, a short slope, dp's 2F step (0.2 m over 0.5 m)
+— or no crossing at all is walked on the flat policy, with one log line per
+plan saying so ("Path rises … but the planner lays no stair there"). The
+heights still say **where**: a stair crossing straightened by the planner
+(`stairCrossing`) starts at the floor vertex before the flight, so the span
+says whether and the rise where, and the hold comes at the same pose as
+before. Without the word for this plan — a planner that keeps none (`known:
+false`), a sidecar for an older plan, or none yet — the rise test alone
+decides, exactly as before. The landing corners the planner lays (`turns` in
+the sidecar) are not read yet: `findCorner()` still finds them from the
+path's geometry.
+
 **Run on robot01**: HIMLOCO climbs the stair with the policy switched standing
 still (no `Stand` first) and the settle time above. The state
 machine is unit-tested in `syncai_util/test/test_stair_mode.cpp` on a
 synthetic flight (enter, hold, send, settle, leave, the replan-before-send
-cancel, the reset-after-send completion, a missing service, a level path).
+cancel, the reset-after-send completion, a missing service, a level path,
+and since 2026-11-02 the planner's word: a flat-gait crossing over the flight
+never holds, a stair crossing that starts early holds where the heights say,
+a word for another plan is ignored, and a flat-gait word takes a robot left
+on the stair policy off it).
 
 ## Regulated Pure Pursuit
 
