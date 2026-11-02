@@ -169,6 +169,22 @@ bool StairMode::plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) co
   return true;
 }
 
+bool StairMode::plannerPassages(std::vector<PlanCrossing> & passages) const
+{
+  passages.clear();
+  std::lock_guard<std::mutex> lock(crossings_mutex_);
+  if (!crossings_.isFor(
+        full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, full_plan_.poses.size())) {
+    return false;
+  }
+  for (const PlanCrossing & c : crossings_.crossings) {
+    if (c.kind == "narrow") {
+      passages.push_back(c);
+    }
+  }
+  return true;
+}
+
 size_t StairMode::indexAhead(const nav_msgs::msg::Path & path, size_t idx, double dist)
 {
   const auto & P = path.poses;

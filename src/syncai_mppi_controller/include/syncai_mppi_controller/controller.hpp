@@ -198,6 +198,14 @@ protected:
     const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
 
   /**
+    * @brief Inside a narrow passage the planner reports on plan_crossings,
+    * the forward speed the optimizer may ask for
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @return narrow_linear_vel inside one, 0 (no cap) outside or when off
+    */
+  double narrowSpeedLimit(const geometry_msgs::msg::PoseStamped & robot_pose);
+
+  /**
     * @brief The straight walk onto a point shared by the direct approach and
     * the stair carrot: vx towards `speed`, wz on the pure-pursuit arc through
     * the point, both acceleration-clamped
@@ -356,6 +364,11 @@ protected:
   // Set while climbStairs() owns the robot (hold or climb), so the optimizer
   // is reset once on the way in and once on the way out.
   bool climbing_stairs_{false};
+  // Narrow passages (narrowSpeedLimit(), 2026-11-02): the optimizer's speed
+  // cap over a passage's span (<= 0 disables it), and whether the robot is
+  // in one, for the log on the way in and out.
+  double narrow_linear_vel_{0.0};
+  bool narrow_active_{false};
   // The direct approach's and the stair carrot's only obstacle test (see
   // isApproachBlocked()).
   syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *> collision_checker_{nullptr};

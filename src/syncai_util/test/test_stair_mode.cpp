@@ -758,6 +758,46 @@ TEST(StairModePlanner, CrossingsForAnotherPlanAreIgnored)
   EXPECT_EQ(firstHold(again, path), expected);
 }
 
+TEST(StairModePlanner, NarrowPassagesAreThisPlansOnlyAndChangeNoGait)
+{
+  // A narrow passage (a door) before the flight, beside the flight's stair
+  // crossing: plannerPassages() hands it out, with its width and axis, for
+  // this plan only; stair mode holds where it did without it.
+  const auto path = stairPath();
+  Harness plain;
+  plain.sm.setReportedPolicy(0);
+  plain.sm.setPlan(path);
+  const size_t expected = firstHold(plain, path);
+
+  auto c = crossingsFor(path, kLevelIn, kLevelIn + kFlight, true);
+  syncai_util::PlanCrossing door;
+  door.kind = "narrow";
+  door.evidence = "geometry";
+  door.first = 2;
+  door.last = 8;
+  door.width = 0.65;
+  door.heading = 1.0;
+  c.crossings.insert(c.crossings.begin(), door);
+
+  Harness h;
+  h.sm.setReportedPolicy(0);
+  h.sm.setPlan(path);
+  h.sm.setCrossings(c);
+  std::vector<syncai_util::PlanCrossing> passages;
+  ASSERT_TRUE(h.sm.plannerPassages(passages));
+  ASSERT_EQ(passages.size(), 1u);
+  EXPECT_EQ(passages[0].first, 2u);
+  EXPECT_EQ(passages[0].last, 8u);
+  EXPECT_DOUBLE_EQ(passages[0].width, 0.65);
+  EXPECT_DOUBLE_EQ(passages[0].heading, 1.0);
+  EXPECT_EQ(firstHold(h, path), expected);
+
+  c.poses += 1;  // another plan's
+  h.sm.setCrossings(c);
+  EXPECT_FALSE(h.sm.plannerPassages(passages));
+  EXPECT_TRUE(passages.empty());
+}
+
 TEST(StairModePlanner, OnTheStairsAFlatGaitWordForTheNewPlanTakesItOff)
 {
   // Left in stair mode (a goal cancelled on a flight), handed a plan whose
