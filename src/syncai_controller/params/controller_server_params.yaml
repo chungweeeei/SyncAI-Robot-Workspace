@@ -63,6 +63,20 @@
     # (syncai_util/path_progress.hpp, 2026-11): it was the whole path's
     # nearest pose, which on that loop is the start and the end at once.
     goal_reached_max_remaining_path: 1.0
+    # Where a path turns back on itself it is driven as legs, one at a time
+    # (2026-11, syncai_util/path_cusps.hpp): each leg ends on its cusp facing
+    # the next, the plugin's final rotation turns the robot there, and the
+    # goal checker's acceptance hands over the next leg. On robot01 a patrol
+    # P1 -> P2 -> P3 -> P2 -> P4 handed to MPPI whole stopped 0.84 m short of
+    # P3 for good: with the return leg in its window the critics' carrot came
+    # back under the robot. A cusp is a turn sharper than cusp_min_angle
+    # (rad) between the cusp_window (m) of path before and after a pose, on
+    # one floor: 2.0 (~115 deg) leaves every 90 deg corner to the controller,
+    # and a turn this sharp is one the robot stops for anyway; 0.4 is four
+    # cells, so an A* return leg one cell aside still reads as one turn.
+    # cusp_min_angle <= 0 hands every path over whole, as before.
+    cusp_min_angle: 2.0
+    cusp_window: 0.4
 
     # DockToPose (dock_to_pose, 2026-10). What an empty controller_id /
     # goal_checker_id in a dock goal resolves to -- both must be entries of

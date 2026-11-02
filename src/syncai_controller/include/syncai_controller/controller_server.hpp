@@ -21,6 +21,7 @@
 #include "syncai_nav_core/progress_checker.hpp"
 #include "syncai_util/node_thread.hpp"
 #include "syncai_util/odom_subscriber.hpp"
+#include "syncai_util/path_cusps.hpp"
 #include "syncai_util/path_progress.hpp"
 #include "syncai_util/simple_action_server.hpp"
 #include "tf2_ros/transform_listener.h"
@@ -356,6 +357,23 @@ protected:
   // updated by isGoalReached() every cycle, read by its remaining-length gate
   // and by the feedback's distance_to_goal. Reset with the path.
   syncai_util::PathProgress path_progress_;
+
+  // current_path_ cut where it turns back on itself (path_cusps.hpp,
+  // 2026-11): the controller plugin is handed legs_[leg_] only, end_pose_ is
+  // that leg's end, and isGoalReached() hands over the next leg once the goal
+  // checker accepts it. leg_ends_[k] is legs_[k]'s last pose as an index into
+  // current_path_. One leg -- the path itself -- for a path with no cusp,
+  // which is every MOVE and every dock.
+  syncai_util::CuspParams cusp_params_;
+  std::vector<nav_msgs::msg::Path> legs_;
+  std::vector<size_t> leg_ends_;
+  size_t leg_{0};
+
+  /**
+   * @brief Hands legs_[k] to the controller: its plan, end_pose_, and a reset
+   * goal checker (a stateful one has latched the previous leg's end)
+   */
+  void startLeg(size_t k);
 
   // DockToPose: the plugin ids an empty controller_id / goal_checker_id
   // resolve to (findControllerId("") only falls back when exactly one plugin

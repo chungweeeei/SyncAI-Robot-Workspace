@@ -1,5 +1,6 @@
 #include "syncai_controller/controller_server.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -77,6 +78,10 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("body_frame", rclcpp::ParameterValue(std::string("pointlio_body")));
   declare_parameter("lidar_height", rclcpp::ParameterValue(0.481));
   declare_parameter("goal_z_tolerance", rclcpp::ParameterValue(0.5));
+  // Where a path turns back on itself it is driven as legs (path_cusps.hpp).
+  // cusp_min_angle <= 0 drives every path whole, as before 2026-11.
+  declare_parameter("cusp_min_angle", rclcpp::ParameterValue(2.0));
+  declare_parameter("cusp_window", rclcpp::ParameterValue(0.4));
 
   // DockToPose (dock_to_pose). The ids are what an empty goal field resolves
   // to; they must name entries of controller_plugins / goal_checker_plugins,
@@ -158,6 +163,8 @@ void ControllerServer::configure()
   get_parameter("body_frame", body_frame_);
   get_parameter("lidar_height", body_height_);
   get_parameter("goal_z_tolerance", goal_z_tolerance_);
+  get_parameter("cusp_min_angle", cusp_params_.min_angle);
+  get_parameter("cusp_window", cusp_params_.window);
 
   costmap_ros_->init();
   // Launch a thread to run the costmap node
@@ -469,18 +476,37 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
   if (path.poses.empty()) {
     throw syncai_nav_core::PlannerException("Invalid path, Path is empty.");
   }
-  controllers_[current_controller_]->setPlan(path);
 
-  end_pose_ = path.poses.back();
-  end_pose_.header.frame_id = path.header.frame_id;
-  goal_checkers_[current_goal_checker_]->reset();
-
-  RCLCPP_DEBUG(
-    get_logger(), "Path end point is (%.2f, %.2f)", end_pose_.pose.position.x,
-    end_pose_.pose.position.y);
+  // Cut where the path turns back on itself (2026-11, path_cusps.hpp has the
+  // robot01 patrol that stalled 0.84 m short of its U-turn): the plugin is
+  // given one leg at a time, so no controller ever sees a path that comes
+  // back on itself, and each leg ends on its cusp facing the next, which the
+  // plugin's final rotation turns the robot to. current_path_ stays whole --
+  // the feedback and the remaining-length gate measure along all of it. A
+  // replan (updateGlobalPath()) starts again from its first leg: it starts
+  // at the robot. A dock's path has two poses and never has a cusp.
+  const std::vector<size_t> cusps = syncai_util::findCusps(path, cusp_params_);
+  legs_ = syncai_util::splitAtCusps(path, cusps, cusp_params_.window);
+  leg_ends_ = cusps;
+  leg_ends_.push_back(path.poses.size() - 1);
 
   current_path_ = path;
   path_progress_.reset();
+  startLeg(0);
+}
+
+void ControllerServer::startLeg(size_t k)
+{
+  leg_ = k;
+  controllers_[current_controller_]->setPlan(legs_[k]);
+
+  end_pose_ = legs_[k].poses.back();
+  end_pose_.header.frame_id = legs_[k].header.frame_id;
+  goal_checkers_[current_goal_checker_]->reset();
+
+  RCLCPP_DEBUG(
+    get_logger(), "Leg %zu/%zu end point is (%.2f, %.2f)", k + 1, legs_.size(),
+    end_pose_.pose.position.x, end_pose_.pose.position.y);
 }
 
 void ControllerServer::computeAndPublishVelocity()
@@ -1062,9 +1088,16 @@ bool ControllerServer::isGoalReached()
   // which only moves forward (2026-11): this was a whole-path nearest pose,
   // strict '<' so a tie went to the start, which on a loop meant a robot back
   // at A could still read as at the start and never finish.
+  // Measured to the end of the leg the controller is driving: on a path cut
+  // at its cusps (setPlannerPath()) end_pose_ is that leg's end, and the rest
+  // of the path is no reason to keep the checker from it.
   if (goal_reached_max_remaining_path_ > 0.0 && !current_path_.poses.empty()) {
-    const double remaining_path_length =
-      syncai_util::geometry_utils::calculate_path_length(current_path_, path_progress_.index());
+    const size_t leg_end = std::min(leg_ends_[leg_], current_path_.poses.size() - 1);
+    double remaining_path_length = 0.0;
+    for (size_t i = path_progress_.index(); i < leg_end; ++i) {
+      remaining_path_length += syncai_util::geometry_utils::euclidean_distance(
+        current_path_.poses[i].pose, current_path_.poses[i + 1].pose);
+    }
     if (remaining_path_length > goal_reached_max_remaining_path_) {
       return false;
     }
@@ -1072,6 +1105,25 @@ bool ControllerServer::isGoalReached()
 
   if (!goal_checkers_[current_goal_checker_]->isGoalReached(
         pose.pose, transformed_end_pose.pose, velocity)) {
+    return false;
+  }
+  if (leg_ + 1 < legs_.size()) {
+    // On a cusp and turned to the next leg: hand it over. Not the goal, and
+    // not a controller reset either (see computeControl()) -- the plugin's
+    // setPlan() drops its own per-path latches.
+    RCLCPP_INFO(
+      get_logger(),
+      "Reached cusp %zu/%zu at (%.2f, %.2f): %.3f m and %+.3f rad from it; handing over leg "
+      "%zu/%zu, %.2f m",
+      leg_ + 1, legs_.size() - 1, end_pose_.pose.position.x, end_pose_.pose.position.y,
+      std::hypot(
+        pose.pose.position.x - transformed_end_pose.pose.position.x,
+        pose.pose.position.y - transformed_end_pose.pose.position.y),
+      angles::shortest_angular_distance(
+        tf2::getYaw(pose.pose.orientation), tf2::getYaw(transformed_end_pose.pose.orientation)),
+      leg_ + 2, legs_.size(),
+      syncai_util::geometry_utils::calculate_path_length(legs_[leg_ + 1], 0));
+    startLeg(leg_ + 1);
     return false;
   }
   RCLCPP_INFO(
@@ -1099,6 +1151,22 @@ void ControllerServer::logPath(const char * what, const nav_msgs::msg::Path & pa
     syncai_util::geometry_utils::calculate_path_length(path, 0), path.header.frame_id.c_str(),
     pathHasHeight(path) ? " with heights" : "", end.position.x, end.position.y, end.position.z,
     tf2::getYaw(end.orientation));
+  // Said up front, because the stop it causes is otherwise unexplained: the
+  // robot halts on each cusp and turns in place before going on.
+  if (legs_.size() > 1) {
+    std::string where;
+    for (size_t k = 0; k + 1 < legs_.size(); ++k) {
+      const auto & p = legs_[k].poses.back().pose.position;
+      char buf[48];
+      std::snprintf(buf, sizeof(buf), "%s(%.2f, %.2f)", k == 0 ? "" : ", ", p.x, p.y);
+      where += buf;
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "%s: the path turns back on itself at %zu cusp(s) %s; driven as %zu legs, stopping on each "
+      "cusp to turn in place",
+      what, legs_.size() - 1, where.c_str(), legs_.size());
+  }
 }
 
 bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
@@ -1153,6 +1221,10 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
         dock_approach_timeout_ = parameter.as_double();
       } else if (name == "goal_z_tolerance") {
         goal_z_tolerance_ = parameter.as_double();
+      } else if (name == "cusp_min_angle") {
+        cusp_params_.min_angle = parameter.as_double();
+      } else if (name == "cusp_window") {
+        cusp_params_.window = parameter.as_double();
       }
     }
 

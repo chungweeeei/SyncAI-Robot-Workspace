@@ -78,6 +78,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_path_progress test/test_path_progress.cpp)
   target_link_libraries(test_path_progress ${PROJECT_NAME})
   ament_target_dependencies(test_path_progress ${dependencies})
+
+  # Header-only: where a path turns back on itself and the legs it is cut
+  # into there (path_cusps.hpp), on synthetic patrol routes and a stair.
+  ament_add_gtest(test_path_cusps test/test_path_cusps.cpp)
+  target_link_libraries(test_path_cusps ${PROJECT_NAME})
+  ament_target_dependencies(test_path_cusps ${dependencies})
 endif()
 
 ament_export_include_directories(include)

@@ -211,6 +211,36 @@ not the minimum over `max_robot_pose_search_dist`: an out-and-back route's retur
 leg lies on top of the outgoing one and inside that 10 m window for the last 5 m
 before the turn, and pruning onto it cannot be undone.
 
+### A path that turns back on itself is driven leg by leg
+
+Forward-only progress passes a U-turn only once the robot has been within its
+0.3 m hysteresis of the tip, and nothing made a controller go there. On robot01
+(2026-11-02) a patrol P1 → P2 → P3 → P2 → P4, handed to MPPI whole, stopped
+**0.84 m short of P3** and stood there with no log line until it was cancelled;
+the same points as four MOVEs went through. MPPI's critics place each candidate
+trajectory on the pruned path by its nearest pose over all of it
+(`findPathFurthestReachedPoint`): within `prune_distance` of the tip the return leg
+is in view, the slow candidates match it, and `PathFollowCritic`'s carrot lands at
+2 D − `prune_distance` (D = distance to the tip) — under the robot at D ≈ 1 m —
+and `PathAngleCritic` then turned the robot towards a carrot behind it. RPP 3D's
+lookahead (the first pose L away) is on the return leg for D < L, so it would turn
+back short of the tip instead (reasoned, not observed).
+
+So `setPlannerPath()` cuts the path at its cusps (`syncai_util/path_cusps.hpp`:
+a turn sharper than **`cusp_min_angle`**, 2.0 rad, between the **`cusp_window`**,
+0.4 m, of path before and after a pose, on one floor) and hands the plugin one
+leg at a time. Every leg but the last ends on its cusp facing the next leg, so the
+plugin's own final rotation turns the robot there, exactly as at the end of a
+MOVE; once the goal checker accepts that end, `isGoalReached()` hands over the
+next leg (`Reached cusp k/n …: handing over leg …`), and `logPath()` lists the
+cusps when the path arrives. `current_path_` stays whole: the feedback and the
+remaining-length gate (measured to the current leg's end) read along all of it.
+The robot therefore stops and turns in place on a turn-back waypoint, the one
+place a patrol stops short of its end. A replan restarts at its first leg; a
+dock's two-pose path never has a cusp. Not handled: a route that crosses itself
+on one floor (an X), where MPPI's nearest-pose match can still jump to the later
+crossing leg.
+
 A second fix lives here too: `end_pose_` is re-stamped with `Time(0)` before being
 transformed into the costmap's global frame. Using the path's original stamp made
 long goals die with a TF "extrapolation into the past" error, so `isGoalReached()`
@@ -814,7 +844,9 @@ Server-level (`/**/controller_server`):
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
 | `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) — then on a 2D global costmap that updated at 1 Hz out of phase with it, on `Octo3D`'s dynamic overlay since 2026-10-21 — up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and while `is_path_valid` ran RPP's own footprint test on the 2D costmap (until 2026-10-28) a refused path was replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
-| `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above, from the robot's forward-only place on the path; `<= 0` disables |
+| `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above, from the robot's forward-only place on the path to the end of the leg being driven; `<= 0` disables |
+| `cusp_min_angle` | `2.0` | A turn sharper than this (rad) is a cusp, where the path is cut into legs (above); `<= 0` hands every path over whole |
+| `cusp_window` | `0.4` | Path length (m) read before and after a pose for its turn; four cells, so an A* return leg one cell aside is one turn |
 | `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
 | `lidar_height` | `0.481` | `body_frame`'s height above the feet — the planner's `Octo3D.lidar_height`; change both together |
 | `goal_z_tolerance` | `0.5` | Paths with heights: how far the ground under the robot may be from the end pose's height for the goal to count. Dynamically reconfigurable |

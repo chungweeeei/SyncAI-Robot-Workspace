@@ -30,7 +30,12 @@
      that every consumer of the path places the robot on it by forward-only
      progress (syncai_util/path_progress.hpp): MPPI's and RPP 3D's pruning,
      the controller server's goal gate (goal_reached_max_remaining_path) and
-     feedback, and the planner server's `plan` trim and is_path_valid.
+     feedback, and the planner server's `plan` trim and is_path_valid. And
+     that the controller server cuts the path where it turns back on itself
+     (syncai_util/path_cusps.hpp, cusp_min_angle): the robot stops on the
+     turn-back waypoint and turns in place there -- the one place a patrol
+     does stop short of its last waypoint -- because a controller handed the
+     out-and-back whole stopped short of it for good (robot01, 2026-11-02).
 
   The failure attribution maps ComputePathThroughPoses to PLAN_FAILED, but
   navigate_through_poses is nav2's action with an Empty result: the reason is
