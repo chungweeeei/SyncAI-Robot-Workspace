@@ -195,6 +195,26 @@ struct TerrainParams
   // Share of the disc's cells that must have a ground estimate for the
   // slope to be judged at all.
   double slope_min_known = 0.5;
+
+  // ---- the planner's flat-gait crossings (2026-11-02, setCrossings()) ----
+  // A cell this close (m, x / y) to one of them is not judged by the step
+  // and slope rules: the planner lays a walked door sill or a short slope as
+  // a crossing the flat gait takes, and these rules, the planner's own,
+  // would otherwise wall it off for the controller. The obstacle rule still
+  // applies, but its band starts the crossing's rise higher there: the
+  // riser's own returns stand up to the rise above the lower floor's ground
+  // and read as an obstacle otherwise (a 0.3 m sill lane was a quarter
+  // lethal in the test with the step waived alone). A person on the
+  // crossing still is one -- legs reach far above the band's floor -- but on
+  // the lane a thing shorter than rise + min_obstacle_height is not seen.
+  // robot_radius would just cover the body's half-width centred on the
+  // line; 0.4 also keeps the inflation of the step left beside the crossing
+  // off its centre line. Wider would waive a real drop-off beside an
+  // unrailed ramp.
+  double crossing_radius = 0.4;
+  // ... and whose ground is within this (m) of the crossing's height there:
+  // a floor above or below the crossing in the same column is not it.
+  double crossing_z_band = 0.5;
 };
 
 // A pose of the global path in the grid's frame. Only its place is used (as
@@ -207,6 +227,9 @@ struct TerrainPathPose
 struct TerrainStats
 {
   size_t known = 0, lethal_obstacle = 0, lethal_step = 0, lethal_slope = 0, lethal_island = 0;
+  // Cells the step or slope rule would have made lethal, waived on a
+  // planner's flat-gait crossing.
+  size_t waived = 0;
 };
 
 class TerrainGrid
@@ -250,6 +273,15 @@ public:
   // floor goes) -- or an empty list. Replaces the previous call's. Every
   // pose seeds the reach rule (see classify()).
   void setPath(const std::vector<TerrainPathPose> & poses);
+
+  // The planner's flat-gait crossings on the current plan (plan_crossings:
+  // walked gaps, kerbs, ramps), each the plan's poses over it, in the grid's
+  // frame. Replaces the previous call's; empty = none. Cells within
+  // crossing_radius of one, on ground within crossing_z_band of its height,
+  // skip the step and slope rules (see TerrainParams). A stair is never
+  // given here: the stair mode climbs it without the costmap, and lethal is
+  // what keeps the flat gait off it.
+  void setCrossings(const std::vector<std::vector<TerrainPathPose>> & crossings);
 
   // Judge every cell at time `now`, with the robot at (robot_x, robot_y) on
   // ground `robot_ground_z`, which is also the estimate for cells that have
@@ -327,6 +359,12 @@ private:
   // swapped with cells_ on each shift.
   std::vector<Cell> shifted_;
   std::vector<TerrainPathPose> path_;
+  std::vector<std::vector<TerrainPathPose>> crossings_;
+  // Scratch of classify(): the cells setCrossings()' crossings waive, and
+  // the rise of the highest crossing over each (the obstacle band's lift).
+  mutable std::vector<uint8_t> waived_;
+  mutable std::vector<float> waive_lift_;
+  void markCrossings() const;
   // Scratch of classify(): the ground per cell (NaN = none), whether it came
   // from samples, the reach flood, and the neighbourhood's samples.
   mutable std::vector<float> ground_;

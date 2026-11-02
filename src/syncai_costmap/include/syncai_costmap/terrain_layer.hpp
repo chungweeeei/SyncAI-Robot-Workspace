@@ -34,6 +34,7 @@
 #include "message_filters/subscriber.h"
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "syncai_costmap/costmap_layer.hpp"
 #include "syncai_costmap/footprint.hpp"
 #include "syncai_costmap/layered_costmap.hpp"
@@ -70,8 +71,11 @@ protected:
 
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
   void planCallback(nav_msgs::msg::Path::ConstSharedPtr message);
-  // The latest path in the costmap's frame when it has heights, else empty.
-  std::vector<TerrainPathPose> pathPoses();
+  void crossingsCallback(std_msgs::msg::String::ConstSharedPtr message);
+  // The latest path in the costmap's frame when it has heights, else empty;
+  // with `crossings` set, the planner's flat-gait crossings in that frame too.
+  std::vector<TerrainPathPose> pathPoses(
+    std::vector<std::vector<TerrainPathPose>> * crossings = nullptr);
   void updateFootprint(
     double robot_x, double robot_y, double robot_yaw, double * min_x, double * min_y,
     double * max_x, double * max_y);
@@ -102,6 +106,14 @@ protected:
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
   std::mutex plan_mutex_;
   nav_msgs::msg::Path plan_;
+  // The planner's crossings (`plan_crossings`, syncai_util/plan_crossings.hpp),
+  // under plan_mutex_: the flat-gait ones' points, in their frame, waive the
+  // step and slope rules along them (TerrainGrid::setCrossings()). Matched to
+  // no stamp: `plan` is restamped on every republish; the planner sends a
+  // fresh set with every plan and an empty one with every clear.
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr crossings_sub_;
+  std::string crossings_frame_;
+  std::vector<std::vector<TerrainPathPose>> crossings_;
 
   // The grid and what the last cloud said about the robot. terrain_mutex_
   // orders the subscription callbacks against the costmap update thread.

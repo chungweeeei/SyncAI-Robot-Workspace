@@ -776,3 +776,54 @@ int main(int argc, char ** argv)
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+TEST(TerrainGrid, AFlatGaitCrossingWaivesItsStepButNotAPersonOnIt)
+{
+  // A 0.3 m sill across the window at x = 0 (dp's lab door as the map read
+  // it): the step rule walls it off. The planner's flat-gait crossing over
+  // it at y = 0, the plan's poses along x (setCrossings()), opens a lane of
+  // crossing_radius either side; the step beyond the lane stays lethal, a
+  // person standing on the crossing is lethal all the same, and a crossing
+  // on a floor far above waives nothing here.
+  Scene s;
+  s.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return x > 0.0 ? 0.30 : 0.0; });
+  std::vector<TerrainPathPose> lane;
+  for (double x = -1.0; x <= 1.0 + 1e-9; x += 0.1) {
+    lane.push_back({x, 0.0, x > 0.0 ? 0.30 : 0.0});
+  }
+  s.grid.setPath(lane);  // the plan seeds the far floor's reach, as it does now
+  auto st = s.classify(0.0, -1.0, 0.0);
+  EXPECT_GT(s.share(-0.1, 0.1, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
+  EXPECT_EQ(st.waived, 0u);
+
+  s.grid.setCrossings({lane});
+  st = s.classify(0.0, -1.0, 0.0);
+  EXPECT_GT(st.waived, 0u);
+  EXPECT_GT(s.share(-0.1, 0.1, -0.3, 0.3, FREE_SPACE), 0.98);  // the lane
+  EXPECT_GT(s.share(-0.1, 0.1, 0.6, 1.9, LETHAL_OBSTACLE), 0.9);  // the step beside it
+  EXPECT_GT(s.share(-0.1, 0.1, -1.9, -0.6, LETHAL_OBSTACLE), 0.9);
+
+  // A person's legs on the crossing: the obstacle rule is not waived.
+  for (double z = 0.35; z < 1.0; z += 0.05) {
+    for (const double ly : {-0.1, 0.1}) {
+      s.grid.addSample(0.6, ly, z, kNow - 0.5);
+    }
+  }
+  s.classify(0.0, -1.0, 0.0);
+  EXPECT_EQ(s.at(0.6, 0.1), LETHAL_OBSTACLE);
+
+  // The same crossing 3 m up (a floor above in the same columns): not this one.
+  Scene up;
+  up.surface(
+    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return x > 0.0 ? 0.30 : 0.0; });
+  std::vector<TerrainPathPose> high = lane;
+  for (auto & p : high) {
+    p.z += 3.0;
+  }
+  up.grid.setPath(lane);
+  up.grid.setCrossings({high});
+  st = up.classify(0.0, -1.0, 0.0);
+  EXPECT_EQ(st.waived, 0u);
+  EXPECT_GT(up.share(-0.1, 0.1, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
+}
