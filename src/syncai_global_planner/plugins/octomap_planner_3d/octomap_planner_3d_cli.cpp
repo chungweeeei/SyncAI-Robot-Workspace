@@ -91,7 +91,8 @@ void usage()
     "paths and (with --poses) the stair links\n"
     "  --write-bt <out.bt>      write the tree (a --synthetic scene, say) as an OctoMap .bt; "
     "alone, nothing else is done\n"
-    "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors\n");
+    "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors threshold threshold_ramp "
+    "ledge\n");
 }
 
 struct Pose
@@ -130,11 +131,16 @@ bool readPoses(const std::string & path, std::vector<Pose> & out)
 
 // "kf 2221 -> 2358" for a stair the track found, "detected at (5.9, -12.2)"
 // (its first point) for one found off the map, "kerb at (5.9, -12.2)" (the
-// cell the crossing steps up from) for a kerb link.
+// cell the crossing steps up from) for a kerb link, "gap kf 2992 -> 2994
+// (ramp) at (11.6, -23.0)" (its midpoint) for a walked gap.
 std::string linkName(const StairLink & l, const char * arrow = "->")
 {
-  char buf[80];
-  if (l.kerb) {
+  char buf[96];
+  if (l.leads && l.evidence == CrossingEvidence::Track) {
+    std::snprintf(
+      buf, sizeof buf, "gap kf %zu %s %zu (%s) at (%.1f, %.1f)", l.kf_a, arrow, l.kf_b,
+      crossingKindName(l.kind), (l.pts[1].x + l.pts[2].x) / 2, (l.pts[1].y + l.pts[2].y) / 2);
+  } else if (l.leads) {
     std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
   } else if (l.detected) {
     std::snprintf(buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
@@ -186,6 +192,16 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.kerb_lead = v;
   } else if (k == "kerb_fit_radius") {
     st.kerb_fit_radius = v;
+  } else if (k == "gap_links") {
+    st.gap_links = v != 0.0;
+  } else if (k == "gap_anchor_min_area") {
+    st.gap_anchor_min_area = v;
+  } else if (k == "gap_max_length") {
+    st.gap_max_length = v;
+  } else if (k == "gap_max_rise") {
+    st.gap_max_rise = v;
+  } else if (k == "stair_min_rise_window") {
+    st.stair_min_rise_window = v;
   } else if (k == "kerb_min_length") {
     p.kerb_min_length = v;
   } else if (k == "kerb_min_sure_cells") {
@@ -893,9 +909,9 @@ int runPlan(
   for (const LinkUse & u : r.links) {
     const StairLink & l = astar.links()->links[u.link];
     std::printf(
-      "plan:   %s %s: z %.2f -> %.2f, %.1f m\n", l.kerb ? "kerb" : "stairs",
+      "plan:   %s %s: z %.2f -> %.2f, %.1f m (%s gait)\n", crossingKindName(l.kind),
       linkName(l, u.reversed ? "<-" : "->").c_str(), m.zTop(u.reversed ? l.b : l.a),
-      m.zTop(u.reversed ? l.a : l.b), l.length);
+      m.zTop(u.reversed ? l.a : l.b), l.length, crossingGaitName(l.gait()));
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1457,15 +1473,35 @@ int main(int argc, char ** argv)
       track.push_back({p.x, p.y, p.z - lidar_height});
     }
     links = buildStairLinks(*map, track, stair_params, tree.get());
-    size_t kerb_links = 0;
+    size_t kerb_links = 0, gap_kerbs = 0, gap_ramps = 0;
     for (const StairLink & l : links->links) {
-      kerb_links += l.kerb ? 1 : 0;
+      if (l.leads && l.evidence == CrossingEvidence::Track) {
+        (l.kind == CrossingKind::Kerb ? gap_kerbs : gap_ramps) += 1;
+      } else if (l.leads) {
+        ++kerb_links;
+      }
     }
     std::printf(
       "stair links: %zu (min_rise %.2f m, %zu straight flights); kerb links: %zu over %zu of the "
       "map's %zu kerbs (lead %.1f m)\n",
-      links->links.size() - kerb_links, stair_params.min_rise, links->flights.size(), kerb_links,
-      links->kerbs, map->kerb_lines.size(), stair_params.kerb_lead);
+      links->links.size() - kerb_links - links->gap_links, stair_params.min_rise,
+      links->flights.size(), kerb_links, links->kerbs, map->kerb_lines.size(),
+      stair_params.kerb_lead);
+    std::printf(
+      "gap links: %zu from the track (%zu kerb, %zu ramp; a rise of at most %.2f m over at most "
+      "%.1f m of track between surfaces of at least %.1f m2, lead %.1f m); %zu walked climbs "
+      "refused (not onto a floor)\n",
+      links->gap_links, gap_kerbs, gap_ramps, stair_params.gap_max_rise,
+      stair_params.gap_max_length, stair_params.gap_anchor_min_area, stair_params.kerb_lead,
+      links->gap_refused);
+    for (const StairLink & l : links->links) {
+      if (l.leads && l.evidence == CrossingEvidence::Track) {
+        std::printf(
+          "  %s: z %.2f -> %.2f (component %u -> %u), rise %.2f m, %.1f m long\n",
+          linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+          map->cells[l.b].component, l.rise, l.length);
+      }
+    }
     for (const StairFlight & f : links->flights) {
       const StairLink & l = links->links[f.first];
       std::printf(

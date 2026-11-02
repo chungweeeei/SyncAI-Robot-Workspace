@@ -353,9 +353,12 @@ bool stairCrossing(
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices,
-  const BlockedView * blocked)
+  const BlockedView * blocked, std::vector<PathSpan> * spans)
 {
   std::vector<Waypoint> out;
+  if (spans) {
+    spans->clear();
+  }
   if (cells.empty()) {
     if (vertices) {
       *vertices = 0;
@@ -388,8 +391,8 @@ std::vector<Waypoint> buildPath(
   if (shortcut) {
     for (size_t i = 0; i < uses.size(); ++i) {
       const StairLink & link = links->links[uses[i].link];
-      if (!link.straight || link.kerb) {
-        continue;  // a kerb link's own points are the crossing (see the header)
+      if (!link.straight || link.leads) {
+        continue;  // a kerb's or a gap's own points, leads and all, are the crossing
       }
       std::vector<CellId> & A = chains[i];
       std::vector<CellId> & B = chains[i + 1];
@@ -414,6 +417,22 @@ std::vector<Waypoint> buildPath(
     }
   }
 
+  // The crossing's block, appended: its first waypoint is the last one already
+  // out when append() dropped it as the joint.
+  const auto appendSpan = [&](size_t use, const std::vector<Waypoint> & block) -> PathSpan * {
+    const bool joint =
+      !out.empty() && !block.empty() &&
+      std::hypot(out.back().x - block.front().x, out.back().y - block.front().y) < 1e-9 &&
+      std::fabs(out.back().z - block.front().z) < 1e-9;
+    const size_t first = joint ? out.size() - 1 : out.size();
+    append(out, block);
+    if (!spans || out.empty()) {
+      return nullptr;
+    }
+    spans->push_back({use, std::min(first, out.size() - 1), out.size() - 1, {}});
+    return &spans->back();
+  };
+
   size_t nvert = 0;
   for (size_t i = 0; i < chains.size(); ++i) {
     nvert += chains[i].size();
@@ -423,17 +442,40 @@ std::vector<Waypoint> buildPath(
     }
     if (!crossings[i].empty()) {
       nvert += 2;
-      append(out, crossings[i]);
+      appendSpan(i, crossings[i]);
       continue;
     }
-    std::vector<Waypoint> pts = links->links[uses[i].link].pts;
+    const StairLink & link = links->links[uses[i].link];
+    std::vector<Waypoint> pts = link.pts;
     if (uses[i].reversed) {
       std::reverse(pts.begin(), pts.end());
     }
     nvert += pts.size();
     std::vector<Waypoint> flight;
     resamplePolyline(pts, spacing, flight);
-    append(out, flight);
+    PathSpan * span = appendSpan(i, flight);
+    // A landing corner is a point of the link; the resample keeps the
+    // polyline's vertices on it or within half a spacing, so the nearest
+    // waypoint of the span is the corner.
+    if (span) {
+      for (const size_t t : link.turns) {
+        if (t >= link.pts.size()) {
+          continue;
+        }
+        const Waypoint & c = link.pts[t];
+        size_t best = span->first;
+        double best_d = std::numeric_limits<double>::infinity();
+        for (size_t k = span->first; k <= span->last; ++k) {
+          const double d = std::hypot(out[k].x - c.x, out[k].y - c.y) + std::fabs(out[k].z - c.z);
+          if (d < best_d) {
+            best_d = d;
+            best = k;
+          }
+        }
+        span->turns.push_back(best);
+      }
+      std::sort(span->turns.begin(), span->turns.end());
+    }
   }
   if (vertices) {
     *vertices = nvert;

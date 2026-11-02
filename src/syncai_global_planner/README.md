@@ -525,6 +525,46 @@ mode's `min_rise`, so the gait does not change for it. The kerb scene
 (`--synthetic kerb`, a 0.15 m step): 74 links, a route from (2, 2) to
 (10, 6) crosses at y = 4.25 from x 5.55 to 6.45 in one straight line.
 
+**Walked gaps** (2026-11-02). Between a kerb (one step, one piece of
+ground) and a stair (`stair_min_rise` and more, between two floors of
+`stair_anchor_min_area`) the rules left a hole: a door sill the map lost, a
+short slope steeper than `max_slope_deg`, a doorway the footprint rule
+closed — each parts two pieces of ground the flat gait walks between, and
+the track proves it, but the stair walker anchors on floors only, so a room
+the furniture cut small never linked (dp's 2F lab, 9 m² behind a ~0.1 m
+sill the map read as a 0.3 m step), and a rise under `stair_min_rise`
+between two floors made no link on purpose. So the track is walked once
+more for **gap links** (`gap_links`): its anchors are every component of
+at least `gap_anchor_min_area` (2 m², a room), and two consecutive ones in
+different components, at most `gap_max_length` (2.5 m) of track apart and
+at most `gap_max_rise` (0.3 m; the measured floor where the cloud gave one)
+apart in height, are joined by a straight crossing — the last cell stood on
+before the gap to the first after it, with a lead of `kerb_lead` (0.5 m,
+one lead for every flat-gait crossing) marched either side over level
+ground of the same component, as a kerb link is laid, so the gap is met
+square. Its kind is **kerb** within
+`max_step_height` and **ramp** above, both the flat gait's
+(`StairLink::gait()`) and both taken at `kerb_cost_multiplier`; the track
+crossing the same gap again (the way back through a door) lays nothing new,
+a second door into the same room does. A gap inside a laid stair's
+keyframes (a landing, a flight's foot) is that stair's and is skipped. A
+rise above `gap_max_rise` is the stair walker's between two floors and
+**refused** onto anything smaller, with a startup note (`gap_refused`
+counts them): the operator drove the G23 up a 0.4 m ledge beside dp's 2F
+door by mistake, and a planner that repeated that walk would send the robot
+up it on every route to the lab. What a link says about the terrain — its
+`kind`, `rise` and `gait`, and how it was found (`evidence`: the track, the
+geometry, or a declared file, reserved) — is what the controllers are meant
+to read instead of guessing stairs from the path's heights. `gap_max_rise`
+is a placeholder, not a measurement: the RL policy has not been measured on
+short slopes, and the dp sill it walked is ~0.1 m. The `threshold` scene (a
+0.1 m sill over a 0.2 m dip, the lab door's shape): one kerb crossing, the
+route over it one straight line; `threshold_ramp` (a 0.2 m sill over a
+dip): one ramp crossing — at 0.1 m voxels a rise between one step and
+`stair_min_rise` is always that shape, since the slope rule fits a plane
+only over a span of more than one step; `ledge` (a 2.5 × 2.5 m, 0.4 m block
+walked over): no link, two notes.
+
 **The measured floor** (2026-10-29). The voxels alone cannot do this for
 outdoor_1027's own kerb: 12 cm, one cell along its whole length in the
 0.1 m octomap, so a step edge with the one-cell band but no kerb, and the
@@ -739,7 +779,7 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
    … --poses … --plan-poses 0 2000 [--no-stair-links]           # with --poses, the track's stairs are links
    … --keepout map/<name>/keepout.json --plan … --dump-image out.bmp   # the zones, as the plugin reads them (see "Keepout zones")
-   … --synthetic ramp|stairs|kerb|drop|wall|hole|two_floors      # the test scenes
+   … --synthetic ramp|stairs|kerb|drop|wall|hole|two_floors|threshold|threshold_ramp|ledge   # the test scenes
    … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
 ```
 
@@ -1071,6 +1111,7 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `step_edge_cost_radius`, `kerb_min_length`, `kerb_min_sure_cells` | `0.4`, `1.0`, `3` | The step edges' cost band, and what makes a line of step cells a kerb (see **Kerbs**). Build-time |
 | `measured_floor`, `step_edge_min_rise`, `floor_same_surface` | `true`, `0.06`, `0.05` | Read `map.pcd` beside the tree for each cell's measured floor; the metric height from which a step between two measured cells is a sure step; how far a neighbour's floor may be from a cell's own to vote in its smoothing (see **Kerbs**, *The measured floor*). Build-time |
 | `kerb_links`, `kerb_lead`, `kerb_fit_radius` | `true`, `0.5`, `0.5` | Kerb links: a straight crossing at every cell of a kerb, the lead either side, the fit of the kerb's direction (see **Kerbs**); `false` = a kerb is crossed cell to cell at any angle. Build-time |
+| `gap_links`, `gap_anchor_min_area`, `gap_max_length`, `gap_max_rise` | `true`, `2.0` m², `2.5`, `0.3` | Walked gaps: a straight crossing where the track crossed, in at most `gap_max_length`, between two components of at least `gap_anchor_min_area` no more than `gap_max_rise` apart, with `kerb_lead` either side (see **Walked gaps**); `false` = the behaviour before 2026-11-02. `gap_max_rise` is a placeholder, unmeasured. Build-time |
 | `step_edge_cost_weight`, `step_edge_cost_scaling`, `step_edge_one_cell`, `kerb_cost_multiplier` | `1.0`, `5.0`, `0.5`, `1.5` | The band's cost curve, a one-cell step's share of it, and the factor on a kerb link's length (≥ 1). Dynamic |
 | `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area`, `stair_smooth_passes` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m², `2` | Stair links from the track (see **Stairs**). Build-time |
 | `stair_straight`, `stair_straight_max_flight`, `stair_straight_fit_radius`, `stair_straight_half_width`, `stair_straight_exit_reach` | `true`, `8.0`, `1.0`, `2.0`, `0.6` | Straight links across a single flight's width instead of one along the walk (see **Stairs**); `false` = the walked link only. Build-time |
@@ -1116,6 +1157,7 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `syncai_common/ComputePathToPose` (2026-11; `nav2_msgs/ComputePathToPose`'s goal, a result with `error_code` / `error_msg`) |
 | Action | `compute_path_through_poses` | `syncai_common/ComputePathThroughPoses` (2026-11) — one path through every waypoint in order, `patrol.xml`'s (see "`getPlan()` selects the plugin") |
+| Topic (out) | `plan_crossings` | `std_msgs/String`, reliable, transient_local (2026-11-02) — the crossings of each plan as JSON (`syncai_util/plan_crossings.hpp`): every stair, kerb and walked gap the plan takes, its kind, the gait it is taken in, its pose span on the plan and those poses, tied to the plan by stamp and pose count. Sent with each plan `publishPlan()` sends, from the planner that made it (`GlobalPlanner::planAnnotations()`; `known: false` from one that keeps nothing), and empty with each clear. Not republished (the 1 Hz `plan` is restamped). Read by the controllers' `StairMode` (a rise enters stair mode only on a stair-gait crossing) and the local costmap's `TerrainLayer` (the step and slope rules waived on flat-gait ones) |
 | Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the robot's place on it onward free? When the path is the last plan, the planner is handed it from the robot's place on (forward-only progress, `syncai_util/path_progress.hpp`, 2026-11; a patrol route can pass back within a cell of the robot, and a whole-path nearest pose would judge that leg) and the blocked indices are shifted back to the request's. Asked of the planner that made the last plan (`GlobalPlanner::isPathValid()`; the request carries no planner id, the server remembers the last plan's): `Octo3D` judges on its dynamic overlay and its keepout zones (see **Dynamic obstacles** and **Keepout zones**). An empty remembered id — before a first plan, or after `clear_plan` — falls back to the only loaded planner, as `getPlan()` does; an id no loaded planner has answers `false` with a throttled warning, so the BT replans. Called once a second by `move.xml` / `dock.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails). Served on the main executor, so it never queues behind a plan. Until 2026-10-28 a path of a planner on the costmap (`GridBased`) was judged here on the global costmap instead: the centre cell `< INSCRIBED` and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test) |
 | Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
 | Service | `planner_server/Octo3D/load_keepout` | `nav2_msgs/LoadMap` (2026-10-23) — replace `Octo3D`'s keepout zones from `map_url` (`map/<name>/keepout.json`; `""` = none) on the loaded map, without rebuilding it. What the backend calls after it writes the file; a map switch needs no call, `load_map` reads the new map's own. Result table under "Keepout zones". On `load_map`'s thread |

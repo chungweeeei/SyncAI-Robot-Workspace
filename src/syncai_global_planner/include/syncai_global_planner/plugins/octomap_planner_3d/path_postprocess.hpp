@@ -87,16 +87,28 @@ std::vector<CellId> shortcutPath(
 std::vector<Waypoint> resamplePath(
   const SurfaceMap & m, const std::vector<CellId> & cells, double spacing);
 
+// Where one link use of a plan landed in buildPath's output (2026-11-02): the
+// waypoints first .. last (inclusive) that are the crossing -- the link's own
+// points, or the stairCrossing segment that replaced them -- and, for a
+// flights link, the waypoint nearest each of its landing corners. What the
+// planner's plan_crossings sidecar tells the followers.
+struct PathSpan
+{
+  size_t use = 0;  // index into the uses buildPath was given
+  size_t first = 0, last = 0;
+  std::vector<size_t> turns;
+};
+
 // The whole route of a plan: the cell chain split at its stair links, each
 // floor stretch shortcut (when asked) and resampled on its own -- a shortcut
 // never spans a link -- and each link's recorded ground points, oriented the
 // way it is taken and resampled at the same spacing, spliced in between.
 // With vertices set, the number of vertices before resampling (shortcut
-// vertices plus link points).
+// vertices plus link points); with spans set, one PathSpan per use, in order.
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices = nullptr,
-  const BlockedView * blocked = nullptr);
+  const BlockedView * blocked = nullptr, std::vector<PathSpan> * spans = nullptr);
 
 }  // namespace syncai_global_planner::octomap_planner_3d
 

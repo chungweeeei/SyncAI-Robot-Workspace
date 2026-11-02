@@ -398,8 +398,12 @@ PlanResult SurfaceAStar::plan(
           if (closed_stamp_[n] == gen) {
             continue;
           }
+          // A stair's factor for a stair, a kerb's for every flat-gait
+          // crossing: a kerb and a walked gap are taken slower than floor,
+          // not avoided.
           const float ng =
-            g_[c] + static_cast<float>(l.length * (l.kerb ? kerb_factor : stair_factor));
+            g_[c] + static_cast<float>(
+                      l.length * (l.kind == CrossingKind::Stair ? stair_factor : kerb_factor));
           if (open_stamp_[n] != gen || ng < g_[n]) {
             open_stamp_[n] = gen;
             g_[n] = ng;
