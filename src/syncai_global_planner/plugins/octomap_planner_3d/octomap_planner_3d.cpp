@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -18,6 +19,7 @@
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "syncai_util/path_progress.hpp"
 #include "tf2/exceptions.h"
 #include "tf2/time.h"
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -871,6 +873,26 @@ double OctomapPlanner3D::scanAge() const
 nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal)
 {
+  return planThrough(start, {goal});
+}
+
+nav_msgs::msg::Path OctomapPlanner3D::createPlanThroughPoses(
+  const geometry_msgs::msg::PoseStamped & start,
+  const std::vector<geometry_msgs::msg::PoseStamped> & goals)
+{
+  if (goals.empty()) {
+    RCLCPP_ERROR(
+      logger_,
+      "[OctomapPlanner3D][createPlanThroughPoses] no waypoints in the request: nothing to plan");
+    return nav_msgs::msg::Path();
+  }
+  return planThrough(start, goals);
+}
+
+nav_msgs::msg::Path OctomapPlanner3D::planThrough(
+  const geometry_msgs::msg::PoseStamped & start,
+  const std::vector<geometry_msgs::msg::PoseStamped> & goals)
+{
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
   std::lock_guard<std::mutex> lock(mutex_);
@@ -879,18 +901,46 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   path.header.stamp = clock_->now();
   path.header.frame_id = global_frame_;
 
+  // A route through several waypoints (compute_path_through_poses, 2026-11)
+  // is planned leg by leg here rather than by the GlobalPlanner default,
+  // which calls createPlan() per leg: createPlan() takes the start's height
+  // from TF (the robot's floor), so a leg starting at a waypoint upstairs
+  // would snap its start onto the floor the robot is on; it would also check
+  // "the robot stands in a zone" and exempt a disc round a waypoint the robot
+  // is not at, and re-snap each joint, where the previous leg's goal snap
+  // (round blocked cells) and the next leg's start snap (ignoring them) can
+  // pick cells up to snap_xy_radius apart. Here leg 0 starts at the robot
+  // exactly as a single plan does, and every later leg starts on the cell
+  // the leg before ended on: the right floor, no jump at the joint, one
+  // overlay snapshot for the whole route. A single goal is a one-leg route
+  // and logs as it always did.
+  const bool through = goals.size() > 1;
+  const char * fn = through ? "createPlanThroughPoses" : "createPlan";
+
   // The request as this planner sees it, appended to a failure: the
   // detail of a search failure (no_path, disconnected, timeout) names no
-  // coordinates, and the start's z is the TF's, not the request's.
-  const auto where = [&](double start_z, double goal_z) {
-    char buf[160];
-    std::snprintf(
-      buf, sizeof buf, " [start (%.2f, %.2f, z %.2f) -> goal (%.2f, %.2f, z %.2f)]",
-      start.pose.position.x, start.pose.position.y, start_z, goal.pose.position.x,
-      goal.pose.position.y, goal_z);
+  // coordinates, and the start's z is the TF's, not the request's. On a
+  // route, which leg, from which waypoint.
+  const auto where = [&](
+                       size_t leg, double sx, double sy, double sz,
+                       const geometry_msgs::msg::PoseStamped & goal, double goal_z) {
+    char buf[224];
+    if (through) {
+      std::snprintf(
+        buf, sizeof buf,
+        " [leg %zu of %zu: %s (%.2f, %.2f, z %.2f) -> waypoint %zu (%.2f, %.2f, z %.2f)]", leg + 1,
+        goals.size(), leg == 0 ? "start" : "waypoint", sx, sy, sz, leg + 1, goal.pose.position.x,
+        goal.pose.position.y, goal_z);
+    } else {
+      std::snprintf(
+        buf, sizeof buf, " [start (%.2f, %.2f, z %.2f) -> goal (%.2f, %.2f, z %.2f)]", sx, sy, sz,
+        goal.pose.position.x, goal.pose.position.y, goal_z);
+    }
     return std::string(buf);
   };
-  std::string request = where(start.pose.position.z, goal.pose.position.z);
+  std::string request = where(
+    0, start.pose.position.x, start.pose.position.y, start.pose.position.z, goals.front(),
+    goals.front().pose.position.z);
 
   // An empty path is how the planner server learns of a failure; the reason
   // goes to the log, and only there: ComputePathToPose's result carries no
@@ -898,7 +948,7 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   // aborted, nothing more.
   const auto fail = [&](o3d::PlanFailure f, const std::string & detail) {
     RCLCPP_ERROR(
-      logger_, "[OctomapPlanner3D][createPlan] %s: %s%s", o3d::planFailureName(f), detail.c_str(),
+      logger_, "[OctomapPlanner3D][%s] %s: %s%s", fn, o3d::planFailureName(f), detail.c_str(),
       request.c_str());
     path.poses.clear();
     return path;
@@ -921,12 +971,13 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   } else {
     RCLCPP_WARN_THROTTLE(
       logger_, *clock_, 5000,
-      "[OctomapPlanner3D][createPlan] no TF %s -> %s (%s); using the request's start z %.2f, "
+      "[OctomapPlanner3D][%s] no TF %s -> %s (%s); using the request's start z %.2f, "
       "which is 0 for the planar robot pose (fine on the ground floor, wrong upstairs)",
-      global_frame_.c_str(), body_frame_.c_str(), tf_error.c_str(), start_z);
+      fn, global_frame_.c_str(), body_frame_.c_str(), tf_error.c_str(), start_z);
   }
-  const double goal_z = goal_z_mode_ == "start" ? start_z : goal.pose.position.z;
-  request = where(start_z, goal_z);
+  request = where(
+    0, start.pose.position.x, start.pose.position.y, start_z, goals.front(),
+    goal_z_mode_ == "start" ? start_z : goals.front().pose.position.z);
 
   // The start is snapped without the overlay: the robot stands where it
   // stands, and a person beside it must not make its own cell unavailable.
@@ -953,7 +1004,8 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   // pointer under mutex_, which this holds). The disc around the start is
   // exempt from the marks' and the zones' dilation (not from a mark or a
   // core), so the first step away from a person standing close, or from a
-  // zone edge, is legal.
+  // zone edge, is legal. Only on the first leg: later legs start at a
+  // waypoint whose cell the goal snap already chose clear of the dilation.
   const o3d::DynamicMaskPtr mask = overlay_->snapshot(clock_->now().seconds());
   o3d::BlockedView blocked;
   blocked.mask = mask.get();
@@ -961,58 +1013,95 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   blocked.exempt = s.cell;
   blocked.exempt_radius =
     std::max(mask ? mask->block_radius : 0.0, keepout_ ? keepout_->block_radius : 0.0);
-  const o3d::SnapResult g = astar_->snap(
-    goal.pose.position.x, goal.pose.position.y, goal_z, search_params_,
-    map_->cells[s.cell].component, &blocked);
-  if (g.cell == o3d::kNoCell) {
-    return fail(
-      g.outside ? o3d::PlanFailure::GoalOutsideMap : o3d::PlanFailure::GoalUnavailable, g.detail);
-  }
-  // Said every time: a goal whose z is this far off is one the backend or
-  // the console placed without the ground's height, and on a map whose
-  // floors overlap elsewhere the same goal would have failed.
-  if (s.z_fallback || g.z_fallback) {
-    const o3d::SnapResult & f = g.z_fallback ? g : s;
-    const double hint = g.z_fallback ? goal_z : start_z;
-    RCLCPP_WARN(
-      logger_,
-      "[OctomapPlanner3D][createPlan] %s z hint %.2f, ground there at z %.2f (%.2f m off, beyond "
-      "snap_z_window %.2f): snapped to it as the only floor within %.2f m (snap_single_layer)",
-      g.z_fallback ? "goal" : "start", hint, hint + f.dz, std::fabs(f.dz),
-      search_params_.snap_z_window, search_params_.snap_xy_radius);
-  }
 
-  o3d::PlanResult r = astar_->plan(s.cell, g.cell, search_params_, blocked);
-  if (r.failure != o3d::PlanFailure::None) {
-    char buf[96];
-    std::snprintf(buf, sizeof buf, " (%zu iterations, %.3f s)", r.iterations, r.search_s);
-    return fail(r.failure, r.detail + buf);
-  }
-
-  const auto toPoses = [&](const std::vector<o3d::Waypoint> & wps, nav_msgs::msg::Path & out) {
-    out.poses.clear();
-    out.poses.reserve(wps.size());
-    for (size_t i = 0; i < wps.size(); ++i) {
-      geometry_msgs::msg::PoseStamped pose;
-      pose.header = out.header;
-      pose.pose.position.x = wps[i].x;
-      pose.pose.position.y = wps[i].y;
-      pose.pose.position.z = wps[i].z + path_z_offset_;
-      if (i + 1 < wps.size()) {
-        pose.pose.orientation = syncai_util::geometry_utils::orientationAroundZAxis(
-          std::atan2(wps[i + 1].y - wps[i].y, wps[i + 1].x - wps[i].x));
-      } else {
-        pose.pose.orientation = goal.pose.orientation;
-      }
-      out.poses.push_back(pose);
+  std::vector<o3d::Waypoint> wps;
+  o3d::CellId leg_start = s.cell;
+  double leg_start_z = start_z;
+  double leg_sx = start.pose.position.x, leg_sy = start.pose.position.y;
+  size_t vertices = 0, cells = 0, links = 0, iterations = 0;
+  double search_s = 0.0, goal_snap_max = 0.0;
+  for (size_t leg = 0; leg < goals.size(); ++leg) {
+    const geometry_msgs::msg::PoseStamped & goal = goals[leg];
+    const double goal_z = goal_z_mode_ == "start" ? leg_start_z : goal.pose.position.z;
+    request = where(leg, leg_sx, leg_sy, leg_start_z, goal, goal_z);
+    if (leg == 1) {
+      blocked.exempt = o3d::kNoCell;
+      blocked.exempt_radius = 0.0;
     }
-  };
 
-  size_t vertices = 0;
-  const auto wps = o3d::buildPath(
-    *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &vertices,
-    &blocked);
-  toPoses(wps, path);
+    const o3d::SnapResult g = astar_->snap(
+      goal.pose.position.x, goal.pose.position.y, goal_z, search_params_,
+      map_->cells[leg_start].component, &blocked);
+    if (g.cell == o3d::kNoCell) {
+      return fail(
+        g.outside ? o3d::PlanFailure::GoalOutsideMap : o3d::PlanFailure::GoalUnavailable, g.detail);
+    }
+    // Said every time: a goal whose z is this far off is one the backend or
+    // the console placed without the ground's height, and on a map whose
+    // floors overlap elsewhere the same goal would have failed.
+    if ((leg == 0 && s.z_fallback) || g.z_fallback) {
+      const o3d::SnapResult & f = g.z_fallback ? g : s;
+      const double hint = g.z_fallback ? goal_z : start_z;
+      RCLCPP_WARN(
+        logger_,
+        "[OctomapPlanner3D][%s] %s z hint %.2f, ground there at z %.2f (%.2f m off, beyond "
+        "snap_z_window %.2f): snapped to it as the only floor within %.2f m "
+        "(snap_single_layer)%s",
+        fn, g.z_fallback ? (through ? "waypoint" : "goal") : "start", hint, hint + f.dz,
+        std::fabs(f.dz), search_params_.snap_z_window, search_params_.snap_xy_radius,
+        request.c_str());
+    }
+
+    o3d::PlanResult r = astar_->plan(leg_start, g.cell, search_params_, blocked);
+    iterations += r.iterations;
+    search_s += r.search_s;
+    if (r.failure != o3d::PlanFailure::None) {
+      char buf[96];
+      std::snprintf(buf, sizeof buf, " (%zu iterations, %.3f s)", r.iterations, r.search_s);
+      return fail(r.failure, r.detail + buf);
+    }
+
+    size_t leg_vertices = 0;
+    const auto leg_wps = o3d::buildPath(
+      *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &leg_vertices,
+      &blocked);
+    // Each leg starts on the cell the one before ended on, so its first
+    // waypoint repeats the joint: dropped, not driven twice.
+    auto first = leg_wps.begin();
+    if (
+      !wps.empty() && first != leg_wps.end() && first->x == wps.back().x &&
+      first->y == wps.back().y && first->z == wps.back().z) {
+      ++first;
+    }
+    wps.insert(wps.end(), first, leg_wps.end());
+    vertices += leg_vertices;
+    cells += r.cells.size();
+    links += r.links.size();
+    goal_snap_max = std::max(goal_snap_max, g.xy_dist);
+
+    leg_start = g.cell;
+    leg_start_z = goal_z + g.dz;
+    leg_sx = goal.pose.position.x;
+    leg_sy = goal.pose.position.y;
+  }
+
+  // Every pose faces the next one; the last takes the last goal's heading.
+  // A waypoint's own heading is not used: the route passes through it.
+  path.poses.reserve(wps.size());
+  for (size_t i = 0; i < wps.size(); ++i) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = path.header;
+    pose.pose.position.x = wps[i].x;
+    pose.pose.position.y = wps[i].y;
+    pose.pose.position.z = wps[i].z + path_z_offset_;
+    if (i + 1 < wps.size()) {
+      pose.pose.orientation = syncai_util::geometry_utils::orientationAroundZAxis(
+        std::atan2(wps[i + 1].y - wps[i].y, wps[i + 1].x - wps[i].x));
+    } else {
+      pose.pose.orientation = goals.back().pose.orientation;
+    }
+    path.poses.push_back(pose);
+  }
 
   double length = 0.0, zmin = wps.empty() ? 0.0 : wps.front().z, zmax = zmin;
   for (size_t i = 1; i < wps.size(); ++i) {
@@ -1031,15 +1120,26 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   } else {
     std::snprintf(scan, sizeof scan, "last scan %.1f s ago", age);
   }
+  if (!through) {
+    request = where(
+      0, start.pose.position.x, start.pose.position.y, start_z, goals.front(),
+      goal_z_mode_ == "start" ? start_z : goals.front().pose.position.z);
+  } else {
+    char buf[96];
+    std::snprintf(
+      buf, sizeof buf, " [start (%.2f, %.2f, z %.2f) through %zu waypoints]", start.pose.position.x,
+      start.pose.position.y, start_z, goals.size());
+    request = buf;
+  }
   RCLCPP_INFO(
     logger_,
-    "[OctomapPlanner3D][createPlan] %zu poses, %.1f m, z %.2f..%.2f (start snapped %.2f m, goal "
+    "[OctomapPlanner3D][%s] %zu poses, %.1f m, z %.2f..%.2f (start snapped %.2f m, %s "
     "%.2f m), %zu cells -> %zu vertices, %zu stair links, %zu dynamic marks (%s), %zu keepout "
     "zones, %zu iterations, search %.3f s, total %.3f s%s",
-    path.poses.size(), length, zmin, zmax, s.xy_dist, g.xy_dist, r.cells.size(), vertices,
-    r.links.size(), mask ? mask->marked : size_t{0}, scan, keepout_ ? keepout_->zones : size_t{0},
-    r.iterations, r.search_s, std::chrono::duration<double>(Clock::now() - t0).count(),
-    request.c_str());
+    fn, path.poses.size(), length, zmin, zmax, s.xy_dist,
+    through ? "farthest waypoint snap" : "goal", goal_snap_max, cells, vertices, links,
+    mask ? mask->marked : size_t{0}, scan, keepout_ ? keepout_->zones : size_t{0}, iterations,
+    search_s, std::chrono::duration<double>(Clock::now() - t0).count(), request.c_str());
   return path;
 }
 
@@ -1109,24 +1209,28 @@ bool OctomapPlanner3D::isPathValid(
   const auto & poses = path.poses;
   const double rx = robot_pose.pose.position.x, ry = robot_pose.pose.position.y;
 
-  // The pose nearest the robot in 3D (the server's own nearest-pose search
-  // is planar, with a robot z of 0: wrong on a stair whose turns lie over
-  // each other), then the robot's own cell. No traversable cell under that
-  // pose means the robot is on a stair (a flight's cells are all rejected)
-  // or off the map's ground: valid, never a replan from there. A replan
-  // whose start snaps mid-flight lands on the wrong floor, and a goal that
-  // aborts on a flight stops the robot on the stair.
-  size_t i0 = 0;
-  double best = std::numeric_limits<double>::infinity();
-  for (size_t i = 0; i < poses.size(); ++i) {
-    const auto & p = poses[i].pose.position;
-    const double d = (p.x - rx) * (p.x - rx) + (p.y - ry) * (p.y - ry) +
-                     (p.z - path_z_offset_ - rz) * (p.z - path_z_offset_ - rz);
-    if (d < best) {
-      best = d;
-      i0 = i;
-    }
-  }
+  // The pose nearest the robot in 3D (the server's own progress is planar,
+  // with a robot z of 0: wrong on a stair whose turns lie over each other),
+  // then the robot's own cell. No traversable cell under that pose means the
+  // robot is on a stair (a flight's cells are all rejected) or off the map's
+  // ground: valid, never a replan from there. A replan whose start snaps
+  // mid-flight lands on the wrong floor, and a goal that aborts on a flight
+  // stops the robot on the stair.
+  // The first local minimum from the path's start, not the whole path's
+  // minimum (2026-11, syncai_util/path_progress.hpp): the server hands over
+  // the last plan already trimmed to where the robot is on it, and on a
+  // patrol route the rest of the path can pass back within a cell of the
+  // robot (A -> B -> A), whose obstacles the whole-path minimum would then
+  // have judged in place of the leg being driven.
+  const auto first_near = syncai_util::firstLocalMinimum(
+    poses.begin(), poses.end(),
+    [&](const geometry_msgs::msg::PoseStamped & ps) {
+      const auto & p = ps.pose.position;
+      const double dz = p.z - path_z_offset_ - rz;
+      return std::sqrt((p.x - rx) * (p.x - rx) + (p.y - ry) * (p.y - ry) + dz * dz);
+    },
+    syncai_util::PathProgress::kDefaultHysteresis);
+  const size_t i0 = static_cast<size_t>(std::distance(poses.begin(), first_near));
   const auto cellOf = [&](size_t i) {
     const auto & p = poses[i].pose.position;
     return m.traversableAt(p.x, p.y, p.z - path_z_offset_);

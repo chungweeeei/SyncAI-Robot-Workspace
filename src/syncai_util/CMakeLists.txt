@@ -72,6 +72,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_stair_mode test/test_stair_mode.cpp)
   target_link_libraries(test_stair_mode ${PROJECT_NAME})
   ament_target_dependencies(test_stair_mode ${dependencies})
+
+  # Header-only: the robot's place on a path that passes back over itself
+  # (path_progress.hpp), on synthetic patrol routes.
+  ament_add_gtest(test_path_progress test/test_path_progress.cpp)
+  target_link_libraries(test_path_progress ${PROJECT_NAME})
+  ament_target_dependencies(test_path_progress ${dependencies})
 endif()
 
 ament_export_include_directories(include)

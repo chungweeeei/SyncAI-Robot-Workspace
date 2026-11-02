@@ -38,6 +38,10 @@ struct FailureReason
 // the operator; the node's detail follows in parentheses.
 const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNode = {
   {"ComputePathToPose", {GoalResult::PLAN_FAILED, "Planning failed: no path to the goal"}},
+  // patrol.xml (2026-11). Not reported by navigate_through_poses' nav2 result,
+  // which has no fields; logged, and ready for its syncai_common twin.
+  {"ComputePathThroughPoses",
+   {GoalResult::PLAN_FAILED, "Planning failed: no route through the waypoints"}},
   {"FollowPath",
    {GoalResult::FOLLOW_PATH_FAILED,
     "Path following failed: the robot could not reach the goal along its path"}},
@@ -136,6 +140,17 @@ bool PoseNavigator<ActionT>::configure(
 
   odom_smoother_ = odom_smoother;
 
+  if constexpr (Traits::kThroughPoses) {
+    // Generous: a waypoint is passed through, not stopped on, so the robot
+    // only comes within the path's tracking error of it (more on an MPPI
+    // detour round a person), and a waypoint missed by this test is not
+    // driven back to unless the path is replanned before the next one.
+    if (!node->has_parameter("waypoint_passed_radius")) {
+      node->declare_parameter("waypoint_passed_radius", 1.0);
+    }
+    waypoint_passed_radius_ = node->get_parameter("waypoint_passed_radius").as_double();
+  }
+
   // On the node's default callback group, which main()'s spin services, so
   // the reply is consumed there and goalCompleted() never waits on it.
   clear_plan_client_ = node->create_client<std_srvs::srv::Empty>("clear_plan");
@@ -159,13 +174,13 @@ std::string PoseNavigator<ActionT>::getDefaultBTFilepath(rclcpp::Node::WeakPtr p
   auto node = parent_node.lock();
 
   std::string default_bt_xml_filename;
-  if (!node->has_parameter("default_bt_xml")) {
+  if (!node->has_parameter(Traits::kDefaultBtParam)) {
     std::string pkg_share_dir = ament_index_cpp::get_package_share_directory("syncai_task_runner");
     node->declare_parameter<std::string>(
-      "default_bt_xml", pkg_share_dir + "/behavior_trees/move.xml");
+      Traits::kDefaultBtParam, pkg_share_dir + "/behavior_trees/" + Traits::kDefaultBtFile);
   }
 
-  node->get_parameter("default_bt_xml", default_bt_xml_filename);
+  node->get_parameter(Traits::kDefaultBtParam, default_bt_xml_filename);
 
   return default_bt_xml_filename;
 }
@@ -192,6 +207,14 @@ std::string PoseNavigator<ActionT>::selectBtFilename(const std::string & request
 template <class ActionT>
 bool PoseNavigator<ActionT>::goalReceived(typename ActionT::Goal::ConstSharedPtr goal)
 {
+  if constexpr (Traits::kThroughPoses) {
+    if (goal->poses.empty()) {
+      RCLCPP_ERROR(
+        this->logger_, "[PoseNavigator][%s] %s: a route with no poses; navigation canceled",
+        __func__, this->getName().c_str());
+      return false;
+    }
+  }
   const std::string bt_xml_filename = selectBtFilename(goal->behavior_tree);
   RCLCPP_INFO(
     this->logger_, "[PoseNavigator][%s] %s: running %s", __func__, this->getName().c_str(),
@@ -308,23 +331,10 @@ void PoseNavigator<ActionT>::onLoop()
     nav_msgs::msg::Path current_path;
     blackboard->get<nav_msgs::msg::Path>(path_blackboard_id_, current_path);
 
-    // Find the closest pose to current pose on global path
-    auto find_closest_pose_idx = [&current_pose, &current_path]() {
-      size_t closest_pose_idx = 0;
-      double curr_min_dist = std::numeric_limits<double>::max();
-      for (size_t curr_idx = 0; curr_idx < current_path.poses.size(); ++curr_idx) {
-        double curr_dist = syncai_util::geometry_utils::euclidean_distance(
-          current_pose, current_path.poses[curr_idx]);
-        if (curr_dist < curr_min_dist) {
-          curr_min_dist = curr_dist;
-          closest_pose_idx = curr_idx;
-        }
-      }
-      return closest_pose_idx;
-    };
-
-    double distance_remaining =
-      syncai_util::geometry_utils::calculate_path_length(current_path, find_closest_pose_idx());
+    // From the robot's place on the path, forward only (feedback_progress_):
+    // planar, like the pose it is measured from.
+    double distance_remaining = syncai_util::geometry_utils::calculate_path_length(
+      current_path, feedback_progress_.update(current_path, current_pose.pose, false));
 
     // Default value for time remaining
     rclcpp::Duration estimated_time_remaining = rclcpp::Duration::from_seconds(0.0);
@@ -340,6 +350,36 @@ void PoseNavigator<ActionT>::onLoop()
     feedback_msg->distance_remaining = distance_remaining;
     feedback_msg->estimated_time_remaining = estimated_time_remaining;
   } catch (...) {
+  }
+
+  if constexpr (Traits::kThroughPoses) {
+    // Drop the waypoints the robot has passed from the front of what is
+    // still ahead (blackboard_keys::kRemainingGoals). Front only, in order:
+    // a route that comes back past an earlier waypoint must not skip the
+    // ones in between. The last one stays: it is the goal.
+    std::vector<geometry_msgs::msg::PoseStamped> remaining;
+    if (blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
+          keys::kRemainingGoals, remaining)) {
+      size_t passed = 0;
+      while (remaining.size() - passed > 1 &&
+             syncai_util::geometry_utils::euclidean_distance(
+               remaining[passed].pose, current_pose.pose) <= waypoint_passed_radius_) {
+        ++passed;
+      }
+      if (passed > 0) {
+        for (size_t i = 0; i < passed; ++i) {
+          RCLCPP_INFO(
+            this->logger_,
+            "[PoseNavigator][%s] %s: passed waypoint (%.2f, %.2f) within %.2f m; %zu still ahead",
+            __func__, this->getName().c_str(), remaining[i].pose.position.x,
+            remaining[i].pose.position.y, waypoint_passed_radius_, remaining.size() - i - 1);
+        }
+        remaining.erase(remaining.begin(), remaining.begin() + static_cast<std::ptrdiff_t>(passed));
+        blackboard->set<std::vector<geometry_msgs::msg::PoseStamped>>(
+          keys::kRemainingGoals, remaining);
+      }
+      feedback_msg->number_of_poses_remaining = static_cast<int16_t>(remaining.size());
+    }
   }
 
   int recovery_count = 0;
@@ -367,6 +407,19 @@ void PoseNavigator<ActionT>::onPreempt(typename ActionT::Goal::ConstSharedPtr go
   RCLCPP_INFO(
     this->logger_, "[PoseNavigator][%s] %s: received goal preemption request", __func__,
     this->getName().c_str());
+
+  if constexpr (Traits::kThroughPoses) {
+    // goalReceived()'s check, which a preempt does not pass through.
+    if (goal->poses.empty()) {
+      RCLCPP_WARN(
+        this->logger_,
+        "[PoseNavigator][%s] %s: preempting route has no poses; rejected, continuing the current "
+        "one",
+        __func__, this->getName().c_str());
+      this->bt_action_server_->terminatePendingGoal();
+      return;
+    }
+  }
 
   // The tree the pending goal would run as a new goal (an empty name is the
   // default), so the comparison is like for like.
@@ -396,10 +449,18 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
     current_pose, *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
     this->feedback_utils_.robot_frame, this->feedback_utils_.transform_tolerance);
 
-  RCLCPP_INFO(
-    this->logger_, "Begin navigating from current location (%.2f, %.2f) to (%.2f, %.2f)",
-    current_pose.pose.position.x, current_pose.pose.position.y, goal->pose.pose.position.x,
-    goal->pose.pose.position.y);
+  if constexpr (Traits::kThroughPoses) {
+    RCLCPP_INFO(
+      this->logger_,
+      "Begin navigating from current location (%.2f, %.2f) through %zu poses to (%.2f, %.2f)",
+      current_pose.pose.position.x, current_pose.pose.position.y, goal->poses.size(),
+      goal->poses.back().pose.position.x, goal->poses.back().pose.position.y);
+  } else {
+    RCLCPP_INFO(
+      this->logger_, "Begin navigating from current location (%.2f, %.2f) to (%.2f, %.2f)",
+      current_pose.pose.position.x, current_pose.pose.position.y, goal->pose.pose.position.x,
+      goal->pose.pose.position.y);
+  }
 
   // Reset state for new action feedback. A preempt comes through here too, so
   // the superseding goal starts with a clean attribution, its first plan is
@@ -414,8 +475,17 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
   // landing, and until then planning is what the robot is doing.
   blackboard->set<std::string>(keys::kNavStatusMsg, keys::kStatusPlanning);
 
-  // Update the goal pose on the blackboard
-  blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
+  // Update the goal pose on the blackboard: the route's waypoints for
+  // navigate_through_poses, both the client's list and the copy the
+  // navigator drops passed waypoints from (blackboard_keys.hpp).
+  if constexpr (Traits::kThroughPoses) {
+    blackboard->set<std::vector<geometry_msgs::msg::PoseStamped>>(keys::kGoals, goal->poses);
+    blackboard->set<std::vector<geometry_msgs::msg::PoseStamped>>(
+      keys::kRemainingGoals, goal->poses);
+  } else {
+    blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
+  }
+  feedback_progress_.reset();
 
   // Drop the previous goal's path. move.xml keeps {path} for as long as
   // IsPathValid accepts it (the 2D tree) or for the whole goal (the Octo3D
@@ -432,19 +502,24 @@ template <class ActionT>
 void PoseNavigator<ActionT>::onGoalPoseReceived(
   const geometry_msgs::msg::PoseStamped::SharedPtr pose)
 {
-  // Instantiated for both actions, subscribed for one (Traits::kDrivesRvizGoalPose).
-  if (!self_client_) {
-    return;
+  // Instantiated for every action, subscribed for one (Traits::kDrivesRvizGoalPose).
+  if constexpr (Traits::kDrivesRvizGoalPose) {
+    if (!self_client_) {
+      return;
+    }
+
+    typename ActionT::Goal goal;
+    goal.pose = *pose;
+
+    // subscribe the goal pose topic and send the goal to the action server
+    self_client_->async_send_goal(goal);
+  } else {
+    (void)pose;
   }
-
-  typename ActionT::Goal goal;
-  goal.pose = *pose;
-
-  // subscribe the goal pose topic and send the goal to the action server
-  self_client_->async_send_goal(goal);
 }
 
 template class PoseNavigator<nav2_msgs::action::NavigateToPose>;
 template class PoseNavigator<syncai_common::action::NavigateToGoal>;
+template class PoseNavigator<nav2_msgs::action::NavigateThroughPoses>;
 
 }  // namespace syncai_task_runner

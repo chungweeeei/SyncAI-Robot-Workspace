@@ -480,6 +480,7 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
     end_pose_.pose.position.y);
 
   current_path_ = path;
+  path_progress_.reset();
 }
 
 void ControllerServer::computeAndPublishVelocity()
@@ -488,30 +489,17 @@ void ControllerServer::computeAndPublishVelocity()
   if (!computeVelocityCycle(cycle)) {
     return;
   }
-  const geometry_msgs::msg::PoseStamped & pose = cycle.pose;
   const geometry_msgs::msg::TwistStamped & cmd_vel_2d = cycle.cmd_vel;
 
   std::shared_ptr<Action::Feedback> feedback = std::make_shared<Action::Feedback>();
   feedback->speed = std::hypot(cmd_vel_2d.twist.linear.x, cmd_vel_2d.twist.linear.y);
 
-  // Find the closest pose to current pose on global path
-  nav_msgs::msg::Path & current_path = current_path_;
-  auto find_closest_pose_idx = [&pose, &current_path]() {
-    size_t closest_pose_idx = 0;
-    double curr_min_dist = std::numeric_limits<double>::max();
-    for (size_t curr_idx = 0; curr_idx < current_path.poses.size(); ++curr_idx) {
-      double curr_dist =
-        syncai_util::geometry_utils::euclidean_distance(pose, current_path.poses[curr_idx]);
-      if (curr_dist < curr_min_dist) {
-        curr_min_dist = curr_dist;
-        closest_pose_idx = curr_idx;
-      }
-    }
-    return closest_pose_idx;
-  };
-
+  // From the robot's place as isGoalReached() last updated it (a cycle old).
+  // Until 2026-11 a whole-path nearest pose to the cycle's pose, in the local
+  // costmap's frame while the path is in map, and which on a patrol route
+  // could land on a later leg.
   feedback->distance_to_goal =
-    syncai_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
+    syncai_util::geometry_utils::calculate_path_length(current_path_, path_progress_.index());
   action_server_->publish_feedback(feedback);
 
   publishVelocity(cmd_vel_2d);
@@ -1023,6 +1011,31 @@ bool ControllerServer::isGoalReached()
         body_frame_.c_str(), error.c_str());
       return false;
     }
+  }
+
+  // The robot's place on the path, every cycle and before any check below
+  // can return: a check that skipped the update (the level check does, for
+  // the whole of a 1F -> 2F route's ground floor) would leave the place
+  // behind the robot, further than one update reads. Also what the feedback
+  // reports distance_to_goal from.
+  if (!current_path_.poses.empty()) {
+    geometry_msgs::msg::PoseStamped robot_pose_latest = pose;
+    robot_pose_latest.header.stamp = rclcpp::Time(0);
+    geometry_msgs::msg::PoseStamped robot_in_path_frame;
+    if (!syncai_util::transformPoseInTargetFrame(
+          robot_pose_latest, robot_in_path_frame, *costmap_ros_->getTfBuffer(),
+          current_path_.header.frame_id, costmap_ros_->getTransformTolerance())) {
+      return false;
+    }
+    // Nearest in 3D on a path with heights: on a spiral stair the turn above
+    // the robot is as near in x / y as the one under it.
+    if (path_has_height) {
+      robot_in_path_frame.pose.position.z = ground_z;
+    }
+    path_progress_.update(current_path_, robot_in_path_frame.pose, path_has_height);
+  }
+
+  if (path_has_height) {
     if (std::abs(ground_z - end_pose_.pose.position.z) > goal_z_tolerance_) {
       // Said only near the end pose in x / y, where it is the reason the
       // goal is not reached: a robot standing on its goal with the ground
@@ -1045,39 +1058,13 @@ bool ControllerServer::isGoalReached()
   // Proximity to the end pose alone cannot decide completion: on a path that
   // loops back onto its own start (patrol), the robot is within goal tolerance
   // before it has moved. Only consult the goal checker once the remaining
-  // length from the path pose closest to the robot is short.
+  // length from the robot's place is short. The place is path_progress_'s,
+  // which only moves forward (2026-11): this was a whole-path nearest pose,
+  // strict '<' so a tie went to the start, which on a loop meant a robot back
+  // at A could still read as at the start and never finish.
   if (goal_reached_max_remaining_path_ > 0.0 && !current_path_.poses.empty()) {
-    geometry_msgs::msg::PoseStamped robot_pose_latest = pose;
-    robot_pose_latest.header.stamp = rclcpp::Time(0);
-
-    geometry_msgs::msg::PoseStamped robot_in_path_frame;
-    if (!syncai_util::transformPoseInTargetFrame(
-          robot_pose_latest, robot_in_path_frame, *costmap_ros_->getTfBuffer(),
-          current_path_.header.frame_id, costmap_ros_->getTransformTolerance())) {
-      return false;
-    }
-
-    // Nearest in 3D on a path with heights, for the reason above: on a spiral
-    // stair the turn above the robot is as near in x / y as the one under it.
-    if (path_has_height) {
-      robot_in_path_frame.pose.position.z = ground_z;
-    }
-
-    // Strict '<' keeps the earliest pose on ties, so on a closed loop the
-    // robot standing on the shared start/end point resolves to the start.
-    size_t closest_idx = 0;
-    double min_dist = std::numeric_limits<double>::max();
-    for (size_t i = 0; i < current_path_.poses.size(); ++i) {
-      double dist = syncai_util::geometry_utils::euclidean_distance(
-        robot_in_path_frame, current_path_.poses[i], path_has_height);
-      if (dist < min_dist) {
-        min_dist = dist;
-        closest_idx = i;
-      }
-    }
-
-    double remaining_path_length =
-      syncai_util::geometry_utils::calculate_path_length(current_path_, closest_idx);
+    const double remaining_path_length =
+      syncai_util::geometry_utils::calculate_path_length(current_path_, path_progress_.index());
     if (remaining_path_length > goal_reached_max_remaining_path_) {
       return false;
     }

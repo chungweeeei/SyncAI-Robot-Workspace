@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/srv/is_path_valid.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -19,6 +20,7 @@
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
+#include "syncai_util/path_progress.hpp"
 #include "syncai_util/simple_action_server.hpp"
 #include "tf2_ros/buffer.h"
 
@@ -41,6 +43,8 @@ class PlannerServer : public rclcpp::Node
 public:
   using ActionToPose = nav2_msgs::action::ComputePathToPose;
   using ActionServerToPose = syncai_util::SimpleActionServer<ActionToPose>;
+  using ActionThroughPoses = nav2_msgs::action::ComputePathThroughPoses;
+  using ActionServerThroughPoses = syncai_util::SimpleActionServer<ActionThroughPoses>;
   using PlannerMap = std::unordered_map<std::string, syncai_nav_core::GlobalPlanner::Ptr>;
 
   /**
@@ -73,61 +77,87 @@ public:
     const std::string & planner_id);
 
 protected:
+  // The helpers below serve both action servers (compute_path_to_pose and,
+  // since 2026-11, compute_path_through_poses), so they take the server they
+  // act for: each terminates or reads the goal of that one. be663c0's
+  // through-poses callback inlined copies of them instead, because these
+  // were hard-wired to action_server_pose_ and would have ended the wrong
+  // action's goal.
+
   /**
    * @brief Check if the action server is valid / active
    * @return true if the server is inactive (caller should bail out)
    */
-  bool isServerInactive();
+  template <typename ServerT>
+  bool isServerInactive(std::unique_ptr<ServerT> & server);
 
   /**
    * @brief Check if the action server has a cancellation request pending;
    * terminates all goals if so.
    * @return true if a cancel was requested
    */
-  bool isCancelRequested();
+  template <typename ServerT>
+  bool isCancelRequested(std::unique_ptr<ServerT> & server);
 
   /**
    * @brief Check if the action server has a preemption request and replaces
    * the goal with the new preemption goal.
    * @param goal Goal to overwrite (by reference, so the caller sees the
    * preempting goal)
+   * @return true if the goal was replaced
    */
-  void getPreemptedGoalIfRequested(std::shared_ptr<const ActionToPose::Goal> & goal);
+  template <typename ServerT, typename GoalT>
+  bool getPreemptedGoalIfRequested(
+    std::unique_ptr<ServerT> & server, std::shared_ptr<const GoalT> & goal);
 
   /**
-   * @brief Get the starting pose from costmap or message, if valid
-   * @param goal Goal to find start from
+   * @brief Get the starting pose from costmap or message, if valid;
+   * terminates the server's goal if not
+   * @param goal Goal to find start from (use_start / start: both actions)
    * @param start The starting pose to use
    * @return bool If successful in finding a valid starting pose
    */
+  template <typename ServerT, typename GoalT>
   bool getStartPose(
-    std::shared_ptr<const ActionToPose::Goal> goal, geometry_msgs::msg::PoseStamped & start);
+    std::unique_ptr<ServerT> & server, const std::shared_ptr<const GoalT> & goal,
+    geometry_msgs::msg::PoseStamped & start);
 
   /**
-   * @brief Transform start and goal poses into the costmap global frame for
-   * path planning plugins to utilize
-   * @param curr_start The starting pose to transform
-   * @param curr_goal Goal pose to transform
-   * @return bool If successful in transforming poses
+   * @brief Transform a pose into the costmap global frame for the planner
+   * plugins, logging which pose (`what`) failed from which frame
+   * @return bool If successful in transforming the pose
    */
-  bool transformPosesToGlobalFrame(
-    geometry_msgs::msg::PoseStamped & curr_start, geometry_msgs::msg::PoseStamped & curr_goal);
+  bool transformPoseToGlobalFrame(geometry_msgs::msg::PoseStamped & pose, const std::string & what);
 
   /**
-   * @brief Validate that the path contains a meaningful path
-   * @param goal Current goal
+   * @brief Validate that the path contains a meaningful path; terminates the
+   * server's goal if not
+   * @param goal_desc What the path was asked to reach, for the log
    * @param path Current path
    * @param planner_id The planner ID used to generate the path
    * @return bool If path is valid
    */
+  template <typename ServerT>
   bool validatePath(
-    const geometry_msgs::msg::PoseStamped & goal, const nav_msgs::msg::Path & path,
-    const std::string & planner_id);
+    std::unique_ptr<ServerT> & server, const std::string & goal_desc,
+    const nav_msgs::msg::Path & path, const std::string & planner_id);
+
+  /**
+   * @brief The planner `planner_id` names, or the only one loaded when it is
+   * empty; nullptr (logged) when there is none
+   */
+  syncai_nav_core::GlobalPlanner * findPlanner(const std::string & planner_id);
 
   /**
    * @brief The action server callback which calls planner to get the path
    */
   void computePlan();
+
+  /**
+   * @brief compute_path_through_poses' callback: one path from the robot
+   * through every goal in order (GlobalPlanner::createPlanThroughPoses())
+   */
+  void computePlanThroughPoses();
 
   /**
    * @brief The is_path_valid service callback: is the part of a path still
@@ -181,8 +211,12 @@ protected:
   // Our action server implements the ComputePathToPose action
   std::unique_ptr<ActionServerToPose> action_server_pose_;
 
-  // No compute_path_through_poses (2026-10-28): nav2's waypoint action,
-  // which no BT node, backend or console route ever called.
+  // compute_path_through_poses: the patrol route of navigate_through_poses
+  // (patrol.xml's ComputePathThroughPoses). Removed on 2026-10-28 for want of
+  // a caller, back on 2026-11 with one, and planned by
+  // createPlanThroughPoses() rather than by joining getPlan() legs, which
+  // under Octo3D started every leg on the robot's floor.
+  std::unique_ptr<ActionServerThroughPoses> action_server_poses_;
 
   // Planner
   PlannerMap planners_;
@@ -214,6 +248,14 @@ protected:
   // first plan, and after clear_plan.
   nav_msgs::msg::Path last_plan_;
   std::string last_plan_planner_id_;
+  // Where the robot is on last_plan_, forward only (path_progress.hpp), under
+  // last_plan_mutex_: the 1 Hz `plan` trim and is_path_valid both start from
+  // it. Until 2026-11 each did a whole-path nearest pose, which on a patrol
+  // route (out and back, or a loop) can land on a later leg. Planar: the
+  // robot pose here is the planar base_link, and forward-only is what keeps
+  // a spiral stair's turn above from being taken (Octo3D still places the
+  // robot in 3D within what it is handed).
+  syncai_util::PathProgress last_plan_progress_;
   std::mutex last_plan_mutex_;
   rclcpp::TimerBase::SharedPtr plan_republish_timer_;
 

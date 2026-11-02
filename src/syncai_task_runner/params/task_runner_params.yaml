@@ -1,8 +1,10 @@
-# One node, two action servers (navigate_to_pose from nav2_msgs and
-# navigate_to_goal from syncai_common) built from one navigator template, so
-# every parameter below -- default_bt_xml, goal_blackboard_id,
-# path_blackboard_id, the BtActionServer timings -- is shared by both: same
-# tree, same blackboard keys, one navigation at a time.
+# One node, three action servers (navigate_to_pose from nav2_msgs,
+# navigate_to_goal from syncai_common and, since 2026-11, the patrol route's
+# navigate_through_poses from nav2_msgs) built from one navigator template, so
+# every parameter below -- goal_blackboard_id, path_blackboard_id, the
+# BtActionServer timings -- is shared by all three: same blackboard keys, one
+# navigation at a time. default_bt_xml (move.xml) is the first two's;
+# navigate_through_poses has default_nav_through_poses_bt_xml (patrol.xml).
 /**/task_runner:
   ros__parameters:
     use_sim_time: false
@@ -24,6 +26,15 @@
     # Reload the XML from disk on every goal (handy while editing trees).
     always_reload_bt_xml: false
 
+    # navigate_through_poses: a waypoint the robot has come within this many
+    # metres of is passed, and dropped from what a replan plans through (the
+    # last one never is; blackboard_keys.hpp, remaining_goals). Wide because
+    # a waypoint is passed through, not stopped on: the robot only comes
+    # within the path's tracking error of it, more on an MPPI detour round a
+    # person. A waypoint missed by this is driven back to only if the path is
+    # replanned before the next one is passed. A first value, unmeasured.
+    waypoint_passed_radius: 1.0
+
     # BT node plugins (shared libraries) to load into the factory. Only the
     # nodes ported so far are listed — extend as recovery/condition/control
     # nodes are added. XML tag names must match what each plugin registers.
@@ -36,6 +47,7 @@
     # missing one fails that goal (ABORTED, NONE), not this node.
     plugin_lib_names:
       - syncai_compute_path_to_pose_action_bt_node
+      - syncai_compute_path_through_poses_action_bt_node
       - syncai_follow_path_action_bt_node
       - syncai_clear_costmap_service_bt_node
       - syncai_pipeline_sequence_bt_node

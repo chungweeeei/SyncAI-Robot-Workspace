@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav2_msgs/action/navigate_through_poses.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -14,15 +15,19 @@
 #include "syncai_common/action/navigate_to_goal.hpp"
 #include "syncai_task_runner/navigator.hpp"
 #include "syncai_util/odometry_utils.hpp"
+#include "syncai_util/path_progress.hpp"
 
 namespace syncai_task_runner
 {
 
 /**
- * @brief What differs between the two actions PoseNavigator serves. One
+ * @brief What differs between the actions PoseNavigator serves. One
  * specialisation per action; everything else (the tree, the blackboard keys,
- * feedback, preemption) is shared and compiles against the field names the two
+ * feedback, preemption) is shared and compiles against the field names the
  * actions have in common -- NavigateToGoal mirrors nav2's on purpose.
+ * kThroughPoses marks the one whose goal is a list (`poses`, written to the
+ * blackboard's `goals`) rather than one `pose` (`goal`), with its own default
+ * tree.
  */
 template <class ActionT>
 struct PoseNavigatorTraits;
@@ -39,6 +44,9 @@ struct PoseNavigatorTraits<nav2_msgs::action::NavigateToPose>
   // rejection; it moves when the nav2 action is retired, by flipping these
   // two flags.
   static constexpr bool kDrivesRvizGoalPose = true;
+  static constexpr bool kThroughPoses = false;
+  static constexpr const char * kDefaultBtParam = "default_bt_xml";
+  static constexpr const char * kDefaultBtFile = "move.xml";
 };
 
 template <>
@@ -47,21 +55,45 @@ struct PoseNavigatorTraits<syncai_common::action::NavigateToGoal>
   static constexpr const char * kActionName = "navigate_to_goal";
   static constexpr bool kReportsFailure = true;
   static constexpr bool kDrivesRvizGoalPose = false;
+  static constexpr bool kThroughPoses = false;
+  static constexpr const char * kDefaultBtParam = "default_bt_xml";
+  static constexpr const char * kDefaultBtFile = "move.xml";
+};
+
+// The patrol route (2026-11): drive through every pose in order without
+// stopping, the last one reached like a MOVE's goal (xy and heading). nav2's
+// own action, so its result is Empty and its feedback has no status_msg; a
+// syncai_common twin with NavigateToGoal's error_code / status_msg is the
+// next step, and is one more specialisation here. Its own default tree
+// parameter, because the two default trees differ while navigate_to_pose and
+// navigate_to_goal share move.xml.
+template <>
+struct PoseNavigatorTraits<nav2_msgs::action::NavigateThroughPoses>
+{
+  static constexpr const char * kActionName = "navigate_through_poses";
+  static constexpr bool kReportsFailure = false;
+  static constexpr bool kDrivesRvizGoalPose = false;
+  static constexpr bool kThroughPoses = true;
+  static constexpr const char * kDefaultBtParam = "default_nav_through_poses_bt_xml";
+  static constexpr const char * kDefaultBtFile = "patrol.xml";
 };
 
 /**
  * @class PoseNavigator
- * @brief Navigate to a single pose by ticking move.xml. One template serving
- * both nav2_msgs/NavigateToPose (unchanged; what the backend sends today) and
- * syncai_common/NavigateToGoal (2026-10: the same navigation with error_code /
- * error_msg in the result and number_of_replans in the feedback, so the
- * operator can be told whether the robot failed to plan or failed to drive).
- * The three places the two differ sit behind PoseNavigatorTraits and
- * `if constexpr`; the explicit instantiations are at the bottom of the .cpp.
+ * @brief Navigate to a single pose by ticking move.xml, or through a list of
+ * them by ticking patrol.xml. One template serving nav2_msgs/NavigateToPose
+ * (unchanged; what the backend sends today), syncai_common/NavigateToGoal
+ * (2026-10: the same navigation with error_code / error_msg in the result and
+ * number_of_replans in the feedback, so the operator can be told whether the
+ * robot failed to plan or failed to drive) and nav2_msgs/NavigateThroughPoses
+ * (2026-11, the patrol route). The places they differ sit behind
+ * PoseNavigatorTraits and `if constexpr`; the explicit instantiations are at
+ * the bottom of the .cpp.
  *
- * Both instantiations share the host node's parameters (default_bt_xml,
- * goal_blackboard_id, path_blackboard_id, the BtActionServer timings) and
- * the one NavigatorMutex: same tree, same keys, one navigation at a time.
+ * All instantiations share the host node's parameters (goal_blackboard_id,
+ * path_blackboard_id, the BtActionServer timings) and the one NavigatorMutex:
+ * one navigation at a time across the three actions. The single-pose two
+ * also share default_bt_xml.
  */
 template <class ActionT>
 class PoseNavigator : public Navigator<ActionT>
@@ -136,15 +168,28 @@ protected:
 
   // Odometry smoother object
   std::shared_ptr<syncai_util::OdomSmoother> odom_smoother_;
+
+  // The robot's place on the path, for the feedback's distance_remaining.
+  // Forward only (path_progress.hpp): a patrol route passes back near itself,
+  // and a whole-path nearest pose there reported the distance from a later
+  // leg (2026-11). A replan (another stamp) starts it over.
+  syncai_util::PathProgress feedback_progress_;
+
+  // navigate_through_poses only: a waypoint within this of the robot is
+  // passed and dropped from remaining_goals, so a replan starts from the
+  // next one (the last one is never dropped).
+  double waypoint_passed_radius_{1.0};
 };
 
 using NavigateToPoseNavigator = PoseNavigator<nav2_msgs::action::NavigateToPose>;
 using NavigateToGoalNavigator = PoseNavigator<syncai_common::action::NavigateToGoal>;
+using NavigateThroughPosesNavigator = PoseNavigator<nav2_msgs::action::NavigateThroughPoses>;
 
 // Defined once, in pose_navigator.cpp, so the node -> error_code table stays a
 // .cpp-private detail and the library serves both actions.
 extern template class PoseNavigator<nav2_msgs::action::NavigateToPose>;
 extern template class PoseNavigator<syncai_common::action::NavigateToGoal>;
+extern template class PoseNavigator<nav2_msgs::action::NavigateThroughPoses>;
 
 }  // namespace syncai_task_runner
 

@@ -133,6 +133,13 @@ public:
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
 
+  // A patrol route (compute_path_through_poses): leg by leg from the robot
+  // through every waypoint, each later leg from the cell the one before
+  // ended on (planThrough()).
+  nav_msgs::msg::Path createPlanThroughPoses(
+    const geometry_msgs::msg::PoseStamped & start,
+    const std::vector<geometry_msgs::msg::PoseStamped> & goals) override;
+
   // The part of `path` ahead of the robot against the dynamic overlay and
   // the keepout zones, on the floor stretch the robot is on (see the .cpp
   // for the stair rule). Takes the overlay's lock only, never mutex_.
@@ -191,6 +198,12 @@ protected:
   // `name` next to the tree: map/<name>/ holds poses.txt and keepout.json
   // beside octomap.bt.
   static std::string fileBeside(const std::string & octomap_file, const char * name);
+
+  // createPlan() and createPlanThroughPoses(): a route from the robot through
+  // `goals` (one goal: an ordinary plan), under mutex_.
+  nav_msgs::msg::Path planThrough(
+    const geometry_msgs::msg::PoseStamped & start,
+    const std::vector<geometry_msgs::msg::PoseStamped> & goals);
 
   // z of the ground under the robot from TF (body_frame_ minus lidar_height_).
   // On failure `error`, when given, gets the TF exception's message.

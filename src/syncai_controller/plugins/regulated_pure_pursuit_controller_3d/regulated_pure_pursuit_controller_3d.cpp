@@ -14,6 +14,7 @@
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "syncai_util/path_height.hpp"
+#include "syncai_util/path_progress.hpp"
 #include "tf2/utils.h"
 
 using std::abs;
@@ -1076,12 +1077,17 @@ nav_msgs::msg::Path RegulatedPurePursuitController3D::transformGlobalPlan(
   auto closest_pose_upper_bound = syncai_util::geometry_utils::first_after_integrated_distance(
     global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
 
-  // Within the range found above, find the path point closest to the robot
-  auto transformation_begin = syncai_util::geometry_utils::min_by(
+  // Within the range found above, find the robot's place on the path: the
+  // first local minimum of the distance from the pruned front, not the
+  // range's minimum, so an out-and-back patrol route's return leg (on top of
+  // the outgoing one, and in range for its last 5 m) is never pruned onto
+  // early (2026-11, path_progress.hpp; MPPI's PathHandler does the same).
+  auto transformation_begin = syncai_util::firstLocalMinimum(
     global_plan_.poses.begin(), closest_pose_upper_bound,
     [&robot_pose, is_3d](const geometry_msgs::msg::PoseStamped & ps) {
       return euclidean_distance(robot_pose, ps, is_3d);
-    });
+    },
+    syncai_util::PathProgress::kDefaultHysteresis);
 
   // Scan forward from transformation_begin and take the first point whose straight-line
   // distance from the robot exceeds the local costmap extent as transformation_end

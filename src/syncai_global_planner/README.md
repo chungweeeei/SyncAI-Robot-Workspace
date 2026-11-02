@@ -123,10 +123,28 @@ and returns an empty path; an *empty* id with exactly one plugin loaded — the
 case today — picks that one and warns once. The BT names `Octo3D` explicitly
 in `move.xml` / `dock.xml`.
 
-**No `compute_path_through_poses`** since 2026-10-28: nav2's second action
-(plan `start → goals[0] → goals[1] → …` as concatenated segments) was ported
-but never called — the trees only use `ComputePathToPose`, and the backend
-sequences multi-stop tasks as separate `MOVE` steps. git history has it.
+**`compute_path_through_poses`** (`nav2_msgs/ComputePathThroughPoses`) plans
+one path from the robot through `goals[0] → goals[1] → …` in order: the patrol
+route, called by `patrol.xml`'s `ComputePathThroughPoses` for the task
+runner's `navigate_through_poses` (2026-11). It was ported once, removed
+unused on 2026-10-28, and is back with a caller — and no longer as the
+upstream loop of `getPlan(prev, next)` joined end to end: the server calls
+`GlobalPlanner::createPlanThroughPoses()`, whose default does that, and
+`Octo3D` overrides it, because its `createPlan()` takes the start's height
+from TF. A later leg starts at a waypoint, not at the robot, so the joined
+version planned a leg from an upstairs waypoint on the robot's floor, checked
+"the robot stands in a keepout zone" and exempted a disc at a waypoint the
+robot was not at, and re-snapped each joint, where the previous leg's goal
+snap (round blocked cells) and the next leg's start snap (ignoring them) can
+pick cells up to `snap_xy_radius` apart. `Octo3D` plans leg 0 from the robot
+exactly as a single plan, and every later leg from the cell the leg before
+ended on, under one lock and one overlay snapshot; each waypoint's z picks
+its floor (`goal_z_mode`); every pose faces the next and only the last
+waypoint's heading is kept, so the controllers turn only at the end. A
+failure names the leg and the waypoint (`[leg 2 of 3: waypoint (…) ->
+waypoint 2 (…)]`). The two actions share `dynamic_params_lock_` and
+`Octo3D`'s lock, so a route and a single plan never run at once; a route
+becomes the last plan like any other (`plan`, `is_path_valid`, `clear_plan`).
 
 ### Reading the log after a failed plan
 
@@ -706,8 +724,11 @@ terms:
 - `is_path_valid` for an `Octo3D` path is answered by the planner
   (`GlobalPlanner::isPathValid()`, which the server calls instead of its
   costmap test for the planner that made the last plan when that planner
-  does not use the costmap): the pose nearest the robot in 3D, then every
-  pose from there against the snapshot, with the same exempt disc. Two rules
+  does not use the costmap): the pose nearest the robot in 3D — the first
+  local minimum from the start of what the server hands over (the last plan
+  from the robot's place on, see `is_path_valid` under Interfaces), not the
+  whole path's minimum, since 2026-11 — then every pose from there against
+  the snapshot, with the same exempt disc. Two rules
   are the stair's: the check stops where the path leaves traversable ground
   (a stair link), judging only the floor stretch the robot is on, and it
   answers "valid" while the robot itself stands on no traversable cell
@@ -846,8 +867,8 @@ all 41 links and the upper floor is `no_path`.
   the rays hit. After a `clear_overlay` the first plan runs before the next
   scan re-marks a person in view (≤ 0.1 s; the 2D tree's planner waited for
   its costmap to be current instead, until 2026-10-28), and `IsPathValid` replans after its
-  10 s. The republish trim on `plan` still uses the server's planar
-  nearest-pose search.
+  10 s. The republish trim on `plan` uses the server's planar forward-only
+  progress (`syncai_util/path_progress.hpp`).
 - A route over a stair link is only a route: climbing it is the controllers'
   stair mode (`syncai_util::StairMode`, run by MPPI and `FollowPathRPP3D`;
   `syncai_controller/README.md`, "Stairs"), which stops and switches the gait
@@ -878,7 +899,7 @@ all 41 links and the upper floor is `no_path`.
 |---|---|---|
 | `planner_plugins` | `["Octo3D"]` (config: `["Octo3D"]`) | IDs; each needs `<id>.plugin` naming the type. With one loaded, an empty `planner_id` in a goal picks it; with more, an empty id is an error. Until 2026-10-28 the default was NavFn as `GridBased`, and the config loaded `GridBased` (SmacPlanner2D) beside `Octo3D` |
 | `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan once per goal and again only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
-| `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the pose nearest the robot (the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. The planner cannot tell when the navigation finished, so the task_runner reports a goal that **succeeded or was cancelled** through `clear_plan`; after a failure the last route keeps showing for `plan_idle_clear_time`. Read once at startup |
+| `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the robot's place on it — forward-only progress since 2026-11 (`syncai_util/path_progress.hpp`), so a patrol route that comes back past the robot is not cut to its later leg (the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. The planner cannot tell when the navigation finished, so the task_runner reports a goal that **succeeded or was cancelled** through `clear_plan`; after a failure the last route keeps showing for `plan_idle_clear_time`. Read once at startup |
 | `plan_idle_clear_time` | `30.0` (config: `30.0`) | s (2026-10-25) after which a plan that no navigation has made or checked (`is_path_valid`, which every running tree calls once a second) is dropped, as `clear_plan` drops it; `0` = never. The end of a **failed** navigation's route, which nothing else clears: until then it stayed on `plan` until the next goal (on dp, 1.5 h after the task ended), and the 1 Hz re-send kept the backend's own expiry from firing. Checked before the subscriber test, so a viewer subscribing later gets no stale route. Logs "No navigation has used the plan". Read once at startup |
 
 `expected_planner_frequency` is the only parameter the *server's* dynamic
@@ -956,13 +977,14 @@ With the node at `/<robot_id>`:
 | Interface | Name | Type |
 |---|---|---|
 | Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
-| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the pose nearest the robot onward free? Asked of the planner that made the last plan (`GlobalPlanner::isPathValid()`; the request carries no planner id, the server remembers the last plan's): `Octo3D` judges on its dynamic overlay and its keepout zones (see **Dynamic obstacles** and **Keepout zones**). An empty remembered id — before a first plan, or after `clear_plan` — falls back to the only loaded planner, as `getPlan()` does; an id no loaded planner has answers `false` with a throttled warning, so the BT replans. Called once a second by `move.xml` / `dock.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails). Served on the main executor, so it never queues behind a plan. Until 2026-10-28 a path of a planner on the costmap (`GridBased`) was judged here on the global costmap instead: the centre cell `< INSCRIBED` and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test) |
+| Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` (2026-11) — one path through every waypoint in order, `patrol.xml`'s (see "`getPlan()` selects the plugin") |
+| Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the robot's place on it onward free? When the path is the last plan, the planner is handed it from the robot's place on (forward-only progress, `syncai_util/path_progress.hpp`, 2026-11; a patrol route can pass back within a cell of the robot, and a whole-path nearest pose would judge that leg) and the blocked indices are shifted back to the request's. Asked of the planner that made the last plan (`GlobalPlanner::isPathValid()`; the request carries no planner id, the server remembers the last plan's): `Octo3D` judges on its dynamic overlay and its keepout zones (see **Dynamic obstacles** and **Keepout zones**). An empty remembered id — before a first plan, or after `clear_plan` — falls back to the only loaded planner, as `getPlan()` does; an id no loaded planner has answers `false` with a throttled warning, so the BT replans. Called once a second by `move.xml` / `dock.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails). Served on the main executor, so it never queues behind a plan. Until 2026-10-28 a path of a planner on the costmap (`GridBased`) was judged here on the global costmap instead: the centre cell `< INSCRIBED` and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test) |
 | Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
 | Service | `planner_server/Octo3D/load_keepout` | `nav2_msgs/LoadMap` (2026-10-23) — replace `Octo3D`'s keepout zones from `map_url` (`map/<name>/keepout.json`; `""` = none) on the loaded map, without rebuilding it. What the backend calls after it writes the file; a map switch needs no call, `load_map` reads the new map's own. Result table under "Keepout zones". On `load_map`'s thread |
 | Service | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap` (2026-10-21) — drop every mark of `Octo3D`'s dynamic overlay (the keepout zones stay); what the trees' planner-side `ClearEntireCostmap` nodes call (at every new goal, and when a plan fails) — the global costmap's own clear is a no-op for `Octo3D` (and the costmap has no layers to clear). Main executor |
 | Subscriber | `pointlio/body_cloud` | `sensor_msgs/PointCloud2` (2026-10-21, `Octo3D.dynamic.topic`) — the lidar cloud for the dynamic overlay, through a TF message filter into `map`. Created on the `global_costmap` node and its callback group since 2026-10-22, so the costmap's TF thread runs the filter (see **Dynamic obstacles**); the name is still resolved in the planner's namespace. Dropped unread while `Octo3D` has no map |
 | Service | `clear_plan` | `std_srvs/Empty` (2026-10-14) — forget the last plan and send an empty `plan` (frame `map`, not empty: the backend drops any other frame before it looks at the poses), then two more at `plan_republish_rate`, because the backend reads `plan` BEST_EFFORT and one dropped message would leave the console drawing the old route. Called by the task_runner when a navigation is **cancelled** (2026-10-14; until then the cancelled route stayed on `plan` until the next goal) or **succeeds** (2026-10-22; the trimmed re-send left a stub that grew back along the route once the robot moved off the goal), and by `Octo3D` on a map switch. The same drop runs by itself once the plan has gone unused for `plan_idle_clear_time` (2026-10-25: the end of a failed navigation's route). A new plan stops the repeats. Main executor, the republish timer's thread |
-| Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's nearest pose onward; empty after a `clear_plan` or `plan_idle_clear_time` unused |
+| Publisher | `plan` | `nav_msgs/Path` (visualization; skipped when nothing is subscribed). Sent when a plan is made, and the last one again at `plan_republish_rate`, from the robot's place on it onward (forward-only progress since 2026-11, so a route that comes back past the robot is not trimmed to its later leg); empty after a `clear_plan` or `plan_idle_clear_time` unused |
 
 Plus everything the internal costmap exposes under
 `/<robot_id>/global_costmap/…` — `costmap` (the empty 5 × 5 m default grid),

@@ -22,25 +22,6 @@ namespace syncai_global_planner
 namespace
 {
 
-// Index of the pose nearest the robot, searched over the whole path. Shared by
-// is_path_valid and the plan republish on purpose: the route `plan` shows is
-// then exactly the part is_path_valid checks. A route that passes back near
-// itself can match its later leg; both callers inherit that together.
-size_t closestPoseIndex(
-  const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose)
-{
-  size_t closest_idx = 0;
-  double closest_dist = std::numeric_limits<double>::max();
-  for (size_t i = 0; i < path.poses.size(); ++i) {
-    const double dist = syncai_util::geometry_utils::euclidean_distance(robot_pose, path.poses[i]);
-    if (dist < closest_dist) {
-      closest_dist = dist;
-      closest_idx = i;
-    }
-  }
-  return closest_idx;
-}
-
 // "(1.23, -4.56, z 0.00) in 'map'", for the goal / start lines.
 std::string describePose(const geometry_msgs::msg::PoseStamped & p)
 {
@@ -83,6 +64,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
 PlannerServer::~PlannerServer()
 {
   action_server_pose_.reset();
+  action_server_poses_.reset();
   dyn_params_handler_.reset();
   planners_.clear();
   if (costmap_ros_) {
@@ -186,8 +168,17 @@ void PlannerServer::configure()
     this->shared_from_this(), "compute_path_to_pose", std::bind(&PlannerServer::computePlan, this),
     nullptr, std::chrono::milliseconds(500), true);
 
+  // The patrol route's planner (navigate_through_poses), on its own thread
+  // likewise. Both actions plan under dynamic_params_lock_ and the planner's
+  // own lock, so a route and a single plan never run at once.
+  action_server_poses_ = std::make_unique<ActionServerThroughPoses>(
+    this->shared_from_this(), "compute_path_through_poses",
+    std::bind(&PlannerServer::computePlanThroughPoses, this), nullptr,
+    std::chrono::milliseconds(500), true);
+
   // Activation phase (nav2 on_activate)
   action_server_pose_->activate();
+  action_server_poses_->activate();
   costmap_ros_->activate();
 
   // Add callback for dynamic parameters
@@ -195,9 +186,10 @@ void PlannerServer::configure()
     std::bind(&PlannerServer::dynamicParametersCallback, this, _1));
 }
 
-bool PlannerServer::isServerInactive()
+template <typename ServerT>
+bool PlannerServer::isServerInactive(std::unique_ptr<ServerT> & server)
 {
-  if (action_server_pose_ == nullptr || !action_server_pose_->is_server_active()) {
+  if (server == nullptr || !server->is_server_active()) {
     RCLCPP_DEBUG(
       get_logger(), "[PlannerServer][%s] Action server unavailable or inactive. Stopping.",
       __func__);
@@ -207,30 +199,34 @@ bool PlannerServer::isServerInactive()
   return false;
 }
 
-bool PlannerServer::isCancelRequested()
+template <typename ServerT>
+bool PlannerServer::isCancelRequested(std::unique_ptr<ServerT> & server)
 {
-  if (action_server_pose_->is_cancel_requested()) {
+  if (server->is_cancel_requested()) {
     RCLCPP_INFO(
       get_logger(), "[PlannerServer][%s] Goal was canceled. Canceling planning action.", __func__);
-    action_server_pose_->terminate_all();
+    server->terminate_all();
     return true;
   }
 
   return false;
 }
 
-void PlannerServer::getPreemptedGoalIfRequested(std::shared_ptr<const ActionToPose::Goal> & goal)
+template <typename ServerT, typename GoalT>
+bool PlannerServer::getPreemptedGoalIfRequested(
+  std::unique_ptr<ServerT> & server, std::shared_ptr<const GoalT> & goal)
 {
-  if (action_server_pose_->is_preempt_requested()) {
-    goal = action_server_pose_->accept_pending_goal();
-    RCLCPP_INFO(
-      get_logger(), "[PlannerServer][%s] Preempted by a new goal to %s", __func__,
-      describePose(goal->goal).c_str());
+  if (server->is_preempt_requested()) {
+    goal = server->accept_pending_goal();
+    return true;
   }
+  return false;
 }
 
+template <typename ServerT, typename GoalT>
 bool PlannerServer::getStartPose(
-  std::shared_ptr<const ActionToPose::Goal> goal, geometry_msgs::msg::PoseStamped & start)
+  std::unique_ptr<ServerT> & server, const std::shared_ptr<const GoalT> & goal,
+  geometry_msgs::msg::PoseStamped & start)
 {
   if (goal->use_start) {
     start = goal->start;
@@ -243,41 +239,33 @@ bool PlannerServer::getStartPose(
       "[PlannerServer][%s] Plan aborted: no robot pose (%s in %s) to start from -- is the "
       "localizer / lio_bridge publishing map -> odom -> base_link?",
       __func__, costmap_ros_->getBaseFrameID().c_str(), costmap_ros_->getGlobalFrameID().c_str());
-    action_server_pose_->terminate_current();
+    server->terminate_current();
     return false;
   }
 
   return true;
 }
 
-bool PlannerServer::transformPosesToGlobalFrame(
-  geometry_msgs::msg::PoseStamped & curr_start, geometry_msgs::msg::PoseStamped & curr_goal)
+bool PlannerServer::transformPoseToGlobalFrame(
+  geometry_msgs::msg::PoseStamped & pose, const std::string & what)
 {
-  // Which of the two, and from which frame: a goal sent in a frame nobody
-  // publishes (a typo, a robot_id prefix on `map`) is the usual cause, and
-  // the old line did not say it was the goal.
-  const auto transform = [&](geometry_msgs::msg::PoseStamped & pose, const char * what) {
-    const std::string from = pose.header.frame_id;
-    if (costmap_ros_->transformPoseToGlobalFrame(pose, pose)) {
-      return true;
-    }
-    RCLCPP_ERROR(
-      get_logger(),
-      "[PlannerServer][%s] Plan aborted: cannot transform the %s pose from '%s' to '%s'", __func__,
-      what, from.c_str(), costmap_ros_->getGlobalFrameID().c_str());
-    return false;
-  };
-  if (!transform(curr_start, "start") || !transform(curr_goal, "goal")) {
-    action_server_pose_->terminate_current();
-    return false;
+  // Which pose, and from which frame: a goal sent in a frame nobody
+  // publishes (a typo, a robot_id prefix on `map`) is the usual cause.
+  const std::string from = pose.header.frame_id;
+  if (costmap_ros_->transformPoseToGlobalFrame(pose, pose)) {
+    return true;
   }
-
-  return true;
+  RCLCPP_ERROR(
+    get_logger(),
+    "[PlannerServer][%s] Plan aborted: cannot transform the %s pose from '%s' to '%s'", __func__,
+    what.c_str(), from.c_str(), costmap_ros_->getGlobalFrameID().c_str());
+  return false;
 }
 
+template <typename ServerT>
 bool PlannerServer::validatePath(
-  const geometry_msgs::msg::PoseStamped & goal, const nav_msgs::msg::Path & path,
-  const std::string & planner_id)
+  std::unique_ptr<ServerT> & server, const std::string & goal_desc,
+  const nav_msgs::msg::Path & path, const std::string & planner_id)
 {
   if (path.poses.size() == 0) {
     // The planner's own line just above has the reason (Octo3D: the
@@ -286,17 +274,39 @@ bool PlannerServer::validatePath(
       get_logger(),
       "[PlannerServer][%s] Plan failed: planner '%s' returned no path to %s (its reason is "
       "logged above)",
-      __func__, planner_id.empty() ? "(none given)" : planner_id.c_str(),
-      describePose(goal).c_str());
-    action_server_pose_->terminate_current();
+      __func__, planner_id.empty() ? "(none given)" : planner_id.c_str(), goal_desc.c_str());
+    server->terminate_current();
     return false;
   }
 
   RCLCPP_DEBUG(
-    get_logger(), "[PlannerServer][%s] Found valid path of size %zu to (%.2f, %.2f)", __func__,
-    path.poses.size(), goal.pose.position.x, goal.pose.position.y);
+    get_logger(), "[PlannerServer][%s] Found valid path of size %zu to %s", __func__,
+    path.poses.size(), goal_desc.c_str());
 
   return true;
+}
+
+syncai_nav_core::GlobalPlanner * PlannerServer::findPlanner(const std::string & planner_id)
+{
+  auto it = planners_.find(planner_id);
+  if (it != planners_.end()) {
+    return it->second.get();
+  }
+  if (planners_.size() == 1 && planner_id.empty()) {
+    RCLCPP_WARN_ONCE(
+      get_logger(),
+      "[PlannerServer][%s] No planners specified in action call. "
+      "Server will use only plugin %s in server."
+      " This warning will appear once.",
+      __func__, planner_ids_concat_.c_str());
+    return planners_.begin()->second.get();
+  }
+  RCLCPP_ERROR(
+    get_logger(),
+    "[PlannerServer][%s] planner '%s' is not a valid planner. "
+    "Planner names are: %s",
+    __func__, planner_id.c_str(), planner_ids_concat_.c_str());
+  return nullptr;
 }
 
 void PlannerServer::isPathValid(
@@ -371,11 +381,38 @@ void PlannerServer::isPathValid(
       __func__, planner_id.c_str(), planner_ids_concat_.c_str());
     return;
   }
+  // The path the BT checks is the last plan (same stamp and size): the
+  // planner is handed only the part from the robot's place on, and the
+  // indices it reports are shifted back to the request's. The planner still
+  // finds the robot on what it is handed (Octo3D in 3D), but on a patrol
+  // route a whole-path search there could match the leg coming back past
+  // the robot and judge that one instead (2026-11). A path that is not the
+  // last plan (none since a clear_plan) is handed over whole.
+  size_t offset = 0;
+  {
+    std::lock_guard<std::mutex> lock(last_plan_mutex_);
+    if (
+      !last_plan_.poses.empty() && request->path.header.stamp == last_plan_.header.stamp &&
+      request->path.poses.size() == last_plan_.poses.size()) {
+      offset = last_plan_progress_.update(last_plan_, robot_pose.pose, false);
+    }
+  }
   // The planner logs a blocked path itself, with what blocks it and for how
   // long (Octo3D: marks / zones, distance ahead); a second line here said
   // less, every second.
+  if (offset == 0) {
+    response->is_valid =
+      planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
+    return;
+  }
+  nav_msgs::msg::Path ahead;
+  ahead.header = request->path.header;
+  ahead.poses.assign(request->path.poses.begin() + offset, request->path.poses.end());
   response->is_valid =
-    planner_it->second->isPathValid(request->path, robot_pose, response->invalid_pose_indices);
+    planner_it->second->isPathValid(ahead, robot_pose, response->invalid_pose_indices);
+  for (auto & i : response->invalid_pose_indices) {
+    i += static_cast<int32_t>(offset);
+  }
 }
 
 void PlannerServer::computePlan()
@@ -389,11 +426,15 @@ void PlannerServer::computePlan()
   auto result = std::make_shared<ActionToPose::Result>();
 
   try {
-    if (isServerInactive() || isCancelRequested()) {
+    if (isServerInactive(action_server_pose_) || isCancelRequested(action_server_pose_)) {
       return;
     }
 
-    getPreemptedGoalIfRequested(goal);
+    if (getPreemptedGoalIfRequested(action_server_pose_, goal)) {
+      RCLCPP_INFO(
+        get_logger(), "[PlannerServer][%s] Preempted by a new goal to %s", __func__,
+        describePose(goal->goal).c_str());
+    }
 
     // What was asked, so the planner's success or failure line below can be
     // read against it (a ComputePathToPose result carries no reason, and the
@@ -410,19 +451,23 @@ void PlannerServer::computePlan()
 
     // Use start pose if provided otherwise use current robot pose
     geometry_msgs::msg::PoseStamped start;
-    if (!getStartPose(goal, start)) {
+    if (!getStartPose(action_server_pose_, goal, start)) {
       return;
     }
 
     // Transform them into the global frame
     geometry_msgs::msg::PoseStamped goal_pose = goal->goal;
-    if (!transformPosesToGlobalFrame(start, goal_pose)) {
+    if (
+      !transformPoseToGlobalFrame(start, "start") ||
+      !transformPoseToGlobalFrame(goal_pose, "goal")) {
+      action_server_pose_->terminate_current();
       return;
     }
 
     result->path = getPlan(start, goal_pose, goal->planner_id);
 
-    if (!validatePath(goal_pose, result->path, goal->planner_id)) {
+    if (!validatePath(
+          action_server_pose_, describePose(goal_pose), result->path, goal->planner_id)) {
       return;
     }
 
@@ -454,6 +499,99 @@ void PlannerServer::computePlan()
   }
 }
 
+void PlannerServer::computePlanThroughPoses()
+{
+  std::lock_guard<std::mutex> lock(dynamic_params_lock_);
+
+  auto start_time = this->now();
+
+  auto goal = action_server_poses_->get_current_goal();
+  auto result = std::make_shared<ActionThroughPoses::Result>();
+
+  // "waypoint 3 of 5 (x, y, z) ..." for the log lines below.
+  const auto describeRoute = [](const ActionThroughPoses::Goal & g) {
+    if (g.goals.empty()) {
+      return std::string("no waypoints");
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%zu waypoints, ending at ", g.goals.size());
+    return std::string(buf) + describePose(g.goals.back());
+  };
+
+  try {
+    if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
+      return;
+    }
+
+    if (getPreemptedGoalIfRequested(action_server_poses_, goal)) {
+      RCLCPP_INFO(
+        get_logger(), "[PlannerServer][%s] Preempted by a new route through %s", __func__,
+        describeRoute(*goal).c_str());
+    }
+
+    const std::string start_desc =
+      goal->use_start ? describePose(goal->start) : std::string("the robot pose");
+    RCLCPP_INFO(
+      get_logger(), "[PlannerServer][%s] Plan request: planner '%s', route through %s, start %s",
+      __func__, goal->planner_id.c_str(), describeRoute(*goal).c_str(), start_desc.c_str());
+
+    if (goal->goals.empty()) {
+      // What patrol.xml's RemovePassedGoals never leaves (it keeps the last
+      // waypoint), so a client sent an empty route.
+      RCLCPP_WARN(
+        get_logger(), "[PlannerServer][%s] Plan aborted: a route with no waypoints", __func__);
+      action_server_poses_->terminate_current();
+      return;
+    }
+
+    geometry_msgs::msg::PoseStamped start;
+    if (!getStartPose(action_server_poses_, goal, start)) {
+      return;
+    }
+    if (!transformPoseToGlobalFrame(start, "start")) {
+      action_server_poses_->terminate_current();
+      return;
+    }
+    std::vector<geometry_msgs::msg::PoseStamped> goals = goal->goals;
+    for (size_t i = 0; i < goals.size(); ++i) {
+      if (!transformPoseToGlobalFrame(goals[i], "waypoint " + std::to_string(i + 1))) {
+        action_server_poses_->terminate_current();
+        return;
+      }
+    }
+
+    syncai_nav_core::GlobalPlanner * planner = findPlanner(goal->planner_id);
+    if (planner != nullptr) {
+      result->path = planner->createPlanThroughPoses(start, goals);
+    }
+    if (!validatePath(action_server_poses_, describeRoute(*goal), result->path, goal->planner_id)) {
+      return;
+    }
+
+    publishPlan(result->path, goal->planner_id);
+
+    auto cycle_duration = this->now() - start_time;
+    result->planning_time = cycle_duration;
+    if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "[PlannerServer][%s] Plan took %.3f s, over the %.3f s of expected_planner_frequency "
+        "(%.1f Hz); a warning only",
+        __func__, cycle_duration.seconds(), max_planner_duration_, 1 / max_planner_duration_);
+    }
+
+    action_server_poses_->succeeded_current(result);
+  } catch (std::exception & ex) {
+    RCLCPP_ERROR(
+      get_logger(),
+      "[PlannerServer][%s] Plan aborted: planner '%s' threw planning a route through %s after "
+      "%.3f s: %s",
+      __func__, goal->planner_id.c_str(), describeRoute(*goal).c_str(),
+      (this->now() - start_time).seconds(), ex.what());
+    action_server_poses_->terminate_current();
+  }
+}
+
 nav_msgs::msg::Path PlannerServer::getPlan(
   const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal,
   const std::string & planner_id)
@@ -465,27 +603,8 @@ nav_msgs::msg::Path PlannerServer::getPlan(
     __func__, start.pose.position.x, start.pose.position.y, goal.pose.position.x,
     goal.pose.position.y);
 
-  if (planners_.find(planner_id) != planners_.end()) {
-    return planners_[planner_id]->createPlan(start, goal);
-  } else {
-    if (planners_.size() == 1 && planner_id.empty()) {
-      RCLCPP_WARN_ONCE(
-        get_logger(),
-        "[PlannerServer][%s] No planners specified in action call. "
-        "Server will use only plugin %s in server."
-        " This warning will appear once.",
-        __func__, planner_ids_concat_.c_str());
-      return planners_[planners_.begin()->first]->createPlan(start, goal);
-    } else {
-      RCLCPP_ERROR(
-        get_logger(),
-        "[PlannerServer][%s] planner '%s' is not a valid planner. "
-        "Planner names are: %s",
-        __func__, planner_id.c_str(), planner_ids_concat_.c_str());
-    }
-  }
-
-  return nav_msgs::msg::Path();
+  syncai_nav_core::GlobalPlanner * planner = findPlanner(planner_id);
+  return planner ? planner->createPlan(start, goal) : nav_msgs::msg::Path();
 }
 
 void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::string & planner_id)
@@ -496,6 +615,7 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::str
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = path;
     last_plan_planner_id_ = planner_id;
+    last_plan_progress_.reset();
     last_plan_used_ = std::chrono::steady_clock::now();
     clear_resends_left_ = 0;
   }
@@ -551,19 +671,25 @@ void PlannerServer::republishPlan()
     }
     *msg = last_plan_;
   }
-  // Trimmed to the part still ahead, from the pose nearest the robot: the
+  // Trimmed to the part still ahead, from the robot's place on it: the
   // stored plan starts where the robot was when it was made, which with plans
   // now rare is often tens of metres back, and a viewer showing the driven
   // part reads it as the robot being off its route. last_plan_ itself stays
-  // whole, so each tick trims from the full plan, statelessly. No robot pose
-  // (stale TF): the whole plan rather than nothing, since the route is still
-  // what the robot is following.
+  // whole; the place is last_plan_progress_, which only moves forward, so a
+  // patrol route that comes back past the robot is not trimmed to its later
+  // leg (2026-11; until then a stateless whole-path nearest pose). No robot
+  // pose (stale TF): the whole plan rather than nothing, since the route is
+  // still what the robot is following.
   geometry_msgs::msg::PoseStamped robot_pose;
   if (
     msg->header.frame_id == costmap_ros_->getGlobalFrameID() &&
     costmap_ros_->getRobotPose(robot_pose)) {
-    const size_t closest_idx = closestPoseIndex(*msg, robot_pose);
-    msg->poses.erase(msg->poses.begin(), msg->poses.begin() + closest_idx);
+    size_t place = 0;
+    {
+      std::lock_guard<std::mutex> lock(last_plan_mutex_);
+      place = last_plan_progress_.update(*msg, robot_pose.pose, false);
+    }
+    msg->poses.erase(msg->poses.begin(), msg->poses.begin() + place);
   }
   // Restamped: the poses are in the fixed `map` frame, so the content is
   // still true now, and a viewer whose fixed frame is not `map` would
@@ -593,6 +719,7 @@ void PlannerServer::dropPlan(const std::string & reason)
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
     last_plan_ = nav_msgs::msg::Path();
     last_plan_planner_id_.clear();
+    last_plan_progress_.reset();
     // The immediate publish below is the first of the repeats; the timer sends
     // the rest, one per plan_republish_rate tick (none when it is 0).
     clear_resends_left_ = kClearResends - 1;
