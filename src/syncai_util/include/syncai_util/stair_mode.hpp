@@ -260,6 +260,13 @@ public:
   /// setPlan() was given, before or after this call. Any thread.
   void setCrossings(const PlanCrossings & crossings);
 
+  /// The narrow passages (kind "narrow", 2026-11-02) of the plan setPlan()
+  /// was given, when the planner's crossings are for it (true; possibly
+  /// none), else false. Not stair mode's own business: it holds the one
+  /// plan_crossings subscription and the plan they are matched to, so the
+  /// controller's narrow-passage walk reads them here. Any thread.
+  bool plannerPassages(std::vector<PlanCrossing> & passages) const;
+
   bool enabled() const { return params_.enabled; }
   bool onStairs() const { return on_stairs_; }
   // The live parameters: a dynamic-parameter callback edits them in place.

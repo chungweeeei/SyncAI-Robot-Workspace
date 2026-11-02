@@ -112,6 +112,15 @@ public:
    */
   void reset();
 
+  /**
+   * @brief Cap the forward speed the optimized sequence may ask for, as
+   * upstream's setSpeedLimit() does through the same constraints. Not upstream
+   * here (the port had none; see MPPIController::narrowSpeedLimit()). reset()
+   * restores vx_max, so a caller sets it every cycle it wants it.
+   * @param vx_max The cap (m/s); <= 0 restores the vx_max parameter
+   */
+  void setSpeedLimit(double vx_max);
+
 protected:
   /**
    * @brief Main function to generate, score, and return trajectories

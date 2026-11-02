@@ -476,6 +476,17 @@
       # within 10 m); a level stretch keeps the last reading. false = down
       # forwards. Unmeasured.
       stair_descend_backwards: true
+      # Narrow passages (2026-11-02, MPPIController::narrowSpeedLimit()):
+      # over a span the planner reports as kind "narrow" on plan_crossings
+      # (narrower than its narrow_max_width 0.85, the footprint's diagonal,
+      # plus its narrow_lead), the optimizer's vx_max is this, and so is the
+      # command. dp's 2F lab door is ~0.6 m free in this costmap; at 0.80 MPPI
+      # reached it 20-70 deg off its axis, twice, and stuck. 0.30 =
+      # walk_vx_min, the gait's floor (under it, the floor wins between
+      # stops). 0 = off. A version that took the robot from MPPI over the
+      # span (square up, then a carrot behind a LETHAL check) was dropped the
+      # same day: the check refused every pass at ~6 cm a side.
+      narrow_linear_vel: 0.30
       # Horizon 32 x 0.05 = 1.6 s (upstream 56 = 2.8 s). At vx_max 0.80 that is
       # 1.28 m, which with the footprint's 0.36 m nose and the window's lag
       # (it re-centres at update_frequency 5 Hz, 0.16 m at 0.80) fits in the
