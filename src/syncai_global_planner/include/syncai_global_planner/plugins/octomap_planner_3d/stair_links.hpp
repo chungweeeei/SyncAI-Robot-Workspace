@@ -31,7 +31,7 @@
 // floor to the next storey's floor over the whole stairwell, landings and
 // all, and an island on the way neither ends nor splits it. A small rise
 // between two large components (a door the footprint rule closed) makes no
-// link.
+// stair link; since 2026-11-02 the walked gaps below bridge it.
 //
 // The track says WHERE a stair is; since 2026-10-19 it no longer says how
 // to climb it. A single flight (one walked stretch of at most
@@ -145,12 +145,53 @@
 // controllers' stair mode does not wake for a kerb's rise (under its
 // min_rise), which is as it should be.
 //
+// **Walked gaps** (2026-11-02). Between a kerb (one step, one piece of
+// ground) and a stair (min_rise and more, between two floors) the rules left
+// a hole: a door sill the map lost, a short ramp steeper than max_slope_deg,
+// a doorway the footprint rule closed -- each parts two pieces of ground the
+// flat gait walks between, and the track proves it, but the stair walker
+// above anchors on floors of anchor_min_area only, so a room the furniture
+// cut small (dp's 2F lab, under 10 m2 behind a 0.1 m sill) never linked, and
+// a rise under min_rise between two floors made no link on purpose. So the
+// track is walked once more for **gap links**: its anchors are now every
+// component of at least gap_anchor_min_area (a room, not a floor), and two
+// consecutive ones in different components, at most gap_max_length of track
+// apart and at most gap_max_rise apart in height (the measured floor where
+// the cloud gave one), are joined by a straight crossing of the gap -- a's
+// centre to b's centre, with a lead of kerb_lead marched either side over
+// level traversable ground, as a kerb link is laid, so the crossing is met
+// square. Its kind is a kerb within max_step_height and a ramp above, both
+// taken at kerb_cost_multiplier and both the flat gait's (StairLink::gait);
+// the track crossing the same gap again (the way back through a door) lays
+// nothing new, a second door into the same room does. A rise above
+// gap_max_rise is the stair walker's business between two floors, and
+// **refused** onto anything smaller: the operator drove the G23 up a 0.4 m
+// ledge beside dp's 2F door by mistake, and a planner that repeated that
+// walk would send the robot up it on every route to the lab. Such a climb is
+// a note (StairLinks::gap_refused counts them), never a link. The chord is
+// laid blind over ground the rules rejected, and the walk may have bent
+// round a door post the chord cuts through, so with the octree to hand the
+// band the body needs above the chord is checked for occupied voxels, and a
+// gap with something standing on its line is refused with a note too.
+//
+// What a link says about the terrain -- its kind, its rise, the gait that
+// takes it -- is what the controllers read off the planner's sidecar instead
+// of guessing stairs from the path's heights (CrossingKind, CrossingGait
+// below), so a kind has to be the geometry's, not the generator's: a link the
+// stair readers laid is a stair only if it rises min_rise within
+// stair_min_rise_window of its points, the stair mode's own test; one that
+// climbs more gently between two floors (dp's 2F step, 0.2 m over 0.5 m) is
+// a ramp of the flat gait, as the stair mode made of it from the path's
+// heights too, and a sidecar that called it a stair would stop the robot
+// there to switch the policy.
+//
 // What could not be linked is reported in StairLinks::notes, for the plugin
 // to log and the CLI to print: a height change on the track that stayed
 // unlinked because its stretch was longer than max_length, a flight that
 // fell back to its walked link and why, large components at different
-// heights that no chain of links joins, and a kerb no crossing could be laid
-// at.
+// heights that no chain of links joins, a kerb no crossing could be laid
+// at, a walked climb refused because it is not between floors, and a walked
+// gap no straight lead could be laid at.
 //
 // ROS-free (see surface_map.hpp).
 
@@ -263,26 +304,92 @@ struct StairLinkParams
   // of it: a kerb curves round a corner over a metre or so, and 0.5 m of
   // cells either side reads the local direction without smoothing the turn.
   double kerb_fit_radius = 0.5;
+  // Walked gaps (see the header). false = the behaviour before 2026-11-02:
+  // a rise under min_rise the track crossed between two components makes no
+  // link, whatever its size.
+  bool gap_links = true;
+  // Smallest component (m2) a gap link may end in: a room, not a floor. dp's
+  // 2F lab came out as 9 m2, its anteroom as ~3 m2; the landings of a
+  // stairwell are a few m2 too, which is why a gap inside a laid stair's
+  // keyframes is skipped rather than anchored on.
+  double gap_anchor_min_area = 2.0;
+  // Longest stretch of track (m, xy) between the two anchors: a door sill or
+  // a short ramp is crossed in a metre or two, a stair's flight is not.
+  double gap_max_length = 2.5;
+  // Largest rise (m) the flat gait is trusted with on a walked gap. Equal to
+  // min_rise so the two regimes tile: above it a climb is a stair's, between
+  // floors only. A placeholder, not a measurement (2026-11-02): the G23's RL
+  // policy has not been measured on short ramps; the dp lab sill it walked
+  // is ~0.1 m.
+  double gap_max_rise = 0.3;
+  // The straight run either side of a gap is kerb_lead: one lead for every
+  // flat-gait crossing, since its reason (the body's length) is the same.
+  // A link the stair readers laid is a stair only when it rises min_rise
+  // within this much of its points (m, xy) -- the controllers' stair mode's
+  // own test, stair_enter_dist, ~17 deg and up. One that climbs more gently
+  // between two floors -- dp's 2F step, 0.2 m over 0.5 m -- is a ramp of the
+  // flat gait (CrossingKind), which is what the stair mode made of it from
+  // the path's heights too.
+  double stair_min_rise_window = 1.0;
 };
+
+// What a link crosses, and what that asks of the robot. A kind is a number
+// read off the map (the rise, how it was found), not a name for the thing
+// in the building: a sill, a speed bump and a cable cover are all a kerb to
+// the planner, a short slope and a wheelchair ramp both a ramp. New terrain
+// changes a threshold here, not the code; a new kind is needed only when
+// the robot gains a gait or a manoeuvre.
+enum class CrossingKind : uint8_t {
+  Stair,  // a flight or a stairwell: the stair gait, climbed blind
+  Kerb,   // one step within max_step_height, crossed square: the flat gait
+  Ramp,   // a rise above one step but within gap_max_rise over a short run: the flat gait
+};
+// The gait a crossing is taken in: the controllers' stair mode switches the
+// policy for Stair only.
+enum class CrossingGait : uint8_t {
+  Flat,
+  Stair,
+};
+// How a crossing was found: the mapping track walked it, the geometry
+// alone said so (a kerb line, a detected stair), or a person declared it
+// (a per-map file; not read yet, reserved).
+enum class CrossingEvidence : uint8_t {
+  Track,
+  Geometry,
+  Declared,
+};
+const char * crossingKindName(CrossingKind k);          // "stair", "kerb", "ramp"
+const char * crossingGaitName(CrossingGait g);          // "flat", "stair"
+const char * crossingEvidenceName(CrossingEvidence e);  // "track", "geometry", "declared"
 
 struct StairLink
 {
   CellId a = kNoCell, b = kNoCell;  // the end cells; a is on the side walked first
   std::vector<Waypoint> pts;        // a's centre .. b's centre: the walk, or a straight line
   double length = 0.0;              // 3D length of pts
+  double rise = 0.0;                // |z of b's end - z of a's end| (set by addLink)
   size_t kf_a = 0, kf_b = 0;        // the keyframes that found the stair (poses.txt line index)
   bool detected = false;            // found off the map, not the track: kf_a, kf_b mean nothing
-  bool kerb = false;                // a crossing of a kerb, not a stair (see the header)
-  bool straight = false;            // a line across the fitted flight, not the walked track
-  bool flights = false;             // flights + landing corners read off the map (see the header)
-  std::vector<size_t> turns;        // indices into pts where the robot turns in place (flights)
-  size_t n_flights = 0;             // flights only
-  std::string geometry;             // flights only: one line for the logs (widths, landings, turns)
-  double up_x = 0.0, up_y = 0.0;    // the flight's uphill unit direction (straight links only)
+  CrossingKind kind = CrossingKind::Stair;
+  CrossingEvidence evidence = CrossingEvidence::Track;
+  // The points carry a straight lead either side of the crossing (a kerb
+  // link, a walked gap): they are the crossing, and nothing straightens them.
+  bool leads = false;
+  bool straight = false;          // a line across the fitted flight, not the walked track
+  bool flights = false;           // flights + landing corners read off the map (see the header)
+  std::vector<size_t> turns;      // indices into pts where the robot turns in place (flights)
+  size_t n_flights = 0;           // flights only
+  std::string geometry;           // flights only: one line for the logs (widths, landings, turns)
+  double up_x = 0.0, up_y = 0.0;  // the flight's uphill unit direction (straight links only)
   // Centring of a walked link (see the header): how many points moved, the
   // mean and largest shift, and the narrowest cross-section measured.
   size_t centred = 0;
   double centre_mean_shift = 0.0, centre_max_shift = 0.0, centre_min_width = 0.0;
+
+  CrossingGait gait() const
+  {
+    return kind == CrossingKind::Stair ? CrossingGait::Stair : CrossingGait::Flat;
+  }
 };
 
 // One walked flight that became a row of straight links, for the logs.
@@ -325,6 +432,9 @@ public:
   // the search takes on a link only. Empty without kerb links.
   std::vector<uint8_t> kerb_edge;
   size_t kerbs = 0;  // kerb lines at least one link crosses
+  // Walked gaps (see the header): the links laid, and the climbs refused
+  // because they were not between floors.
+  size_t gap_links = 0, gap_refused = 0;
 
   uint32_t groupOf(uint32_t component) const
   {

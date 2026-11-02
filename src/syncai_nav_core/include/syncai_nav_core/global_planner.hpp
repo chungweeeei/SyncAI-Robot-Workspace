@@ -128,6 +128,26 @@ public:
     (void)invalid_pose_indices;
     return true;
   }
+
+  /**
+   * @brief What this planner knows about the terrain `path` crosses, as the
+   * plan_crossings JSON (syncai_util/plan_crossings.hpp), or "" for nothing
+   *
+   * Asked by the planner server right after a plan, with the path the plan
+   * returned, and published on `plan_crossings` beside `plan` (2026-11-02):
+   * the stairs, kerbs and walked gaps it takes and the gait each is taken
+   * in, so the controllers' stair mode and the local costmap's terrain layer
+   * follow the planner's judgement instead of guessing from the path's
+   * heights. A planner that keeps no such thing returns "" (the default),
+   * and the server publishes `known: false` for it, so the followers keep
+   * their own judgement. Must answer for that path only -- a plan made since
+   * by another thread is not it.
+   */
+  virtual std::string planAnnotations(const nav_msgs::msg::Path & path)
+  {
+    (void)path;
+    return {};
+  }
 };
 
 }  // namespace syncai_nav_core

@@ -28,6 +28,7 @@
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
+#include "syncai_util/plan_crossings.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/message_filter.h"
 
@@ -150,6 +151,11 @@ public:
     const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose,
     std::vector<int32_t> & invalid_pose_indices) override;
 
+  // The crossings of the last plan planThrough() returned, as the
+  // plan_crossings JSON (syncai_util/plan_crossings.hpp), when `path` is that
+  // plan (same stamp and pose count); "" otherwise. Never takes mutex_.
+  std::string planAnnotations(const nav_msgs::msg::Path & path) override;
+
 protected:
   // The lidar cloud, transformed into the map frame and fed to the overlay.
   // Runs on the global costmap's executor thread, the one that fills tf_
@@ -259,6 +265,11 @@ protected:
   // orders those; mutex_ -> overlay lock is the one order ever taken. It
   // also carries the keepout mask for isPathValid() (setKeepout).
   std::unique_ptr<octomap_planner_3d::DynamicOverlay> overlay_;
+
+  // The last plan's crossings (planAnnotations()), under their own lock so
+  // the server's ask after a plan never waits behind the next one.
+  std::mutex crossings_mutex_;
+  syncai_util::PlanCrossings last_crossings_;
 
   // One lock around createPlan, the parameter callback and the map swap.
   std::mutex mutex_;

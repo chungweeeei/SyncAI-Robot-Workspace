@@ -16,6 +16,7 @@
 #include "pluginlib/class_loader.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "syncai_common/action/compute_path_through_poses.hpp"
 #include "syncai_common/action/compute_path_to_pose.hpp"
@@ -293,6 +294,11 @@ protected:
 
   // Publisher for the path
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
+  // `plan_crossings` (syncai_util/plan_crossings.hpp), latched: the planner's
+  // crossings for each plan publishPlan() sends, and an empty one with each
+  // clear. Not republished: a follower matches it to its plan by stamp, and
+  // the 1 Hz `plan` is restamped.
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr crossings_publisher_;
 
   // The last plan handed out, re-sent on `plan` at plan_republish_rate. Written
   // from the action servers' threads, read from the main executor's timer.

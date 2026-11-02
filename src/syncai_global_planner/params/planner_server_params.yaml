@@ -211,6 +211,14 @@
       stair_links: true
       # Above a kerb (0.15) and one stair step, below a flight between landings.
       stair_min_rise: 0.3
+      # A link the stair readers laid is a stair only when it rises
+      # stair_min_rise within this much of its points (m, xy) -- the
+      # controllers' stair_enter_dist, ~17 deg and up (2026-11-02). One that
+      # climbs more gently between two floors (dp's 2F step, 0.2 m over
+      # 0.5 m) is a ramp of the flat gait: the stair mode never woke for it
+      # from the path's heights either, and the planner's sidecar must not
+      # call it a stair.
+      stair_min_rise_window: 1.0
       # dp1f_1012's stairwell took 32 m of track with the turns on its landings.
       stair_max_length: 60.0
       # Track ground (pose z - lidar_height) to a cell's top face.
@@ -324,6 +332,23 @@
       kerb_links: true
       kerb_lead: 0.5
       kerb_fit_radius: 0.5
+      # Walked gaps (2026-11-02): where the mapping track crossed, in at
+      # most gap_max_length of track, from one component of at least
+      # gap_anchor_min_area (a room, not a floor) to another no more than
+      # gap_max_rise higher or lower -- a door sill the map lost, a short
+      # slope the slope rule refuses, a doorway the footprint rule closed --
+      # a straight crossing square to the gap, kerb_lead either side: a kerb
+      # within max_step_height, a ramp above, both the flat gait's. A climb
+      # above gap_max_rise onto anything smaller than stair_anchor_min_area
+      # is refused with a startup note (dp: the operator drove up a 0.4 m
+      # ledge beside the 2F lab by mistake). gap_max_rise equals
+      # stair_min_rise so the two regimes tile; it is a placeholder, not a
+      # measurement of what the RL policy walks. false = the behaviour
+      # before 2026-11-02.
+      gap_links: true
+      gap_anchor_min_area: 2.0
+      gap_max_length: 2.5
+      gap_max_rise: 0.3
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the

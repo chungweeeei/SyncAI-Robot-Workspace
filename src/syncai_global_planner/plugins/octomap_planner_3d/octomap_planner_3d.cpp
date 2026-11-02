@@ -179,6 +179,12 @@ void OctomapPlanner3D::initialize(
   dp("kerb_links", rclcpp::ParameterValue(stair_params_.kerb_links));
   dp("kerb_lead", rclcpp::ParameterValue(stair_params_.kerb_lead));
   dp("kerb_fit_radius", rclcpp::ParameterValue(stair_params_.kerb_fit_radius));
+  // Walked gaps (build time, stair_links.hpp).
+  dp("gap_links", rclcpp::ParameterValue(stair_params_.gap_links));
+  dp("gap_anchor_min_area", rclcpp::ParameterValue(stair_params_.gap_anchor_min_area));
+  dp("gap_max_length", rclcpp::ParameterValue(stair_params_.gap_max_length));
+  dp("gap_max_rise", rclcpp::ParameterValue(stair_params_.gap_max_rise));
+  dp("stair_min_rise_window", rclcpp::ParameterValue(stair_params_.stair_min_rise_window));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -265,6 +271,11 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".kerb_links", stair_params_.kerb_links);
   node->get_parameter(name + ".kerb_lead", stair_params_.kerb_lead);
   node->get_parameter(name + ".kerb_fit_radius", stair_params_.kerb_fit_radius);
+  node->get_parameter(name + ".gap_links", stair_params_.gap_links);
+  node->get_parameter(name + ".gap_anchor_min_area", stair_params_.gap_anchor_min_area);
+  node->get_parameter(name + ".gap_max_length", stair_params_.gap_max_length);
+  node->get_parameter(name + ".gap_max_rise", stair_params_.gap_max_rise);
+  node->get_parameter(name + ".stair_min_rise_window", stair_params_.stair_min_rise_window);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -728,12 +739,17 @@ bool OctomapPlanner3D::buildMap(
     }
     if (have_track || stair_params_.detect || stair_params_.kerb_links) {
       links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
-      size_t detected = 0, kerb_links = 0;
+      size_t detected = 0, kerb_links = 0, gap_kerbs = 0, gap_ramps = 0;
       for (const auto & l : links->links) {
-        kerb_links += l.kerb ? 1 : 0;
-        detected += (l.detected && !l.kerb) ? 1 : 0;
+        if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
+          (l.kind == o3d::CrossingKind::Kerb ? gap_kerbs : gap_ramps) += 1;
+        } else if (l.leads) {
+          ++kerb_links;
+        } else {
+          detected += l.detected ? 1 : 0;
+        }
       }
-      const size_t stairs = links->links.size() - kerb_links;
+      const size_t stairs = links->links.size() - kerb_links - gap_kerbs - gap_ramps;
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links: %zu from %zu keyframes of %s, %zu detected off "
@@ -741,11 +757,24 @@ bool OctomapPlanner3D::buildMap(
         __func__, stairs, stairs - detected, track.size(), poses_file.c_str(), detected,
         stair_params_.min_rise, kerb_links, links->kerbs, map->kerb_lines.size(),
         stair_params_.kerb_lead);
-      // "kf 2221 -> 2358", "detected at (6.5, -12.6)" (its first point), or
-      // "kerb at (6.5, -12.6)" (the cell the crossing steps up from).
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s] %zu gap links from the track (%zu kerb, %zu ramp: a rise of at "
+        "most %.2f m crossed in at most %.1f m of track between surfaces of at least %.1f m2); "
+        "%zu walked climbs refused (not onto a floor)",
+        __func__, links->gap_links, gap_kerbs, gap_ramps, stair_params_.gap_max_rise,
+        stair_params_.gap_max_length, stair_params_.gap_anchor_min_area, links->gap_refused);
+      // "kf 2221 -> 2358", "detected at (6.5, -12.6)" (its first point),
+      // "kerb at (6.5, -12.6)" (the cell the crossing steps up from), or
+      // "gap kf 2992 -> 2994 (ramp) at (11.6, -23.0)" (its midpoint).
       const auto name = [](const o3d::StairLink & l) {
-        char buf[80];
-        if (l.kerb) {
+        char buf[96];
+        if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
+          std::snprintf(
+            buf, sizeof buf, "gap kf %zu -> %zu (%s) at (%.1f, %.1f)", l.kf_a, l.kf_b,
+            o3d::crossingKindName(l.kind), (l.pts[1].x + l.pts[2].x) / 2,
+            (l.pts[1].y + l.pts[2].y) / 2);
+        } else if (l.leads) {
           std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
         } else if (l.detected) {
           std::snprintf(
@@ -765,6 +794,12 @@ bool OctomapPlanner3D::buildMap(
           f.width, l.length);
       }
       for (const auto & l : links->links) {
+        if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
+          RCLCPP_INFO(
+            logger_, "[OctomapPlanner3D][%s]   %s: z %.2f -> %.2f, rise %.2f m, %.1f m long",
+            __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.rise, l.length);
+          continue;
+        }
         if (l.straight) {
           continue;
         }
@@ -1135,6 +1170,9 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     std::max(mask ? mask->block_radius : 0.0, keepout_ ? keepout_->block_radius : 0.0);
 
   std::vector<o3d::Waypoint> wps;
+  // The crossings the route takes, as plan_crossings tells the followers:
+  // waypoint spans now, pose spans once the poses are made (1:1).
+  std::vector<syncai_util::PlanCrossing> crossings;
   o3d::CellId leg_start = s.cell;
   double leg_start_z = start_z;
   double leg_sx = start.pose.position.x, leg_sy = start.pose.position.y;
@@ -1216,9 +1254,10 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     }
 
     size_t leg_vertices = 0;
+    std::vector<o3d::PathSpan> spans;
     const auto leg_wps = o3d::buildPath(
       *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &leg_vertices,
-      &blocked);
+      &blocked, &spans);
     // Each leg starts on the cell the one before ended on, so its first
     // waypoint repeats the joint: dropped, not driven twice.
     auto first = leg_wps.begin();
@@ -1227,7 +1266,24 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       first->y == wps.back().y && first->z == wps.back().z) {
       ++first;
     }
+    // Leg waypoint k is route waypoint base + k (the dropped joint, k = 0,
+    // is the route's last one already in).
+    const size_t base = wps.size() - static_cast<size_t>(first - leg_wps.begin());
     wps.insert(wps.end(), first, leg_wps.end());
+    for (const o3d::PathSpan & sp : spans) {
+      const o3d::StairLink & l = links_->links[r.links[sp.use].link];
+      syncai_util::PlanCrossing x;
+      x.kind = o3d::crossingKindName(l.kind);
+      x.stair_gait = l.gait() == o3d::CrossingGait::Stair;
+      x.evidence = o3d::crossingEvidenceName(l.evidence);
+      x.rise = l.rise;
+      x.first = base + sp.first;
+      x.last = base + sp.last;
+      for (const size_t t : sp.turns) {
+        x.turns.push_back(base + t);
+      }
+      crossings.push_back(std::move(x));
+    }
     vertices += leg_vertices;
     cells += r.cells.size();
     links += r.links.size();
@@ -1255,6 +1311,29 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       pose.pose.orientation = goals.back().pose.orientation;
     }
     path.poses.push_back(pose);
+  }
+  {
+    // The poses are the waypoints one for one, so a span carries over; its
+    // points are the poses' own positions, path_z_offset and all, which is
+    // what a follower holding this plan compares them with.
+    syncai_util::PlanCrossings pc;
+    pc.known = true;
+    pc.stamp_sec = path.header.stamp.sec;
+    pc.stamp_nanosec = path.header.stamp.nanosec;
+    pc.frame_id = path.header.frame_id;
+    pc.poses = path.poses.size();
+    for (syncai_util::PlanCrossing & x : crossings) {
+      if (x.first >= path.poses.size() || x.last >= path.poses.size()) {
+        continue;  // cannot happen (1:1); never sent out of range if it does
+      }
+      for (size_t i = x.first; i <= x.last; ++i) {
+        const auto & p = path.poses[i].pose.position;
+        x.pts.push_back({p.x, p.y, p.z});
+      }
+      pc.crossings.push_back(std::move(x));
+    }
+    std::lock_guard<std::mutex> lock(crossings_mutex_);
+    last_crossings_ = std::move(pc);
   }
 
   double length = 0.0, zmin = wps.empty() ? 0.0 : wps.front().z, zmax = zmin;
@@ -1295,6 +1374,15 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     mask ? mask->marked : size_t{0}, scan, keepout_ ? keepout_->zones : size_t{0}, iterations,
     search_s, std::chrono::duration<double>(Clock::now() - t0).count(), request.c_str());
   return path;
+}
+
+std::string OctomapPlanner3D::planAnnotations(const nav_msgs::msg::Path & path)
+{
+  std::lock_guard<std::mutex> lock(crossings_mutex_);
+  if (!last_crossings_.isFor(path.header.stamp.sec, path.header.stamp.nanosec, path.poses.size())) {
+    return {};
+  }
+  return syncai_util::toJson(last_crossings_);
 }
 
 bool OctomapPlanner3D::isPathValid(
@@ -1394,12 +1482,14 @@ bool OctomapPlanner3D::isPathValid(
     RCLCPP_DEBUG_THROTTLE(
       logger_, *clock_, 5000,
       "[OctomapPlanner3D][isPathValid] no traversable cell under path pose %zu (%.2f, %.2f, z "
-      "%.2f), the nearest the robot: on a stair or off the ground, path not judged",
+      "%.2f), the nearest the robot: on a crossing or off the ground, path not judged",
       i0, poses[i0].pose.position.x, poses[i0].pose.position.y, poses[i0].pose.position.z);
-    return valid(" (robot on a stair or off the map's ground: not judged there)");
+    return valid(" (robot on a stair, a gap or off the map's ground: not judged there)");
   }
   // Only the floor stretch the robot is on is judged: the check stops where
-  // the path leaves traversable ground (a stair link), and the stretch
+  // the path leaves traversable ground (a stair link, or a gap link's
+  // crossing -- the cells between its anchors are the ones the rules
+  // rejected), and the stretch
   // beyond is judged once the robot is on it. Judging it now would, with
   // blocked_time's 10 s wait, fire the replan while the robot is mid-flight
   // -- the case above. The disc around the robot's own cell is exempt from
