@@ -130,6 +130,19 @@ Header-only and all `inline`:
   `first_after_integrated_distance(begin, end, getter)` — the pair RPP uses to
   find the closest path pose within a bounded search window
 
+## plan_crossings
+
+**`plan_crossings.hpp`** (2026-11-02) — the format of the planner's
+`plan_crossings` sidecar, one JSON object on a `std_msgs/String`:
+`PlanCrossings` (`known`, the plan's stamp and pose count, `crossings`) and
+`PlanCrossing` (kind, gait, evidence, rise, inclusive pose span, turns, the
+plan's points over it), `toJson()` / `fromJson()` (nlohmann, behind the
+`.cpp`; a message it cannot read is a `false` with a reason, never a throw or
+a half-read). planner_server writes it (`GlobalPlanner::planAnnotations()`),
+`StairMode` and the costmap's `TerrainLayer` read it. The header has the
+schema and why it is not a `syncai_common` message.
+`test/test_plan_crossings.cpp` is ROS-free.
+
 ## The rest
 
 - **`line_iterator.hpp`** — Bresenham ray tracing, used by the costmap's

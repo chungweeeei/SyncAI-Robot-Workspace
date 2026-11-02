@@ -19,6 +19,11 @@ find_package(tf2_geometry_msgs REQUIRED)
 # package, and every nav package above it, now needs that checkout to build.
 find_package(std_msgs REQUIRED)
 find_package(syncai_common REQUIRED)
+# plan_crossings.cpp: the planner's sidecar is JSON (plan_crossings.hpp has
+# why). Header-only and used in the .cpp only, but linked with the plain
+# signature ament_target_dependencies uses, so it is in the exported target's
+# interface and exported below for the packages that link this one.
+find_package(nlohmann_json REQUIRED)
 
 set(dependencies
   rclcpp
@@ -38,6 +43,7 @@ add_library(${PROJECT_NAME} SHARED
   src/odometry_utils.cpp
   src/robot_utils.cpp
   src/stair_mode.cpp
+  src/plan_crossings.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -46,6 +52,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 ament_target_dependencies(${PROJECT_NAME} ${dependencies})
+target_link_libraries(${PROJECT_NAME} nlohmann_json::nlohmann_json)
 
 install(
   TARGETS ${PROJECT_NAME}
@@ -75,6 +82,8 @@ if(BUILD_TESTING)
 
   # Header-only: the robot's place on a path that passes back over itself
   # (path_progress.hpp), on synthetic patrol routes.
+  ament_add_gtest(test_plan_crossings test/test_plan_crossings.cpp)
+  target_link_libraries(test_plan_crossings ${PROJECT_NAME})
   ament_add_gtest(test_path_progress test/test_path_progress.cpp)
   target_link_libraries(test_path_progress ${PROJECT_NAME})
   ament_target_dependencies(test_path_progress ${dependencies})
@@ -89,6 +98,6 @@ endif()
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
 ament_export_targets(export_${PROJECT_NAME})
-ament_export_dependencies(${dependencies})
+ament_export_dependencies(${dependencies} nlohmann_json)
 
 ament_package()
