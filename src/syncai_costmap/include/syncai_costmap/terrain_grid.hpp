@@ -132,6 +132,36 @@
 // estimating the ground a second time without the obstacles' returns, which
 // broke the wall foot, the box on unseen floor and the crossing's person.
 //
+// A ray through a cell bounds its ground (2026-11-03). The jamb's returns
+// also stand in the 3x3 ground of the doorway cells beside it, and a
+// wall's in the cells before it wherever the lower FOV hides its foot: a
+// borrowed ground 0.15-0.5 m up that the reach flood cannot step onto, an
+// island band along the wall and into the lane. elevation_mapping's
+// visibility cleanup (ETH, 2022) deletes a cell whose height a ray passes
+// under; here each ray records the lowest height it crossed every cell at
+// (Cell::ray_lo, in clearRay()), and a cell's estimate takes no gathered
+// sample above that height + ray_clear_tolerance: the ray proves the
+// column empty there, so a neighbour's return up there is not this cell's
+// ground. Not in the cell the ray ends in (the surface it hits), so a wall
+// keeps its own cell; the rays that end on it do cap the cells before it,
+// which is where the band was. A floor, a box top, a tread, the lower floor
+// across a drop-off: every surface lies under the rays that end on or
+// beyond it, so their estimates stay (a box under the rays to a wall behind
+// it is in the test). dp's 2F lab, the robot stuck in the pocket between the
+// door's east jamb and the east wall, replayed from the sim's scans: 73 ->
+// 96 of the pocket's 132 cells not lethal, the lane out of the door 0.5 ->
+// 0.6 m.
+//
+// And the slope fit takes only grounds the cell's own returns stand on
+// (groundSupported(), 2026-11-03). A jamb's inner cells hold too few
+// returns for the obstacle rule and the jamb's next door for a ground;
+// fitted, they tilted every disc that reached them: the lab door on the way
+// in, 0.6 m of lane between the jambs with the obstacle cells out of the fit
+// (above), 0.7 with these out too, 0.75 in map.pcd. It also ends the
+// 0.15 m slope band in front of a seen wall foot, whose cells' grounds came
+// from the wall's returns the same way: lethal starts at the wall's own
+// cell, as the obstacle layer had it, and the tests say so.
+//
 // Stairs are not this grid's business: the step and slope rules refuse a
 // flight, as Octo3D's do, and nothing here opens one. A stair is crossed
 // only over the global planner's stair link, by the controllers' stair mode,
@@ -279,7 +309,9 @@ public:
   // lie within ray_clear_tolerance of the ray's height there (the header has
   // why). The return itself is not added -- call addSample() for that; a
   // return outside the window or the layer's height band still clears along
-  // its ray, which is what a wall at 6 m is good for.
+  // its ray, which is what a wall at 6 m is good for. Every cell but the
+  // last also keeps the lowest height a ray crossed it at, a bound on its
+  // ground (the header).
   void clearRay(double ox, double oy, double oz, double x, double y, double z, double t);
   // Samples clearRay() has removed since construction, for the debug log.
   uint64_t clearedSamples() const { return cleared_; }
@@ -339,14 +371,24 @@ private:
     std::vector<Sample> ring;
     int count = 0;  // samples held (<= ring.size())
     int head = 0;   // next slot to overwrite
+    // The lowest height a ray crossed this cell at, and when (grid time):
+    // the ground is under it (the header). Replaced by a lower ray, or by
+    // any ray once it is older than ground_memory.
+    float ray_lo = std::numeric_limits<float>::infinity();
+    float ray_lo_t = -std::numeric_limits<float>::infinity();
   };
 
   // Ground estimate per cell from the samples, the robot's ground where
   // there are too few.
   void estimateGround(double now, double robot_ground_z) const;
   // The slope rule's plane under the disc at (ix, iy), through the known
-  // grounds of the cells that are not obstacles (obstacle_).
+  // grounds of the cells that are not obstacles (obstacle_) and that their
+  // own returns stand on (groundSupported()).
   bool fitSlope(int ix, int iy, double & tilt_deg) const;
+  // Whether a return of cell i's own, within the last estimate's memory,
+  // lies within max_ground_lift of its ground: a surface in this column,
+  // not a neighbour's borrowed through the 3x3 gather.
+  bool groundSupported(size_t i) const;
   bool cellHasObstacle(size_t i, double now, double ground) const;
   // The reach flood (classify()) into `reached`: from the robot's cell, and
   // from the path's poses when `with_path`.
@@ -396,6 +438,8 @@ private:
   // fit leaves these out (the header has why).
   mutable std::vector<uint8_t> obstacle_;
   mutable std::vector<float> scratch_;
+  // The last estimate's memory window (grid time), for groundSupported().
+  mutable float ground_oldest_ = 0.f;
   mutable std::vector<int> queue_;
 };
 

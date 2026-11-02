@@ -270,9 +270,14 @@ TEST(TerrainGrid, WallFootIsLethalWhetherOrNotTheFloorUnderItWasSeen)
   s.floor(kOrigin, 1.0, kOrigin, -kOrigin);
   s.wall(1.0, kOrigin, -kOrigin, 0.0, 1.4);
   s.classify();
-  EXPECT_GT(s.share(0.95, 1.05, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
-  EXPECT_GT(s.share(-1.9, 0.8, -1.9, 1.9, FREE_SPACE), 0.98);
-  // Only the wall's upper part seen (the foot hidden): still an obstacle.
+  // Lethal from the wall's own cell; the floor is free up to its face. Until
+  // 2026-11-03 the 0.15 m before it was slope-lethal too, its grounds
+  // borrowed from the wall's returns -- the band the slope fit's own-support
+  // rule ended.
+  EXPECT_GT(s.share(1.0, 1.05, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
+  EXPECT_GT(s.share(-1.9, 0.95, -1.9, 1.9, FREE_SPACE), 0.98);
+  // Only the wall's upper part seen (the foot hidden, the floor to 0.9):
+  // the wall and the unseen strip before it are lethal.
   Scene hidden;
   hidden.floor(kOrigin, 0.9, kOrigin, -kOrigin);
   hidden.wall(1.0, kOrigin, -kOrigin, 0.4, 1.4);
@@ -286,9 +291,10 @@ TEST(TerrainGrid, ADoorsJambsDoNotTiltTheFloorBetweenThem)
   // 5 cm higher, and the wall's and the jambs' feet hidden below 0.15 m, as
   // the lower FOV leaves them. The jambs are lethal; the lane between them
   // must not be walled off by the slope rule fitting their returns as
-  // ground. Before 2026-11-02, with them in the fit: 0.958 of the 0.6 m lane
-  // free, and 0.345 of the strip in front of the wall (1.000 and 0.667 now;
-  // what is left there is the ring next to the wall, see the header).
+  // ground. With the jambs in the fit (before 2026-11-02): 0.958 of a 0.6 m
+  // lane free and 0.345 of the strip in front of the wall; with the
+  // obstacle cells out, 1.000 and 0.667; with the unsupported grounds out
+  // too (2026-11-03), the door's whole width and the strip.
   constexpr double kHalf = 0.375;
   Scene s;
   const auto floor_z = [](double x, double) { return x > 1.0 ? 0.05 : 0.0; };
@@ -305,10 +311,10 @@ TEST(TerrainGrid, ADoorsJambsDoNotTiltTheFloorBetweenThem)
     }
   }
   s.classify();
-  EXPECT_GT(s.share(0.95, 1.1, 0.45, 0.6, LETHAL_OBSTACLE), 0.9);  // the jambs
-  EXPECT_GT(s.share(0.95, 1.1, -0.6, -0.45, LETHAL_OBSTACLE), 0.9);
-  EXPECT_GT(s.share(0.9, 1.1, -0.3, 0.3, FREE_SPACE), 0.98);  // a 0.6 m lane
-  EXPECT_GT(s.share(0.75, 0.9, 0.5, 1.9, FREE_SPACE), 0.6);  // in front of the wall
+  EXPECT_GT(s.share(1.0, 1.05, 0.45, 0.6, LETHAL_OBSTACLE), 0.9);  // the wall either side
+  EXPECT_GT(s.share(1.0, 1.05, -0.6, -0.45, LETHAL_OBSTACLE), 0.9);
+  EXPECT_GT(s.share(0.9, 1.1, -0.35, 0.35, FREE_SPACE), 0.98);  // the door's width, to a cell
+  EXPECT_GT(s.share(0.75, 0.95, 0.5, 1.9, FREE_SPACE), 0.95);  // in front of the wall
 }
 
 TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
@@ -857,4 +863,76 @@ TEST(TerrainGrid, AFlatGaitCrossingWaivesItsStepButNotAPersonOnIt)
   st = up.classify(0.0, -1.0, 0.0);
   EXPECT_EQ(st.waived, 0u);
   EXPECT_GT(up.share(-0.1, 0.1, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
+}
+
+TEST(TerrainGrid, ARayThroughACellBoundsItsGround)
+{
+  // The hidden wall foot again (floor to 0.9, the wall from 0.4 up), with
+  // the scan's rays onto the wall from the lidar at the robot's centre: the
+  // cell before the wall, whose ground was the wall's returns next door, is
+  // crossed 0.4 m up -- empty there -- so it holds no ground at all now
+  // (unknown, not lethal), and the wall's own cell, where the rays end,
+  // keeps its returns.
+  Scene s;
+  s.floor(kOrigin, 0.9, kOrigin, -kOrigin);
+  s.wall(1.0, kOrigin, -kOrigin, 0.4, 1.4);
+  for (double y = -1.9; y < 1.9; y += 0.025) {
+    for (double z = 0.4; z < 0.8; z += 0.05) {
+      ray(s, 1.0, y, z);
+    }
+  }
+  s.classify();
+  EXPECT_GT(s.share(1.0, 1.05, -1.8, 1.8, LETHAL_OBSTACLE), 0.95);
+  EXPECT_GT(s.share(0.95, 1.0, -1.8, 1.8, NO_INFORMATION), 0.9);
+  EXPECT_GT(s.share(-1.8, 0.95, -1.8, 1.8, FREE_SPACE), 0.98);
+
+  // The lane beside a jamb whose foot is hidden, the doorway's floor unseen
+  // (dp's lab door as the lidar sees it from a metre): the lane cells next
+  // to the jamb are islands on its returns until the rays through the door
+  // -- to the wall and the floor beyond -- cross them low.
+  constexpr double kHalf = 0.375;
+  const auto door = [](Scene & d) {
+    d.surface(kOrigin, 0.85, kOrigin, -kOrigin, [](double, double) { return 0.0; });
+    d.surface(1.15, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; });
+    d.wall(1.0, kOrigin, -kHalf, 0.15, 1.4);
+    d.wall(1.0, kHalf, -kOrigin, 0.15, 1.4);
+    for (double x = 1.0; x < 1.15; x += kRes / 2) {
+      for (const double y : {-kHalf, kHalf}) {
+        for (double z = 0.15; z < 1.4; z += 0.03) {
+          d.grid.addSample(x, y, z + d.noise(d.rng), kNow - 1.0);
+        }
+      }
+    }
+  };
+  Scene blind;
+  door(blind);
+  blind.classify();
+  EXPECT_GT(blind.share(1.0, 1.1, 0.3, 0.35, LETHAL_OBSTACLE), 0.9);
+  Scene seen;
+  door(seen);
+  for (double y = -0.3; y <= 0.3; y += 0.025) {
+    for (double z = 0.2; z < 0.6; z += 0.05) {
+      ray(seen, 1.8, y * 1.8, z);
+    }
+    for (double xf = 1.3; xf < 1.9; xf += 0.1) {
+      ray(seen, xf, y * xf, 0.0);
+    }
+  }
+  seen.classify();
+  EXPECT_LT(seen.share(1.0, 1.1, 0.3, 0.35, LETHAL_OBSTACLE), 0.1);
+  EXPECT_GT(seen.share(1.0, 1.05, 0.35, 0.4, LETHAL_OBSTACLE), 0.9);  // the jamb itself
+
+  // Nothing a ray passes over is touched: a box under the rays to a wall
+  // behind it keeps its top, and is lethal as before.
+  Scene box;
+  box.floor();
+  box.surface(0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; });
+  box.wall(0.8, -0.2, 0.2, 0.0, 0.30);
+  for (double y = -0.3; y <= 0.3; y += 0.025) {
+    for (double z = 0.35; z < 0.7; z += 0.05) {
+      ray(box, 1.8, y * 1.8, z);
+    }
+  }
+  box.classify();
+  EXPECT_GT(box.share(0.8, 1.2, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
 }
