@@ -9,7 +9,7 @@ consumed in completely different ways:
 | | What | How it reaches a consumer |
 |---|---|---|
 | **Engine + base classes** | `BehaviorTreeEngine`, `BtActionServer`, `BtActionNode`, `BtServiceNode`, `bt_conversions` | `libsyncai_behavior_tree.so` + headers, linked at **build** time |
-| **BT node plugins** | `ComputePathToPose`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, and the docking nodes (below) | one shared library each, `dlopen`ed by **name at runtime** |
+| **BT node plugins** | `ComputePathToPose`, `ComputePathThroughPoses`, `FollowPath`, `ClearEntireCostmap`, `PipelineSequence`, `RecoveryNode`, `RateController`, `IsPathValid`, `GlobalUpdatedGoal`, and the docking nodes (below) | one shared library each, `dlopen`ed by **name at runtime** |
 
 Nothing here is a ROS node. The only consumer today is **`syncai_task_runner`**,
 which builds a `BtActionServer<nav2_msgs::action::NavigateToPose>` and ticks
@@ -234,6 +234,7 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | XML tag | Kind | Library | Ports |
 |---|---|---|---|
 | `ComputePathToPose` | action → `nav2_msgs/ComputePathToPose` on `compute_path_to_pose` | `syncai_compute_path_to_pose_action_bt_node` | in `goal`, `start`, `planner_id`; out `path`. Bumps blackboard `number_plans` on success, `report_failure()`s on abort |
+| `ComputePathThroughPoses` | action → `nav2_msgs/ComputePathThroughPoses` on `compute_path_through_poses` | `syncai_compute_path_through_poses_action_bt_node` | in `goals` (`std::vector<PoseStamped>`, blackboard only), `start`, `planner_id`; out `path`. `patrol.xml`'s (2026-11); `ComputePathToPose`'s twin, down to `number_plans`, `report_failure()` and the status sentences. nav2's `RemovePassedGoals` is not ported: the task_runner's navigator drops passed waypoints from `remaining_goals` itself (`blackboard_keys.hpp`) |
 | `FollowPath` | action → `nav2_msgs/FollowPath` on `follow_path` | `syncai_follow_path_action_bt_node` | in `path`, `controller_id`, `goal_checker_id`. Refuses to send an empty path (`FAILURE` with a WARN, 2026-10) and ignores an empty `path` while running — the controller would throw "Invalid path, Path is empty." and the retry would be spent on a path that cannot change until the planner branch runs again. `report_failure()`s on abort |
 | `DockToPose` | action → `syncai_common/DockToPose` on `dock_to_pose` (syncai_controller) | `syncai_dock_to_pose_action_bt_node` | in `dock_pose` (`PoseStamped`, any frame; sent as the action's planar `frame_id` / `x` / `y` / `yaw`), `controller_id` (default `Docking`; `Undocking` backs out), `goal_checker_id` (default `dock_goal_checker`), `timeout` (s, default 0 = server default). Refuses a pose without a `frame_id`. Writes `nav_status_msg` from the controller's feedback; `report_failure()`s on abort with the controller's reason (`ABORTED` + `NONE` is spelled out as "busy or superseded"); `on_cancelled()` returns `FAILURE`. Drives to `dock_pose` as given; the `method` port (`position` / a reserved `charger`) was removed on 2026-10-15 — a charger dock will be its own tree whose detection node produces the pose. 2026-10 |
 | `SetMotionKey` | service → `syncai_common/SetMotionKey` on `set_motion_key` (syncai_driver_manager) | `syncai_set_motion_key_service_bt_node` | in `key` (**required**: `0` stand, `1` RL, `2` lie down, `3` damping, `4` e-stop, `5` MPC). `FAILURE` + `report_failure()` when the driver refuses (`LOCKED`, unknown key); unattributed on a timeout. `success` means the UDP datagram left, not that the gait changed. 2026-10 |
@@ -248,7 +249,7 @@ the library name goes in `plugin_lib_names`, the tag goes in the XML.
 | `RecoveryNode` | control | `syncai_recovery_node_bt_node` | in `number_of_retries` (default 1), `retry_refill_time` (s, default 0 = never) |
 | `RateController` | decorator | `syncai_rate_controller_bt_node` | in `hz` (default 10.0) |
 | `IsPathValid` | condition → `nav2_msgs/IsPathValid` on `is_path_valid` (syncai_global_planner) | `syncai_is_path_valid_condition_bt_node` | in `path`, `service_name` (default `is_path_valid`), `server_timeout`, `blocked_time` (s, default 0; `move.xml` / `dock.xml` set 10), `blocked_match_distance` (m, default 0.5) |
-| `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal`) |
+| `GlobalUpdatedGoal` | condition | `syncai_globally_updated_goal_condition_bt_node` | — (reads blackboard `goal` and, since 2026-11, `goals`) |
 
 Semantics of the non-obvious ones:
 
@@ -293,8 +294,11 @@ Semantics of the non-obvious ones:
   wait; a timeout leaves it running. It exists because a person
   crossing the route was a replan, and the detour then stuck for the goal.
 - **`GlobalUpdatedGoal`** returns `SUCCESS` on the first tick after blackboard
-  `goal` changed. The very first tick only records a baseline (`FAILURE`).
-  Upstream also watches `goals`; nothing here writes it, so this port does not.
+  `goal` or `goals` changed. The very first tick only records a baseline
+  (`FAILURE`). `goals` is watched again since 2026-11, when the
+  `navigate_through_poses` navigator started writing it; `patrol.xml` plans
+  through a separate `remaining_goals`, so passing a waypoint is not a changed
+  goal.
 
 The three `ClearCostmap*` nodes all call `increment_recovery_count()`, which bumps
 the `number_recoveries` blackboard key that the navigator reports as feedback.

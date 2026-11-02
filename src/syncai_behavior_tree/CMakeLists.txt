@@ -63,6 +63,11 @@ add_library(syncai_compute_path_to_pose_action_bt_node SHARED
   plugins/action/compute_path_to_pose_action.cpp)
 list(APPEND plugin_libs syncai_compute_path_to_pose_action_bt_node)
 
+# The patrol route (patrol.xml, 2026-11)
+add_library(syncai_compute_path_through_poses_action_bt_node SHARED
+  plugins/action/compute_path_through_poses_action.cpp)
+list(APPEND plugin_libs syncai_compute_path_through_poses_action_bt_node)
+
 add_library(syncai_follow_path_action_bt_node SHARED
   plugins/action/follow_path_action.cpp)
 list(APPEND plugin_libs syncai_follow_path_action_bt_node)

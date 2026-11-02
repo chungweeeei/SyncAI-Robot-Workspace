@@ -57,6 +57,19 @@ inline constexpr char kNavStatusMsg[] = "nav_status_msg";
 inline constexpr char kStatusPlanning[] = "Planning a path to the goal";
 inline constexpr char kStatusFollowing[] = "Following the path";
 
+// The patrol route's waypoints (navigate_through_poses, patrol.xml, 2026-11).
+// kGoals is the client's list as sent, rewritten only by a new goal or a
+// preempt, so GlobalUpdatedGoal sees a change of route and nothing else.
+// kRemainingGoals is what is still ahead, the list ComputePathThroughPoses
+// plans through: the navigator drops a waypoint from its front once the robot
+// has come within waypoint_passed_radius of it (never the last), so a replan
+// mid-route starts from the next waypoint instead of driving back to one
+// already passed. Dropping it here and not in the tree (nav2's
+// RemovePassedGoals) checks it at the navigator's loop rate rather than the
+// planner branch's 1 Hz, and does not need a TF buffer on the blackboard.
+inline constexpr char kGoals[] = "goals";
+inline constexpr char kRemainingGoals[] = "remaining_goals";
+
 }  // namespace blackboard_keys
 }  // namespace syncai_behavior_tree
 

@@ -41,8 +41,9 @@ The package is split into a **host node** and **navigators**:
 |---|---|
 | `TaskRunner` (`syncai_task_runner.cpp`) | The `rclcpp::Node`. Owns the shared TF buffer, the odom smoother, the navigator mutex, and the parameters. Hosts navigators; contains no navigation logic. |
 | `Navigator<ActionT>` (`navigator.hpp`) | Header-only template base. Wraps a `syncai_behavior_tree::BtActionServer<ActionT>` and implements the goal-muxing that keeps two navigators from driving the robot at once. |
-| `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml`, computes feedback, fills the result. One template, two explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`) and `NavigateToGoalNavigator` (`syncai_common`). The three places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The two actions share field names on purpose; that is what lets one body compile for both. |
+| `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml` (or `patrol.xml`), computes feedback, fills the result. One template, three explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`), `NavigateToGoalNavigator` (`syncai_common`) and, since 2026-11, `NavigateThroughPosesNavigator` (`nav2_msgs`, the patrol route). The places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber, one `pose` or a list of `poses`, the default tree) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The actions share field names on purpose; that is what lets one body compile for all three. |
 | `behavior_trees/move.xml` | The default tree: `Octo3D` + `FollowPath` (MPPI) — see "Which tree a goal runs" |
+| `behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11): `move.xml` planning through the waypoints still ahead — see "The patrol route" |
 | `behavior_trees/dock.xml`, `undock.xml` | The docking trees, by `NavigateToGoal.behavior_tree` |
 
 `Navigator` is templated on the action type because each navigator binds a
@@ -330,7 +331,9 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
-| `plugin_lib_names` | fourteen BT node libraries | Must list every library whose tags `move.xml`, `dock.xml` and `undock.xml` use — which is every library `syncai_behavior_tree` builds since its unused `InitialPoseReceived` condition went (2026-10-28). The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `plugin_lib_names` | fifteen BT node libraries | Must list every library whose tags `move.xml`, `patrol.xml`, `dock.xml` and `undock.xml` use — which is every library `syncai_behavior_tree` builds since its unused `InitialPoseReceived` condition went (2026-10-28). The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `default_nav_through_poses_bt_xml` | `<share>/behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11), declared lazily by its navigator like `default_bt_xml` |
+| `waypoint_passed_radius` | `1.0` m | `navigate_through_poses` only: a waypoint the robot comes within this of is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. A first value, unmeasured |
 | `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`dock.xml`), resolved against the same `behavior_trees/` directory, or an absolute path. (Until 2026-10-28 a 3D map swapped any of them for its `_3d.xml` sibling.) |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 
@@ -339,12 +342,61 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 `default_server_timeout` (20 ms), `wait_for_service_timeout` (1000 ms),
 `always_reload_bt_xml` (false).
 
+## The patrol route (`navigate_through_poses`, 2026-11)
+
+`nav2_msgs/NavigateThroughPoses` on `navigate_through_poses`: drive from the
+robot through every pose of `poses`, in order, **without stopping or turning
+at them**, and finish at the last one **like a MOVE** — xy within the goal
+checker's 0.10 m and heading within its 0.2 rad. A waypoint's own heading is
+ignored; only the last pose's is used. Each pose's z picks its floor
+(`goal_z_mode: request`), so a route can cross floors over a stair. What the
+backend's PATROL step sends; the result is Empty (a failure's reason is in
+this log only, mapped like `move.xml`'s, `ComputePathThroughPoses` →
+`PLAN_FAILED`), until a `syncai_common` twin with `error_code` /
+`status_msg` exists.
+
+`patrol.xml` is `move.xml` with its planner branch planning through the
+waypoints (`ComputePathThroughPoses`, `Octo3D`'s
+`createPlanThroughPoses()`: leg by leg, each later leg from the cell the one
+before ended on). Two blackboard keys carry the route
+(`blackboard_keys.hpp`): `goals`, the client's list, rewritten only by a new
+goal or a preempt — what `GlobalUpdatedGoal` watches — and `remaining_goals`,
+what a replan plans through. The navigator drops a waypoint from the front of
+`remaining_goals` once the robot has come within `waypoint_passed_radius`
+(1.0 m) of it, never the last, at its loop rate, and reports what is left as
+`number_of_poses_remaining`. So passing a waypoint is not a changed goal and
+does not replan; a replan for a blocked path starts from the next waypoint.
+A waypoint the robot misses by more than the radius (a wide detour) is
+driven back to only if the path is replanned before the next one is passed.
+nav2 does the dropping in the tree (`RemovePassedGoals`, ported here once and
+removed unused in 2026-07); in the navigator it runs at 20 Hz instead of the
+planner branch's 1 Hz and needs no TF buffer on the blackboard.
+
+A route can pass back over itself — out and back along one corridor, or a
+loop ending where it started. Every consumer of the path places the robot on
+it by **forward-only progress** (`syncai_util/path_progress.hpp`): MPPI's and
+RPP 3D's pruning, the controller server's goal gate and feedback, the
+planner server's `plan` trim and `is_path_valid`, and this navigator's
+`distance_remaining`. A whole-path nearest pose there could take the later
+leg: a robot back at a loop's start read as at the start, and an
+out-and-back's return leg lies on top of the outgoing one.
+
+```bash
+ros2 action send_goal /<robot_id>/navigate_through_poses nav2_msgs/action/NavigateThroughPoses \
+  "{poses: [{header: {frame_id: map}, pose: {position: {x: 2.0, y: 0.0}, orientation: {w: 1.0}}},
+            {header: {frame_id: map}, pose: {position: {x: 4.0, y: 2.0}, orientation: {w: 1.0}}},
+            {header: {frame_id: map}, pose: {position: {x: 0.0, y: 0.0}, orientation: {z: 1.0, w: 0.0}}}]}" \
+  --feedback
+```
+
 ## Interfaces
 
 | Kind | Name | Type |
 |---|---|---|
 | Action server | `navigate_to_pose` | `nav2_msgs/NavigateToPose` — what the backend sends today; result empty |
 | Action server | `navigate_to_goal` | `syncai_common/NavigateToGoal` — the same navigation, result `error_code` / `error_msg`, feedback `+ number_of_replans`, `status_msg` (2026-10) |
+| Action server | `navigate_through_poses` | `nav2_msgs/NavigateThroughPoses` (2026-11) — the patrol route through `poses`, `patrol.xml` by default; result empty, feedback `number_of_poses_remaining`. The backend's PATROL step |
+| Action client | `compute_path_through_poses` | via the `ComputePathThroughPoses` BT node — `patrol.xml` only |
 | Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) → `navigate_to_pose` |
 | Action client | `compute_path_to_pose` | via the BT node |
 | Action client | `follow_path` | via the BT node |
@@ -356,9 +408,12 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 
 Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);
 it is also the suffix of the internal client node `BtActionServer` creates
-(`task_runner_navigate_to_pose_rclcpp_node`, `task_runner_navigate_to_goal_rclcpp_node`).
-Both servers are built from the same `plugin_lib_names`, so a tag missing from
-that list fails both trees the same way.
+(`task_runner_navigate_to_pose_rclcpp_node`, `task_runner_navigate_to_goal_rclcpp_node`,
+`task_runner_navigate_through_poses_rclcpp_node`). All three servers are built
+from the same `plugin_lib_names`, so a tag missing from that list fails every
+tree that uses it the same way. Each loads its default tree at startup, so
+`patrol.xml`'s `compute_path_through_poses` client is waited for then, like
+`move.xml`'s `compute_path_to_pose`.
 
 ## Running
 
@@ -481,10 +536,11 @@ each switch (milliseconds, every server already up).
   a visualization topic.
 - **Preemption with a different BT is rejected, not queued.** The current goal
   keeps running and the pending one is terminated.
-- **One navigation at a time across both actions.** A `navigate_to_goal` goal
-  sent while a `navigate_to_pose` one runs (or the reverse) is `ABORTED` with
-  an empty result and a "rejecting request" log line; it is not queued and it
-  does not preempt. Preempt on the action the running goal came in on.
+- **One navigation at a time across the three actions.** A `navigate_to_goal`
+  goal sent while a `navigate_to_pose` or `navigate_through_poses` one runs (or
+  any other pair) is `ABORTED` with an empty result and a "rejecting request"
+  log line; it is not queued and it does not preempt. Preempt on the action
+  the running goal came in on.
 - **A retried abort can leave a stale attribution.** `failed_node` is written
   on abort and never cleared on success, so if the tree later fails through a
   path that writes nothing (an exception), the result names the earlier,

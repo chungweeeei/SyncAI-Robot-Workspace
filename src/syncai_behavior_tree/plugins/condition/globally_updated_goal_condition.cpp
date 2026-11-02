@@ -1,6 +1,7 @@
 #include "syncai_behavior_tree/plugins/condition/globally_updated_goal_condition.hpp"
 
 #include <string>
+#include <vector>
 
 #include "syncai_behavior_tree/blackboard_keys.hpp"
 
@@ -17,6 +18,8 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
 {
   geometry_msgs::msg::PoseStamped current_goal;
   config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", current_goal);
+  std::vector<geometry_msgs::msg::PoseStamped> current_goals;
+  config().blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>("goals", current_goals);
 
   // The first tick only records the baseline. The instance outlives a goal
   // (the tree is reused unless always_reload_bt_xml), so on every later goal
@@ -25,11 +28,13 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
   if (first_time_) {
     first_time_ = false;
     goal_ = current_goal;
+    goals_ = current_goals;
     return BT::NodeStatus::FAILURE;
   }
 
-  if (goal_ != current_goal) {
+  if (goal_ != current_goal || goals_ != current_goals) {
     goal_ = current_goal;
+    goals_ = current_goals;
     // Said only once this goal has had a path: the first tick of every new
     // goal lands here too (see above), and there the navigator's "Planning"
     // sentence is the true one -- nothing is being re-planned yet.

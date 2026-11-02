@@ -1,0 +1,67 @@
+<!--
+  patrol.xml: the patrol route (navigate_through_poses, 2026-11). Drive from
+  the robot through every waypoint in order without stopping or turning at
+  them, and finish at the last one like a MOVE: xy within the goal checker's
+  0.10 m and heading within its 0.2 rad (FollowPath's default goal_checker).
+
+  It is move.xml with two differences, and everything move.xml's header says
+  -- the replan only on a path blocked for blocked_time or a changed goal,
+  FollowPath's four refilling retries, the obstacle memory clears, the
+  failure attribution by child order, the status sentences -- holds here
+  unchanged and is not repeated. Tuning one of those numbers there (the
+  retries against blocked_time above all) means tuning it here too.
+
+  1. The planner branch plans through the waypoints:
+     ComputePathThroughPoses (compute_path_through_poses) on
+     {remaining_goals}, the waypoints still ahead. Octo3D plans it leg by
+     leg, each later leg from the cell the one before ended on, so a
+     waypoint upstairs is planned from upstairs; every pose of the path faces
+     the next, and only the last waypoint's heading is kept, so the
+     controllers turn only at the end (MPPI's final rotation and goal critics
+     read the path's last pose). The navigator, not this tree, drops a
+     waypoint from {remaining_goals} once the robot has passed within
+     waypoint_passed_radius of it (blackboard_keys.hpp has why), so a replan
+     mid-route starts from the next waypoint; {goals} keeps the client's list,
+     which is what GlobalUpdatedGoal watches -- passing a waypoint is not a
+     changed goal and does not replan.
+
+  2. A route can pass back over itself (A -> B -> A, or a loop ending where it
+     started). Nothing in the tree is specific to that; what makes it work is
+     that every consumer of the path places the robot on it by forward-only
+     progress (syncai_util/path_progress.hpp): MPPI's and RPP 3D's pruning,
+     the controller server's goal gate (goal_reached_max_remaining_path) and
+     feedback, and the planner server's `plan` trim and is_path_valid.
+
+  The failure attribution maps ComputePathThroughPoses to PLAN_FAILED, but
+  navigate_through_poses is nav2's action with an Empty result: the reason is
+  in the task_runner log only, until its syncai_common twin exists.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="NavigateFromFreshGlobalCostmap">
+      <ForceSuccess>
+        <ClearEntireCostmap name="ClearDynamicOverlay-NewGoal" service_name="planner_server/Octo3D/clear_overlay" server_timeout="1000"/>
+      </ForceSuccess>
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+            <Fallback name="FallbackComputePathThroughPoses">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
+              </ReactiveSequence>
+              <ComputePathThroughPoses goals="{remaining_goals}" path="{path}" planner_id="Octo3D"/>
+            </Fallback>
+            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+    </Sequence>
+  </BehaviorTree>
+</root>

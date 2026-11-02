@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "nav2_msgs/action/navigate_through_poses.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -46,6 +47,9 @@ protected:
   std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateToPose>> pose_navigator_;
   std::unique_ptr<syncai_task_runner::Navigator<syncai_common::action::NavigateToGoal>>
     goal_navigator_;
+  // navigate_through_poses (2026-11): the patrol route, patrol.xml.
+  std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateThroughPoses>>
+    poses_navigator_;
   syncai_task_runner::NavigatorMutex plugin_mutex_;
 
   // Odometry smoother object
