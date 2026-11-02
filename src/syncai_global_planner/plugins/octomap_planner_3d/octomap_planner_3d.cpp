@@ -1274,7 +1274,7 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       const o3d::StairLink & l = links_->links[r.links[sp.use].link];
       syncai_util::PlanCrossing x;
       x.kind = o3d::crossingKindName(l.kind);
-      x.stair_gait = l.gait() == o3d::CrossingGait::Stair;
+      x.stair_gait = l.gait() == o3d::CrossingGait::Stair;  // the route's below
       x.evidence = o3d::crossingEvidenceName(l.evidence);
       x.rise = l.rise;
       x.first = base + sp.first;
@@ -1311,6 +1311,20 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       pose.pose.orientation = goals.back().pose.orientation;
     }
     path.poses.push_back(pose);
+  }
+  {
+    // The gait is the route's, not each link's: a kerb onto a stair's top
+    // step is taken in the stair's gait (o3d::routeStairGaits). The legs
+    // were planned in order, so the crossings are in route order.
+    std::vector<o3d::RouteCrossing> rc;
+    rc.reserve(crossings.size());
+    for (const syncai_util::PlanCrossing & x : crossings) {
+      rc.push_back({x.first, x.last, x.stair_gait});
+    }
+    o3d::routeStairGaits(wps, rc, stair_params_.min_rise, stair_params_.stair_min_rise_window);
+    for (size_t i = 0; i < crossings.size(); ++i) {
+      crossings[i].stair_gait = rc[i].stair;
+    }
   }
   {
     // The poses are the waypoints one for one, so a span carries over; its

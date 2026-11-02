@@ -808,7 +808,7 @@ int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
   std::vector<PlannedPath> * planned, const DynamicMask * mask, const KeepoutMask * keepout,
-  const std::vector<KeepoutZone> & zones)
+  const std::vector<KeepoutZone> & zones, const StairLinkParams & stair_params)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -874,8 +874,19 @@ int runPlan(
     raw_len += std::hypot(bx - ax, by - ay);
   }
   size_t vertices = 0;
+  std::vector<PathSpan> spans;
   const auto path =
-    buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked);
+    buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked, &spans);
+  // The gait each crossing is taken in on this route, as the plugin sends it
+  // on plan_crossings (routeStairGaits): a link's own gait can be overruled
+  // by a stair next to it.
+  std::vector<RouteCrossing> gaits;
+  for (const PathSpan & sp : spans) {
+    gaits.push_back(
+      {sp.first, sp.last,
+       astar.links()->links[r.links[sp.use].link].gait() == CrossingGait::Stair});
+  }
+  routeStairGaits(path, gaits, stair_params.min_rise, stair_params.stair_min_rise_window);
   if (planned) {
     PlannedPath pp;
     pp.start = Waypoint{sxc, syc, m.zTop(s.cell)};
@@ -906,12 +917,15 @@ int runPlan(
     raw_cells, r.cost, r.iterations, r.search_s, total, vertices, path.size(), len, raw_len, zmin,
     zmax, min_clear, r.links.size(), mask ? mask->marked : size_t{0},
     keepout ? keepout->blocked : size_t{0});
-  for (const LinkUse & u : r.links) {
+  for (size_t i = 0; i < spans.size(); ++i) {
+    const LinkUse & u = r.links[spans[i].use];
     const StairLink & l = astar.links()->links[u.link];
+    const bool stair = gaits[i].stair;
     std::printf(
-      "plan:   %s %s: z %.2f -> %.2f, %.1f m (%s gait)\n", crossingKindName(l.kind),
+      "plan:   %s %s: z %.2f -> %.2f, %.1f m (%s gait%s)\n", crossingKindName(l.kind),
       linkName(l, u.reversed ? "<-" : "->").c_str(), m.zTop(u.reversed ? l.b : l.a),
-      m.zTop(u.reversed ? l.a : l.b), l.length, crossingGaitName(l.gait()));
+      m.zTop(u.reversed ? l.a : l.b), l.length, stair ? "stair" : "flat",
+      stair != (l.gait() == CrossingGait::Stair) ? ", the route's, not the link's" : "");
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1619,7 +1633,7 @@ int main(int argc, char ** argv)
       }
       rc |= runPlan(
         astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned, mask.get(),
-        keepout.get(), zones);
+        keepout.get(), zones, stair_params);
     }
   }
   if (!image_path.empty()) {

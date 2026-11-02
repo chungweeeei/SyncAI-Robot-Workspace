@@ -1895,14 +1895,14 @@ TEST(GapLinks, AWalkedGapWithAPostOnTheStraightLineIsRefused)
   EXPECT_EQ(buildStairLinks(*m, w, StairLinkParams{})->links.size(), 1u);
 }
 
-TEST(GapLinks, AGentleClimbBetweenTwoFloorsIsARampNotAStair)
+TEST(GapLinks, AGentleClimbBetweenTwoFloorsIsTheStairWalkersStair)
 {
-  // two_sills: 0.4 m between two floors in two 0.2 m sills a metre apart --
-  // dp's 2F step. The stair walker lays it (min_rise between two floors),
-  // but whatever it laid rises 0.2 m within any metre of its points: a ramp
-  // of the flat gait, not a stair -- which is what the controllers' stair
-  // mode made of the path's heights too. The sills are inside the walked
-  // stretch, so the gaps leave them alone.
+  // two_sills: 0.4 m between two floors in two 0.2 m sills a metre apart.
+  // The stair walker lays it (min_rise between two floors) and what it lays
+  // is a stair, whatever its own ends say: judging the links by their points
+  // made ramps of the short links of dp's 2F stair, which end half-way down
+  // (2026-11-02). The sills are inside the walked stretch, so the gaps leave
+  // them alone.
   const auto m = build("two_sills");
   EXPECT_FALSE(connected(*m, 3.0, 4.0, 0.0, 9.0, 4.0, 0.4));
   const auto links = buildStairLinks(
@@ -1911,21 +1911,65 @@ TEST(GapLinks, AGentleClimbBetweenTwoFloorsIsARampNotAStair)
   ASSERT_GE(links->links.size(), 1u);
   EXPECT_EQ(links->gap_links, 0u);
   for (const StairLink & l : links->links) {
-    EXPECT_EQ(l.kind, CrossingKind::Ramp);
-    EXPECT_EQ(l.gait(), CrossingGait::Flat);
+    EXPECT_EQ(l.kind, CrossingKind::Stair);
+    EXPECT_EQ(l.gait(), CrossingGait::Stair);
     EXPECT_FALSE(l.leads);
     EXPECT_NEAR(l.rise, 0.4, 0.11);
   }
-  SurfaceAStar astar(m, links);
-  SearchParams p;
-  const SnapResult a = astar.snap(3.0, 4.0, 0.0, p);
-  ASSERT_NE(a.cell, kNoCell);
-  const SnapResult b = astar.snap(9.0, 4.0, 0.4, p, m->cells[a.cell].component);
-  ASSERT_NE(b.cell, kNoCell) << b.detail;
-  const PlanResult r = astar.plan(a.cell, b.cell, p);
-  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
-  ASSERT_EQ(r.links.size(), 1u);
-  EXPECT_EQ(links->links[r.links[0].link].kind, CrossingKind::Ramp);
+}
+
+namespace
+{
+// A straight route along x at 0.1 m spacing with the given heights.
+std::vector<Waypoint> route(double x0, double x1, const std::function<double(double)> & z)
+{
+  std::vector<Waypoint> r;
+  for (double x = x0; x <= x1 + 1e-9; x += 0.1) {
+    r.push_back({x, 0.0, z(x)});
+  }
+  return r;
+}
+}  // namespace
+
+TEST(RouteGaits, AKerbOntoAStairsTopStepIsTakenInTheStairGait)
+{
+  // dp's 2F stair as the planner takes it: a kerb link onto the top step
+  // (5.3 -> 5.1, x 1.0..1.4), 0.3 m of tread, then a stair link (5.0 -> 4.5,
+  // x 1.7..2.9). The policy cannot be switched between the two.
+  const auto r = route(0.0, 5.0, [](double x) {
+    return x < 1.2 ? 5.3 : (x < 1.7 ? 5.1 : (x < 2.9 ? 5.1 - 0.5 * (x - 1.7) : 4.5));
+  });
+  std::vector<RouteCrossing> c{{10, 14, false}, {17, 29, true}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_TRUE(c[0].stair);
+  EXPECT_TRUE(c[1].stair);
+}
+
+TEST(RouteGaits, ALoneKerbOrTwoFarApartStayFlatAndTwoCloseKerbsAreAStair)
+{
+  // A 0.15 m kerb at x 1 and another 3 m on: each the flat gait's.
+  auto r = route(0.0, 6.0, [](double x) { return x < 1.0 ? 0.0 : (x < 4.0 ? 0.15 : 0.3); });
+  std::vector<RouteCrossing> c{{8, 12, false}, {38, 42, false}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_FALSE(c[0].stair);
+  EXPECT_FALSE(c[1].stair);
+  // The same two kerbs half a metre apart: 0.3 m within a metre, a stair.
+  r = route(0.0, 6.0, [](double x) { return x < 1.0 ? 0.0 : (x < 1.5 ? 0.15 : 0.3); });
+  c = {{8, 12, false}, {13, 17, false}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_TRUE(c[0].stair);
+  EXPECT_TRUE(c[1].stair);
+}
+
+TEST(RouteGaits, TheFloorBeyondACrossingIsNotJudgedWithIt)
+{
+  // A 0.15 m kerb at the foot of a 20 deg floor slope: the slope is the flat
+  // gait's, and so is the kerb.
+  const auto r = route(
+    0.0, 4.0, [](double x) { return x < 1.0 ? 0.0 : (x < 1.5 ? 0.15 : 0.15 + 0.364 * (x - 1.5)); });
+  std::vector<RouteCrossing> c{{8, 13, false}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_FALSE(c[0].stair);
 }
 
 TEST(GapLinks, AWalkedStairMakesNoGapLink)

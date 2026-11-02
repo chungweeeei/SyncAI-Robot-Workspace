@@ -2192,6 +2192,39 @@ void gapLinks(
 
 }  // namespace
 
+void routeStairGaits(
+  const std::vector<Waypoint> & route, std::vector<RouteCrossing> & crossings, double min_rise,
+  double window)
+{
+  std::vector<double> d(route.size(), 0.0);  // xy distance along the route
+  for (size_t i = 1; i < route.size(); ++i) {
+    d[i] = d[i - 1] + std::hypot(route[i].x - route[i - 1].x, route[i].y - route[i - 1].y);
+  }
+  size_t g = 0;
+  while (g < crossings.size()) {
+    size_t e = g + 1;  // one past the group
+    size_t last = crossings[g].last;
+    bool stair = crossings[g].stair;
+    while (e < crossings.size() && crossings[e].first < route.size() && last < route.size() &&
+           d[crossings[e].first] - d[last] <= window + 1e-9) {
+      last = std::max(last, crossings[e].last);
+      stair = stair || crossings[e].stair;
+      ++e;
+    }
+    const size_t first = crossings[g].first;
+    if (!stair && first < route.size() && last < route.size()) {
+      const std::vector<Waypoint> stretch(
+        route.begin() + static_cast<std::ptrdiff_t>(first),
+        route.begin() + static_cast<std::ptrdiff_t>(last) + 1);
+      stair = maxRiseWithin(stretch, window) >= min_rise - 1e-9;
+    }
+    for (size_t i = g; i < e; ++i) {
+      crossings[i].stair = stair;
+    }
+    g = e;
+  }
+}
+
 const char * crossingKindName(CrossingKind k)
 {
   switch (k) {
@@ -2345,17 +2378,6 @@ std::shared_ptr<const StairLinks> buildStairLinks(
   }
   kerbLinks(m, params, *out);
   gapLinks(m, tree, track, params, comp_cells, min_cells, *out);
-  // A kind is the geometry's, not the generator's (see the header): a link
-  // the stair readers laid that never rises min_rise within
-  // stair_min_rise_window of its points is a ramp of the flat gait. The kerb
-  // and gap crossings are the flat gait's already.
-  for (StairLink & l : out->links) {
-    if (
-      l.kind == CrossingKind::Stair &&
-      maxRiseWithin(l.pts, params.stair_min_rise_window) < params.min_rise - 1e-9) {
-      l.kind = CrossingKind::Ramp;
-    }
-  }
   for (uint32_t i = 0; i < ncomp; ++i) {
     out->group[i] = findRoot(out->group, i);
   }

@@ -211,13 +211,12 @@
       stair_links: true
       # Above a kerb (0.15) and one stair step, below a flight between landings.
       stair_min_rise: 0.3
-      # A link the stair readers laid is a stair only when it rises
-      # stair_min_rise within this much of its points (m, xy) -- the
-      # controllers' stair_enter_dist, ~17 deg and up (2026-11-02). One that
-      # climbs more gently between two floors (dp's 2F step, 0.2 m over
-      # 0.5 m) is a ramp of the flat gait: the stair mode never woke for it
-      # from the path's heights either, and the planner's sidecar must not
-      # call it a stair.
+      # A route's crossings within this much of each other (m, xy, along the
+      # route) are one crossing for the gait sent on plan_crossings, the
+      # stair gait when any of them is a stair or the route between their
+      # ends rises stair_min_rise within it (2026-11-02): dp's 2F stair is a
+      # kerb link onto its top step and a stair link 0.3 m on, and the policy
+      # cannot switch between the two. The controllers' stair_enter_dist.
       stair_min_rise_window: 1.0
       # dp1f_1012's stairwell took 32 m of track with the turns on its landings.
       stair_max_length: 60.0
