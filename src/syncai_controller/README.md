@@ -193,12 +193,23 @@ goal checker whether the robot is near `end_pose_`; on a **patrol loop whose las
 waypoint is its own start**, that is true on the very first control cycle and the
 goal "succeeds" in about a second without the robot moving.
 
-So this port first computes the remaining path length from the path pose closest
-to the robot, and only consults the goal checker once that drops below
+So this port first computes the remaining path length from the robot's place on
+the path, and only consults the goal checker once that drops below
 **`goal_reached_max_remaining_path`** (default 1.0 m; `<= 0` disables the gate).
-The closest-pose search uses a strict `<` so that on a closed loop a robot sitting
-on the shared start/end point resolves to the *start* index, leaving the full loop
-length remaining.
+The place is **forward-only progress** (`syncai_util::PathProgress`, 2026-11),
+updated every cycle before any check in `isGoalReached()` can return, reset with
+the path, and also what the feedback's `distance_to_goal` is measured from. It was
+a whole-path nearest pose with a strict `<`, which put a robot on the shared
+start/end point of a closed loop at the *start* — right as it set off, and wrong
+when it came back: the patrol route (`navigate_through_poses`) ends there, and
+the gate would never have opened. The feedback's search also compared the
+local costmap's frame with the path's.
+
+**RPP 3D's and MPPI's own nearest-pose searches** take the first local minimum of
+the distance from their pruned front (`syncai_util::firstLocalMinimum`, 2026-11),
+not the minimum over `max_robot_pose_search_dist`: an out-and-back route's return
+leg lies on top of the outgoing one and inside that 10 m window for the last 5 m
+before the turn, and pruning onto it cannot be undone.
 
 A second fix lives here too: `end_pose_` is re-stamped with `Time(0)` before being
 transformed into the costmap's global frame. Using the path's original stamp made
@@ -803,7 +814,7 @@ Server-level (`/**/controller_server`):
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
 | `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) — then on a 2D global costmap that updated at 1 Hz out of phase with it, on `Octo3D`'s dynamic overlay since 2026-10-21 — up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and while `is_path_valid` ran RPP's own footprint test on the 2D costmap (until 2026-10-28) a refused path was replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
 | `publish_zero_velocity` | `true` | Send one stop command on success |
-| `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above; `<= 0` disables |
+| `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above, from the robot's forward-only place on the path; `<= 0` disables |
 | `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
 | `lidar_height` | `0.481` | `body_frame`'s height above the feet — the planner's `Octo3D.lidar_height`; change both together |
 | `goal_z_tolerance` | `0.5` | Paths with heights: how far the ground under the robot may be from the end pose's height for the goal to count. Dynamically reconfigurable |

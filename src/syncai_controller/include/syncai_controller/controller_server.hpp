@@ -21,6 +21,7 @@
 #include "syncai_nav_core/progress_checker.hpp"
 #include "syncai_util/node_thread.hpp"
 #include "syncai_util/odom_subscriber.hpp"
+#include "syncai_util/path_progress.hpp"
 #include "syncai_util/simple_action_server.hpp"
 #include "tf2_ros/transform_listener.h"
 
@@ -351,6 +352,10 @@ protected:
 
   // Current path container
   nav_msgs::msg::Path current_path_;
+  // The robot's place on current_path_, forward only (path_progress.hpp):
+  // updated by isGoalReached() every cycle, read by its remaining-length gate
+  // and by the feedback's distance_to_goal. Reset with the path.
+  syncai_util::PathProgress path_progress_;
 
   // DockToPose: the plugin ids an empty controller_id / goal_checker_id
   // resolve to (findControllerId("") only falls back when exactly one plugin

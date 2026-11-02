@@ -20,6 +20,7 @@
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/path_height.hpp"
+#include "syncai_util/path_progress.hpp"
 
 namespace mppi
 {
@@ -72,12 +73,20 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
   // Find closest point to the robot. In 3D when the plan has heights: on a
   // spiral stair the turn 2.5 m above the robot is as close on x / y as the
   // one it stands on, and the 10 m search window holds both (path_height.hpp).
+  // The FIRST local minimum from the pruned front, not the window's minimum
+  // (2026-11, path_progress.hpp): a patrol route (navigate_through_poses)
+  // walks a corridor out and back, the return leg on top of the outgoing one
+  // and inside the window for the last 5 m before the turn, and upstream's
+  // min_by -- '<=', the later pose on a tie -- would prune onto the return leg
+  // and turn the robot back short of its waypoint. Pruning is permanent, so
+  // that could never be undone. The pruned front is this search's memory.
   const bool is_3d = plan_has_height_;
-  auto closest_point = syncai_util::geometry_utils::min_by(
+  auto closest_point = syncai_util::firstLocalMinimum(
     begin, closest_pose_upper_bound,
     [&global_pose, is_3d](const geometry_msgs::msg::PoseStamped & ps) {
       return euclidean_distance(global_pose, ps, is_3d);
-    });
+    },
+    syncai_util::PathProgress::kDefaultHysteresis);
 
   nav_msgs::msg::Path transformed_plan;
   transformed_plan.header.frame_id = costmap_->getGlobalFrameID();
