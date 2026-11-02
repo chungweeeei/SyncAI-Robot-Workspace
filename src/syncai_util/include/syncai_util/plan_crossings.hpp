@@ -59,7 +59,8 @@ struct PlanCrossing
     double x, y, z;
   };
   std::string kind;           // "stair", "kerb", "ramp"
-  bool stair_gait{false};     // "gait": "stair" (true) or "flat"
+  bool stair_gait{false};     // "gait": "stair" (true) or "flat"; the route's, so a kerb
+                              // onto a stair's top step is "stair" too
   std::string evidence;       // "track", "geometry", "declared"
   double rise{0.0};           // height between its two ends (m)
   size_t first{0}, last{0};   // inclusive pose indices into the plan

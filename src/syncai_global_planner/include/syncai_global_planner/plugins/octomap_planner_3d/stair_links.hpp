@@ -177,13 +177,15 @@
 // What a link says about the terrain -- its kind, its rise, the gait that
 // takes it -- is what the controllers read off the planner's sidecar instead
 // of guessing stairs from the path's heights (CrossingKind, CrossingGait
-// below), so a kind has to be the geometry's, not the generator's: a link the
-// stair readers laid is a stair only if it rises min_rise within
-// stair_min_rise_window of its points, the stair mode's own test; one that
-// climbs more gently between two floors (dp's 2F step, 0.2 m over 0.5 m) is
-// a ramp of the flat gait, as the stair mode made of it from the path's
-// heights too, and a sidecar that called it a stair would stop the robot
-// there to switch the policy.
+// below). A link's kind is its generator's: whatever the stair readers lay
+// is a stair, however gently its own two ends differ. Judging a stair link
+// by its own points was tried (2026-11-02) and was wrong: dp's 2F stair
+// (0.8 m, z 5.3 -> 4.5 over ~2 m) is read as a row of 24 straight links
+// whose short ones end half-way down at z 4.8, on ground that keeps falling
+// to 4.5, and its top step is a kerb line -- link by link it was a kerb, 8
+// ramps and 16 stairs, and a route over a "ramp" walked 0.6 m of stair in
+// the flat gait. The gait is therefore decided per route, over the
+// crossings it takes together (routeStairGaits below), not per link.
 //
 // What could not be linked is reported in StairLinks::notes, for the plugin
 // to log and the CLI to print: a height change on the track that stayed
@@ -324,12 +326,12 @@ struct StairLinkParams
   double gap_max_rise = 0.3;
   // The straight run either side of a gap is kerb_lead: one lead for every
   // flat-gait crossing, since its reason (the body's length) is the same.
-  // A link the stair readers laid is a stair only when it rises min_rise
-  // within this much of its points (m, xy) -- the controllers' stair mode's
-  // own test, stair_enter_dist, ~17 deg and up. One that climbs more gently
-  // between two floors -- dp's 2F step, 0.2 m over 0.5 m -- is a ramp of the
-  // flat gait (CrossingKind), which is what the stair mode made of it from
-  // the path's heights too.
+  // A route's crossings within this much of each other (m, xy, along the
+  // route) are one crossing for the gait (routeStairGaits): dp's 2F stair
+  // is a kerb link onto its top step and a stair link 0.3 m further on, and
+  // the robot cannot switch the policy between the two. Also the window of
+  // the rise test such a group is judged by -- the controllers' stair mode's
+  // stair_enter_dist, ~17 deg and up.
   double stair_min_rise_window = 1.0;
 };
 
@@ -345,7 +347,8 @@ enum class CrossingKind : uint8_t {
   Ramp,   // a rise above one step but within gap_max_rise over a short run: the flat gait
 };
 // The gait a crossing is taken in: the controllers' stair mode switches the
-// policy for Stair only.
+// policy for Stair only. StairLink::gait() is the link's own; on a route a
+// flat-gait link next to a stair is taken in the stair's (routeStairGaits).
 enum class CrossingGait : uint8_t {
   Flat,
   Stair,
@@ -462,6 +465,28 @@ bool readTrack(
 std::shared_ptr<const StairLinks> buildStairLinks(
   const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
   const octomap::OcTree * tree = nullptr);
+
+// One crossing a route takes: its inclusive span of the route's waypoints
+// and whether it is taken in the stair gait (in: the link's own gait; out:
+// the route's).
+struct RouteCrossing
+{
+  size_t first = 0, last = 0;
+  bool stair = false;
+};
+
+// The gait of each crossing on a route (see the header). Crossings in route
+// order whose spans lie within `window` (m, xy, along the route) of the
+// next are one group, judged together over the route from the group's first
+// waypoint to its last: the whole group is the stair gait when any member
+// is, or when the route rises `min_rise` within `window` anywhere in it --
+// two kerbs half a metre apart are a stair, and so is one kerb link the
+// map read as 0.3 m (dp's 2F stair's top step). Only the route between the
+// group's ends is judged, never the floor beyond: a kerb at the foot of a
+// 20 deg floor slope is the flat gait's, as the slope is.
+void routeStairGaits(
+  const std::vector<Waypoint> & route, std::vector<RouteCrossing> & crossings, double min_rise,
+  double window);
 
 }  // namespace syncai_global_planner::octomap_planner_3d
 

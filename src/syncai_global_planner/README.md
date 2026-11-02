@@ -554,8 +554,21 @@ counts them): the operator drove the G23 up a 0.4 m ledge beside dp's 2F
 door by mistake, and a planner that repeated that walk would send the robot
 up it on every route to the lab. What a link says about the terrain — its
 `kind`, `rise` and `gait`, and how it was found (`evidence`: the track, the
-geometry, or a declared file, reserved) — is what the controllers are meant
-to read instead of guessing stairs from the path's heights. `gap_max_rise`
+geometry, or a declared file, reserved) — is what the controllers read off
+`plan_crossings` instead of guessing stairs from the path's heights. A
+link's kind is its generator's: whatever the stair readers lay is a stair.
+The **gait is the route's** (`routeStairGaits`): crossings within
+`stair_min_rise_window` (1 m) of each other along a route are one group,
+taken in the stair gait when any member is a stair or the route between
+the group's ends rises `stair_min_rise` within that window. dp's 2F stair
+(0.8 m, z 5.3 → 4.5 over ~2 m) is why: the planner takes it as a kerb link
+onto the top step and a stair link 0.3 m on, and judged link by link
+(tried first, 2026-11-02, on each link's own points) its top step was a
+kerb, 8 of its 24 straight links — the short ones, which end half-way down
+at z 4.8 on ground that keeps falling — were ramps, and a route over either
+would have walked the stair in the flat gait. A lone kerb or gap is never
+judged with the floor around it, so one at the foot of a 20° floor slope
+stays the flat gait's. `gap_max_rise`
 is a placeholder, not a measurement: the RL policy has not been measured on
 short slopes, and the dp sill it walked is ~0.1 m. The `threshold` scene (a
 0.1 m sill over a 0.2 m dip, the lab door's shape): one kerb crossing, the
@@ -1113,6 +1126,7 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `kerb_links`, `kerb_lead`, `kerb_fit_radius` | `true`, `0.5`, `0.5` | Kerb links: a straight crossing at every cell of a kerb, the lead either side, the fit of the kerb's direction (see **Kerbs**); `false` = a kerb is crossed cell to cell at any angle. Build-time |
 | `gap_links`, `gap_anchor_min_area`, `gap_max_length`, `gap_max_rise` | `true`, `2.0` m², `2.5`, `0.3` | Walked gaps: a straight crossing where the track crossed, in at most `gap_max_length`, between two components of at least `gap_anchor_min_area` no more than `gap_max_rise` apart, with `kerb_lead` either side (see **Walked gaps**); `false` = the behaviour before 2026-11-02. `gap_max_rise` is a placeholder, unmeasured. Build-time |
 | `step_edge_cost_weight`, `step_edge_cost_scaling`, `step_edge_one_cell`, `kerb_cost_multiplier` | `1.0`, `5.0`, `0.5`, `1.5` | The band's cost curve, a one-cell step's share of it, and the factor on a kerb link's length (≥ 1). Dynamic |
+| `stair_min_rise_window` | `1.0` | Crossings of a route this close together (m, along the route) are one for the gait on `plan_crossings`: the stair gait when any is a stair or the route between their ends rises `stair_min_rise` within it (see **Walked gaps**). Per plan |
 | `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area`, `stair_smooth_passes` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m², `2` | Stair links from the track (see **Stairs**). Build-time |
 | `stair_straight`, `stair_straight_max_flight`, `stair_straight_fit_radius`, `stair_straight_half_width`, `stair_straight_exit_reach` | `true`, `8.0`, `1.0`, `2.0`, `0.6` | Straight links across a single flight's width instead of one along the walk (see **Stairs**); `false` = the walked link only. Build-time |
 | `stair_cost_multiplier` | `2.0` | Factor on a link's 3D length (≥ 1). Dynamic |
