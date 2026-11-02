@@ -136,7 +136,8 @@ Header-only and all `inline`:
 `plan_crossings` sidecar, one JSON object on a `std_msgs/String`:
 `PlanCrossings` (`known`, the plan's stamp and pose count, `crossings`) and
 `PlanCrossing` (kind, gait, evidence, rise, inclusive pose span, turns, the
-plan's points over it), `toJson()` / `fromJson()` (nlohmann, behind the
+plan's points over it; for kind `narrow`, a passage narrower than the robot
+turns in, also `width` and `heading`), `toJson()` / `fromJson()` (nlohmann, behind the
 `.cpp`; a message it cannot read is a `false` with a reason, never a throw or
 a half-read). planner_server writes it (`GlobalPlanner::planAnnotations()`),
 `StairMode` and the costmap's `TerrainLayer` read it. The header has the

@@ -57,6 +57,33 @@ TEST(PlanCrossings, WhatIsWrittenIsReadBack)
   EXPECT_EQ(back.crossings[1].kind, "ramp");
   EXPECT_FALSE(back.crossings[1].stair_gait);
   EXPECT_DOUBLE_EQ(back.crossings[1].rise, 0.2);
+  EXPECT_DOUBLE_EQ(back.crossings[1].width, 0.0);  // not a passage: no width written or read
+}
+
+TEST(PlanCrossings, ANarrowPassageCarriesItsWidthAndAxis)
+{
+  PlanCrossings c;
+  c.known = true;
+  c.frame_id = "map";
+  c.poses = 88;
+  PlanCrossing n;
+  n.kind = "narrow";
+  n.evidence = "geometry";
+  n.first = 61;
+  n.last = 77;
+  n.width = 0.65;
+  n.heading = -1.466;
+  c.crossings = {n};
+  const std::string json = toJson(c);
+  EXPECT_NE(json.find("\"width\""), std::string::npos);
+  PlanCrossings back;
+  std::string error;
+  ASSERT_TRUE(fromJson(json, back, error)) << error;
+  ASSERT_EQ(back.crossings.size(), 1u);
+  EXPECT_EQ(back.crossings[0].kind, "narrow");
+  EXPECT_FALSE(back.crossings[0].stair_gait);
+  EXPECT_DOUBLE_EQ(back.crossings[0].width, 0.65);
+  EXPECT_DOUBLE_EQ(back.crossings[0].heading, -1.466);
 }
 
 TEST(PlanCrossings, UnknownAppliesToNoPlanAndEmptyIsStillAnAnswer)

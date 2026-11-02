@@ -28,6 +28,10 @@ std::string toJson(const PlanCrossings & c)
       pts.push_back({p.x, p.y, p.z});
     }
     e["pts"] = std::move(pts);
+    if (x.width > 0.0) {
+      e["width"] = x.width;
+      e["heading"] = x.heading;
+    }
     list.push_back(std::move(e));
   }
   j["crossings"] = std::move(list);
@@ -100,6 +104,12 @@ bool fromJson(const std::string & json, PlanCrossings & out, std::string & error
     }
     if (e.contains("rise") && e["rise"].is_number()) {
       x.rise = e["rise"].get<double>();
+    }
+    if (e.contains("width") && e["width"].is_number()) {
+      x.width = e["width"].get<double>();
+    }
+    if (e.contains("heading") && e["heading"].is_number()) {
+      x.heading = e["heading"].get<double>();
     }
     x.first = e["first"].get<size_t>();
     x.last = e["last"].get<size_t>();

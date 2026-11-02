@@ -517,6 +517,21 @@
       shortcut: true
       interpolation_resolution: 0.1
       path_z_offset: 0.0
+      # Narrow passages (2026-11-02, path_postprocess.hpp): every stretch of
+      # the plan where the floor between the walls either side is narrower
+      # than narrow_max_width goes out on plan_crossings as kind "narrow",
+      # with its width and axis, grown by narrow_lead either side -- where a
+      # follower squares up before it. 0.85 is the footprint's diagonal
+      # (0.70 x 0.44 m + 0.01 padding, controller_server_params.yaml): the
+      # narrowest width it can turn round in. dp's 2F lab door (0.75 m between
+      # the jambs) reads 0.65 at 0.1 m; the robot reached it 20-70 deg off
+      # its axis twice and stuck. 0.5 is a body length. The width is to a
+      # cell (+-0.1 m), and to what the surface map refuses: a few one-cell
+      # pits in a floor narrow it as a wall does (dp's 2F at (11, -19.5), a
+      # 0.8 m "passage" between two pits' footprint rings: a map to repair,
+      # docs/octomap-repair.md). 0 = none sent. Dynamic.
+      narrow_max_width: 0.85
+      narrow_lead: 0.5
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").

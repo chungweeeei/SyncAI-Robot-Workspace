@@ -82,6 +82,9 @@ void usage()
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
     "  --no-shortcut            keep the raw A* cell chain\n"
+    "  --narrow <width> <lead>  each --plan's narrow passages (path_postprocess.hpp): narrower\n"
+    "                           than width (m, 0 = off), grown by lead (m) either side; the\n"
+    "                           plugin's narrow_max_width / narrow_lead (0.85 0.5)\n"
     "  --no-stair-links         no stair links at all: neither the --poses track's flights\n"
     "                           nor the stairs detected off the map (--param stair_detect=0\n"
     "                           keeps the track's only), nor the kerb links (--param\n"
@@ -808,7 +811,8 @@ int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
   std::vector<PlannedPath> * planned, const DynamicMask * mask, const KeepoutMask * keepout,
-  const std::vector<KeepoutZone> & zones, const StairLinkParams & stair_params)
+  const std::vector<KeepoutZone> & zones, const StairLinkParams & stair_params,
+  double narrow_width, double narrow_lead)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -926,6 +930,13 @@ int runPlan(
       linkName(l, u.reversed ? "<-" : "->").c_str(), m.zTop(u.reversed ? l.b : l.a),
       m.zTop(u.reversed ? l.a : l.b), l.length, stair ? "stair" : "flat",
       stair != (l.gait() == CrossingGait::Stair) ? ", the route's, not the link's" : "");
+  }
+  for (const NarrowSpan & n : findNarrowPassages(m, path, narrow_width, narrow_lead)) {
+    std::printf(
+      "plan:   narrow passage: %.2f m wide, poses %zu..%zu, (%.2f, %.2f) -> (%.2f, %.2f), axis "
+      "%.0f deg\n",
+      n.width, n.first, n.last, path[n.first].x, path[n.first].y, path[n.last].x, path[n.last].y,
+      n.heading * 180.0 / M_PI);
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1249,6 +1260,7 @@ int main(int argc, char ** argv)
   std::string out_path;
   std::string write_bt_path;
   bool shortcut = true;
+  double narrow_width = 0.85, narrow_lead = 0.5;  // --narrow
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&](const char * what) -> std::string {
@@ -1317,6 +1329,9 @@ int main(int argc, char ** argv)
       write_bt_path = next("--write-bt");
     } else if (a == "--no-shortcut") {
       shortcut = false;
+    } else if (a == "--narrow") {
+      narrow_width = std::atof(next("--narrow").c_str());
+      narrow_lead = std::atof(next("--narrow").c_str());
     } else if (a == "--no-stair-links") {
       stair_links = false;
     } else if (a == "--floor-pcd") {
@@ -1633,7 +1648,7 @@ int main(int argc, char ** argv)
       }
       rc |= runPlan(
         astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned, mask.get(),
-        keepout.get(), zones, stair_params);
+        keepout.get(), zones, stair_params, narrow_width, narrow_lead);
     }
   }
   if (!image_path.empty()) {
