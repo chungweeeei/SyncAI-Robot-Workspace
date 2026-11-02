@@ -9,6 +9,26 @@ enum BuilderStatus
     MAPPING         
 };
 
+// One process() call as the node's health log sees it (2026-11-02): the
+// lidar update's numbers and the IMU samples it fused. The IMU half exists
+// for satu_acc: the 2026-10-30 dock bag peaked at ~33 m/s^2 against
+// satu_acc 30, and an axis at or over it is dropped from the update
+// (PointEKF::updateIMU) with nothing logged. Counted with the same test.
+//  - imu_samples: IMU samples fused this call.
+//  - acc_saturated / gyro_saturated: of those, samples with at least one axis
+//    at or over satu_acc / satu_gyro.
+//  - acc_abs_max / gyro_abs_max: the largest |axis| seen (m/s^2 after
+//    imu_acc_scale; rad/s).
+struct ScanHealth
+{
+  LidarUpdateStats lidar;
+  int imu_samples = 0;
+  int acc_saturated = 0;
+  int gyro_saturated = 0;
+  double acc_abs_max = 0.0;
+  double gyro_abs_max = 0.0;
+};
+
 class MapBuilder
 {
 public:
@@ -16,6 +36,8 @@ public:
 
     void process(SyncPackage &package);
     BuilderStatus status() { return m_status; }
+    // The last process() call's; zero lidar numbers outside MAPPING.
+    const ScanHealth & health() const { return m_health; }
     std::shared_ptr<LidarProcessor> lidar_processor() { return m_lidar_processor; }
 
     // Motion-compensate one scan of the last process() call into the body
@@ -53,4 +75,5 @@ private:
     Vec<StampedPose> m_group_poses;
     double m_last_state_time = -1.0;
     double m_last_cov_time = -1.0;
+    ScanHealth m_health;
 };

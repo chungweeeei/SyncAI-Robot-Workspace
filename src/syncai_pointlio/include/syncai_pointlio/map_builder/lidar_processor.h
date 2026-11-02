@@ -24,6 +24,32 @@ struct PointGroup
     int end;
 };
 
+// What the point-to-plane update of one scan did, for the node's health log
+// (2026-11-02). On 2026-10-30 robot01's Point-LIO diverged and nothing it
+// logged said how well its scans had been matching beforehand; these are the
+// numbers that would have. Reset by preprocess(), filled by updateChunk().
+//  - points: the downsampled scan, what the update sees.
+//  - near: points with near_search_num map neighbours, the farthest within
+//    sqrt(5) m. Few means the scan does not land on the map -- the pose is
+//    already wrong, or the place is new.
+//  - effective: points of `near` whose neighbours fit a plane (plane_thr) and
+//    that passed the residual gate, i.e. the rows of the update. Near but not
+//    effective means surroundings that are not planar (grass, foliage,
+//    people).
+//  - residual_sum: sum of |n^T p + d| of the effective points before their
+//    update, metres.
+//  - chunks / chunks_updated: update chunks, and those with at least one
+//    effective point. A chunk without one is IMU propagation only.
+struct LidarUpdateStats
+{
+  int points = 0;
+  int near = 0;
+  int effective = 0;
+  double residual_sum = 0.0;
+  int chunks = 0;
+  int chunks_updated = 0;
+};
+
 class LidarProcessor
 {
 public:
@@ -42,6 +68,9 @@ public:
     // Point-to-plane update of one group at its own timestamp; groups larger
     // than batch_max_points are split into sequential chunks.
     void processGroup(const PointGroup &group);
+
+    // The last preprocess() + processGroup() calls' numbers.
+    const LidarUpdateStats & stats() const { return m_stats; }
 
     static CloudType::Ptr transformCloud(CloudType::Ptr inp, const M3D &r, const V3D &t);
     M3D r_wl() { return m_kf->x().r_wi * m_kf->x().r_il; }
@@ -73,4 +102,5 @@ private:
     pcl::VoxelGrid<PointType> m_scan_filter;
     HMatX12D m_H;
     Eigen::VectorXd m_z;
+    LidarUpdateStats m_stats;
 };

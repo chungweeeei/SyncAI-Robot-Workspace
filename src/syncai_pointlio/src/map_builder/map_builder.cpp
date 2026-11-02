@@ -20,6 +20,14 @@ void MapBuilder::processIMU(const IMUData & imu)
   m_kf->predictState(imu.time - m_last_state_time);
   m_kf->predictCov(imu.time - m_last_cov_time);  // The covariance matrix likewise
   m_kf->updateIMU(imu.gyro, imu.acc);  // Correct the estimate with the IMU reading as measurement
+  ++m_health.imu_samples;
+  const double acc_max = imu.acc.cwiseAbs().maxCoeff();
+  const double gyro_max = imu.gyro.cwiseAbs().maxCoeff();
+  // >=, the complement of updateIMU's `< satu` keep test.
+  if (acc_max >= m_config.satu_acc) ++m_health.acc_saturated;
+  if (gyro_max >= m_config.satu_gyro) ++m_health.gyro_saturated;
+  m_health.acc_abs_max = std::max(m_health.acc_abs_max, acc_max);
+  m_health.gyro_abs_max = std::max(m_health.gyro_abs_max, gyro_max);
   m_last_state_time = std::max(imu.time, m_last_state_time);
   m_last_cov_time = std::max(imu.time, m_last_cov_time);
 }
@@ -32,6 +40,7 @@ void MapBuilder::predictTo(double time)
 
 void MapBuilder::process(SyncPackage & package)
 {
+  m_health = ScanHealth();
   if (m_status == BuilderStatus::IMU_INIT) {
     if (m_imu_initializer->initialize(package)) {
       // The propagation clock starts at the end of this frame
@@ -105,6 +114,7 @@ void MapBuilder::process(SyncPackage & package)
   }
   predictTo(package.cloud_end_time);
   m_group_poses.push_back({package.cloud_end_time, m_kf->x().r_wi, m_kf->x().t_wi});
+  m_health.lidar = m_lidar_processor->stats();
 
   // After downsampling, each map voxel keeps only the point closest to its centre.
   // Done incrementally: the map is not rebuilt, only the incoming points are judged for insertion
