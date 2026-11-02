@@ -28,6 +28,13 @@
 // A robot within the hysteresis of a U-turn's tip may read as already on the
 // way back, which is what it is about to be.
 //
+// It passes a U-turn only once the robot has been within that hysteresis of
+// the tip, and nothing made a controller go there: on robot01 (2026-11-02)
+// MPPI, handed an out-and-back whole, stopped 0.84 m short of the tip for good
+// and every place on the path stayed on the outgoing leg. The controller
+// server therefore cuts a path at its cusps and drives it leg by leg
+// (path_cusps.hpp); each leg ends on its tip, so the robot gets there.
+//
 // ROS-free apart from the message types; test/test_path_progress.cpp.
 
 #include <cmath>
