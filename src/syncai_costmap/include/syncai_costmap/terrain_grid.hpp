@@ -116,6 +116,22 @@
 // path's heights seed the flood too, so a ramp whose foot the lidar never
 // looked at is still the floor the planner says it is.
 //
+// Slope beside an obstacle (2026-11-02): a cell the obstacle rule judges
+// lethal -- a door jamb, a wall foot, a box -- has a "ground" that is the
+// lower quantile of the thing's own returns, 0.15-0.3 m over the floor when
+// the foot is hidden, and the slope rule fitted it with the floor beside it:
+// every disc that reached a jamb spanned more than a step and tilted past
+// max_slope_deg, so a band of slope cells a disc's radius wide stood in front
+// of each jamb. dp's 2F lab door, 0.75 m between its jambs in map.pcd and
+// lethal on robot01, replayed from the sim's scans on the approach: 0.5 m of
+// free lane for a 0.46 m footprint, MPPI's every candidate in collision. The
+// fit now leaves the obstacle cells out (they are lethal anyway): 0.6 m.
+// Rejected: leaving out their 8-neighbours as well, whose 3x3 ground took the
+// jamb's returns too -- the door opened to 0.7 m, but that ring is the wall
+// foot's lethal band and a stair's edge cells, and those tests failed; and
+// estimating the ground a second time without the obstacles' returns, which
+// broke the wall foot, the box on unseen floor and the crossing's person.
+//
 // Stairs are not this grid's business: the step and slope rules refuse a
 // flight, as Octo3D's do, and nothing here opens one. A stair is crossed
 // only over the global planner's stair link, by the controllers' stair mode,
@@ -328,6 +344,8 @@ private:
   // Ground estimate per cell from the samples, the robot's ground where
   // there are too few.
   void estimateGround(double now, double robot_ground_z) const;
+  // The slope rule's plane under the disc at (ix, iy), through the known
+  // grounds of the cells that are not obstacles (obstacle_).
   bool fitSlope(int ix, int iy, double & tilt_deg) const;
   bool cellHasObstacle(size_t i, double now, double ground) const;
   // The reach flood (classify()) into `reached`: from the robot's cell, and
@@ -374,6 +392,9 @@ private:
   // reference height per cell.
   mutable std::vector<uint8_t> walkable_;
   mutable std::vector<float> obstacle_ref_;
+  // The obstacle rule's verdict per cell, before the other rules: the slope
+  // fit leaves these out (the header has why).
+  mutable std::vector<uint8_t> obstacle_;
   mutable std::vector<float> scratch_;
   mutable std::vector<int> queue_;
 };

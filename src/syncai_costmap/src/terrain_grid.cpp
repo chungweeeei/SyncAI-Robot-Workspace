@@ -424,6 +424,8 @@ bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
   // Least-squares plane z = a x + b y + c through the known grounds under
   // the disc; tilt = atan(hypot(a, b)). surface_map.cpp's stage 5, without
   // its residual test: a quantile ground is smoother than a voxel top face.
+  // An obstacle cell's ground is the thing's returns, not floor: left out,
+  // as Octo3D fits only the surface cells (the header has the door).
   const int r = static_cast<int>(std::ceil(params.robot_radius / res_));
   const double r2 = params.robot_radius * params.robot_radius;
   double sx = 0, sy = 0, sz = 0, sxx = 0, sxy = 0, syy = 0, sxz = 0, syz = 0;
@@ -441,7 +443,7 @@ bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
         continue;
       }
       const size_t j = index(nx, ny);
-      if (!ground_known_[j]) {
+      if (!ground_known_[j] || obstacle_[j]) {
         continue;
       }
       const double z = ground_[j];
@@ -572,6 +574,17 @@ void TerrainGrid::classify(
     floodReach(robot_x, robot_y, false, walkable_);
   }
   obstacleReference();
+  // 1. A return in the band above the ground: a wall foot, a box, a person, a
+  // tread two risers up. A sparse cell's band starts from obstacleReference()'s
+  // height, not the borrowed one. On a planner's flat-gait crossing the band
+  // starts its rise higher (TerrainParams::crossing_radius has why). Judged
+  // for every cell before the loop, because the slope rule's fit reads it
+  // for the cells round the one it judges.
+  obstacle_.assign(cells_.size(), 0);
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    obstacle_[i] =
+      cellHasObstacle(i, now, obstacle_ref_[i] + (waived_[i] ? waive_lift_[i] : 0.f)) ? 1 : 0;
+  }
   TerrainStats st;
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
@@ -582,12 +595,7 @@ void TerrainGrid::classify(
       }
       const double ground = ground_[i];
 
-      // 1. A return in the band above the ground: a wall foot, a box, a
-      // person, a tread two risers up. A sparse cell's band starts from
-      // obstacleReference()'s height, not the borrowed one.
-      // On a planner's flat-gait crossing the band starts its rise higher
-      // (TerrainParams::crossing_radius has why).
-      if (cellHasObstacle(i, now, obstacle_ref_[i] + (waived_[i] ? waive_lift_[i] : 0.f))) {
+      if (obstacle_[i]) {
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_obstacle;
         continue;

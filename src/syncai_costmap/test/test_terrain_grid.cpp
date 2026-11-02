@@ -280,6 +280,37 @@ TEST(TerrainGrid, WallFootIsLethalWhetherOrNotTheFloorUnderItWasSeen)
   EXPECT_GT(hidden.share(0.95, 1.05, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
 }
 
+TEST(TerrainGrid, ADoorsJambsDoNotTiltTheFloorBetweenThem)
+{
+  // A wall at x = 1 with a 0.75 m door (dp's 2F lab door), the floor beyond
+  // 5 cm higher, and the wall's and the jambs' feet hidden below 0.15 m, as
+  // the lower FOV leaves them. The jambs are lethal; the lane between them
+  // must not be walled off by the slope rule fitting their returns as
+  // ground. Before 2026-11-02, with them in the fit: 0.958 of the 0.6 m lane
+  // free, and 0.345 of the strip in front of the wall (1.000 and 0.667 now;
+  // what is left there is the ring next to the wall, see the header).
+  constexpr double kHalf = 0.375;
+  Scene s;
+  const auto floor_z = [](double x, double) { return x > 1.0 ? 0.05 : 0.0; };
+  s.surface(kOrigin, 0.95, kOrigin, -kOrigin, floor_z);
+  s.surface(0.95, 1.2, -kHalf, kHalf, floor_z);  // the doorway
+  s.surface(1.2, -kOrigin, kOrigin, -kOrigin, floor_z);
+  s.wall(1.0, kOrigin, -kHalf, 0.15, 1.4);
+  s.wall(1.0, kHalf, -kOrigin, 0.15, 1.4);
+  for (double x = 1.0; x < 1.15; x += kRes / 2) {
+    for (const double y : {-kHalf, kHalf}) {
+      for (double z = 0.15; z < 1.4; z += 0.03) {
+        s.grid.addSample(x, y, z + s.noise(s.rng), kNow - 1.0);
+      }
+    }
+  }
+  s.classify();
+  EXPECT_GT(s.share(0.95, 1.1, 0.45, 0.6, LETHAL_OBSTACLE), 0.9);  // the jambs
+  EXPECT_GT(s.share(0.95, 1.1, -0.6, -0.45, LETHAL_OBSTACLE), 0.9);
+  EXPECT_GT(s.share(0.9, 1.1, -0.3, 0.3, FREE_SPACE), 0.98);  // a 0.6 m lane
+  EXPECT_GT(s.share(0.75, 0.9, 0.5, 1.9, FREE_SPACE), 0.6);  // in front of the wall
+}
+
 TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
 {
   // dp's lobby stair on robot01, 2026-10-22: the robot walked under its

@@ -282,7 +282,16 @@ and judges every cell on each update:
 5. **Slope**: the plane fitted under the `robot_radius` disc steeper than
    `max_slope_deg` (20) → LETHAL, judged only when the disc spans more than a
    step (a level floor with a kerb is not fitted) and at least
-   `slope_min_known` of it has a ground.
+   `slope_min_known` of it has a ground. The fit leaves out the cells rule 2
+   made obstacles (2026-11-02): their "ground" is the thing's own returns, and
+   a door jamb's, fitted with the floor beside it, tilted every disc that
+   reached it past the limit. dp's 2F lab door (0.75 m between the jambs,
+   lethal on robot01), replayed from the sim's scans on the approach, had a
+   0.5 m free lane for the 0.46 m footprint; 0.6 m with the jamb out of the
+   fit. The ring next to an obstacle keeps its ground (its 3x3 estimate took
+   the jamb's returns too): leaving it out opened the door to 0.7 m, but that
+   ring is a wall foot's lethal band and a stair's edge cells, and the stair
+   test lost half its lethal cells.
 6. Nothing seen → NO_INFORMATION; the rest FREE. Then `updateWithMax`, the
    footprint cleared (its floor is never seen and the robot's legs are in the
    cloud), and the `InflationLayer` inflates it all.
@@ -474,7 +483,7 @@ paths start passing suspiciously close to walls.
 
 `test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
 syncai_costmap`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
-step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a stair's underside
+step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a door's jambs, a stair's underside
 overhead (and with no floor seen under it), a stair lethal with and
 without a climbing path, the window moving — with no ROS; it also builds on a workstation
 with plain `clang++` against `include/` and googletest.
