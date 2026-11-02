@@ -1,6 +1,7 @@
 #ifndef SYNCAI_NAV_CORE__GLOBAL_PLANNER_HPP_
 #define SYNCAI_NAV_CORE__GLOBAL_PLANNER_HPP_
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -45,6 +46,55 @@ public:
   virtual nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) = 0;
+
+  /**
+   * @brief One path from `start` through every pose of `goals`, in order
+   * (compute_path_through_poses, 2026-11: navigate_through_poses' patrol
+   * route).
+   *
+   * The default plans each leg with createPlan() from where the previous one
+   * ended and joins them, dropping each later leg's first pose when it
+   * repeats the joint; every pose but the last then faces the next one, so
+   * a waypoint's own heading is ignored and only the last goal's is kept.
+   * A planner whose createPlan() takes its start from the robot rather than
+   * the request (OctomapPlanner3D reads the start's height from TF) must
+   * override it: later legs start at a waypoint, not at the robot. Empty on
+   * any leg's failure, as createPlan() is.
+   */
+  virtual nav_msgs::msg::Path createPlanThroughPoses(
+    const geometry_msgs::msg::PoseStamped & start,
+    const std::vector<geometry_msgs::msg::PoseStamped> & goals)
+  {
+    nav_msgs::msg::Path path;
+    geometry_msgs::msg::PoseStamped leg_start = start;
+    for (const auto & goal : goals) {
+      nav_msgs::msg::Path leg = createPlan(leg_start, goal);
+      if (leg.poses.empty()) {
+        return nav_msgs::msg::Path();
+      }
+      path.header = leg.header;
+      auto first = leg.poses.begin();
+      if (!path.poses.empty()) {
+        const auto & a = path.poses.back().pose.position;
+        const auto & b = first->pose.position;
+        if (a.x == b.x && a.y == b.y && a.z == b.z) {
+          ++first;
+        }
+      }
+      path.poses.insert(path.poses.end(), first, leg.poses.end());
+      leg_start = leg.poses.back();
+    }
+    for (size_t i = 0; i + 1 < path.poses.size(); ++i) {
+      const auto & a = path.poses[i].pose.position;
+      const auto & b = path.poses[i + 1].pose.position;
+      const double yaw = std::atan2(b.y - a.y, b.x - a.x);
+      path.poses[i].pose.orientation.x = 0.0;
+      path.poses[i].pose.orientation.y = 0.0;
+      path.poses[i].pose.orientation.z = std::sin(yaw / 2.0);
+      path.poses[i].pose.orientation.w = std::cos(yaw / 2.0);
+    }
+    return path;
+  }
 
   /**
    * @brief Is the part of `path` still ahead of `robot_pose` free, in this
