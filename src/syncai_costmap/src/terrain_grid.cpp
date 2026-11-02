@@ -215,6 +215,12 @@ void TerrainGrid::clearRay(double ox, double oy, double oz, double x, double y, 
   if (reach <= 0.0 || len < 1e-6) {
     return;
   }
+  // The ground bound (the header) goes further: every cell but the one the
+  // return lands in. A ray is above the surface it ends on all the way --
+  // the grazing that keeps clearing short of the end only brings it within
+  // the tolerance of a floor, never under it -- and the cells right before
+  // a wall are where the borrowed ground stands.
+  const double reach_cap = len - res_;
   int ix, iy;
   if (!worldToCell(ox, oy, ix, iy)) {
     // The lidar outside the window: the rolling window is centred on the
@@ -249,15 +255,22 @@ void TerrainGrid::clearRay(double ox, double oy, double oz, double x, double y, 
 
   double s_in = 0.0;
   bool first = true;
-  while (s_in < reach) {
-    const double s_out = std::min(std::min(s_x, s_y), reach);
+  while (s_in < reach_cap) {
+    const double s_out = std::min(std::min(s_x, s_y), reach_cap);
     // The lidar's own cell holds the robot's legs; the footprint is cleared
     // anyway. Every other cell: the ray's height at the middle of its
     // crossing (it drops at most a centimetre across a cell at the angles
     // the lidar sees the floor at, inside the tolerance).
     if (!first) {
       const float h = static_cast<float>(oz + dz_ds * 0.5 * (s_in + s_out));
-      clearCell(index(ix, iy), h, ts, tol);
+      if (s_in < reach) {
+        clearCell(index(ix, iy), h, ts, tol);
+      }
+      Cell & c = cells_[index(ix, iy)];
+      if (h < c.ray_lo || ts - c.ray_lo_t > static_cast<float>(params.ground_memory)) {
+        c.ray_lo = h;
+        c.ray_lo_t = ts;
+      }
     }
     first = false;
     if (s_x < s_y) {
@@ -352,6 +365,7 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
   ground_known_.assign(cells_.size(), 0);
 
   const float oldest = rel(now) - static_cast<float>(params.ground_memory);
+  ground_oldest_ = oldest;
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
       const size_t i = index(ix, iy);
@@ -371,6 +385,18 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
               scratch_.push_back(s.z);
             }
           }
+        }
+      }
+      // A ray through this cell within the memory proves it empty at its
+      // height: no gathered sample above that is this cell's ground (the
+      // header; a jamb's returns next door to the lane).
+      {
+        const Cell & own = cells_[i];
+        if (own.ray_lo_t >= oldest) {
+          const float cap = own.ray_lo + static_cast<float>(params.ray_clear_tolerance);
+          scratch_.erase(
+            std::remove_if(scratch_.begin(), scratch_.end(), [cap](float z) { return z > cap; }),
+            scratch_.end());
         }
       }
       // Overhead returns out, against the neighbourhood's lowest (2026-10-22;
@@ -419,13 +445,29 @@ bool TerrainGrid::cellHasObstacle(size_t i, double now, double ground) const
   return false;
 }
 
+bool TerrainGrid::groundSupported(size_t i) const
+{
+  const Cell & c = cells_[i];
+  const float g = ground_[i];
+  const float lift = static_cast<float>(params.max_ground_lift);
+  for (int k = 0; k < c.count; ++k) {
+    const Sample & s = c.ring[k];
+    if (s.t >= ground_oldest_ && std::fabs(s.z - g) <= lift) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
 {
   // Least-squares plane z = a x + b y + c through the known grounds under
   // the disc; tilt = atan(hypot(a, b)). surface_map.cpp's stage 5, without
   // its residual test: a quantile ground is smoother than a voxel top face.
   // An obstacle cell's ground is the thing's returns, not floor: left out,
-  // as Octo3D fits only the surface cells (the header has the door).
+  // as Octo3D fits only the surface cells (the header has the door). So is
+  // a ground none of the cell's own returns stand on, a neighbour's (the
+  // header has the jamb's inner cells, and the band before a wall).
   const int r = static_cast<int>(std::ceil(params.robot_radius / res_));
   const double r2 = params.robot_radius * params.robot_radius;
   double sx = 0, sy = 0, sz = 0, sxx = 0, sxy = 0, syy = 0, sxz = 0, syz = 0;
@@ -443,7 +485,7 @@ bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
         continue;
       }
       const size_t j = index(nx, ny);
-      if (!ground_known_[j] || obstacle_[j]) {
+      if (!ground_known_[j] || obstacle_[j] || !groundSupported(j)) {
         continue;
       }
       const double z = ground_[j];

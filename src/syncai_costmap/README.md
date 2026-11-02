@@ -244,6 +244,18 @@ and judges every cell on each update:
    inside `max_rel_z`, pushed the floor seen from further off out of the
    rings and became the ground under it — islands and steps round the robot,
    MPPI failing half its cycles for 18 s, the robot standing and twitching.
+   **A ray through a cell bounds its ground** (2026-11-03; elevation_mapping's
+   visibility cleanup): `clearRay()` also records per cell the lowest height
+   a ray crossed it at within `ground_memory`, and the estimate takes no
+   gathered sample above that + `ray_clear_tolerance` — the ray proves the
+   column empty there, so a jamb's or a wall's returns next door are not
+   this cell's ground. Not in the cell a ray ends in, so a wall keeps its own
+   cell while the rays that end on it cap the cells before it, where the
+   island band stood wherever the lower FOV hid a wall's foot (dp's lab, the
+   pocket beside the door the robot stuck in: 73 → 96 of 132 cells not
+   lethal, the lane out of the door 0.5 → 0.6 m, replayed from the sim's
+   scans). Every surface lies under the rays that end on or beyond it, so a
+   box top, a tread or the floor across a drop-off keeps its estimate.
 2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
    (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
    that ground (for a sparse cell, the reference above) → LETHAL.
@@ -291,7 +303,12 @@ and judges every cell on each update:
    fit. The ring next to an obstacle keeps its ground (its 3x3 estimate took
    the jamb's returns too): leaving it out opened the door to 0.7 m, but that
    ring is a wall foot's lethal band and a stair's edge cells, and the stair
-   test lost half its lethal cells.
+   test lost half its lethal cells. And the fit takes only grounds a cell's
+   own returns stand on (`groundSupported()`, 2026-11-03): a jamb's inner
+   cells, too few returns for rule 2 and the jamb's next door for a ground,
+   tilted every disc that reached them (the lab door on the way in: 0.6 →
+   0.7 m, 0.75 in `map.pcd`). The 0.15 m slope band in front of a seen wall
+   foot went with it: lethal starts at the wall's own cell.
 6. Nothing seen → NO_INFORMATION; the rest FREE. Then `updateWithMax`, the
    footprint cleared (its floor is never seen and the robot's legs are in the
    cloud), and the `InflationLayer` inflates it all.
@@ -483,7 +500,7 @@ paths start passing suspiciously close to walls.
 
 `test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
 syncai_costmap`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
-step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a door's jambs, a stair's underside
+step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a door's jambs, a wall foot and a door lane under the scan's rays, a stair's underside
 overhead (and with no floor seen under it), a stair lethal with and
 without a climbing path, the window moving — with no ROS; it also builds on a workstation
 with plain `clang++` against `include/` and googletest.
