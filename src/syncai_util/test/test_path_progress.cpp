@@ -2,7 +2,8 @@
 // poses: a straight line, an out-and-back whose two legs lie on top of each
 // other, a closed loop ending on its start, and a stair route whose upper floor
 // is over the lower one. Each case walks a robot along the route the way the
-// controller would see it and checks the place never jumps to a later leg.
+// controller would see it and checks the place never jumps to a later leg --
+// and that it does pass a U-turn's tip the robot turned round short of.
 
 #include <gtest/gtest.h>
 
@@ -32,6 +33,33 @@ geometry_msgs::msg::PoseStamped poseAt(double x, double y, double z = 0.0)
 geometry_msgs::msg::Pose robotAt(double x, double y, double z = 0.0)
 {
   return poseAt(x, y, z).pose;
+}
+
+geometry_msgs::msg::Pose robotFacing(double x, double y, double yaw)
+{
+  auto pose = poseAt(x, y).pose;
+  pose.orientation.z = std::sin(yaw / 2.0);
+  pose.orientation.w = std::cos(yaw / 2.0);
+  return pose;
+}
+
+// A -> B -> A along y = 0, B at x = 6 (pose 60): the robot walks up to
+// `short_of` metres before the tip facing it, turns in place there (the
+// controller's final rotation on the cusp), and walks back facing home.
+// Returns the place after the walk back to x = 0.
+size_t turnShortOfTheTip(const nav_msgs::msg::Path & path, PathProgress & progress, double short_of)
+{
+  const double turn_x = 6.0 - short_of;
+  for (double x = 0.0; x <= turn_x + 1e-9; x += 0.2) {
+    progress.update(path, robotFacing(x, 0.05, 0.0), false);
+  }
+  for (int k = 0; k <= 10; ++k) {
+    progress.update(path, robotFacing(turn_x, 0.05, M_PI * k / 10.0), false);
+  }
+  for (double x = turn_x; x >= 0.0; x -= 0.2) {
+    progress.update(path, robotFacing(x, -0.05, M_PI), false);
+  }
+  return progress.update(path, robotFacing(0.0, -0.05, M_PI), false);
 }
 
 // Straight segments through `corners`, sampled every kStep, corners included
@@ -99,6 +127,58 @@ TEST(PathProgress, OutAndBackDoesNotJumpToTheReturnLeg)
     progress.update(path, robotAt(0.2 * i, -0.05), false);
   }
   EXPECT_GE(progress.index(), path.poses.size() - 3);
+}
+
+TEST(PathProgress, TurnedRoundShortOfTheTipPassesIt)
+{
+  // The controller's turn on the cusp is not held on the spot: in the sim it
+  // ended 0.29 m from the tip (2026-11-02). Beyond the 0.3 m hysteresis the
+  // place used to stay on the outgoing leg for good.
+  const auto path = polyline({{0, 0}, {6, 0}, {0, 0}});
+  for (const double short_of : {0.2, 0.29, 0.45, 0.55}) {
+    PathProgress progress;
+    EXPECT_EQ(turnShortOfTheTip(path, progress, short_of), path.poses.size() - 1)
+      << "turned " << short_of << " m short of the tip";
+  }
+}
+
+TEST(PathProgress, StillWalkingUpToTheTipStaysOnTheOutgoingLeg)
+{
+  // Within the pass radius but facing the tip: not turned round yet.
+  const auto path = polyline({{0, 0}, {6, 0}, {0, 0}});
+  PathProgress progress;
+  for (double x = 0.0; x <= 5.6 + 1e-9; x += 0.2) {
+    const size_t idx = progress.update(path, robotFacing(x, 0.05, 0.0), false);
+    EXPECT_LE(idx, 60u) << "robot at x " << x;
+    EXPECT_NEAR(path.poses[idx].pose.position.x, x, 0.051);
+  }
+}
+
+TEST(PathProgress, TurnedRoundFarFromTheTipStaysPut)
+{
+  // 1 m short is outside the pass radius: nothing says the robot was ever at
+  // the tip, and the place does not jump onto the return leg.
+  const auto path = polyline({{0, 0}, {6, 0}, {0, 0}});
+  PathProgress progress;
+  EXPECT_LE(turnShortOfTheTip(path, progress, 1.0), 60u);
+}
+
+TEST(PathProgress, PassToMovesForwardOnly)
+{
+  const auto path = polyline({{0, 0}, {6, 0}, {0, 0}});
+  PathProgress progress;
+  progress.passTo(30);  // no path yet: nothing to move along
+  EXPECT_EQ(progress.index(), 0u);
+  progress.update(path, robotAt(2.0, 0), false);
+  progress.passTo(60);
+  EXPECT_EQ(progress.index(), 60u);
+  progress.passTo(10);
+  EXPECT_EQ(progress.index(), 60u);
+  // From the tip, a robot walking back is found on the return leg.
+  EXPECT_NEAR(
+    path.poses[progress.update(path, robotFacing(4.0, 0, M_PI), false)].pose.position.x, 4.0,
+    0.051);
+  EXPECT_GT(progress.index(), 60u);
 }
 
 TEST(PathProgress, ClosedLoopStartsAtTheStartAndEndsAtTheEnd)

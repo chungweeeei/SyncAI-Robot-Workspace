@@ -491,6 +491,9 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
   leg_ends_.push_back(path.poses.size() - 1);
 
   current_path_ = path;
+  // Its own cusps are the ones cut here, so it passes the robot over them at
+  // the same turns (path_progress.hpp).
+  path_progress_.setCuspParams(cusp_params_);
   path_progress_.reset();
   startLeg(0);
 }
@@ -1123,6 +1126,10 @@ bool ControllerServer::isGoalReached()
         tf2::getYaw(pose.pose.orientation), tf2::getYaw(transformed_end_pose.pose.orientation)),
       leg_ + 2, legs_.size(),
       syncai_util::geometry_utils::calculate_path_length(legs_[leg_ + 1], 0));
+    // The goal checker has the robot on the cusp, whatever the turn in place
+    // drifted: the place moves past it here, not only once PathProgress sees
+    // the robot within its cusp_pass_radius (path_progress.hpp).
+    path_progress_.passTo(leg_ends_[leg_]);
     startLeg(leg_ + 1);
     return false;
   }
