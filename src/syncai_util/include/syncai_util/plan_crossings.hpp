@@ -36,6 +36,13 @@
 //   planner without crossings): a follower falls back to its own judgement.
 //   true with no crossings says the plan crosses nothing -- every rise on it
 //   is floor the flat gait walks.
+// - kind "narrow" (2026-11-02) is not terrain but a passage narrower than the
+//   robot can turn in (a door: path_postprocess.hpp's findNarrowPassages),
+//   always the flat gait, evidence "geometry", with two more fields: width,
+//   its narrowest (m), and heading, the axis the plan takes it along (rad,
+//   frame_id). Its span includes a lead either side, where to square up
+//   before it. It says nothing about the floor: the terrain layer does not
+//   waive anything on it, and the stair mode reads gaits only.
 //
 // Not a syncai_common message on purpose: the backend does not read it, and a
 // typed message is a change in another repository (CLAUDE.md, "Out of tree");
@@ -58,7 +65,7 @@ struct PlanCrossing
   {
     double x, y, z;
   };
-  std::string kind;           // "stair", "kerb", "ramp"
+  std::string kind;           // "stair", "kerb", "ramp", "narrow"
   bool stair_gait{false};     // "gait": "stair" (true) or "flat"; the route's, so a kerb
                               // onto a stair's top step is "stair" too
   std::string evidence;       // "track", "geometry", "declared"
@@ -66,6 +73,10 @@ struct PlanCrossing
   size_t first{0}, last{0};   // inclusive pose indices into the plan
   std::vector<size_t> turns;  // pose indices of the turns in place (a switchback's landings)
   std::vector<Point> pts;     // the plan's poses first .. last
+  // "narrow" only (0 otherwise, and not written): the narrowest width (m)
+  // and the axis the plan takes the passage along (rad, frame_id).
+  double width{0.0};
+  double heading{0.0};
 };
 
 struct PlanCrossings

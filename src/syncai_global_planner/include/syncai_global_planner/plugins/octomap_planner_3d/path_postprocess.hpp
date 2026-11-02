@@ -110,6 +110,37 @@ std::vector<Waypoint> buildPath(
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices = nullptr,
   const BlockedView * blocked = nullptr, std::vector<PathSpan> * spans = nullptr);
 
+// Narrow passages (2026-11-02): the stretches of a route where the floor
+// between the walls either side is narrower than the robot can turn in. dp's
+// 2F lab door, 0.75 m between its jambs: twice the robot reached it turned
+// 20-70 deg off its axis, and with ~6 cm a side no MPPI candidate cleared the
+// jambs (stuck going in, and again coming out). A follower that knows where
+// such a stretch is can square up before it and drive it straight; the
+// local costmap cannot tell, since the floor in a doorway is in the lidar's
+// blind range and its jambs read wider than they are. This map saw both
+// jambs from the mapping run.
+//
+// At each waypoint on a traversable cell, the floor is walked square to the
+// route both ways, step-continuously, to the first column that is not
+// traversable; the passage's width is the two distances plus 2 x
+// robot_radius, because traversable already stops robot_radius short of a
+// wall (to a cell, so +-0.1 m at 0.1 m). A width under max_width is narrow --
+// the footprint's diagonal (0.70 x 0.44 m + padding: 0.85) is the width it
+// can turn round in. Measuring both sides is what tells a door from walking
+// beside one wall; clearance_d is the nearer side only. A waypoint off the
+// traversable cells (a stair or kerb link's own points) is never narrow:
+// the links carry their own crossings. Runs of narrow waypoints become
+// spans, each grown by `lead` metres of route either side (where to square
+// up, a body length) and merged with the next one if they then touch.
+struct NarrowSpan
+{
+  size_t first = 0, last = 0;  // inclusive waypoint indices, lead included
+  double width = 0.0;          // the narrowest width inside (m)
+  double heading = 0.0;        // the passage's axis as the route takes it (rad, map frame)
+};
+std::vector<NarrowSpan> findNarrowPassages(
+  const SurfaceMap & m, const std::vector<Waypoint> & path, double max_width, double lead);
+
 }  // namespace syncai_global_planner::octomap_planner_3d
 
 #endif  // SYNCAI_GLOBAL_PLANNER__PLUGINS__OCTOMAP_PLANNER_3D__PATH_POSTPROCESS_HPP_

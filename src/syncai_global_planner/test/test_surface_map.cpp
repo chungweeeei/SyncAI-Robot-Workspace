@@ -297,6 +297,69 @@ TEST(SurfaceAStar, PlansThroughTheDoorAndKeepsClearance)
   }
 }
 
+TEST(PathPostprocess, ANarrowDoorIsOnePassageAndAWideDoorOrAWallBesideIsNone)
+{
+  // findNarrowPassages at the plugin's 0.85 m (the footprint's diagonal) and
+  // 0.5 m lead. The plan's own waypoints, as the plugin measures them.
+  const auto route = [](const std::shared_ptr<const SurfaceMap> & m, double sx, double sy,
+                        double gx, double gy) {
+    SurfaceAStar astar(m);
+    SearchParams p;
+    const SnapResult a = astar.snap(sx, sy, 0.0, p);
+    const SnapResult b = astar.snap(gx, gy, 0.0, p);
+    EXPECT_NE(a.cell, kNoCell);
+    EXPECT_NE(b.cell, kNoCell);
+    const PlanResult r = astar.plan(a.cell, b.cell, p);
+    EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
+    return resamplePath(*m, shortcutPath(*m, r.cells), 0.1);
+  };
+  {
+    // The wall scene's 0.8 m door (y 3.6..4.4): one passage round the
+    // doorway, its width within a cell of 0.8, taken along +x, the lead
+    // reaching ~0.5 m of route back from where it narrows.
+    const auto m = build("wall");
+    const auto path = route(m, 3.0, 6.0, 9.0, 6.0);
+    const auto spans = findNarrowPassages(*m, path, 0.85, 0.5);
+    ASSERT_EQ(spans.size(), 1u);
+    const NarrowSpan & n = spans[0];
+    EXPECT_LT(n.width, 0.85);
+    EXPECT_GT(n.width, 0.6);
+    EXPECT_GT(std::cos(n.heading), 0.0);
+    size_t door = path.size();
+    for (size_t i = 0; i < path.size(); ++i) {
+      if (std::fabs(path[i].x - 6.05) < 0.06) {
+        door = i;
+      }
+    }
+    ASSERT_LT(door, path.size());
+    EXPECT_LE(n.first, door);
+    EXPECT_GE(n.last, door);
+    EXPECT_GT(std::hypot(path[door].x - path[n.first].x, path[door].y - path[n.first].y), 0.5);
+    // Off: nothing.
+    EXPECT_TRUE(findNarrowPassages(*m, path, 0.0, 0.5).empty());
+  }
+  {
+    // A 1.2 m door: the robot turns in it, no passage.
+    synthetic::SceneBuilder b(0.1);
+    b.flatFloor(0, 12, 0, 8, 0.0);
+    b.box(6.0, 6.1, 0.0, 3.4, 0.0, 2.0);
+    b.box(6.0, 6.1, 4.6, 8.0, 0.0, 2.0);
+    const auto tree = b.finish();
+    const auto m = buildSurfaceMap(*tree, SurfaceMapParams{});
+    EXPECT_TRUE(findNarrowPassages(*m, route(m, 3.0, 4.0, 9.0, 4.0), 0.85, 0.5).empty());
+  }
+  {
+    // Walking 0.4 m beside one long wall: the nearer side alone is close,
+    // which is what clearance_d would have said; both sides are measured.
+    synthetic::SceneBuilder b(0.1);
+    b.flatFloor(0, 12, 0, 8, 0.0);
+    b.box(0.0, 12.0, 4.6, 4.7, 0.0, 2.0);
+    const auto tree = b.finish();
+    const auto m = buildSurfaceMap(*tree, SurfaceMapParams{});
+    EXPECT_TRUE(findNarrowPassages(*m, route(m, 1.0, 4.2, 11.0, 4.2), 0.85, 0.5).empty());
+  }
+}
+
 TEST(SurfaceAStar, RampPathFollowsTheSurface)
 {
   const auto m = build("ramp");

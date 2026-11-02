@@ -126,6 +126,8 @@ void OctomapPlanner3D::initialize(
   dp("interpolation_resolution", rclcpp::ParameterValue(interpolation_resolution_));
   dp("path_z_offset", rclcpp::ParameterValue(path_z_offset_));
   dp("shortcut", rclcpp::ParameterValue(shortcut_));
+  dp("narrow_max_width", rclcpp::ParameterValue(narrow_max_width_));
+  dp("narrow_lead", rclcpp::ParameterValue(narrow_lead_));
   // Surface map (build time).
   dp("robot_radius", rclcpp::ParameterValue(map_params_.robot_radius));
   dp("body_clearance", rclcpp::ParameterValue(map_params_.body_clearance));
@@ -224,6 +226,8 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".interpolation_resolution", interpolation_resolution_);
   node->get_parameter(name + ".path_z_offset", path_z_offset_);
   node->get_parameter(name + ".shortcut", shortcut_);
+  node->get_parameter(name + ".narrow_max_width", narrow_max_width_);
+  node->get_parameter(name + ".narrow_lead", narrow_lead_);
   node->get_parameter(name + ".robot_radius", map_params_.robot_radius);
   node->get_parameter(name + ".body_clearance", map_params_.body_clearance);
   node->get_parameter(name + ".max_step_height", map_params_.max_step_height);
@@ -1327,6 +1331,37 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     }
   }
   {
+    // The narrow passages (path_postprocess.hpp), after the gaits: a passage
+    // says how to drive a stretch, not which gait, so it takes no part in
+    // routeStairGaits. Over the whole route, on the static map only -- a
+    // person in a corridor is the dynamic overlay's, not a door. Sorted in
+    // with the links' crossings, so the list stays in route order.
+    for (const o3d::NarrowSpan & n :
+         o3d::findNarrowPassages(*map_, wps, narrow_max_width_, narrow_lead_)) {
+      syncai_util::PlanCrossing x;
+      x.kind = "narrow";
+      x.stair_gait = false;
+      x.evidence = "geometry";
+      x.rise = wps[n.last].z - wps[n.first].z;
+      x.first = n.first;
+      x.last = n.last;
+      x.width = n.width;
+      x.heading = n.heading;
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s] narrow passage %.2f m wide at (%.2f, %.2f) -> (%.2f, %.2f), axis "
+        "%.0f deg (narrower than narrow_max_width %.2f; poses %zu..%zu)",
+        fn, n.width, wps[n.first].x, wps[n.first].y, wps[n.last].x, wps[n.last].y,
+        n.heading * 180.0 / M_PI, narrow_max_width_, n.first, n.last);
+      crossings.push_back(std::move(x));
+    }
+    std::stable_sort(
+      crossings.begin(), crossings.end(),
+      [](const syncai_util::PlanCrossing & a, const syncai_util::PlanCrossing & b) {
+        return a.first < b.first;
+      });
+  }
+  {
     // The poses are the waypoints one for one, so a span carries over; its
     // points are the poses' own positions, path_z_offset and all, which is
     // what a follower holding this plan compares them with.
@@ -1686,6 +1721,10 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         interpolation_resolution_ = v;
       } else if (key == "path_z_offset") {
         path_z_offset_ = v;
+      } else if (key == "narrow_max_width") {
+        narrow_max_width_ = v;
+      } else if (key == "narrow_lead") {
+        narrow_lead_ = v;
       } else if (key == "lidar_height") {
         lidar_height_ = v;
       } else if (key == "keepout.block_radius") {

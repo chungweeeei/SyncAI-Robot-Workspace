@@ -483,4 +483,105 @@ std::vector<Waypoint> buildPath(
   return out;
 }
 
+namespace
+{
+
+// From cell c, how far (m, xy) the floor stays traversable along (nx, ny):
+// the distance to the first sample whose column has no traversable cell
+// within a step of the last one, or `limit` if there is none that close.
+double floorTo(const SurfaceMap & m, CellId c, double x, double y, double nx, double ny, double limit)
+{
+  const double ds = m.res / 2;
+  int kz = m.cells[c].kz;
+  int ix = m.ixOf(x), iy = m.iyOf(y);
+  for (double s = ds; s < limit; s += ds) {
+    const int jx = m.ixOf(x + nx * s), jy = m.iyOf(y + ny * s);
+    if (jx == ix && jy == iy) {
+      continue;
+    }
+    const CellId n = m.traversableNeighbour(jx, jy, kz);
+    if (n == kNoCell) {
+      return s;
+    }
+    kz = m.cells[n].kz;
+    ix = jx;
+    iy = jy;
+  }
+  return limit;
+}
+
+}  // namespace
+
+std::vector<NarrowSpan> findNarrowPassages(
+  const SurfaceMap & m, const std::vector<Waypoint> & path, double max_width, double lead)
+{
+  std::vector<NarrowSpan> out;
+  if (max_width <= 0.0 || path.size() < 2) {
+    return out;
+  }
+  const double rr = m.params.robot_radius;
+  const double reach = std::max(0.0, max_width - 2 * rr);  // one side alone can say "wide"
+  std::vector<double> width(path.size(), std::numeric_limits<double>::infinity());
+  for (size_t i = 0; i < path.size(); ++i) {
+    const CellId c = m.traversableAt(path[i].x, path[i].y, path[i].z);
+    if (c == kNoCell) {
+      continue;
+    }
+    const Waypoint & a = path[i == 0 ? 0 : i - 1];
+    const Waypoint & b = path[std::min(i + 1, path.size() - 1)];
+    const double len = std::hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-9) {
+      continue;
+    }
+    const double nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+    const double left = floorTo(m, c, path[i].x, path[i].y, nx, ny, reach);
+    const double right = floorTo(m, c, path[i].x, path[i].y, -nx, -ny, reach);
+    width[i] = left + right + 2 * rr;
+  }
+  // Route distance at each waypoint, for the lead.
+  std::vector<double> along(path.size(), 0.0);
+  for (size_t i = 1; i < path.size(); ++i) {
+    along[i] = along[i - 1] + std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+  }
+  for (size_t i = 0; i < path.size();) {
+    if (!(width[i] < max_width)) {
+      ++i;
+      continue;
+    }
+    size_t j = i;
+    double narrowest = width[i];
+    while (j + 1 < path.size() && width[j + 1] < max_width) {
+      ++j;
+      narrowest = std::min(narrowest, width[j]);
+    }
+    NarrowSpan sp;
+    sp.width = narrowest;
+    // The axis: the route through the run, or the local direction for a
+    // run of one waypoint.
+    const Waypoint & a = path[i == j && i > 0 ? i - 1 : i];
+    const Waypoint & b = path[i == j ? std::min(j + 1, path.size() - 1) : j];
+    sp.heading = std::atan2(b.y - a.y, b.x - a.x);
+    sp.first = i;
+    while (sp.first > 0 && along[i] - along[sp.first - 1] <= lead + 1e-9) {
+      --sp.first;
+    }
+    sp.last = j;
+    while (sp.last + 1 < path.size() && along[sp.last + 1] - along[j] <= lead + 1e-9) {
+      ++sp.last;
+    }
+    if (!out.empty() && sp.first <= out.back().last + 1) {
+      NarrowSpan & prev = out.back();
+      prev.last = std::max(prev.last, sp.last);
+      if (sp.width < prev.width) {
+        prev.width = sp.width;
+        prev.heading = sp.heading;
+      }
+    } else {
+      out.push_back(sp);
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
 }  // namespace syncai_global_planner::octomap_planner_3d

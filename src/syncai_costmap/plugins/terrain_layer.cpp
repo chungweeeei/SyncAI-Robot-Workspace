@@ -313,6 +313,9 @@ void TerrainLayer::crossingsCallback(std_msgs::msg::String::ConstSharedPtr messa
       if (x.stair_gait || x.pts.empty()) {
         continue;  // a stair stays lethal: the stair mode climbs it blind
       }
+      if (x.kind == "narrow") {
+        continue;  // a passage's width, not a sill or a slope the planner judged walkable
+      }
       std::vector<TerrainPathPose> pts;
       pts.reserve(x.pts.size());
       for (const auto & p : x.pts) {
