@@ -280,6 +280,72 @@ void TerrainGrid::setPath(const std::vector<TerrainPathPose> & poses)
   path_ = poses;
 }
 
+void TerrainGrid::setCrossings(const std::vector<std::vector<TerrainPathPose>> & crossings)
+{
+  crossings_ = crossings;
+}
+
+void TerrainGrid::markCrossings() const
+{
+  waived_.assign(cells_.size(), 0);
+  waive_lift_.assign(cells_.size(), 0.f);
+  if (crossings_.empty() || params.crossing_radius <= 0.0) {
+    return;
+  }
+  const double r = params.crossing_radius;
+  const int rc = static_cast<int>(std::ceil(r / res_));
+  float rise = 0.f;  // the crossing being marked
+  // Along each crossing at half a cell, every cell within r of the sample
+  // whose ground (estimateGround()'s) is near the crossing's height there.
+  const auto mark = [&](double x, double y, double z) {
+    int cx, cy;
+    if (!worldToCell(x, y, cx, cy)) {
+      // A sample outside the window may still reach into it.
+      cx = static_cast<int>(std::floor((x - ox_) / res_));
+      cy = static_cast<int>(std::floor((y - oy_) / res_));
+    }
+    for (int dy = -rc; dy <= rc; ++dy) {
+      for (int dx = -rc; dx <= rc; ++dx) {
+        const int ix = cx + dx, iy = cy + dy;
+        if (ix < 0 || iy < 0 || ix >= nx_ || iy >= ny_) {
+          continue;
+        }
+        const double ccx = ox_ + (ix + 0.5) * res_, ccy = oy_ + (iy + 0.5) * res_;
+        if (std::hypot(ccx - x, ccy - y) > r) {
+          continue;
+        }
+        const size_t i = index(ix, iy);
+        if (std::fabs(ground_[i] - z) <= params.crossing_z_band) {
+          waived_[i] = 1;
+          waive_lift_[i] = std::max(waive_lift_[i], rise);
+        }
+      }
+    }
+  };
+  for (const auto & c : crossings_) {
+    float zlo = std::numeric_limits<float>::infinity(), zhi = -zlo;
+    for (const auto & p : c) {
+      zlo = std::min(zlo, static_cast<float>(p.z));
+      zhi = std::max(zhi, static_cast<float>(p.z));
+    }
+    rise = c.empty() ? 0.f : zhi - zlo;
+    for (size_t k = 0; k < c.size(); ++k) {
+      if (k + 1 == c.size()) {
+        mark(c[k].x, c[k].y, c[k].z);
+        break;
+      }
+      const double len = std::hypot(c[k + 1].x - c[k].x, c[k + 1].y - c[k].y);
+      const int n = std::max(1, static_cast<int>(std::ceil(len / (res_ / 2))));
+      for (int s = 0; s < n; ++s) {
+        const double t = static_cast<double>(s) / n;
+        mark(
+          c[k].x + t * (c[k + 1].x - c[k].x), c[k].y + t * (c[k + 1].y - c[k].y),
+          c[k].z + t * (c[k + 1].z - c[k].z));
+      }
+    }
+  }
+}
+
 void TerrainGrid::estimateGround(double now, double robot_ground_z) const
 {
   ground_.assign(cells_.size(), kNaN);
@@ -497,6 +563,7 @@ void TerrainGrid::classify(
   TerrainStats * stats) const
 {
   estimateGround(now, robot_ground_z);
+  markCrossings();
   floodReach(robot_x, robot_y, true, reached_);
   // The floor the robot can walk onto from where it stands, without the
   // path's seeds (they reach a stair's treads): what a sparse cell may be
@@ -518,7 +585,9 @@ void TerrainGrid::classify(
       // 1. A return in the band above the ground: a wall foot, a box, a
       // person, a tread two risers up. A sparse cell's band starts from
       // obstacleReference()'s height, not the borrowed one.
-      if (cellHasObstacle(i, now, obstacle_ref_[i])) {
+      // On a planner's flat-gait crossing the band starts its rise higher
+      // (TerrainParams::crossing_radius has why).
+      if (cellHasObstacle(i, now, obstacle_ref_[i] + (waived_[i] ? waive_lift_[i] : 0.f))) {
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_obstacle;
         continue;
@@ -555,7 +624,15 @@ void TerrainGrid::classify(
           step = true;
         }
       }
+      // 3 and 4 waived on a planner's flat-gait crossing (setCrossings()):
+      // the planner judged that sill or slope walkable, so these rules --
+      // its own -- do not wall it off again here.
       if (step) {
+        if (waived_[i]) {
+          ++st.waived;
+          cost[i] = FREE_SPACE;
+          continue;
+        }
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_step;
         continue;
@@ -564,6 +641,11 @@ void TerrainGrid::classify(
       // does not.
       double tilt = 0.0;
       if (fitSlope(ix, iy, tilt) && tilt > params.max_slope_deg) {
+        if (waived_[i]) {
+          ++st.waived;
+          cost[i] = FREE_SPACE;
+          continue;
+        }
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_slope;
         continue;

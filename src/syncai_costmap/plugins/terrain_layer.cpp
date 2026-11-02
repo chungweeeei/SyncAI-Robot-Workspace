@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "geometry_msgs/msg/point_stamped.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "syncai_costmap/cost_values.hpp"
 #include "syncai_util/path_height.hpp"
+#include "syncai_util/plan_crossings.hpp"
 #include "tf2/exceptions.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -50,6 +52,8 @@ void TerrainLayer::onInitialize()
   declareParameter("max_step_height", rclcpp::ParameterValue(p.max_step_height));
   declareParameter("max_slope_deg", rclcpp::ParameterValue(p.max_slope_deg));
   declareParameter("slope_min_known", rclcpp::ParameterValue(p.slope_min_known));
+  declareParameter("crossing_radius", rclcpp::ParameterValue(p.crossing_radius));
+  declareParameter("crossing_z_band", rclcpp::ParameterValue(p.crossing_z_band));
 
   node_->get_parameter(name_ + ".enabled", enabled_);
   node_->get_parameter(name_ + ".footprint_clearing_enabled", footprint_clearing_enabled_);
@@ -75,6 +79,8 @@ void TerrainLayer::onInitialize()
   node_->get_parameter(name_ + ".max_step_height", p.max_step_height);
   node_->get_parameter(name_ + ".max_slope_deg", p.max_slope_deg);
   node_->get_parameter(name_ + ".slope_min_known", p.slope_min_known);
+  node_->get_parameter(name_ + ".crossing_radius", p.crossing_radius);
+  node_->get_parameter(name_ + ".crossing_z_band", p.crossing_z_band);
   node_->get_parameter("track_unknown_space", track_unknown_space);
   node_->get_parameter("transform_tolerance", transform_tolerance_);
 
@@ -124,6 +130,11 @@ void TerrainLayer::onInitialize()
   plan_sub_ = node_->create_subscription<nav_msgs::msg::Path>(
     plan_topic_, rclcpp::QoS(1),
     std::bind(&TerrainLayer::planCallback, this, std::placeholders::_1), sub_opt);
+  // Beside `plan`, the planner's (latched).
+  crossings_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    joinWithParentNamespace(syncai_util::kPlanCrossingsTopic),
+    rclcpp::QoS(1).reliable().transient_local(),
+    std::bind(&TerrainLayer::crossingsCallback, this, std::placeholders::_1), sub_opt);
   cloud_sub_->subscribe();
 }
 
@@ -283,12 +294,83 @@ void TerrainLayer::planCallback(nav_msgs::msg::Path::ConstSharedPtr message)
   plan_ = *message;
 }
 
-std::vector<TerrainPathPose> TerrainLayer::pathPoses()
+void TerrainLayer::crossingsCallback(std_msgs::msg::String::ConstSharedPtr message)
+{
+  syncai_util::PlanCrossings c;
+  std::string error;
+  if (!syncai_util::fromJson(message->data, c, error)) {
+    RCLCPP_WARN(
+      logger_,
+      "TerrainLayer: plan_crossings unreadable (%s): kept the last one, so its crossings stay "
+      "waived until the next plan",
+      error.c_str());
+    return;
+  }
+  // known: false (a planner that says nothing) waives nothing, as no plan does.
+  std::vector<std::vector<TerrainPathPose>> flat;
+  if (c.known) {
+    for (const auto & x : c.crossings) {
+      if (x.stair_gait || x.pts.empty()) {
+        continue;  // a stair stays lethal: the stair mode climbs it blind
+      }
+      std::vector<TerrainPathPose> pts;
+      pts.reserve(x.pts.size());
+      for (const auto & p : x.pts) {
+        pts.push_back({p.x, p.y, p.z});
+      }
+      flat.push_back(std::move(pts));
+    }
+  }
+  if (!flat.empty()) {
+    RCLCPP_INFO(
+      logger_,
+      "TerrainLayer: %zu flat-gait crossings on the new plan: their step and slope rules waived "
+      "within %.2f m",
+      flat.size(), terrain_.params.crossing_radius);
+  }
+  std::lock_guard<std::mutex> lock(plan_mutex_);
+  crossings_frame_ = c.frame_id;
+  crossings_ = std::move(flat);
+}
+
+std::vector<TerrainPathPose> TerrainLayer::pathPoses(
+  std::vector<std::vector<TerrainPathPose>> * crossings)
 {
   nav_msgs::msg::Path plan;
+  std::vector<std::vector<TerrainPathPose>> flat;
+  std::string flat_frame;
   {
     std::lock_guard<std::mutex> lock(plan_mutex_);
     plan = plan_;
+    if (crossings) {
+      flat = crossings_;
+      flat_frame = crossings_frame_;
+    }
+  }
+  if (crossings) {
+    crossings->clear();
+    if (!flat.empty()) {
+      // The planner's frame (map), as the plan's.
+      try {
+        const auto tf = tf_->lookupTransform(global_frame_, flat_frame, tf2::TimePointZero);
+        for (auto & c : flat) {
+          for (auto & p : c) {
+            geometry_msgs::msg::PointStamped in, out;
+            in.point.x = p.x;
+            in.point.y = p.y;
+            in.point.z = p.z;
+            tf2::doTransform(in, out, tf);
+            p = {out.point.x, out.point.y, out.point.z};
+          }
+        }
+        *crossings = std::move(flat);
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *clock_, 5000,
+          "TerrainLayer: cannot transform the plan's crossings (%s) into %s: %s; none waived",
+          flat_frame.c_str(), global_frame_.c_str(), ex.what());
+      }
+    }
   }
   std::vector<TerrainPathPose> out;
   // A level path (a 2D planner's, and the empty one a cancel leaves) says
@@ -322,8 +404,9 @@ void TerrainLayer::updateBounds(
   // Before the costmap's own mutex: pathPoses() takes TF and the plan's
   // mutex, neither of which needs the costmap.
   std::vector<TerrainPathPose> path;
+  std::vector<std::vector<TerrainPathPose>> crossings;
   if (enabled_) {
-    path = pathPoses();
+    path = pathPoses(&crossings);
   }
 
   std::lock_guard<Costmap::mutex_t> guard(*getMutex());
@@ -342,6 +425,7 @@ void TerrainLayer::updateBounds(
   useExtraBounds(min_x, min_y, max_x, max_y);
 
   terrain_.setPath(path);
+  terrain_.setCrossings(crossings);
   terrain_.classify(
     clock_->now().seconds(), robot_x, robot_y, robot_ground_z_, costmap_, &last_stats_);
 
@@ -358,12 +442,14 @@ void TerrainLayer::updateBounds(
     RCLCPP_DEBUG(
       logger_,
       "TerrainLayer: %zu cells with a ground estimate, %zu lethal (%zu obstacle, %zu step, "
-      "%zu slope, %zu island), %llu samples ray-cleared in all%s",
+      "%zu slope, %zu island), %zu step / slope cells waived on the planner's crossings, %llu "
+      "samples ray-cleared in all%s",
       last_stats_.known,
       last_stats_.lethal_obstacle + last_stats_.lethal_step + last_stats_.lethal_slope +
         last_stats_.lethal_island,
       last_stats_.lethal_obstacle, last_stats_.lethal_step, last_stats_.lethal_slope,
-      last_stats_.lethal_island, static_cast<unsigned long long>(terrain_.clearedSamples()),
+      last_stats_.lethal_island, last_stats_.waived,
+      static_cast<unsigned long long>(terrain_.clearedSamples()),
       has_cloud_ ? "" : " (no cloud yet)");
   }
 

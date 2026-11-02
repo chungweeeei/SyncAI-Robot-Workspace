@@ -287,6 +287,23 @@ and judges every cell on each update:
    footprint cleared (its floor is never seen and the robot's legs are in the
    cloud), and the `InflationLayer` inflates it all.
 
+**The planner's flat-gait crossings waive 4 and 5 (2026-11-02).** The planner
+lays a walked door sill, a short slope or a kerb as a crossing the flat gait
+takes, and says so on **`plan_crossings`** (`syncai_util/plan_crossings.hpp`,
+latched, a fresh set with every plan and an empty one with every clear). The
+layer takes the crossings' points (the plan's own poses over each, in the
+map frame, transformed like the path) and, within **`crossing_radius`**
+(0.4 m) of one on ground within **`crossing_z_band`** (0.5 m) of its height,
+skips the step and slope rules — the planner's own rules, which would
+otherwise wall the crossing off for MPPI again. The obstacle rule (1) is kept,
+but its band starts the crossing's rise higher there: the riser's own returns
+stand up to the rise above the lower floor's ground, and with only 4 and 5
+waived a 0.3 m sill's lane was still a quarter lethal in the test. A person
+on the crossing stays lethal (legs reach far above the band's floor); a thing
+on the lane shorter than rise + `min_obstacle_height` is not seen. Stair-gait
+crossings are not taken: a stair stays lethal (below). `waived` in the debug
+stats counts the cells.
+
 The four geometry values are `SurfaceMapParams`' (Octo3D), one calibration of
 the legs; change them together.
 

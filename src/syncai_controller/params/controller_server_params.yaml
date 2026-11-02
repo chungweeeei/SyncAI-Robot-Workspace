@@ -1167,6 +1167,17 @@
       max_step_height: 0.17
       max_slope_deg: 20.0
       slope_min_known: 0.5
+      # The planner's flat-gait crossings (plan_crossings, 2026-11-02): a
+      # walked door sill, a short slope, a kerb it laid for the flat gait.
+      # Within crossing_radius of one, on ground within crossing_z_band of
+      # its height, the step and slope rules are skipped and the obstacle
+      # band starts the crossing's rise higher, so the riser is not an
+      # obstacle; a person on it still is. 0.4 m covers the body's half-width
+      # and keeps the step's inflation off the lane's centre; wider would
+      # waive a drop-off beside an unrailed ramp. A stair crossing is never
+      # waived (the stair mode climbs it blind).
+      crossing_radius: 0.4
+      crossing_z_band: 0.5
 
     # Read by MPPI's CostCritic (and nothing else here: RPP checks LETHAL
     # only, its cost-regulated scaling is off, docking reads no costmap).
