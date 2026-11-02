@@ -193,14 +193,43 @@ inline std::vector<size_t> findCusps(const nav_msgs::msg::Path & path, const Cus
   return cusps;
 }
 
+// The direction (yaw) the path leaves `cusp` in: towards the pose `window`
+// of arc after it, or the path's last pose when the rest is shorter -- not
+// the next pose, which after a one-cell side step at the tip is sideways.
+// False when nothing after the cusp is away from it.
+inline bool directionAfterCusp(
+  const nav_msgs::msg::Path & path, size_t cusp, double window, double & yaw)
+{
+  if (cusp + 1 >= path.poses.size()) {
+    return false;
+  }
+  const auto & tip = path.poses[cusp].pose.position;
+  size_t ahead = cusp + 1;
+  double along = 0.0;
+  while (ahead + 1 < path.poses.size()) {
+    const auto & p = path.poses[ahead].pose.position;
+    const auto & q = path.poses[ahead - 1].pose.position;
+    along += std::hypot(p.x - q.x, p.y - q.y);
+    if (along >= window && std::hypot(p.x - tip.x, p.y - tip.y) > 1e-6) {
+      break;
+    }
+    ++ahead;
+  }
+  const auto & next = path.poses[ahead].pose.position;
+  if (std::hypot(next.x - tip.x, next.y - tip.y) <= 1e-6) {
+    return false;
+  }
+  yaw = std::atan2(next.y - tip.y, next.x - tip.x);
+  return true;
+}
+
 // `path` cut at `cusps` (findCusps()'s, ascending): leg k runs from cusp k-1
 // (the path's start for k = 0) to cusp k inclusive (the path's end for the
 // last), so two legs share their cusp pose. Every leg but the last ends
-// facing the next leg -- the pose `window` along it -- which is where the
+// facing the next leg (directionAfterCusp()), which is where the
 // controller's final rotation turns the robot before the next leg is handed
-// over; the planner's own heading there points at the next pose, which after
-// a one-cell side step at the tip is sideways. The last leg keeps the path's
-// end pose. Every leg carries the path's header. No cusps: the path itself.
+// over. The last leg keeps the path's end pose. Every leg carries the path's
+// header. No cusps: the path itself.
 inline std::vector<nav_msgs::msg::Path> splitAtCusps(
   const nav_msgs::msg::Path & path, const std::vector<size_t> & cusps, double window)
 {
@@ -216,21 +245,8 @@ inline std::vector<nav_msgs::msg::Path> splitAtCusps(
       path.poses.begin() + static_cast<std::ptrdiff_t>(first),
       path.poses.begin() + static_cast<std::ptrdiff_t>(cusp) + 1);
 
-    const auto & tip = path.poses[cusp].pose.position;
-    size_t ahead = cusp + 1;
-    double along = 0.0;
-    while (ahead + 1 < path.poses.size()) {
-      const auto & p = path.poses[ahead].pose.position;
-      const auto & q = path.poses[ahead - 1].pose.position;
-      along += std::hypot(p.x - q.x, p.y - q.y);
-      if (along >= window && std::hypot(p.x - tip.x, p.y - tip.y) > 1e-6) {
-        break;
-      }
-      ++ahead;
-    }
-    const auto & next = path.poses[ahead].pose.position;
-    if (std::hypot(next.x - tip.x, next.y - tip.y) > 1e-6) {
-      const double yaw = std::atan2(next.y - tip.y, next.x - tip.x);
+    double yaw = 0.0;
+    if (directionAfterCusp(path, cusp, window, yaw)) {
       auto & q = leg.poses.back().pose.orientation;
       q.x = 0.0;
       q.y = 0.0;

@@ -241,6 +241,15 @@ dock's two-pose path never has a cusp. Not handled: a route that crosses itself
 on one floor (an X), where MPPI's nearest-pose match can still jump to the later
 crossing leg.
 
+The server's own place on the path passes the cusp on the handover
+(`PathProgress::passTo()`), not by distance alone: the goal checker latches the
+position at 0.10 m and the turn in place drifts (0.29 m from the tip in the sim,
+2026-11-02). A place left on the outgoing leg never moves again, so beyond the
+0.3 m hysteresis the remaining-length gate would have stayed shut for the whole
+return leg and the goal never been reached. The planner's and the task_runner's
+`PathProgress`, which do not see the legs, pass a cusp once the robot is within
+0.6 m of it facing the way the path leaves it (`path_progress.hpp`).
+
 A second fix lives here too: `end_pose_` is re-stamped with `Time(0)` before being
 transformed into the costmap's global frame. Using the path's original stamp made
 long goals die with a TF "extrapolation into the past" error, so `isGoalReached()`
