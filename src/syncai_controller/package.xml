@@ -34,6 +34,8 @@
        pluginlib (FollowPath in params/controller_server_params.yaml); nothing
        here compiles against it. -->
   <exec_depend>syncai_mppi_controller</exec_depend>
+  <!-- The launch file reads the runtime params overlay to log and vet it. -->
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -877,6 +877,35 @@ ones that are placeholders until the robot has been measured.
 callback takes the same mutex the control loop holds, so a change is rejected
 with a warning while a goal is executing. Plugin parameters (anything with a `.`
 in the name) are skipped by that lock and handled by each plugin's own callback.
+Every callback on the node sees every set, and rclcpp stops at the first one
+that refuses it — after the callbacks before it have already applied their
+share. RPP 3D and Docking therefore vet the whole batch first and refuse it
+with a `reason` before touching a member (2026-11-03: until then their
+"rejecting update" was a `continue` that still returned success, so the node
+held a value the controller was not using); a caller mixing server and plugin
+parameters should send the server's in a set of its own, first.
+
+### The runtime overlay (console settings)
+
+The launch loads two files: the factory `params/controller_server_params.yaml`
+(this package, tracked, never written at runtime) and then, when it exists,
+**`config/params/<robot_id>/controller_server.yaml`** beside the system INI
+(gitignored). The overlay is written by `syncai_backend`'s controller settings
+page and holds only the keys the operator changed, under the same
+`/**/controller_server: ros__parameters:` key, so a later file wins key by key
+and every untouched key keeps following the factory file through a `git pull`.
+The backend sets the live value over `set_parameters` / `get_parameters` and
+persists what it read back; a parameter the node only reads at startup is
+written to the overlay alone and takes effect on the next start of the nav
+session. Which parameters the page exposes, with their ranges and
+descriptions, is the backend's schema — nothing here declares a descriptor.
+
+Falling back to the factory values: delete the overlay (or one key of it) and
+restart the session, or launch with `use_runtime_params:=false`. An overlay
+that does not parse is skipped with an error in the controller's log rather
+than handed to rcl, which would abort the process on every boot; the log
+says how many keys a good one carried. `runtime_params_file:=` points at
+another file.
 
 The tuned RPP values live in the params files with their rationale attached; a
 few worth reading before touching:
@@ -1048,8 +1077,12 @@ ros2 topic echo /<robot_id>/docking_plan         # the approach the console draw
   `*_3d_params.yaml` variants have been merged back into the defaults; it was a
   bug while they were separate (the 3D session silently ran with
   `use_sim_time: true` and no pointcloud observation source).
-- **Dynamic parameter changes are refused mid-goal**, with a warning rather than
-  an error. Set them while idle.
+- **Dynamic parameter changes are refused mid-goal** for the server's own
+  (undotted) parameters, with `successful: false` and a warning. Set them while
+  idle. Plugin parameters apply mid-goal.
+- **A value in `config/params/<robot_id>/controller_server.yaml` beats the
+  factory file.** When a factory change seems to do nothing on one robot, look
+  for the key there first (the controller's log names the overlay at startup).
 
 Upstream references: [`nav2_controller`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_controller)
 and [`nav2_regulated_pure_pursuit_controller`](https://github.com/ros-navigation/navigation2/tree/humble/nav2_regulated_pure_pursuit_controller),

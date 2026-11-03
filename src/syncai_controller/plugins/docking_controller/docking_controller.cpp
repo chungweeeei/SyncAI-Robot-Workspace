@@ -548,6 +548,50 @@ rcl_interfaces::msg::SetParametersResult DockingController::dynamicParametersCal
   rcl_interfaces::msg::SetParametersResult result;
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // Validate the whole batch against its values after the set, before
+  // touching a member. A rejection used to be a `continue` that still returned
+  // successful = true: the node stored the value, the control law never got
+  // it, and a reader of GetParameters (the console's settings page confirms a
+  // set that way, then persists it) saw a speed limit that was not in force.
+  // Judging the batch as a whole also lets one set raise v_linear_min and
+  // v_linear_max together, which the old per-parameter check refused.
+  double next_v_linear_min = v_linear_min_;
+  double next_v_linear_max = v_linear_max_;
+  bool next_initial_rotation = initial_rotation_;
+  bool next_allow_backward = allow_backward_;
+  for (const auto & parameter : parameters) {
+    const auto & name = parameter.get_name();
+    if (parameter.get_type() == ParameterType::PARAMETER_DOUBLE) {
+      if (name == plugin_name_ + ".v_linear_min") {
+        next_v_linear_min = parameter.as_double();
+      } else if (name == plugin_name_ + ".v_linear_max") {
+        next_v_linear_max = parameter.as_double();
+      }
+    } else if (parameter.get_type() == ParameterType::PARAMETER_BOOL) {
+      if (name == plugin_name_ + ".initial_rotation") {
+        next_initial_rotation = parameter.as_bool();
+      } else if (name == plugin_name_ + ".allow_backward") {
+        next_allow_backward = parameter.as_bool();
+      }
+    }
+  }
+  if (next_v_linear_min > next_v_linear_max) {
+    result.successful = false;
+    result.reason = plugin_name_ + ".v_linear_min (" + std::to_string(next_v_linear_min) +
+                    ") above " + plugin_name_ + ".v_linear_max (" +
+                    std::to_string(next_v_linear_max) + ")";
+  } else if (next_initial_rotation && next_allow_backward) {
+    result.successful = false;
+    result.reason = plugin_name_ + ".initial_rotation and " + plugin_name_ +
+                    ".allow_backward cannot both be true";
+  }
+  if (!result.reason.empty()) {
+    RCLCPP_WARN(
+      logger_, "[DockingController][%s] rejecting parameter update: %s", plugin_name_.c_str(),
+      result.reason.c_str());
+    return result;
+  }
+
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
@@ -562,20 +606,8 @@ rcl_interfaces::msg::SetParametersResult DockingController::dynamicParametersCal
       } else if (name == plugin_name_ + ".lambda") {
         lambda_ = parameter.as_double();
       } else if (name == plugin_name_ + ".v_linear_min") {
-        if (parameter.as_double() > v_linear_max_) {
-          RCLCPP_WARN(
-            logger_, "[DockingController][%s] v_linear_min above v_linear_max; rejecting update",
-            plugin_name_.c_str());
-          continue;
-        }
         v_linear_min_ = parameter.as_double();
       } else if (name == plugin_name_ + ".v_linear_max") {
-        if (parameter.as_double() < v_linear_min_) {
-          RCLCPP_WARN(
-            logger_, "[DockingController][%s] v_linear_max below v_linear_min; rejecting update",
-            plugin_name_.c_str());
-          continue;
-        }
         v_linear_max_ = parameter.as_double();
       } else if (name == plugin_name_ + ".v_angular_max") {
         v_angular_max_ = parameter.as_double();
@@ -596,26 +628,10 @@ rcl_interfaces::msg::SetParametersResult DockingController::dynamicParametersCal
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
       if (name == plugin_name_ + ".initial_rotation") {
-        if (parameter.as_bool() && allow_backward_) {
-          RCLCPP_WARN(
-            logger_,
-            "[DockingController][%s] initial_rotation and allow_backward cannot both be true; "
-            "rejecting update",
-            plugin_name_.c_str());
-          continue;
-        }
         initial_rotation_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".final_rotation") {
         final_rotation_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".allow_backward") {
-        if (parameter.as_bool() && initial_rotation_) {
-          RCLCPP_WARN(
-            logger_,
-            "[DockingController][%s] initial_rotation and allow_backward cannot both be true; "
-            "rejecting update",
-            plugin_name_.c_str());
-          continue;
-        }
         allow_backward_ = parameter.as_bool();
       }
     }
