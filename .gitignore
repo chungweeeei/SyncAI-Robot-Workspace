@@ -108,6 +108,12 @@ src/third-party/*
 # seconds while the robot moves; never committed.
 /config/state/
 
+# Per-robot runtime parameter overlays: config/params/<robot_id>/<node>.yaml,
+# written by syncai_backend's settings page and loaded after the package's
+# factory params (controller_server first, 2026-11-03). One robot's tuning;
+# never committed -- the factory file is what a change for every robot edits.
+/config/params/
+
 # Materialised by `vcs import < dependencies.repos`, not committed -- the same
 # arrangement src/third-party/ has, for our own packages that live in their own
 # repositories. Each was tracked here until it moved out: syncai_common (28

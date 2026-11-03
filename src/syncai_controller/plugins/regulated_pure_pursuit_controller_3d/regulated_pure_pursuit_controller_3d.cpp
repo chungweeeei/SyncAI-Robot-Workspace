@@ -1192,19 +1192,47 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
   rcl_interfaces::msg::SetParametersResult result;
   std::lock_guard<std::mutex> lock_reinit(mutex_);
 
+  // Validate the whole batch before touching a member. A rejection used to be
+  // a `continue` that still returned successful = true, so the node stored a
+  // value the controller never used and GetParameters reported it as live —
+  // the console's settings page reads a set back to confirm it and persists
+  // what it read, so it would have saved a value that never took effect.
+  // The checks run against the values after the batch, so a set that flips
+  // use_rotate_to_heading and allow_reversing together is judged as a pair.
+  bool next_use_rotate_to_heading = use_rotate_to_heading_;
+  bool next_allow_reversing = allow_reversing_;
+  for (const auto & parameter : parameters) {
+    const auto & name = parameter.get_name();
+    if (
+      name == plugin_name_ + ".inflation_cost_scaling_factor" &&
+      parameter.get_type() == ParameterType::PARAMETER_DOUBLE && parameter.as_double() <= 0.0) {
+      result.successful = false;
+      result.reason = name + " must be > 0, got " + std::to_string(parameter.as_double());
+      RCLCPP_WARN(logger_, "Rejecting parameter update: %s", result.reason.c_str());
+      return result;
+    }
+    if (parameter.get_type() == ParameterType::PARAMETER_BOOL) {
+      if (name == plugin_name_ + ".use_rotate_to_heading") {
+        next_use_rotate_to_heading = parameter.as_bool();
+      } else if (name == plugin_name_ + ".allow_reversing") {
+        next_allow_reversing = parameter.as_bool();
+      }
+    }
+  }
+  if (next_use_rotate_to_heading && next_allow_reversing) {
+    result.successful = false;
+    result.reason = plugin_name_ + ".use_rotate_to_heading and " + plugin_name_ +
+                    ".allow_reversing cannot both be true";
+    RCLCPP_WARN(logger_, "Rejecting parameter update: %s", result.reason.c_str());
+    return result;
+  }
+
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
 
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == plugin_name_ + ".inflation_cost_scaling_factor") {
-        if (parameter.as_double() <= 0.0) {
-          RCLCPP_WARN(
-            logger_,
-            "The value inflation_cost_scaling_factor is incorrectly set, "
-            "it should be >0. Ignoring parameter update.");
-          continue;
-        }
         inflation_cost_scaling_factor_ = parameter.as_double();
       } else if (name == plugin_name_ + ".desired_linear_vel") {
         desired_linear_vel_ = parameter.as_double();
@@ -1264,22 +1292,8 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
       } else if (name == plugin_name_ + ".use_cost_regulated_linear_velocity_scaling") {
         use_cost_regulated_linear_velocity_scaling_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".use_rotate_to_heading") {
-        if (parameter.as_bool() && allow_reversing_) {
-          RCLCPP_WARN(
-            logger_,
-            "Both use_rotate_to_heading and allow_reversing "
-            "parameter cannot be set to true. Rejecting parameter update.");
-          continue;
-        }
         use_rotate_to_heading_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".allow_reversing") {
-        if (use_rotate_to_heading_ && parameter.as_bool()) {
-          RCLCPP_WARN(
-            logger_,
-            "Both use_rotate_to_heading and allow_reversing "
-            "parameter cannot be set to true. Rejecting parameter update.");
-          continue;
-        }
         allow_reversing_ = parameter.as_bool();
       }
     }
