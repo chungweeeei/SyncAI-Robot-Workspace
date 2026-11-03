@@ -1,0 +1,52 @@
+# =============================================================================
+# Point-LIO ring recorder: scripts/record/lio_ring_record.sh in a container of
+# its own, beside robot01, for catching what Point-LIO was fed when it
+# diverges (docs/pointlio-divergence-2026-11-03.md §3).
+#
+#   docker compose -f docker-compose.recorder.yml up -d
+#   docker logs -f lio-recorder
+#   touch record/lio_ring/SAVE                       # save the last 20 min now
+#   docker compose -f docker-compose.recorder.yml down
+#
+# Standalone, like docker-compose.build.yml (own project `name:`, not
+# `include`d): a plain `docker compose up -d` on the robot must not start a
+# recorder that writes ~14 GB/h. A container rather than a byobu pane because
+# switch_mode kills every session, and rather than `docker exec` into robot01
+# so that it survives the shell that started it.
+#
+# Same image as robot01 (rosbag2 and the livox / syncai_common message types
+# from the workspace's install/), same DDS setup (host network, CycloneDDS on
+# lo, domain 1 -- see x-robot-env in docker-compose.robots.yml; keep the two in
+# step), same workspace mount and instance INI, for robot_id. No devices: it
+# only subscribes. restart "no": it is for a night of recording, not a service.
+# =============================================================================
+
+name: syncai-recorder
+
+services:
+  recorder:
+    image: syncai-robot-base
+    container_name: lio-recorder
+    restart: "no"
+    init: true
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /home/syncrobotic/robot_ws
+    network_mode: host
+    entrypoint: ["scripts/record/lio_ring_record.sh"]
+    environment:
+      ROS_DOMAIN_ID: "1"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
+      ROS_LOG_DIR: /tmp/ros_log
+      RCUTILS_COLORIZED_OUTPUT: "0"
+      PYTHONUNBUFFERED: "1"
+      HOME: /home/syncrobotic
+      # The script's knobs (minutes / seconds / GB); see its header.
+      RING_MIN: "${RING_MIN:-30}"
+      KEEP_MIN: "${KEEP_MIN:-20}"
+      POST_SEC: "${POST_SEC:-120}"
+      MAX_SAVES: "${MAX_SAVES:-6}"
+      MIN_FREE_GB: "${MIN_FREE_GB:-20}"
+    volumes:
+      - .:/home/syncrobotic/robot_ws
+      - ./config/instances/robot.ini:/home/syncrobotic/robot_ws/config/system.ini:ro

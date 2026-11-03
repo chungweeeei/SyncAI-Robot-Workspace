@@ -65,9 +65,12 @@ void MPPIController::initialize(
   // over to the other.
   getParam(approach_dist_, "approach_dist", 0.0);
   getParam(approach_rotate_min_angle_, "approach_rotate_min_angle", 0.25);
-  // Not upstream; see applyApproachScaling(). <= 0 disables it, and so does
-  // walk_vx_min <= 0: it scales down to that floor.
-  getParam(approach_velocity_scaling_dist_, "approach_velocity_scaling_dist", 0.0);
+  // Not upstream; see applyApproachScaling(). approach_decel <= 0 disables
+  // it, and so does walk_vx_min <= 0: it slows down to that floor.
+  getParam(approach_decel_, "approach_decel", 0.0);
+  getParam(approach_floor_dist_, "approach_floor_dist", 0.2);
+  // Not upstream; see rotateToGoalHeading(). <= 0 stops at max_linear_accel.
+  getParam(goal_stop_decel_, "goal_stop_decel", 0.0);
   // Not upstream; see rotateToPath(). rotate_to_path_min_angle <= 0 disables
   // it, and so does final_rotation_wz <= 0: it turns at that rate.
   getParam(rotate_to_path_min_angle_, "rotate_to_path_min_angle", 0.0);
@@ -285,15 +288,28 @@ void MPPIController::applyApproachScaling(geometry_msgs::msg::Twist & cmd) const
   // started when rotateToGoalHeading() latched: 0.32 m from 0.80 at
   // max_linear_accel, plus the gait's latency, with scale_fwd 1.40 on top.
   //
-  // This is RPP's approach velocity scaling (FollowPathRPP3D's
-  // approach_velocity_scaling_dist / min_approach_linear_velocity): within
-  // approach_velocity_scaling_dist of the path's end, along the path, vx is
-  // capped at vx_max * remaining / approach_velocity_scaling_dist, never
-  // under walk_vx_min, so the robot reaches the tolerance at the walking
-  // floor -- ~0.045 m of braking at max_linear_accel. Linear in the distance,
-  // the deceleration it asks for is vx_max / approach_velocity_scaling_dist
-  // x vx: at most max_linear_accel when the two ratios match (0.80 / 0.8),
-  // so the clamp after this does not bite and the ramp down is the cap's.
+  // The first version (2026-10-29) was RPP's approach velocity scaling, a
+  // cap linear in the remaining distance (vx_max * remaining / 0.8 m). Its
+  // deceleration is proportional to the speed -- 0.8 m/s^2 at 0.80, the
+  // hardest at the start -- and the stop from the floor that followed it ran
+  // at max_linear_accel: commanded 0.80 -> 0 in ~2 s with two hard edges,
+  // ~1.1 / 1.4 m/s^2 at the gait under scale_fwd 1.40. Point-LIO pays for a
+  // hard stop: on robot01 (2026-11-03) it slid 1.4 m along the corridor
+  // through the brake and the turn at a MOVE's end and never recovered
+  // (docs/pointlio-divergence-2026-11-03.md) -- not shown to be the
+  // trigger, since 84 laps braked the same way, but the brake is the
+  // excitation.
+  //
+  // Now a constant deceleration (2026-11-03): vx is capped at
+  // sqrt(walk_vx_min^2 + 2 * approach_decel * (remaining - approach_floor_dist)),
+  // the speed from which approach_decel reaches the walking floor at
+  // approach_floor_dist from the end, so the robot walks the last
+  // approach_floor_dist - xy_goal_tolerance at the floor and comes into the
+  // tolerance there; rotateToGoalHeading()'s stop takes it on from there at
+  // goal_stop_decel. approach_decel is under max_linear_accel, so the clamp
+  // after this does not bite and the ramp down is the cap's. The floor stays:
+  // under it the gait stands still, and a cap that ran under it short of the
+  // tolerance would bring back the 2026-10-15 stalls short of the goal.
   //
   // A cap only, never a raise: a slower optimizer output (a blocker, a turn)
   // is left as it is. wz is scaled with vx so the command keeps the arc the
@@ -302,12 +318,13 @@ void MPPIController::applyApproachScaling(geometry_msgs::msg::Twist & cmd) const
   // (the cap is never under it, so it cannot drop a walk into the band the
   // floor exists for) and before the clamp, like it. The optimizer is not
   // told, as with the clamp: its next cycle starts from measured speed.
-  if (approach_velocity_scaling_dist_ <= 0.0 || walk_vx_min_ <= 0.0 || !goal_path_dist_) {
+  if (approach_decel_ <= 0.0 || walk_vx_min_ <= 0.0 || !goal_path_dist_) {
     return;
   }
   const double vx = std::fabs(cmd.linear.x);
-  const double cap =
-    std::max(walk_vx_min_, vx_max_ * *goal_path_dist_ / approach_velocity_scaling_dist_);
+  const double cap = std::sqrt(
+    walk_vx_min_ * walk_vx_min_ +
+    2.0 * approach_decel_ * std::max(0.0, *goal_path_dist_ - approach_floor_dist_));
   if (vx <= cap) {
     return;
   }
@@ -419,7 +436,15 @@ bool MPPIController::rotateToGoalHeading(
     tf2::getYaw(robot_pose.pose.orientation), tf2::getYaw(goal.orientation));
   double vx = 0.0;
   double wz = 0.0;
-  rotateInPlace(angle, vx, wz);
+  // The stop from the walking floor at goal_stop_decel rather than
+  // max_linear_accel (2026-11-03): the last hard edge of the approach (see
+  // applyApproachScaling()). 0.30 -> 0 at 0.5 m/s^2 is 0.6 s and 0.09 m
+  // where 1.0 took 0.3 s and 0.045 m, so the robot stops a few centimetres
+  // further past the point it entered the tolerance at; the stateful goal
+  // checker has latched the position by then. Under the floor the command
+  // is the gait's to follow -- RL may stand before it reaches 0 -- so this
+  // softens the command, and what the gait makes of it is unmeasured.
+  rotateInPlace(angle, vx, wz, goal_stop_decel_);
   // Stop first, then turn (2026-10-29). rotateInPlace() ramps vx down and wz
   // up in the same cycles, so a robot that came into the tolerance at speed
   // swept out of it on an arc while still braking: on robot01 wz was already
@@ -441,7 +466,8 @@ bool MPPIController::rotateToGoalHeading(
   return true;
 }
 
-void MPPIController::rotateInPlace(double angle, double & vx, double & wz) const
+void MPPIController::rotateInPlace(
+  double angle, double & vx, double & wz, double linear_decel) const
 {
   // RPP's rotateToHeading() with RPP's numbers; see rotateToGoalHeading() for
   // why each step is where it is. The floor goes last so that neither the
@@ -460,8 +486,9 @@ void MPPIController::rotateInPlace(double angle, double & vx, double & wz) const
   if (std::fabs(wz) < in_place_wz_min_) {
     wz = sign * in_place_wz_min_;
   }
-  if (max_linear_accel_ > 0.0) {
-    const double dv = max_linear_accel_ * control_duration_;
+  const double decel = linear_decel > 0.0 ? linear_decel : max_linear_accel_;
+  if (decel > 0.0) {
+    const double dv = decel * control_duration_;
     vx = std::clamp(0.0, last_cmd_vel_.linear.x - dv, last_cmd_vel_.linear.x + dv);
   }
 }

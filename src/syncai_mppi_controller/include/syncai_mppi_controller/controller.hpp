@@ -122,7 +122,8 @@ protected:
 
   /**
     * @brief Cap the optimizer's forward speed by the distance left along the
-    * path to its end (RPP's approach velocity scaling), arc kept
+    * path to its end, at a constant deceleration down to the walking floor,
+    * arc kept
     * @param cmd Optimizer output to adjust in place, after the walking floor
     * and before the clamp
     */
@@ -240,8 +241,9 @@ protected:
     * @param angle Remaining heading change, signed
     * @param vx Set to the linear command (ramping down to 0)
     * @param wz Set to the angular command
+    * @param linear_decel How fast vx ramps down; <= 0 = max_linear_accel
     */
-  void rotateInPlace(double angle, double & vx, double & wz) const;
+  void rotateInPlace(double angle, double & vx, double & wz, double linear_decel = 0.0) const;
 
   /**
     * @brief Publish the optimal trajectory on local_plan as a nav_msgs/Path
@@ -279,12 +281,17 @@ protected:
   bool rotating_to_goal_{false};
   double approach_dist_{0.0};
   double approach_rotate_min_angle_{0.25};
-  // applyApproachScaling(): the distance it starts at, the optimizer's own
-  // vx_max it scales down from, and the distance along the path to its end as
-  // of the cycle's transformPath() -- nullopt while the path in view stops
-  // short of the end (PathHandler::transformedGoal()).
-  double approach_velocity_scaling_dist_{0.0};
+  // applyApproachScaling(): its deceleration, the distance from the path's
+  // end where it reaches walk_vx_min, the optimizer's own vx_max it slows
+  // down from, and the distance along the path to its end as of the cycle's
+  // transformPath() -- nullopt while the path in view stops short of the end
+  // (PathHandler::transformedGoal()).
+  double approach_decel_{0.0};
+  double approach_floor_dist_{0.2};
   double vx_max_{0.0};
+  // rotateToGoalHeading()'s stop from the walking floor; <= 0 uses
+  // max_linear_accel.
+  double goal_stop_decel_{0.0};
   std::optional<double> goal_path_dist_;
   // Set when the optimizer first asks to stand inside approach_dist, cleared
   // when the final rotation takes over, when the way onto the goal is blocked,
