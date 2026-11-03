@@ -44,6 +44,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -192,6 +193,20 @@ struct NodeConfig
   // An interval <= 0 disables it.
   int lost_backoff_after_rounds = 25;
   double lost_backoff_interval = 1.0;
+  // The 10 ms timer used to send map -> local_frame on every tick, ~100 Hz on
+  // /tf, although the stamp is the last scan's (10 Hz) and the offset moves
+  // at most update_hz: nine messages in ten repeated the one before, and
+  // every /tf subscriber in the domain (both costmaps, the planner, the
+  // controller, lio_bridge, robot_state) paid to deserialise and
+  // drop each one (2026-11, CPU load). sendBroadCastTF now skips a transform
+  // whose stamp AND offset both equal the last one sent -- the stamp alone is
+  // not enough, a round that registers against the scan already broadcast
+  // updates the offset under the same stamp -- and resends it anyway after
+  // tf_keepalive_sec, so a node that joins while the robot stands with no
+  // scans arriving (Point-LIO down or resetting, no map frame otherwise)
+  // still receives one; tf2 keeps nothing for a late joiner on /tf. <= 0
+  // sends every tick, the old behaviour.
+  double tf_keepalive_sec = 1.0;
   // Per-direction use of a registration result: GICP's correction is taken
   // only along the directions its Hessian says the scan constrained, the rest
   // stays with odometry. localizers/localizability.h has the whole argument;
@@ -333,6 +348,13 @@ struct NodeState
   // needs no lock.
   bool initial_pose_pending = false;
   rclcpp::Time last_send_tf_time = rclcpp::Clock().now();
+  // What sendBroadCastTF last put on /tf, and when (timer thread only:
+  // every caller is in timerCB), for NodeConfig::tf_keepalive_sec.
+  bool tf_sent = false;
+  builtin_interfaces::msg::Time tf_sent_stamp;
+  M3D tf_sent_r = M3D::Identity();
+  V3D tf_sent_t = V3D::Zero();
+  std::chrono::steady_clock::time_point tf_sent_time;
   builtin_interfaces::msg::Time last_message_time;
   CloudType::Ptr last_cloud = std::make_shared<CloudType>();
   // The last GlobalLocConfig::accum_scans synchronised clouds, newest at the
@@ -506,6 +528,8 @@ public:
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr & cloud_msg,
     const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg);
 
+  // Broadcast map -> local_frame at `time` with the current offset, unless it
+  // is the transform last sent and tf_keepalive_sec has not passed since.
   void sendBroadCastTF(builtin_interfaces::msg::Time & time);
 
   // `relocalize`: (re)load a map and store the request's RAW 6-DOF pose as the

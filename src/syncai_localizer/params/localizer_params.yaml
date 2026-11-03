@@ -192,6 +192,15 @@
       after_rounds: 25
       interval: 1.0
 
+    # TF dedup (2026-11, CPU load; NodeConfig has the argument). The 10 ms
+    # timer sent map -> local_frame on every tick, ~100 Hz on /tf for a stamp
+    # that changes at the scan rate. A transform whose stamp and offset both
+    # equal the last one sent is now skipped (the offset is compared too: a
+    # registration of the scan already broadcast changes it under the same
+    # stamp), and resent after tf_keepalive_sec so a node that joins while no
+    # scans arrive still gets one. <= 0.0 sends every tick, as before.
+    tf_keepalive_sec: 1.0
+
     # Localizability (2026-10; localizers/localizability.h has the whole
     # argument). GICP's final 6x6 Hessian says which directions the scan
     # constrained: its eigenvalues, per inlier and in the map frame, are
