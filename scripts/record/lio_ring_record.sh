@@ -47,12 +47,17 @@ log() { echo "[$(date '+%F %T')] $*"; }
 # ROS environment, in the order robot01's command: sources it. install/ is
 # needed for the message types: livox_ros_driver2/CustomMsg and
 # syncai_common's IMUState cannot be recorded without their type support.
+# With nounset off: the ament setup files read variables they never set
+# (AMENT_TRACE_SETUP_FILES, COLCON_TRACE, ...), and under set -u the first one
+# killed the script before it recorded anything.
+set +u
 # shellcheck disable=SC1091
 source /opt/ros/humble/setup.bash
 # shellcheck disable=SC1091
 source /opt/ros2_rust_underlay/install/setup.bash
 # shellcheck disable=SC1091
 source install/setup.bash
+set -u
 
 ROBOT_ID=$(python3 -c "
 import configparser
