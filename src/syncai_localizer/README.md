@@ -86,7 +86,7 @@ silence.
 
 | Output | Type / QoS | Notes |
 |---|---|---|
-| TF `map → local_frame` | `<robot_id>/pointlio_odom` | Rebroadcast from a 10 ms timer on every tick, re-solved at most `update_hz` and only when the motion gate says so. `local_frame` is **adopted from the first odom message**; until then it is the launch's `<robot_id>/pointlio_odom`, the same name. |
+| TF `map → local_frame` | `<robot_id>/pointlio_odom` | Sent from a 10 ms timer, but only when the stamp (the last scan's) or the offset changed since the last send — so at the scan rate, ~10 Hz, not 100 Hz — plus a resend every `tf_keepalive_sec` (1 s) for a late joiner while no scans arrive (2026-11). Re-solved at most `update_hz` and only when the motion gate says so. `local_frame` is **adopted from the first odom message**; until then it is the launch's `<robot_id>/pointlio_odom`, the same name. |
 | `map_cloud` | `PointCloud2`, depth 1, TRANSIENT_LOCAL | The refine-resolution map, published once per `loadMap` (construction, `relocalize`, the `initialpose` fallback); an **empty** cloud when the node starts with no map. For rviz; set the display's durability to Transient Local. |
 | `auto_localize` | `syncai_common/srv/AutoLocalize` | Kidnap recovery, no hint. **Blocks** until a pose is found *and* the timer has registered against it, or fails with localization unchanged. See below. |
 | `reset_odometry` | `syncai_common/srv/ResetOdometry` | Zero the odometry, keep the map pose: calls `pointlio/reset` and re-seeds the new run — or, with `skip_seed`, runs `auto_localize`'s search on it (the backend's `POST /api/v1/localization/auto`). **Blocks**, robot **stationary**. See below. |
@@ -512,6 +512,7 @@ throwing. The launch layers the instance values on top.
 | `min_inlier_ratio` | `0.0` (off) | | Refine inlier-ratio gate; the ratio is logged every round, set it from off-site data |
 | `guess_timeout_sec` | `10.0` s | | Withdraw an un-owned guess the timer cannot converge on; `<= 0` retries forever |
 | `lost_backoff.{after_rounds, interval}` | `25`, `1.0` s | | Back-off while lost (above): after that many non-converged rounds in a row, retry every `interval` while no guess is pending; `interval <= 0` disables it |
+| `tf_keepalive_sec` | `1.0` s | | The TF dedup (above): an unchanged stamp + offset is resent after this long; `<= 0` sends every 10 ms tick, the pre-2026-11 behaviour |
 | `localizability.{enabled, ratio_none, ratio_partial, min_eig_per_inlier, partial_gain}` | `true`, `0.02`, `0.1`, `0.0`, `0.3` | | Per-direction projection of the correction (above). The thresholds are **first guesses**, to be set from the `loc:` log |
 | `jump_gate.{enabled, max_speed, max_rot_speed, max_reject_streak}` | `true`, `1.5` m/s, `1.5` rad/s, `5` | | Against the last accepted body pose (above); the streak cap is what keeps it from freezing the TF |
 | `num_threads` | `4` | | GICP covariance / KD-tree / reduction threads. Read **once**: `RegistrationPCL` builds the tree at `setInputTarget`. Shares the CPU with pointlio |

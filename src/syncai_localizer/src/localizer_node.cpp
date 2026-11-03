@@ -252,6 +252,9 @@ void LocalizerNode::loadParameters()
          declare_parameter<int>("lost_backoff.after_rounds", m_config.lost_backoff_after_rounds)));
   m_config.lost_backoff_interval =
     declare_parameter<double>("lost_backoff.interval", m_config.lost_backoff_interval);
+  // Dedup of the 10 ms TF rebroadcast; NodeConfig has the argument.
+  m_config.tf_keepalive_sec =
+    declare_parameter<double>("tf_keepalive_sec", m_config.tf_keepalive_sec);
 
   // Localizability projection (localizers/localizability.h) and the jump gate;
   // NodeConfig has the rationale, the YAML the tuning state.
@@ -1363,6 +1366,23 @@ void LocalizerNode::syncCB(
 
 void LocalizerNode::sendBroadCastTF(builtin_interfaces::msg::Time & time)
 {
+  // Exact comparisons on purpose: any change to the offset, however small, is
+  // a new transform, and an unchanged one is bit-for-bit the stored matrix
+  // (only an accepted round, a guess or reset_odometry rewrites it).
+  const auto wall_now = std::chrono::steady_clock::now();
+  if (
+    m_config.tf_keepalive_sec > 0.0 && m_state.tf_sent && m_state.tf_sent_stamp == time &&
+    m_state.tf_sent_r == m_state.last_offset_r && m_state.tf_sent_t == m_state.last_offset_t &&
+    std::chrono::duration<double>(wall_now - m_state.tf_sent_time).count() <
+      m_config.tf_keepalive_sec) {
+    return;
+  }
+  m_state.tf_sent = true;
+  m_state.tf_sent_stamp = time;
+  m_state.tf_sent_r = m_state.last_offset_r;
+  m_state.tf_sent_t = m_state.last_offset_t;
+  m_state.tf_sent_time = wall_now;
+
   geometry_msgs::msg::TransformStamped transformStamped;
   transformStamped.header.frame_id = m_config.map_frame;
   transformStamped.child_frame_id = m_config.local_frame;
