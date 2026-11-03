@@ -970,6 +970,20 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 A build-time parameter set through `ros2 param set` is refused with the
 reason; it needs a planner_server restart.
 
+### The runtime overlay (console settings)
+
+As for the controller (its README, "The runtime overlay"): the launch loads the
+factory `params/planner_server_params.yaml` and then, when it exists,
+**`config/params/<robot_id>/planner_server.yaml`** (gitignored), which
+`syncai_backend`'s planner settings page writes with only the keys the operator
+changed. The backend sets the Dynamic ones live and saves what it read back;
+a build-time one is only saved, for the next start. Delete the overlay (or one
+key of it) and restart the nav session, or launch with
+`use_runtime_params:=false`, to fall back. An overlay that does not parse is
+skipped with an error in the planner's log. `Octo3D`'s callback refuses a
+build-time key with a reason rather than storing it, so a set of one is never
+a silent no-op.
+
 ## Interfaces
 
 With the node at `/<robot_id>`:

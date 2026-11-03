@@ -11,9 +11,20 @@
 # planner's octomap.bt is derived: no new INI key, so the backend's
 # one-line map switch is unaffected. A map without the file still launches;
 # the Octo3D plugin then logs one error and fails its own plans only.
+#
+# Two parameter files are loaded, in order: the factory params in this
+# package (tracked, never written at runtime) and the robot's runtime overlay,
+# config/params/<robot_id>/planner_server.yaml beside the system INI -- the
+# keys the console's settings page changed, written by syncai_backend. A later
+# file wins key by key; deleting the overlay, or launching with
+# use_runtime_params:=false, falls back to the factory values. Same scheme as
+# controller_server.launch.py, whose helpers below are copied, not shared:
+# a launch file in one package does not import another package's.
 
 import configparser
 import os
+
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -52,6 +63,42 @@ def read_robot_id(config_path: str) -> str:
         return FALLBACK_ROBOT_ID
 
     return robot_id
+
+
+def count_leaves(node) -> int:
+    if isinstance(node, dict):
+        return sum(count_leaves(v) for v in node.values())
+    return 1
+
+
+def runtime_params(path: str):
+    """Return the overlay file to load after the factory params, or None.
+
+    A file that does not parse is skipped with an error rather than handed to
+    rcl: rcl aborts the process on a malformed params file, so one bad write
+    by the backend would otherwise keep planner_server down on every boot.
+    """
+    if not os.path.isfile(path):
+        logger.info(f"No runtime params overlay at '{path}'; factory params only")
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            raise ValueError("top level is not a mapping")
+        keys = sum(
+            count_leaves(section.get("ros__parameters", {}))
+            for section in data.values()
+            if isinstance(section, dict)
+        )
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        logger.error(
+            f"Runtime params overlay '{path}' is unreadable ({e}); "
+            "skipping it and loading the factory params only"
+        )
+        return None
+    logger.info(f"Runtime params overlay '{path}' loaded: {keys} key(s) over the factory params")
+    return path
 
 
 def read_map_pcd(config_path: str) -> str:
@@ -115,6 +162,22 @@ def launch_setup(context, *args, **kwargs):
 
     params_file = LaunchConfiguration("params_file")
 
+    parameters = [params_file]
+    if LaunchConfiguration("use_runtime_params").perform(context).lower() == "true":
+        overlay_path = LaunchConfiguration("runtime_params_file").perform(context)
+        if not overlay_path:
+            overlay_path = os.path.join(
+                os.path.dirname(config_path),
+                "params",
+                robot_id,
+                "planner_server.yaml",
+            )
+        overlay = runtime_params(overlay_path)
+        if overlay:
+            parameters.append(overlay)
+    else:
+        logger.warning("use_runtime_params is false: runtime overlay ignored, factory params only")
+
     # NOTE: no `name=` here. The process hosts two nodes (planner_server and
     # its internal global_costmap); a launch-level name would remap BOTH to
     # the same name and the costmap would lose its parameters. The namespace
@@ -131,8 +194,10 @@ def launch_setup(context, *args, **kwargs):
         executable="planner_server",
         namespace=robot_id,
         output="screen",
+        # Factory params, then the runtime overlay, then the per-robot
+        # overrides: a later entry wins, and the overlay holds none of these.
         parameters=[
-            params_file,
+            *parameters,
             {
                 # TF frame names are not namespaced by ROS, so override the
                 # yaml defaults with the robot_id prefix here. Later entries
@@ -168,10 +233,27 @@ def generate_launch_description():
         description="Full path to the planner server parameters YAML file",
     )
 
+    declare_runtime_params_file = DeclareLaunchArgument(
+        "runtime_params_file",
+        default_value="",
+        description=(
+            "Runtime overlay YAML loaded after params_file; empty = "
+            "<dir of system_config>/params/<robot_id>/planner_server.yaml"
+        ),
+    )
+
+    declare_use_runtime_params = DeclareLaunchArgument(
+        "use_runtime_params",
+        default_value="true",
+        description="false = ignore the runtime overlay and run on the factory params",
+    )
+
     return LaunchDescription(
         [
             declare_system_config,
             declare_params_file,
+            declare_runtime_params_file,
+            declare_use_runtime_params,
             OpaqueFunction(function=launch_setup),
         ]
     )
