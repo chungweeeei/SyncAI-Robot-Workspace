@@ -174,7 +174,10 @@
       # floor one control cycle is 1.5 cm and the stop ~0.1 m, the reason this
       # was widened from 0.05 in the first place. Estimated, not measured
       # (latency and the real speed under scale_fwd 1.40 are unmeasured): if
-      # "Reached the goal" is not steadily under 0.10, revisit both.
+      # "Reached the goal" is not steadily under 0.10, revisit both. Since
+      # 2026-11-03 the stop from the floor is FollowPath's goal_stop_decel
+      # (0.5): 0.09 m rather than 0.045, still inside a 0.10 window entered
+      # at its edge, before the gait's latency.
       xy_goal_tolerance: 0.10
       # Raised 0.1 -> 0.2 rad (~11.5 deg, 2026-10-14). The gait controller does
       # not turn below ~0.3 rad/s (MPPI's -0.115 rad/s left odom at zero), so
@@ -328,21 +331,36 @@
       # bearing runs a wider arc than the one through the goal point (a few
       # mm wide at 0.25 rad and 0.2 m, well inside xy_goal_tolerance).
       approach_rotate_min_angle: 0.25
-      # Not upstream: approach velocity scaling (2026-10-29), RPP 3D's
-      # approach_velocity_scaling_dist. Within this distance of the path's
-      # end, along the path, the optimizer's vx is capped at
-      # vx_max * remaining / this, never under walk_vx_min (wz scaled with
-      # it, so the arc is kept). MPPI does not slow for the goal by itself
-      # (GoalCritic pays arriving sooner, and the optimizer plans as if it
-      # could stop at once): on robot01 it entered xy_goal_tolerance near
-      # vx_max and stopped 0.26-0.38 m past the goal (see goal_checker). 0.8,
-      # not RPP 3D's 0.6, because the deceleration this asks for is
-      # vx_max / this x vx: 1.0 m/s^2 at 0.80 m/s, max_linear_accel exactly,
-      # where 0.6 asks 1.07 and the clamp would cut it short -- before the
-      # gait's latency. Reaches the floor 0.3 m out, so the last ~0.2 m to
-      # the tolerance are walked at 0.30. Change it with vx_max or
-      # max_linear_accel. Needs walk_vx_min on; 0 disables it.
-      approach_velocity_scaling_dist: 0.8
+      # Not upstream: the approach slowdown. MPPI does not slow for the goal
+      # by itself (GoalCritic pays arriving sooner, and the optimizer plans
+      # as if it could stop at once): on robot01 it entered xy_goal_tolerance
+      # near vx_max and stopped 0.26-0.38 m past the goal (see goal_checker).
+      # Along the path to its end, the optimizer's vx is capped at
+      # sqrt(walk_vx_min^2 + 2 x approach_decel x (remaining -
+      # approach_floor_dist)), wz scaled with it so the arc is kept: a
+      # constant deceleration that reaches the walking floor
+      # approach_floor_dist from the end. From vx_max 0.80 it starts 0.89 m
+      # out and takes 1.25 s; the last 0.1 m to the tolerance are walked at
+      # 0.30. It replaced (2026-11-03) RPP 3D's linear
+      # approach_velocity_scaling_dist (0.8 here, 2026-10-29), whose
+      # deceleration was proportional to the speed -- 0.8 m/s^2 at the start,
+      # ~1.1 at the gait under scale_fwd 1.40 -- because Point-LIO diverged
+      # after a hard brake and turn at a MOVE's end
+      # (docs/pointlio-divergence-2026-11-03.md). 0.4, half of what the old
+      # cap asked at 0.80; unmeasured on the robot. approach_floor_dist must
+      # stay over goal_checker.xy_goal_tolerance, or the robot comes into the
+      # tolerance above the floor and the stop below starts from there.
+      # Needs walk_vx_min on; approach_decel 0 disables it.
+      approach_decel: 0.4
+      approach_floor_dist: 0.2
+      # Not upstream (2026-11-03): the final rotation's stop from the walking
+      # floor, which ran at max_linear_accel -- 0.30 -> 0 in 0.3 s, the
+      # approach's last hard edge. At 0.5: 0.6 s and 0.09 m, so the robot
+      # stops ~5 cm further past where it entered the tolerance (the stateful
+      # checker has latched the position). Under the floor RL may stand
+      # before the command reaches 0, so how much of this the gait follows is
+      # unmeasured. 0 = max_linear_accel.
+      goal_stop_decel: 0.5
       # Not upstream: the turn onto a new path (2026-10-20). From a stand
       # (commanded |vx| under in_place_vx_max), once per path, a robot more
       # than rotate_to_path_min_angle off the bearing of the first pose
