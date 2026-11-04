@@ -47,6 +47,8 @@ services:
       POST_SEC: "${POST_SEC:-120}"
       MAX_SAVES: "${MAX_SAVES:-6}"
       MIN_FREE_GB: "${MIN_FREE_GB:-20}"
+      DOCK_JUMP_M: "${DOCK_JUMP_M:-0.3}"
+      DOCK_REST_SEC: "${DOCK_REST_SEC:-60}"
     volumes:
       - .:/home/syncrobotic/robot_ws
       - ./config/instances/robot.ini:/home/syncrobotic/robot_ws/config/system.ini:ro

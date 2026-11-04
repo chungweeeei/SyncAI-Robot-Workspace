@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Ring-buffer recorder for Point-LIO's raw input, saved when the localizer
-# reports LOST -- the data docs/pointlio-divergence-2026-11-03.md §3 says is
-# missing: what Point-LIO was fed in the lap where it slid at P3.
+# reports LOST or the robot's rest spot jumps in Point-LIO's own frame -- the
+# data docs/pointlio-divergence-2026-11-03.md §3 says is missing: what
+# Point-LIO was fed in the lap where it slid at P3.
 #
 # Records livox/lidar + livox/imu (Point-LIO's input) plus the references the
 # 2026-11-03 analysis leaned on (the body IMU, cmd_vel, lio_odom) continuously
 # into 60 s split files, deletes split files older than RING_MIN minutes, and
-# when the localizer's log says "-> LOST" (or someone touches $RING/SAVE),
-# hard-links the last KEEP_MIN minutes into record/lio_saved/<time>/ once
+# when a trigger fires (or someone touches $RING/SAVE), hard-links the last KEEP_MIN minutes into record/lio_saved/<time>/ once
 # POST_SEC have passed, so the save also holds what came after.
 #
 # Why a whole lap and not a few seconds around P3: Point-LIO replayed from a
@@ -16,6 +16,14 @@
 # before it (standing) plus the lap before that, which did not. Replaying it
 # from cold also answers whether the trigger is in that lap's data at all, or
 # in the state Point-LIO had built up over the night.
+#
+# Two triggers. The localizer's "-> LOST" alone was too late on 2026-11-04: it
+# fired 80 min after the slide, by when the ring had dropped that lap. So
+# dock_jump_watch.py also compares each rest (the dock, between laps) with the
+# last one at the same place in the map, in Point-LIO's odom frame, and fires
+# on a jump over DOCK_JUMP_M (0.3 m; healthy laps moved it <= 7 cm, the slide
+# 2.1 m). It fires about DOCK_REST_SEC after the robot is back on the dock, so
+# KEEP_MIN 20 holds the lap that slid and the one before it.
 #
 # Run it in its own container (docker-compose.recorder.yml), not in a session
 # pane: switch_mode kills every session. Workspace root as cwd, like
@@ -37,6 +45,8 @@ SPLIT_SEC=${SPLIT_SEC:-60}        # split file length
 MAX_SAVES=${MAX_SAVES:-6}         # saves before triggers are only logged
 MIN_FREE_GB=${MIN_FREE_GB:-20}    # stop recording below this much free disk
 COOLDOWN_SEC=${COOLDOWN_SEC:-600} # a trigger within this of the last save is only logged
+export DOCK_JUMP_M=${DOCK_JUMP_M:-0.3}  # dock_jump_watch.py: rest-to-rest jump that triggers
+export DOCK_REST_SEC=${DOCK_REST_SEC:-60} # dock_jump_watch.py: standing this long is a rest
 
 ROOT=record
 RING=$ROOT/lio_ring
@@ -98,6 +108,7 @@ fi
 
 REC_PID=""
 TAIL_PID=""
+WATCH_PID=""
 start_recorder() {
   local name
   name=ring_$(date +%Y%m%d_%H%M%S)
@@ -114,6 +125,7 @@ stop_all() {
   log "stopping"
   # The group: tail and grep, not only the subshell around them.
   [ -n "$TAIL_PID" ] && kill -- -"$TAIL_PID" 2>/dev/null
+  [ -n "$WATCH_PID" ] && kill -INT "$WATCH_PID" 2>/dev/null
   if [ -n "$REC_PID" ] && kill -0 "$REC_PID" 2>/dev/null; then
     kill -INT "$REC_PID"
     wait "$REC_PID"
@@ -127,12 +139,21 @@ trap stop_all INT TERM
 # tail -F follows the new file.
 (
   tail -n0 -F "$LOC_LOG" 2>/dev/null | grep --line-buffered -- '-> LOST' | while IFS= read -r line; do
-    echo "$line" >>"$RING/triggers.log"
+    echo "localizer LOST: $line" >>"$RING/triggers.log"
     touch "$RING/TRIGGER"
   done
 ) &
 TAIL_PID=$!
 log "watching $LOC_LOG for '-> LOST'; 'touch $RING/SAVE' saves by hand"
+
+# The other trigger, which writes triggers.log and TRIGGER itself. Restarted
+# from the main loop if it exits, like the recorder.
+start_watch() {
+  python3 scripts/record/dock_jump_watch.py "$ROBOT_ID" "$RING" &
+  WATCH_PID=$!
+  log "watching pointlio/lio_odom for a dock jump > $DOCK_JUMP_M m (pid $WATCH_PID)"
+}
+start_watch
 
 # The split being written is the highest-numbered .db3 of the newest ring bag;
 # a save waits POST_SEC, longer than a split, so every file it takes is closed.
@@ -200,6 +221,10 @@ while true; do
     log "the recorder exited; starting a new ring bag"
     start_recorder
   fi
+  if ! kill -0 "$WATCH_PID" 2>/dev/null; then
+    log "dock_jump_watch.py exited; restarting it"
+    start_watch
+  fi
 
   find "$RING" -name '*.db3' -mmin +"$RING_MIN" -delete
 
@@ -207,7 +232,8 @@ while true; do
     [ -e "$RING/$t" ] || continue
     rm -f "$RING/$t"
     now=$(date +%s)
-    why=$([ "$t" = SAVE ] && echo "by hand" || echo "localizer LOST: $(tail -n1 "$RING/triggers.log")")
+    # Each trigger writes its own line, source first, before touching TRIGGER.
+    why=$([ "$t" = SAVE ] && echo "by hand" || tail -n1 "$RING/triggers.log")
     if [ -n "$pending_epoch" ]; then
       log "trigger ($why) while a save is pending; covered by it"
     elif [ "$saves" -ge "$MAX_SAVES" ]; then
