@@ -151,6 +151,13 @@ initialposes from the console and 26 s to localize.
   `min_rot` (2°) of motion, so a parked robot does not rewrite the eMMC. The
   write is tmp + fsync + rename (`localizers/last_pose_store.*`), so a power
   loss leaves the old file or the new one.
+- **Not while Point-LIO is suspect** (2026-11-04). Only while the health log
+  reads `OK`, and not within `last_pose.after_lost_sec` (300 s) of a round it
+  judged `LOST`. "Trusted" alone is Point-LIO's speed under 3 m/s, which a
+  Point-LIO swinging ±5 m on the dock passes: robot01 wrote the file
+  mid-divergence 33 s after a LOST on 2026-11-04 (1.2 m off the dock) and 59 s
+  after one on 2026-11-03 (0.3 m off). The file keeps the pose from before it
+  went wrong; a withheld write is logged once a minute.
 - **When it is read.** By the launch, when the file is complete and its `map`
   equals the loaded PCD's directory; otherwise (no file, a broken one, a map
   switch since) `[initial_pose]` as before, with a log line saying which.
@@ -501,7 +508,7 @@ throwing. The launch layers the instance values on top.
 | `map_path` | `""` | `[map] pcd`, made absolute; `""` when `[map] name` is empty or the file is missing | Loaded in the constructor. Empty → identity TF, empty `map_cloud`, no registration until `relocalize` |
 | `set_initial_pose`, `initial_pose.{x,y,yaw}` | `false`, `0.0` | from the last pose file, else `[initial_pose]` if the section exists | Applied once on the first odom, through `applyPlanarGuess` |
 | `initial_pose.{use_ground_z,ground_z}` | `false`, `0.0` | from the last pose file only | The boot guess's storey |
-| `last_pose.{file,save_interval,min_move,min_rot}` | `""`, `5.0` s, `0.05` m, `0.035` rad | `file` = `config/state/<robot_id>/last_pose.json` | The last pose file's path and write throttle |
+| `last_pose.{file,save_interval,min_move,min_rot,after_lost_sec}` | `""`, `5.0` s, `0.05` m, `0.035` rad, `300.0` s | `file` = `config/state/<robot_id>/last_pose.json` | The last pose file's path, write throttle, and hold after a LOST |
 | `lidar_height` | `0.481` m | | Lidar above the feet: how far above a marked `initialpose` z (a ground height) the guess puts the body. Same as the controller's and planner's `lidar_height` |
 | `update_hz` | `5.0` | | Ceiling on re-registration; was 1.0 until 2026-08-28 (staircase corrections at 0.7 m/s) |
 | `min_update_trans` / `min_update_rot` | `0.05` m / `0.02` rad | | Motion gate thresholds |
