@@ -21,6 +21,7 @@
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/path_height.hpp"
 #include "syncai_util/path_progress.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 namespace mppi
 {
@@ -96,6 +97,33 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
     syncai_util::geometry_utils::first_after_integrated_distance(
     closest_point, global_plan_up_to_inversion_.poses.end(), prune_distance_);
 
+  // One plan frame -> costmap frame lookup, at the robot's stamp, for every
+  // pose of the window (2026-11). Upstream transformed pose by pose, each a
+  // buffer lookup with its own transform_tolerance wait: ~20 poses per call
+  // and up to four calls a cycle on a 3D path (climbStairs,
+  // rotateToGoalHeading, rotateToPath, the optimizer), so a stale map -> odom
+  // stalled one cycle for N x the tolerance, and a failed lookup left a zero
+  // pose (the robot's origin) in the local path, the return value unchecked.
+  // Now a failure is one PlannerException, inside failure_tolerance -- though
+  // transformToGlobalPlanFrame() has just looked the same chain up the other
+  // way at the same stamp, so it does not fail in practice.
+  const std::string & costmap_frame = costmap_->getGlobalFrameID();
+  const std::string & plan_frame = global_plan_.header.frame_id;
+  geometry_msgs::msg::TransformStamped plan_to_costmap;
+  if (plan_frame == costmap_frame) {
+    plan_to_costmap.transform.rotation.w = 1.0;
+  } else {
+    try {
+      plan_to_costmap = tf_buffer_->lookupTransform(
+        costmap_frame, plan_frame, tf2_ros::fromMsg(global_pose.header.stamp),
+        tf2::durationFromSec(transform_tolerance_));
+    } catch (const tf2::TransformException & ex) {
+      throw syncai_nav_core::PlannerException(
+        "Unable to transform the plan from " + plan_frame + " into the costmap's " + costmap_frame +
+        ": " + ex.what());
+    }
+  }
+
   unsigned int mx, my;
   // Find the furthest relevent pose on the path to consider within costmap
   // bounds
@@ -106,8 +134,10 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
     // Transform from global plan frame to costmap frame
     geometry_msgs::msg::PoseStamped costmap_plan_pose;
     global_plan_pose->header.stamp = global_pose.header.stamp;
-    global_plan_pose->header.frame_id = global_plan_.header.frame_id;
-    transformPose(costmap_->getGlobalFrameID(), *global_plan_pose, costmap_plan_pose);
+    global_plan_pose->header.frame_id = plan_frame;
+    tf2::doTransform(*global_plan_pose, costmap_plan_pose, plan_to_costmap);
+    costmap_plan_pose.header.frame_id = costmap_frame;  // also when the frames are one
+    costmap_plan_pose.header.stamp = global_pose.header.stamp;
 
     // Check if pose is inside the costmap
     if (!costmap_->getCostmap()->worldToMap(

@@ -198,13 +198,21 @@ ScanStats DynamicOverlay::addScan(
     if (rel <= band_lo || rel >= band_hi) {
       continue;
     }
+    // Only a cell new to hot_ changes the mask: it is a function of which
+    // cells hold a mark, not of when they were last seen. A refresh of a
+    // mark already held (a person standing in view, every scan at 10 Hz)
+    // just moves its stamp, so snapshot() hands out the mask it has; until
+    // 2026-11 every marked return set dirty_, and while anything was in view
+    // each is_path_valid (1 Hz) and each plan re-dilated every mark over the
+    // whole map's cells. A mark cleared by pass 1 and seen again before the
+    // next snapshot() is still in hot_; the clear already set dirty_.
     if (!in_hot_[cell]) {
       in_hot_[cell] = 1;
       hot_.push_back(cell);
+      dirty_ = true;
     }
     last_hit_[cell] = stamp;
     ++st.marked;
-    dirty_ = true;
   }
   return st;
 }

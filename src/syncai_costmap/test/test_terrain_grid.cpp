@@ -424,6 +424,38 @@ TEST(TerrainGrid, WindowMovesWithTheSamples)
   EXPECT_GT(s.share(-0.9, 0.5, -1.9, 1.9, FREE_SPACE), 0.98);
 }
 
+// The shift swaps cells through a second buffer (2026-11) instead of
+// building a new grid each time: a cell that left the window must come back
+// empty, never with the samples the buffer last held.
+TEST(TerrainGrid, WindowShiftedCellByCellAndBackForgetsWhatLeft)
+{
+  Scene s;
+  s.floor();
+  s.surface(0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; });
+  s.surface(-1.9, -1.5, -0.2, 0.2, [](double, double) { return 0.30; });
+  s.classify();
+  EXPECT_EQ(s.at(1.0, 0.0), LETHAL_OBSTACLE);
+  EXPECT_EQ(s.at(-1.7, 0.0), LETHAL_OBSTACLE);
+  // 1 m in +x one cell at a time, diagonally for the last half, then back.
+  double ox = kOrigin, oy = kOrigin;
+  for (int k = 0; k < 20; ++k) {
+    ox += kRes;
+    oy += k >= 10 ? kRes : 0.0;
+    s.grid.updateOrigin(ox, oy);
+  }
+  for (int k = 0; k < 20; ++k) {
+    ox -= kRes;
+    oy -= k < 10 ? kRes : 0.0;
+    s.grid.updateOrigin(ox, oy);
+  }
+  s.classify();
+  // The box that stayed in the window is where it was; the one that left
+  // (x < -1 m after the first leg) and the floor round it came back unknown.
+  EXPECT_EQ(s.at(1.0, 0.0), LETHAL_OBSTACLE);
+  EXPECT_GT(s.share(-1.95, -1.05, -1.45, 1.45, NO_INFORMATION), 0.98);
+  EXPECT_GT(s.share(-0.9, 0.5, -1.4, 1.4, FREE_SPACE), 0.98);
+}
+
 // Ray clearing (2026-10-23). The lidar is at the robot's centre, 0.481 m up
 // (TerrainLayer's sensor_height); a "scan" is a fan of rays from it to the
 // given returns, each clearing along its way, at kNow.
