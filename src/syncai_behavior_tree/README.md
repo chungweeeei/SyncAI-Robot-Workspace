@@ -117,7 +117,7 @@ editing a tree, since otherwise the XML is read once and cached.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `bt_loop_duration` | `10` ms | Tick period of the whole tree. Also sets every node's per-tick spin budget (half of it). |
-| `default_server_timeout` | `20` ms | How long a BT node waits for a goal ack / result / cancel before giving up |
+| `default_server_timeout` | `20` ms (code); `100` in `syncai_task_runner`'s params since 2026-11 | How long a BT node waits for a goal ack / result / cancel before giving up |
 | `wait_for_service_timeout` | `1000` ms | How long a BT node's **constructor** waits for its server to appear before throwing |
 | `always_reload_bt_xml` | `false` | Re-read the XML from disk on every `loadBehaviorTree()` |
 | `global_frame` | `map` | Declared here and copied to `client_node_` for BT nodes to read |
@@ -444,8 +444,13 @@ Only the ament linters run under `colcon test`; there are no unit tests.
 - **`bt_loop_duration` does double duty**: tick period *and* (halved) the per-tick
   spin budget of every action/service node. Lowering it to speed the loop also
   shortens how long each node may wait for its server per tick.
-- **`server_timeout` is per-goal-ack/result, not per-action.** A 20 ms default is
-  fine for an ack; a long-running action returns `RUNNING` for as long as it needs.
+- **`server_timeout` is per-goal-ack/result, not per-action.** A long-running
+  action returns `RUNNING` for as long as it needs. The budget is for the ack,
+  the cancel and result in `halt()`, and a whole service call. 20 ms (nav2's
+  default) is one spin at `bt_loop_duration` 50, so one late answer failed the
+  node; the task runner ships 100 since 2026-11 (its params file has why). The
+  ack / service waits return `RUNNING` across ticks; `halt()` blocks for up to
+  two of them.
 - **`RecoveryNode` with anything other than two children throws** at tick time.
 
 ## Further reading

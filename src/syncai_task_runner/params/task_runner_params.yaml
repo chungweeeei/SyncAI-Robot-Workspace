@@ -20,8 +20,23 @@
     # BT engine loop period in ms: 50 ms => the whole tree is ticked at 20 Hz.
     # This value also becomes every BT node's per-tick spin budget (halved).
     bt_loop_duration: 50
-    # How long (ms) a BT action/service client waits on its server per goal.
-    default_server_timeout: 20
+    # How long (ms) a BT action/service client waits on its server per goal:
+    # an action's goal ack, the cancel and the result in halt(), and a whole
+    # service call. A node with its own server_timeout in the XML overrides it.
+    # 100 since 2026-11 (nav2's 20 until then). 20 ms is one spin of the node
+    # (half of bt_loop_duration, 25 ms, caps one wait), so a single late
+    # answer failed the node: an ack late on a CPU Point-LIO saturates ended
+    # the goal UNKNOWN "did not acknowledge", and the context
+    # ClearEntireCostmap in move.xml / patrol.xml (no server_timeout of their
+    # own) failed their RecoveryNode -- and with it the goal, the retries
+    # unused -- when the costmap mutex or the planner's executor was busy.
+    # The ack and service waits stay non-blocking past 25 ms per tick (the
+    # node returns RUNNING), so this costs no tick time. halt() does block:
+    # up to this for the cancel and again for the result, so a cancel holds
+    # the BT thread up to 200 ms where the 20 ms one gave up first, logging
+    # "Failed to get result ... in node halt!" on nearly every cancel because
+    # the controller only sees a cancel on its next 50 ms cycle.
+    default_server_timeout: 100
     # How long (ms) to wait for an action/service server to appear before failing.
     wait_for_service_timeout: 1000
     # Reload the XML from disk on every goal (handy while editing trees).

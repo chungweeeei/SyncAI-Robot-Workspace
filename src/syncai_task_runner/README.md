@@ -347,7 +347,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 
 Plus the `BtActionServer` parameters, declared by that class and documented in
 `syncai_behavior_tree`'s README: `bt_loop_duration` (50 ms here),
-`default_server_timeout` (20 ms), `wait_for_service_timeout` (1000 ms),
+`default_server_timeout` (100 ms; 20 until 2026-11), `wait_for_service_timeout` (1000 ms),
 `always_reload_bt_xml` (false).
 
 ## The patrol route (`navigate_through_goals` / `navigate_through_poses`, 2026-11)

@@ -63,7 +63,9 @@
   and read blocked every second.
 
   The 1 Hz RateController paces the checks; a plan only runs when one fails.
-  IsPathValid gets 100 ms instead of the 20 ms default_server_timeout. A
+  IsPathValid gets 100 ms, named here although default_server_timeout is
+  100 too since 2026-11 (20 before), so the tree keeps it if the default
+  moves. A
   timeout keeps the path (a replan nobody can justify is the thing this
   tree exists to avoid; the next check is a second away and the controller
   holds the robot meanwhile). A timeout WARN in the task_runner log on every
