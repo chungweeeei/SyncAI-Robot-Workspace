@@ -23,6 +23,9 @@
   <depend>syncai_util</depend>
   <depend>syncai_costmap</depend>
   <depend>syncai_nav_core</depend>
+  <!-- ComputePathToPose / ComputePathThroughPoses (2026-11): the planner's
+       failure reason in the result. -->
+  <depend>syncai_common</depend>
 
   <!-- OctomapPlanner3D reads map/<name>/octomap.bt (octomap::OcTree). The
        same rosdep key syncai_mapping's clean_map uses; the image's dev stage

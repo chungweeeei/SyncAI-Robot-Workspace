@@ -31,6 +31,8 @@ const char * planFailureName(PlanFailure f)
       return "goal_unavailable";
     case PlanFailure::StartInKeepout:
       return "start_in_keepout";
+    case PlanFailure::GoalInKeepout:
+      return "goal_in_keepout";
     case PlanFailure::Disconnected:
       return "disconnected";
     case PlanFailure::SearchLimit:

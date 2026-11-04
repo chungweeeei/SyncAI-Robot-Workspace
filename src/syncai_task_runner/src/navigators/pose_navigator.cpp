@@ -72,6 +72,33 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
     "Docking failed: the gait controller did not reach the requested motion state"}},
 };
 
+// The planner's own reasons (2026-11): ComputePathToPose's error_code, which
+// the planner nodes pass on in failure_code and which replaces their row's
+// PLAN_FAILED, with a sentence that says it. The numbers are the interface's
+// (one table in four files, syncai_common); a code not listed here is still
+// copied through, under the planner node's own sentence, so a code the
+// interface adds first is never lost to a stale table. Phrased for a single
+// goal: on a patrol route the detail in parentheses names the waypoint.
+const std::map<uint16_t, const char *> kPlanningSentenceByCode = {
+  {GoalResult::INVALID_PLANNER, "Planning failed: the requested planner is not loaded"},
+  {GoalResult::TF_ERROR, "Planning failed: no robot pose or transform to plan with"},
+  {GoalResult::START_OUTSIDE_MAP, "Planning failed: the robot is outside the map"},
+  {GoalResult::GOAL_OUTSIDE_MAP, "Planning failed: the goal is outside the map"},
+  {GoalResult::START_OCCUPIED, "Planning failed: no free ground where the robot stands"},
+  {GoalResult::GOAL_OCCUPIED,
+   "Planning failed: no free ground at the goal (a wall, a ledge, another floor, or an "
+   "obstacle on it)"},
+  {GoalResult::TIMEOUT, "Planning failed: the search for a path ran out of time"},
+  {GoalResult::NO_VALID_PATH, "Planning failed: the way to the goal is closed"},
+  {GoalResult::NO_VIAPOINTS_GIVEN, "Planning failed: the route has no waypoints"},
+  {GoalResult::MAP_NOT_LOADED, "Planning failed: no map is loaded"},
+  {GoalResult::MAP_LOADING, "Planning failed: the map is still loading"},
+  {GoalResult::START_IN_KEEPOUT, "Planning failed: the robot stands inside a keepout zone"},
+  {GoalResult::GOAL_IN_KEEPOUT, "Planning failed: the goal is inside a keepout zone"},
+  {GoalResult::DISCONNECTED,
+   "Planning failed: the goal is on ground no stair connects to the robot's"},
+};
+
 // NavigateToGoal.behavior_tree, as the client sent it, to the file to load.
 // A bare file name ("dock.xml") resolves against this package's own
 // behavior_trees/ directory, so the backend does not have to embed the
@@ -98,6 +125,20 @@ FailureReason readFailureReason(const BT::Blackboard::Ptr & blackboard)
 
   const auto stage = kStageByFailedNode.find(failed_node);
   if (stage != kStageByFailedNode.end()) {
+    // A planner node's own finer code (failure_code, 2026-11): only inside
+    // the planning range and above its base, so a node that wrote none (0)
+    // or a stray value keeps its row's code. Read for the planner nodes only
+    // -- the docking nodes that write failed_node by hand do not write it.
+    uint16_t code = 0;
+    blackboard->get<uint16_t>(keys::kFailureCode, code);
+    if (
+      stage->second.first == GoalResult::PLAN_FAILED && code > GoalResult::PLAN_FAILED &&
+      code < GoalResult::DOCK_FAILED) {
+      const auto sentence = kPlanningSentenceByCode.find(code);
+      const char * text =
+        sentence != kPlanningSentenceByCode.end() ? sentence->second : stage->second.second;
+      return {code, std::string(text) + " (" + failure_msg + ")"};
+    }
     return {stage->second.first, std::string(stage->second.second) + " (" + failure_msg + ")"};
   }
   if (failed_node.empty() && !failure_msg.empty()) {
@@ -470,6 +511,7 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
   blackboard->set<std::string>(keys::kFailedNode, "");
   blackboard->set<std::string>(keys::kFailureMsg, "");
+  blackboard->set<uint16_t>(keys::kFailureCode, 0);
   blackboard->set<int>(keys::kNumberPlans, 0);
   // Seeded rather than cleared: the tree's first write is the first path
   // landing, and until then planning is what the robot is doing.
@@ -521,5 +563,6 @@ void PoseNavigator<ActionT>::onGoalPoseReceived(
 template class PoseNavigator<nav2_msgs::action::NavigateToPose>;
 template class PoseNavigator<syncai_common::action::NavigateToGoal>;
 template class PoseNavigator<nav2_msgs::action::NavigateThroughPoses>;
+template class PoseNavigator<syncai_common::action::NavigateThroughGoals>;
 
 }  // namespace syncai_task_runner

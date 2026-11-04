@@ -118,6 +118,7 @@ enum class PlanFailure {
   StartUnavailable,
   GoalUnavailable,
   StartInKeepout,  // the robot stands inside a keepout zone's core (the callers' check)
+  GoalInKeepout,   // the requested goal point lies inside a zone's polygon (the callers' check)
   Disconnected,
   SearchLimit,
   Timeout,

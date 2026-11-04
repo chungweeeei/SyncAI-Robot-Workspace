@@ -5,23 +5,23 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav_msgs/msg/path.h"
 #include "syncai_behavior_tree/bt_action_node.hpp"
+#include "syncai_common/action/compute_path_through_poses.hpp"
 
 namespace syncai_behavior_tree
 {
 
 /**
  * @brief A syncai_behavior_tree::BtActionNode class that wraps
- * nav2_msgs::action::ComputePathThroughPoses: one path from the robot through
- * every waypoint of `goals`, in order (patrol.xml, 2026-11). The twin of
- * ComputePathToPoseAction, down to the failure attribution, the plan count
- * and the status sentences, so the navigator reads a patrol's planning the
- * way it reads a move's.
+ * syncai_common::action::ComputePathThroughPoses: one path from the robot
+ * through every waypoint of `goals`, in order (patrol.xml, 2026-11). The twin
+ * of ComputePathToPoseAction, down to the failure attribution and its
+ * error_code, the plan count and the status sentences, so the navigator reads
+ * a patrol's planning the way it reads a move's.
  */
 class ComputePathThroughPosesAction
-: public BtActionNode<nav2_msgs::action::ComputePathThroughPoses>
+: public BtActionNode<syncai_common::action::ComputePathThroughPoses>
 {
 public:
   ComputePathThroughPosesAction(

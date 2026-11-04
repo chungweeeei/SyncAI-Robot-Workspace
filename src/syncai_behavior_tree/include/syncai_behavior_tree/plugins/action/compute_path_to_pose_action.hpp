@@ -3,18 +3,20 @@
 
 #include <string>
 
-#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav_msgs/msg/path.h"
 #include "syncai_behavior_tree/bt_action_node.hpp"
+#include "syncai_common/action/compute_path_to_pose.hpp"
 
 namespace syncai_behavior_tree
 {
 
 /**
  * @brief A syncai_behavior_tree::BtActionNode class that wraps
- * nav2_msgs::action::ComputePathToPose
+ * syncai_common::action::ComputePathToPose: nav2's goal, and since 2026-11 a
+ * result whose error_code says why there is no path, passed on to the
+ * navigator through report_failure()
  */
-class ComputePathToPoseAction : public BtActionNode<nav2_msgs::action::ComputePathToPose>
+class ComputePathToPoseAction : public BtActionNode<syncai_common::action::ComputePathToPose>
 {
 public:
   /**

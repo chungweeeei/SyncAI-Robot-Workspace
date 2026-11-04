@@ -21,6 +21,10 @@ find_package(pluginlib REQUIRED)
 find_package(syncai_util REQUIRED)
 find_package(syncai_costmap REQUIRED)
 find_package(syncai_nav_core REQUIRED)
+# The two planner actions are syncai_common's since 2026-11 (nav2's goals
+# plus error_code / error_msg in the result); nav2_msgs stays for
+# IsPathValid, LoadMap and ClearEntireCostmap.
+find_package(syncai_common REQUIRED)
 # OctomapPlanner3D's dynamic overlay subscribes the lidar cloud through a TF
 # message filter and transforms it into the map frame (2026-10-21). All three
 # came in transitively through syncai_costmap before, but a target that
@@ -58,6 +62,7 @@ set(dependencies
   syncai_util
   syncai_costmap
   syncai_nav_core
+  syncai_common
   sensor_msgs
   message_filters
   tf2_sensor_msgs

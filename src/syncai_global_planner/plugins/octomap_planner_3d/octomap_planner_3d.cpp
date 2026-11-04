@@ -17,6 +17,7 @@
 
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
+#include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 #include "syncai_util/path_progress.hpp"
@@ -29,6 +30,51 @@ namespace syncai_global_planner
 
 using syncai_util::declare_parameter_if_not_declared;
 namespace o3d = octomap_planner_3d;
+
+namespace
+{
+
+// A failure as the planner server reads it (2026-11): the typed
+// syncai_nav_core exception it maps to ComputePathToPose's error_code, with
+// the sentence the log line has as what(), which becomes error_msg. Until
+// then every failure was an empty path and reached the backend as
+// PLAN_FAILED, so a goal inside a keepout zone (permanent) and one a person
+// stood on (worth a retry) read the same. The ROS-free core keeps its own
+// PlanFailure; this is the one mapping. SearchLimit is a TIMEOUT: both are
+// the search giving up on a budget, not proof that no path exists.
+[[noreturn]] void throwPlanFailure(o3d::PlanFailure f, const std::string & what)
+{
+  namespace nc = syncai_nav_core;
+  switch (f) {
+    case o3d::PlanFailure::MapNotLoaded:
+      throw nc::MapNotLoaded(what);
+    case o3d::PlanFailure::MapLoading:
+      throw nc::MapLoading(what);
+    case o3d::PlanFailure::StartOutsideMap:
+      throw nc::StartOutsideMapBounds(what);
+    case o3d::PlanFailure::GoalOutsideMap:
+      throw nc::GoalOutsideMapBounds(what);
+    case o3d::PlanFailure::StartUnavailable:
+      throw nc::StartOccupied(what);
+    case o3d::PlanFailure::GoalUnavailable:
+      throw nc::GoalOccupied(what);
+    case o3d::PlanFailure::StartInKeepout:
+      throw nc::StartInKeepout(what);
+    case o3d::PlanFailure::GoalInKeepout:
+      throw nc::GoalInKeepout(what);
+    case o3d::PlanFailure::Disconnected:
+      throw nc::GroundDisconnected(what);
+    case o3d::PlanFailure::SearchLimit:
+    case o3d::PlanFailure::Timeout:
+      throw nc::PlannerTimedOut(what);
+    case o3d::PlanFailure::NoPath:
+      throw nc::NoValidPathCouldBeFound(what);
+    default:
+      throw nc::PlannerException(what);
+  }
+}
+
+}  // namespace
 
 OctomapPlanner3D::~OctomapPlanner3D()
 {
@@ -881,10 +927,8 @@ nav_msgs::msg::Path OctomapPlanner3D::createPlanThroughPoses(
   const std::vector<geometry_msgs::msg::PoseStamped> & goals)
 {
   if (goals.empty()) {
-    RCLCPP_ERROR(
-      logger_,
-      "[OctomapPlanner3D][createPlanThroughPoses] no waypoints in the request: nothing to plan");
-    return nav_msgs::msg::Path();
+    // The planner server refuses an empty route before it gets here.
+    throw syncai_nav_core::NoViapointsGiven("no waypoints in the request: nothing to plan");
   }
   return planThrough(start, goals);
 }
@@ -942,16 +986,14 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     0, start.pose.position.x, start.pose.position.y, start.pose.position.z, goals.front(),
     goals.front().pose.position.z);
 
-  // An empty path is how the planner server learns of a failure; the reason
-  // goes to the log, and only there: ComputePathToPose's result carries no
-  // message, so NavigateToGoal says PLAN_FAILED and that the planner
-  // aborted, nothing more.
-  const auto fail = [&](o3d::PlanFailure f, const std::string & detail) {
-    RCLCPP_ERROR(
-      logger_, "[OctomapPlanner3D][%s] %s: %s%s", fn, o3d::planFailureName(f), detail.c_str(),
-      request.c_str());
-    path.poses.clear();
-    return path;
+  // A failure is a typed exception (throwPlanFailure, 2026-11): the planner
+  // server answers the goal with its error_code and this sentence as
+  // error_msg, which NavigateToGoal carries to the backend. Logged here too,
+  // as before, because this line is the planner's own record.
+  const auto fail = [&](o3d::PlanFailure f, const std::string & detail) -> nav_msgs::msg::Path {
+    const std::string what = std::string(o3d::planFailureName(f)) + ": " + detail + request;
+    RCLCPP_ERROR(logger_, "[OctomapPlanner3D][%s] %s", fn, what.c_str());
+    throwPlanFailure(f, what);
   };
 
   if (!map_) {
@@ -1029,6 +1071,29 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       blocked.exempt_radius = 0.0;
     }
 
+    // A goal point inside a zone: refused as goal_in_keepout (2026-11),
+    // before the snap, which keeps off the zones and their ring and would
+    // move a goal up to snap_xy_radius - block_radius (0.25 m) inside a
+    // zone's edge out of it and plan there, and fail one deeper as
+    // goal_unavailable -- which reads as "someone may stand there", a
+    // reason worth a retry, where a zone is permanent. The floor is the one
+    // an unblocked snap finds under the point, as a zone's band names a
+    // floor and a goal's z hint may be well off it; no floor under it at all
+    // is left to the snap below to say.
+    if (!zones_.empty()) {
+      const o3d::SnapResult floor =
+        astar_->snap(goal.pose.position.x, goal.pose.position.y, goal_z, search_params_);
+      if (floor.cell != o3d::kNoCell) {
+        if (
+          const o3d::KeepoutZone * z = o3d::zoneAtPoint(
+            zones_, goal.pose.position.x, goal.pose.position.y, map_->zTop(floor.cell))) {
+          return fail(
+            o3d::PlanFailure::GoalInKeepout, std::string(through ? "waypoint" : "the goal") +
+                                               " lies inside keepout zone " + o3d::zoneLabel(*z) +
+                                               "; move it out of the zone, or edit the zone");
+        }
+      }
+    }
     const o3d::SnapResult g = astar_->snap(
       goal.pose.position.x, goal.pose.position.y, goal_z, search_params_,
       map_->cells[leg_start].component, &blocked);

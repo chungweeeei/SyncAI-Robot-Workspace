@@ -141,6 +141,7 @@ public:
     // finds them, reset per goal by the subclass.
     blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kFailedNode, "");
     blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kFailureMsg, "");
+    blackboard->set<uint16_t>(syncai_behavior_tree::blackboard_keys::kFailureCode, 0);
     blackboard->set<int>(syncai_behavior_tree::blackboard_keys::kNumberPlans, 0);
     blackboard->set<std::string>(syncai_behavior_tree::blackboard_keys::kNavStatusMsg, "");
 

@@ -262,6 +262,9 @@ protected:
     config().blackboard->template set<std::string>(
       blackboard_keys::kFailedNode, attributed ? registrationName() : std::string());
     config().blackboard->template set<std::string>(blackboard_keys::kFailureMsg, msg);
+    // No service here returns a finer code; written so the code always
+    // belongs to the same failure as the node name.
+    config().blackboard->template set<uint16_t>(blackboard_keys::kFailureCode, 0);
   }
 
   std::string service_name_, service_node_name_;

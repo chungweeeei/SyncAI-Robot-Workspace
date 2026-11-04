@@ -25,11 +25,13 @@ depend on, so neither has to depend on the other.
 | `controller.hpp` | `Controller` | `syncai_mppi_controller`: `MPPIController` (id `FollowPath`); `syncai_controller`: `RegulatedPurePursuitController3D` (`FollowPathRPP3D`), `DockingController` (`Docking` / `Undocking`) |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker` (`StoppedGoalChecker` and `PositionGoalChecker`, never loaded, were deleted 2026-10-28) |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker` (`PoseProgressChecker` likewise) |
-| `exceptions.hpp` | `PlannerException` | thrown by the controller path |
+| `exceptions.hpp` | `PlannerException` and, since 2026-11, its typed planning subclasses | thrown by the controller path (the base) and by the planners and `planner_server` (the subclasses) |
 
 **`GlobalPlanner`** — `initialize(node, name, tf, costmap_ros)` then
-`createPlan(start, goal) → nav_msgs::msg::Path`. An empty path means failure;
-there is no separate error channel. `isPathValid(path, robot_pose,
+`createPlan(start, goal) → nav_msgs::msg::Path`. A failure is a **typed
+`PlannerException`** thrown with the planner's sentence (2026-11); the server
+maps it to the result's `error_code`. An empty path still means failure, with
+no finer reason (`PLAN_FAILED`). `isPathValid(path, robot_pose,
 invalid_pose_indices)` (not in nav2_core, 2026-10-21) is the validity test:
 the planner server's `is_path_valid` service asks the planner that made the
 last plan. The default body says "valid" (a planner with no dynamic knowledge
@@ -75,8 +77,22 @@ is what produced the cmd_vel sawtooth on every replan.
 name it is thrown from the **controller** side: `ControllerServer` uses it for
 "Failed to obtain robot pose" / "Failed to make progress" / "Controller patience
 exceeded", and RPP for "collision ahead: …" and its transform failures.
-`PlannerServer` does not throw it at all. nav2 splits these into a hierarchy of
-`PlannerException` / `ControllerException` subtypes; this port kept one.
+nav2 splits these into a hierarchy of `PlannerException` /
+`ControllerException` subtypes; this port kept one for the controllers.
+
+**The planning subclasses** (2026-11) are nav2 Iron's `planner_exceptions.hpp`
+under the same names — `InvalidPlanner`, `PlannerTFError`,
+`StartOutsideMapBounds`, `GoalOutsideMapBounds`, `StartOccupied`,
+`GoalOccupied`, `PlannerTimedOut`, `NoValidPathCouldBeFound`, `NoViapointsGiven`
+— plus this stack's `MapNotLoaded`, `MapLoading`, `StartInKeepout`,
+`GoalInKeepout` and `GroundDisconnected`. `OctomapPlanner3D` throws one for
+each failure, `planner_server` one for each failure of its own, and the
+server's `abortPlan()` turns it into `syncai_common/ComputePathToPose`'s
+`error_code` (`PLAN_FAILED` for the base class or anything else). The codes
+live in the interface, not here, so this package does not depend on
+`syncai_common`; the one mapping is the server's. All derive from
+`PlannerException`, so the controller server, which tolerates that base for
+`failure_tolerance`, would tolerate them too — no controller throws them.
 
 ## What changed from nav2_core
 

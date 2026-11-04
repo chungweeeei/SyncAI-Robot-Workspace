@@ -12,7 +12,7 @@ namespace syncai_behavior_tree
 ComputePathThroughPosesAction::ComputePathThroughPosesAction(
   const std::string & xml_tag_name, const std::string & action_name,
   const BT::NodeConfiguration & conf)
-: BtActionNode<nav2_msgs::action::ComputePathThroughPoses>(xml_tag_name, action_name, conf)
+: BtActionNode<syncai_common::action::ComputePathThroughPoses>(xml_tag_name, action_name, conf)
 {
 }
 
@@ -42,11 +42,13 @@ BT::NodeStatus ComputePathThroughPosesAction::on_aborted()
 {
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
-  // No reason in the result (Humble); the planner log names the leg and the
-  // waypoint that failed. The navigator maps this node to PLAN_FAILED.
+  // The planner's reason, as in ComputePathToPoseAction::on_aborted(); its
+  // sentence names the leg and the waypoint that failed.
+  const auto & res = result_.result;
   report_failure(
     "planner " + action_name_ + " aborted the route through " + std::to_string(goal_.goals.size()) +
-    " waypoints");
+      " waypoints" + (res && !res->error_msg.empty() ? ": " + res->error_msg : std::string()),
+    true, res ? res->error_code : 0);
   config().blackboard->set<std::string>(  // NOLINT
     blackboard_keys::kNavStatusMsg,
     "Planner could not find a route through the waypoints; clearing obstacle memory and retrying");

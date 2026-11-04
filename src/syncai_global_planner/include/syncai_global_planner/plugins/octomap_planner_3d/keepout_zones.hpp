@@ -117,6 +117,18 @@ KeepoutMaskPtr buildKeepoutMask(
 // messages), or nullptr.
 const KeepoutZone * zoneAt(const std::vector<KeepoutZone> & zones, const SurfaceMap & m, CellId c);
 
+// The first zone holding the point (x, y) on the floor at floor_z, or
+// nullptr: the goal_in_keepout test (2026-11). The point the client asked
+// for, not a cell centre and not a snapped cell -- the goal snap keeps off
+// the zones and their robot-radius ring, so without this a goal up to
+// snap_xy_radius - block_radius (0.25 m) inside a zone's edge was moved out
+// of it and planned to, and one deeper failed goal_unavailable, which reads
+// as "someone may be standing there" and was retried. floor_z is the height
+// of the floor the goal is on (an unblocked snap's), since a zone's band
+// names a floor and a goal's z hint may be well off it.
+const KeepoutZone * zoneAtPoint(
+  const std::vector<KeepoutZone> & zones, double x, double y, double floor_z);
+
 // "'<id>'" or "'<id>' (<name>)", for messages.
 std::string zoneLabel(const KeepoutZone & z);
 

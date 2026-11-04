@@ -1243,6 +1243,48 @@ TEST(SurfaceAStar, TheStartRingIsExemptButACoreCellIsNot)
   EXPECT_STREQ(planFailureName(PlanFailure::StartInKeepout), "start_in_keepout");
 }
 
+// goal_in_keepout (2026-11): the requested goal POINT inside a polygon is
+// refused, however close to the edge. The goal snap alone keeps off the
+// zone and its ring, so a goal 0.2 m inside the edge snapped 0.45 m out of
+// the zone and was planned to (dp, 2026-11-04), and one deeper failed as
+// goal_unavailable, which the backend could not tell from a person on it.
+TEST(KeepoutZones, AGoalPointInsideAZoneIsInItOnItsFloorOnly)
+{
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const std::vector<KeepoutZone> zones = {rect("box", 5, 7, 3, 5, -0.5, 0.5)};
+  const auto box = buildKeepoutMask(*m, nullptr, zones, 0.25);
+  ASSERT_NE(box, nullptr);
+  const BlockedView view = zoneView(*box, kNoCell);
+  // The floor the callers test the point on: an unblocked snap's.
+  const auto floorZ = [&](double x, double y) {
+    const SnapResult f = astar.snap(x, y, 0.0, p);
+    EXPECT_NE(f.cell, kNoCell);
+    return m->zTop(f.cell);
+  };
+  // 0.2 m inside the edge: the blocked snap still finds a cell outside the
+  // ring (this is what the check is for), but the point is in the zone.
+  const SnapResult near_edge = astar.snap(6.0, 5.0 - 0.2, 0.0, p, kNoComponent, &view);
+  EXPECT_NE(near_edge.cell, kNoCell);
+  const KeepoutZone * z = zoneAtPoint(zones, 6.0, 4.8, floorZ(6.0, 4.8));
+  ASSERT_NE(z, nullptr);
+  EXPECT_EQ(z->id, "box");
+  // The middle of the zone, and just inside a corner.
+  EXPECT_NE(zoneAtPoint(zones, 6.0, 4.0, floorZ(6.0, 4.0)), nullptr);
+  EXPECT_NE(zoneAtPoint(zones, 5.02, 3.02, floorZ(5.02, 3.02)), nullptr);
+  // Outside the polygon, even inside the robot-radius ring: not in the zone
+  // (the snap moves that goal to the nearest cell clear of the ring).
+  EXPECT_EQ(zoneAtPoint(zones, 6.0, 5.1, floorZ(6.0, 5.1)), nullptr);
+  EXPECT_EQ(zoneAtPoint(zones, 4.0, 4.0, floorZ(4.0, 4.0)), nullptr);
+  // A zone's band names its floor: the same polygon upstairs leaves a goal
+  // on the ground floor alone.
+  const std::vector<KeepoutZone> upstairs = {rect("up", 5, 7, 3, 5, 4.5, 5.5)};
+  EXPECT_EQ(zoneAtPoint(upstairs, 6.0, 4.0, floorZ(6.0, 4.0)), nullptr);
+  EXPECT_EQ(zoneAtPoint({}, 6.0, 4.0, 0.0), nullptr);
+  EXPECT_STREQ(planFailureName(PlanFailure::GoalInKeepout), "goal_in_keepout");
+}
+
 TEST(StairLinks, AZoneOnTheFlightCutsTheLinkAndTheFailureSaysSo)
 {
   const auto m = build("stairs");

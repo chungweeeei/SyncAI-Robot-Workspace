@@ -27,6 +27,15 @@ namespace blackboard_keys
 // answered); kFailureMsg is the detail in either case.
 inline constexpr char kFailedNode[] = "failed_node";
 inline constexpr char kFailureMsg[] = "failure_msg";
+// The failed action's own error_code (uint16_t), when its result carries
+// one: since 2026-11 the planner's (syncai_common/ComputePathToPose, 201..),
+// which the navigator copies into NavigateToGoal / NavigateThroughGoals in
+// place of its node's 200. 0 = none, the node's base applies. Written by
+// every report_failure() call -- 0 when it has no code -- so it always
+// belongs to the same failure as kFailedNode; a node that writes those two
+// by hand does not write it, and the navigator reads it only for the
+// planner nodes.
+inline constexpr char kFailureCode[] = "failure_code";
 
 // Plans completed for the current goal: incremented by ComputePathToPose on
 // success, reset by the navigator per goal, reported as plans - 1 (the

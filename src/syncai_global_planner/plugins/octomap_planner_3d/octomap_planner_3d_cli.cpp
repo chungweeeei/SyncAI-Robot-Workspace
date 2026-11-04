@@ -785,8 +785,8 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
 // mask: the dynamic overlay's snapshot (--dynamic), or null; keepout: the
 // map's keepout mask (--keepout), or null. Read exactly as the plugin reads
 // them: the goal snap, the search and the shortcut keep off both, with the
-// disc round the start exempt from the dilation, and a start inside a zone's
-// core is refused.
+// disc round the start exempt from the dilation, a start inside a zone's
+// core is refused, and so is a goal point inside a zone's polygon.
 int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
@@ -809,6 +809,17 @@ int runPlan(
       "plan: %s: the start stands inside keepout zone %s\n",
       planFailureName(PlanFailure::StartInKeepout), z ? zoneLabel(*z).c_str() : "?");
     return 1;
+  }
+  // The goal point inside a zone's polygon, on the floor an unblocked snap
+  // finds under it: refused as the plugin refuses it (goal_in_keepout).
+  const SnapResult gf = astar.snap(gx, gy, gz, sp);
+  if (gf.cell != kNoCell) {
+    if (const KeepoutZone * z = zoneAtPoint(zones, gx, gy, m.zTop(gf.cell))) {
+      std::printf(
+        "plan: %s: the goal (%.2f, %.2f) lies inside keepout zone %s\n",
+        planFailureName(PlanFailure::GoalInKeepout), gx, gy, zoneLabel(*z).c_str());
+      return 1;
+    }
   }
   BlockedView blocked;
   blocked.mask = mask;

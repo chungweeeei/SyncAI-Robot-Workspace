@@ -12,6 +12,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_srvs/srv/empty.hpp"
+#include "syncai_common/action/navigate_through_goals.hpp"
 #include "syncai_common/action/navigate_to_goal.hpp"
 #include "syncai_task_runner/navigator.hpp"
 #include "syncai_util/odometry_utils.hpp"
@@ -62,16 +63,33 @@ struct PoseNavigatorTraits<syncai_common::action::NavigateToGoal>
 
 // The patrol route (2026-11): drive through every pose in order without
 // stopping, the last one reached like a MOVE's goal (xy and heading). nav2's
-// own action, so its result is Empty and its feedback has no status_msg; a
-// syncai_common twin with NavigateToGoal's error_code / status_msg is the
-// next step, and is one more specialisation here. Its own default tree
-// parameter, because the two default trees differ while navigate_to_pose and
-// navigate_to_goal share move.xml.
+// own action, so its result is Empty and its feedback has no status_msg;
+// syncai_common's NavigateThroughGoals below is the twin that has them, and
+// this one stays until the backend's PATROL step has moved to it. Its own
+// default tree parameter, because the default trees differ while
+// navigate_to_pose and navigate_to_goal share move.xml.
 template <>
 struct PoseNavigatorTraits<nav2_msgs::action::NavigateThroughPoses>
 {
   static constexpr const char * kActionName = "navigate_through_poses";
   static constexpr bool kReportsFailure = false;
+  static constexpr bool kDrivesRvizGoalPose = false;
+  static constexpr bool kThroughPoses = true;
+  static constexpr const char * kDefaultBtParam = "default_nav_through_poses_bt_xml";
+  static constexpr const char * kDefaultBtFile = "patrol.xml";
+};
+
+// NavigateThroughGoals (2026-11): navigate_through_poses with
+// NavigateToGoal's error_code / error_msg in the result and number_of_replans
+// / status_msg in the feedback, so an aborted PATROL step says why -- a
+// waypoint in a keepout zone is permanent, a person in the way is not, and
+// the backend retried both. Same default tree parameter as the nav2 one:
+// both run patrol.xml.
+template <>
+struct PoseNavigatorTraits<syncai_common::action::NavigateThroughGoals>
+{
+  static constexpr const char * kActionName = "navigate_through_goals";
+  static constexpr bool kReportsFailure = true;
   static constexpr bool kDrivesRvizGoalPose = false;
   static constexpr bool kThroughPoses = true;
   static constexpr const char * kDefaultBtParam = "default_nav_through_poses_bt_xml";
@@ -85,15 +103,16 @@ struct PoseNavigatorTraits<nav2_msgs::action::NavigateThroughPoses>
  * (unchanged; what the backend sends today), syncai_common/NavigateToGoal
  * (2026-10: the same navigation with error_code / error_msg in the result and
  * number_of_replans in the feedback, so the operator can be told whether the
- * robot failed to plan or failed to drive) and nav2_msgs/NavigateThroughPoses
- * (2026-11, the patrol route). The places they differ sit behind
- * PoseNavigatorTraits and `if constexpr`; the explicit instantiations are at
- * the bottom of the .cpp.
+ * robot failed to plan or failed to drive), nav2_msgs/NavigateThroughPoses
+ * (2026-11, the patrol route) and syncai_common/NavigateThroughGoals (2026-11:
+ * the patrol route with NavigateToGoal's result and feedback). The places
+ * they differ sit behind PoseNavigatorTraits and `if constexpr`; the explicit
+ * instantiations are at the bottom of the .cpp.
  *
  * All instantiations share the host node's parameters (goal_blackboard_id,
  * path_blackboard_id, the BtActionServer timings) and the one NavigatorMutex:
- * one navigation at a time across the three actions. The single-pose two
- * also share default_bt_xml.
+ * one navigation at a time across the four actions. The single-pose two
+ * share default_bt_xml, the two routes default_nav_through_poses_bt_xml.
  */
 template <class ActionT>
 class PoseNavigator : public Navigator<ActionT>
@@ -184,6 +203,7 @@ protected:
 using NavigateToPoseNavigator = PoseNavigator<nav2_msgs::action::NavigateToPose>;
 using NavigateToGoalNavigator = PoseNavigator<syncai_common::action::NavigateToGoal>;
 using NavigateThroughPosesNavigator = PoseNavigator<nav2_msgs::action::NavigateThroughPoses>;
+using NavigateThroughGoalsNavigator = PoseNavigator<syncai_common::action::NavigateThroughGoals>;
 
 // Defined once, in pose_navigator.cpp, so the node -> error_code table stays a
 // .cpp-private detail and the library serves both actions.

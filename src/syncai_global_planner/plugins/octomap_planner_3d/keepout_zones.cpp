@@ -256,6 +256,17 @@ const KeepoutZone * zoneAt(const std::vector<KeepoutZone> & zones, const Surface
   return nullptr;
 }
 
+const KeepoutZone * zoneAtPoint(
+  const std::vector<KeepoutZone> & zones, double x, double y, double floor_z)
+{
+  for (const KeepoutZone & zone : zones) {
+    if (zoneContains(zone, x, y, floor_z)) {
+      return &zone;
+    }
+  }
+  return nullptr;
+}
+
 std::string zoneLabel(const KeepoutZone & z)
 {
   return "'" + z.id + "'" + (z.name.empty() ? std::string() : " (" + z.name + ")");
