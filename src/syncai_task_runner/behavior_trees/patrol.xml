@@ -37,9 +37,12 @@
      does stop short of its last waypoint -- because a controller handed the
      out-and-back whole stopped short of it for good (robot01, 2026-11-02).
 
-  The failure attribution maps ComputePathThroughPoses to PLAN_FAILED, but
-  navigate_through_poses is nav2's action with an Empty result: the reason is
-  in the task_runner log only, until its syncai_common twin exists.
+  The failure attribution maps ComputePathThroughPoses to the planner's own
+  2xx (PLAN_FAILED 200 when it has none), as ComputePathToPose in move.xml.
+  navigate_through_poses is nav2's action with an Empty result, so there the
+  reason is in the task_runner log only; its syncai_common twin,
+  navigate_through_goals (NavigateThroughGoals, 2026-11), carries it as
+  error_code / error_msg.
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">

@@ -336,14 +336,14 @@ and so is the braking, done with each one's own acceleration clamp:
    commanded to a stop it calls the driver's **`set_policy_mode`** with
    **`stair_policy_mode`** (1, HIMLOCO — the index table is in
    `syncai_common/msg/RobotLowLevelMode.msg`: 0 PPO, 1 HIMLOCO, 2 CHAMP, 3 ISSAC)
-   and stands **`stair_policy_settle_time`** (3 s in the params file, 1 s in code). The call is fire and forget:
+   and stands **`stair_policy_settle_time`** (3 s, in the params file and in code). The call is fire and forget:
    the driver's UDP has no acknowledgement. If the service is not up, the cycle
    fails instead (the robot does not climb on the level-ground policy). If
    `<robot_id>/mode` already reports the stair policy, nothing is sent and the
    robot does not stop.
 2. **Climb** at **`stair_linear_vel`** (0.5 m/s since 2026-10-19 — 0.2 made the
    stair tests crawl; 0.5 is unmeasured on HIMLOCO) with a **`stair_lookahead_dist`**
-   (0.4 m) carrot. The short carrot keeps RPP off the inside of a spiral's turns
+   (0.4 m; MPPI's is 0.6, see `syncai_mppi_controller`'s README) carrot. The short carrot keeps RPP off the inside of a spiral's turns
    (its narrowest treads) and keeps the collision projection (carrot + 0.36 m of
    footprint, ~0.76 m) short. Until 2026-10-20 that length also mattered
    against the local costmap's obstacle floor (0.58 m above the robot's

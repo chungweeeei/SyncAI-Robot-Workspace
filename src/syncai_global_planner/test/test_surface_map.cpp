@@ -780,6 +780,36 @@ TEST(DynamicOverlay, MarksExpireAndClearAndANewMapDropThem)
   EXPECT_EQ(mask->d.size(), two->cells.size());
 }
 
+TEST(DynamicOverlay, ARefreshedMarkKeepsTheMaskANewOneRebuildsIt)
+{
+  // The mask depends on which cells hold a mark, not on when they were last
+  // seen: a person standing in view refreshes the same marks every scan, and
+  // each snapshot() (1 Hz is_path_valid, every plan) used to re-dilate them.
+  const auto m = build("flat");
+  DynamicOverlay o;
+  o.setMap(m);
+  const Waypoint sensor = sensorOver(3.05, 4.05, 0.0);
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 0.0);
+  const auto first = o.snapshot(0.0);
+  ASSERT_NE(first, nullptr);
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 0.1);
+  o.addScan({{5.05, 4.05, 0.3}}, sensor, 0.2);
+  EXPECT_EQ(o.snapshot(0.2), first);  // same object, not rebuilt
+  // The refresh still moves the stamp: it outlives the first sighting's 30 s.
+  EXPECT_EQ(o.snapshot(30.1), first);
+  // A second cell is a new mask with both.
+  o.addScan({{5.05, 3.05, 0.3}}, sensor, 30.2);
+  const auto second = o.snapshot(30.2);
+  ASSERT_NE(second, nullptr);
+  EXPECT_NE(second, first);
+  EXPECT_EQ(second->marked, 2u);
+  // One aging out is a new mask again.
+  const auto third = o.snapshot(60.15);
+  ASSERT_NE(third, nullptr);
+  EXPECT_NE(third, second);
+  EXPECT_EQ(third->marked, 1u);
+}
+
 TEST(DynamicOverlay, DilationStaysOnTheFloorAndWithinReach)
 {
   const auto m = build("two_floors");

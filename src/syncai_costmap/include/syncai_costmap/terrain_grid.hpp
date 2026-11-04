@@ -321,6 +321,9 @@ private:
   uint64_t cleared_ = 0;
   std::vector<Sample> ring_scratch_;
   std::vector<Cell> cells_;
+  // updateOrigin()'s other buffer, the same size with its rings allocated,
+  // swapped with cells_ on each shift.
+  std::vector<Cell> shifted_;
   std::vector<TerrainPathPose> path_;
   // Scratch of classify(): the ground per cell (NaN = none), whether it came
   // from samples, the reach flood, and the neighbourhood's samples.

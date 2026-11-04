@@ -107,10 +107,10 @@
   (the robot stands at its end, so it reads <= 0.15 m); the dock distance is
   in status_msg only.
 
-  server_timeout="500" on every SetMotionKey call: the default 20 ms is the
-  action-ack budget, but for a service it is the whole call, and the
-  driver's four services share one worker thread, so a set_speed_scale in
-  flight from the console would time the switch out. Half a second is still
+  server_timeout="500" on every SetMotionKey call: the default (100 ms, 20
+  until 2026-11) is the action-ack budget, but for a service it is the
+  whole call, and the driver's four services share one worker thread, so
+  a set_speed_scale in flight from the console would time the switch out. Half a second is still
   far below anything a human would notice.
 
   Not a RecoveryNode around DockToPose: a dock approach that failed is

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "syncai_costmap/cost_values.hpp"
 
@@ -27,6 +28,9 @@ void TerrainGrid::resize(int nx, int ny, double res, double ox, double oy)
   for (auto & c : cells_) {
     c.ring.resize(std::max(1, params.max_samples_per_cell));
   }
+  // updateOrigin()'s second buffer, made the same way: its rings are
+  // allocated once here and only swapped from then on.
+  shifted_ = cells_;
   ground_.assign(cells_.size(), kNaN);
   ground_known_.assign(cells_.size(), 0);
 }
@@ -53,24 +57,28 @@ void TerrainGrid::updateOrigin(double ox, double oy)
   if (dx == 0 && dy == 0) {
     return;
   }
-  std::vector<Cell> moved(cells_.size());
-  for (auto & c : moved) {
-    c.ring.resize(std::max(1, params.max_samples_per_cell));
+  // Into the second buffer and back by swaps, so no ring is allocated: until
+  // 2026-11 this built a fresh vector of nx * ny cells, each with its own
+  // max_samples_per_cell ring -- 6400 allocations (~1.2 MB) on nearly every
+  // 5 Hz update while walking, since a 5 cm cell is crossed in 0.06 s at
+  // 0.8 m/s. A cell with no source keeps whatever ring it holds, emptied.
+  if (shifted_.size() != cells_.size()) {
+    shifted_ = cells_;  // resize() was skipped (a default-built grid)
   }
   for (int iy = 0; iy < ny_; ++iy) {
     const int sy = iy + dy;
-    if (sy < 0 || sy >= ny_) {
-      continue;
-    }
     for (int ix = 0; ix < nx_; ++ix) {
       const int sx = ix + dx;
-      if (sx < 0 || sx >= nx_) {
+      Cell & dst = shifted_[index(ix, iy)];
+      if (sy < 0 || sy >= ny_ || sx < 0 || sx >= nx_) {
+        dst.count = 0;
+        dst.head = 0;
         continue;
       }
-      moved[index(ix, iy)] = std::move(cells_[index(sx, sy)]);
+      std::swap(dst, cells_[index(sx, sy)]);
     }
   }
-  cells_ = std::move(moved);
+  cells_.swap(shifted_);
   ox_ += dx * res_;
   oy_ += dy * res_;
   // The ground estimates are per old cell; until the next classify() (the

@@ -89,11 +89,15 @@ public:
     // 0 = aim at the foot, as before.
     double standoff{1.0};
     // stair_exit_behind_dist / stair_exit_ahead_dist: the window that must
-    // have gone level before leaving. 2.5 m ahead keeps a landing (rarely
-    // longer than ~2 m on a spiral) in stair mode instead of switching the
-    // policy twice per turn; 0.8 m behind has the hind legs off the last step.
+    // have gone level before leaving. The ahead window keeps a landing in
+    // stair mode instead of switching the policy twice per turn -- 2.5 m
+    // covered a spiral's (rarely longer than ~2 m); 3.5 m, what both plugins'
+    // params ship, also covers a U landing, so the stair policy goes back
+    // only on the top floor. It was 2.5 here while the file said 3.5, against
+    // "defaults are the values the params file ships" above. 0.8 m behind has
+    // the hind legs off the last step.
     double exit_behind_dist{0.8};
-    double exit_ahead_dist{2.5};
+    double exit_ahead_dist{3.5};
     // stair_policy_settle_time: how long the robot stands after each switch.
     double settle_time{3.0};
     // stair_policy_mode: the RL policy index for stairs (syncai_common

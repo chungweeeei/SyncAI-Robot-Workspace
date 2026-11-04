@@ -593,9 +593,10 @@ bool MPPIController::approachGoal(
   //
   // It was asking to stand because nothing pays it to move. Inside 0.5 m
   // only GoalCritic, CostCritic and ConstraintCritic still score, and
-  // GoalCritic is the mean distance to the goal over the 2 s horizon: for a
-  // point d straight ahead the best constant speed is d * sqrt(2) / 2 s,
-  // under in_place_vx_max inside ~0.14 m, and a point off to the side of a
+  // GoalCritic is the mean distance to the goal over the 1.6 s horizon
+  // (time_steps 32 x model_dt 0.05; "2 s" until 2026-11, from an older
+  // time_steps): for a point d straight ahead the best constant speed is
+  // d * sqrt(2) / 1.6 s, under in_place_vx_max inside ~0.11 m, and a point off to the side of a
   // DiffDrive robot that cannot reverse scores lower still. RPP never had
   // this, because past its rotate-to-heading it drives a fixed speed with
   // min_approach_linear_velocity as the floor -- which is what this does:

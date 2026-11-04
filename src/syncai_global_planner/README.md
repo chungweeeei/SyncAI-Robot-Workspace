@@ -299,13 +299,24 @@ arriving meanwhile fail with `map_loading`):
    at grazing angles only and the observed floor is sparse — with every
    column required, 13 % of dp1f_1012's own keyframes stood on
    "untraversable" ground.
+   **The wall clearance this gives is 0.35 m, not 0.25** (measured
+   2026-11 on synthetic walls): the floor cell against a wall foot is
+   already step-rejected by rule 4, and a step-rejected cell in the disc
+   blocks like the wall itself, so the inflation is `robot_radius` + one
+   cell. The narrowest door a route passes is therefore **0.8 m**; a 0.7 m
+   one has no traversable column. Kept on purpose (decided 2026-11): the
+   disc is a circle of the footprint's half-*width*, and the extra cell is
+   what stands for the half-length (0.35 m) when the robot turns in a
+   doorway. Counting step-rejected cells as support would give 0.25 m and
+   0.6 m doors, and needs the two tests that pin 0.35 changed with it.
 6. 8-connected components (no corner cutting), so a disconnected goal fails
    before the search and a goal snaps to the robot's floor, not the one below
    a balcony edge.
 7. A clearance distance field propagated over the surface graph (not the
    2D grid, or a ground-floor wall would cost the floor above it) out to
-   `clearance_cost_radius` (0.55 from the traversable boundary = 0.8 from
-   the wall, the 2D global costmap's `inflation_radius` until 2026-10-28).
+   `clearance_cost_radius` (0.55 from the traversable boundary = 0.9 from
+   the wall face, with the 0.35 m clearance above; sized as 0.8, the 2D
+   global costmap's `inflation_radius` until 2026-10-28, against 0.25).
 
 Every rejected surface keeps its reason (`clearance_occupied`,
 `no_free_above`, `step`, `footprint_blocked`, `slope`, `residual`), which is
@@ -944,7 +955,7 @@ inside it is `start_in_keepout`, a goal inside it `goal_in_keepout`, and on
 | `planner_plugins` | `["Octo3D"]` (config: `["Octo3D"]`) | IDs; each needs `<id>.plugin` naming the type. With one loaded, an empty `planner_id` in a goal picks it; with more, an empty id is an error. Until 2026-10-28 the default was NavFn as `GridBased`, and the config loaded `GridBased` (SmacPlanner2D) beside `Octo3D` |
 | `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan once per goal and again only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
 | `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the robot's place on it — forward-only progress since 2026-11 (`syncai_util/path_progress.hpp`), so a patrol route that comes back past the robot is not cut to its later leg (the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. The planner cannot tell when the navigation finished, so the task_runner reports a goal that **succeeded or was cancelled** through `clear_plan`; after a failure the last route keeps showing for `plan_idle_clear_time`. Read once at startup |
-| `plan_idle_clear_time` | `30.0` (config: `30.0`) | s (2026-10-25) after which a plan that no navigation has made or checked (`is_path_valid`, which every running tree calls once a second) is dropped, as `clear_plan` drops it; `0` = never. The end of a **failed** navigation's route, which nothing else clears: until then it stayed on `plan` until the next goal (on dp, 1.5 h after the task ended), and the 1 Hz re-send kept the backend's own expiry from firing. Checked before the subscriber test, so a viewer subscribing later gets no stale route. Logs "No navigation has used the plan". Read once at startup |
+| `plan_idle_clear_time` | `30.0` (config: `30.0`) | s (2026-10-25) after which a plan that no navigation has made or checked (`is_path_valid`, which every running tree calls once a second) is dropped, as `clear_plan` drops it; `0` = never. The end of a **failed** navigation's route, which nothing else clears: until then it stayed on `plan` until the next goal (on dp, 1.5 h after the task ended), and the 1 Hz re-send kept the backend's own expiry from firing. Checked before the subscriber test, so a viewer subscribing later gets no stale route. Logs "Plan cleared: no navigation planned or checked it for N s (plan_idle_clear_time)". Read once at startup |
 
 `expected_planner_frequency` is the only parameter the *server's* dynamic
 callback handles, and it takes the same mutex the plan cycle holds.
