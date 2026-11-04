@@ -328,6 +328,8 @@ void LocalizerNode::loadParameters()
     declare_parameter<double>("last_pose.min_move", m_config.last_pose_min_move);
   m_config.last_pose_min_rot =
     declare_parameter<double>("last_pose.min_rot", m_config.last_pose_min_rot);
+  m_config.last_pose_after_lost_sec =
+    declare_parameter<double>("last_pose.after_lost_sec", m_config.last_pose_after_lost_sec);
   m_config.lidar_height = declare_parameter<double>("lidar_height", m_config.lidar_height);
 
   // Common parameters of the small_gicp backend, shared by both registration stages.
@@ -899,97 +901,6 @@ void LocalizerNode::timerCB()
   finish();
 }
 
-void LocalizerNode::maybeSaveLastPose(const rclcpp::Time & now, const std::string & round_map)
-{
-  if (m_config.last_pose_file.empty() || round_map.empty()) return;
-  if (
-    m_state.last_pose_saved &&
-    (now - m_state.last_pose_saved_time).seconds() < m_config.last_pose_save_interval) {
-    return;
-  }
-  LastPose pose;
-  V3D t;
-  double yaw = 0.0;
-  {
-    std::lock_guard<std::mutex> lock(m_state.service_mutex);
-    // A relocalize between the round's snapshot and here: this pose was
-    // solved against the previous map (or a new guess is pending on the new
-    // one). The next round saves.
-    if (m_state.service_received || m_state.loaded_map_name != round_map) return;
-    // Never localized on this map: rounds still run from whatever offset
-    // there is (identity at boot, after a wrong boot guess was withdrawn) and
-    // can converge in a wrong basin -- the loc_1022 replay with a boot guess
-    // 5 m out "converged" 50 s later 1 rad off. Broadcasting that is the
-    // node's behaviour before this file existed; booting from it next time
-    // must not be.
-    if (!m_state.pose_established) return;
-    t = m_state.good_map_body_t;
-    yaw = std::atan2(m_state.good_map_body_r(1, 0), m_state.good_map_body_r(0, 0));
-  }
-  if (m_state.last_pose_saved) {
-    const double moved = (t - m_state.last_pose_saved_t).head<2>().norm();
-    const double turned = std::abs(std::remainder(yaw - m_state.last_pose_saved_yaw, 2.0 * M_PI));
-    if (moved < m_config.last_pose_min_move && turned < m_config.last_pose_min_rot) {
-      // Parked: the file already says where the robot is. Restart the
-      // interval anyway, so the check runs at its pace and not every round.
-      m_state.last_pose_saved_time = now;
-      return;
-    }
-  }
-  pose.map = round_map;
-  pose.x = t.x();
-  pose.y = t.y();
-  pose.ground_z = t.z() - m_config.lidar_height;
-  pose.yaw = yaw;
-  std::string error;
-  // A few hundred bytes, every few seconds at most, on the timer thread: the
-  // fsyncs are the cost, and they are well inside a round's 200 ms.
-  if (!saveLastPose(m_config.last_pose_file, pose, error)) {
-    RCLCPP_WARN_THROTTLE(
-      this->get_logger(), *this->get_clock(), 60000, "last pose not saved: %s", error.c_str());
-    return;
-  }
-  if (!m_state.last_pose_saved) {
-    RCLCPP_INFO(
-      this->get_logger(),
-      "last pose saved to %s (map %s, x=%.2f y=%.2f ground_z=%.2f yaw=%.2f); written again as "
-      "the robot moves",
-      m_config.last_pose_file.c_str(), pose.map.c_str(), pose.x, pose.y, pose.ground_z, pose.yaw);
-  }
-  m_state.last_pose_saved = true;
-  m_state.last_pose_saved_t = t;
-  m_state.last_pose_saved_yaw = yaw;
-  m_state.last_pose_saved_time = now;
-}
-
-void LocalizerNode::setLoadedMap(const std::string & pcd_path)
-{
-  m_state.loaded_map_path = pcd_path;
-  std::lock_guard<std::mutex> lock(m_state.service_mutex);
-  m_state.loaded_map_name = mapNameFromPcdPath(pcd_path);
-  // A pose on the previous map says nothing about this one; the guess that
-  // comes with a map switch establishes it again once it converges.
-  m_state.pose_established = false;
-}
-
-void LocalizerNode::logRoundStats(const rclcpp::Time & now)
-{
-  if ((now - m_state.last_stats_log).seconds() < 60.0) return;
-  m_state.last_stats_log = now;
-  if (m_state.rounds_run == 0) return;
-  RCLCPP_INFO(
-    this->get_logger(),
-    "loc stats (since start): run=%llu accepted=%llu not_converged=%llu low_inliers=%llu "
-    "degenerate=%llu jump_rejected=%llu projected=%llu",
-    static_cast<unsigned long long>(m_state.rounds_run),
-    static_cast<unsigned long long>(m_state.rounds_accepted),
-    static_cast<unsigned long long>(m_state.rounds_not_converged),
-    static_cast<unsigned long long>(m_state.rounds_low_inliers),
-    static_cast<unsigned long long>(m_state.rounds_degenerate),
-    static_cast<unsigned long long>(m_state.rounds_jump_rejected),
-    static_cast<unsigned long long>(m_state.rounds_projected));
-}
-
 namespace
 {
 const char * healthName(Health h)
@@ -1054,6 +965,118 @@ std::string strFormat(const char * fmt, Args... args)
   return buf;
 }
 }  // namespace
+
+void LocalizerNode::maybeSaveLastPose(const rclcpp::Time & now, const std::string & round_map)
+{
+  if (m_config.last_pose_file.empty() || round_map.empty()) return;
+  if (
+    m_state.last_pose_saved &&
+    (now - m_state.last_pose_saved_time).seconds() < m_config.last_pose_save_interval) {
+    return;
+  }
+  LastPose pose;
+  V3D t;
+  double yaw = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    // A relocalize between the round's snapshot and here: this pose was
+    // solved against the previous map (or a new guess is pending on the new
+    // one). The next round saves.
+    if (m_state.service_received || m_state.loaded_map_name != round_map) return;
+    // Never localized on this map: rounds still run from whatever offset
+    // there is (identity at boot, after a wrong boot guess was withdrawn) and
+    // can converge in a wrong basin -- the loc_1022 replay with a boot guess
+    // 5 m out "converged" 50 s later 1 rad off. Broadcasting that is the
+    // node's behaviour before this file existed; booting from it next time
+    // must not be.
+    if (!m_state.pose_established) return;
+    t = m_state.good_map_body_t;
+    yaw = std::atan2(m_state.good_map_body_r(1, 0), m_state.good_map_body_r(0, 0));
+  }
+  if (m_state.last_pose_saved) {
+    const double moved = (t - m_state.last_pose_saved_t).head<2>().norm();
+    const double turned = std::abs(std::remainder(yaw - m_state.last_pose_saved_yaw, 2.0 * M_PI));
+    if (moved < m_config.last_pose_min_move && turned < m_config.last_pose_min_rot) {
+      // Parked: the file already says where the robot is. Restart the
+      // interval anyway, so the check runs at its pace and not every round.
+      m_state.last_pose_saved_time = now;
+      return;
+    }
+  }
+  // The health gate (NodeConfig::last_pose_after_lost_sec), after the parked check so that
+  // only a write it actually withholds is logged. The throttle is not restarted: the next
+  // round that passes writes at once.
+  std::string withheld;
+  if (m_state.health != Health::kOk) {
+    withheld = std::string("loc health is ") + healthName(m_state.health);
+  } else if (
+    m_state.health_last_lost >= 0.0 &&
+    now.seconds() - m_state.health_last_lost < m_config.last_pose_after_lost_sec) {
+    withheld = strFormat(
+      "loc health was LOST %.0f s ago (< last_pose.after_lost_sec %.0f s)",
+      now.seconds() - m_state.health_last_lost, m_config.last_pose_after_lost_sec);
+  }
+  if (!withheld.empty()) {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 60000,
+      "last pose not saved (x=%.2f y=%.2f): %s; Point-LIO may be diverging, so %s keeps the "
+      "pose from before",
+      t.x(), t.y(), withheld.c_str(), m_config.last_pose_file.c_str());
+    return;
+  }
+  pose.map = round_map;
+  pose.x = t.x();
+  pose.y = t.y();
+  pose.ground_z = t.z() - m_config.lidar_height;
+  pose.yaw = yaw;
+  std::string error;
+  // A few hundred bytes, every few seconds at most, on the timer thread: the
+  // fsyncs are the cost, and they are well inside a round's 200 ms.
+  if (!saveLastPose(m_config.last_pose_file, pose, error)) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 60000, "last pose not saved: %s", error.c_str());
+    return;
+  }
+  if (!m_state.last_pose_saved) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "last pose saved to %s (map %s, x=%.2f y=%.2f ground_z=%.2f yaw=%.2f); written again as "
+      "the robot moves",
+      m_config.last_pose_file.c_str(), pose.map.c_str(), pose.x, pose.y, pose.ground_z, pose.yaw);
+  }
+  m_state.last_pose_saved = true;
+  m_state.last_pose_saved_t = t;
+  m_state.last_pose_saved_yaw = yaw;
+  m_state.last_pose_saved_time = now;
+}
+
+void LocalizerNode::setLoadedMap(const std::string & pcd_path)
+{
+  m_state.loaded_map_path = pcd_path;
+  std::lock_guard<std::mutex> lock(m_state.service_mutex);
+  m_state.loaded_map_name = mapNameFromPcdPath(pcd_path);
+  // A pose on the previous map says nothing about this one; the guess that
+  // comes with a map switch establishes it again once it converges.
+  m_state.pose_established = false;
+}
+
+void LocalizerNode::logRoundStats(const rclcpp::Time & now)
+{
+  if ((now - m_state.last_stats_log).seconds() < 60.0) return;
+  m_state.last_stats_log = now;
+  if (m_state.rounds_run == 0) return;
+  RCLCPP_INFO(
+    this->get_logger(),
+    "loc stats (since start): run=%llu accepted=%llu not_converged=%llu low_inliers=%llu "
+    "degenerate=%llu jump_rejected=%llu projected=%llu",
+    static_cast<unsigned long long>(m_state.rounds_run),
+    static_cast<unsigned long long>(m_state.rounds_accepted),
+    static_cast<unsigned long long>(m_state.rounds_not_converged),
+    static_cast<unsigned long long>(m_state.rounds_low_inliers),
+    static_cast<unsigned long long>(m_state.rounds_degenerate),
+    static_cast<unsigned long long>(m_state.rounds_jump_rejected),
+    static_cast<unsigned long long>(m_state.rounds_projected));
+}
 
 void LocalizerNode::recordHealthRound(const HealthRound & round)
 {
@@ -1206,6 +1229,7 @@ void LocalizerNode::updateHealth(double now)
     }
     state = why.empty() ? Health::kOk : Health::kDegraded;
   }
+  if (state == Health::kLost) m_state.health_last_lost = now;
 
   // Worse at once, better only once it has held health_recover_sec -- except
   // for the event-driven states (a guess arriving, a reset starting), which

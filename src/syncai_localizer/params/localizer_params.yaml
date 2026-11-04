@@ -73,11 +73,16 @@
     # guess has converged on the loaded map, so a robot carried off while it
     # was down keeps the old file until it is localized again. file "" = off; the launch sets it to
     # <workspace>/config/state/<robot_id>/last_pose.json.
+    # after_lost_sec (2026-11-04): and only while loc health reads OK and no
+    # round was LOST in the last after_lost_sec seconds. A diverging Point-LIO
+    # oscillates under max_lio_speed between its LOSTs; robot01 wrote the file
+    # mid-divergence 33 s and 59 s after one (2026-11-04 / 11-03).
     last_pose:
       file: ""
       save_interval: 5.0
       min_move: 0.05
       min_rot: 0.035
+      after_lost_sec: 300.0
 
     # Lidar (Point-LIO body) above the feet, metres. An initialpose that gives a
     # z (its z variance set) gives the ground's height; the guess puts the body

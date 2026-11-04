@@ -110,6 +110,16 @@ struct NodeConfig
   double last_pose_save_interval = 5.0;
   double last_pose_min_move = 0.05;
   double last_pose_min_rot = 0.035;
+  // ... and only while the health log reads OK, and not within this many seconds of the last
+  // round it judged LOST (2026-11-04). A trusted round is only a round whose odometry moved
+  // slower than max_lio_speed (3 m/s), and a Point-LIO swinging +-5 m on the dock at under
+  // 1 m/s passes that: robot01 wrote (-8.69, -4.52) for a dock at (-9.85, -4.55) mid-
+  // divergence on 2026-11-04 (14:54:25, 33 s after LOST at 14:53:52), and 0.3 m off on
+  // 2026-11-03 (04:54:46, 59 s after LOST). Both LOSTs came from Point-LIO's speed, and a
+  // diverging Point-LIO goes on oscillating between them, so the hold outlasts the gaps:
+  // the file keeps the last pose from before, which is where the robot was before it went
+  // wrong. A reset_odometry does not clear the hold; it only delays the next write.
+  double last_pose_after_lost_sec = 300.0;
   // Height of the lidar (Point-LIO's body frame) above the feet, metres. An initialpose that
   // gives a z gives the ground's height, and this raises it to the body's. The controller's
   // and the planner's `lidar_height` are the same number; keep the three equal.
@@ -378,6 +388,9 @@ struct NodeState
   V3D last_pose_saved_t = V3D::Zero();
   double last_pose_saved_yaw = 0.0;
   rclcpp::Time last_pose_saved_time{0, 0, RCL_SYSTEM_TIME};
+  // When updateHealth last judged a round LOST (wall seconds, its clock; -1 = never), before
+  // the recover hysteresis, for NodeConfig::last_pose_after_lost_sec. Timer thread only.
+  double health_last_lost = -1.0;
   M3D last_r;                           // localmap_body_r
   V3D last_t;                           // localmap_body_t
   M3D last_offset_r = M3D::Identity();  // map_localmap_r
