@@ -41,7 +41,11 @@ public:
    * @brief Method to create the plan from a starting and ending goal.
    * @param start The starting pose of the robot
    * @param goal The goal pose of the robot
-   * @return The sequence of poses to get from start to goal, if any
+   * @return The sequence of poses to get from start to goal
+   * @throw One of exceptions.hpp's typed PlannerExceptions when there is
+   * none (2026-11): the planner server answers the goal with the error_code
+   * it maps to and what() as error_msg. An empty path is still accepted as
+   * a failure, with no finer reason than PLAN_FAILED.
    */
   virtual nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
@@ -58,8 +62,9 @@ public:
    * a waypoint's own heading is ignored and only the last goal's is kept.
    * A planner whose createPlan() takes its start from the robot rather than
    * the request (OctomapPlanner3D reads the start's height from TF) must
-   * override it: later legs start at a waypoint, not at the robot. Empty on
-   * any leg's failure, as createPlan() is.
+   * override it: later legs start at a waypoint, not at the robot. A leg's
+   * failure ends the route: createPlan()'s exception passes through, and an
+   * empty leg gives an empty path.
    */
   virtual nav_msgs::msg::Path createPlanThroughPoses(
     const geometry_msgs::msg::PoseStamped & start,

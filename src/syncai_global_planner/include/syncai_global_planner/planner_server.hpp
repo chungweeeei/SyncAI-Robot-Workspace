@@ -2,6 +2,7 @@
 #define SYNCAI_GLOBAL_PLANNER__PLANNER_SERVER_HPP_
 
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -9,14 +10,14 @@
 #include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "nav2_msgs/action/compute_path_through_poses.hpp"
-#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/srv/is_path_valid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/empty.hpp"
+#include "syncai_common/action/compute_path_through_poses.hpp"
+#include "syncai_common/action/compute_path_to_pose.hpp"
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
@@ -41,9 +42,14 @@ namespace syncai_global_planner
 class PlannerServer : public rclcpp::Node
 {
 public:
-  using ActionToPose = nav2_msgs::action::ComputePathToPose;
+  // syncai_common's twins of nav2's two planner actions (2026-11): the same
+  // goals, and a result that says why there is no path (error_code /
+  // error_msg), which the navigator copies into NavigateToGoal's. Served in
+  // place of the nav2 types; the BT nodes of the same names are the only
+  // clients.
+  using ActionToPose = syncai_common::action::ComputePathToPose;
   using ActionServerToPose = syncai_util::SimpleActionServer<ActionToPose>;
-  using ActionThroughPoses = nav2_msgs::action::ComputePathThroughPoses;
+  using ActionThroughPoses = syncai_common::action::ComputePathThroughPoses;
   using ActionServerThroughPoses = syncai_util::SimpleActionServer<ActionThroughPoses>;
   using PlannerMap = std::unordered_map<std::string, syncai_nav_core::GlobalPlanner::Ptr>;
 
@@ -71,6 +77,8 @@ public:
    * @param goal goal request
    * @param planner_id The planner to use
    * @return Path
+   * @throw syncai_nav_core::PlannerException (a typed one) when there is
+   * none: an unknown planner_id, or the planner's own reason
    */
   nav_msgs::msg::Path getPlan(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal,
@@ -110,43 +118,64 @@ protected:
   bool getPreemptedGoalIfRequested(
     std::unique_ptr<ServerT> & server, std::shared_ptr<const GoalT> & goal);
 
+  // Since 2026-11 the helpers below fail by throwing one of
+  // syncai_nav_core's typed planner exceptions (exceptions.hpp), as the
+  // planner plugins do, and each action callback answers every failure in
+  // one place, abortPlan(), with the error_code the exception maps to.
+
   /**
-   * @brief Get the starting pose from costmap or message, if valid;
-   * terminates the server's goal if not
+   * @brief Get the starting pose from costmap or message
    * @param goal Goal to find start from (use_start / start: both actions)
    * @param start The starting pose to use
-   * @return bool If successful in finding a valid starting pose
+   * @throw syncai_nav_core::PlannerTFError when there is no robot pose
    */
-  template <typename ServerT, typename GoalT>
-  bool getStartPose(
-    std::unique_ptr<ServerT> & server, const std::shared_ptr<const GoalT> & goal,
-    geometry_msgs::msg::PoseStamped & start);
+  template <typename GoalT>
+  void getStartPose(
+    const std::shared_ptr<const GoalT> & goal, geometry_msgs::msg::PoseStamped & start);
 
   /**
    * @brief Transform a pose into the costmap global frame for the planner
-   * plugins, logging which pose (`what`) failed from which frame
-   * @return bool If successful in transforming the pose
+   * plugins
+   * @param what Which pose, for the error message
+   * @throw syncai_nav_core::PlannerTFError naming the pose and its frame
    */
-  bool transformPoseToGlobalFrame(geometry_msgs::msg::PoseStamped & pose, const std::string & what);
+  void transformPoseToGlobalFrame(geometry_msgs::msg::PoseStamped & pose, const std::string & what);
 
   /**
-   * @brief Validate that the path contains a meaningful path; terminates the
-   * server's goal if not
-   * @param goal_desc What the path was asked to reach, for the log
+   * @brief Validate that the path contains a meaningful path
+   * @param goal_desc What the path was asked to reach, for the error message
    * @param path Current path
    * @param planner_id The planner ID used to generate the path
-   * @return bool If path is valid
+   * @throw syncai_nav_core::PlannerException (PLAN_FAILED) on an empty path:
+   * a planner that failed without saying why
    */
-  template <typename ServerT>
-  bool validatePath(
-    std::unique_ptr<ServerT> & server, const std::string & goal_desc,
-    const nav_msgs::msg::Path & path, const std::string & planner_id);
+  void validatePath(
+    const std::string & goal_desc, const nav_msgs::msg::Path & path,
+    const std::string & planner_id);
+
+  /**
+   * @brief Answer the server's goal ABORTED with the error_code `ex` maps to
+   * (the ComputePathToPose table; PLAN_FAILED for anything untyped) and
+   * ex.what() as error_msg, and log it: WARN for a PlannerException, the
+   * expected way to fail, ERROR for anything else a plugin threw.
+   */
+  template <typename ServerT, typename ResultT>
+  void abortPlan(
+    std::unique_ptr<ServerT> & server, const std::shared_ptr<ResultT> & result,
+    const std::exception & ex, const std::string & planner_id, const std::string & goal_desc,
+    const rclcpp::Time & start_time);
 
   /**
    * @brief The planner `planner_id` names, or the only one loaded when it is
    * empty; nullptr (logged) when there is none
    */
   syncai_nav_core::GlobalPlanner * findPlanner(const std::string & planner_id);
+
+  /**
+   * @brief findPlanner(), for the action callbacks
+   * @throw syncai_nav_core::InvalidPlanner when there is none
+   */
+  syncai_nav_core::GlobalPlanner * findPlannerOrThrow(const std::string & planner_id);
 
   /**
    * @brief The action server callback which calls planner to get the path

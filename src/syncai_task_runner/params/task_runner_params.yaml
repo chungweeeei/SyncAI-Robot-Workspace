@@ -1,10 +1,11 @@
-# One node, three action servers (navigate_to_pose from nav2_msgs,
+# One node, four action servers (navigate_to_pose from nav2_msgs,
 # navigate_to_goal from syncai_common and, since 2026-11, the patrol route's
-# navigate_through_poses from nav2_msgs) built from one navigator template, so
-# every parameter below -- goal_blackboard_id, path_blackboard_id, the
-# BtActionServer timings -- is shared by all three: same blackboard keys, one
-# navigation at a time. default_bt_xml (move.xml) is the first two's;
-# navigate_through_poses has default_nav_through_poses_bt_xml (patrol.xml).
+# navigate_through_poses from nav2_msgs and its syncai_common twin
+# navigate_through_goals) built from one navigator template, so every
+# parameter below -- goal_blackboard_id, path_blackboard_id, the
+# BtActionServer timings -- is shared by all four: same blackboard keys, one
+# navigation at a time. default_bt_xml (move.xml) is the first two's; the two
+# routes have default_nav_through_poses_bt_xml (patrol.xml).
 /**/task_runner:
   ros__parameters:
     use_sim_time: false

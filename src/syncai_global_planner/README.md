@@ -5,7 +5,7 @@ The global planning half of the nav stack: an action server that hosts
 `nav2_planner`.
 
 ```
-syncai_task_runner ──ComputePathToPose (nav2_msgs)──►  planner_server
+syncai_task_runner ──ComputePathToPose (syncai_common)──►  planner_server
                                                             │  global_costmap (internal node, no layers:
                                                             │  frame, TF buffer, robot pose, callback group)
                                                             ▼
@@ -123,7 +123,7 @@ and returns an empty path; an *empty* id with exactly one plugin loaded — the
 case today — picks that one and warns once. The BT names `Octo3D` explicitly
 in `move.xml` / `dock.xml`.
 
-**`compute_path_through_poses`** (`nav2_msgs/ComputePathThroughPoses`) plans
+**`compute_path_through_poses`** (`syncai_common/ComputePathThroughPoses`) plans
 one path from the robot through `goals[0] → goals[1] → …` in order: the patrol
 route, called by `patrol.xml`'s `ComputePathThroughPoses` for the task
 runner's `navigate_through_poses` (2026-11). It was ported once, removed
@@ -146,23 +146,57 @@ waypoint 2 (…)]`). The two actions share `dynamic_params_lock_` and
 `Octo3D`'s lock, so a route and a single plan never run at once; a route
 becomes the last plan like any other (`plan`, `is_path_valid`, `clear_plan`).
 
+### Why a plan failed: the error code (2026-11)
+
+The two actions are `syncai_common`'s twins of nav2's — the same goals, and a
+result with `error_code` / `error_msg` — served **in place of** the nav2
+types, since the BT nodes of the same names are their only clients. Until
+then a failed plan reached the task runner as "planner aborted the goal" and
+`NavigateToGoal` could only say `PLAN_FAILED`, so the backend could not tell a
+goal inside a keepout zone (permanent) from a person standing on it (worth a
+retry), and retried both.
+
+Every failure is now **a typed `syncai_nav_core` exception**
+(`exceptions.hpp`, nav2 Iron's names plus this stack's): `Octo3D` throws one
+for each `PlanFailure` (`throwPlanFailure()` in `octomap_planner_3d.cpp`, the
+one mapping), the server throws its own for what it decides (no robot pose,
+a pose it cannot transform, an unknown `planner_id`, an empty route), and each
+action callback answers every failure in one place, `abortPlan()`, with the
+code the exception maps to and its `what()` as `error_msg`:
+
+| `PlanFailure` / server case | Exception | `error_code` |
+|---|---|---|
+| unknown `planner_id` | `InvalidPlanner` | 201 `INVALID_PLANNER` |
+| no robot pose, a pose not transformable | `PlannerTFError` | 202 `TF_ERROR` |
+| `start_outside_map` / `goal_outside_map` | `StartOutsideMapBounds` / `GoalOutsideMapBounds` | 203 / 204 |
+| `start_unavailable` / `goal_unavailable` | `StartOccupied` / `GoalOccupied` | 205 / 206 |
+| `timeout`, `search_limit` | `PlannerTimedOut` | 207 `TIMEOUT` |
+| `no_path` | `NoValidPathCouldBeFound` | 208 `NO_VALID_PATH` |
+| an empty route | `NoViapointsGiven` | 209 |
+| `map_not_loaded` / `map_loading` | `MapNotLoaded` / `MapLoading` | 220 / 221 |
+| `start_in_keepout` / `goal_in_keepout` | `StartInKeepout` / `GoalInKeepout` | 222 / 223 |
+| `disconnected` | `GroundDisconnected` | 224 `DISCONNECTED` |
+| an empty path, an untyped `PlannerException`, any other exception | — | 200 `PLAN_FAILED` |
+
+The task runner copies the code into `NavigateToGoal` / `NavigateThroughGoals`
+unchanged (the interface's `ComputePathToPose.action` documents each, with
+whether a retry can help — what the backend decides its retries on).
+`search_limit` is a `TIMEOUT` rather than `NO_VALID_PATH`: both are the search
+giving up on a budget, not proof that there is no path.
+
 ### Reading the log after a failed plan
 
-A `ComputePathToPose` result carries no reason, so the task runner's
-`NavigateToGoal` result says `PLAN_FAILED` with "planner compute_path_to_pose
-aborted the goal" and nothing more; **the planner's log is the one place the
-reason is written.** Each plan and each way a navigation's path
-check can go has a line, with the numbers that decided it. In order of
-appearance:
+The result now carries the code and the planner's sentence, but **the
+planner's log is still where the request's numbers are written.** Each plan
+and each way a navigation's path check can go has a line, with the numbers
+that decided it. In order of appearance:
 
 | Line | Level | What it tells you |
 |---|---|---|
 | `Plan request: planner 'X', goal (x, y, z) in 'frame', start …` | INFO | What the BT asked for. Read every later line against the last of these. `Preempted by a new goal to …` when a newer request replaced it before it ran |
-| `Plan aborted: no robot pose (base_link in map) …` | ERROR | `map → odom → base_link` missing; the TF helper's own ERROR above it has the TF reason |
-| `Plan aborted: cannot transform the start / goal pose from 'F' to 'map'` | ERROR | A goal (or explicit start) in a frame TF cannot reach — usually a frame-id typo |
-| `[createPlan] <failure>: <detail> [start (…) -> goal (…)]` | ERROR | `Octo3D`'s reason: `map_not_loaded` / `map_loading`, `start_outside_map` / `goal_outside_map`, `start_unavailable` / `goal_unavailable` (what the snap found in that column, and how many cells marks or zones refused), `start_in_keepout` (the zone), `disconnected` (the two components), `search_limit` / `timeout` (iterations, seconds), `no_path` (marks and zones that may have closed the way). The bracket is the request with the start's z from TF, which picks the floor |
-| `Plan failed: planner 'X' returned no path to …` | WARN | The server closing the goal; the reason is the line above |
-| `Plan aborted: planner 'X' threw …` | ERROR | A plugin threw instead of returning an empty path — a bug, with the exception text |
+| `[createPlan] <failure>: <detail> [start (…) -> goal (…)]` | ERROR | `Octo3D`'s reason: `map_not_loaded` / `map_loading`, `start_outside_map` / `goal_outside_map`, `start_unavailable` / `goal_unavailable` (what the snap found in that column, and how many cells marks or zones refused), `start_in_keepout` / `goal_in_keepout` (the zone), `disconnected` (the two components), `search_limit` / `timeout` (iterations, seconds), `no_path` (marks and zones that may have closed the way). The bracket is the request with the start's z from TF, which picks the floor. The same sentence is the result's `error_msg` |
+| `Plan failed (error_code N): planner 'X' to … after T s: <reason>` | WARN | The server closing the goal with its code. For the server's own reasons (no robot pose — `map → odom → base_link` missing, the TF helper's ERROR above has why; a start / goal / waypoint pose in a frame TF cannot reach, usually a frame-id typo; an unknown `planner_id`; an empty route) this is the only line |
+| `Plan aborted (error_code 200): planner 'X' threw …` | ERROR | A plugin threw something other than a `PlannerException` — a bug, with the exception text |
 | `[createPlan] N poses, L m, z … dynamic marks (last scan N s ago) …` | INFO | A plan made: length, heights, stair links taken, the marks and zones it planned round, the time, and the request |
 | `Plan took N s, over the … of expected_planner_frequency` | WARN | A slow search (a canary, not a failure; see Parameters) |
 | `[isPathValid] Path blocked for N s: …` | INFO, on change + every 5 s | The running path reads blocked: how far ahead, where, how many poses, marks vs zones. `move.xml` replans after `blocked_time` (10 s) of it |
@@ -812,7 +846,13 @@ it follows a ramp and stops at a floor edge the way a mark's does, so one
 floor's zone never reaches the other. The mask (`KeepoutMask`) rides beside
 the overlay's in every `BlockedView`, so the goal snap, the search, the
 shortcut and `is_path_valid` keep off a zone exactly as they keep off a
-person: a goal inside one fails `goal_unavailable` ("… in keepout zones"), a
+person: a goal **point inside a zone's polygon** fails `goal_in_keepout`
+(2026-11, naming the zone; tested on the floor an unblocked snap finds under
+the point, before the goal snap — which keeps off the zones and their ring,
+and so used to move a goal up to `snap_xy_radius − block_radius` (0.25 m)
+inside an edge out of the zone and plan to it, and fail a deeper one as
+`goal_unavailable`, the reason a person on the goal also gives); a goal outside
+the polygon but in its ring still snaps clear of the ring; a
 zone across the only corridor fails `no_path` with the zones named (the
 components are baked, so never `disconnected`), and a **stair link any of
 whose points lies in a core is cut** — never expanded by the search, so a
@@ -850,8 +890,11 @@ extra call. `octomap_planner_3d_cli --keepout <file>` reads it for every
 `--plan` as the plugin does and draws the cores (crimson) and rings (dark
 red) in `--dump-image`: on `--synthetic flat` a 2 × 2 m box across the line
 from (2, 4) to (10, 4) turns the 8.00 m route into an 8.97 m detour, a start
-inside it is `start_in_keepout`, and on `stairs` a box over the flight cuts
-all 41 links and the upper floor is `no_path`.
+inside it is `start_in_keepout`, a goal inside it `goal_in_keepout`, and on
+`stairs` a box over the flight cuts all 41 links and the upper floor is
+`no_path`. On `map/dp` (2026-11-04) a 2 × 2 m box round (25, −31.6): a goal
+0.2 m inside its edge was snapped 0.45 m out of the zone and planned to before
+`goal_in_keepout`, and is refused since; one 0.1 m outside still plans.
 
 **Known limits** (prototype):
 
@@ -888,8 +931,9 @@ all 41 links and the upper floor is `no_path`.
   planner_server restart.
 - Shallow stairs with 0.1 m risers are a 19° ramp at this resolution; the
   tilt limit is the only guard, and a quadruped walks them anyway.
-- The failure reason reaches `NavigateToGoal.error_msg` only as
-  `PLAN_FAILED`; the text is in the planner log.
+- The failure reason reaches `NavigateToGoal` as its own code (201–224) and
+  sentence since 2026-11 (see "Why a plan failed"); a plugin that returns an
+  empty path without throwing still reads as plain `PLAN_FAILED`.
 
 ## Parameters
 
@@ -990,8 +1034,8 @@ With the node at `/<robot_id>`:
 
 | Interface | Name | Type |
 |---|---|---|
-| Action | `compute_path_to_pose` | `nav2_msgs/ComputePathToPose` |
-| Action | `compute_path_through_poses` | `nav2_msgs/ComputePathThroughPoses` (2026-11) — one path through every waypoint in order, `patrol.xml`'s (see "`getPlan()` selects the plugin") |
+| Action | `compute_path_to_pose` | `syncai_common/ComputePathToPose` (2026-11; `nav2_msgs/ComputePathToPose`'s goal, a result with `error_code` / `error_msg`) |
+| Action | `compute_path_through_poses` | `syncai_common/ComputePathThroughPoses` (2026-11) — one path through every waypoint in order, `patrol.xml`'s (see "`getPlan()` selects the plugin") |
 | Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the robot's place on it onward free? When the path is the last plan, the planner is handed it from the robot's place on (forward-only progress, `syncai_util/path_progress.hpp`, 2026-11; a patrol route can pass back within a cell of the robot, and a whole-path nearest pose would judge that leg) and the blocked indices are shifted back to the request's. Asked of the planner that made the last plan (`GlobalPlanner::isPathValid()`; the request carries no planner id, the server remembers the last plan's): `Octo3D` judges on its dynamic overlay and its keepout zones (see **Dynamic obstacles** and **Keepout zones**). An empty remembered id — before a first plan, or after `clear_plan` — falls back to the only loaded planner, as `getPlan()` does; an id no loaded planner has answers `false` with a throttled warning, so the BT replans. Called once a second by `move.xml` / `dock.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails). Served on the main executor, so it never queues behind a plan. Until 2026-10-28 a path of a planner on the costmap (`GridBased`) was judged here on the global costmap instead: the centre cell `< INSCRIBED` and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test) |
 | Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
 | Service | `planner_server/Octo3D/load_keepout` | `nav2_msgs/LoadMap` (2026-10-23) — replace `Octo3D`'s keepout zones from `map_url` (`map/<name>/keepout.json`; `""` = none) on the loaded map, without rebuilding it. What the backend calls after it writes the file; a map switch needs no call, `load_map` reads the new map's own. Result table under "Keepout zones". On `load_map`'s thread |

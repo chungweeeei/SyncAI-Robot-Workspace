@@ -41,7 +41,7 @@ The package is split into a **host node** and **navigators**:
 |---|---|
 | `TaskRunner` (`syncai_task_runner.cpp`) | The `rclcpp::Node`. Owns the shared TF buffer, the odom smoother, the navigator mutex, and the parameters. Hosts navigators; contains no navigation logic. |
 | `Navigator<ActionT>` (`navigator.hpp`) | Header-only template base. Wraps a `syncai_behavior_tree::BtActionServer<ActionT>` and implements the goal-muxing that keeps two navigators from driving the robot at once. |
-| `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml` (or `patrol.xml`), computes feedback, fills the result. One template, three explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`), `NavigateToGoalNavigator` (`syncai_common`) and, since 2026-11, `NavigateThroughPosesNavigator` (`nav2_msgs`, the patrol route). The places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber, one `pose` or a list of `poses`, the default tree) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The actions share field names on purpose; that is what lets one body compile for all three. |
+| `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml` (or `patrol.xml`), computes feedback, fills the result. One template, four explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`), `NavigateToGoalNavigator` (`syncai_common`) and, since 2026-11, the patrol route's `NavigateThroughPosesNavigator` (`nav2_msgs`) and `NavigateThroughGoalsNavigator` (`syncai_common`). The places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber, one `pose` or a list of `poses`, the default tree) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The actions share field names on purpose; that is what lets one body compile for all four. |
 | `behavior_trees/move.xml` | The default tree: `Octo3D` + `FollowPath` (MPPI) — see "Which tree a goal runs" |
 | `behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11): `move.xml` planning through the waypoints still ahead — see "The patrol route" |
 | `behavior_trees/dock.xml`, `undock.xml` | The docking trees, by `NavigateToGoal.behavior_tree` |
@@ -92,7 +92,7 @@ The tree reads the goal from the blackboard, not from the action goal — that
 indirection is what lets `move.xml` reference `goal="{goal}"` without knowing
 anything about the action type.
 
-### Result (`NavigateToGoal` only)
+### Result (`NavigateToGoal` and `NavigateThroughGoals`)
 
 `goalCompleted()` runs before the action server terminates the goal, so what it
 writes is what the client receives. It fills the result only for a tree that
@@ -101,7 +101,8 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `error_code` | When | `error_msg` |
 |---|---|---|
 | `NONE` = 0 | success, cancel — **and** a goal that was preempted by a newer one or rejected before the tree ran (another navigator busy, BT file missing). Those two never reach `goalCompleted()`: the action server aborts them with an empty result | empty |
-| `PLAN_FAILED` = 200 | the planner branch failed the tree: `ComputePathToPose` aborted twice (the second time after the `clear_overlay` recovery) — no route, start or goal in an obstacle / keepout zone, TF | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
+| `PLAN_FAILED` = 200 | the planner branch failed the tree — `ComputePathToPose` (or, for a route, `ComputePathThroughPoses`) aborted twice, the second time after the `clear_overlay` recovery — and the planner gave no finer reason | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
+| 201–224 (2026-11) | the same, with the planner's own reason: its result's `error_code`, copied unchanged — `GOAL_IN_KEEPOUT` 223, `GOAL_OCCUPIED` 206, `NO_VALID_PATH` 208, `MAP_NOT_LOADED` 220, … (`syncai_common`'s `ComputePathToPose.action` has the table, with whether a retry can help) | a sentence for the code, then the planner's: `Planning failed: the goal is inside a keepout zone (planner compute_path_to_pose aborted the goal: goal_in_keepout: the goal lies inside keepout zone 'z1'; … [start (…) -> goal (…)])` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
 | `DOCK_FAILED` = 300 | the docking branch of `dock.xml` / `undock.xml` failed (2026-10): `SetMotionKey` refused (`LOCKED`), `ComputeStagingPose` rejected the dock pose, `ComputeBackOutPose` could not build the back-out target (a misconfigured tree or `base_frame`), or `DockToPose` aborted — the controller's reason follows. A dock goal can still end 100 / 200: that is the staging leg, "the dock was unreachable" | `Docking failed: the dock approach did not complete (controller dock_to_pose aborted the goal: dock approach exceeded 60.0 s (error_code 304))` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
@@ -114,8 +115,15 @@ registration name to the code — the number belongs to the action, so the
 mapping lives next to its server, not in the BT package. Last writer wins, and
 `move.xml`'s header shows why that names the branch that actually failed the
 tree. The ranges are nav2 Iron's (1xx controller, 2xx planner) so finer codes
-slot in as `base + n` once Humble's `nav2_msgs` results are replaced by ones
-that carry a reason; the two bases are never renumbered. The same reason is
+slot in as `base + n`; the bases are never renumbered. The planner's are the
+first (2026-11): the planner actions are `syncai_common`'s twins with
+`error_code` in the result, `report_failure()` writes it to `failure_code`
+(0 for a node with none, so it always belongs to the same failure as
+`failed_node`), and for the two planner nodes a code above 200 and below 300
+replaces their row's 200, under a sentence of its own
+(`kPlanningSentenceByCode`; a code missing there keeps the node's sentence but
+is still copied). The controller's 1xx waits for a `FollowPath` result with a
+reason. The same reason is
 logged at ERROR for **both** actions, so `navigate_to_pose` callers get it in
 the task_runner log before they migrate.
 
@@ -342,18 +350,22 @@ Plus the `BtActionServer` parameters, declared by that class and documented in
 `default_server_timeout` (20 ms), `wait_for_service_timeout` (1000 ms),
 `always_reload_bt_xml` (false).
 
-## The patrol route (`navigate_through_poses`, 2026-11)
+## The patrol route (`navigate_through_goals` / `navigate_through_poses`, 2026-11)
 
-`nav2_msgs/NavigateThroughPoses` on `navigate_through_poses`: drive from the
+`syncai_common/NavigateThroughGoals` on `navigate_through_goals`, and
+`nav2_msgs/NavigateThroughPoses` on `navigate_through_poses` beside it (the
+same navigator, tree and rules; nav2's result is Empty, so it stays only until
+nothing sends it): drive from the
 robot through every pose of `poses`, in order, **without stopping or turning
 at them**, and finish at the last one **like a MOVE** — xy within the goal
 checker's 0.10 m and heading within its 0.2 rad. A waypoint's own heading is
 ignored; only the last pose's is used. Each pose's z picks its floor
-(`goal_z_mode: request`), so a route can cross floors over a stair. What the
-backend's PATROL step sends; the result is Empty (a failure's reason is in
-this log only, mapped like `move.xml`'s, `ComputePathThroughPoses` →
-`PLAN_FAILED`), until a `syncai_common` twin with `error_code` /
-`status_msg` exists.
+(`goal_z_mode: request`), so a route can cross floors over a stair.
+`NavigateThroughGoals` is what the backend's PATROL step sends (2026-11); its
+result is `NavigateToGoal`'s, mapped the same way (`ComputePathThroughPoses` →
+200 or the planner's own 2xx — a waypoint in a keepout zone is
+`GOAL_IN_KEEPOUT`, the detail naming the leg), and its feedback adds
+`number_of_replans` / `status_msg`.
 
 `patrol.xml` is `move.xml` with its planner branch planning through the
 waypoints (`ComputePathThroughPoses`, `Octo3D`'s
@@ -382,7 +394,9 @@ leg: a robot back at a loop's start read as at the start, and an
 out-and-back's return leg lies on top of the outgoing one.
 
 ```bash
-ros2 action send_goal /<robot_id>/navigate_through_poses nav2_msgs/action/NavigateThroughPoses \
+# navigate_through_goals reports why it failed (error_code / error_msg);
+# navigate_through_poses nav2_msgs/action/NavigateThroughPoses takes the same goal.
+ros2 action send_goal /<robot_id>/navigate_through_goals syncai_common/action/NavigateThroughGoals \
   "{poses: [{header: {frame_id: map}, pose: {position: {x: 2.0, y: 0.0}, orientation: {w: 1.0}}},
             {header: {frame_id: map}, pose: {position: {x: 4.0, y: 2.0}, orientation: {w: 1.0}}},
             {header: {frame_id: map}, pose: {position: {x: 0.0, y: 0.0}, orientation: {z: 1.0, w: 0.0}}}]}" \
@@ -395,10 +409,11 @@ ros2 action send_goal /<robot_id>/navigate_through_poses nav2_msgs/action/Naviga
 |---|---|---|
 | Action server | `navigate_to_pose` | `nav2_msgs/NavigateToPose` — what the backend sends today; result empty |
 | Action server | `navigate_to_goal` | `syncai_common/NavigateToGoal` — the same navigation, result `error_code` / `error_msg`, feedback `+ number_of_replans`, `status_msg` (2026-10) |
+| Action server | `navigate_through_goals` | `syncai_common/NavigateThroughGoals` (2026-11) — the patrol route, as `navigate_through_poses` below, with `NavigateToGoal`'s result (`error_code` / `error_msg`) and feedback (`+ number_of_replans`, `status_msg`). The backend's PATROL step |
 | Action server | `navigate_through_poses` | `nav2_msgs/NavigateThroughPoses` (2026-11) — the patrol route through `poses`, `patrol.xml` by default; result empty, feedback `number_of_poses_remaining`. The backend's PATROL step |
 | Action client | `compute_path_through_poses` | via the `ComputePathThroughPoses` BT node — `patrol.xml` only |
 | Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) → `navigate_to_pose` |
-| Action client | `compute_path_to_pose` | via the BT node |
+| Action client | `compute_path_to_pose` | `syncai_common/ComputePathToPose` (2026-11), via the BT node |
 | Action client | `follow_path` | via the BT node |
 | Action client | `dock_to_pose` | `syncai_common/DockToPose`, via the `DockToPose` BT node — `dock.xml` / `undock.xml` only (2026-10) |
 | Service client | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap`, via the `ClearEntireCostmap` BT node — `move.xml`'s / `dock.xml`'s two planner-side clears, dropping `Octo3D`'s dynamic-obstacle marks (2026-10-21; `global_costmap/clear_entirely_global_costmap` on the 2D trees until 2026-10-28) |
@@ -409,7 +424,7 @@ ros2 action send_goal /<robot_id>/navigate_through_poses nav2_msgs/action/Naviga
 Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);
 it is also the suffix of the internal client node `BtActionServer` creates
 (`task_runner_navigate_to_pose_rclcpp_node`, `task_runner_navigate_to_goal_rclcpp_node`,
-`task_runner_navigate_through_poses_rclcpp_node`). All three servers are built
+`task_runner_navigate_through_poses_rclcpp_node`, `task_runner_navigate_through_goals_rclcpp_node`). All four servers are built
 from the same `plugin_lib_names`, so a tag missing from that list fails every
 tree that uses it the same way. Each loads its default tree at startup, so
 `patrol.xml`'s `compute_path_through_poses` client is waited for then, like

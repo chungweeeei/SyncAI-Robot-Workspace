@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "builtin_interfaces/msg/duration.hpp"
+#include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
 
@@ -30,6 +31,69 @@ std::string describePose(const geometry_msgs::msg::PoseStamped & p)
     buf, sizeof(buf), "(%.2f, %.2f, z %.2f) in '%s'", p.pose.position.x, p.pose.position.y,
     p.pose.position.z, p.header.frame_id.c_str());
   return buf;
+}
+
+// The result's error_code for a planning failure: the typed exception a
+// planner (or this server) threw, mapped to the ComputePathToPose table
+// (2026-11). Both planner actions' results carry the same constants, hence
+// the template. Anything else -- an untyped PlannerException, an empty path
+// (validatePath() throws the base class), a std::exception a plugin was not
+// meant to throw -- is PLAN_FAILED, the 2xx base: no finer reason. The most
+// derived classes are tested first; all of them derive from
+// PlannerException directly, so the order among them does not matter.
+template <typename T>
+bool isA(const std::exception & e)
+{
+  return dynamic_cast<const T *>(&e) != nullptr;
+}
+
+template <typename ResultT>
+uint16_t planErrorCode(const std::exception & e)
+{
+  namespace nc = syncai_nav_core;
+  if (isA<nc::InvalidPlanner>(e)) {
+    return ResultT::INVALID_PLANNER;
+  }
+  if (isA<nc::PlannerTFError>(e)) {
+    return ResultT::TF_ERROR;
+  }
+  if (isA<nc::StartOutsideMapBounds>(e)) {
+    return ResultT::START_OUTSIDE_MAP;
+  }
+  if (isA<nc::GoalOutsideMapBounds>(e)) {
+    return ResultT::GOAL_OUTSIDE_MAP;
+  }
+  if (isA<nc::StartOccupied>(e)) {
+    return ResultT::START_OCCUPIED;
+  }
+  if (isA<nc::GoalOccupied>(e)) {
+    return ResultT::GOAL_OCCUPIED;
+  }
+  if (isA<nc::PlannerTimedOut>(e)) {
+    return ResultT::TIMEOUT;
+  }
+  if (isA<nc::NoValidPathCouldBeFound>(e)) {
+    return ResultT::NO_VALID_PATH;
+  }
+  if (isA<nc::NoViapointsGiven>(e)) {
+    return ResultT::NO_VIAPOINTS_GIVEN;
+  }
+  if (isA<nc::MapNotLoaded>(e)) {
+    return ResultT::MAP_NOT_LOADED;
+  }
+  if (isA<nc::MapLoading>(e)) {
+    return ResultT::MAP_LOADING;
+  }
+  if (isA<nc::StartInKeepout>(e)) {
+    return ResultT::START_IN_KEEPOUT;
+  }
+  if (isA<nc::GoalInKeepout>(e)) {
+    return ResultT::GOAL_IN_KEEPOUT;
+  }
+  if (isA<nc::GroundDisconnected>(e)) {
+    return ResultT::DISCONNECTED;
+  }
+  return ResultT::PLAN_FAILED;
 }
 
 }  // namespace
@@ -223,67 +287,84 @@ bool PlannerServer::getPreemptedGoalIfRequested(
   return false;
 }
 
-template <typename ServerT, typename GoalT>
-bool PlannerServer::getStartPose(
-  std::unique_ptr<ServerT> & server, const std::shared_ptr<const GoalT> & goal,
-  geometry_msgs::msg::PoseStamped & start)
+template <typename GoalT>
+void PlannerServer::getStartPose(
+  const std::shared_ptr<const GoalT> & goal, geometry_msgs::msg::PoseStamped & start)
 {
   if (goal->use_start) {
     start = goal->start;
   } else if (!costmap_ros_->getRobotPose(start)) {
     // The TF helper logs the lookup's own error just above; this says what
-    // it cost. A ComputePathToPose result carries no reason, so this line is
-    // the only record of why the BT's ComputePathToPose failed.
-    RCLCPP_ERROR(
-      get_logger(),
-      "[PlannerServer][%s] Plan aborted: no robot pose (%s in %s) to start from -- is the "
-      "localizer / lio_bridge publishing map -> odom -> base_link?",
-      __func__, costmap_ros_->getBaseFrameID().c_str(), costmap_ros_->getGlobalFrameID().c_str());
-    server->terminate_current();
-    return false;
+    // it cost, in the goal's error_msg and in abortPlan()'s line.
+    throw syncai_nav_core::PlannerTFError(
+      "no robot pose (" + costmap_ros_->getBaseFrameID() + " in " +
+      costmap_ros_->getGlobalFrameID() +
+      ") to start from -- is the localizer / lio_bridge publishing map -> odom -> base_link?");
   }
-
-  return true;
 }
 
-bool PlannerServer::transformPoseToGlobalFrame(
+void PlannerServer::transformPoseToGlobalFrame(
   geometry_msgs::msg::PoseStamped & pose, const std::string & what)
 {
   // Which pose, and from which frame: a goal sent in a frame nobody
   // publishes (a typo, a robot_id prefix on `map`) is the usual cause.
   const std::string from = pose.header.frame_id;
-  if (costmap_ros_->transformPoseToGlobalFrame(pose, pose)) {
-    return true;
+  if (!costmap_ros_->transformPoseToGlobalFrame(pose, pose)) {
+    throw syncai_nav_core::PlannerTFError(
+      "cannot transform the " + what + " pose from '" + from + "' to '" +
+      costmap_ros_->getGlobalFrameID() + "'");
   }
-  RCLCPP_ERROR(
-    get_logger(),
-    "[PlannerServer][%s] Plan aborted: cannot transform the %s pose from '%s' to '%s'", __func__,
-    what.c_str(), from.c_str(), costmap_ros_->getGlobalFrameID().c_str());
-  return false;
 }
 
-template <typename ServerT>
-bool PlannerServer::validatePath(
-  std::unique_ptr<ServerT> & server, const std::string & goal_desc,
-  const nav_msgs::msg::Path & path, const std::string & planner_id)
+void PlannerServer::validatePath(
+  const std::string & goal_desc, const nav_msgs::msg::Path & path, const std::string & planner_id)
 {
-  if (path.poses.size() == 0) {
-    // The planner's own line just above has the reason (Octo3D: the
-    // failure name and the numbers); this one closes the goal.
-    RCLCPP_WARN(
-      get_logger(),
-      "[PlannerServer][%s] Plan failed: planner '%s' returned no path to %s (its reason is "
-      "logged above)",
-      __func__, planner_id.empty() ? "(none given)" : planner_id.c_str(), goal_desc.c_str());
-    server->terminate_current();
-    return false;
+  if (path.poses.empty()) {
+    // A planner that returns an empty path without throwing gave no reason:
+    // PLAN_FAILED, the 2xx base. Octo3D throws a typed exception for every
+    // failure (2026-11), so this is a plugin that does not.
+    throw syncai_nav_core::PlannerException(
+      "planner '" + (planner_id.empty() ? std::string("(none given)") : planner_id) +
+      "' returned no path to " + goal_desc + " and gave no reason");
   }
 
   RCLCPP_DEBUG(
     get_logger(), "[PlannerServer][%s] Found valid path of size %zu to %s", __func__,
     path.poses.size(), goal_desc.c_str());
+}
 
-  return true;
+template <typename ServerT, typename ResultT>
+void PlannerServer::abortPlan(
+  std::unique_ptr<ServerT> & server, const std::shared_ptr<ResultT> & result,
+  const std::exception & ex, const std::string & planner_id, const std::string & goal_desc,
+  const rclcpp::Time & start_time)
+{
+  result->path.poses.clear();
+  result->error_code = planErrorCode<ResultT>(ex);
+  result->error_msg = ex.what();
+  const double elapsed = (this->now() - start_time).seconds();
+  if (dynamic_cast<const syncai_nav_core::PlannerException *>(&ex) != nullptr) {
+    // The expected way to fail: the reason is the planner's (or this
+    // server's) own sentence. Octo3D also logged it, with the request's
+    // coordinates, just above.
+    RCLCPP_WARN(
+      get_logger(),
+      "[PlannerServer][%s] Plan failed (error_code %u): planner '%s' to %s after %.3f s: %s",
+      __func__, static_cast<unsigned>(result->error_code),
+      planner_id.empty() ? "(none given)" : planner_id.c_str(), goal_desc.c_str(), elapsed,
+      ex.what());
+  } else {
+    // A plugin is meant to fail with a PlannerException (or, with no reason,
+    // an empty path), never to throw anything else: ERROR.
+    RCLCPP_ERROR(
+      get_logger(),
+      "[PlannerServer][%s] Plan aborted (error_code %u): planner '%s' threw planning to %s after "
+      "%.3f s: %s",
+      __func__, static_cast<unsigned>(result->error_code),
+      planner_id.empty() ? "(none given)" : planner_id.c_str(), goal_desc.c_str(), elapsed,
+      ex.what());
+  }
+  server->terminate_current(result);
 }
 
 syncai_nav_core::GlobalPlanner * PlannerServer::findPlanner(const std::string & planner_id)
@@ -307,6 +388,16 @@ syncai_nav_core::GlobalPlanner * PlannerServer::findPlanner(const std::string & 
     "Planner names are: %s",
     __func__, planner_id.c_str(), planner_ids_concat_.c_str());
   return nullptr;
+}
+
+syncai_nav_core::GlobalPlanner * PlannerServer::findPlannerOrThrow(const std::string & planner_id)
+{
+  syncai_nav_core::GlobalPlanner * planner = findPlanner(planner_id);
+  if (planner == nullptr) {
+    throw syncai_nav_core::InvalidPlanner(
+      "planner '" + planner_id + "' is not loaded (loaded: " + planner_ids_concat_ + ")");
+  }
+  return planner;
 }
 
 void PlannerServer::isPathValid(
@@ -449,27 +540,19 @@ void PlannerServer::computePlan()
     // until 2026-10-28): no loaded planner reads its cells, and it has no
     // layers to be current with.
 
-    // Use start pose if provided otherwise use current robot pose
+    // Use start pose if provided otherwise use current robot pose. Every
+    // failure from here on is a throw, answered once, with its error_code,
+    // by the catch below (2026-11).
     geometry_msgs::msg::PoseStamped start;
-    if (!getStartPose(action_server_pose_, goal, start)) {
-      return;
-    }
+    getStartPose(goal, start);
 
     // Transform them into the global frame
     geometry_msgs::msg::PoseStamped goal_pose = goal->goal;
-    if (
-      !transformPoseToGlobalFrame(start, "start") ||
-      !transformPoseToGlobalFrame(goal_pose, "goal")) {
-      action_server_pose_->terminate_current();
-      return;
-    }
+    transformPoseToGlobalFrame(start, "start");
+    transformPoseToGlobalFrame(goal_pose, "goal");
 
     result->path = getPlan(start, goal_pose, goal->planner_id);
-
-    if (!validatePath(
-          action_server_pose_, describePose(goal_pose), result->path, goal->planner_id)) {
-      return;
-    }
+    validatePath(describePose(goal_pose), result->path, goal->planner_id);
 
     // Publish the plan for visualization purposes
     publishPlan(result->path, goal->planner_id);
@@ -488,14 +571,9 @@ void PlannerServer::computePlan()
     }
 
     action_server_pose_->succeeded_current(result);
-  } catch (std::exception & ex) {
-    // A plugin is meant to fail with an empty path, never to throw: ERROR.
-    RCLCPP_ERROR(
-      get_logger(),
-      "[PlannerServer][%s] Plan aborted: planner '%s' threw planning to %s after %.3f s: %s",
-      __func__, goal->planner_id.c_str(), describePose(goal->goal).c_str(),
-      (this->now() - start_time).seconds(), ex.what());
-    action_server_pose_->terminate_current();
+  } catch (const std::exception & ex) {
+    abortPlan(
+      action_server_pose_, result, ex, goal->planner_id, describePose(goal->goal), start_time);
   }
 }
 
@@ -536,37 +614,21 @@ void PlannerServer::computePlanThroughPoses()
       __func__, goal->planner_id.c_str(), describeRoute(*goal).c_str(), start_desc.c_str());
 
     if (goal->goals.empty()) {
-      // What patrol.xml's RemovePassedGoals never leaves (it keeps the last
-      // waypoint), so a client sent an empty route.
-      RCLCPP_WARN(
-        get_logger(), "[PlannerServer][%s] Plan aborted: a route with no waypoints", __func__);
-      action_server_poses_->terminate_current();
-      return;
+      // What the navigator never leaves in remaining_goals (it keeps the
+      // last waypoint), so a client sent an empty route.
+      throw syncai_nav_core::NoViapointsGiven("a route with no waypoints");
     }
 
     geometry_msgs::msg::PoseStamped start;
-    if (!getStartPose(action_server_poses_, goal, start)) {
-      return;
-    }
-    if (!transformPoseToGlobalFrame(start, "start")) {
-      action_server_poses_->terminate_current();
-      return;
-    }
+    getStartPose(goal, start);
+    transformPoseToGlobalFrame(start, "start");
     std::vector<geometry_msgs::msg::PoseStamped> goals = goal->goals;
     for (size_t i = 0; i < goals.size(); ++i) {
-      if (!transformPoseToGlobalFrame(goals[i], "waypoint " + std::to_string(i + 1))) {
-        action_server_poses_->terminate_current();
-        return;
-      }
+      transformPoseToGlobalFrame(goals[i], "waypoint " + std::to_string(i + 1));
     }
 
-    syncai_nav_core::GlobalPlanner * planner = findPlanner(goal->planner_id);
-    if (planner != nullptr) {
-      result->path = planner->createPlanThroughPoses(start, goals);
-    }
-    if (!validatePath(action_server_poses_, describeRoute(*goal), result->path, goal->planner_id)) {
-      return;
-    }
+    result->path = findPlannerOrThrow(goal->planner_id)->createPlanThroughPoses(start, goals);
+    validatePath(describeRoute(*goal), result->path, goal->planner_id);
 
     publishPlan(result->path, goal->planner_id);
 
@@ -581,14 +643,10 @@ void PlannerServer::computePlanThroughPoses()
     }
 
     action_server_poses_->succeeded_current(result);
-  } catch (std::exception & ex) {
-    RCLCPP_ERROR(
-      get_logger(),
-      "[PlannerServer][%s] Plan aborted: planner '%s' threw planning a route through %s after "
-      "%.3f s: %s",
-      __func__, goal->planner_id.c_str(), describeRoute(*goal).c_str(),
-      (this->now() - start_time).seconds(), ex.what());
-    action_server_poses_->terminate_current();
+  } catch (const std::exception & ex) {
+    abortPlan(
+      action_server_poses_, result, ex, goal->planner_id, "a route through " + describeRoute(*goal),
+      start_time);
   }
 }
 
@@ -603,8 +661,7 @@ nav_msgs::msg::Path PlannerServer::getPlan(
     __func__, start.pose.position.x, start.pose.position.y, goal.pose.position.x,
     goal.pose.position.y);
 
-  syncai_nav_core::GlobalPlanner * planner = findPlanner(planner_id);
-  return planner ? planner->createPlan(start, goal) : nav_msgs::msg::Path();
+  return findPlannerOrThrow(planner_id)->createPlan(start, goal);
 }
 
 void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::string & planner_id)

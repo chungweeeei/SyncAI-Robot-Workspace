@@ -11,7 +11,7 @@ namespace syncai_behavior_tree
 ComputePathToPoseAction::ComputePathToPoseAction(
   const std::string & xml_tag_name, const std::string & action_name,
   const BT::NodeConfiguration & conf)
-: BtActionNode<nav2_msgs::action::ComputePathToPose>(xml_tag_name, action_name, conf)
+: BtActionNode<syncai_common::action::ComputePathToPose>(xml_tag_name, action_name, conf)
 {
 }
 
@@ -45,12 +45,17 @@ BT::NodeStatus ComputePathToPoseAction::on_aborted()
 {
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
-  // Humble's ComputePathToPose result carries no reason (nav2 Iron's
-  // error_code is not in this nav2_msgs), so the detail is the stage, not
-  // the cause; the planner log has "failed to generate a valid path" against
-  // the TF warning. The navigator turns this into PLAN_FAILED if the tree
-  // ends on it.
-  report_failure("planner " + action_name_ + " aborted the goal");
+  // The planner's reason (2026-11, syncai_common's ComputePathToPose): its
+  // error_code goes to the navigator, which reports it in place of
+  // PLAN_FAILED if the tree ends on this, and its sentence into the detail.
+  // A result without one (a goal aborted before it was planned) reads as the
+  // plain 200. Until then Humble's nav2 result carried no reason and the
+  // detail named the stage only.
+  const auto & res = result_.result;
+  report_failure(
+    "planner " + action_name_ + " aborted the goal" +
+      (res && !res->error_msg.empty() ? ": " + res->error_msg : std::string()),
+    true, res ? res->error_code : 0);
   // Said as a retry because move.xml's RecoveryNode clears the global costmap
   // and plans once more; if that fails too the goal ends and the result's
   // error_msg takes over, so the sentence is never left claiming a retry.

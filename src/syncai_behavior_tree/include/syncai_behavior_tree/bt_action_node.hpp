@@ -507,8 +507,10 @@ protected:
    *        (the server never acknowledged the goal, or rejected it) -- the
    *        navigator then reports UNKNOWN with this message rather than
    *        blaming planning or driving
+   * @param code the action result's own error_code, when it has one (the
+   *        planner's, 2026-11); 0 = none
    */
-  void report_failure(const std::string & msg, bool attributed = true)
+  void report_failure(const std::string & msg, bool attributed = true, uint16_t code = 0)
   {
     // registrationName() is the factory ID ("ComputePathToPose"), not name(),
     // which is the XML name="..." attribute when one is given -- move.xml's
@@ -516,6 +518,7 @@ protected:
     config().blackboard->template set<std::string>(
       blackboard_keys::kFailedNode, attributed ? registrationName() : std::string());
     config().blackboard->template set<std::string>(blackboard_keys::kFailureMsg, msg);
+    config().blackboard->template set<uint16_t>(blackboard_keys::kFailureCode, code);
   }
 
   std::string action_name_;

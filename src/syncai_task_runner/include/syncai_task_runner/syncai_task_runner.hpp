@@ -47,9 +47,14 @@ protected:
   std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateToPose>> pose_navigator_;
   std::unique_ptr<syncai_task_runner::Navigator<syncai_common::action::NavigateToGoal>>
     goal_navigator_;
-  // navigate_through_poses (2026-11): the patrol route, patrol.xml.
+  // navigate_through_poses (2026-11): the patrol route, patrol.xml; and its
+  // syncai_common twin navigate_through_goals, the same route with a failure
+  // reason in the result (2026-11). The nav2 one goes when the backend's
+  // PATROL step has migrated.
   std::unique_ptr<syncai_task_runner::Navigator<nav2_msgs::action::NavigateThroughPoses>>
     poses_navigator_;
+  std::unique_ptr<syncai_task_runner::Navigator<syncai_common::action::NavigateThroughGoals>>
+    goals_navigator_;
   syncai_task_runner::NavigatorMutex plugin_mutex_;
 
   // Odometry smoother object
