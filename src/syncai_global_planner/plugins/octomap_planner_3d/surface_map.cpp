@@ -511,6 +511,11 @@ void applyFootprintRule(const std::vector<Offset> & disc, SurfaceMap & m)
       // height difference grows along the slope cone, not just +-one step.
       const int tol = m.step_cells + static_cast<int>(std::ceil(tan_slope * o.d_m / m.res - 1e-9));
       const CellId n = m.layerNear(nc, kz, tol);
+      // A step-rejected neighbour blocks too, though it is floor: the cell
+      // against a wall foot is one, so walls are inflated by robot_radius
+      // plus a cell (0.35 m; 0.8 m is the narrowest door). Kept on purpose,
+      // 2026-11: the extra cell stands for the footprint's half-length the
+      // disc leaves out. The README's rule 5 has the measurements.
       if (n == kNoCell || m.cells[n].reject != static_cast<uint8_t>(Reject::None)) {
         blocked = true;
         break;
