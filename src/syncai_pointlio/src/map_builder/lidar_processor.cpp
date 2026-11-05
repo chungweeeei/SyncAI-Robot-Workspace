@@ -1,9 +1,14 @@
 #include "syncai_pointlio/map_builder/lidar_processor.h"
 
+#include <cmath>
+#ifdef MP_EN
+// Came in through ikd_Tree.h's includes until the tree went (2026-11-05).
+#include <omp.h>
+#endif
+
 LidarProcessor::LidarProcessor(Config &config, std::shared_ptr<PointEKF> kf) : m_config(config), m_kf(kf)
 {
-    m_ikdtree = std::make_shared<KD_TREE<PointType>>();
-    m_ikdtree->set_downsample_param(m_config.map_resolution);
+    m_map = std::make_shared<IVoxMap>(m_config.map_grid_resolution, m_config.map_capacity, m_config.map_nearby);
     m_cloud_down_lidar.reset(new CloudType);
     m_cloud_down_world.reset(new CloudType(10000, 1));
     m_norm_vec.reset(new CloudType(10000, 1));
@@ -18,134 +23,58 @@ LidarProcessor::LidarProcessor(Config &config, std::shared_ptr<PointEKF> kf) : m
     }
 }
 
-void LidarProcessor::trimCloudMap()
-{
-    // Sliding local map: keeps the ikd-Tree from growing without bound as the robot travels
-    // further. This logic was carried over from fastlio2.
-    // Core idea: maintain a cube of side cube_len (300 m) and push it forward when the robot is
-    // about to reach its boundary.
-    m_local_map.cub_to_rm.clear();
-    const State &state = m_kf->x();
-    Eigen::Vector3d pos_lidar = state.t_wi + state.r_wi * state.t_il;
-
-    if (!m_local_map.initialed)
-    {
-        for (int i = 0; i < 3; i++)
-        {
-            m_local_map.local_map_corner.vertex_min[i] = pos_lidar[i] - m_config.cube_len / 2.0;
-            m_local_map.local_map_corner.vertex_max[i] = pos_lidar[i] + m_config.cube_len / 2.0;
-        }
-        m_local_map.initialed = true;
-        return;
-    }
-    
-    // Check whether the cube needs to be pushed forward
-    float dist_to_map_edge[3][2];
-    bool need_move = false;
-    double det_thresh = m_config.move_thresh * m_config.det_range;
-    for (int i = 0; i < 3; i++)
-    {
-        dist_to_map_edge[i][0] = fabs(pos_lidar(i) - m_local_map.local_map_corner.vertex_min[i]);
-        dist_to_map_edge[i][1] = fabs(pos_lidar(i) - m_local_map.local_map_corner.vertex_max[i]);
-
-        if (dist_to_map_edge[i][0] <= det_thresh || dist_to_map_edge[i][1] <= det_thresh)
-            need_move = true;
-    }
-    if (!need_move)
-        return;
-    
-    // Push the cube and mark the boxes to delete
-    BoxPointType new_corner, temp_corner;
-    new_corner = m_local_map.local_map_corner;
-    float mov_dist = std::max((m_config.cube_len - 2.0 * m_config.move_thresh * m_config.det_range) * 0.5 * 0.9, double(m_config.det_range * (m_config.move_thresh - 1)));
-
-    for (int i = 0; i < 3; i++)
-    {
-        temp_corner = m_local_map.local_map_corner;
-        if (dist_to_map_edge[i][0] <= det_thresh)
-        {
-            new_corner.vertex_max[i] -= mov_dist;
-            new_corner.vertex_min[i] -= mov_dist;
-            temp_corner.vertex_min[i] = m_local_map.local_map_corner.vertex_max[i] - mov_dist;
-            m_local_map.cub_to_rm.push_back(temp_corner);
-        }
-        else if (dist_to_map_edge[i][1] <= det_thresh)
-        {
-            new_corner.vertex_max[i] += mov_dist;
-            new_corner.vertex_min[i] += mov_dist;
-            temp_corner.vertex_max[i] = m_local_map.local_map_corner.vertex_min[i] + mov_dist;
-            m_local_map.cub_to_rm.push_back(temp_corner);
-        }
-    }
-    m_local_map.local_map_corner = new_corner;
-
-    PointVec points_history;
-    m_ikdtree->acquire_removed_points(points_history);
-
-    // Delete the points outside the local map
-    if (m_local_map.cub_to_rm.size() > 0)
-        m_ikdtree->Delete_Point_Boxes(m_local_map.cub_to_rm);
-    return;
-}
-
 void LidarProcessor::incrCloudMap()
 {
     if (m_cloud_down_lidar->empty())
         return;
-        
+
     // m_cloud_down_world was already transformed inside processGroup / updateChunk with the state
     // at each point group's own time (equivalent to point-by-point undistortion), so it is used
     // as is here and not recomputed.
+    //
+    // A point is added only if no map point already sits in its map_resolution voxel, judged on
+    // the neighbours the update just found for it: the first point in a voxel stays there for
+    // good. This is upstream Point-LIO's rule (both branches; 2026-11-05). The port had FAST-LIO2's
+    // instead -- add the point if it is nearer the voxel centre than its neighbours, and let the
+    // ikd-tree's downsampling replace the voxel's point with it -- under which each voxel held the
+    // minimum, over every scan ever inserted, of the distance to its centre. With ~4 800 scans per
+    // 8-minute dock rest and a hundred laps a night, that minimum walks off the true surface by a
+    // few sigma of the observation spread, in a different direction in every voxel, and the
+    // planes the update fits get thicker all night (docs/pointlio-map-gravity-fixes.md §2: dock
+    // match ratio 84 % -> 59 %, walking residual 2.55 -> 3.01 cm, then a divergence at P3).
+    // First-wins cannot drift that way. Its own cost: whatever the first observation got wrong,
+    // a person standing there included, stays until the map is reset.
+    const double res = m_config.map_resolution;
     int size = m_cloud_down_lidar->size();
     PointVec point_to_add;
-    PointVec point_no_need_downsample;
+    point_to_add.reserve(size);
     for (int i = 0; i < size; i++)
     {
-        // A point with no neighbours nearby must be added to the map
-        if (m_nearest_points[i].empty())
-        {
-            point_to_add.push_back(m_cloud_down_world->points[i]);
-            continue;
-        }
-
+        const PointType &point_world = m_cloud_down_world->points[i];
         const PointVec &points_near = m_nearest_points[i];
+        const float cx = (std::floor(point_world.x / res) + 0.5) * res;
+        const float cy = (std::floor(point_world.y / res) + 0.5) * res;
+        const float cz = (std::floor(point_world.z / res) + 0.5) * res;
         bool need_add = true;
-        PointType mid_point;
-        mid_point.x = std::floor(m_cloud_down_world->points[i].x / m_config.map_resolution) * m_config.map_resolution + 0.5 * m_config.map_resolution;
-        mid_point.y = std::floor(m_cloud_down_world->points[i].y / m_config.map_resolution) * m_config.map_resolution + 0.5 * m_config.map_resolution;
-        mid_point.z = std::floor(m_cloud_down_world->points[i].z / m_config.map_resolution) * m_config.map_resolution + 0.5 * m_config.map_resolution;
-
-        // If the voxel this point falls in holds no point yet, add it directly without downsampling
-        if (fabs(points_near[0].x - mid_point.x) > 0.5 * m_config.map_resolution && fabs(points_near[0].y - mid_point.y) > 0.5 * m_config.map_resolution && fabs(points_near[0].z - mid_point.z) > 0.5 * m_config.map_resolution)
+        for (const PointType &q : points_near)
         {
-            point_no_need_downsample.push_back(m_cloud_down_world->points[i]);
-            continue;
-        }
-        float dist = sq_dist(m_cloud_down_world->points[i], mid_point);
-
-        for (int readd_i = 0; readd_i < m_config.near_search_num; readd_i++)
-        {
-            // A point with too few neighbours must be added to the map
-            if (points_near.size() < static_cast<size_t>(m_config.near_search_num))
-                break;
-            // If a neighbour lies closer to the voxel centre than this point does, this point
-            // need not be added
-            if (sq_dist(points_near[readd_i], mid_point) < dist)
+            if (std::fabs(q.x - cx) < 0.5 * res && std::fabs(q.y - cy) < 0.5 * res && std::fabs(q.z - cz) < 0.5 * res)
             {
                 need_add = false;
                 break;
             }
         }
         if (need_add)
-            point_to_add.push_back(m_cloud_down_world->points[i]);
+            point_to_add.push_back(point_world);
     }
-    m_ikdtree->Add_Points(point_to_add, true);
-    m_ikdtree->Add_Points(point_no_need_downsample, false);
+    m_map->addPoints(point_to_add);
 }
 
 void LidarProcessor::initCloudMap(PointVec &point_vec)
 {
-    m_ikdtree->Build(point_vec);
+    // The whole first scan, not thinned per voxel: there is nothing to match it against yet,
+    // as upstream's ikdtree.Build() / ivox_->AddPoints() of the first frame.
+    m_map->addPoints(point_vec);
 }
 
 void LidarProcessor::preprocess(SyncPackage &package, Vec<PointGroup> &groups)
@@ -225,9 +154,11 @@ void LidarProcessor::updateChunk(int begin, int end)
         point_world.y = point_world_vec(1);
         point_world.z = point_world_vec(2);
         point_world.intensity = point_body.intensity;
-        std::vector<float> point_sq_dist(m_config.near_search_num);
+        std::vector<float> point_sq_dist;
         auto &points_near = m_nearest_points[i];
-        m_ikdtree->Nearest_Search(point_world, m_config.near_search_num, points_near, point_sq_dist);
+        // Searched out to upstream's 5 m, the gate below keeps sqrt(5) m. The candidates past the
+        // gate still matter: incrCloudMap judges a point's voxel by this list.
+        m_map->nearestSearch(point_world, m_config.near_search_num, 5.0, points_near, point_sq_dist);
         if (points_near.size() >= static_cast<size_t>(m_config.near_search_num) && point_sq_dist[m_config.near_search_num - 1] <= 5)
             m_point_selected_flag[i] = true;
         else

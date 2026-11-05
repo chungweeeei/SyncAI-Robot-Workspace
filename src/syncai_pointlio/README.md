@@ -29,8 +29,9 @@ Ported into the workspace from `SyncAI-Fast-LIO2`'s `pointlio` package in
 no longer imported at all). The ROS surface did not change with the move — same executable
 and node name, namespace, topics, service name and parameters — so no consumer
 had to. `map_builder/` is the ported math (`point_ekf`, `imu_initializer`,
-`lidar_processor`, `ikd_Tree`, refactored from HKU MaRS Point-LIO in the
-`liangheming/FASTLIO2_ROS2` style, MIT); `pointlio_node.*` is the ROS shell.
+`lidar_processor`, refactored from HKU MaRS Point-LIO in the
+`liangheming/FASTLIO2_ROS2` style, MIT, plus `ivox_map`, written here in
+2026-11 — see "The local map"); `pointlio_node.*` is the ROS shell.
 
 ## Inputs
 
@@ -122,9 +123,41 @@ before" rather than an exact match; the error is a millisecond of motion. The
 MAP_INIT frame has no groups and is published with the end state alone, as
 before. Each deskew runs only when its output has a subscriber.
 
+### The local map
+
+Every scan point is matched against Point-LIO's **own** map, built from its
+own past scans, never against `map.pcd`. Since 2026-11-05 that map is an
+`IVoxMap` (`map_builder/ivox_map.*`), the design of upstream Point-LIO's
+default branch `point-lio-with-grid-map` (itself faster-lio's iVox), in place
+of the ikd-tree the port came with:
+
+- **Grids and search.** `map_grid_resolution` (2 m) grids found by a hash of
+  their integer key; a nearest search looks in the point's grid and its
+  `map_nearby` (6) face neighbours only. That is approximate: on a random
+  dense cloud one query in ten gets a different 5-neighbour set than an exact
+  search would. Upstream accepts it for the speed.
+- **Insertion: the first point in a voxel stays.** A point is added only when
+  none of the neighbours its update just found lies in its `map_resolution`
+  (0.3 m) voxel (`LidarProcessor::incrCloudMap`), upstream Point-LIO's rule.
+  The port had FAST-LIO2's instead — add the point if it is nearer the voxel
+  centre than its neighbours, and let the ikd-tree replace the voxel's point
+  with it — under which each voxel held an extreme over every scan ever
+  inserted, which walks off the true surface over a night of laps and thickens
+  every plane the update fits (`docs/pointlio-map-gravity-fixes.md` §2). The
+  cost of first-wins: whatever the first observation got wrong, a person
+  standing there included, stays until a `reset`.
+- **The LRU.** Grids are ordered by their last insertion and the oldest is
+  dropped whole past `map_capacity` grids. A search does not count as use (it
+  runs on `MP_PROC_NUM` threads and must not write), so a grid the robot sees
+  every lap but adds nothing new to ages like one it never sees. At upstream's
+  1 000 000 it is a memory bound and drops nothing on any site this robot
+  patrols — just as the ikd-tree's `cube_len` 300 m sliding cube never trimmed
+  anything. A capacity that forgets has to be sized off the health line's
+  `map … grids`, and replayed, before it goes on a robot.
+
 ### The reset contract
 
-`reset` throws the ikd-tree map, the EKF and the sensor buffers away and
+`reset` throws the local map, the EKF and the sensor buffers away and
 re-runs the static IMU initialisation, **without restarting the process**.
 Nobody calls it directly in normal operation: `pgo_node`'s `reset_mapping`
 (the console's "New map") owns the ordering — pause intake → call `reset` →
@@ -193,7 +226,7 @@ and its cause not at all. Since 2026-11-02 it logs one `lio health:` line per
 `health.summary_period` (1 s), from numbers the filter already has:
 
 ```
-lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms
+lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms | map 812 grids 95210 pts evicted 0
 ```
 
 (Illustrative numbers: a healthy robot's have not been recorded yet.)
@@ -210,6 +243,7 @@ lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm |
 | `std p` / `r` | Position / attitude 1σ from the covariance | Shrinking while `res` grows: an over-confident filter discounting its scans |
 | `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | `\|g\|` drifting from 9.81, biases walking off |
 | `cost` | `timerCB` per processed scan, mean / max, against the lidar's 100 ms | See "Falling behind" |
+| `map … grids … pts evicted …` | The local map's grids and points, and the grids its LRU has dropped since the last `reset` (see "The local map"); last on the line since 2026-11-05, so the earlier fields kept their positions | `pts` still growing on a route already driven: first-wins is adding voxels the earlier laps left empty — a pose off the surfaces it mapped |
 
 The line is a **WARN** with every reason that holds appended after ` -- `
 (`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 31.2 >=
@@ -253,7 +287,7 @@ The launch layers the two frame names on top.
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
 | `scan_resolution` / `map_resolution` | `0.25` / `0.3` | | Voxel sizes. Coarser than fastlio2's 0.15: every point group costs an EKF update, keep headroom on the Jetson. |
-| `cube_len` / `det_range` / `move_thresh` | `300.0` / `60.0` / `1.5` | | Local-map management. **Write floats**: the node declares doubles, and a bare `300` is an int64 override → `InvalidParameterTypeException` at startup. |
+| `map_grid_resolution` / `map_capacity` / `map_nearby` | `2.0` / `1000000` / `6` | | The local map (see "The local map"): grid edge (m), LRU capacity (grids), search neighbourhood (`0` / `6` / `18` / `26`). Upstream Point-LIO's values. Out-of-range values log an ERROR and fall back to these. **Write the resolution as a float.** `cube_len` / `det_range` / `move_thresh` went with the ikd-tree on 2026-11-05; left in a params file they are ignored. |
 | `gyr_cov_output` / `acc_cov_output` | `1000.0` / `500.0` | | Process noise driving the omg / acc random-walk states. At 1000 the output model tracks the raw gyro almost instantly, which is why the bridge's yaw rate is not the bias-free estimate it looks like. |
 | `b_gyr_cov` / `b_acc_cov` | `0.0001` | | Bias random walk |
 | `imu_meas_omg_cov` / `imu_meas_acc_cov` | `0.1` | | IMU-as-measurement noise |
@@ -261,7 +295,7 @@ The launch layers the two frame names on top.
 | `lidar_meas_cov` / `plane_thr` | `0.01` / `0.1` | | Point-to-plane measurement |
 | `batch_max_points` | `500` | | Same-timestamp groups larger than this are split into sequential chunks |
 | `imu_init_num` | `20` | | Samples averaged by the static init (≈0.1 s at 200 Hz) |
-| `near_search_num` | `5` | | ikd-tree neighbours per point |
+| `near_search_num` | `5` | | Map neighbours per point, for the plane fit |
 | `gravity_align` | `true` | | Rotate the initial pose so gravity is −z |
 | `esti_il` | `false` | | Estimate the lidar → IMU extrinsic online |
 | `r_il` / `t_il` | identity / `[-0.011, -0.02329, 0.04412]` | | IMU ← lidar extrinsic. `r_il` is the row-major 3×3 flattened to 9 doubles (ROS parameters have no matrix type); the node checks the lengths and keeps the default with an ERROR log on a mismatch. |
@@ -287,7 +321,7 @@ Checking it:
 
 ```bash
 ros2 node info /<robot_id>/pointlio/pointlio_node        # subs /<id>/livox/{lidar,imu}; pubs; srv reset
-ros2 param get /<robot_id>/pointlio/pointlio_node cube_len   # 300.0 → the params file was found
+ros2 param get /<robot_id>/pointlio/pointlio_node lidar_max_range   # 30.0 (code default 20.0) → the params file was found
 ros2 topic hz /<robot_id>/pointlio/lio_odom               # ~10 Hz once MAPPING
 ros2 service type /<robot_id>/pointlio/reset             # syncai_common/srv/ResetLIO
 ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
@@ -336,13 +370,15 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
   `syncai_mapping` gives GTSAM. Recreating the container from the image keeps it; a hand-built
   one loses it.
 - **An unoptimised build is unusable, not just slow.** CMake defaults
-  `CMAKE_BUILD_TYPE` to Release (upstream forced it); the ikd-tree and the
+  `CMAKE_BUILD_TYPE` to Release (upstream forced it); the map search and the
   per-point EKF cannot hold the lidar rate on the Jetson at `-O0`.
   `MP_PROC_NUM=2` is the OpenMP thread count for the residual loop, sized
   alongside the localizer and the costmaps.
 - **Lint is partly off.** `ament_cmake_copyright` and `cpplint` are disabled
   as they were upstream: `map_builder/` has no per-file licence headers (the
-  package `LICENSE` covers it) and `ikd_Tree.*` is not clang-format clean.
+  package `LICENSE` covers it) and the ported files are not clang-format
+  clean. `ivox_map.*` is ours and does not copy faster-lio's iVox, which is
+  GPL-2.0.
   The node shell (`pointlio_node.*`, `main.cpp`) follows the workspace
   `.clang-format`.
 - `lidar_type: 1` and `imu_acc_scale` exist for the Isaac Sim path, whose

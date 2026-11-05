@@ -5,15 +5,8 @@
 #include <cstdint>
 
 #include "syncai_pointlio/map_builder/commons.h"
-#include "syncai_pointlio/map_builder/ikd_Tree.h"
+#include "syncai_pointlio/map_builder/ivox_map.h"
 #include "syncai_pointlio/map_builder/point_ekf.h"
-
-struct LocalMap
-{
-    bool initialed = false;
-    BoxPointType local_map_corner;
-    Vec<BoxPointType> cub_to_rm;
-};
 
 // One group of points sharing the same per-point timestamp (curvature).
 // Indices are [begin, end) into the downsampled scan; time is absolute.
@@ -55,8 +48,6 @@ class LidarProcessor
 public:
     LidarProcessor(Config &config, std::shared_ptr<PointEKF> kf);
 
-    void trimCloudMap();
-
     void incrCloudMap();
 
     void initCloudMap(PointVec &point_vec);
@@ -71,6 +62,7 @@ public:
 
     // The last preprocess() + processGroup() calls' numbers.
     const LidarUpdateStats & stats() const { return m_stats; }
+    const IVoxMap & map() const { return *m_map; }
 
     static CloudType::Ptr transformCloud(CloudType::Ptr inp, const M3D &r, const V3D &t);
     M3D r_wl() { return m_kf->x().r_wi * m_kf->x().r_il; }
@@ -80,9 +72,8 @@ private:
     void updateChunk(int begin, int end);
 
     Config m_config;
-    LocalMap m_local_map;
     std::shared_ptr<PointEKF> m_kf;
-    std::shared_ptr<KD_TREE<PointType>> m_ikdtree;
+    std::shared_ptr<IVoxMap> m_map;
     CloudType::Ptr m_cloud_down_lidar;
     CloudType::Ptr m_cloud_down_world;
     // One byte per point, NOT std::vector<bool>: updateChunk writes these

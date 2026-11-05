@@ -36,7 +36,7 @@
     # behind for good (robot01 2026-10-28: over 5 minutes behind, at 0.65x real
     # time). 0.3 s is three scans of slack before anything is skipped; at 2 the
     # node catches up while it runs faster than 1/3 of real time. A float, see
-    # cube_len below; <= 0.0 processes every scan however late.
+    # map_grid_resolution below; <= 0.0 processes every scan however late.
     max_lidar_backlog: 0.3
     max_lidar_skip: 2
 
@@ -72,12 +72,19 @@
     scan_resolution: 0.25
     map_resolution: 0.3
 
-    # Written as floats, not 300 / 60: the node declares these as double, and a
-    # bare integer in a ROS params file is an int64 override -> the node dies
-    # with an InvalidParameterTypeException at startup.
-    cube_len: 300.0
-    det_range: 60.0
-    move_thresh: 1.5
+    # The local map (2026-11-05, an IVoxMap in place of the ikd-tree and its
+    # cube_len / det_range / move_thresh, which on this site never trimmed
+    # anything): upstream Point-LIO's grid-map branch values. 2 m grids, a
+    # search over the grid and its 6 face neighbours (0 / 6 / 18 / 26), and an
+    # LRU that drops the least recently inserted-into grid past map_capacity
+    # grids -- a memory bound at 1000000, not forgetting; the `map` field of the
+    # health line has the count to size a smaller one from. map_resolution
+    # above is the voxel each of which keeps the first point inserted in it.
+    # Write the resolution as a float: the node declares a double, and a bare
+    # 2 is an int64 override -> InvalidParameterTypeException at startup.
+    map_grid_resolution: 2.0
+    map_capacity: 1000000
+    map_nearby: 6
 
     # process noise driving the omg/acc random-walk states
     gyr_cov_output: 1000.0

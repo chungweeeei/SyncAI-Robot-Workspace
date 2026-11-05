@@ -81,7 +81,6 @@ void MapBuilder::process(SyncPackage & package)
   // update; point group -> predict + point-to-plane update (Point-LIO output model, no scan
   // undistortion).
   m_lidar_processor->preprocess(package, m_groups);
-  m_lidar_processor->trimCloudMap();
 
   // Below is the loop that runs the two sorted sequences merged in time order.
   // The main reason pointlio needs no separate correction (undistortion) step is that it
@@ -116,7 +115,7 @@ void MapBuilder::process(SyncPackage & package)
   m_group_poses.push_back({package.cloud_end_time, m_kf->x().r_wi, m_kf->x().t_wi});
   m_health.lidar = m_lidar_processor->stats();
 
-  // After downsampling, each map voxel keeps only the point closest to its centre.
+  // Each map_resolution voxel keeps the first point that landed in it (see incrCloudMap).
   // Done incrementally: the map is not rebuilt, only the incoming points are judged for insertion
   m_lidar_processor->incrCloudMap();
 }
