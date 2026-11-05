@@ -1075,6 +1075,16 @@
       # success or a cancel, and 30 s after a failure, plan_idle_clear_time).
       # Its poses seed the reach rule below; a level path seeds nothing.
       plan_topic: plan
+      # Freshness (2026-11): the layer is not current, and the controller
+      # stops the robot (controller_server, waitForCurrentCostmap), once the
+      # newest cloud's stamp is older than this, s -- no cloud, its TF
+      # missing (the message filter drops it), or a Point-LIO fallen behind.
+      # Until then nothing reported a dead cloud: the samples aged out, the
+      # cells went NO_INFORMATION, FREE to MPPI, and it drove on an empty
+      # costmap. 1.0 is ten scans at 10 Hz and over three times the longest
+      # gap Point-LIO leaves on purpose (max_lidar_skip 2 scans) plus the
+      # filter's transform wait; a first value, unmeasured. 0 = never stale.
+      cloud_timeout: 1.0
       # Memory. The MID360's -7 deg lower FOV never sees the floor within
       # ~3.9 m of the robot: the floor under and ahead of it was seen 5-13 s
       # ago at walking speed, from further off, so a cell's ground comes from

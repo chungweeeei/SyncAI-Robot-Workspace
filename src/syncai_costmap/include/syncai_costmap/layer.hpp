@@ -88,9 +88,21 @@ public:
    *
    *        A layer's current state should be managed by the protected
    *        variable current_.
+   *
+   *        Virtual since 2026-11 (upstream's is not): a layer whose data
+   *        can go stale between updates answers from its data's age when
+   *        asked. CostmapROS's update loop skips the layers altogether while
+   *        it has no robot pose, so a current_ kept up to date by
+   *        updateBounds() alone stays true through a TF outage.
    * @return Whether the data in the layer is up to date.
    */
-  bool isCurrent() const { return current_; }
+  virtual bool isCurrent() const { return current_; }
+
+  /**
+   * @brief Why isCurrent() is false, with the numbers that decided it, for
+   *        the controller's log; empty while current.
+   */
+  virtual std::string staleReason() const { return isCurrent() ? "" : "not current"; }
 
   /**@brief Gets whether the layer is enabled. */
   bool isEnabled() const { return enabled_; }

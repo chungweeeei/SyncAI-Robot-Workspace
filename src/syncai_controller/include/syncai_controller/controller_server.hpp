@@ -231,6 +231,15 @@ protected:
   void publishZeroVelocity();
 
   /**
+   * @brief Hold the robot at zero until the local costmap is current again
+   *        (computeControl() only; the docking loop reads no costmap).
+   * @return false when the goal was cancelled meanwhile (terminated here)
+   * @throws syncai_nav_core::PlannerException once failure_tolerance (at
+   *         least 1 s) has passed without a valid command
+   */
+  bool waitForCurrentCostmap();
+
+  /**
    * @brief Checks if goal is reached
    * @return true or false
    */
