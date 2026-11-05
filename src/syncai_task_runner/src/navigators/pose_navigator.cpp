@@ -416,9 +416,8 @@ void PoseNavigator<ActionT>::onLoop()
     // a route that comes back past an earlier waypoint must not skip the
     // ones in between. The last one stays: it is the goal.
     std::vector<geometry_msgs::msg::PoseStamped> remaining;
-    if (
-      blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
-        keys::kRemainingGoals, remaining)) {
+    if (blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
+          keys::kRemainingGoals, remaining)) {
       size_t passed = 0;
       while (remaining.size() - passed > 1 &&
              syncai_util::geometry_utils::euclidean_distance(

@@ -103,7 +103,8 @@ void MPPIController::initialize(
   path_handler_.initialize(parent_, name_, costmap_ros_, tf_buffer_, parameters_handler_.get());
   collision_checker_.setCostmap(costmap_ros_->getCostmap());
   trajectory_visualizer_.on_configure(
-    parent_, name_, costmap_ros_->getGlobalFrameID(), parameters_handler_.get());
+    parent_, name_,
+    costmap_ros_->getGlobalFrameID(), parameters_handler_.get());
 
   // Not upstream. The optimal trajectory is the "local path" the rest of
   // this stack has asked for since RPP, which has none to show; upstream only
@@ -141,7 +142,8 @@ void MPPIController::reset()
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
-  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & robot_speed,
   syncai_nav_core::GoalChecker * goal_checker)
 {
   try {
@@ -1023,9 +1025,8 @@ bool MPPIController::climbStairs(
     double target = stair_reverse_ ? -stair_linear_vel_ : stair_linear_vel_;
     size_t corner_idx = 0;
     double corner_heading = 0.0;
-    if (
-      syncai_util::StairMode::findCorner(
-        plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+    if (syncai_util::StairMode::findCorner(
+          plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
       const auto & cp = plan.poses[corner_idx].pose.position;
       const double corner_dist = std::hypot(cp.x - x, cp.y - y);
       // The S-curve from the stair speed stops in 0.75 v^2 / a (0.19 m at
@@ -1229,7 +1230,8 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
-  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const geometry_msgs::msg::Twist & robot_speed,
   syncai_nav_core::GoalChecker * goal_checker)
 {
 #ifdef BENCHMARK_TESTING
