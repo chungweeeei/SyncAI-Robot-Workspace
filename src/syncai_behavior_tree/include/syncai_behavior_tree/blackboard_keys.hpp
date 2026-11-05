@@ -66,6 +66,15 @@ inline constexpr char kNavStatusMsg[] = "nav_status_msg";
 inline constexpr char kStatusPlanning[] = "Planning a path to the goal";
 inline constexpr char kStatusFollowing[] = "Following the path";
 
+// Which goal the tree is running (int), bumped by the navigator at every goal
+// and every accepted preempt (2026-11). FollowPath remembers the generation
+// of the path it last sent and does not take the controller's success for a
+// path sent under an older one: after a preempt {path} is empty until the
+// new goal's plan lands, FollowPath keeps driving the old path meanwhile, and
+// reaching the old goal in that window succeeded the tree -- reported as the
+// new goal reached, at the old goal's place (FollowPathAction::on_success).
+inline constexpr char kGoalGeneration[] = "goal_generation";
+
 // The patrol route's waypoints (navigate_through_poses, patrol.xml, 2026-11).
 // kGoals is the client's list as sent, rewritten only by a new goal or a
 // preempt, so GlobalUpdatedGoal sees a change of route and nothing else.

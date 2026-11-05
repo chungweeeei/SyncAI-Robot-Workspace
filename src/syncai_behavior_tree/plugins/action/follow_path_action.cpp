@@ -46,6 +46,8 @@ void FollowPathAction::on_tick()
     should_send_goal_ = false;
     return;
   }
+  sent_generation_ = goalGeneration();
+  waiting_logged_ = false;
 
   // A goal is going out: the first drive (ComputePathToPose already said
   // "Following the path" in this tick) or a retry after the controller gave
@@ -78,6 +80,7 @@ void FollowPathAction::on_wait_for_result(
     // the action server on the next loop iteration
     goal_.path = new_path;
     goal_updated_ = true;
+    sent_generation_ = goalGeneration();
   }
 
   std::string new_controller_id;
@@ -110,6 +113,58 @@ BT::NodeStatus FollowPathAction::on_aborted()
   config().blackboard->set<std::string>(
     blackboard_keys::kNavStatusMsg, kControllerGaveUp);  // NOLINT
   return BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus FollowPathAction::on_success()
+{
+  // Why (2026-11): a preempt empties {path} until the new goal's plan lands,
+  // and on_wait_for_result() keeps the old path on the controller meanwhile
+  // (an empty one is never sent). If the robot reached the old goal in that
+  // window -- a retarget sent while it was finishing its final rotation --
+  // the controller succeeded, PipelineSequence took that as the tree's
+  // success while the planner was still RUNNING, and the navigator reported
+  // the NEW goal reached, standing at the old one; the task went on to its
+  // next step in the wrong place.
+  const int generation = goalGeneration();
+  if (generation == sent_generation_) {
+    return BT::NodeStatus::SUCCESS;
+  }
+  // The old path is done and the controller has stopped. Stay RUNNING, which
+  // brings the tick back here (BtActionNode::tick() keeps the result), until
+  // the planner branch lands the new goal's path; a planner failure fails
+  // the tree through PipelineSequence and halts this node as usual.
+  nav_msgs::msg::Path path;
+  getInput("path", path);
+  if (path.poses.empty()) {
+    if (!waiting_logged_) {
+      waiting_logged_ = true;
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "[FollowPathAction][%s] Reached the end of the preempted goal's path; holding until the "
+        "new goal's path is planned",
+        __func__);
+    }
+    return BT::NodeStatus::RUNNING;
+  }
+  getInput("controller_id", goal_.controller_id);
+  getInput("goal_checker_id", goal_.goal_checker_id);
+  goal_.path = path;
+  sent_generation_ = generation;
+  waiting_logged_ = false;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "[FollowPathAction][%s] The new goal's path landed after the preempted one finished; "
+    "following it",
+    __func__);
+  send_new_goal();
+  return BT::NodeStatus::RUNNING;
+}
+
+int FollowPathAction::goalGeneration()
+{
+  int generation = 0;
+  config().blackboard->get<int>(blackboard_keys::kGoalGeneration, generation);  // NOLINT
+  return generation;
 }
 
 }  // namespace syncai_behavior_tree

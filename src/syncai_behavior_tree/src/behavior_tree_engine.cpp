@@ -45,7 +45,17 @@ BtStatus BehaviorTreeEngine::run(
       // 3. NodeStatus::FAILURE => halt all children.
       result = tree->tickRoot();
 
-      onLoop();
+      // Only while the tree still runs (2026-11). onLoop() is where a pending
+      // preempt is accepted (BtActionServer), and accepted after the tick
+      // that finished the tree, the finished goal's outcome went to the goal
+      // that had just replaced it: the old goal, reached, came back ABORTED
+      // as superseded and the new one SUCCEEDED where it had never been sent
+      // (or FAILED, for the old goal's failure). Left pending, the action
+      // server reports this goal as it ended and then runs the new one from
+      // the start (SimpleActionServer::work()).
+      if (result == BT::NodeStatus::RUNNING) {
+        onLoop();
+      }
 
       if (!loopRate.sleep()) {
         RCLCPP_WARN(

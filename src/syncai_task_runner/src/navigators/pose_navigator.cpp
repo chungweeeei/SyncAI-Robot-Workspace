@@ -360,9 +360,26 @@ void PoseNavigator<ActionT>::onLoop()
   auto feedback_msg = std::make_shared<typename ActionT::Feedback>();
 
   geometry_msgs::msg::PoseStamped current_pose;
-  syncai_util::getCurrentPose(
-    current_pose, *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
-    this->feedback_utils_.robot_frame, this->feedback_utils_.transform_tolerance);
+  if (!syncai_util::getCurrentPose(
+        current_pose, *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
+        this->feedback_utils_.robot_frame, this->feedback_utils_.transform_tolerance)) {
+    // No feedback and no waypoint tracking this tick (2026-11). A failed
+    // lookup leaves current_pose at the identity in the robot's own frame, and
+    // everything below read it as the robot standing on the map origin: every
+    // waypoint within waypoint_passed_radius of (0, 0) -- often where the map
+    // was started, so where routes begin and end -- was dropped from
+    // kRemainingGoals as passed and the next replan skipped it, and the
+    // feedback showed the robot at the origin with the distance from there.
+    // The tree itself is not stopped: the controller and planner judge the
+    // pose themselves, and a TF gap of a few ticks should not end a patrol.
+    RCLCPP_WARN_THROTTLE(
+      this->logger_, *this->clock_, 2000,
+      "[PoseNavigator][%s] %s: no robot pose (%s -> %s within %.2f s); waypoints and feedback "
+      "not updated until it is back",
+      __func__, this->getName().c_str(), this->feedback_utils_.global_frame.c_str(),
+      this->feedback_utils_.robot_frame.c_str(), this->feedback_utils_.transform_tolerance);
+    return;
+  }
 
   // Named type, not auto: initialised from a dependent expression the variable
   // would be dependent too, and every get<T>() below would need `template`.
@@ -399,8 +416,9 @@ void PoseNavigator<ActionT>::onLoop()
     // a route that comes back past an earlier waypoint must not skip the
     // ones in between. The last one stays: it is the goal.
     std::vector<geometry_msgs::msg::PoseStamped> remaining;
-    if (blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
-          keys::kRemainingGoals, remaining)) {
+    if (
+      blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
+        keys::kRemainingGoals, remaining)) {
       size_t passed = 0;
       while (remaining.size() - passed > 1 &&
              syncai_util::geometry_utils::euclidean_distance(
@@ -513,6 +531,9 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
   blackboard->set<std::string>(keys::kFailureMsg, "");
   blackboard->set<uint16_t>(keys::kFailureCode, 0);
   blackboard->set<int>(keys::kNumberPlans, 0);
+  // A new goal, so FollowPath no longer counts the controller's success on a
+  // path sent before this as the goal reached (blackboard_keys.hpp).
+  blackboard->set<int>(keys::kGoalGeneration, ++goal_generation_);
   // Seeded rather than cleared: the tree's first write is the first path
   // landing, and until then planning is what the robot is doing.
   blackboard->set<std::string>(keys::kNavStatusMsg, keys::kStatusPlanning);
@@ -535,8 +556,9 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
   // (haltAllActions() only halts nodes still RUNNING, so ComputePathToPose's
   // halt() rarely runs). A stale path that is still free would otherwise be
   // followed from wherever it starts when the same goal is sent again. On a
-  // preempt this is harmless: FollowPath ignores an empty path and keeps the
-  // one it has until the replan lands.
+  // preempt FollowPath ignores the empty path and keeps driving the one it
+  // has until the replan lands; should that one finish first, the goal
+  // generation above keeps it from succeeding the new goal.
   blackboard->set<nav_msgs::msg::Path>(path_blackboard_id_, nav_msgs::msg::Path());
 }
 
