@@ -433,7 +433,7 @@ TEST(StairMode, ServiceMissingRefusesEnteringOnly)
   EXPECT_FALSE(h.sm.onStairs());
 }
 
-TEST(StairMode, ReplanBeforeSendCancelsAndResetAfterSendCompletes)
+TEST(StairMode, ReplanBeforeSendCancelsAndResetAfterSendSettlesAgain)
 {
   {
     Harness h;
@@ -458,15 +458,27 @@ TEST(StairMode, ReplanBeforeSendCancelsAndResetAfterSendCompletes)
     h.tick(path, kLevelIn - 5, 0.0);
     h.sm.standing(at(0.0));
     ASSERT_EQ(h.sent.size(), 1u);
-    // The goal ends mid-settle: the switch counts as done.
+    // The goal ends mid-settle: the switch stays pending, not done.
     h.sm.reset();
-    EXPECT_TRUE(h.sm.onStairs());
-    // on_stairs survives into the next goal; a level plan takes it back out.
+    EXPECT_FALSE(h.sm.onStairs());
+    // The next goal is level, but the gait controller is switching to the
+    // stair policy: it holds and settles that first, in full from standing.
     const auto level = levelPath();
     h.sm.setPlan(level);
-    const auto d = h.tick(level, 0, 1.0);
-    EXPECT_TRUE(d.hold);  // leaving: stop and restore
+    auto d = h.tick(level, 0, 1.0);
+    EXPECT_TRUE(d.hold);
+    EXPECT_FALSE(d.leaving);
     h.sm.standing(at(1.0));
+    EXPECT_EQ(h.sent.size(), 1u);  // no second send
+    h.sm.standing(at(3.5));        // 3.5 s after the send, 2.5 s after the reset
+    EXPECT_FALSE(h.sm.onStairs());
+    h.sm.standing(at(4.1));
+    EXPECT_TRUE(h.sm.onStairs());
+    // on_stairs survives into the new goal; its level plan takes it back out.
+    d = h.tick(level, 0, 4.2);
+    EXPECT_TRUE(d.hold);
+    EXPECT_TRUE(d.leaving);
+    h.sm.standing(at(4.2));
     ASSERT_EQ(h.sent.size(), 2u);
     EXPECT_EQ(h.sent[1], 0);
   }
@@ -480,6 +492,51 @@ TEST(StairMode, ReplanBeforeSendCancelsAndResetAfterSendCompletes)
     h.sm.reset();
     EXPECT_FALSE(h.sm.onStairs());
     EXPECT_TRUE(h.sent.empty());
+  }
+}
+
+TEST(StairMode, MidGoalResetDuringSettleHoldsAndSettlesInFull)
+{
+  // The server resets the plugin mid-goal while the local costmap is stale
+  // (a Point-LIO stall) or the robot pose is missing. Inside the settle at the
+  // stair's foot, that must not let the robot climb early.
+  for (const bool leaving : {false, true}) {
+    Harness h;
+    h.sm.setReportedPolicy(0);
+    const auto path = stairPath();
+    h.sm.setPlan(path);
+    // On the stairs already when testing the way out.
+    const size_t idx = leaving ? kLevelIn + kFlight + kLanding + 12 : kLevelIn - 5;
+    if (leaving) {
+      h.tick(path, kLevelIn - 5, 0.0);
+      h.sm.standing(at(0.0));
+      h.sm.standing(at(3.0));
+      ASSERT_TRUE(h.sm.onStairs());
+      h.sent.clear();
+    }
+    auto d = h.tick(path, idx, 10.0);
+    ASSERT_TRUE(d.hold);
+    h.sm.standing(at(10.0));
+    ASSERT_EQ(h.sent.size(), 1u);
+    // A second into the settle, the costmap goes stale: reset.
+    h.sm.reset();
+    EXPECT_EQ(h.sm.onStairs(), leaving);  // unchanged
+    // Fresh again at 11.5 s; the controller is still told to hold.
+    d = h.tick(path, idx, 11.5);
+    EXPECT_TRUE(d.hold);
+    EXPECT_EQ(d.leaving, leaving);
+    EXPECT_EQ(d.on_stairs, leaving);
+    h.sm.standing(at(11.5));
+    // 13.1 s is past the first settle's end (13.0) but not the second's.
+    h.sm.standing(at(13.1));
+    EXPECT_EQ(h.sm.onStairs(), leaving);
+    d = h.tick(path, idx, 13.2);
+    EXPECT_TRUE(d.hold);
+    h.sm.standing(at(14.6));
+    EXPECT_EQ(h.sm.onStairs(), !leaving);
+    d = h.tick(path, idx, 14.7);
+    EXPECT_FALSE(d.hold);
+    EXPECT_EQ(h.sent.size(), 1u);  // never re-sent
   }
 }
 

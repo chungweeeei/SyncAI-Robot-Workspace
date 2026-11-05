@@ -132,7 +132,8 @@ void MPPIController::reset()
   rotating_to_path_ = false;
   backing_out_ = false;
   // Stair mode's on_stairs survives (it is the policy the gait controller is
-  // on); a half-done switch is settled or dropped (StairMode::reset()).
+  // on); a switch not yet sent is dropped, one sent settles again in full
+  // (StairMode::reset()).
   stair_mode_.reset();
   climbing_stairs_ = false;
   stair_ramp_valid_ = false;

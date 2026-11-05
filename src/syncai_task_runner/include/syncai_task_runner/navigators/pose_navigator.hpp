@@ -174,6 +174,10 @@ protected:
 
   rclcpp::Time start_time_;
 
+  // Bumped at every goal and accepted preempt, written to the blackboard as
+  // blackboard_keys::kGoalGeneration (FollowPath's stale-success test).
+  int goal_generation_{0};
+
   // Only the rviz-driving instantiation creates these (Traits::kDrivesRvizGoalPose)
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   typename rclcpp_action::Client<ActionT>::SharedPtr self_client_;

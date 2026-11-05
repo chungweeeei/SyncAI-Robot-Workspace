@@ -405,8 +405,12 @@ The windows come from dp1f_1012's Octo3D paths: level paths on 1F and 2F rise at
 most 0.10–0.20 m within 1 m, the spiral stair 0.68 m, the short 2F ramp 0.47 m —
 so the ramp is taken in stair mode too (1.9 m of it), and each stair path enters
 stair mode exactly once. A change of mode not yet sent is dropped if a replan
-stops asking for it; once sent it completes, and a goal ending mid-switch counts
-it as done (`reset()`). `on_stairs_` outlives the goal on purpose — it is the
+stops asking for it; once sent it completes. A `reset()` mid-switch — a new
+goal, or the server's own reset on a missing robot pose or a stale local
+costmap — keeps it pending, and the robot holds and settles again for the full
+`stair_policy_settle_time` once it next stands (2026-11; before, it counted as
+done, so a one-second Point-LIO stall at the stair's foot let the robot climb
+on a policy sent a moment earlier). `on_stairs_` outlives the goal on purpose — it is the
 policy the gait controller is on — and the next goal's first level cycle switches
 back. The state is latched on **`stair_mode`** (`std_msgs/Bool`).
 

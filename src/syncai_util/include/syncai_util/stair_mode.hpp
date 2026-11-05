@@ -223,9 +223,12 @@ public:
   void standing(const rclcpp::Time & now);
 
   /**
-   * @brief New goal: a transition whose policy went out counts as done, one
-   * that never sent as never started. on_stairs survives: it is the policy
-   * the gait controller is on, which outlives the goal that set it.
+   * @brief The controller was reset (a new goal, or mid-goal on a missing
+   * pose or a stale costmap): a transition that never sent counts as never
+   * started; one whose policy went out stays pending and settles again for the
+   * full settle_time from the next standing() (the .cpp has why). on_stairs
+   * survives: it is the policy the gait controller is on, which outlives the
+   * goal that set it.
    */
   void reset();
 
@@ -351,6 +354,9 @@ private:
   bool on_stairs_{false};
   Transition transition_{Transition::None};
   bool policy_sent_{false};
+  // A reset() landed after the policy went out: the next standing() restarts
+  // the settle instead of counting the time before the reset.
+  bool resettle_{false};
   // The lead an entry started with (update()).
   double entry_lead_{0.0};
   rclcpp::Time settle_until_;

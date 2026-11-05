@@ -230,6 +230,14 @@ void StairMode::standing(const rclcpp::Time & now)
     sendPolicy(entering ? params_.stair_policy : restore_policy_);
     policy_sent_ = true;
     settle_until_ = now + rclcpp::Duration::from_seconds(params_.settle_time);
+  } else if (resettle_) {
+    // A reset() interrupted the settle (reset() has why): the robot is
+    // standing again, so the full settle_time starts over from here.
+    resettle_ = false;
+    settle_until_ = now + rclcpp::Duration::from_seconds(params_.settle_time);
+    RCLCPP_INFO(
+      logger_, "%s stair mode: standing again after a reset; settling %.1f s from now",
+      entering ? "Entering" : "Leaving", params_.settle_time);
   } else if (now >= settle_until_) {
     on_stairs_ = entering;
     transition_ = Transition::None;
@@ -240,9 +248,20 @@ void StairMode::standing(const rclcpp::Time & now)
 
 void StairMode::reset()
 {
+  // A switch whose policy went out stays pending and settles again in full
+  // once the robot next stands (2026-11). It used to count as done here, but
+  // reset() is not only a new goal: the controller server resets the plugin
+  // mid-goal on a missing robot pose and while the local costmap is stale
+  // (waitForCurrentCostmap), and either can land inside the settle. A
+  // Point-LIO stall of a second at the stair's foot then marked the robot on
+  // stairs a moment after HIMLOCO was sent, and it climbed the moment the
+  // cloud came back, on a policy that had not settled. Kept pending, the next
+  // cycle holds (update()), the controller brakes and reports standing(), and
+  // settle_time runs from there; for a new goal the policy is the gait
+  // controller's either way, so it settles before the new plan is judged.
   if (transition_ != Transition::None && policy_sent_) {
-    on_stairs_ = transition_ == Transition::Entering;
-    publish();
+    resettle_ = true;
+    return;
   }
   transition_ = Transition::None;
   policy_sent_ = false;

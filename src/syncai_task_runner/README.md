@@ -165,6 +165,28 @@ The superseded goal is `ABORTED` with an **empty** result
 `error_code` `NONE` — see Result above. Preemption works within one action;
 a goal on the *other* action while one runs is a mutex rejection, not a preempt.
 
+Two guards keep the superseded goal's outcome from landing on its successor
+(2026-11):
+
+- **A preempt is accepted only while the tree still runs.** One pending at the
+  tick that finished the tree stays pending: the finished goal gets its own
+  result (SUCCEEDED, or its failure), and the new goal then runs from the start
+  like any other — including a different tree, which mid-run would have been
+  rejected. Before, it was accepted after that tick, so the new goal was
+  reported SUCCEEDED (or FAILED) for the old goal's outcome and the old goal,
+  which had arrived, came back ABORTED.
+- **The old path's success is not the new goal's.** A preempt empties `{path}`
+  until the new goal's plan lands, and `FollowPath` keeps driving the old path
+  meanwhile. The navigator bumps `goal_generation` on the blackboard at every
+  goal and preempt; `FollowPath` takes the controller's success only for a path
+  sent under the current one, and otherwise stands at the old goal until the new
+  path lands and sends it. Before, reaching the old goal in that window
+  succeeded the tree — the new goal reported reached, at the old one's place.
+  Not covered: a replan of the old goal already in flight when the preempt
+  came lands its path as the new goal's (`ComputePathToPose` does not re-target
+  a running plan), so that path counts as the new goal's until the next 1 Hz
+  check replans.
+
 ### RViz goal poses
 
 The `navigate_to_pose` navigator subscribes to `goal_pose`

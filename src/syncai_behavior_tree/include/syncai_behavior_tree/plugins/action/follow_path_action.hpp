@@ -47,6 +47,13 @@ public:
   BT::NodeStatus on_aborted() override;
 
   /**
+   * @brief SUCCESS when the path that finished belongs to the current goal;
+   * otherwise (the goal was preempted while driving it) RUNNING, standing at
+   * the old goal until the new goal's path lands, which is then sent
+   */
+  BT::NodeStatus on_success() override;
+
+  /**
    * @brief Creates list of BT ports
    * @return BT::PortsList Containing basic ports along with node-specific ports
    */
@@ -58,6 +65,15 @@ public:
       BT::InputPort<std::string>("goal_checker_id", ""),
     });
   }
+
+private:
+  // blackboard_keys::kGoalGeneration now; 0 when no navigator writes it.
+  int goalGeneration();
+
+  // The goal generation of the path last sent to the controller.
+  int sent_generation_{0};
+  // on_success() is polled every tick while it waits; say so once.
+  bool waiting_logged_{false};
 };
 
 }  // namespace syncai_behavior_tree

@@ -99,7 +99,8 @@ what the `sleep:` offsets in `config/sessions/*.yaml` are for.
 ```
 on_goal_received_callback(goal)  →  false ⇒ terminate_current(), done
 engine.run(tree, on_loop, is_canceling, bt_loop_duration)
-        on_loop  = preempt check (→ on_preempt_callback) + on_loop_callback
+        on_loop  = preempt check (→ on_preempt_callback) + on_loop_callback,
+                   only after a tick that left the tree RUNNING
         is_cancel = server inactive OR cancel requested
 haltAllActions()
 on_completion_callback(result, status)

@@ -495,7 +495,11 @@ they are properties of the nodes in `src/`, not of the backend:
   goal) never reaches `goalCompleted()`. Only a tree that ran and failed
   carries `PLAN_FAILED` / `FOLLOW_PATH_FAILED` / `DOCK_FAILED` / `UNKNOWN`;
   CANCELED carries NONE too. The codes are never renumbered — switch on the
-  hundreds. `NavigateThroughGoals` follows the same rules.
+  hundreds. `NavigateThroughGoals` follows the same rules. Since 2026-11 a
+  goal that arrives in the tick the tree finished is not a preempt (the old
+  goal keeps its own result, the new one then runs from the start), and the
+  old path finishing before the new goal's plan lands is not the new goal
+  reached (`goal_generation`, `syncai_task_runner`'s README, "Preemption").
 - **A planning failure says whether a retry can help** (2026-11). The planner's
   reason comes through as 201–224 (`syncai_common`'s `ComputePathToPose.action`
   documents each with "Retry"); the backend fails a step at once on the
