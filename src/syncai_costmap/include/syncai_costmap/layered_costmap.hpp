@@ -63,6 +63,12 @@ public:
   bool isCurrent();
 
   /**
+   * @brief "name: reason" of every enabled layer that is not current, joined
+   *        with "; " (Layer::staleReason()); empty when the costmap is.
+   */
+  std::string staleLayers() const;
+
+  /**
    * @brief Get the costmap pointer to the master costmap
    */
   Costmap * getCostmap() { return &combined_costmap_; }

@@ -113,8 +113,12 @@ progress_checker_->reset()
 loop at controller_frequency:
     server inactive?            → return
     cancel requested?           → terminate_all + zero velocity, return
-    wait until costmap_ros_->isCurrent()      ← spin at 100 Hz; a clear-costmap
-                                                 makes the costmap non-current
+    waitForCurrentCostmap()     ← zero + controller reset, then 100 Hz until
+                                  current; cancel honoured; throws (goal fails)
+                                  past failure_tolerance (>= 1 s) without a
+                                  valid command. A clear makes the costmap
+                                  non-current for one update, a stale cloud
+                                  (terrain_layer cloud_timeout) until it returns
     updateGlobalPath()          ← accept a preempting goal in place, no restart
     computeAndPublishVelocity()
     isGoalReached()?            → break
@@ -1023,12 +1027,18 @@ ros2 topic echo /<robot_id>/docking_plan         # the approach the console draw
 
 ## Gotchas
 
-- **The wait for a current costmap publishes nothing.** `computeControl()`
-  spins until `costmap_ros_->isCurrent()` with no command, no zero and no
-  timeout, and `driver_manager` has no `cmd_vel` watchdog, so a sensor that
-  stops mid-drive leaves the gait on the last command until the costmap
-  recovers or the BT cancels the goal. It is logged ("Waiting N s for the local
-  costmap …") but not stopped — an open safety question, not a decision.
+- **A costmap that is not current stops the robot** (2026-11). `driver_manager`
+  has no `cmd_vel` watchdog, so the wait (`waitForCurrentCostmap()`) publishes
+  zero, resets the controller as a missing robot pose does, honours a cancel,
+  and fails the goal once `failure_tolerance` — never less than 1 s, so the
+  one-update gap after a costmap clear cannot — passes without a valid
+  command, logging which layer and why ("terrain_layer: newest cloud on … is
+  N s old (cloud_timeout 1.0 s)"). Until then it spun with nothing published,
+  no cancel and no bound, which was latent only because the terrain layer
+  never reported a stale cloud: with `pointlio/body_cloud` gone, MPPI drove
+  on an all-free costmap. The robot stops wherever this happens, a flight
+  included (stair mode climbs without the costmap, but not without the
+  odometry a dead Point-LIO also takes).
 - **Nothing smooths `cmd_vel`.** `max_linear_accel` / `max_angular_accel` are the
   only thing between the controller and the gait controller. Raising
   `desired_linear_vel` without checking them gives a step command.
@@ -1044,11 +1054,8 @@ ros2 topic echo /<robot_id>/docking_plan         # the approach the console draw
   so that the planner's `is_path_valid` perimeter-on-LETHAL test (2D paths)
   was stricter than the one RPP runs here; the global costmap has had no
   layers and no footprint test since, and `Octo3D` judges its own paths.
-- **`isCurrent()` can hang the loop.** The `while (!costmap_ros_->isCurrent())`
-  spin has no timeout: if an observation source stops publishing, the control
-  loop stalls there with the goal still active rather than failing. The dock
-  loop does not wait on it (it reads no cost data), so a dock goal under a
-  dead sensor ends with its own timeout instead.
+- **The dock loop does not wait for a current costmap** (it reads no cost
+  data), so a dock goal under a dead sensor ends with its own timeout instead.
 - **The docking controller does not avoid obstacles.** By decision, not
   omission (see "Docking"): the dock is a lethal cell, so the last metre is
   driven blind, and a person stepping in between is pushed against until the

@@ -16,6 +16,8 @@
 
 #include "syncai_mppi_controller/tools/path_handler.hpp"
 
+#include <cstdio>
+
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_mppi_controller/tools/utils.hpp"
 #include "syncai_nav_core/exceptions.hpp"
@@ -162,14 +164,27 @@ PathHandler::getGlobalPlanConsideringBoundsInCostmapFrame(
 geometry_msgs::msg::PoseStamped PathHandler::transformToGlobalPlanFrame(
   const geometry_msgs::msg::PoseStamped & pose)
 {
+  // Every failure in this file is a PlannerException (2026-11), as RPP 3D's
+  // are at the same three spots: the server tolerates it for
+  // failure_tolerance, commanding zero, and ends the goal only after that.
+  // Until then these were std::runtime_error, which the server's catch-all
+  // ends the goal on at once -- so one map -> odom a scan late past
+  // transform_tolerance aborted FollowPath and burned a RecoveryNode retry,
+  // while the same miss in RPP 3D, or in the ground-z lookup below, waited.
   if (global_plan_up_to_inversion_.poses.empty()) {
-    throw std::runtime_error("Received plan with zero length");
+    throw syncai_nav_core::PlannerException("Received plan with zero length");
   }
 
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!transformPose(global_plan_up_to_inversion_.header.frame_id, pose, robot_pose)) {
-    throw std::runtime_error(
-            "Unable to transform robot pose into global plan's frame");
+    char buf[256];
+    std::snprintf(
+      buf, sizeof buf,
+      "Unable to transform the robot pose (%s) into the plan's frame (%s) within "
+      "transform_tolerance %.2f s",
+      pose.header.frame_id.c_str(), global_plan_up_to_inversion_.header.frame_id.c_str(),
+      transform_tolerance_);
+    throw syncai_nav_core::PlannerException(buf);
   }
 
   // A plan with heights (OctomapPlanner3D) is matched in 3D: the robot's pose
@@ -177,9 +192,8 @@ geometry_msgs::msg::PoseStamped PathHandler::transformToGlobalPlanFrame(
   // ground height under the robot in the plan's frame, exactly as RPP 3D
   // does. No height, no matching -- on a stair that would mean steering by
   // whichever turn is nearest in x / y -- so this cycle fails, with the
-  // exception the server tolerates for failure_tolerance (the file's other
-  // throws are std::runtime_error, which ends the goal at once; a TF that is
-  // a scan late is not that kind of failure).
+  // exception the server tolerates for failure_tolerance (a TF that is a
+  // scan late is not a reason to end the goal).
   if (plan_has_height_) {
     std::string error;
     double ground_z = 0.0;
@@ -226,7 +240,12 @@ nav_msgs::msg::Path PathHandler::transformPath(
   }
 
   if (transformed_plan.poses.empty()) {
-    throw std::runtime_error("Resulting plan has 0 poses in it.");
+    // No pose of the plan within prune_distance of the robot falls inside the
+    // local costmap: the robot is far off its path (a localizer jump). A
+    // replan fixes it, which the BT only starts after this goal ends, so
+    // this still ends it, after failure_tolerance rather than at once.
+    throw syncai_nav_core::PlannerException(
+      "No pose of the plan near the robot lies inside the local costmap (robot far off the path)");
   }
 
   return transformed_plan;

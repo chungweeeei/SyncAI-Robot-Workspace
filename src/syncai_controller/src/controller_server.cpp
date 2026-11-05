@@ -411,20 +411,8 @@ void ControllerServer::computeControl()
         return;
       }
 
-      // Don't compute a trajectory until costmap is valid (after clear costmap)
-      // Logged, because nothing else is while it lasts: a layer that stops
-      // getting data (terrain_layer: no pointlio/body_cloud) holds the loop
-      // here with no command published, no feedback and no error, and the
-      // goal only ends when the BT gives up on it.
-      rclcpp::Rate r(100);
-      const rclcpp::Time costmap_wait_start = now();
-      while (!costmap_ros_->isCurrent()) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "Waiting %.1f s for the local costmap to be current (a layer has no fresh data -- is "
-          "pointlio/body_cloud publishing?); no command is computed meanwhile",
-          (now() - costmap_wait_start).seconds());
-        r.sleep();
+      if (!waitForCurrentCostmap()) {
+        return;  // cancelled while waiting; stopped and terminated there
       }
 
       updateGlobalPath();
@@ -975,6 +963,68 @@ void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & 
   if (vel_publisher_->get_subscription_count() > 0) {
     vel_publisher_->publish(std::move(cmd_vel));
   }
+}
+
+bool ControllerServer::waitForCurrentCostmap()
+{
+  if (costmap_ros_->isCurrent()) {
+    return true;
+  }
+  // No command is computed until the local costmap is current again: just
+  // after a clear (one update, <= 0.2 s), or while the terrain layer has no
+  // fresh cloud (pointlio/body_cloud stopped, or its TF did, which drops the
+  // cloud at the layer's message filter; terrain_layer.cpp, cloud_timeout).
+  //
+  // Until 2026-11 this waited with nothing published, cancel unread and no
+  // bound. syncai_driver_manager has no cmd_vel watchdog -- it sends the
+  // last command until a new one comes -- so the gait kept walking at the
+  // last speed for as long as the wait lasted, and a cancel from the BT was
+  // not seen until it ended. That stayed latent only because the terrain
+  // layer never reported a stale cloud; now that it does, the wait must
+  // stop the robot:
+  //  - zero at once, and the controller reset() as on a missing robot pose
+  //    (computeVelocity()), so the first command after the wait ramps up
+  //    from a stand instead of clamping round the speed held before it;
+  //  - a cancel is honoured inside the wait;
+  //  - it is bounded by failure_tolerance on the same clock as a refused
+  //    command (last_valid_cmd_time_): no fresh terrain is no valid command.
+  //    Never shorter than costmap_wait_min_s, so the one-update gap after a
+  //    costmap clear (the BT's recovery clears before every FollowPath
+  //    retry) cannot abort a goal even at failure_tolerance 0.
+  constexpr double costmap_wait_min_s = 1.0;
+  publishZeroVelocity();
+  controllers_[current_controller_]->reset();
+  const rclcpp::Time wait_start = now();
+  rclcpp::Rate r(100);
+  while (rclcpp::ok() && !costmap_ros_->isCurrent()) {
+    if (action_server_->is_cancel_requested()) {
+      RCLCPP_INFO(
+        get_logger(), "Goal was canceled while waiting for the local costmap. Stopping the robot.");
+      action_server_->terminate_all();
+      publishZeroVelocity();
+      return false;
+    }
+    const double waited = (now() - wait_start).seconds();
+    const double without_cmd = (now() - last_valid_cmd_time_).seconds();
+    if (
+      failure_tolerance_ != -1.0 &&
+      without_cmd > std::max(failure_tolerance_, costmap_wait_min_s)) {
+      throw syncai_nav_core::PlannerException(
+        "Controller patience exceeded: the local costmap has not been current for " +
+        seconds(waited) + " s (" + costmap_ros_->getLayeredCostmap()->staleLayers() + "), " +
+        seconds(without_cmd) + " s without a valid command");
+    }
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Local costmap not current for %.1f s (%s): commanding zero, %.1f s without a valid "
+      "command (failure_tolerance %.1f s)",
+      waited, costmap_ros_->getLayeredCostmap()->staleLayers().c_str(), without_cmd,
+      failure_tolerance_);
+    // Re-sent while waiting: the driver repeats whatever it last received.
+    publishZeroVelocity();
+    r.sleep();
+  }
+  return true;
 }
 
 void ControllerServer::publishZeroVelocity()

@@ -19,6 +19,8 @@
 // flight without reading the costmap (no obstacle avoidance on stairs, by
 // decision, 2026-10-20).
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -56,8 +58,16 @@ public:
   void matchSize() override;
   void activate() override;
   void deactivate() override;
+  // Current = not just cleared, and the newest cloud no older than
+  // cloud_timeout, judged when asked (layer.hpp has why).
+  bool isCurrent() const override;
+  std::string staleReason() const override;
 
 protected:
+  // Age of the newest cloud's stamp against the node clock; negative = none
+  // yet.
+  double cloudAge() const;
+
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
   void planCallback(nav_msgs::msg::Path::ConstSharedPtr message);
   // The latest path in the costmap's frame when it has heights, else empty.
@@ -99,6 +109,13 @@ protected:
   TerrainGrid terrain_;
   bool has_cloud_{false};
   double robot_ground_z_{0.0};
+  // The newest cloud stamp applied to the grid, ns of the node clock; 0 =
+  // none yet. Atomic: written by the cloud callback, read by the controller
+  // thread through isCurrent().
+  std::atomic<int64_t> newest_cloud_ns_{0};
+  // isCurrent() is false once the newest cloud is older than this (s);
+  // 0 = never stale.
+  double cloud_timeout_{1.0};
   TerrainStats last_stats_;
   rclcpp::Time last_stats_log_;
 };

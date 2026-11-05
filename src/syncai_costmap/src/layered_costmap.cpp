@@ -172,6 +172,21 @@ bool LayeredCostmap::isCurrent()
   return current_;
 }
 
+std::string LayeredCostmap::staleLayers() const
+{
+  std::string out;
+  for (const auto & plugin : plugins_) {
+    if (!plugin->isEnabled() || plugin->isCurrent()) {
+      continue;
+    }
+    if (!out.empty()) {
+      out += "; ";
+    }
+    out += plugin->getName() + ": " + plugin->staleReason();
+  }
+  return out;
+}
+
 void LayeredCostmap::setFootprint(const std::vector<geometry_msgs::msg::Point> & footprint_spec)
 {
   footprint_ = footprint_spec;

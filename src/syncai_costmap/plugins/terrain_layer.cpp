@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <string>
@@ -32,6 +33,7 @@ void TerrainLayer::onInitialize()
   declareParameter("min_rel_z", rclcpp::ParameterValue(min_rel_z_));
   declareParameter("max_rel_z", rclcpp::ParameterValue(max_rel_z_));
   declareParameter("plan_topic", rclcpp::ParameterValue(std::string("plan")));
+  declareParameter("cloud_timeout", rclcpp::ParameterValue(cloud_timeout_));
   TerrainParams & p = terrain_.params;
   declareParameter("max_samples_per_cell", rclcpp::ParameterValue(p.max_samples_per_cell));
   declareParameter("ground_memory", rclcpp::ParameterValue(p.ground_memory));
@@ -57,6 +59,7 @@ void TerrainLayer::onInitialize()
   node_->get_parameter(name_ + ".min_rel_z", min_rel_z_);
   node_->get_parameter(name_ + ".max_rel_z", max_rel_z_);
   node_->get_parameter(name_ + ".plan_topic", plan_topic_);
+  node_->get_parameter(name_ + ".cloud_timeout", cloud_timeout_);
   node_->get_parameter(name_ + ".max_samples_per_cell", p.max_samples_per_cell);
   node_->get_parameter(name_ + ".ground_memory", p.ground_memory);
   node_->get_parameter(name_ + ".obstacle_memory", p.obstacle_memory);
@@ -95,11 +98,13 @@ void TerrainLayer::onInitialize()
     "TerrainLayer %s: cloud %s (ground = lidar z - %.3f, returns within %.1f m and "
     "[%.1f, %.1f] m of the ground), path %s; step %.2f m, slope %.0f deg, obstacles %.2f-%.2f m "
     "above the ground, ground memory %.0f s, obstacle memory %.1f s, ray clearing %s "
-    "(tolerance %.2f m, end margin %.2f m)",
+    "(tolerance %.2f m, end margin %.2f m); not current once the newest cloud is older than "
+    "%.1f s (cloud_timeout; 0 = never)",
     name_.c_str(), cloud_topic_.c_str(), sensor_height_, max_range_, min_rel_z_, max_rel_z_,
     plan_topic_.c_str(), p.max_step_height, p.max_slope_deg, p.min_obstacle_height,
     p.body_clearance, p.ground_memory, p.obstacle_memory,
-    p.ray_clear_tolerance > 0.0 ? "on" : "off", p.ray_clear_tolerance, p.ray_clear_end_margin);
+    p.ray_clear_tolerance > 0.0 ? "on" : "off", p.ray_clear_tolerance, p.ray_clear_end_margin,
+    cloud_timeout_);
 
   auto sub_opt = rclcpp::SubscriptionOptions();
   sub_opt.callback_group = callback_group_;
@@ -206,6 +211,70 @@ void TerrainLayer::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr m
   }
   robot_ground_z_ = ground_z;
   has_cloud_ = true;
+  // Newest, not last: the message filter can release a cloud held for its
+  // TF after a later one.
+  const int64_t ns = rclcpp::Time(message->header.stamp, clock_->get_clock_type()).nanoseconds();
+  int64_t seen = newest_cloud_ns_.load();
+  while (ns > seen && !newest_cloud_ns_.compare_exchange_weak(seen, ns)) {
+  }
+}
+
+double TerrainLayer::cloudAge() const
+{
+  const int64_t ns = newest_cloud_ns_.load();
+  if (ns == 0) {
+    return -1.0;
+  }
+  return (clock_->now().nanoseconds() - ns) * 1e-9;
+}
+
+bool TerrainLayer::isCurrent() const
+{
+  // Until 2026-11 only current_, which a costmap clear drops for one update
+  // and nothing else ever did: with pointlio/body_cloud gone (Point-LIO hung
+  // or restarted, as on 2026-11-03 / -04) the samples aged out in 2-10 s,
+  // every cell went NO_INFORMATION -- FREE in the master grid, since
+  // track_unknown_space is off -- and MPPI drove on an empty costmap while
+  // the controller's "costmap not current" wait never fired.
+  //
+  // The cloud's own stamp, not its arrival: the message filter drops a
+  // cloud whose TF is missing (lio_bridge or the localizer down), and a
+  // Point-LIO that has fallen behind (2026-10-28: ~30 s, then minutes)
+  // still publishes, with stamps as old as its odometry. Both read stale.
+  // The grid ages its samples against the same clock (updateBounds()'s
+  // classify(now)), which is what makes the stamps comparable to it.
+  if (!current_) {
+    return false;
+  }
+  if (cloud_timeout_ <= 0.0) {
+    return true;
+  }
+  const double age = cloudAge();
+  return age >= 0.0 && age <= cloud_timeout_;
+}
+
+std::string TerrainLayer::staleReason() const
+{
+  if (!current_) {
+    return "cleared, waiting for its next update";
+  }
+  if (cloud_timeout_ <= 0.0) {
+    return "";
+  }
+  const double age = cloudAge();
+  char buf[160];
+  if (age < 0.0) {
+    std::snprintf(
+      buf, sizeof buf, "no cloud on %s yet (or none whose TF into %s resolved)",
+      cloud_topic_.c_str(), global_frame_.c_str());
+  } else if (age > cloud_timeout_) {
+    std::snprintf(
+      buf, sizeof buf, "newest cloud on %s is %.1f s old (cloud_timeout %.1f s)",
+      cloud_topic_.c_str(), age, cloud_timeout_);
+  } else {
+    return "";
+  }
+  return buf;
 }
 
 void TerrainLayer::planCallback(nav_msgs::msg::Path::ConstSharedPtr message)

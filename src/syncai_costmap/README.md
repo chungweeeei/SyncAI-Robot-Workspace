@@ -303,6 +303,20 @@ it was taken out with that decision, and git history has it.
 floor the lidar can no longer see is in them, and a stale obstacle mark leaves
 with the next ray through it, or after `obstacle_memory` where no ray comes.
 
+**When it is current** (2026-11): not just after a clear (one update), and
+only while the newest cloud applied is no older than `cloud_timeout` (1.0 s),
+by its stamp against the node clock, judged whenever `isCurrent()` is asked
+(`Layer::isCurrent()` is virtual here, unlike upstream: `CostmapROS` skips
+the layers while it has no robot pose, so a flag set in `updateBounds()` would
+stay true through a TF outage). The stamp, not the arrival, so a cloud whose
+TF is missing (dropped by the message filter) and a Point-LIO that has fallen
+behind both read stale. `staleReason()` says which, with the age, for the
+controller's log; the controller stops the robot while the layer is not
+current (`syncai_controller`'s README, Gotchas). No cloud yet at start-up is
+not current too. Before this, nothing reported a dead cloud: the samples aged
+out in 2–10 s, every cell went NO_INFORMATION — FREE in the master grid, with
+`track_unknown_space` off — and MPPI drove on an empty costmap.
+
 **Limits.** A raised surface whose connection to the robot's floor was never
 observed is an island even when it is a ramp — at start-up facing a ramp whose
 foot is inside the blind 3.9 m and with no path through it, the ramp is lethal
