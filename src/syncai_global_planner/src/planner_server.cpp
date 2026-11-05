@@ -129,6 +129,7 @@ PlannerServer::~PlannerServer()
 {
   action_server_pose_.reset();
   action_server_poses_.reset();
+  action_server_preview_.reset();
   dyn_params_handler_.reset();
   planners_.clear();
   if (costmap_ros_) {
@@ -240,9 +241,19 @@ void PlannerServer::configure()
     std::bind(&PlannerServer::computePlanThroughPoses, this), nullptr,
     std::chrono::milliseconds(500), true);
 
+  // The console's route preview, on its own thread too. It plans under the
+  // same two locks, so it waits behind a navigation's plan rather than racing
+  // it, but it never publishes on `plan` or replaces the last plan: a preview
+  // there would be drawn on every console as the route being driven, and
+  // is_path_valid would judge a running navigation's path against it.
+  action_server_preview_ = std::make_unique<ActionServerToPose>(
+    this->shared_from_this(), "preview_path_to_pose", std::bind(&PlannerServer::previewPlan, this),
+    nullptr, std::chrono::milliseconds(500), true);
+
   // Activation phase (nav2 on_activate)
   action_server_pose_->activate();
   action_server_poses_->activate();
+  action_server_preview_->activate();
   costmap_ros_->activate();
 
   // Add callback for dynamic parameters
@@ -508,22 +519,35 @@ void PlannerServer::isPathValid(
 
 void PlannerServer::computePlan()
 {
+  planToPose(action_server_pose_, true);
+}
+
+void PlannerServer::previewPlan()
+{
+  planToPose(action_server_preview_, false);
+}
+
+void PlannerServer::planToPose(std::unique_ptr<ActionServerToPose> & server, bool remember)
+{
   std::lock_guard<std::mutex> lock(dynamic_params_lock_);
 
   auto start_time = this->now();
 
   // Initialize the ComputePathToPose goal and result
-  auto goal = action_server_pose_->get_current_goal();
+  auto goal = server->get_current_goal();
   auto result = std::make_shared<ActionToPose::Result>();
+  // Which server, in every line below: a preview's failure is not a
+  // navigation's, and reads as one in this log otherwise.
+  const char * kind = remember ? "Plan" : "Preview";
 
   try {
-    if (isServerInactive(action_server_pose_) || isCancelRequested(action_server_pose_)) {
+    if (isServerInactive(server) || isCancelRequested(server)) {
       return;
     }
 
-    if (getPreemptedGoalIfRequested(action_server_pose_, goal)) {
+    if (getPreemptedGoalIfRequested(server, goal)) {
       RCLCPP_INFO(
-        get_logger(), "[PlannerServer][%s] Preempted by a new goal to %s", __func__,
+        get_logger(), "[PlannerServer][%s] %s preempted by a new goal to %s", __func__, kind,
         describePose(goal->goal).c_str());
     }
 
@@ -533,8 +557,8 @@ void PlannerServer::computePlan()
     const std::string start_desc =
       goal->use_start ? describePose(goal->start) : std::string("the robot pose");
     RCLCPP_INFO(
-      get_logger(), "[PlannerServer][%s] Plan request: planner '%s', goal %s, start %s", __func__,
-      goal->planner_id.c_str(), describePose(goal->goal).c_str(), start_desc.c_str());
+      get_logger(), "[PlannerServer][%s] %s request: planner '%s', goal %s, start %s", __func__,
+      kind, goal->planner_id.c_str(), describePose(goal->goal).c_str(), start_desc.c_str());
 
     // No wait for the costmap to be current (upstream's, and GridBased's
     // until 2026-10-28): no loaded planner reads its cells, and it has no
@@ -554,8 +578,11 @@ void PlannerServer::computePlan()
     result->path = getPlan(start, goal_pose, goal->planner_id);
     validatePath(describePose(goal_pose), result->path, goal->planner_id);
 
-    // Publish the plan for visualization purposes
-    publishPlan(result->path, goal->planner_id);
+    // Publish the plan for visualization purposes, and keep it as the route
+    // being driven. A preview is answered to its caller only.
+    if (remember) {
+      publishPlan(result->path, goal->planner_id);
+    }
 
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
@@ -570,10 +597,11 @@ void PlannerServer::computePlan()
         __func__, cycle_duration.seconds(), max_planner_duration_, 1 / max_planner_duration_);
     }
 
-    action_server_pose_->succeeded_current(result);
+    server->succeeded_current(result);
   } catch (const std::exception & ex) {
     abortPlan(
-      action_server_pose_, result, ex, goal->planner_id, describePose(goal->goal), start_time);
+      server, result, ex, goal->planner_id,
+      (remember ? "" : "preview of ") + describePose(goal->goal), start_time);
   }
 }
 
