@@ -183,6 +183,20 @@ protected:
   void computePlan();
 
   /**
+   * @brief preview_path_to_pose's callback: the same plan as
+   * compute_path_to_pose, answered to the caller and nowhere else
+   */
+  void previewPlan();
+
+  /**
+   * @brief One ComputePathToPose goal of `server`, planned and answered.
+   * @param remember Publish the path on `plan` and keep it as the last plan
+   * (is_path_valid, the 1 Hz re-send): what a navigation's plan is, and what
+   * a preview must never be
+   */
+  void planToPose(std::unique_ptr<ActionServerToPose> & server, bool remember);
+
+  /**
    * @brief compute_path_through_poses' callback: one path from the robot
    * through every goal in order (GlobalPlanner::createPlanThroughPoses())
    */
@@ -246,6 +260,14 @@ protected:
   // createPlanThroughPoses() rather than by joining getPlan() legs, which
   // under Octo3D started every leg on the robot's floor.
   std::unique_ptr<ActionServerThroughPoses> action_server_poses_;
+
+  // preview_path_to_pose (2026-11): the console's "show me the route before I
+  // send the robot". Its own server, not a flag on compute_path_to_pose: that
+  // one is the BT's, a SimpleActionServer serves one goal at a time, and a
+  // preview sent there mid-navigation would preempt the BT's replan. The
+  // type is ComputePathToPose's, so the answer carries the same error_code /
+  // error_msg a navigation's failure would.
+  std::unique_ptr<ActionServerToPose> action_server_preview_;
 
   // Planner
   PlannerMap planners_;

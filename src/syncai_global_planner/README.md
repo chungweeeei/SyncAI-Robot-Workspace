@@ -146,6 +146,22 @@ waypoint 2 (…)]`). The two actions share `dynamic_params_lock_` and
 `Octo3D`'s lock, so a route and a single plan never run at once; a route
 becomes the last plan like any other (`plan`, `is_path_valid`, `clear_plan`).
 
+**`preview_path_to_pose`** (2026-11, `syncai_common/ComputePathToPose`, the
+same goal and result) is the console's route preview: the operator aims a
+goal, sees the route `Octo3D` would take, and only then sends the robot. It
+runs `compute_path_to_pose`'s cycle (`planToPose()`) on its own server and
+thread, under the same two locks, and differs in one step: the path is
+answered to the caller and **not published or kept as the last plan**. A
+preview on `plan` would be drawn on every console as the route being driven
+(the backend forwards `plan` to the telemetry socket), and one kept as the
+last plan would be what `is_path_valid` judges a running navigation's path
+against — the stamp it matches and the progress it trims from. It is not a
+flag on `compute_path_to_pose` either: that server takes one goal at a time,
+and a preview sent mid-navigation would preempt the BT's replan. A newer
+preview preempts an older one, which is all two consoles previewing at once
+cost. A failure carries the same `error_code` / `error_msg` a navigation's
+plan would, logged as `Preview request` / `preview of …`.
+
 ### Why a plan failed: the error code (2026-11)
 
 The two actions are `syncai_common`'s twins of nav2's — the same goals, and a
