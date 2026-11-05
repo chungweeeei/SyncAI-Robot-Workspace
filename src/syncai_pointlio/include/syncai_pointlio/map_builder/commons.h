@@ -34,8 +34,7 @@ struct Config
   double scan_resolution = 0.25;
   double map_resolution = 0.3;
 
-  // The local map (IVoxMap; replaced the ikd-tree and its cube_len / det_range / move_thresh
-  // sliding cube on 2026-11-05): grid edge in metres, LRU capacity in grids, and the grids a
+  // The local map (IVoxMap): grid edge in metres, LRU capacity in grids, and the grids a
   // nearest search looks in (0, 6, 18 or 26 neighbours). Upstream Point-LIO's values.
   double map_grid_resolution = 2.0;
   int map_capacity = 1000000;

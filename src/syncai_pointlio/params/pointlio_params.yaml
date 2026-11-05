@@ -72,9 +72,7 @@
     scan_resolution: 0.25
     map_resolution: 0.3
 
-    # The local map (2026-11-05, an IVoxMap in place of the ikd-tree and its
-    # cube_len / det_range / move_thresh, which on this site never trimmed
-    # anything): upstream Point-LIO's grid-map branch values. 2 m grids, a
+    # The local map (IVoxMap): upstream Point-LIO's grid-map branch values. 2 m grids, a
     # search over the grid and its 6 face neighbours (0 / 6 / 18 / 26), and an
     # LRU that drops the least recently inserted-into grid past map_capacity
     # grids -- a memory bound at 1000000, not forgetting; the `map` field of the

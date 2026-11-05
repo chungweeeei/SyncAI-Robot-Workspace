@@ -16,9 +16,8 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
-# -pthread / -fexceptions carried over from upstream, where ikd_Tree ran its
-# rebuild on a raw pthread (the tree went on 2026-11-05; the flags predate the
-# CMake thread-target idiom and are kept rather than retested).
+# -pthread / -fexceptions carried over from upstream; they predate the CMake
+# thread-target idiom and are kept rather than retested.
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fexceptions")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -fexceptions")
 
@@ -32,7 +31,7 @@ endif()
 # the consumer side or its headers pull fmt back in.
 add_compile_definitions(SOPHUS_USE_BASIC_LOGGING)
 
-# Multi-processing switches (upstream names, from ikd_Tree). MP_PROC_NUM=2 is the
+# Multi-processing switches (upstream names). MP_PROC_NUM=2 is the
 # OpenMP thread count for the point-to-plane residual loop; it was tuned for
 # the Jetson's core budget alongside the localizer and the costmaps.
 add_definitions(-DMP_EN)

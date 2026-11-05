@@ -766,8 +766,7 @@ void PointLIONode::publishResults()
 // yet" and a second, subtly different one would drift from it. The order
 // matters twice: last_odom_time is read before anything is cleared (it is the
 // answer), and the builder is replaced last (dropping it releases the old
-// LidarProcessor and its map; until 2026-11-05 that map was an ikd-tree whose
-// destructor joined a rebuild thread, now it is a hash map freed in place).
+// LidarProcessor and its map, a hash map freed in place).
 //
 // NO LOCK against timerCB, and that is load-bearing: this service and the
 // timer are both in the node's default MutuallyExclusive group, so timerCB

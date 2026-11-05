@@ -7,8 +7,8 @@
 
 #include "syncai_pointlio/map_builder/commons.h"
 
-// The local map the point-to-plane update matches against (2026-11-05, in
-// place of the ikd-tree): an incremental voxel map in the shape of upstream
+// The local map the point-to-plane update matches against: an incremental
+// voxel map in the shape of upstream
 // Point-LIO's default branch (`point-lio-with-grid-map`, whose iVox comes from
 // faster-lio). Written here rather than copied, because that code is GPL-2.0
 // and this package is MIT; the behaviour is the same:
@@ -23,9 +23,8 @@
 //    count as use: it runs on MP_PROC_NUM OpenMP threads and must not write.
 //    Upstream's capacity (1 000 000 grids of 2 m) is a memory bound, not a
 //    forgetting horizon: no site this robot patrols comes near it.
-// What changed against the ikd-tree is in LidarProcessor::incrCloudMap, which
-// decides what is offered to addPoints(); this class keeps every point it is
-// given.
+// Which points are offered to addPoints() is LidarProcessor::incrCloudMap's
+// call; this class keeps every point it is given.
 class IVoxMap
 {
 public:

@@ -12,7 +12,8 @@
   </description>
   <maintainer email="chungweeeei@gmail.com">andy_tseng</maintainer>
   <!-- MIT, not Apache-2.0 like the other syncai_* packages: map_builder/ is
-       derived from Point-LIO and ikd-Tree, and the LICENSE file is theirs. -->
+       derived from Point-LIO, and the LICENSE file is theirs. ivox_map is
+       written here, not taken from faster-lio (GPL-2.0), to keep it MIT. -->
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

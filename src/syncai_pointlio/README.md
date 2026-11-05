@@ -151,9 +151,22 @@ of the ikd-tree the port came with:
   runs on `MP_PROC_NUM` threads and must not write), so a grid the robot sees
   every lap but adds nothing new to ages like one it never sees. At upstream's
   1 000 000 it is a memory bound and drops nothing on any site this robot
-  patrols — just as the ikd-tree's `cube_len` 300 m sliding cube never trimmed
-  anything. A capacity that forgets has to be sized off the health line's
+  patrols. A capacity that forgets has to be sized off the health line's
   `map … grids`, and replayed, before it goes on a robot.
+- **Where it differs from upstream.** Checked against the branch's code
+  (the grid map came in `d4919a8`, 2024-01-18; its map code last changed in
+  `97b0042`, 2025-02-20 — the 2026-06-13 commits are README only).
+  Upstream's 2 m / 6 are its `config/*.yaml` and launch values; the code's
+  own fallback for `ivox_nearby_type` is 18, which `mapping_horizon.launch`
+  gets by not setting it. Its first-wins voxel is `filter_size_map` (0.4 on
+  the Avia, 0.5 elsewhere); ours stays the port's `map_resolution` 0.3. Its
+  first map is `init_map_size` points gathered over the first scans; ours is
+  the whole first scan, as the ikd-tree's `Build()` was. Its search only puts
+  the nearest neighbour first; ours sorts all k, because `updateChunk` reads
+  the k-th distance for the √5 m gate. It evicts as each new grid passes
+  capacity; ours after the scan's batch, so a grid the scan just made is never
+  the one dropped. Its `ivox3d.h` is faster-lio's (GPL-2.0), so `IVoxMap` is
+  a rewrite, not a copy.
 
 ### The reset contract
 
@@ -243,7 +256,7 @@ lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm |
 | `std p` / `r` | Position / attitude 1σ from the covariance | Shrinking while `res` grows: an over-confident filter discounting its scans |
 | `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | `\|g\|` drifting from 9.81, biases walking off |
 | `cost` | `timerCB` per processed scan, mean / max, against the lidar's 100 ms | See "Falling behind" |
-| `map … grids … pts evicted …` | The local map's grids and points, and the grids its LRU has dropped since the last `reset` (see "The local map"); last on the line since 2026-11-05, so the earlier fields kept their positions | `pts` still growing on a route already driven: first-wins is adding voxels the earlier laps left empty — a pose off the surfaces it mapped |
+| `map … grids … pts evicted …` | The local map's grids and points, and the grids its LRU has dropped since the last `reset` (see "The local map"); last on the line, so a parser of the earlier fields keeps their positions | `pts` still growing on a route already driven: first-wins is adding voxels the earlier laps left empty — a pose off the surfaces it mapped |
 
 The line is a **WARN** with every reason that holds appended after ` -- `
 (`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 31.2 >=
@@ -287,7 +300,7 @@ The launch layers the two frame names on top.
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
 | `scan_resolution` / `map_resolution` | `0.25` / `0.3` | | Voxel sizes. Coarser than fastlio2's 0.15: every point group costs an EKF update, keep headroom on the Jetson. |
-| `map_grid_resolution` / `map_capacity` / `map_nearby` | `2.0` / `1000000` / `6` | | The local map (see "The local map"): grid edge (m), LRU capacity (grids), search neighbourhood (`0` / `6` / `18` / `26`). Upstream Point-LIO's values. Out-of-range values log an ERROR and fall back to these. **Write the resolution as a float.** `cube_len` / `det_range` / `move_thresh` went with the ikd-tree on 2026-11-05; left in a params file they are ignored. |
+| `map_grid_resolution` / `map_capacity` / `map_nearby` | `2.0` / `1000000` / `6` | | The local map (see "The local map"): grid edge (m), LRU capacity (grids), search neighbourhood (`0` / `6` / `18` / `26`). Upstream Point-LIO's values. Out-of-range values log an ERROR and fall back to these. **Write the resolution as a float.** |
 | `gyr_cov_output` / `acc_cov_output` | `1000.0` / `500.0` | | Process noise driving the omg / acc random-walk states. At 1000 the output model tracks the raw gyro almost instantly, which is why the bridge's yaw rate is not the bias-free estimate it looks like. |
 | `b_gyr_cov` / `b_acc_cov` | `0.0001` | | Bias random walk |
 | `imu_meas_omg_cov` / `imu_meas_acc_cov` | `0.1` | | IMU-as-measurement noise |

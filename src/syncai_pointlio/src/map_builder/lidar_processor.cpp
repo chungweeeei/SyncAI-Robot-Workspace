@@ -2,7 +2,7 @@
 
 #include <cmath>
 #ifdef MP_EN
-// Came in through ikd_Tree.h's includes until the tree went (2026-11-05).
+// omp_set_num_threads() for the MP_EN residual loop.
 #include <omp.h>
 #endif
 
@@ -35,7 +35,7 @@ void LidarProcessor::incrCloudMap()
   //
   // A point is added only if no map point already sits in its map_resolution voxel, judged on
   // the neighbours the update just found for it: the first point in a voxel stays there for
-  // good. This is upstream Point-LIO's rule (both branches; 2026-11-05). The port had FAST-LIO2's
+  // good. This is upstream Point-LIO's rule (both branches). The port had FAST-LIO2's
   // instead -- add the point if it is nearer the voxel centre than its neighbours, and let the
   // ikd-tree's downsampling replace the voxel's point with it -- under which each voxel held the
   // minimum, over every scan ever inserted, of the distance to its centre. With ~4 800 scans per
@@ -71,8 +71,7 @@ void LidarProcessor::incrCloudMap()
 
 void LidarProcessor::initCloudMap(PointVec & point_vec)
 {
-  // The whole first scan, not thinned per voxel: there is nothing to match it against yet,
-  // as upstream's ikdtree.Build() / ivox_->AddPoints() of the first frame.
+  // The whole first scan, not thinned per voxel: there is nothing to match it against yet.
   m_map->addPoints(point_vec);
 }
 
