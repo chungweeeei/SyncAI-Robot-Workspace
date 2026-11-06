@@ -169,6 +169,31 @@
 // (2026-10-20). An earlier draft of this layer opened a corridor along a
 // climbing path (the path's height as the ground, the band starting higher);
 // it was taken out with that decision, and git history has it.
+//
+// The plan's corridor (2026-11-07). Along the plan -- every pose of it the
+// planner lays for the flat gait, which is every pose outside a stair-gait
+// span of plan_crossings -- this grid judges no terrain at all: within
+// plan_radius of such a pose, on ground within plan_z_band of its height,
+// the step, slope and reach rules are not run and the obstacle rule's ground
+// is the plan's own height there (the planner's measured floor, interpolated
+// along the plan), so a return more than min_obstacle_height above the floor
+// the map says is there is an obstacle and the floor itself, a sill's riser
+// or a slope's rise included, is not. Why: these rules are the planner's,
+// re-run here on worse data (the -7 deg blind cone, grazing-angle returns,
+// 0.05 m cells), and each walked sill, short slope and kerb the planner laid
+// for the flat gait was walled off again until a matching waiver was added
+// -- one per kind of crossing from 2026-11-02 (crossing_radius,
+// crossing_z_band, a lift of the obstacle band by the crossing's rise), and
+// the next kind would have needed the next. Off the plan the rules run as
+// before, so a wall, a drop-off or a box beside the route is what it was.
+// What the corridor trusts is the map: a floor the map has 0.3 m too high
+// (dp's drift layer) hides a 0.25 m box on the real floor there, as the
+// crossing waiver's band did. What it keeps off: a stair-gait span, where
+// the flight stays lethal to the flat gait as above (the draft's climbing
+// corridor is still not this), and a plan on another floor in the same
+// columns (plan_z_band). Not a plan the planner says nothing about
+// (plan_crossings `known: false`, or none yet): then there is no word on
+// where the stairs are, and no corridor.
 
 #include <cstddef>
 #include <cstdint>
@@ -242,40 +267,38 @@ struct TerrainParams
   // slope to be judged at all.
   double slope_min_known = 0.5;
 
-  // ---- the planner's flat-gait crossings (2026-11-02, setCrossings()) ----
-  // A cell this close (m, x / y) to one of them is not judged by the step
-  // and slope rules: the planner lays a walked door sill or a short slope as
-  // a crossing the flat gait takes, and these rules, the planner's own,
-  // would otherwise wall it off for the controller. The obstacle rule still
-  // applies, but its band starts the crossing's rise higher there: the
-  // riser's own returns stand up to the rise above the lower floor's ground
-  // and read as an obstacle otherwise (a 0.3 m sill lane was a quarter
-  // lethal in the test with the step waived alone). A person on the
-  // crossing still is one -- legs reach far above the band's floor -- but on
-  // the lane a thing shorter than rise + min_obstacle_height is not seen.
-  // robot_radius would just cover the body's half-width centred on the
-  // line; 0.4 also keeps the inflation of the step left beside the crossing
-  // off its centre line. Wider would waive a real drop-off beside an
-  // unrailed ramp.
-  double crossing_radius = 0.4;
-  // ... and whose ground is within this (m) of the crossing's height there:
-  // a floor above or below the crossing in the same column is not it.
-  double crossing_z_band = 0.5;
+  // ---- the plan's corridor (2026-11-07, setPath(); the header) ----
+  // A cell this close (m, x / y) to a flat-gait pose of the plan is judged
+  // by the obstacle rule alone, against the plan's height there as its
+  // ground. robot_radius would just cover the body's half-width centred on
+  // the line; 0.4 also keeps the inflation of a step left beside the plan
+  // off its centre line. Wider would open a real drop-off beside an
+  // unrailed ramp. (crossing_radius from 2026-11-02 to 2026-11-07, over the
+  // flat-gait crossings only, with the step and slope rules waived and the
+  // obstacle band lifted by each crossing's whole rise -- on a sill's upper
+  // landing too, where a 0.35 m box went unseen.)
+  double plan_radius = 0.4;
+  // ... and whose ground estimate is within this (m) of the plan's height
+  // there: a floor above or below the plan in the same column is not it.
+  double plan_z_band = 0.5;
 };
 
-// A pose of the global path in the grid's frame. Only its place is used (as
-// a seed of the reach flood); the height is kept for debugging.
+// A pose of the global path in the grid's frame: its place seeds the reach
+// flood, and its height is the corridor's ground (the header) -- unless it
+// lies on a stretch the planner lays in the stair gait, which seeds the
+// flood and opens no corridor (the flight stays lethal).
 struct TerrainPathPose
 {
   double x, y, z;
+  bool stair = false;
 };
 
 struct TerrainStats
 {
   size_t known = 0, lethal_obstacle = 0, lethal_step = 0, lethal_slope = 0, lethal_island = 0;
-  // Cells the step or slope rule would have made lethal, waived on a
-  // planner's flat-gait crossing.
-  size_t waived = 0;
+  // Cells on the plan's corridor: judged by the obstacle rule alone, against
+  // the plan's height.
+  size_t on_plan = 0;
 };
 
 class TerrainGrid
@@ -319,17 +342,11 @@ public:
   // The current path in the grid's frame -- only when it has heights
   // (OctomapPlanner3D's; a 2D planner's z = 0 says nothing about where the
   // floor goes) -- or an empty list. Replaces the previous call's. Every
-  // pose seeds the reach rule (see classify()).
-  void setPath(const std::vector<TerrainPathPose> & poses);
-
-  // The planner's flat-gait crossings on the current plan (plan_crossings:
-  // walked gaps, kerbs, ramps), each the plan's poses over it, in the grid's
-  // frame. Replaces the previous call's; empty = none. Cells within
-  // crossing_radius of one, on ground within crossing_z_band of its height,
-  // skip the step and slope rules (see TerrainParams). A stair is never
-  // given here: the stair mode climbs it without the costmap, and lethal is
-  // what keeps the flat gait off it.
-  void setCrossings(const std::vector<std::vector<TerrainPathPose>> & crossings);
+  // pose seeds the reach rule (see classify()); every pose not marked
+  // `stair` opens the corridor along it (the header, TerrainParams::
+  // plan_radius). With `corridor` false the poses seed only: the planner
+  // has not said where the stairs on this plan are, so none may open one.
+  void setPath(const std::vector<TerrainPathPose> & poses, bool corridor = true);
 
   // Judge every cell at time `now`, with the robot at (robot_x, robot_y) on
   // ground `robot_ground_z`, which is also the estimate for cells that have
@@ -419,12 +436,14 @@ private:
   // swapped with cells_ on each shift.
   std::vector<Cell> shifted_;
   std::vector<TerrainPathPose> path_;
-  std::vector<std::vector<TerrainPathPose>> crossings_;
-  // Scratch of classify(): the cells setCrossings()' crossings waive, and
-  // the rise of the highest crossing over each (the obstacle band's lift).
-  mutable std::vector<uint8_t> waived_;
-  mutable std::vector<float> waive_lift_;
-  void markCrossings() const;
+  bool corridor_ = true;
+  // Scratch of classify(): the cells on the plan's corridor, the plan's
+  // height at the nearest flat-gait sample over each (the obstacle rule's
+  // ground there) and that sample's distance, for the nearest to win.
+  mutable std::vector<uint8_t> on_plan_;
+  mutable std::vector<float> plan_z_;
+  mutable std::vector<float> plan_dist_;
+  void markPlan() const;
   // Scratch of classify(): the ground per cell (NaN = none), whether it came
   // from samples, the reach flood, and the neighbourhood's samples.
   mutable std::vector<float> ground_;

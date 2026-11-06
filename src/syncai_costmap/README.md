@@ -313,22 +313,32 @@ and judges every cell on each update:
    footprint cleared (its floor is never seen and the robot's legs are in the
    cloud), and the `InflationLayer` inflates it all.
 
-**The planner's flat-gait crossings waive 4 and 5 (2026-11-02).** The planner
-lays a walked door sill, a short slope or a kerb as a crossing the flat gait
-takes, and says so on **`plan_crossings`** (`syncai_util/plan_crossings.hpp`,
-latched, a fresh set with every plan and an empty one with every clear). The
-layer takes the crossings' points (the plan's own poses over each, in the
-map frame, transformed like the path) and, within **`crossing_radius`**
-(0.4 m) of one on ground within **`crossing_z_band`** (0.5 m) of its height,
-skips the step and slope rules — the planner's own rules, which would
-otherwise wall the crossing off for MPPI again. The obstacle rule (1) is kept,
-but its band starts the crossing's rise higher there: the riser's own returns
-stand up to the rise above the lower floor's ground, and with only 4 and 5
-waived a 0.3 m sill's lane was still a quarter lethal in the test. A person
-on the crossing stays lethal (legs reach far above the band's floor); a thing
-on the lane shorter than rise + `min_obstacle_height` is not seen. Stair-gait
-crossings are not taken: a stair stays lethal (below). `waived` in the debug
-stats counts the cells.
+**Along the plan the layer judges no terrain (the corridor, 2026-11-07).**
+Within **`plan_radius`** (0.4 m) of a pose of the plan the planner lays for
+the flat gait, on ground within **`plan_z_band`** (0.5 m) of the plan's
+height there, rules 4 and 5 are not run and rule 2's band starts at the
+plan's own height (the planner's measured floor, interpolated along the plan;
+the highest within two cells of the nearest pose, so a sill's riser is judged
+against the floor above it and a slope's band is not lifted by the slope
+ahead) or at the cell's own estimate (rule 1), whichever is higher — never
+lower, or a map 0.2 m under the real floor would make every floor return on
+the corridor an obstacle. Rules 2 and 3 run as everywhere. Why: 4 and 5 are the planner's
+own rules, re-run here on worse data (the −7° blind cone, grazing-angle
+returns, 0.05 m cells), and from 2026-11-02 each walked sill, short slope and
+kerb the planner laid for the flat gait was walled off again until a matching
+waiver was added — per kind of crossing (`crossing_radius`, `crossing_z_band`,
+the obstacle band lifted by the crossing's whole rise, which on a sill's upper
+landing hid a 0.35 m box), and the next kind would have needed the next. Of
+the planner's word (**`plan_crossings`**, `syncai_util/plan_crossings.hpp`,
+latched, a fresh set with every plan and an empty one with every clear) the
+layer reads one bit per crossing, its gait: a pose within `plan_radius` of a
+**stair-gait** span's points is the stair's and opens nothing (the flight
+stays lethal, below), and with no word for the plan at all (`known: false`,
+or none yet) no pose does — the poses seed the reach flood only, as every
+plan did before. A person on the corridor stays lethal (legs reach far above
+the band's floor); a drop-off the map does not have, or a box shorter than
+the map's error there, is not seen — the corridor trusts the map, as the
+crossing waiver's band did. `on_plan` in the debug stats counts the cells.
 
 The four geometry values are `SurfaceMapParams`' (Octo3D), one calibration of
 the legs; change them together.
@@ -342,7 +352,9 @@ stairs**, by decision (2026-10-20). The lethal here is what keeps MPPI's
 optimizer off a stair the robot was not routed over. A draft of the same day
 opened a corridor along a climbing path (the path's height as the ground, the
 obstacle band starting 0.3 m up) so the climb could avoid a box on the stairs;
-it was taken out with that decision, and git history has it.
+it was taken out with that decision, and git history has it. The corridor of
+2026-11-07 (above) is not it: it opens along the plan's flat-gait poses only,
+and ends where the planner's stair-gait span begins.
 
 **What a costmap clear does here**: drops the costs, keeps the returns. The
 floor the lidar can no longer see is in them, and a stale obstacle mark leaves

@@ -72,10 +72,12 @@ protected:
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
   void planCallback(nav_msgs::msg::Path::ConstSharedPtr message);
   void crossingsCallback(std_msgs::msg::String::ConstSharedPtr message);
-  // The latest path in the costmap's frame when it has heights, else empty;
-  // with `crossings` set, the planner's flat-gait crossings in that frame too.
-  std::vector<TerrainPathPose> pathPoses(
-    std::vector<std::vector<TerrainPathPose>> * crossings = nullptr);
+  // The latest path in the costmap's frame when it has heights, else empty,
+  // each pose on a stair-gait span of the planner's crossings marked so;
+  // `corridor` set when the planner has spoken for the plan (the poses may
+  // open the grid's corridor), cleared when it has not or its crossings
+  // could not be brought into this frame.
+  std::vector<TerrainPathPose> pathPoses(bool & corridor);
   void updateFootprint(
     double robot_x, double robot_y, double robot_yaw, double * min_x, double * min_y,
     double * max_x, double * max_y);
@@ -101,19 +103,25 @@ protected:
   std::shared_ptr<tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>> cloud_filter_;
 
   // The path: the planner's `plan` (republished at plan_republish_rate with
-  // the heights OctomapPlanner3D wrote), whose poses seed the reach flood.
+  // the heights OctomapPlanner3D wrote), whose poses seed the reach flood
+  // and, where the planner lays them for the flat gait, open the grid's
+  // corridor (terrain_grid.hpp).
   std::string plan_topic_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
   std::mutex plan_mutex_;
   nav_msgs::msg::Path plan_;
-  // The planner's crossings (`plan_crossings`, syncai_util/plan_crossings.hpp),
-  // under plan_mutex_: the flat-gait ones' points, in their frame, waive the
-  // step and slope rules along them (TerrainGrid::setCrossings()). Matched to
-  // no stamp: `plan` is restamped on every republish; the planner sends a
-  // fresh set with every plan and an empty one with every clear.
+  // Of the planner's crossings (`plan_crossings`, syncai_util/
+  // plan_crossings.hpp), under plan_mutex_: whether the planner spoke for
+  // the plan at all (`known`) and the points of its stair-gait spans, in
+  // their frame -- the one bit this layer reads of a crossing (2026-11-07).
+  // A plan pose near one is a stair's and opens no corridor; with no word
+  // from the planner none does. Matched to no stamp: `plan` is restamped on
+  // every republish; the planner sends a fresh set with every plan and an
+  // empty one with every clear.
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr crossings_sub_;
   std::string crossings_frame_;
-  std::vector<std::vector<TerrainPathPose>> crossings_;
+  bool crossings_known_{false};
+  std::vector<TerrainPathPose> stair_pts_;
 
   // The grid and what the last cloud said about the robot. terrain_mutex_
   // orders the subscription callbacks against the costmap update thread.
