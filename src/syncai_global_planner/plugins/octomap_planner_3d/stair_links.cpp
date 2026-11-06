@@ -2265,6 +2265,39 @@ const char * crossingEvidenceName(CrossingEvidence e)
   return "?";
 }
 
+std::string linkName(const StairLink & l, const char * arrow)
+{
+  char buf[96];
+  if (l.leads && l.evidence == CrossingEvidence::Track) {
+    std::snprintf(
+      buf, sizeof buf, "gap kf %zu %s %zu (%s) at (%.1f, %.1f)", l.kf_a, arrow, l.kf_b,
+      crossingKindName(l.kind), (l.pts[1].x + l.pts[2].x) / 2, (l.pts[1].y + l.pts[2].y) / 2);
+  } else if (l.leads) {
+    std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
+  } else if (l.detected) {
+    std::snprintf(buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
+  } else {
+    std::snprintf(buf, sizeof buf, "kf %zu %s %zu", l.kf_a, arrow, l.kf_b);
+  }
+  return buf;
+}
+
+LinkCounts countLinks(const StairLinks & links)
+{
+  LinkCounts n;
+  for (const StairLink & l : links.links) {
+    if (l.leads && l.evidence == CrossingEvidence::Track) {
+      (l.kind == CrossingKind::Kerb ? n.gap_kerbs : n.gap_ramps) += 1;
+    } else if (l.leads) {
+      ++n.kerbs;
+    } else {
+      ++n.stairs;
+      n.detected += l.detected ? 1 : 0;
+    }
+  }
+  return n;
+}
+
 std::shared_ptr<const StairLinks> buildStairLinks(
   const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
   const octomap::OcTree * tree)
