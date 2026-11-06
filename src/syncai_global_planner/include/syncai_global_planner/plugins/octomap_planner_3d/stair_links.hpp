@@ -369,6 +369,30 @@ const char * crossingKindName(CrossingKind k);          // "stair", "kerb", "ram
 const char * crossingGaitName(CrossingGait g);          // "flat", "stair"
 const char * crossingEvidenceName(CrossingEvidence e);  // "track", "geometry", "declared"
 
+struct StairLink;
+struct StairLinks;
+
+// How a link reads in the plugin's startup log and the CLI's --stats: "kf
+// 2221 -> 2358" for a stair the track found, "detected at (5.9, -12.2)"
+// (its first point) for one found off the map, "kerb at (5.9, -12.2)" (the
+// cell the crossing steps up from) for a kerb link, "gap kf 2992 -> 2994
+// (ramp) at (11.6, -23.0)" (its midpoint) for a walked gap. `arrow` joins
+// the keyframes ("<-" for a link taken backwards). One copy (2026-11-07):
+// those two outputs are what an offline run is compared with against the
+// robot's, and each had its own, to drift apart at the next kind.
+std::string linkName(const StairLink & l, const char * arrow = "->");
+
+// The links by what laid them, for the same two outputs' counts.
+struct LinkCounts
+{
+  size_t stairs = 0;     // the stair readers' (walked or detected): not kerb or gap links
+  size_t detected = 0;   // of them, found off the map (no keyframes)
+  size_t kerbs = 0;      // kerb links, over the map's kerb lines
+  size_t gap_kerbs = 0;  // walked gaps, by kind
+  size_t gap_ramps = 0;
+};
+LinkCounts countLinks(const StairLinks & links);
+
 struct StairLink
 {
   CellId a = kNoCell, b = kNoCell;  // the end cells; a is on the side walked first

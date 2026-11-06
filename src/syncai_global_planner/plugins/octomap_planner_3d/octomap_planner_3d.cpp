@@ -743,65 +743,37 @@ bool OctomapPlanner3D::buildMap(
     }
     if (have_track || stair_params_.detect || stair_params_.kerb_links) {
       links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
-      size_t detected = 0, kerb_links = 0, gap_kerbs = 0, gap_ramps = 0;
-      for (const auto & l : links->links) {
-        if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
-          (l.kind == o3d::CrossingKind::Kerb ? gap_kerbs : gap_ramps) += 1;
-        } else if (l.leads) {
-          ++kerb_links;
-        } else {
-          detected += l.detected ? 1 : 0;
-        }
-      }
-      const size_t stairs = links->links.size() - kerb_links - gap_kerbs - gap_ramps;
+      // The counts and the names are stair_links.hpp's (countLinks, linkName):
+      // the CLI's --stats prints the same, and the two are compared.
+      const o3d::LinkCounts n = o3d::countLinks(*links);
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links: %zu from %zu keyframes of %s, %zu detected off "
         "the map (min_rise %.2f m); %zu kerb links over %zu of the map's %zu kerbs (lead %.1f m)",
-        __func__, stairs, stairs - detected, track.size(), poses_file.c_str(), detected,
-        stair_params_.min_rise, kerb_links, links->kerbs, map->kerb_lines.size(),
+        __func__, n.stairs, n.stairs - n.detected, track.size(), poses_file.c_str(), n.detected,
+        stair_params_.min_rise, n.kerbs, links->kerbs, map->kerb_lines.size(),
         stair_params_.kerb_lead);
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu gap links from the track (%zu kerb, %zu ramp: a rise of at "
         "most %.2f m crossed in at most %.1f m of track between surfaces of at least %.1f m2); "
         "%zu walked climbs refused (not onto a floor)",
-        __func__, links->gap_links, gap_kerbs, gap_ramps, stair_params_.gap_max_rise,
+        __func__, links->gap_links, n.gap_kerbs, n.gap_ramps, stair_params_.gap_max_rise,
         stair_params_.gap_max_length, stair_params_.gap_anchor_min_area, links->gap_refused);
-      // "kf 2221 -> 2358", "detected at (6.5, -12.6)" (its first point),
-      // "kerb at (6.5, -12.6)" (the cell the crossing steps up from), or
-      // "gap kf 2992 -> 2994 (ramp) at (11.6, -23.0)" (its midpoint).
-      const auto name = [](const o3d::StairLink & l) {
-        char buf[96];
-        if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
-          std::snprintf(
-            buf, sizeof buf, "gap kf %zu -> %zu (%s) at (%.1f, %.1f)", l.kf_a, l.kf_b,
-            o3d::crossingKindName(l.kind), (l.pts[1].x + l.pts[2].x) / 2,
-            (l.pts[1].y + l.pts[2].y) / 2);
-        } else if (l.leads) {
-          std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
-        } else if (l.detected) {
-          std::snprintf(
-            buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
-        } else {
-          std::snprintf(buf, sizeof buf, "kf %zu -> %zu", l.kf_a, l.kf_b);
-        }
-        return std::string(buf);
-      };
       for (const auto & f : links->flights) {
         const auto & l = links->links[f.first];
         RCLCPP_INFO(
           logger_,
           "[OctomapPlanner3D][%s]   stair %s: z %.2f -> %.2f, %u straight links, "
           "uphill %.0f deg, %.1f m wide, %.1f m long",
-          __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), f.count, f.heading_deg,
-          f.width, l.length);
+          __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), f.count,
+          f.heading_deg, f.width, l.length);
       }
       for (const auto & l : links->links) {
         if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
           RCLCPP_INFO(
             logger_, "[OctomapPlanner3D][%s]   %s: z %.2f -> %.2f, rise %.2f m, %.1f m long",
-            __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.rise, l.length);
+            __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.rise, l.length);
           continue;
         }
         if (l.straight) {
@@ -810,8 +782,8 @@ bool OctomapPlanner3D::buildMap(
         RCLCPP_INFO(
           logger_,
           "[OctomapPlanner3D][%s]   stair link %s: z %.2f -> %.2f, %.1f m, %zu points (%s)",
-          __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size(),
-          l.flights ? l.geometry.c_str() : "walked track");
+          __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.length,
+          l.pts.size(), l.flights ? l.geometry.c_str() : "walked track");
         if (l.centred > 0) {
           RCLCPP_INFO(
             logger_,
