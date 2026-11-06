@@ -520,7 +520,7 @@ bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
         continue;
       }
       const size_t j = index(nx, ny);
-      if (!ground_known_[j] || obstacle_[j] || !groundSupported(j)) {
+      if (!ground_known_[j] || obstacle_[j] || !supported_[j]) {
         continue;
       }
       const double z = ground_[j];
@@ -662,9 +662,13 @@ void TerrainGrid::classify(
   // before the loop, because the slope rule's fit reads it for the cells
   // round the one it judges.
   obstacle_.assign(cells_.size(), 0);
+  supported_.assign(cells_.size(), 0);
   for (size_t i = 0; i < cells_.size(); ++i) {
     const float ref = on_plan_[i] ? std::max(obstacle_ref_[i], plan_z_[i]) : obstacle_ref_[i];
     obstacle_[i] = cellHasObstacle(i, now, ref) ? 1 : 0;
+    // Whether the cell's own returns stand on its ground, for the slope
+    // fit: once per cell here, not once per disc cell there (the header).
+    supported_[i] = ground_known_[i] && groundSupported(i) ? 1 : 0;
   }
   TerrainStats st;
   for (int iy = 0; iy < ny_; ++iy) {

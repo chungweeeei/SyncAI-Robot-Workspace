@@ -454,8 +454,12 @@ private:
   mutable std::vector<uint8_t> walkable_;
   mutable std::vector<float> obstacle_ref_;
   // The obstacle rule's verdict per cell, before the other rules: the slope
-  // fit leaves these out (the header has why).
+  // fit leaves these out (the header has why). And groundSupported() per
+  // known cell, once (2026-11-07): the fit asked it for every cell of every
+  // disc, ~80 rescans of each ring per update -- 6400 cells x 80 x 24
+  // samples, ~12 M checks at 5 Hz on the controller's costmap thread.
   mutable std::vector<uint8_t> obstacle_;
+  mutable std::vector<uint8_t> supported_;
   mutable std::vector<float> scratch_;
   // The last estimate's memory window (grid time), for groundSupported().
   mutable float ground_oldest_ = 0.f;
