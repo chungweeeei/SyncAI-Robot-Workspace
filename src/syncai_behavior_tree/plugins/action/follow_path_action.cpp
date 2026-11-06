@@ -21,24 +21,61 @@ FollowPathAction::FollowPathAction(
 {
 }
 
+BT::NodeStatus FollowPathAction::tick()
+{
+  // Why (2026-11): {path} is empty while the planner branch replans after a
+  // failure (ComputePathToPose::on_aborted clears it) and after a preempt
+  // (the navigator clears it). A controller abort in that window -- a
+  // blocker, the progress checker -- failed this node, the RecoveryNode
+  // cleared the costmap and ticked it again, it failed at once on the empty
+  // path (on_tick() below; tick() fails when no goal is sent), and so on:
+  // move.xml's four retries went in as many ticks, and the goal ended
+  // FOLLOW_PATH_FAILED while the planner was still running and could well
+  // have found a way. Holding RUNNING without a goal until a path lands
+  // spends one retry per controller abort, as meant. It cannot hang:
+  // PipelineSequence keeps ticking the planner branch, IsPathValid fails on
+  // an empty path so a plan starts within a second, and a planner failure
+  // fails the tree and halts this node.
+  if (status() == BT::NodeStatus::IDLE || waiting_for_path_) {
+    nav_msgs::msg::Path path;
+    getInput("path", path);
+    if (path.poses.empty()) {
+      if (!waiting_for_path_) {
+        waiting_for_path_ = true;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "[FollowPathAction][%s] No path to follow yet (the planner is replanning); holding "
+          "until one lands",
+          __func__);
+      }
+      return BT::NodeStatus::RUNNING;
+    }
+    if (waiting_for_path_) {
+      waiting_for_path_ = false;
+      // BtActionNode::tick() starts a goal only from IDLE.
+      setStatus(BT::NodeStatus::IDLE);
+      RCLCPP_INFO(
+        node_->get_logger(), "[FollowPathAction][%s] A path landed; following it", __func__);
+    }
+  }
+  return BtActionNode<nav2_msgs::action::FollowPath>::tick();
+}
+
+void FollowPathAction::halt()
+{
+  waiting_for_path_ = false;
+  BtActionNode<nav2_msgs::action::FollowPath>::halt();
+}
+
 void FollowPathAction::on_tick()
 {
   getInput("path", goal_.path);
   getInput("controller_id", goal_.controller_id);
   getInput("goal_checker_id", goal_.goal_checker_id);
 
-  // PipelineSequence reaches this node only after the planner branch returned
-  // SUCCESS, which with a real plan is a non-empty path (planner_server
-  // rejects an empty plan as ABORTED). The one SUCCESS that carries no path is
-  // ComputePathToPose::on_cancelled -- its goal cancelled under it, which only
-  // an external cancel on compute_path_to_pose does. Sent on, the controller
-  // throws "Invalid path, Path is empty." at goal start, which reads as a
-  // controller fault, and the RecoveryNode's retry is spent on a path that
-  // cannot change until the planner branch runs again. Failing here (tick()
-  // returns FAILURE when should_send_goal_ is false) names the real cause and
-  // costs nothing: the retry would meet the same empty path. Waiting as
-  // RUNNING until a path exists is not something BtActionNode offers -- its
-  // tick() has no state between "goal sent" and "failed".
+  // tick() holds until {path} has poses, so this is only a guard: sent on,
+  // an empty path throws "Invalid path, Path is empty." in the controller at
+  // goal start, which reads as a controller fault.
   if (goal_.path.poses.empty()) {
     RCLCPP_WARN(
       node_->get_logger(),

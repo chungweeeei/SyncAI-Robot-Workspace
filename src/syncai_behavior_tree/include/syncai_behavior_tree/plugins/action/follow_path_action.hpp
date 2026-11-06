@@ -28,6 +28,17 @@ public:
     const BT::NodeConfiguration & conf);
 
   /**
+   * @brief BtActionNode::tick(), except that with no path to follow it holds
+   * RUNNING without a goal until one lands, rather than failing (2026-11)
+   */
+  BT::NodeStatus tick() override;
+
+  /**
+   * @brief Drops the wait for a path as well as any goal in flight
+   */
+  void halt() override;
+
+  /**
    * @brief Function to perform some user-defined operation on tick
    */
   void on_tick() override;
@@ -74,6 +85,8 @@ private:
   int sent_generation_{0};
   // on_success() is polled every tick while it waits; say so once.
   bool waiting_logged_{false};
+  // tick(): RUNNING with no goal sent, until {path} holds poses.
+  bool waiting_for_path_{false};
 };
 
 }  // namespace syncai_behavior_tree
