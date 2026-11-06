@@ -164,7 +164,9 @@
 // taken at kerb_cost_multiplier and both the flat gait's (StairLink::gait);
 // the track crossing the same gap again (the way back through a door) lays
 // nothing new, a second door into the same room does. A rise above
-// gap_max_rise is the stair walker's business between two floors, and
+// gap_max_rise -- or at min_rise and above, where the route judge would
+// call a flat-gait link a stair anyway (2026-11-07; before, 0.30 exactly was
+// both) -- is the stair walker's business between two floors, and
 // **refused** onto anything smaller: the operator drove the G23 up a 0.4 m
 // ledge beside dp's 2F door by mistake, and a planner that repeated that
 // walk would send the robot up it on every route to the lab. Such a climb is
@@ -318,11 +320,13 @@ struct StairLinkParams
   // Longest stretch of track (m, xy) between the two anchors: a door sill or
   // a short ramp is crossed in a metre or two, a stair's flight is not.
   double gap_max_length = 2.5;
-  // Largest rise (m) the flat gait is trusted with on a walked gap. Equal to
-  // min_rise so the two regimes tile: above it a climb is a stair's, between
-  // floors only. A placeholder, not a measurement (2026-11-02): the G23's RL
-  // policy has not been measured on short ramps; the dp lab sill it walked
-  // is ~0.1 m.
+  // Largest rise (m) the flat gait is trusted with on a walked gap, the
+  // measured floor's (SurfaceMap::zFloor) where the cloud gave one. Equal
+  // to min_rise so the two regimes tile: from min_rise up a climb is a
+  // stair's, between floors only (the gap pass refuses it whichever of the
+  // two is lower). A placeholder, not a measurement (2026-11-02): the G23's
+  // RL policy has not been measured on short ramps; the dp lab sill it
+  // walked is ~0.1 m.
   double gap_max_rise = 0.3;
   // The straight run either side of a gap is kerb_lead: one lead for every
   // flat-gait crossing, since its reason (the body's length) is the same.
@@ -344,7 +348,7 @@ struct StairLinkParams
 enum class CrossingKind : uint8_t {
   Stair,  // a flight or a stairwell: the stair gait, climbed blind
   Kerb,   // one step within max_step_height, crossed square: the flat gait
-  Ramp,   // a rise above one step but within gap_max_rise over a short run: the flat gait
+  Ramp,   // a rise above one step but under min_rise over a short run: the flat gait
 };
 // The gait a crossing is taken in: the controllers' stair mode switches the
 // policy for Stair only. StairLink::gait() is the link's own; on a route a

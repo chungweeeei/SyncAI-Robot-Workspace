@@ -85,10 +85,16 @@ std::vector<Waypoint> resamplePath(
     return out;
   }
   spacing = std::max(spacing, m.res * 0.25);
+  // A pose's height is the measured floor where there is one (2026-11-07,
+  // SurfaceMap::zFloor), the voxel's top face otherwise: the height every
+  // judge of the route then reads, from the gap links' kinds to the terrain
+  // layer's ground along the plan. The voxel tops stayed on the stair
+  // readers' own points (stairCrossing, the walked links), where a flight's
+  // 0.3 m and more swallows the difference.
   auto at = [&](CellId c) {
     Waypoint w;
     m.cellXY(c, w.x, w.y);
-    w.z = m.zTop(c);
+    w.z = m.zFloor(c);
     return w;
   };
   auto surfaceZ = [&](double x, double y, double z_guess) {
@@ -98,7 +104,7 @@ std::vector<Waypoint> resamplePath(
     }
     const int kz = static_cast<int>(std::floor((z_guess - m.z0) / m.res)) - 1;
     const CellId c = m.layerNear(m.col(ix, iy), kz, 3);
-    return c == kNoCell ? z_guess : m.zTop(c);
+    return c == kNoCell ? z_guess : m.zFloor(c);
   };
   Waypoint prev = at(cells[0]);
   out.push_back(prev);
@@ -159,18 +165,22 @@ void resamplePolyline(
   }
 }
 
-// Appends b to a, dropping b's first point when it repeats a's last.
-void append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b)
+// Appends b to a, dropping b's first point when it repeats a's last (the
+// same place, within z_tol in height: a route's poses stand at the measured
+// floor and a stair link's at the voxel tops, up to a voxel apart over the
+// same cell -- 2026-11-07). Returns how many points it dropped (0 or 1).
+size_t append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b, double z_tol = 1e-9)
 {
   size_t from = 0;
   if (!a.empty() && !b.empty()) {
     const Waypoint & p = a.back();
     const Waypoint & q = b.front();
-    if (std::hypot(p.x - q.x, p.y - q.y) < 1e-9 && std::fabs(p.z - q.z) < 1e-9) {
+    if (std::hypot(p.x - q.x, p.y - q.y) < 1e-9 && std::fabs(p.z - q.z) <= z_tol) {
       from = 1;
     }
   }
   a.insert(a.end(), b.begin() + static_cast<std::ptrdiff_t>(from), b.end());
+  return from;
 }
 
 // The segment from cell p (one floor) to cell n (the other), straight across
@@ -417,18 +427,18 @@ std::vector<Waypoint> buildPath(
     }
   }
 
+  // A joint is the same cell at the floor and at its voxel top (append()).
+  const double z_tol = m.res + 1e-9;
   // The crossing's block, appended: its first waypoint is the last one already
-  // out when append() dropped it as the joint.
+  // out when append() dropped it as the joint -- append() says whether it
+  // did, so the span and the joint test cannot drift apart.
   const auto appendSpan = [&](size_t use, const std::vector<Waypoint> & block) -> PathSpan * {
-    const bool joint =
-      !out.empty() && !block.empty() &&
-      std::hypot(out.back().x - block.front().x, out.back().y - block.front().y) < 1e-9 &&
-      std::fabs(out.back().z - block.front().z) < 1e-9;
-    const size_t first = joint ? out.size() - 1 : out.size();
-    append(out, block);
+    const size_t before = out.size();
+    const size_t dropped = append(out, block, z_tol);
     if (!spans || out.empty()) {
       return nullptr;
     }
+    const size_t first = dropped > 0 && before > 0 ? before - 1 : before;
     spans->push_back({use, std::min(first, out.size() - 1), out.size() - 1, {}});
     return &spans->back();
   };
@@ -436,7 +446,7 @@ std::vector<Waypoint> buildPath(
   size_t nvert = 0;
   for (size_t i = 0; i < chains.size(); ++i) {
     nvert += chains[i].size();
-    append(out, resamplePath(m, chains[i], spacing));
+    append(out, resamplePath(m, chains[i], spacing), z_tol);
     if (i >= uses.size()) {
       break;
     }
@@ -489,7 +499,8 @@ namespace
 // From cell c, how far (m, xy) the floor stays traversable along (nx, ny):
 // the distance to the first sample whose column has no traversable cell
 // within a step of the last one, or `limit` if there is none that close.
-double floorTo(const SurfaceMap & m, CellId c, double x, double y, double nx, double ny, double limit)
+double floorTo(
+  const SurfaceMap & m, CellId c, double x, double y, double nx, double ny, double limit)
 {
   const double ds = m.res / 2;
   int kz = m.cells[c].kz;
