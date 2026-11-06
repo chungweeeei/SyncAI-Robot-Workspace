@@ -24,8 +24,69 @@ void ComputePathToPoseAction::on_tick()
   }
 }
 
+void ComputePathToPoseAction::on_wait_for_result(
+  std::shared_ptr<const syncai_common::action::ComputePathToPose::Feedback> /*feedback*/)
+{
+  // Why (2026-11): a preempt only swaps {goal} on the blackboard; the tree
+  // keeps running, and the non-reactive Fallback resumes this node without
+  // asking GlobalUpdatedGoal again. Without a re-send the planner finished
+  // the superseded goal's plan, on_success() wrote that path as the new
+  // goal's first, FollowPath turned onto it, and the 1 Hz check replanned
+  // for the new goal only a second or more later -- a detour started and
+  // abandoned, one replan counted too many, and (since PR #88 tags a landed
+  // path with the current goal generation) the new goal reported reached if
+  // the robot came to the old goal's end meanwhile. Re-sent, the planner
+  // server takes the new goal as a preempt once the plan in hand is done
+  // (it cannot stop Octo3D mid-search; a cancel would not either, and
+  // halt() would block this tick on the answer), and the old goal's result
+  // is dropped by its goal id (BtActionNode::send_new_goal()).
+  if (takeChangedGoal()) {
+    goal_updated_ = true;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[ComputePathToPoseAction][%s] Goal changed while planning; re-sending it to the planner",
+      __func__);
+  }
+}
+
+bool ComputePathToPoseAction::takeChangedGoal()
+{
+  geometry_msgs::msg::PoseStamped goal;
+  getInput("goal", goal);
+  if (goal == goal_.goal) {
+    return false;
+  }
+  goal_.goal = goal;
+  return true;
+}
+
+bool ComputePathToPoseAction::resendIfGoalChanged()
+{
+  // The planner can answer before on_wait_for_result()'s re-send goes out:
+  // BtActionNode re-sends only while the goal is still ACCEPTED / EXECUTING,
+  // so a goal_updated_ left set means the result in hand is the old goal's.
+  // Or {goal} changed in this very tick, after on_wait_for_result() ran.
+  if (!goal_updated_ && !takeChangedGoal()) {
+    return false;
+  }
+  goal_updated_ = false;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "[ComputePathToPoseAction][%s] The planner answered a superseded goal; planning the current "
+    "one",
+    __func__);
+  send_new_goal();
+  return true;
+}
+
 BT::NodeStatus ComputePathToPoseAction::on_success()
 {
+  // Not the current goal's path: BtActionNode::tick() comes back here on the
+  // next tick with the new goal's request out (FollowPathAction::on_success()
+  // waits the same way).
+  if (resendIfGoalChanged()) {
+    return BT::NodeStatus::RUNNING;
+  }
   setOutput("path", result_.result->path);
 
   // Count plans for the navigator's number_of_replans feedback. Same channel
@@ -43,6 +104,10 @@ BT::NodeStatus ComputePathToPoseAction::on_success()
 
 BT::NodeStatus ComputePathToPoseAction::on_aborted()
 {
+  // The superseded goal's failure is not the current goal's.
+  if (resendIfGoalChanged()) {
+    return BT::NodeStatus::RUNNING;
+  }
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
   // The planner's reason (2026-11, syncai_common's ComputePathToPose): its

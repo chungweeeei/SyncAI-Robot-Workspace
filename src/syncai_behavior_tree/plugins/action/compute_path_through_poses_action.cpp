@@ -25,8 +25,55 @@ void ComputePathThroughPosesAction::on_tick()
   }
 }
 
+void ComputePathThroughPosesAction::on_wait_for_result(
+  std::shared_ptr<const syncai_common::action::ComputePathThroughPoses::Feedback> /*feedback*/)
+{
+  // ComputePathToPoseAction::on_wait_for_result() has why. {goals} here is
+  // the navigator's remaining_goals, which also changes when the robot
+  // passes a waypoint mid-plan: that re-sends too, and the route is planned
+  // from the next waypoint, as the next replan would have.
+  if (takeChangedGoals()) {
+    goal_updated_ = true;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[ComputePathThroughPosesAction][%s] Waypoints changed while planning; re-sending them to "
+      "the planner",
+      __func__);
+  }
+}
+
+bool ComputePathThroughPosesAction::takeChangedGoals()
+{
+  std::vector<geometry_msgs::msg::PoseStamped> goals;
+  getInput("goals", goals);
+  if (goals == goal_.goals) {
+    return false;
+  }
+  goal_.goals = goals;
+  return true;
+}
+
+bool ComputePathThroughPosesAction::resendIfGoalsChanged()
+{
+  // ComputePathToPoseAction::resendIfGoalChanged() has why.
+  if (!goal_updated_ && !takeChangedGoals()) {
+    return false;
+  }
+  goal_updated_ = false;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "[ComputePathThroughPosesAction][%s] The planner answered superseded waypoints; planning the "
+    "current ones",
+    __func__);
+  send_new_goal();
+  return true;
+}
+
 BT::NodeStatus ComputePathThroughPosesAction::on_success()
 {
+  if (resendIfGoalsChanged()) {
+    return BT::NodeStatus::RUNNING;
+  }
   setOutput("path", result_.result->path);
   // The navigator's number_of_replans and status sentence, as in
   // ComputePathToPoseAction::on_success().
@@ -40,6 +87,10 @@ BT::NodeStatus ComputePathThroughPosesAction::on_success()
 
 BT::NodeStatus ComputePathThroughPosesAction::on_aborted()
 {
+  // The superseded waypoints' failure is not the current route's.
+  if (resendIfGoalsChanged()) {
+    return BT::NodeStatus::RUNNING;
+  }
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
   // The planner's reason, as in ComputePathToPoseAction::on_aborted(); its

@@ -1,6 +1,7 @@
 #ifndef SYNCAI_BEHAVIOR_TREE__PLUGINS__ACTION__COMPUTE_PATH_THROUGH_POSES_ACTION_HPP_
 #define SYNCAI_BEHAVIOR_TREE__PLUGINS__ACTION__COMPUTE_PATH_THROUGH_POSES_ACTION_HPP_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,11 @@ public:
 
   void on_tick() override;
 
+  // {goals} changed under a plan in flight: re-send (ComputePathToPoseAction's).
+  void on_wait_for_result(
+    std::shared_ptr<const syncai_common::action::ComputePathThroughPoses::Feedback> feedback)
+    override;
+
   BT::NodeStatus on_success() override;
 
   BT::NodeStatus on_aborted() override;
@@ -49,6 +55,10 @@ public:
       BT::InputPort<std::string>("planner_id", "", "Mapped name to the planner plugin type to use"),
     });
   }
+
+private:
+  bool takeChangedGoals();
+  bool resendIfGoalsChanged();
 };
 
 }  // namespace syncai_behavior_tree

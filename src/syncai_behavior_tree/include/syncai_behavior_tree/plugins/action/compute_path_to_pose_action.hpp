@@ -1,6 +1,7 @@
 #ifndef SYNCAI_BEHAVIOR_TREE__PLUGINS__ACTION__COMPUTE_PATH_TO_POSE_ACTION_HPP_
 #define SYNCAI_BEHAVIOR_TREE__PLUGINS__ACTION__COMPUTE_PATH_TO_POSE_ACTION_HPP_
 
+#include <memory>
 #include <string>
 
 #include "nav_msgs/msg/path.h"
@@ -33,6 +34,14 @@ public:
    * @brief Function to perform some user-defined operation on tick
    */
   void on_tick() override;
+
+  /**
+   * @brief Re-send the goal to the planner when {goal} changed under a plan
+   * in flight (a preempt), so the superseded goal's path never lands
+   * (2026-11; the .cpp has why)
+   */
+  void on_wait_for_result(
+    std::shared_ptr<const syncai_common::action::ComputePathToPose::Feedback> feedback) override;
 
   /**
    * @brief Function to perform some user-defined operation upon successful completion of the action
@@ -70,6 +79,13 @@ public:
           "planner_id", "", "Mapped name to the planner plugin type to use"),
       });
   }
+
+private:
+  // Copy {goal} into goal_ when it differs from what was last sent; whether it did.
+  bool takeChangedGoal();
+  // A result came back for a goal {goal} no longer names: send the current
+  // one instead and report RUNNING. Whether it did.
+  bool resendIfGoalChanged();
 };
 
 }  // namespace syncai_behavior_tree
