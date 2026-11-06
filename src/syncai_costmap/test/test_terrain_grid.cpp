@@ -248,8 +248,7 @@ TEST(TerrainGrid, ObstacleForgetsAfterObstacleMemoryAndGroundRemembersLonger)
   // The floor was seen 6 s ago (inside ground_memory 10 s); a person stood
   // at x = 1 until 3 s ago (outside obstacle_memory 2 s).
   Scene old;
-  old.surface(
-    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  old.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   for (double z = 0.1; z < 0.9; z += 0.03) {
     old.grid.addSample(1.0, 0.0, z, kNow - 3.0);
   }
@@ -258,8 +257,7 @@ TEST(TerrainGrid, ObstacleForgetsAfterObstacleMemoryAndGroundRemembersLonger)
   EXPECT_GT(old.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
   // 12 s ago: the floor is forgotten too.
   Scene gone;
-  gone.surface(
-    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 12.0);
+  gone.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 12.0);
   gone.classify();
   EXPECT_GT(gone.share(-1.9, 1.9, -1.9, 1.9, NO_INFORMATION), 0.98);
 }
@@ -314,7 +312,7 @@ TEST(TerrainGrid, ADoorsJambsDoNotTiltTheFloorBetweenThem)
   EXPECT_GT(s.share(1.0, 1.05, 0.45, 0.6, LETHAL_OBSTACLE), 0.9);  // the wall either side
   EXPECT_GT(s.share(1.0, 1.05, -0.6, -0.45, LETHAL_OBSTACLE), 0.9);
   EXPECT_GT(s.share(0.9, 1.1, -0.35, 0.35, FREE_SPACE), 0.98);  // the door's width, to a cell
-  EXPECT_GT(s.share(0.75, 0.95, 0.5, 1.9, FREE_SPACE), 0.95);  // in front of the wall
+  EXPECT_GT(s.share(0.75, 0.95, 0.5, 1.9, FREE_SPACE), 0.95);   // in front of the wall
 }
 
 TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
@@ -328,8 +326,7 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
   auto underside = [](double x, double) { return 1.0 + 0.4 * (x + 1.0) / 2.9; };
   {
     Scene s;
-    s.surface(
-      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
+    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
     s.surface(-1.0, -kOrigin, kOrigin, -kOrigin, underside, 40, 0.5);
     auto st = s.classify();
     EXPECT_EQ(st.lethal_island + st.lethal_step + st.lethal_slope + st.lethal_obstacle, 0u);
@@ -339,8 +336,7 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
     EXPECT_NEAR(s.grid.lastGround()[s.grid.index(ix, iy)], 0.0, 0.05);
 
     // Under it, a box is still a box.
-    s.surface(
-      0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
+    s.surface(0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
     s.wall(0.8, -0.2, 0.2, 0.0, 0.30, 0.5);
     st = s.classify();
     EXPECT_GT(s.share(0.8, 1.2, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
@@ -352,8 +348,7 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
     // the floor's, not lifted by max_ground_lift.
     Scene s;
     s.surface(-1.0, -kOrigin, kOrigin, -kOrigin, underside, 40, 3.0);
-    s.surface(
-      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 1.0);
+    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 1.0);
     s.classify();
     EXPECT_GT(s.share(-1.9, 1.9, -1.9, 1.9, FREE_SPACE), 0.98);
     int ix, iy;
@@ -364,10 +359,8 @@ TEST(TerrainGrid, OverheadUndersideIsNeitherGroundNorObstacle)
     // An underside lower than body_clearance -- a stair's foot, 0.5 m up --
     // is not overhead: the robot does not fit under it.
     Scene s;
-    s.surface(
-      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
-    s.surface(
-      1.0, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.5; }, 40, 0.5);
+    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 5.0);
+    s.surface(1.0, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.5; }, 40, 0.5);
     s.classify();
     EXPECT_GT(s.share(1.05, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.95);
     EXPECT_GT(s.share(-1.9, 0.5, -1.9, 1.9, FREE_SPACE), 0.98);
@@ -382,8 +375,7 @@ TEST(TerrainGrid, OverheadWithNoFloorSeenUnderItIsStillASurface)
   // own floor beside it stays free.
   Scene s;
   s.floor(kOrigin, -1.0, kOrigin, -kOrigin);
-  s.surface(
-    -0.5, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 1.2; }, 40, 0.5);
+  s.surface(-0.5, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 1.2; }, 40, 0.5);
   const auto st = s.classify(0.0, -1.5, 0.0);
   EXPECT_GT(st.lethal_island, 0u);
   EXPECT_GT(s.share(-0.4, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.98);
@@ -403,13 +395,14 @@ double stairZ(double x)
   const int step = std::min(5, static_cast<int>(std::floor(x / 0.28)) + 1);
   return 0.17 * step;
 }
-std::vector<TerrainPathPose> stairPath()
+// The planner's path up it, marked as its stair-gait span (`stair`) or not.
+std::vector<TerrainPathPose> stairPath(bool stair = true)
 {
   std::vector<TerrainPathPose> out;
   for (double x = -1.9; x < 1.9; x += 0.1) {
     // A straight stair link: the planner's path climbs the flight on a line.
     const double z = x <= 0.0 ? 0.0 : (x >= 1.4 ? 0.85 : 0.85 * x / 1.4);
-    out.push_back({x, 0.0, z});
+    out.push_back({x, 0.0, z, stair});
   }
   return out;
 }
@@ -426,13 +419,21 @@ TEST(TerrainGrid, StairIsLethalWithOrWithoutAPathClimbingIt)
   EXPECT_GT(s.share(0.0, 1.4, -1.0, 1.0, LETHAL_OBSTACLE), 0.5);
   EXPECT_GT(s.share(-1.9, -0.3, -1.9, 1.9, FREE_SPACE), 0.98);
 
-  // A path climbing it (Octo3D's stair link) seeds the reach flood and
-  // relaxes nothing: the flight stays as lethal as without it.
+  // A path climbing it (Octo3D's stair link), with the planner's word that
+  // it is a stair: seeds the reach flood and opens nothing, the flight stays
+  // as lethal as without it. And a path the planner has not spoken for (no
+  // corridor) opens nothing either, whatever its poses are marked.
   s.grid.setPath(stairPath());
-  s.classify();
+  auto st = s.classify();
   EXPECT_GT(s.share(0.0, 1.4, -1.0, 1.0, LETHAL_OBSTACLE), 0.5);
   EXPECT_GT(s.share(0.1, 1.3, -0.4, 0.4, LETHAL_OBSTACLE), 0.5);
   EXPECT_GT(s.share(-1.9, -0.3, -1.9, 1.9, FREE_SPACE), 0.98);
+  EXPECT_EQ(st.on_plan, 0u);
+  s.grid.setPath(stairPath(false), false);
+  st = s.classify();
+  EXPECT_GT(s.share(0.0, 1.4, -1.0, 1.0, LETHAL_OBSTACLE), 0.5);
+  EXPECT_GT(s.share(0.1, 1.3, -0.4, 0.4, LETHAL_OBSTACLE), 0.5);
+  EXPECT_EQ(st.on_plan, 0u);
 }
 
 TEST(TerrainGrid, PathHeightsConnectAnUnseenRampAndIsolateABoxOnIt)
@@ -553,8 +554,7 @@ TEST(TerrainGrid, RayClearingForgetsAPersonWhoWalkedOnAtTheNextScan)
   // The floor seen 6 s ago; the person stood here half a second ago, well
   // inside obstacle_memory.
   Scene s;
-  s.surface(
-    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   legs(s, 0.5);
   s.classify();
   EXPECT_EQ(s.at(kLegX, kLegY), LETHAL_OBSTACLE);
@@ -580,8 +580,7 @@ TEST(TerrainGrid, RayClearingForgetsAPersonWhoWalkedOnAtTheNextScan)
   // Clearing off (tolerance 0): the memory alone, as before.
   Scene off;
   off.grid.params.ray_clear_tolerance = 0.0;
-  off.surface(
-    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  off.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   legs(off, 0.5);
   seeThroughLegs(off);
   off.classify();
@@ -617,8 +616,7 @@ TEST(TerrainGrid, RayClearingSparesTheSurfacesARayPassesOver)
   // none of them is evidence against it.
   {
     Scene s;
-    s.surface(
-      kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+    s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
     s.classify();
     for (double ye = -1.9; ye < 1.9; ye += 0.05) {
       for (double xe = 0.5; xe < 1.95; xe += 0.05) {
@@ -674,8 +672,7 @@ TEST(TerrainGrid, RayClearingSparesTheSurfacesARayPassesOver)
     // the top is its ground, passed over, kept; the box stays lethal.
     Scene s;
     s.floor();
-    s.surface(
-      0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
+    s.surface(0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.30; }, 4, 0.5);
     s.classify();
     EXPECT_EQ(s.at(1.0, 0.0), LETHAL_OBSTACLE);
     for (double ye = -0.2; ye < 0.2; ye += 0.025) {
@@ -695,8 +692,7 @@ TEST(TerrainGrid, RayClearingStopsShortOfTheRaysEnd)
   // through where they stood end inside the margin, and clear nothing --
   // obstacle_memory is what forgets them.
   Scene s;
-  s.surface(
-    kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
+  s.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, [](double, double) { return 0.0; }, 4, 6.0);
   legs(s, 0.5);
   for (double ze = 0.0; ze < 1.4; ze += 0.02) {
     ray(s, 1.325, kLegY * 1.325 / kLegX, ze);
@@ -775,20 +771,17 @@ TEST(TerrainGrid, SparseCellsAreNeverJudgedOnABoxTopOrAStairTread)
   };
   // A 0.25 m box on floor never seen, its top sparse.
   const auto box = [](Scene & s) {
-    sparse(
-      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
+    sparse(s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 2);
   };
   // The same box on a seen floor.
   const auto box_on_floor = [](Scene & s) {
     s.floor();
-    sparse(
-      s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
+    sparse(s, 0.8, 1.2, -0.2, 0.2, [](double, double) { return 0.25; }, 3);
   };
   // A flight seen from its foot, its first treads sparse, with and without
   // the stair link's path climbing it.
   const auto flight = [](Scene & s) {
-    sparse(
-      s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
+    sparse(s, -0.2, 0.56, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); }, 3);
     s.surface(0.56, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return stairZ(x); });
   };
   const auto flight_with_path = [&](Scene & s) {
@@ -814,34 +807,38 @@ int main(int argc, char ** argv)
   return RUN_ALL_TESTS();
 }
 
-TEST(TerrainGrid, AFlatGaitCrossingWaivesItsStepButNotAPersonOnIt)
+TEST(TerrainGrid, ThePlansCorridorOpensItsSillButNotAPersonOrABoxOnIt)
 {
   // A 0.3 m sill across the window at x = 0 (dp's lab door as the map read
-  // it): the step rule walls it off. The planner's flat-gait crossing over
-  // it at y = 0, the plan's poses along x (setCrossings()), opens a lane of
-  // crossing_radius either side; the step beyond the lane stays lethal, a
-  // person standing on the crossing is lethal all the same, and a crossing
-  // on a floor far above waives nothing here.
+  // it): the step rule walls it off. The plan over it at y = 0, its poses
+  // along x at the floors' heights (setPath()), opens a corridor of
+  // plan_radius either side once the planner has spoken for it (the
+  // corridor flag); the step beyond the corridor stays lethal, a person
+  // standing on the corridor is lethal all the same, a box on the sill's
+  // upper landing is lethal -- the band there starts at that landing's
+  // floor, not the sill's rise over the lower one, which the crossing
+  // waiver of 2026-11-02 lifted it by -- and a plan on a floor far above
+  // opens nothing here.
   Scene s;
   s.surface(
     kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return x > 0.0 ? 0.30 : 0.0; });
   std::vector<TerrainPathPose> lane;
   for (double x = -1.0; x <= 1.0 + 1e-9; x += 0.1) {
-    lane.push_back({x, 0.0, x > 0.0 ? 0.30 : 0.0});
+    lane.push_back({x, 0.0, x > 0.0 ? 0.30 : 0.0, false});
   }
-  s.grid.setPath(lane);  // the plan seeds the far floor's reach, as it does now
+  s.grid.setPath(lane, false);  // seeds the far floor's reach; no word from the planner yet
   auto st = s.classify(0.0, -1.0, 0.0);
   EXPECT_GT(s.share(-0.1, 0.1, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
-  EXPECT_EQ(st.waived, 0u);
+  EXPECT_EQ(st.on_plan, 0u);
 
-  s.grid.setCrossings({lane});
+  s.grid.setPath(lane);
   st = s.classify(0.0, -1.0, 0.0);
-  EXPECT_GT(st.waived, 0u);
-  EXPECT_GT(s.share(-0.1, 0.1, -0.3, 0.3, FREE_SPACE), 0.98);  // the lane
+  EXPECT_GT(st.on_plan, 0u);
+  EXPECT_GT(s.share(-0.1, 0.1, -0.3, 0.3, FREE_SPACE), 0.98);     // the corridor over the sill
   EXPECT_GT(s.share(-0.1, 0.1, 0.6, 1.9, LETHAL_OBSTACLE), 0.9);  // the step beside it
   EXPECT_GT(s.share(-0.1, 0.1, -1.9, -0.6, LETHAL_OBSTACLE), 0.9);
 
-  // A person's legs on the crossing: the obstacle rule is not waived.
+  // A person's legs on the corridor: the obstacle rule is not waived.
   for (double z = 0.35; z < 1.0; z += 0.05) {
     for (const double ly : {-0.1, 0.1}) {
       s.grid.addSample(0.6, ly, z, kNow - 0.5);
@@ -850,7 +847,14 @@ TEST(TerrainGrid, AFlatGaitCrossingWaivesItsStepButNotAPersonOnIt)
   s.classify(0.0, -1.0, 0.0);
   EXPECT_EQ(s.at(0.6, 0.1), LETHAL_OBSTACLE);
 
-  // The same crossing 3 m up (a floor above in the same columns): not this one.
+  // A 0.35 m box on the upper landing, on the corridor: 0.35 over the
+  // landing's floor, an obstacle (under a band lifted by the sill's 0.30 m
+  // rise it stood 0.05 m short of one).
+  s.surface(0.8, 1.0, -0.1, 0.1, [](double, double) { return 0.30 + 0.35; });
+  s.classify(0.0, -1.0, 0.0);
+  EXPECT_GT(s.share(0.8, 1.0, -0.1, 0.1, LETHAL_OBSTACLE), 0.9);
+
+  // The same plan 3 m up (a floor above in the same columns): not this one.
   Scene up;
   up.surface(
     kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return x > 0.0 ? 0.30 : 0.0; });
@@ -858,11 +862,29 @@ TEST(TerrainGrid, AFlatGaitCrossingWaivesItsStepButNotAPersonOnIt)
   for (auto & p : high) {
     p.z += 3.0;
   }
-  up.grid.setPath(lane);
-  up.grid.setCrossings({high});
+  up.grid.setPath(high);
   st = up.classify(0.0, -1.0, 0.0);
-  EXPECT_EQ(st.waived, 0u);
+  EXPECT_EQ(st.on_plan, 0u);
   EXPECT_GT(up.share(-0.1, 0.1, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
+
+  // A 15 deg ramp the plan runs up, seen whole: the corridor is free along
+  // it, and the band on it starts at the plan's height within two cells of
+  // the nearest pose -- not the highest within plan_radius, 0.1 m further
+  // up the ramp -- so a 0.2 m box a metre up is still an obstacle.
+  Scene ramp;
+  const double k = std::tan(15.0 * M_PI / 180.0);
+  auto rz = [k](double x, double) { return x > 0.0 ? k * x : 0.0; };
+  ramp.surface(kOrigin, -kOrigin, kOrigin, -kOrigin, rz);
+  std::vector<TerrainPathPose> up_the_ramp;
+  for (double x = -1.9; x < 1.9; x += 0.1) {
+    up_the_ramp.push_back({x, 0.0, rz(x, 0.0), false});
+  }
+  ramp.grid.setPath(up_the_ramp);
+  ramp.classify(0.0, -1.0, 0.0);
+  EXPECT_GT(ramp.share(-0.1, 1.5, -0.3, 0.3, FREE_SPACE), 0.95);
+  ramp.surface(1.0, 1.2, -0.1, 0.1, [&](double x, double y) { return rz(x, y) + 0.20; });
+  ramp.classify(0.0, -1.0, 0.0);
+  EXPECT_GT(ramp.share(1.0, 1.2, -0.1, 0.1, LETHAL_OBSTACLE), 0.9);
 }
 
 TEST(TerrainGrid, ARayThroughACellBoundsItsGround)
@@ -935,4 +957,25 @@ TEST(TerrainGrid, ARayThroughACellBoundsItsGround)
   }
   box.classify();
   EXPECT_GT(box.share(0.8, 1.2, -0.2, 0.2, LETHAL_OBSTACLE), 0.9);
+
+  // The cell a ray ends in is left alone whichever way the ray comes
+  // (2026-11-07). A post of returns 0.4-0.75 m up in the one cell at
+  // (1.0-1.05, 1.0-1.05), nothing seen round it, and a single ray at 45 deg
+  // ending on its lowest return in the far half of that cell: the ray
+  // enters the cell res * sqrt 2 before its end, and the walk used to stop
+  // a distance res short of the end rather than at the end cell, so the
+  // bound was written into the cell the return landed in -- every return
+  // above the ray's own height left the estimate, and the post had no ground
+  // of its own (the robot's, 0). Its ground is its lowest return plus
+  // max_ground_lift now, as a wall's is.
+  Scene post;
+  post.floor(kOrigin, 0.9, kOrigin, -kOrigin);
+  for (double z = 0.4; z < 0.75; z += 0.03) {
+    post.grid.addSample(1.045, 1.045, z, kNow - 1.0);
+  }
+  ray(post, 1.045, 1.045, 0.4);
+  post.classify();
+  int ix, iy;
+  ASSERT_TRUE(post.grid.worldToCell(1.02, 1.02, ix, iy));
+  EXPECT_NEAR(post.grid.lastGround()[post.grid.index(ix, iy)], 0.49, 0.07);
 }
