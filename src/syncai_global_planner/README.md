@@ -774,8 +774,18 @@ terms:
   so a ramp's uphill cells are reached and the floor a storey below is
   not). Cells within `block_radius` (0.35 m — the inscribed radius plus the
   margin the 2D footprint test sweeps) are not expanded by the A*, not in
-  sight for the shortcut and refused to a goal snap; beyond the ring the
-  clearance the cost factor reads is the smaller of the static one and the
+  sight for the shortcut, refused to a pass-through waypoint's snap, and
+  **fail the goal a route ends on** (`goal_unavailable` → 206
+  `GOAL_OCCUPIED`, `SurfaceAStar::snapGoal()`, 2026-11): the goal is snapped
+  keeping off the zones only and its cell then tested against the marks,
+  never moved off them. Until then the goal snap kept off the marks like a
+  zone, and with `snap_xy_radius` 0.5 a goal under an obstacle moved to the
+  nearest cell outside its ring — on robot01 (2026-11-06) 0.42 m, to the
+  side of an obstacle the lidar had not seen, where the robot drove and
+  would have succeeded; it failed only once every cell within 0.5 m was
+  marked or ringed. A pass-through waypoint still snaps round a mark: the
+  robot only passes within `waypoint_passed_radius` (1.0 m) of it. Beyond
+  the ring the clearance the cost factor reads is the smaller of the static one and the
   distance past the ring, so a person is paid for with the same curve as a
   wall and the detour keeps its distance where it has room. The start's own
   disc (`block_radius` round it) is exempt from the dilation — not from a
@@ -800,7 +810,16 @@ terms:
 - `planner_server/Octo3D/clear_overlay` (`nav2_msgs/ClearEntireCostmap`,
   the costmap clear's type, so the trees call it with the stock
   `ClearEntireCostmap` node) drops every mark: at every new goal and when a
-  plan fails, with `move.xml`'s semantics.
+  plan fails, with `move.xml`'s semantics. **The next plan waits for a scan
+  added after the clear** (2026-11, `waitForScanAfterClear()`), at most
+  `dynamic.transform_tolerance` + 0.2 s and only while scans are arriving
+  (none for 2 s: no wait). Until then a plan right after a clear read an
+  empty overlay: `move.xml`'s recovery retries a failed plan at once, and on
+  robot01 (2026-11-06) the retry of a `goal_occupied` plan ran 1.5 ms after
+  the clear, read 0 marks and planned straight through the obstacle on the
+  goal, so 206 never reached the task runner's result. The log says
+  `waited … s for a scan after clear_overlay` (INFO) or that none came
+  (WARN).
 
 Three decisions shape it (the header of `dynamic_overlay.hpp` has them in
 full): only traversable cells are marked, because a wall's returns land in
@@ -871,9 +890,10 @@ margin), and costed beyond that out to `clearance_cost_radius` with the
 walls' own curve. The dilation is the dynamic overlay's (`dilateOnSurface`):
 it follows a ramp and stops at a floor edge the way a mark's does, so one
 floor's zone never reaches the other. The mask (`KeepoutMask`) rides beside
-the overlay's in every `BlockedView`, so the goal snap, the search, the
-shortcut and `is_path_valid` keep off a zone exactly as they keep off a
-person: a goal **point inside a zone's polygon** fails `goal_in_keepout`
+the overlay's in every `BlockedView`, so the search, the shortcut and
+`is_path_valid` keep off a zone exactly as they keep off a person, and the
+goal snap keeps off a zone where a person fails the goal (`snapGoal()`,
+see **Dynamic obstacles**): a goal **point inside a zone's polygon** fails `goal_in_keepout`
 (2026-11, naming the zone; tested on the floor an unblocked snap finds under
 the point, before the goal snap — which keeps off the zones and their ring,
 and so used to move a goal up to `snap_xy_radius − block_radius` (0.25 m)
@@ -1034,7 +1054,7 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `dynamic.self_radius` | `0.6` | Returns closer to the sensor are neither marks nor rays: the robot's own legs (0.2–0.3 m up, ~0.5 m out) sit in the band. Dynamic |
 | `dynamic.min_obstacle_height` | `0.1` | Band bottom above a surface's top face; the top is `body_clearance`. The terrain layer's band. Dynamic |
 | `dynamic.obstacle_memory` | `30.0` s | How long an unrefreshed, uncleared mark lives: outlasts `blocked_time` (10 s) plus a plan plus the detour's blind stretch. Dynamic |
-| `dynamic.block_radius` | `0.35` | Cells within it of a mark are blocked (search, shortcut, goal snap, `is_path_valid`); also the exempt disc round the start. Between the inscribed 0.25 and the circumscribed 0.455, what the removed 2D perimeter test swept. Dynamic |
+| `dynamic.block_radius` | `0.35` | Cells within it of a mark are blocked (search, shortcut, a pass-through waypoint's snap, `is_path_valid`), and a goal whose cell is within it fails `goal_unavailable` (206) rather than move; also the exempt disc round the start. Between the inscribed 0.25 and the circumscribed 0.455, what the removed 2D perimeter test swept. Dynamic |
 | `keepout.file` | `""` (= `keepout.json` next to `octomap_file`) | The zones (see **Keepout zones**); absent = none. Boot only: `load_map` takes the new tree's own and writes it back; `ros2 param set` is refused (call `load_keepout`) |
 | `keepout.block_radius` | `0.25` | Ring round a zone's core within which cells are blocked: = `robot_radius` (what the removed 2D `KeepoutFilter` inflated its mask with) — change the two together. Dynamic (re-rasterised) |
 

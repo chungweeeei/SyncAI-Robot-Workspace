@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -1313,6 +1314,62 @@ TEST(KeepoutZones, AGoalPointInsideAZoneIsInItOnItsFloorOnly)
   EXPECT_EQ(zoneAtPoint(upstairs, 6.0, 4.0, floorZ(6.0, 4.0)), nullptr);
   EXPECT_EQ(zoneAtPoint({}, 6.0, 4.0, 0.0), nullptr);
   EXPECT_STREQ(planFailureName(PlanFailure::GoalInKeepout), "goal_in_keepout");
+}
+
+// The goal a route ends on (snapGoal(), 2026-11): an obstacle on it is
+// goal_occupied, never a goal moved round it, while a zone's ring still
+// moves it clear.
+TEST(SurfaceAStar, AGoalOnAMarkIsOccupiedNotMovedButAZoneRingStillMovesIt)
+{
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;  // snap_xy_radius 0.5
+  // One return on the goal, seen from 1 m off: the smallest obstacle.
+  DynamicOverlay o;
+  o.setMap(m);
+  o.addScan({{6.05, 4.05, 0.3}}, sensorOver(5.05, 4.05, 0.0), 0.0);
+  const auto mask = o.snapshot(0.0);
+  ASSERT_NE(mask, nullptr);
+  const CellId start = cellAt(*m, 3.05, 4.05, 0.0);
+  ASSERT_NE(start, kNoCell);
+  const BlockedView view = viewFrom(*mask, start);
+  // What the goal snap did until then: the nearest cell outside the ring,
+  // ~0.4 m off the point, inside snap_xy_radius.
+  const SnapResult moved = astar.snap(6.05, 4.05, 0.0, p, kNoComponent, &view);
+  ASSERT_NE(moved.cell, kNoCell);
+  EXPECT_GT(moved.xy_dist, mask->block_radius);
+  // snapGoal: refused, and the detail says why and how close.
+  const SnapResult on = astar.snapGoal(6.05, 4.05, 0.0, p, kNoComponent, view);
+  EXPECT_EQ(on.cell, kNoCell);
+  EXPECT_TRUE(on.occupied);
+  EXPECT_FALSE(on.outside);
+  EXPECT_NE(on.detail.find("occupied"), std::string::npos);
+  // Off the mark but inside its ring (0.3 m): the robot would stand on it.
+  EXPECT_TRUE(astar.snapGoal(6.35, 4.05, 0.0, p, kNoComponent, view).occupied);
+  // Clear of the ring (0.5 m): the goal's own cell, not moved.
+  const SnapResult clear = astar.snapGoal(6.55, 4.05, 0.0, p, kNoComponent, view);
+  ASSERT_NE(clear.cell, kNoCell);
+  EXPECT_FALSE(clear.occupied);
+  EXPECT_LT(clear.xy_dist, 0.1);
+  // No overlay at all: an ordinary snap.
+  const SnapResult none = astar.snapGoal(6.05, 4.05, 0.0, p, kNoComponent, BlockedView{});
+  ASSERT_NE(none.cell, kNoCell);
+  EXPECT_FALSE(none.occupied);
+
+  // A goal outside a zone's polygon but in its robot-radius ring is still
+  // moved clear of the ring (the zones' documented rule), with or without
+  // marks elsewhere in the view.
+  const std::vector<KeepoutZone> zones = {rect("box", 5, 7, 3, 5, -0.5, 0.5)};
+  const auto box = buildKeepoutMask(*m, nullptr, zones, 0.25);
+  ASSERT_NE(box, nullptr);
+  BlockedView both = zoneView(*box, start);
+  both.mask = mask.get();
+  both.exempt_radius = std::max(mask->block_radius, box->block_radius);
+  const SnapResult ring = astar.snapGoal(6.0, 5.1, 0.0, p, kNoComponent, both);
+  ASSERT_NE(ring.cell, kNoCell);
+  EXPECT_FALSE(ring.occupied);
+  EXPECT_FALSE(both.blockedByZone(*m, ring.cell));
+  EXPECT_GT(ring.xy_dist, 0.05);
 }
 
 TEST(StairLinks, AZoneOnTheFlightCutsTheLinkAndTheFailureSaysSo)

@@ -916,6 +916,56 @@ double OctomapPlanner3D::scanAge() const
          last;
 }
 
+void OctomapPlanner3D::waitForScanAfterClear(const char * fn)
+{
+  // Why (2026-11): clear_overlay empties the overlay, and until the next
+  // scan (~0.1 s) a plan sees nothing the lidar can see right now. The trees
+  // clear at every new goal and in the planner's recovery, and the recovery
+  // retries at once: on robot01 (2026-11-06) the retry of a goal_occupied
+  // plan ran 1.5 ms after the clear, read 0 marks and planned straight
+  // through the obstacle standing on the goal, so a goal someone stands on
+  // went round the same loop (blocked, 10 s, replan, 206, clear, through)
+  // instead of failing GOAL_OCCUPIED. One scan is enough: whatever it sees
+  // is marked by it, and the marks the clear dropped that it does not see
+  // (out of range, behind the robot) stay dropped -- which is what the
+  // clear is for.
+  //
+  // Only while scans are arriving: with none for kStaleScan (the lidar or
+  // its TF down, dynamic.enabled false, no 3D map) there is nothing to wait
+  // for, and isPathValid() already says so. The bound is the message
+  // filter's own wait for a cloud's transform plus two scan periods, so a
+  // scan that is coming arrives within it; past it the plan goes ahead on
+  // what it has, as before.
+  constexpr double kStaleScan = 2.0;    // s, isPathValid()'s
+  constexpr double kScanPeriods = 0.2;  // s, body_cloud is ~10 Hz
+  const double age = scanAge();
+  if (!dynamic_enabled_ || age < 0.0 || age > kStaleScan) {
+    return;
+  }
+  using Clock = std::chrono::steady_clock;
+  const auto t0 = Clock::now();
+  const auto limit = std::chrono::duration<double>(transform_tolerance_ + kScanPeriods);
+  std::unique_lock<std::mutex> scan_lock(scan_mutex_);
+  if (!scan_pending_after_clear_) {
+    return;
+  }
+  const bool got = scan_cv_.wait_for(
+    scan_lock, std::chrono::duration_cast<Clock::duration>(limit),
+    [this] { return !scan_pending_after_clear_; });
+  const double waited = std::chrono::duration<double>(Clock::now() - t0).count();
+  scan_lock.unlock();
+  if (got) {
+    RCLCPP_INFO(
+      logger_, "[OctomapPlanner3D][%s] waited %.3f s for a scan after clear_overlay", fn, waited);
+  } else {
+    RCLCPP_WARN(
+      logger_,
+      "[OctomapPlanner3D][%s] no scan within %.2f s of clear_overlay; planning on the cleared "
+      "overlay, which does not see what stands in view now",
+      fn, waited);
+  }
+}
+
 nav_msgs::msg::Path OctomapPlanner3D::createPlan(
   const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal)
 {
@@ -939,6 +989,11 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
 {
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
+  const bool through = goals.size() > 1;
+  const char * fn = through ? "createPlanThroughPoses" : "createPlan";
+  // Before mutex_: the wait must not hold up the parameter callback or a
+  // map swap. Counted into the plan's total time in the summary line.
+  waitForScanAfterClear(fn);
   std::lock_guard<std::mutex> lock(mutex_);
 
   nav_msgs::msg::Path path;
@@ -957,9 +1012,7 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
   // exactly as a single plan does, and every later leg starts on the cell
   // the leg before ended on: the right floor, no jump at the joint, one
   // overlay snapshot for the whole route. A single goal is a one-leg route
-  // and logs as it always did.
-  const bool through = goals.size() > 1;
-  const char * fn = through ? "createPlanThroughPoses" : "createPlan";
+  // and logs as it always did (`through` and `fn` above).
 
   // The request as this planner sees it, appended to a failure: the
   // detail of a search failure (no_path, disconnected, timeout) names no
@@ -1094,9 +1147,21 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
         }
       }
     }
-    const o3d::SnapResult g = astar_->snap(
-      goal.pose.position.x, goal.pose.position.y, goal_z, search_params_,
-      map_->cells[leg_start].component, &blocked);
+    // The goal the route ends on is never moved off a dynamic obstacle
+    // (snapGoal(), 2026-11): one on it fails goal_unavailable -> 206
+    // GOAL_OCCUPIED, which the backend retries. A pass-through waypoint of a
+    // patrol still snaps round one: the robot only passes within
+    // waypoint_passed_radius (1.0 m) of it, so moving it up to snap_xy_radius
+    // changes nothing it is for, and failing the whole route because someone
+    // stands on a point it drives through would.
+    const bool last = leg + 1 == goals.size();
+    const auto component = map_->cells[leg_start].component;
+    const o3d::SnapResult g = last ? astar_->snapGoal(
+                                       goal.pose.position.x, goal.pose.position.y, goal_z,
+                                       search_params_, component, blocked)
+                                   : astar_->snap(
+                                       goal.pose.position.x, goal.pose.position.y, goal_z,
+                                       search_params_, component, &blocked);
     if (g.cell == o3d::kNoCell) {
       return fail(
         g.outside ? o3d::PlanFailure::GoalOutsideMap : o3d::PlanFailure::GoalUnavailable, g.detail);
@@ -1403,8 +1468,15 @@ void OctomapPlanner3D::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedP
   // transform's translation is the sensor origin the rays start from.
   const o3d::Waypoint origin{
     tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z};
-  const o3d::ScanStats st =
-    overlay_->addScan(points, origin, rclcpp::Time(message->header.stamp).seconds());
+  o3d::ScanStats st;
+  {
+    // Under scan_mutex_, so a clear cannot land between the add and the
+    // flag: a scan added before a clear must not count as the one after it.
+    std::lock_guard<std::mutex> scan_lock(scan_mutex_);
+    st = overlay_->addScan(points, origin, rclcpp::Time(message->header.stamp).seconds());
+    scan_pending_after_clear_ = false;
+  }
+  scan_cv_.notify_all();
   last_scan_steady_ =
     std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   RCLCPP_DEBUG_THROTTLE(
@@ -1418,7 +1490,13 @@ void OctomapPlanner3D::clearOverlayCallback(
   const std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Request> /*request*/,
   std::shared_ptr<nav2_msgs::srv::ClearEntireCostmap::Response> /*response*/)
 {
-  const size_t n = overlay_->clear();
+  size_t n = 0;
+  {
+    // The next plan waits for a scan added after this (waitForScanAfterClear()).
+    std::lock_guard<std::mutex> scan_lock(scan_mutex_);
+    n = overlay_->clear();
+    scan_pending_after_clear_ = true;
+  }
   RCLCPP_INFO(
     logger_,
     "[OctomapPlanner3D][%s] dynamic overlay cleared: %zu marks dropped (keepout zones kept)",

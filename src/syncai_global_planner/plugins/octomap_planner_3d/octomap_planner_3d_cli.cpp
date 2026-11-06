@@ -784,9 +784,10 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
 
 // mask: the dynamic overlay's snapshot (--dynamic), or null; keepout: the
 // map's keepout mask (--keepout), or null. Read exactly as the plugin reads
-// them: the goal snap, the search and the shortcut keep off both, with the
-// disc round the start exempt from the dilation, a start inside a zone's
-// core is refused, and so is a goal point inside a zone's polygon.
+// them: the search and the shortcut keep off both, with the disc round the
+// start exempt from the dilation; the goal snap keeps off the zones and
+// fails on a mark (snapGoal()); a start inside a zone's core is refused, and
+// so is a goal point inside a zone's polygon.
 int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
@@ -827,7 +828,8 @@ int runPlan(
   blocked.exempt = s.cell;
   blocked.exempt_radius =
     std::max(mask ? mask->block_radius : 0.0, keepout ? keepout->block_radius : 0.0);
-  const SnapResult g = astar.snap(gx, gy, gz, sp, m.cells[s.cell].component, &blocked);
+  // The goal is never moved off a mark, as in the plugin (snapGoal()).
+  const SnapResult g = astar.snapGoal(gx, gy, gz, sp, m.cells[s.cell].component, blocked);
   if (g.cell == kNoCell) {
     std::printf(
       "plan: %s: %s\n",

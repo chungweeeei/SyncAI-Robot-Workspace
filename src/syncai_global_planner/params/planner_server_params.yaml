@@ -345,7 +345,10 @@
       # Snap: nearest traversable cell within the xy radius (Smac's tolerance)
       # whose top face is within the z window of the height hint. 1.0 covers
       # the 0.48 m lidar-to-floor offset of a goal at the robot's height and
-      # is far below the spacing of two floors (~5.7 m here).
+      # is far below the spacing of two floors (~5.7 m here). The radius
+      # moves a goal onto the map's ground and out of a keepout zone's ring;
+      # the goal a route ends on is never moved off a dynamic obstacle
+      # (dynamic.block_radius), a patrol's pass-through waypoint is.
       snap_xy_radius: 0.5
       snap_z_window: 1.0
       # Nothing within snap_z_window and only one traversable layer within
@@ -434,8 +437,10 @@
         # layer's 2 s serves the 5 Hz controller, a different job.
         obstacle_memory: 30.0
         # Cells within this distance of a mark are not traversable for the
-        # search and read blocked to is_path_valid; it is also the disc
-        # round the robot's own cell that the dilation does not block.
+        # search and read blocked to is_path_valid; a goal whose cell is
+        # within it fails goal_unavailable (206 GOAL_OCCUPIED) instead of
+        # being snapped off the mark (2026-11, snapGoal()); it is also the
+        # disc round the robot's own cell that the dilation does not block.
         # Between the inscribed radius (0.25, the surface map's own wall
         # inflation) and the circumscribed one (0.455); the 2D footprint-
         # perimeter test at the path heading +-0.35 rad reaches ~0.36 m
@@ -452,8 +457,10 @@
       # (keepout_zones.hpp has the format; a 2D image cannot say which of
       # a site's storeys a pixel forbids). Read with the tree at boot and on
       # every load_map, rasterised on the surface map, and read beside the
-      # dynamic overlay's marks by the goal snap, the search, the shortcut
-      # and is_path_valid, so a zone is kept off exactly as a person is. A
+      # dynamic overlay's marks by the search, the shortcut and
+      # is_path_valid, so a zone is kept off exactly as a person is; the
+      # goal snap moves a goal out of a zone's ring (a person on the goal
+      # fails it instead, see dynamic.block_radius). A
       # start inside a zone fails start_in_keepout; a stair link with a
       # point in a zone is never taken. Reload an edited file with
       # planner_server/Octo3D/load_keepout (nav2_msgs/LoadMap, map_url =
