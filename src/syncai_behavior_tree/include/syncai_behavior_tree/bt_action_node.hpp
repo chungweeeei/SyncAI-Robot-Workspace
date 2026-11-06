@@ -351,6 +351,30 @@ public:
     //   running has to yield.
     // - haltTree() was called from above (BtActionServer does this on cancel).
 
+    // A goal sent and not yet acknowledged (2026-11; upstream Humble's gap
+    // too): should_cancel_goal() looks at goal_handle_ only, which is still
+    // empty -- or still the previous goal's, for a goal updated mid-flight --
+    // so the halt cancelled nothing, the server accepted the goal a moment
+    // later and ran it, and a CANCELED navigation left the controller driving
+    // the robot. Wait for the acknowledgement (at most server_timeout, as the
+    // cancel below does) and cancel what it names.
+    if (status() == BT::NodeStatus::RUNNING && future_goal_handle_) {
+      const auto ack =
+        callback_group_executor_.spin_until_future_complete(*future_goal_handle_, server_timeout_);
+      if (ack == rclcpp::FutureReturnCode::SUCCESS) {
+        if (auto handle = future_goal_handle_->get()) {
+          goal_handle_ = handle;
+        }
+      } else {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "[BtActionNode][%s] %s: halted with a goal not acknowledged within %ld ms; if the "
+          "server accepts it later it is not cancelled",
+          __func__, action_name_.c_str(), static_cast<long>(server_timeout_.count()));
+      }
+      future_goal_handle_.reset();
+    }
+
     // Check whether there is a goal still RUNNING that needs cancelling
     if (should_cancel_goal()) {
       auto future_result =
