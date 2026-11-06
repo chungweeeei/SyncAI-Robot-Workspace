@@ -171,14 +171,18 @@ bool zoneContains(const KeepoutZone & z, double x, double y, double zz)
 
 KeepoutMaskPtr buildKeepoutMask(
   const SurfaceMap & m, const StairLinks * links, const std::vector<KeepoutZone> & zones,
-  double block_radius)
+  double block_radius, std::vector<size_t> * zone_hits)
 {
+  if (zone_hits) {
+    zone_hits->assign(zones.size(), 0);
+  }
   auto mask = std::make_shared<KeepoutMask>();
   mask->block_radius = block_radius;
   mask->zones = zones.size();
   mask->d.assign(m.cells.size(), std::numeric_limits<float>::infinity());
   std::vector<CellId> seeds;
-  for (const KeepoutZone & z : zones) {
+  for (size_t zi = 0; zi < zones.size(); ++zi) {
+    const KeepoutZone & z = zones[zi];
     // The polygon's bounding box in columns, clipped to the grid; every cell
     // of every column in it whose centre the polygon holds and whose top
     // face the band holds is a seed -- traversable or not, as the 2D mask
@@ -199,10 +203,13 @@ KeepoutMaskPtr buildKeepoutMask(
         const double cx = m.cx(ix), cy = m.cy(iy);
         const uint32_t c = m.col(ix, iy);
         for (uint32_t i = m.col_begin[c], e = m.col_begin[c + 1]; i < e; ++i) {
-          if (mask->d[i] <= 0.0f) {
-            continue;  // already a seed of an earlier zone
+          if (!zoneContains(z, cx, cy, m.zTop(i))) {
+            continue;
           }
-          if (zoneContains(z, cx, cy, m.zTop(i))) {
+          if (zone_hits) {
+            ++(*zone_hits)[zi];
+          }
+          if (mask->d[i] > 0.0f) {  // else already a seed of an earlier zone
             mask->d[i] = 0.0f;
             seeds.push_back(i);
           }
@@ -215,9 +222,12 @@ KeepoutMaskPtr buildKeepoutMask(
     for (size_t li = 0; li < links->links.size(); ++li) {
       for (const Waypoint & w : links->links[li].pts) {
         bool in = false;
-        for (const KeepoutZone & z : zones) {
-          if (zoneContains(z, w.x, w.y, w.z)) {
+        for (size_t zi = 0; zi < zones.size(); ++zi) {
+          if (zoneContains(zones[zi], w.x, w.y, w.z)) {
             in = true;
+            if (zone_hits) {
+              ++(*zone_hits)[zi];
+            }
             break;
           }
         }

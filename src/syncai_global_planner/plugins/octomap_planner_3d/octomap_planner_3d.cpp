@@ -450,7 +450,8 @@ OctomapPlanner3D::KeepoutLoad OctomapPlanner3D::loadKeepout(
       logger_, "[OctomapPlanner3D][%s] keepout zones not loaded: %s", __func__, error.c_str());
     return KeepoutLoad::Failed;
   }
-  o3d::KeepoutMaskPtr built = o3d::buildKeepoutMask(map, links, parsed, block_radius);
+  std::vector<size_t> hits;
+  o3d::KeepoutMaskPtr built = o3d::buildKeepoutMask(map, links, parsed, block_radius, &hits);
   // One line the smoke test greps for; keep its shape.
   RCLCPP_INFO(
     logger_,
@@ -458,10 +459,27 @@ OctomapPlanner3D::KeepoutLoad OctomapPlanner3D::loadKeepout(
     "stair links cut (block radius %.2f m)",
     __func__, file.c_str(), parsed.size(), built ? built->blocked : size_t{0},
     built ? built->core : size_t{0}, built ? built->links_cut : size_t{0}, block_radius);
-  for (const o3d::KeepoutZone & z : parsed) {
-    RCLCPP_INFO(
-      logger_, "[OctomapPlanner3D][%s]   zone %s: %zu vertices, z %.2f..%.2f", __func__,
-      o3d::zoneLabel(z).c_str(), z.polygon.size(), z.z_min, z.z_max);
+  for (size_t i = 0; i < parsed.size(); ++i) {
+    const o3d::KeepoutZone & z = parsed[i];
+    if (hits[i] == 0) {
+      // WARN, not INFO (2026-11): a zone that covers no floor forbids
+      // nothing, and the summary above ("N zones, 0 cells blocked") said so
+      // only in a number. The usual cause is a z band on no storey -- the
+      // band is floor_z +- 0.5, and a floor_z off by a storey's height lands
+      // between two floors.
+      RCLCPP_WARN(
+        logger_,
+        "[OctomapPlanner3D][%s]   zone %s: %zu vertices, z %.2f..%.2f -- covers no floor and no "
+        "stair: no surface of the map has its top within the z band inside the polygon (a band "
+        "on the wrong storey, or a polygon off the map), so this zone forbids nothing",
+        __func__, o3d::zoneLabel(z).c_str(), z.polygon.size(), z.z_min, z.z_max);
+    } else {
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s]   zone %s: %zu vertices, z %.2f..%.2f, %zu core cells / "
+        "stair links",
+        __func__, o3d::zoneLabel(z).c_str(), z.polygon.size(), z.z_min, z.z_max, hits[i]);
+    }
   }
   zones = std::move(parsed);
   mask = std::move(built);
@@ -1444,9 +1462,15 @@ void OctomapPlanner3D::cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedP
   }
   geometry_msgs::msg::TransformStamped tf;
   try {
+    // No timeout (2026-11; transform_tolerance_ until then): the message
+    // filter released this cloud because the transform at its stamp is in
+    // the buffer, and this callback runs on the thread that takes /tf -- a
+    // wait here could only block the delivery of the transform it waits
+    // for, up to transform_tolerance (0.3 s), stalling every TF consumer of
+    // the planner. Missing anyway (a buffer cleared by a time jump between
+    // the filter and here), the scan is dropped with the warning below.
     tf = tf_->lookupTransform(
-      global_frame_, message->header.frame_id, message->header.stamp,
-      tf2::durationFromSec(transform_tolerance_));
+      global_frame_, message->header.frame_id, message->header.stamp, tf2::durationFromSec(0.0));
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
       logger_, *clock_, 5000, "[OctomapPlanner3D][%s] cannot transform %s into %s: %s", __func__,

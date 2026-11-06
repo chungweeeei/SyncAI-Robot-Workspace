@@ -1,6 +1,7 @@
 #ifndef SYNCAI_COSTMAP__LAYER_HPP_
 #define SYNCAI_COSTMAP__LAYER_HPP_
 
+#include <atomic>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -146,7 +147,10 @@ protected:
    */
   virtual void onInitialize() {}
 
-  bool current_;
+  // Atomic (2026-11; upstream's is a plain bool): written on the costmap's
+  // update thread and by a clear's reset(), read every control cycle by the
+  // controller's thread through isCurrent() (waitForCurrentCostmap()).
+  std::atomic<bool> current_;
   // Currently this var is managed by subclasses.
   // TODO(bpwilcox): make this managed by this class and/or container class.
   bool enabled_;

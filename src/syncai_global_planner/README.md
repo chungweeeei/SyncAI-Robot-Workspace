@@ -771,7 +771,10 @@ terms:
   costmap's thread stopped for good mid-goal (every thread in `futex_wait`,
   most likely the filter and tf2 deadlocking across the two threads; no
   backtrace): `/tf` stopped reaching the buffer, `getRobotPose()` kept
-  answering the last pose, and every later plan started 20 m away. Every return within
+  answering the last pose, and every later plan started 20 m away. On that
+  thread the callback's own lookup never waits (2026-11; it waited up to
+  `transform_tolerance` before, for a transform only that thread could
+  deliver): the filter has already seen it in the buffer. Every return within
   `obstacle_max_range` (2.5 m) is dropped onto the surface it lies above —
   the highest layer of its column whose top face is at most one cell above
   the return, so two floors never see each other's people — and if it lies
@@ -894,7 +897,10 @@ named; `test/test_surface_map.cpp`'s `KeepoutZones` cases are the contract.
 
 What a zone does, on the surface map: a cell is in the zone's **core** when
 its column centre lies inside the polygon and its top face in the band — so
-the same polygon with band 4.5..5.5 forbids 2F and leaves 1F alone — and the
+the same polygon with band 4.5..5.5 forbids 2F and leaves 1F alone (a zone
+whose band and polygon hold no surface and cut no stair forbids nothing; each
+load logs it as a **WARN** naming the zone since 2026-11, the usual cause a
+band on the wrong storey) — and the
 core is dilated over the surface by **`keepout.block_radius`** (0.25, the
 robot's radius: the 2D costmap's inscribed radius, what the 2D
 `KeepoutFilter` inflated its mask with, so a zone closes any gap narrower than the robot

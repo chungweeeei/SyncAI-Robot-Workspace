@@ -1183,6 +1183,18 @@ TEST(KeepoutZones, ARectangleIsRasterisedOnItsFloorOnlyAndRingedByTheRobotRadius
   EXPECT_EQ(buildKeepoutMask(*m, nullptr, {rect("mid", 5, 7, 3, 5, 2.0, 3.0)}, 0.25), nullptr);
   EXPECT_EQ(buildKeepoutMask(*m, nullptr, {rect("off", 50, 52, 3, 5, -1, 1)}, 0.25), nullptr);
   EXPECT_EQ(buildKeepoutMask(*m, nullptr, {}, 0.25), nullptr);
+  // Per zone, what the planner warns on: a zone over a floor counts its core
+  // cells, one on no floor 0, and an overlap counts for both.
+  std::vector<size_t> hits;
+  buildKeepoutMask(
+    *m, nullptr,
+    {rect("box", 5, 7, 3, 5, -0.5, 0.5), rect("mid", 5, 7, 3, 5, 2.0, 3.0),
+     rect("half", 6, 7, 3, 5, -0.5, 0.5)},
+    0.25, &hits);
+  ASSERT_EQ(hits.size(), 3u);
+  EXPECT_EQ(hits[0], 400u);
+  EXPECT_EQ(hits[1], 0u);
+  EXPECT_EQ(hits[2], 200u);
   // zoneAt finds the zone a core cell is in, for the messages.
   const std::vector<KeepoutZone> zones = {rect("box", 5, 7, 3, 5, -0.5, 0.5)};
   ASSERT_NE(zoneAt(zones, *m, inside), nullptr);
