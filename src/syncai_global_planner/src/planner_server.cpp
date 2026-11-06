@@ -234,16 +234,18 @@ void PlannerServer::configure()
     nullptr, std::chrono::milliseconds(500), true);
 
   // The patrol route's planner (navigate_through_poses), on its own thread
-  // likewise. Both actions plan under dynamic_params_lock_ and the planner's
-  // own lock, so a route and a single plan never run at once.
+  // likewise. Both actions plan under the planner's own lock, so a route and
+  // a single plan never search at once.
   action_server_poses_ = std::make_unique<ActionServerThroughPoses>(
     this->shared_from_this(), "compute_path_through_poses",
     std::bind(&PlannerServer::computePlanThroughPoses, this), nullptr,
     std::chrono::milliseconds(500), true);
 
   // The console's route preview, on its own thread too. It plans under the
-  // same two locks, so it waits behind a navigation's plan rather than racing
-  // it, but it never publishes on `plan` or replaces the last plan: a preview
+  // same planner lock, so it waits behind a navigation's search rather than
+  // racing it (milliseconds: the lock is held for the search alone, not the
+  // TF waits round it), but it never publishes on `plan` or replaces the
+  // last plan: a preview
   // there would be drawn on every console as the route being driven, and
   // is_path_valid would judge a running navigation's path against it.
   action_server_preview_ = std::make_unique<ActionServerToPose>(
@@ -542,8 +544,6 @@ void PlannerServer::previewPlan()
 
 void PlannerServer::planToPose(std::unique_ptr<ActionServerToPose> & server, bool remember)
 {
-  std::lock_guard<std::mutex> lock(dynamic_params_lock_);
-
   auto start_time = this->now();
 
   // Initialize the ComputePathToPose goal and result
@@ -602,12 +602,13 @@ void PlannerServer::planToPose(std::unique_ptr<ActionServerToPose> & server, boo
 
     // Said as a duration: plans are made once per goal and on a blocked
     // path, so "missed its desired rate" read as a loop that does not exist.
-    if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
+    const double max_duration = max_planner_duration_.load();
+    if (max_duration > 0.0 && cycle_duration.seconds() > max_duration) {
       RCLCPP_WARN(
         get_logger(),
         "[PlannerServer][%s] Plan took %.3f s, over the %.3f s of expected_planner_frequency "
         "(%.1f Hz); a warning only",
-        __func__, cycle_duration.seconds(), max_planner_duration_, 1 / max_planner_duration_);
+        __func__, cycle_duration.seconds(), max_duration, 1 / max_duration);
     }
 
     server->succeeded_current(result);
@@ -620,8 +621,6 @@ void PlannerServer::planToPose(std::unique_ptr<ActionServerToPose> & server, boo
 
 void PlannerServer::computePlanThroughPoses()
 {
-  std::lock_guard<std::mutex> lock(dynamic_params_lock_);
-
   auto start_time = this->now();
 
   auto goal = action_server_poses_->get_current_goal();
@@ -675,12 +674,13 @@ void PlannerServer::computePlanThroughPoses()
 
     auto cycle_duration = this->now() - start_time;
     result->planning_time = cycle_duration;
-    if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
+    const double max_duration = max_planner_duration_.load();
+    if (max_duration > 0.0 && cycle_duration.seconds() > max_duration) {
       RCLCPP_WARN(
         get_logger(),
         "[PlannerServer][%s] Plan took %.3f s, over the %.3f s of expected_planner_frequency "
         "(%.1f Hz); a warning only",
-        __func__, cycle_duration.seconds(), max_planner_duration_, 1 / max_planner_duration_);
+        __func__, cycle_duration.seconds(), max_duration, 1 / max_duration);
     }
 
     action_server_poses_->succeeded_current(result);
@@ -835,7 +835,6 @@ void PlannerServer::dropPlan(const std::string & reason)
 rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallback(
   std::vector<rclcpp::Parameter> parameters)
 {
-  std::lock_guard<std::mutex> lock(dynamic_params_lock_);
   rcl_interfaces::msg::SetParametersResult result;
 
   // Startup only, refused before anything is applied (2026-11; accepted and

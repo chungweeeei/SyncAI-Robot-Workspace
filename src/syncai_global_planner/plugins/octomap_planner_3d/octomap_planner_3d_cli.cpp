@@ -1488,6 +1488,16 @@ int main(int argc, char ** argv)
           "m\n",
           l.centred, l.centre_mean_shift, l.centre_max_shift, l.centre_min_width);
       }
+      // Each landing corner's height against the points either side of it
+      // (a flight's head, the next one's foot, or the other corner of a U):
+      // a corner off the landing's floor reads to stair mode as a step down
+      // and back up where it stops to turn.
+      for (const size_t t : l.turns) {
+        const Waypoint & c = l.pts[t];
+        std::printf(
+          "    turn at (%.2f, %.2f): z %.2f, before %.2f, after %.2f\n", c.x, c.y, c.z,
+          t > 0 ? l.pts[t - 1].z : c.z, t + 1 < l.pts.size() ? l.pts[t + 1].z : c.z);
+      }
     }
     for (const std::string & note : links->notes) {
       std::printf("  note: %s\n", note.c_str());

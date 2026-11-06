@@ -214,6 +214,53 @@ bool landingObstacle(
   return !near && other;
 }
 
+// A landing's floor as the map holds it: the surface height most of the
+// sampled columns hold one at, within a riser and a half (0.3 m) of z, the
+// walk's ground there. Not z itself: the walk's ground is pose z -
+// lidar_height with the body still pitched from the flight, 0.1-0.2 m under
+// the floor on dp's landings, and the map holds stray faces under it too.
+// z when no sampled column holds a surface that near.
+double landingFloor(
+  const SurfaceMap & m, const std::vector<std::pair<double, double>> & xy, double z)
+{
+  std::unordered_map<int, int> votes;
+  for (const auto & [x, y] : xy) {
+    const int ix = m.ixOf(x), iy = m.iyOf(y);
+    if (!m.inGrid(ix, iy)) {
+      continue;
+    }
+    const uint32_t c = m.col(ix, iy);
+    for (uint32_t q = m.col_begin[c]; q < m.col_begin[c + 1]; ++q) {
+      if (std::fabs(m.zTop(q) - z) <= 0.3) {
+        ++votes[m.cells[q].kz];
+      }
+    }
+  }
+  double zl = z;
+  int best_n = 0;
+  for (const auto & [kz, n] : votes) {
+    if (n > best_n) {
+      best_n = n;
+      zl = m.z0 + (kz + 1) * m.res;
+    }
+  }
+  return zl;
+}
+
+// The same round one point: every column centre within radius of (cx, cy).
+double landingFloor(const SurfaceMap & m, double cx, double cy, double radius, double z)
+{
+  std::vector<std::pair<double, double>> xy;
+  for (double dy = -radius; dy <= radius + 1e-9; dy += m.res) {
+    for (double dx = -radius; dx <= radius + 1e-9; dx += m.res) {
+      if (std::hypot(dx, dy) <= radius + 1e-9) {
+        xy.push_back({cx + dx, cy + dy});
+      }
+    }
+  }
+  return landingFloor(m, xy, z);
+}
+
 // xy distance from (x, y) to the nearest blocked column (obstacle(ix, iy))
 // within cap, measured to the column's near edge, half a cell inside its
 // centre. cap when nothing is that close.
@@ -1012,9 +1059,21 @@ bool flightLinks(
     if (j + 1 == F.size()) {
       break;
     }
-    const Flight & g = F[j + 1];
+    Flight & g = F[j + 1];
     const double cosang = f.dx * g.dx + f.dy * g.dy;
     const double z = L[j + 1].z;
+    // A turning landing's floor (landingFloor) is the height of everything
+    // on it: its corners, the head of the flight arriving and the foot of
+    // the one leaving. Their own heights are what the march along the axis
+    // stopped at, or the walk's ground where it found nothing, and on dp's
+    // second landing that was a face 0.2 m under the floor -- with the
+    // corners at the walk's ground the path dipped there, which reads to
+    // stair mode as a step down and back up where it stops to turn (until
+    // 2026-11). f.head is pts.back() here; g.foot is pushed next round.
+    const auto onLanding = [&](double zf) {
+      pts.back().z = zf;
+      g.foot.z = zf;
+    };
     if (cosang > std::cos(30.0 * M_PI / 180.0)) {
       shapes += shapes.empty() ? "straight on" : ", straight on";
       continue;  // head -> next foot, no turn
@@ -1031,7 +1090,13 @@ bool flightLinks(
               "past the next foot";
         return false;
       }
-      const Waypoint c = {f.head.x + t * f.dx, f.head.y + t * f.dy, z};
+      // On the landing's floor as the map holds it, not the walk's ground
+      // (see the U below): the corners are where the robot stops and turns,
+      // and one under the floor reads to stair mode as a step down and back
+      // up there.
+      const double cx = f.head.x + t * f.dx, cy = f.head.y + t * f.dy;
+      const Waypoint c = {cx, cy, landingFloor(m, cx, cy, 0.5, z)};
+      onLanding(c.z);
       link.turns.push_back(pts.size());
       pts.push_back(c);
       std::snprintf(
@@ -1064,36 +1129,23 @@ bool flightLinks(
       // nearest it under the walk reads the floor; with either, most of the
       // landing came out a wall. The height most columns of the landing's
       // near metre hold a surface at, within a riser and a half of the walk.
+      // The corners stand on it too (2026-11; at the walk's z before, 0.1 m
+      // under the floor on dp's first and third landings).
       double zl = z;
       {
-        std::unordered_map<int, int> votes;
+        std::vector<std::pair<double, double>> xy;
         const double along_g0 = (g.foot.x - f.head.x) * f.dx + (g.foot.y - f.head.y) * f.dy;
         const double sa = std::max(0.0, along_g0);
         const double ex = g.foot.x - f.head.x - along_g0 * f.dx;  // f's axis to g's, across
         const double ey = g.foot.y - f.head.y - along_g0 * f.dy;
         for (double s = sa + 0.2; s <= sa + 1.0 + 1e-9; s += m.res) {
           for (double a = 0.0; a <= 1.0 + 1e-9; a += 0.05) {
-            const int ix = m.ixOf(f.head.x + s * f.dx + a * ex);
-            const int iy = m.iyOf(f.head.y + s * f.dy + a * ey);
-            if (!m.inGrid(ix, iy)) {
-              continue;
-            }
-            const uint32_t c = m.col(ix, iy);
-            for (uint32_t q = m.col_begin[c]; q < m.col_begin[c + 1]; ++q) {
-              if (std::fabs(m.zTop(q) - z) <= 0.3) {
-                ++votes[m.cells[q].kz];
-              }
-            }
+            xy.push_back({f.head.x + s * f.dx + a * ex, f.head.y + s * f.dy + a * ey});
           }
         }
-        int best_n = 0;
-        for (const auto & [kz, n] : votes) {
-          if (n > best_n) {
-            best_n = n;
-            zl = m.z0 + (kz + 1) * m.res;
-          }
-        }
+        zl = landingFloor(m, xy, z);
       }
+      onLanding(zl);
       const double cap = R + 0.3;
       std::unordered_map<uint32_t, bool> blocked;
       const auto obstacle = [&](int ix, int iy) {
@@ -1108,8 +1160,8 @@ bool flightLinks(
       const double s0 = std::max(0.0, along_g);  // the later of the two stair edges
       const auto corners = [&](double t, Waypoint & c1, Waypoint & c2) {
         const double s = s0 + t;
-        c1 = {f.head.x + s * ux, f.head.y + s * uy, z};
-        c2 = {g.foot.x + (s - along_g) * ux, g.foot.y + (s - along_g) * uy, z};
+        c1 = {f.head.x + s * ux, f.head.y + s * uy, zl};
+        c2 = {g.foot.x + (s - along_g) * ux, g.foot.y + (s - along_g) * uy, zl};
       };
       // Room left at t: the two turns' discs and the leg's half-width,
       // whichever is tightest. Negative = the body reaches something.
