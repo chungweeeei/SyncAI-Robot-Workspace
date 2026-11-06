@@ -140,7 +140,7 @@ both actions, the sixth on `NavigateToGoal` only):
 | `current_pose` | TF `global_frame → base_frame` |
 | `distance_remaining` | Path length from the closest pose on the blackboard's `path` to its end |
 | `estimated_time_remaining` | `distance_remaining / speed`, from the odom smoother; zero below 0.01 m/s or under 0.1 m remaining |
-| `number_of_recoveries` | Blackboard `number_recoveries`, incremented by the `ClearEntireCostmap` BT nodes — including the new-goal clear at tree start, so it reads at least 1 on every goal and recoveries proper are the value minus one |
+| `number_of_recoveries` | Blackboard `number_recoveries`, incremented by the `ClearEntireCostmap` BT nodes — including the new-goal clear at tree start, so on `move.xml`, `patrol.xml` and `dock.xml` (since 2026-11) it reads at least 1 and recoveries proper are the value minus one; `undock.xml` has no clear and starts at 0. Nothing in this stack, the backend or the console reads it: it is filled because nav2's feedback has the field |
 | `navigation_time` | Now minus `start_time_` |
 | `number_of_replans` (`NavigateToGoal`) | Blackboard `number_plans` (incremented by `ComputePathToPose` on success) minus one, floored at 0 — the detours, since the tree plans only when the path is blocked or the goal changed |
 | `status_msg` (`NavigateToGoal`) | Blackboard `nav_status_msg`: one sentence the BT nodes write at each turn of `move.xml` — "Planning a path to the goal" (set per goal), "Following the path", "Path blocked; replanning", "Goal changed; replanning", and a retry sentence when the planner or the controller gives up. For the operator console, which otherwise could only say "running"; free text, never to be switched on. Not visible: the controller holding at a blocker inside `failure_tolerance` (Humble's `FollowPath` feedback cannot tell that from a stop), which reads "Following the path" until the abort |
@@ -284,7 +284,8 @@ answer in time leaves the goal to plan on the old memory rather than fail it.
 `Octo3D` waits for nothing after the clear, so the first plan can run through
 a person in view until the next scan (≤ 0.1 s) marks them and `IsPathValid`
 replans after `blocked_time`. Because `ClearEntireCostmap` counts itself as a
-recovery, `number_of_recoveries` reads at least 1 on every goal.
+recovery, `number_of_recoveries` reads at least 1 on every goal of the trees
+that have it (`move.xml`, `patrol.xml`, `dock.xml`; not `undock.xml`).
 
 `PipelineSequence` is what makes this work: it re-ticks the planner branch every
 round even while `FollowPath` is still `RUNNING`, so the path can be replaced
