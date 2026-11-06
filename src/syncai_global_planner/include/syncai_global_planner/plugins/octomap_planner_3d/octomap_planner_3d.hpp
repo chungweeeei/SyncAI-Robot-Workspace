@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -269,10 +270,18 @@ protected:
   // also carries the keepout mask for isPathValid() (setKeepout).
   std::unique_ptr<octomap_planner_3d::DynamicOverlay> overlay_;
 
-  // The last plan's crossings (planAnnotations()), under their own lock so
-  // the server's ask after a plan never waits behind the next one.
+  // The last few plans' crossings (planAnnotations()), newest last, under
+  // their own lock so the server's ask after a plan never waits behind the
+  // next one. A few, not one (2026-11-07): the server asks after
+  // createPlan() has returned and let go of mutex_, and the console's route
+  // preview plans on another thread in between -- one slot then answered
+  // the navigation's plan with `known: false`, and the controllers fell back
+  // to the heights (a sill became a stair stop, the door's speed cap was
+  // off). kRecentCrossings previews between a plan and its ask would be
+  // needed to lose one now.
+  static constexpr size_t kRecentCrossings = 4;
   std::mutex crossings_mutex_;
-  syncai_util::PlanCrossings last_crossings_;
+  std::deque<syncai_util::PlanCrossings> recent_crossings_;
 
   // One lock around createPlan, the parameter callback and the map swap.
   std::mutex mutex_;

@@ -1883,10 +1883,12 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       double ax, ay, bx, by;
       m.cellXY(a, ax, ay);
       m.cellXY(b, bx, by);
-      link.pts.push_back({ax, ay, m.zTop(a)});
-      link.pts.push_back({cx, cy, m.zTop(before)});
-      link.pts.push_back({cx + m.res * ux, cy + m.res * uy, m.zTop(after)});
-      link.pts.push_back({bx, by, m.zTop(b)});
+      // At the measured floor, as the route's poses are (2026-11-07): the
+      // kerb's step then reads its true height on the plan, not a voxel's.
+      link.pts.push_back({ax, ay, m.zFloor(a)});
+      link.pts.push_back({cx, cy, m.zFloor(before)});
+      link.pts.push_back({cx + m.res * ux, cy + m.res * uy, m.zFloor(after)});
+      link.pts.push_back({bx, by, m.zFloor(b)});
       addLink(m, std::move(link), out);
       ++links_here;
       // The crossing is a link's from here on: this cell, the high
@@ -1956,12 +1958,12 @@ CellId marchLead(const SurfaceMap & m, CellId c, double ux, double uy, double le
   return end;
 }
 
-// A cell's height as the kerbs and the step edges read it: the measured
-// floor where the cloud gave one, the voxel's top face otherwise.
+// A cell's height as the kerbs, the step edges and a route's poses read it
+// (SurfaceMap::zFloor): the measured floor where the cloud gave one, the
+// voxel's top face otherwise.
 double floorOrTop(const SurfaceMap & m, CellId c)
 {
-  const float fz = m.cells[c].floor_z;
-  return std::isnan(fz) ? m.zTop(c) : static_cast<double>(fz);
+  return m.zFloor(c);
 }
 
 // Whether something stands on the straight line from a to b: an occupied
@@ -2100,10 +2102,14 @@ void gapLinks(
     const uint32_t ca = m.cells[prev].component, cb = m.cells[c].component;
     const double za = floorOrTop(m, prev), zb = floorOrTop(m, c);
     const double rise = std::fabs(zb - za);
-    if (rise > p.gap_max_rise + 1e-9) {
+    if (rise > p.gap_max_rise + 1e-9 || rise >= p.min_rise - 1e-9) {
       // A climb. Between two floors it is the stair walker's (laid above, or
       // noted there); onto anything smaller the track proves only that the
-      // operator went there, which the planner must not repeat.
+      // operator went there, which the planner must not repeat. And from
+      // min_rise up a flat-gait link laid here would be called a stair by
+      // the route judge (routeStairGaits) anyway: the two tests met at 0.3
+      // inclusive on both sides until 2026-11-07, so a 0.30 m sill was a
+      // gap link the route then took in the stair gait.
       if (!(isFloor(ca) && isFloor(cb)) && findRoot(out.group, ca) != findRoot(out.group, cb)) {
         const uint32_t small = isFloor(cb) ? ca : cb;
         char buf[240];
@@ -2178,12 +2184,15 @@ void gapLinks(
     m.cellXY(lead_in, ix, iy);
     m.cellXY(lead_out, ox, oy);
     // The lead-in, the two anchors (the last cell stood on before the gap,
-    // the first after it) and the lead-out, at the surfaces' own heights:
-    // buildPath resamples the gap between the anchors as one ramp.
-    link.pts.push_back({ix, iy, m.zTop(lead_in)});
-    link.pts.push_back({ax, ay, m.zTop(prev)});
-    link.pts.push_back({bx, by, m.zTop(c)});
-    link.pts.push_back({ox, oy, m.zTop(lead_out)});
+    // the first after it) and the lead-out, at the surfaces' own heights --
+    // the measured floor, as the kind above was judged and as the route's
+    // own poses are (2026-11-07; at the voxel tops a link rose up to one
+    // voxel more than its kind said): buildPath resamples the gap between
+    // the anchors as one ramp.
+    link.pts.push_back({ix, iy, m.zFloor(lead_in)});
+    link.pts.push_back({ax, ay, m.zFloor(prev)});
+    link.pts.push_back({bx, by, m.zFloor(c)});
+    link.pts.push_back({ox, oy, m.zFloor(lead_out)});
     laid.push_back(mid);
     addLink(m, std::move(link), out);
     ++out.gap_links;

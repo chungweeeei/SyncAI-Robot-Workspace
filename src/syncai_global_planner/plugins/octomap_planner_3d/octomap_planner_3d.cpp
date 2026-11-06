@@ -1335,14 +1335,17 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     // says how to drive a stretch, not which gait, so it takes no part in
     // routeStairGaits. Over the whole route, on the static map only -- a
     // person in a corridor is the dynamic overlay's, not a door. Sorted in
-    // with the links' crossings, so the list stays in route order.
+    // with the links' crossings, so the list stays in route order. What a
+    // follower reads of it is the `slow` bit (2026-11-07); the kind, width
+    // and heading are for the log.
     for (const o3d::NarrowSpan & n :
          o3d::findNarrowPassages(*map_, wps, narrow_max_width_, narrow_lead_)) {
       syncai_util::PlanCrossing x;
       x.kind = "narrow";
       x.stair_gait = false;
+      x.slow = true;
       x.evidence = "geometry";
-      x.rise = wps[n.last].z - wps[n.first].z;
+      x.rise = std::fabs(wps[n.last].z - wps[n.first].z);  // a height, as every link's
       x.first = n.first;
       x.last = n.last;
       x.width = n.width;
@@ -1382,7 +1385,10 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       pc.crossings.push_back(std::move(x));
     }
     std::lock_guard<std::mutex> lock(crossings_mutex_);
-    last_crossings_ = std::move(pc);
+    recent_crossings_.push_back(std::move(pc));
+    while (recent_crossings_.size() > kRecentCrossings) {
+      recent_crossings_.pop_front();
+    }
   }
 
   double length = 0.0, zmin = wps.empty() ? 0.0 : wps.front().z, zmax = zmin;
@@ -1428,10 +1434,12 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
 std::string OctomapPlanner3D::planAnnotations(const nav_msgs::msg::Path & path)
 {
   std::lock_guard<std::mutex> lock(crossings_mutex_);
-  if (!last_crossings_.isFor(path.header.stamp.sec, path.header.stamp.nanosec, path.poses.size())) {
-    return {};
+  for (const syncai_util::PlanCrossings & c : recent_crossings_) {
+    if (c.isFor(path.header.stamp.sec, path.header.stamp.nanosec, path.poses.size())) {
+      return syncai_util::toJson(c);
+    }
   }
-  return syncai_util::toJson(last_crossings_);
+  return {};
 }
 
 bool OctomapPlanner3D::isPathValid(

@@ -338,12 +338,16 @@
       # slope the slope rule refuses, a doorway the footprint rule closed --
       # a straight crossing square to the gap, kerb_lead either side: a kerb
       # within max_step_height, a ramp above, both the flat gait's. A climb
-      # above gap_max_rise onto anything smaller than stair_anchor_min_area
-      # is refused with a startup note (dp: the operator drove up a 0.4 m
-      # ledge beside the 2F lab by mistake). gap_max_rise equals
-      # stair_min_rise so the two regimes tile; it is a placeholder, not a
-      # measurement of what the RL policy walks. false = the behaviour
-      # before 2026-11-02.
+      # above gap_max_rise (or at stair_min_rise and above, which the route
+      # judge would call a stair anyway) onto anything smaller than
+      # stair_anchor_min_area is refused with a startup note (dp: the
+      # operator drove up a 0.4 m ledge beside the 2F lab by mistake).
+      # gap_max_rise equals stair_min_rise so the two regimes tile, the gap's
+      # side open at the boundary (2026-11-07; before, 0.30 exactly was a gap
+      # link the route then took in the stair gait); it is a placeholder,
+      # not a measurement of what the RL policy walks. Heights are the
+      # measured floor's where map.pcd gave one, as the route's poses are.
+      # false = the behaviour before 2026-11-02.
       gap_links: true
       gap_anchor_min_area: 2.0
       gap_max_length: 2.5
