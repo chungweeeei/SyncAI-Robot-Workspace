@@ -303,7 +303,20 @@ void PlannerServer::getStartPose(
   const std::shared_ptr<const GoalT> & goal, geometry_msgs::msg::PoseStamped & start)
 {
   if (goal->use_start) {
-    start = goal->start;
+    // Refused, not honoured (2026-11): Octo3D takes the start's height from
+    // TF to the robot's body frame whatever the request says, because the
+    // robot pose below is the planar map -> base_link with z = 0. A start
+    // somewhere else would be planned at its x / y on the robot's floor --
+    // the wrong floor, or start_unavailable, on a two-storey map -- and the
+    // start disc's exemption from the dynamic overlay and the "robot stands
+    // inside a keepout zone" check both assume the start is the robot. No
+    // caller sets it (the BT nodes' `start` port went with this; the
+    // backend's preview sends false), so this is a refusal with the reason
+    // rather than a quiet plan from the robot. The field stays: it is
+    // syncai_common's, nav2's goal field for field.
+    throw syncai_nav_core::PlannerException(
+      "use_start is not supported: a plan always starts at the robot's pose (Octo3D reads the "
+      "start's floor from the robot's TF); send use_start false");
   } else if (!costmap_ros_->getRobotPose(start)) {
     // The TF helper logs the lookup's own error just above; this says what
     // it cost, in the goal's error_msg and in abortPlan()'s line.

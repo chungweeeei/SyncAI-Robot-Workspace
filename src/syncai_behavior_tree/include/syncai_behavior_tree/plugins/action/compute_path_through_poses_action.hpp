@@ -50,8 +50,6 @@ public:
       BT::OutputPort<nav_msgs::msg::Path>("path", "Path through every waypoint, in order"),
       BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>(
         "goals", "Waypoints to plan through, the last one the destination"),
-      BT::InputPort<geometry_msgs::msg::PoseStamped>(
-        "start", "Start pose of the path if overriding current robot pose"),
       BT::InputPort<std::string>("planner_id", "", "Mapped name to the planner plugin type to use"),
     });
   }

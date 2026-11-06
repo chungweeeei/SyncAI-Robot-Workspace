@@ -95,12 +95,25 @@ well.
 ```
 server inactive / cancel requested?   → bail
 accept a preempting goal if pending
-start = goal.use_start ? goal.start : costmap.getRobotPose()
+use_start?                            → abort (PLAN_FAILED; see below)
+start = costmap.getRobotPose()
 transform start and goal into the costmap global frame
 path = getPlan(start, goal, goal.planner_id)
 path empty?                           → terminate_current()
 publish plan, fill planning_time, succeeded_current()
 ```
+
+**`use_start` is refused** (2026-11): a goal with it set is aborted
+`PLAN_FAILED` (200) with a sentence saying so, before any planning. `Octo3D`
+takes the start's height from TF to the robot's body frame whatever the
+request says (the robot pose is the planar `map → base_link`, z = 0), so a
+start elsewhere was planned at its x / y on the robot's floor; the start
+disc's exemption from the dynamic overlay and the `start_in_keepout` check
+assume the start is the robot too. Nothing set it — the BT nodes' `start`
+port went with the refusal, and the backend's preview sends `false` — and
+the field stays in `syncai_common`'s actions, nav2's goal field for field.
+Supporting an arbitrary start means taking the height from the request and
+revisiting those two assumptions.
 
 There is no wait for the costmap to be current (upstream's
 `waitForCostmap()`): no loaded planner reads its cells, and it has no layers
