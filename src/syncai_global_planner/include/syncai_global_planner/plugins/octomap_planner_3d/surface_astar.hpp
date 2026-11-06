@@ -133,7 +133,10 @@ struct SnapResult
   double xy_dist = 0.0;     // from the request to the cell centre
   double dz = 0.0;          // cell top face minus the height hint
   bool z_fallback = false;  // outside snap_z_window, taken by snap_single_layer
-  std::string detail;       // why nothing qualified, when cell == kNoCell
+  // snapGoal() only: the goal's own cell was found and is within a dynamic
+  // mark's block_radius, so the goal is refused rather than moved.
+  bool occupied = false;
+  std::string detail;  // why nothing qualified, when cell == kNoCell
 };
 
 struct PlanResult
@@ -162,13 +165,29 @@ public:
   // below a balcony edge); the detail then names the nearest cell that was
   // refused for being elsewhere, so the message says "wrong floor" and not
   // "nothing". With blocked set, cells the dynamic overlay or the keepout
-  // zones block do not qualify either (a goal under a person or in a zone
-  // fails, as a goal in a lethal cell does in 2D), and the detail counts
-  // them by source; the start is snapped without it, since the robot stands
-  // where it stands.
+  // zones block do not qualify either, and the detail counts them by
+  // source: the snap moves the point to the nearest cell clear of both,
+  // within snap_xy_radius. The start is snapped without it, since the robot
+  // stands where it stands; a patrol's pass-through waypoint with it; the
+  // goal a route ends on with snapGoal().
   SnapResult snap(
     double x, double y, double z_hint, const SearchParams & p,
     uint32_t prefer_component = kNoComponent, const BlockedView * blocked = nullptr) const;
+
+  // The snap of the goal a route ends on (2026-11): snap() keeping off the
+  // keepout zones only (a goal inside a zone's ring is still moved clear of
+  // it, the zones' documented rule), then the dynamic marks as a test, never
+  // as a reason to move. A goal whose cell is within a mark's block_radius
+  // fails with `occupied` set and the distance in the detail. Until then the
+  // goal snap kept off the marks like the zones, which moved a goal up to
+  // snap_xy_radius (0.5 m) off a person -- to the cell behind them, which the
+  // lidar does not see -- and the robot drove there and succeeded, where the
+  // contract with the backend is that a person on the goal is goal_occupied
+  // (206): robot01, 2026-11-06, a goal moved 0.42 m round an obstacle put on
+  // it. It failed only once every cell within 0.5 m was marked or ringed.
+  SnapResult snapGoal(
+    double x, double y, double z_hint, const SearchParams & p, uint32_t prefer_component,
+    const BlockedView & blocked) const;
 
   // blocked: the dynamic overlay's mask and the keepout mask for this plan,
   // with the exempt disc around `start` (see BlockedView); the default

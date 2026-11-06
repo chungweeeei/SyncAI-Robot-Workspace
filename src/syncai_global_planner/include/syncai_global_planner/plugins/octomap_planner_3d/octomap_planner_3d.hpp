@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -108,8 +109,10 @@ namespace syncai_global_planner
  * keepout.block_radius (the robot's radius, as the 2D KeepoutFilter inflates
  * its mask) and costed beyond like a wall; a stair link with a point in a
  * core is cut. The mask rides beside the dynamic overlay's in every
- * BlockedView, so a plan, its shortcut, the goal snap and isPathValid()
- * keep off a zone as they keep off a person; a robot standing inside a core
+ * BlockedView, so a plan, its shortcut and isPathValid() keep off a zone
+ * as they keep off a person, and the goal snap moves a goal out of a zone's
+ * ring where a person on the goal fails it (SurfaceAStar::snapGoal(),
+ * 2026-11: the goal is never moved off an obstacle); a robot standing inside a core
  * is refused a plan (start_in_keepout), and clear_overlay leaves the zones
  * alone. `<planner_server>/<id>/load_keepout` (nav2_msgs/srv/LoadMap,
  * map_url = the file, "" = no zones) reloads an edited file without
@@ -213,6 +216,11 @@ protected:
   // value if it never has (steady clock).
   double scanAge() const;
 
+  // Before a plan, not under mutex_: when clear_overlay has emptied the
+  // overlay and no scan has been added since, wait for one, at most
+  // transform_tolerance_ + 0.2 s (see the .cpp). No-op otherwise.
+  void waitForScanAfterClear(const char * fn);
+
   rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
     std::vector<rclcpp::Parameter> parameters);
 
@@ -311,6 +319,21 @@ protected:
   // (tf2_ros logs its drops at DEBUG), and an overlay with no scans marks
   // nothing: every path reads valid. This is how the log says so.
   std::atomic<double> last_scan_steady_{-1.0};
+
+  // A plan after clear_overlay waits for the next scan (2026-11,
+  // waitForScanAfterClear()). Until then the first plan after a clear read
+  // an empty overlay: move.xml's planner recovery clears and retries at
+  // once, so a goal_occupied plan was retried ~1.5 ms after the clear with
+  // no marks (robot01, 2026-11-06) and planned straight through the
+  // obstacle on the goal, and 206 never reached the backend. scan_mutex_
+  // orders a clear against a scan being added -- both happen under it, so
+  // a scan that started before the clear cannot count as the one after it
+  // -- and guards scan_pending_after_clear_; scan_cv_ wakes the waiting
+  // plan. Order: scan_mutex_ -> the overlay's lock, never with mutex_ held
+  // (a plan waits before it takes mutex_).
+  std::mutex scan_mutex_;
+  std::condition_variable scan_cv_;
+  bool scan_pending_after_clear_{false};
 
   // isPathValid()'s last answer, for logging the changes rather than every
   // 1 Hz call: when the path it is answering for first read blocked (unset

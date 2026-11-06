@@ -226,6 +226,37 @@ SnapResult SurfaceAStar::snap(
   return out;
 }
 
+SnapResult SurfaceAStar::snapGoal(
+  double x, double y, double z_hint, const SearchParams & p, uint32_t prefer_component,
+  const BlockedView & blocked) const
+{
+  // The zones move the goal (a goal in a zone's ring is snapped clear of it;
+  // one inside the polygon is the callers' goal_in_keepout, tested before
+  // this). The marks do not: a person is not where the operator meant the
+  // robot to stop next to, and the cell behind them that the lidar has not
+  // seen is the one a moving snap found first.
+  BlockedView zones_only = blocked;
+  zones_only.mask = nullptr;
+  SnapResult out = snap(x, y, z_hint, p, prefer_component, &zones_only);
+  if (out.cell == kNoCell || !blocked.blockedByMark(*map_, out.cell)) {
+    return out;
+  }
+  const SurfaceMap & m = *map_;
+  double gx, gy;
+  m.cellXY(out.cell, gx, gy);
+  char buf[288];
+  std::snprintf(
+    buf, sizeof buf,
+    "the goal's cell (%.2f, %.2f, z %.2f) is %.2f m from a dynamic obstacle, within its "
+    "block_radius %.2f: occupied (the goal is not moved off an obstacle; retry once it has gone)",
+    gx, gy, m.zTop(out.cell), static_cast<double>(blocked.mask->d[out.cell]),
+    blocked.mask->block_radius);
+  out.detail = buf;
+  out.cell = kNoCell;
+  out.occupied = true;
+  return out;
+}
+
 PlanResult SurfaceAStar::plan(
   CellId start, CellId goal, const SearchParams & p, const BlockedView & blocked)
 {

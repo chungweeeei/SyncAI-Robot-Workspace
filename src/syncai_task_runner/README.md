@@ -289,9 +289,14 @@ previous leg had left in the corridor. It runs at tree start only — a preempt
 keeps the tree running and keeps the memory, which is what makes a detour
 stick — and under `ForceSuccess` with a 1 s timeout, so a clear that does not
 answer in time leaves the goal to plan on the old memory rather than fail it.
-`Octo3D` waits for nothing after the clear, so the first plan can run through
-a person in view until the next scan (≤ 0.1 s) marks them and `IsPathValid`
-replans after `blocked_time`. Because `ClearEntireCostmap` counts itself as a
+The first plan after a clear waits for the next scan (`Octo3D`, 2026-11; at
+most `dynamic.transform_tolerance` + 0.2 s), so it sees what is in view now.
+Until then it planned on the empty overlay — through a person in view, and,
+worse, the planner recovery's retry of a `goal_occupied` plan, sent ~1.5 ms
+after its clear, planned straight through the obstacle on the goal, so a goal
+someone stood on looped (blocked 10 s, replan, 206, clear, through) and never
+failed `GOAL_OCCUPIED` (robot01, 2026-11-06). Now the retry fails 206 again
+and the planner branch fails the goal with it. Because `ClearEntireCostmap` counts itself as a
 recovery, `number_of_recoveries` reads at least 1 on every goal of the trees
 that have it (`move.xml`, `patrol.xml`, `dock.xml`; not `undock.xml`).
 

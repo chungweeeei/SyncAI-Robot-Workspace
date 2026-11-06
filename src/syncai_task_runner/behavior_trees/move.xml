@@ -127,13 +127,17 @@
   that fails clears and retries once. Only at tree start, so a preempt (the
   tree keeps running) does not clear: the memory that makes a detour stick
   is the point mid-goal. ForceSuccess, because a clear that times out must
-  not fail the goal -- the stale-memory route is still a route. Octo3D does
-  not wait for anything after a clear, so the first plan after it can run
-  through a person in view until the next scan (<= 0.1 s) marks them and
-  IsPathValid replans after blocked_time. Accepted: the stale-memory route
-  is the worse failure. Side effect: ClearEntireCostmap counts itself into
-  number_recoveries, so the feedback's number_of_recoveries starts at 1 on
-  every goal (nothing reads it today). The FollowPath recovery clears the
+  not fail the goal -- the stale-memory route is still a route. The first
+  plan after a clear waits for the next scan (Octo3D, 2026-11; at most
+  dynamic.transform_tolerance + 0.2 s), so it sees what is in view now.
+  Until then it planned on the empty overlay: through a person in view, and
+  the recovery's retry of a goal_occupied plan, sent ~1.5 ms after its
+  clear, planned straight through the obstacle on the goal -- so a goal
+  someone stood on looped (blocked 10 s, replan, 206, clear, through) and
+  never failed GOAL_OCCUPIED. Now that retry fails 206 again and the
+  planner branch fails the goal. Side effect: ClearEntireCostmap counts
+  itself into number_recoveries, so the feedback's number_of_recoveries
+  starts at 1 on every goal (nothing reads it today). The FollowPath recovery clears the
   controller's local_costmap; relative service names resolve under the
   robot namespace because every node in the stack shares it.
 
