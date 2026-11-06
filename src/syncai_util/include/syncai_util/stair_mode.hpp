@@ -42,6 +42,21 @@
 // says where. Without the planner's word for this very plan (another
 // planner, a sidecar not yet arrived or for an older plan) the rise test
 // alone decides, as before.
+//
+// This class reads two bits of each crossing and nothing else (2026-11-07):
+// the gait, for the gate above, and `slow`, handed to the controller
+// (plannerSlow()) for its speed cap. Not the kind: a "narrow" test here was
+// the one case of a follower switching on what the planner called a thing,
+// and every kind the planner adds would have needed another.
+//
+// The plan a controller holds may be one leg of the planner's (2026-11-07):
+// controller_server cuts a path at its cusps (path_cusps.hpp) and hands the
+// plugin one leg at a time, so setPlan() takes the leg's place in the whole
+// plan and the crossings, whose spans index the whole plan, are matched on
+// its stamp and pose count and shifted to the leg. Until then every leg of a
+// cut plan failed the match -- the word was for a plan of another length --
+// and a patrol out through dp's 2F lab door and back lost the door's speed
+// cap and the sill's flat gait on every leg.
 
 #include <atomic>
 #include <functional>
@@ -175,9 +190,16 @@ public:
     const Params & params, SendPolicyFn send_policy, ServiceReadyFn service_ready = {},
     PublishFn publish = {});
 
-  /// The plan as the controller's setPlan() received it (before any pruning),
-  /// kept with medianHeights() applied: every window and slopeAhead() read that.
-  void setPlan(const nav_msgs::msg::Path & full_plan);
+  /**
+   * @brief The plan as the controller's setPlan() received it (before any
+   * pruning), kept with medianHeights() applied: every window and
+   * slopeAhead() read that
+   * @param full_plan The plan, or one leg of the planner's (the class comment)
+   * @param plan_first The index of `full_plan`'s first pose in the planner's
+   * plan (0: the plan itself)
+   * @param plan_poses The planner's plan's pose count (0: full_plan's own)
+   */
+  void setPlan(const nav_msgs::msg::Path & full_plan, size_t plan_first = 0, size_t plan_poses = 0);
 
   /**
    * @brief Replace each inner pose's z by the median of it and its two
@@ -257,15 +279,18 @@ public:
 
   /// The planner's crossings (`plan_crossings`): applied to the plan they
   /// were made for (same stamp and pose count) whenever that is the plan
-  /// setPlan() was given, before or after this call. Any thread.
+  /// setPlan() was given (or the plan its leg was cut from), before or after
+  /// this call. Any thread.
   void setCrossings(const PlanCrossings & crossings);
 
-  /// The narrow passages (kind "narrow", 2026-11-02) of the plan setPlan()
-  /// was given, when the planner's crossings are for it (true; possibly
-  /// none), else false. Not stair mode's own business: it holds the one
-  /// plan_crossings subscription and the plan they are matched to, so the
-  /// controller's narrow-passage walk reads them here. Any thread.
-  bool plannerPassages(std::vector<PlanCrossing> & passages) const;
+  /// The crossings the planner marks `slow` (2026-11-07; a narrow passage)
+  /// on the plan setPlan() was given, their spans in that plan's indices
+  /// (shifted to the leg, clipped to it, those off it dropped), when the
+  /// planner's crossings are for it (true; possibly none), else false. Not
+  /// stair mode's own business: it holds the one plan_crossings subscription
+  /// and the plan they are matched to, so the controller's speed cap reads
+  /// them here. Any thread.
+  bool plannerSlow(std::vector<PlanCrossing> & spans) const;
 
   bool enabled() const { return params_.enabled; }
   bool onStairs() const { return on_stairs_; }
@@ -383,9 +408,15 @@ private:
   enum class Transition { None, Entering, Leaving };
 
   bool wantStairs(size_t remaining_poses, double lead) const;
-  // The pose spans of the plan the planner lays in the stair gait, when its
-  // crossings are for full_plan_ (true; possibly none), else false.
+  // The pose spans of the plan the planner lays in the stair gait, in
+  // full_plan_'s indices, when its crossings are for full_plan_ (true;
+  // possibly none), else false.
   bool plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) const;
+  // Whether crossings_ is for the plan full_plan_ is (a leg of), and the
+  // crossing's span shifted into full_plan_'s indices and clipped to it;
+  // false for a span wholly off the leg. Under crossings_mutex_.
+  bool crossingsForPlan() const;
+  bool spanOnLeg(const PlanCrossing & c, size_t & first, size_t & last) const;
   // The last pose within `dist` metres (x / y, along the path) after /
   // before `idx`.
   static size_t indexAhead(const nav_msgs::msg::Path & path, size_t idx, double dist);
@@ -407,6 +438,10 @@ private:
 
   nav_msgs::msg::Path full_plan_;
   bool plan_has_height_{false};
+  // Where full_plan_ sits in the planner's plan: its first pose's index
+  // there, and that plan's pose count (setPlan()).
+  size_t plan_first_{0};
+  size_t plan_poses_{0};
   // What the robot is set up for: true once the stair policy was commanded and
   // has settled.
   bool on_stairs_{false};

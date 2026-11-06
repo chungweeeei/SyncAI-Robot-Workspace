@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <vector>
 
 #include "syncai_util/stair_mode.hpp"
@@ -758,11 +759,12 @@ TEST(StairModePlanner, CrossingsForAnotherPlanAreIgnored)
   EXPECT_EQ(firstHold(again, path), expected);
 }
 
-TEST(StairModePlanner, NarrowPassagesAreThisPlansOnlyAndChangeNoGait)
+TEST(StairModePlanner, SlowSpansAreThisPlansOnlyAndChangeNoGait)
 {
-  // A narrow passage (a door) before the flight, beside the flight's stair
-  // crossing: plannerPassages() hands it out, with its width and axis, for
-  // this plan only; stair mode holds where it did without it.
+  // A slow span (a narrow door) before the flight, beside the flight's stair
+  // crossing: plannerSlow() hands it out, with what the planner knew of it,
+  // for this plan only, by its `slow` bit and not its kind; stair mode holds
+  // where it did without it.
   const auto path = stairPath();
   Harness plain;
   plain.sm.setReportedPolicy(0);
@@ -773,29 +775,96 @@ TEST(StairModePlanner, NarrowPassagesAreThisPlansOnlyAndChangeNoGait)
   syncai_util::PlanCrossing door;
   door.kind = "narrow";
   door.evidence = "geometry";
+  door.slow = true;
   door.first = 2;
   door.last = 8;
   door.width = 0.65;
   door.heading = 1.0;
-  c.crossings.insert(c.crossings.begin(), door);
+  syncai_util::PlanCrossing kerb;  // flat gait, not slow: not a speed cap
+  kerb.kind = "kerb";
+  kerb.first = 12;
+  kerb.last = 16;
+  c.crossings.insert(c.crossings.begin(), {door, kerb});
 
   Harness h;
   h.sm.setReportedPolicy(0);
   h.sm.setPlan(path);
   h.sm.setCrossings(c);
-  std::vector<syncai_util::PlanCrossing> passages;
-  ASSERT_TRUE(h.sm.plannerPassages(passages));
-  ASSERT_EQ(passages.size(), 1u);
-  EXPECT_EQ(passages[0].first, 2u);
-  EXPECT_EQ(passages[0].last, 8u);
-  EXPECT_DOUBLE_EQ(passages[0].width, 0.65);
-  EXPECT_DOUBLE_EQ(passages[0].heading, 1.0);
+  std::vector<syncai_util::PlanCrossing> slow;
+  ASSERT_TRUE(h.sm.plannerSlow(slow));
+  ASSERT_EQ(slow.size(), 1u);
+  EXPECT_EQ(slow[0].first, 2u);
+  EXPECT_EQ(slow[0].last, 8u);
+  EXPECT_DOUBLE_EQ(slow[0].width, 0.65);
+  EXPECT_DOUBLE_EQ(slow[0].heading, 1.0);
   EXPECT_EQ(firstHold(h, path), expected);
 
   c.poses += 1;  // another plan's
   h.sm.setCrossings(c);
-  EXPECT_FALSE(h.sm.plannerPassages(passages));
-  EXPECT_TRUE(passages.empty());
+  EXPECT_FALSE(h.sm.plannerSlow(slow));
+  EXPECT_TRUE(slow.empty());
+}
+
+TEST(StairModePlanner, ALegOfACutPlanKeepsThePlannersWord)
+{
+  // controller_server hands the plugin one leg of a plan cut at its cusps
+  // (path_cusps.hpp): the leg keeps the plan's stamp, and setPlan() is told
+  // its place in the plan. The planner's word, for the whole plan, still
+  // applies, shifted to the leg: a flat-gait word over the flight walks it
+  // flat on a leg that starts ten poses in, a stair-gait word enters where
+  // the plain heights do, and a slow span comes out in the leg's indices,
+  // clipped to it -- or not at all when it lies on the leg before. Told
+  // nothing of the cut (setPlan(leg) alone), the word is for a plan of
+  // another length and the heights alone decide, which is the 2026-11-02
+  // behaviour on every leg.
+  const auto path = stairPath();
+  constexpr size_t kLegFirst = 10;
+  nav_msgs::msg::Path leg;
+  leg.header = path.header;
+  leg.poses.assign(path.poses.begin() + static_cast<std::ptrdiff_t>(kLegFirst), path.poses.end());
+
+  Harness plain;
+  plain.sm.setReportedPolicy(0);
+  plain.sm.setPlan(leg);
+  const size_t expected = firstHold(plain, leg);
+  ASSERT_LT(expected, leg.poses.size());
+
+  const auto flat_word = crossingsFor(path, kLevelIn - 2, kLevelIn + kFlight + 2, false);
+  Harness unaware;
+  unaware.sm.setReportedPolicy(0);
+  unaware.sm.setPlan(leg);
+  unaware.sm.setCrossings(flat_word);
+  EXPECT_EQ(firstHold(unaware, leg), expected);
+
+  Harness flat;
+  flat.sm.setReportedPolicy(0);
+  flat.sm.setPlan(leg, kLegFirst, path.poses.size());
+  flat.sm.setCrossings(flat_word);
+  EXPECT_EQ(firstHold(flat, leg), leg.poses.size());
+  EXPECT_TRUE(flat.sent.empty());
+
+  Harness stair;
+  stair.sm.setReportedPolicy(0);
+  stair.sm.setPlan(leg, kLegFirst, path.poses.size());
+  auto c = crossingsFor(path, 5, kLevelIn + kFlight, true);
+  syncai_util::PlanCrossing door;  // plan poses 2..14: the leg's 0..4
+  door.kind = "narrow";
+  door.slow = true;
+  door.first = 2;
+  door.last = 14;
+  syncai_util::PlanCrossing before;  // plan poses 0..8: wholly on the leg before
+  before.kind = "narrow";
+  before.slow = true;
+  before.first = 0;
+  before.last = 8;
+  c.crossings.insert(c.crossings.begin(), {before, door});
+  stair.sm.setCrossings(c);
+  EXPECT_EQ(firstHold(stair, leg), expected);
+  std::vector<syncai_util::PlanCrossing> slow;
+  ASSERT_TRUE(stair.sm.plannerSlow(slow));
+  ASSERT_EQ(slow.size(), 1u);
+  EXPECT_EQ(slow[0].first, 0u);
+  EXPECT_EQ(slow[0].last, 4u);
 }
 
 TEST(StairModePlanner, OnTheStairsAFlatGaitWordForTheNewPlanTakesItOff)

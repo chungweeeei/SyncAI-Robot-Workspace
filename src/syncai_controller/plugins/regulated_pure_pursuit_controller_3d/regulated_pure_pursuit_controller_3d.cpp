@@ -256,8 +256,9 @@ void RegulatedPurePursuitController3D::initialize(
   collision_checker_->setCostmap(costmap_);
 
   // Add callback for dynamic parameters
-  dyn_params_handler_ = node->add_on_set_parameters_callback(std::bind(
-    &RegulatedPurePursuitController3D::dynamicParametersCallback, this, std::placeholders::_1));
+  dyn_params_handler_ = node->add_on_set_parameters_callback(
+    std::bind(
+      &RegulatedPurePursuitController3D::dynamicParametersCallback, this, std::placeholders::_1));
 }
 
 std::unique_ptr<geometry_msgs::msg::PointStamped> RegulatedPurePursuitController3D::createCarrotMsg(
@@ -420,8 +421,9 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController3D::computeVeloci
   if (on_stairs) {
     size_t corner_idx = 0;
     double corner_heading = 0.0;
-    if (syncai_util::StairMode::findCorner(
-          transformed_plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+    if (
+      syncai_util::StairMode::findCorner(
+        transformed_plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
       const auto & cp = transformed_plan.poses[corner_idx].pose.position;
       const double corner_dist = std::hypot(cp.x, cp.y);  // the plan is in the base frame
       const double brake = max_linear_accel_ > 0.0
@@ -794,9 +796,10 @@ bool RegulatedPurePursuitController3D::isCollisionImminent(
   // odom frame and the carrot_pose is in robot base frame.
 
   // Check whether the robot's footprint, right now, is already on a LETHAL obstacle
-  if (inCollision(
-        robot_pose.pose.position.x, robot_pose.pose.position.y,
-        tf2::getYaw(robot_pose.pose.orientation))) {
+  if (
+    inCollision(
+      robot_pose.pose.position.x, robot_pose.pose.position.y,
+      tf2::getYaw(robot_pose.pose.orientation))) {
     collision_dist_ = 0.0;
     return true;
   }
@@ -998,6 +1001,12 @@ void RegulatedPurePursuitController3D::applyConstraints(
 
 void RegulatedPurePursuitController3D::setPlan(const nav_msgs::msg::Path & path)
 {
+  setPlanLeg(path, 0, path.poses.size());
+}
+
+void RegulatedPurePursuitController3D::setPlanLeg(
+  const nav_msgs::msg::Path & path, size_t plan_first, size_t plan_poses)
+{
   // Path only. last_cmd_vel_ deliberately survives: setPlan() is also the
   // mid-navigation replan entry point (the BT re-ticks FollowPath every ~3 s,
   // which arrives as an action preempt -> updateGlobalPath -> setPlan), and
@@ -1008,7 +1017,9 @@ void RegulatedPurePursuitController3D::setPlan(const nav_msgs::msg::Path & path)
   // needed 8 cycles to recover — a 0.32 Hz sawtooth on cmd_vel that burned ~16%
   // of the drive re-accelerating. Per-goal reset lives in reset().
   global_plan_ = path;
-  stair_mode_.setPlan(path);
+  // With the leg's place in the plan, so the planner's word for the whole
+  // plan (plan_crossings) is matched and shifted to it (2026-11-07).
+  stair_mode_.setPlan(path, plan_first, plan_poses);
   plan_has_height_ = pathHasHeight(path);
 }
 
