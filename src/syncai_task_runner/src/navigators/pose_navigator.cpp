@@ -1,6 +1,7 @@
 #include "syncai_task_runner/navigators/pose_navigator.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -12,6 +13,7 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "syncai_behavior_tree/blackboard_keys.hpp"
 #include "syncai_util/geometry_utils.hpp"
+#include "syncai_util/path_height.hpp"
 #include "syncai_util/robot_utils.hpp"
 
 namespace syncai_task_runner
@@ -190,6 +192,19 @@ bool PoseNavigator<ActionT>::configure(
       node->declare_parameter("waypoint_passed_radius", 1.0);
     }
     waypoint_passed_radius_ = node->get_parameter("waypoint_passed_radius").as_double();
+    // The four navigators share one node, so each declares only once.
+    if (!node->has_parameter("waypoint_passed_z_tolerance")) {
+      node->declare_parameter("waypoint_passed_z_tolerance", 1.0);
+    }
+    if (!node->has_parameter("body_frame")) {
+      node->declare_parameter("body_frame", std::string("pointlio_body"));
+    }
+    if (!node->has_parameter("lidar_height")) {
+      node->declare_parameter("lidar_height", 0.481);
+    }
+    waypoint_passed_z_tolerance_ = node->get_parameter("waypoint_passed_z_tolerance").as_double();
+    body_frame_ = node->get_parameter("body_frame").as_string();
+    lidar_height_ = node->get_parameter("lidar_height").as_double();
   }
 
   // On the node's default callback group, which main()'s spin services, so
@@ -415,22 +430,47 @@ void PoseNavigator<ActionT>::onLoop()
     // still ahead (blackboard_keys::kRemainingGoals). Front only, in order:
     // a route that comes back past an earlier waypoint must not skip the
     // ones in between. The last one stays: it is the goal.
+    //
+    // Passed = within waypoint_passed_radius on x / y (current_pose is the
+    // planar map -> base_link) AND on the robot's floor: within
+    // waypoint_passed_z_tolerance of its ground height (2026-11). A waypoint's
+    // z names its floor (NavigateThroughGoals); on x / y alone, a robot on 1F
+    // dropped the 2F waypoint above it, and the replan after skipped it. With
+    // no ground height (body_frame's TF missing) nothing is dropped this tick:
+    // keeping a waypoint one tick longer is harmless, dropping one is not.
     std::vector<geometry_msgs::msg::PoseStamped> remaining;
+    double ground_z = 0.0;
+    std::string z_error;
+    const bool have_z = syncai_util::lookupGroundZ(
+      *this->feedback_utils_.tf, this->feedback_utils_.global_frame, body_frame_, lidar_height_,
+      ground_z, &z_error);
+    if (!have_z) {
+      RCLCPP_WARN_THROTTLE(
+        this->logger_, *this->clock_, 2000,
+        "[PoseNavigator][%s] %s: no ground height (%s -> %s: %s); no waypoint is marked passed "
+        "until it is back",
+        __func__, this->getName().c_str(), this->feedback_utils_.global_frame.c_str(),
+        body_frame_.c_str(), z_error.c_str());
+    }
     if (blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
           keys::kRemainingGoals, remaining)) {
       size_t passed = 0;
-      while (remaining.size() - passed > 1 &&
+      while (have_z && remaining.size() - passed > 1 &&
              syncai_util::geometry_utils::euclidean_distance(
-               remaining[passed].pose, current_pose.pose) <= waypoint_passed_radius_) {
+               remaining[passed].pose, current_pose.pose) <= waypoint_passed_radius_ &&
+             std::abs(remaining[passed].pose.position.z - ground_z) <=
+               waypoint_passed_z_tolerance_) {
         ++passed;
       }
       if (passed > 0) {
         for (size_t i = 0; i < passed; ++i) {
           RCLCPP_INFO(
             this->logger_,
-            "[PoseNavigator][%s] %s: passed waypoint (%.2f, %.2f) within %.2f m; %zu still ahead",
+            "[PoseNavigator][%s] %s: passed waypoint (%.2f, %.2f, z %.2f) within %.2f m, robot's "
+            "ground z %.2f; %zu still ahead",
             __func__, this->getName().c_str(), remaining[i].pose.position.x,
-            remaining[i].pose.position.y, waypoint_passed_radius_, remaining.size() - i - 1);
+            remaining[i].pose.position.y, remaining[i].pose.position.z, waypoint_passed_radius_,
+            ground_z, remaining.size() - i - 1);
         }
         remaining.erase(remaining.begin(), remaining.begin() + static_cast<std::ptrdiff_t>(passed));
         blackboard->set<std::vector<geometry_msgs::msg::PoseStamped>>(

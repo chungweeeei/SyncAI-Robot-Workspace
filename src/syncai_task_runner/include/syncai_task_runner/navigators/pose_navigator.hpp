@@ -202,6 +202,14 @@ protected:
   // passed and dropped from remaining_goals, so a replan starts from the
   // next one (the last one is never dropped).
   double waypoint_passed_radius_{1.0};
+  // And within this of the robot's ground height (2026-11): the radius is
+  // planar, so on a two-storey route the robot on 1F passed the 2F waypoint
+  // right above it and dropped it. The ground is body_frame's z in the map
+  // frame minus lidar_height (base_link is planar), as the controllers and
+  // Octo3D read it.
+  double waypoint_passed_z_tolerance_{1.0};
+  std::string body_frame_{"pointlio_body"};
+  double lidar_height_{0.481};
 };
 
 using NavigateToPoseNavigator = PoseNavigator<nav2_msgs::action::NavigateToPose>;

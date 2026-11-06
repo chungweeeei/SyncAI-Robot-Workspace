@@ -377,7 +377,9 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `transform_tolerance` | `0.1` | |
 | `plugin_lib_names` | fifteen BT node libraries | Must list every library whose tags `move.xml`, `patrol.xml`, `dock.xml` and `undock.xml` use — which is every library `syncai_behavior_tree` builds since its unused `InitialPoseReceived` condition went (2026-10-28). The four docking libraries cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
 | `default_nav_through_poses_bt_xml` | `<share>/behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11), declared lazily by its navigator like `default_bt_xml` |
-| `waypoint_passed_radius` | `1.0` m | `navigate_through_poses` only: a waypoint the robot comes within this of is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. A first value, unmeasured |
+| `waypoint_passed_radius` | `1.0` m | `navigate_through_poses` only: a waypoint the robot comes within this of (x / y) is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. A first value, unmeasured |
+| `waypoint_passed_z_tolerance` | `1.0` m | 2026-11: and only when its z is within this of the robot's ground height, so a waypoint on another floor is never passed from below or above it. Storeys are 2.5 m and more apart |
+| `body_frame` / `lidar_height` | `<robot_id>/pointlio_body` (launch) / `0.481` | The robot's ground height for the test above (`syncai_util::lookupGroundZ`), as controller_server and `Octo3D` read it; keep the three in step |
 | `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`dock.xml`), resolved against the same `behavior_trees/` directory, or an absolute path. (Until 2026-10-28 a 3D map swapped any of them for its `_3d.xml` sibling.) |
 | `goal_blackboard_id` / `path_blackboard_id` | `goal` / `path` | Must match the `{…}` names in the XML |
 
@@ -411,7 +413,11 @@ before ended on). Two blackboard keys carry the route
 goal or a preempt — what `GlobalUpdatedGoal` watches — and `remaining_goals`,
 what a replan plans through. The navigator drops a waypoint from the front of
 `remaining_goals` once the robot has come within `waypoint_passed_radius`
-(1.0 m) of it, never the last, at its loop rate, and reports what is left as
+(1.0 m) of it **on its floor** — the waypoint's z within
+`waypoint_passed_z_tolerance` (1.0 m) of the robot's ground height (2026-11;
+on x / y alone a robot on 1F dropped the 2F waypoint above it, and no ground
+height means nothing is dropped that tick) — never the last, at its loop rate,
+and reports what is left as
 `number_of_poses_remaining`. So passing a waypoint is not a changed goal and
 does not replan; a replan for a blocked path starts from the next waypoint.
 A waypoint the robot misses by more than the radius (a wide detour) is
