@@ -247,7 +247,7 @@ struct NodeConfig
   // /<robot_id> namespace it resolves to pointlio's /<robot_id>/pointlio/reset.
   std::string lio_reset_service = "pointlio/reset";
   // How long to wait for pointlio's reset response (it swaps the builder and
-  // joins the old ikd-tree's rebuild thread -- well under a second normally).
+  // frees the old local map -- well under a second normally).
   double lio_reset_timeout_sec = 2.0;
   // How long to wait for the first odometry of the new run: pointlio re-runs
   // its static IMU init (imu_init_num samples at 200 Hz) and publishes nothing

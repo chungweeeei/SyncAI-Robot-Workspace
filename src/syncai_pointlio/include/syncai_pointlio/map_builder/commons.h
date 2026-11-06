@@ -34,9 +34,11 @@ struct Config
   double scan_resolution = 0.25;
   double map_resolution = 0.3;
 
-  double cube_len = 300;
-  double det_range = 60;
-  double move_thresh = 1.5;
+  // The local map (IVoxMap): grid edge in metres, LRU capacity in grids, and the grids a
+  // nearest search looks in (0, 6, 18 or 26 neighbours). Upstream Point-LIO's values.
+  double map_grid_resolution = 2.0;
+  int map_capacity = 1000000;
+  int map_nearby = 6;
 
   // Point-LIO output model: omg/acc are random-walk states, these drive them.
   double gyr_cov_output = 1000.0;

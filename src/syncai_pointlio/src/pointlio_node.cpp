@@ -166,10 +166,34 @@ void PointLIONode::loadParameters()
     this->declare_parameter("scan_resolution", m_builder_config.scan_resolution);
   m_builder_config.map_resolution =
     this->declare_parameter("map_resolution", m_builder_config.map_resolution);
-  m_builder_config.cube_len = this->declare_parameter("cube_len", m_builder_config.cube_len);
-  m_builder_config.det_range = this->declare_parameter("det_range", m_builder_config.det_range);
-  m_builder_config.move_thresh =
-    this->declare_parameter("move_thresh", m_builder_config.move_thresh);
+  // The local map (IVoxMap). Checked here because a bad value is not an
+  // error further down: a zero resolution is a division by zero in every grid
+  // key, a capacity under one grid drops the map as it is built, and an
+  // unknown neighbourhood silently searches the point's own grid alone.
+  m_builder_config.map_grid_resolution =
+    this->declare_parameter("map_grid_resolution", m_builder_config.map_grid_resolution);
+  m_builder_config.map_capacity =
+    this->declare_parameter("map_capacity", m_builder_config.map_capacity);
+  m_builder_config.map_nearby = this->declare_parameter("map_nearby", m_builder_config.map_nearby);
+  if (!(m_builder_config.map_grid_resolution > 0.0)) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_grid_resolution %.3f must be > 0; using 2.0",
+      __func__, m_builder_config.map_grid_resolution);
+    m_builder_config.map_grid_resolution = 2.0;
+  }
+  if (m_builder_config.map_capacity < 1) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_capacity %d must be >= 1; using 1000000",
+      __func__, m_builder_config.map_capacity);
+    m_builder_config.map_capacity = 1000000;
+  }
+  const int nearby = m_builder_config.map_nearby;
+  if (nearby != 0 && nearby != 6 && nearby != 18 && nearby != 26) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_nearby %d is not 0, 6, 18 or 26; using 6",
+      __func__, nearby);
+    m_builder_config.map_nearby = 6;
+  }
 
   // Point-LIO output model
   m_builder_config.gyr_cov_output =
@@ -622,6 +646,7 @@ void PointLIONode::reportHealth()
   const double std_p_cm = 100.0 * std::sqrt(std::max(0.0, P(3, 3) + P(4, 4) + P(5, 5)));
   const double std_r_deg = std::sqrt(std::max(0.0, P(0, 0) + P(1, 1) + P(2, 2))) * 180.0 / M_PI;
   const State & x = m_kf->x();
+  const IVoxMap & map = m_builder->lidar_processor()->map();
 
   std::string reasons;
   auto add = [&reasons](const std::string & r) {
@@ -667,18 +692,22 @@ void PointLIONode::reportHealth()
   //  them, the worst scan's effective share, mean |residual| | update chunks
   //  with a match / all | IMU samples, saturated samples, largest |axis| |
   //  speed now and the window's max | position / attitude 1-sigma | bias and
-  //  gravity norms | timerCB cost per scan.
+  //  gravity norms | timerCB cost per scan | the local map's grids, points
+  //  and the grids its LRU has dropped since the last reset (last, so a
+  //  parser of the older lines keeps its field positions).
   const double scans = w.scans;
   char line[512];
   std::snprintf(
     line, sizeof(line),
     "lio health: %d scans in %.1f s | pts %.0f near %.0f%% eff %.0f%% (min %.0f%%) res %.2f cm | "
     "chunks %d/%d | imu %d sat acc %d gyro %d max |a| %.1f |w| %.2f | v %.2f max %.2f m/s | "
-    "std p %.2f cm r %.3f deg | |ba| %.3f |bg| %.4f |g| %.3f | cost %.1f max %.1f ms",
+    "std p %.2f cm r %.3f deg | |ba| %.3f |bg| %.4f |g| %.3f | cost %.1f max %.1f ms | "
+    "map %zu grids %zu pts evicted %zu",
     w.scans, window, w.points / scans, near_pct, eff_pct, 100.0 * w.effective_ratio_min, res_cm,
     w.chunks_updated, w.chunks, w.imu_samples, w.acc_saturated, w.gyro_saturated, w.acc_abs_max,
     w.gyro_abs_max, x.v.norm(), w.speed_max, std_p_cm, std_r_deg, x.ba.norm(), x.bg.norm(),
-    x.g.norm(), w.cost_ms_sum / scans, w.cost_ms_max);
+    x.g.norm(), w.cost_ms_sum / scans, w.cost_ms_max, map.numGrids(), map.numPoints(),
+    map.numEvicted());
   if (reasons.empty()) {
     RCLCPP_INFO(this->get_logger(), "%s", line);
   } else {
@@ -737,8 +766,7 @@ void PointLIONode::publishResults()
 // yet" and a second, subtly different one would drift from it. The order
 // matters twice: last_odom_time is read before anything is cleared (it is the
 // answer), and the builder is replaced last (dropping it releases the old
-// LidarProcessor and its ikd-tree, whose destructor joins the tree's rebuild
-// thread -- the one genuinely blocking step here).
+// LidarProcessor and its map, a hash map freed in place).
 //
 // NO LOCK against timerCB, and that is load-bearing: this service and the
 // timer are both in the node's default MutuallyExclusive group, so timerCB
@@ -791,7 +819,7 @@ void PointLIONode::resetCB(
 
   // The reset proper. Same two lines as the constructor: MapBuilder's ctor
   // re-runs setConfig on the EKF (which re-identities its covariance), builds
-  // a fresh IMUInitializer and a fresh LidarProcessor -- new ikd-tree -- and
+  // a fresh IMUInitializer and a fresh LidarProcessor -- new IVoxMap -- and
   // puts the status back to IMU_INIT.
   m_kf = std::make_shared<PointEKF>();
   m_builder = std::make_shared<MapBuilder>(m_builder_config, m_kf);

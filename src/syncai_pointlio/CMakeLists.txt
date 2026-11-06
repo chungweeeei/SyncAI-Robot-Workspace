@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.8)
 project(syncai_pointlio)
 
 # Point-LIO is the one package in this workspace where an unoptimised build is
-# not merely slow but unusable: the ikd-tree and the per-point EKF update cannot
+# not merely slow but unusable: the map search and the per-point EKF update cannot
 # hold the lidar rate on the Jetson without -O3. The upstream CMakeLists forced
 # CMAKE_BUILD_TYPE to Release unconditionally, which also silently defeated any
 # `--cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo` passed for profiling; the
@@ -16,8 +16,8 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
-# -pthread / -fexceptions carried over from upstream: ikd_Tree runs its rebuild
-# on a raw pthread, and the flags predate the CMake thread-target idiom.
+# -pthread / -fexceptions carried over from upstream; they predate the CMake
+# thread-target idiom and are kept rather than retested.
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fexceptions")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -fexceptions")
 
@@ -31,9 +31,11 @@ endif()
 # the consumer side or its headers pull fmt back in.
 add_compile_definitions(SOPHUS_USE_BASIC_LOGGING)
 
-# ikd_Tree multi-processing switches (upstream names). MP_PROC_NUM=2 is the
+# Multi-processing switches (upstream names). MP_PROC_NUM=2 is the
 # OpenMP thread count for the point-to-plane residual loop; it was tuned for
-# the Jetson's core budget alongside the localizer and the costmaps.
+# the Jetson's core budget alongside the localizer and the costmaps. Only a
+# chunk of kMinParallelChunk points or more runs in parallel
+# (lidar_processor.cpp): a Livox scan's chunks are ~1 point each.
 add_definitions(-DMP_EN)
 add_definitions(-DMP_PROC_NUM=2)
 
@@ -70,7 +72,7 @@ add_executable(pointlio_node
   src/map_builder/commons.cpp
   src/map_builder/point_ekf.cpp
   src/map_builder/imu_initializer.cpp
-  src/map_builder/ikd_Tree.cpp
+  src/map_builder/ivox_map.cpp
   src/map_builder/lidar_processor.cpp
   src/map_builder/map_builder.cpp
 )
@@ -107,7 +109,7 @@ install(DIRECTORY include/
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # map_builder/ is ported Point-LIO / ikd-Tree code with no per-file licence
+  # map_builder/ is ported Point-LIO code with no per-file licence
   # header (the package LICENSE covers it) and not clang-format clean; the two
   # linters below would fail on every one of those files, so they stay off as
   # they were upstream. The rest of ament_lint_common still runs.

@@ -2,7 +2,7 @@
 #define SYNCAI_POINTLIO__POINTLIO_NODE_HPP_
 
 // The ROS shell around Point-LIO. Everything numeric lives in map_builder/
-// (point_ekf, imu_initializer, lidar_processor, ikd_Tree); this class owns the
+// (point_ekf, imu_initializer, lidar_processor, ivox_map); this class owns the
 // subscriptions, the sync of a lidar frame with the IMU samples covering it,
 // the publishers / TF broadcaster, and the in-place `reset` service.
 //
