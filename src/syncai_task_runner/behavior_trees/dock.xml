@@ -38,6 +38,17 @@
   xy_goal_tolerance (0.10 m) and yaw_goal_tolerance (0.2 rad) of the staging
   pose; that residual is the docking controller's starting error.
 
+  The tree opens with move.xml's new-goal clear of Octo3D's dynamic overlay
+  (ForceSuccess, server_timeout 1000; move.xml's "Obstacle memory" has the
+  why), added 2026-11: the overlay arrived on 2026-10-22 with that clear in
+  move.xml only, so a DOCK sent within the overlay's 30 s memory of a MOVE
+  or PATROL planned its staging leg round marks the previous leg had left --
+  people who had walked on -- and drove that detour to the end, since a plan
+  that succeeds is never cleared and IsPathValid replans only when blocked.
+  Before the staging leg rather than inside it, as in move.xml, so a preempt
+  keeps the memory a detour depends on. undock.xml plans nothing and has no
+  clear.
+
   How the gait switch is checked (2026-10-14): MPC is SetMotionKey key="5"
   -> syncai_driver_manager -> `MODE M` over one-way UDP, and the driver's
   `success` means the datagram left, nothing more. The controller reports its
@@ -127,6 +138,10 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <Sequence name="Dock">
+      <!-- New goal, clean obstacle memory: move.xml's first node (2026-11, see the header) -->
+      <ForceSuccess>
+        <ClearEntireCostmap name="ClearDynamicOverlay-NewGoal" service_name="planner_server/Octo3D/clear_overlay" server_timeout="1000"/>
+      </ForceSuccess>
       <!-- Staging leg: move.xml with goal="{staging_pose}"; see move.xml for the why -->
       <PipelineSequence name="NavigateToStaging">
         <RateController hz="1.0">
