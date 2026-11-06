@@ -6,6 +6,21 @@
 #include <omp.h>
 #endif
 
+namespace
+{
+// The smallest chunk the residual loop runs on MP_PROC_NUM threads. A Livox
+// CustomMsg scan after the VoxelGrid is ~1250 groups of ~1 point (a voxel's
+// time is the mean of its points', so timestamps are practically unique):
+// a 2-thread region over one iteration costs ~1.3 us of fork/join on the Orin
+// and hands the worker nothing (static schedule), and with a new region every
+// ~30 us libgomp's worker never got past its spin-wait -- robot01 showed one
+// worker per executor thread at its master's CPU time, ~0.4 core of spinning
+// in all (2026-11-06). The parallel loop is for PointCloud2 input
+// (`lidar_type: 1`), whose one group per scan is cut into batch_max_points
+// chunks. 64 is a round number well above the fork/join break-even, not tuned.
+constexpr int kMinParallelChunk = 64;
+}  // namespace
+
 LidarProcessor::LidarProcessor(Config & config, std::shared_ptr<PointEKF> kf)
 : m_config(config), m_kf(kf)
 {
@@ -137,7 +152,7 @@ void LidarProcessor::updateChunk(int begin, int end)
   int near_num = 0;
 #ifdef MP_EN
   omp_set_num_threads(MP_PROC_NUM);
-#pragma omp parallel for reduction(+ : near_num)
+#pragma omp parallel for reduction(+ : near_num) if (end - begin >= kMinParallelChunk)
 #endif
   for (int i = begin; i < end; i++) {
     PointType & point_body = m_cloud_down_lidar->points[i];

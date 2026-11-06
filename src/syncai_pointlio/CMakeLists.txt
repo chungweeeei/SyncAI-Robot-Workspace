@@ -33,7 +33,9 @@ add_compile_definitions(SOPHUS_USE_BASIC_LOGGING)
 
 # Multi-processing switches (upstream names). MP_PROC_NUM=2 is the
 # OpenMP thread count for the point-to-plane residual loop; it was tuned for
-# the Jetson's core budget alongside the localizer and the costmaps.
+# the Jetson's core budget alongside the localizer and the costmaps. Only a
+# chunk of kMinParallelChunk points or more runs in parallel
+# (lidar_processor.cpp): a Livox scan's chunks are ~1 point each.
 add_definitions(-DMP_EN)
 add_definitions(-DMP_PROC_NUM=2)
 

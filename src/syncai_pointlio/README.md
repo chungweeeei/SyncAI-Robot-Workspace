@@ -386,7 +386,12 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
   `CMAKE_BUILD_TYPE` to Release (upstream forced it); the map search and the
   per-point EKF cannot hold the lidar rate on the Jetson at `-O0`.
   `MP_PROC_NUM=2` is the OpenMP thread count for the residual loop, sized
-  alongside the localizer and the costmaps.
+  alongside the localizer and the costmaps. It applies only to a chunk of 64
+  points or more (`kMinParallelChunk`), i.e. `PointCloud2` input: a Livox
+  scan's chunks are ~1 point each (a voxel's time is a mean, so timestamps are
+  practically unique), and a 2-thread region per point gave the worker no
+  work and kept it spinning between regions — on robot01 one worker per
+  executor thread, ~0.4 core in all (2026-11-06).
 - **Lint is partly off.** `ament_cmake_copyright` and `cpplint` are disabled
   as they were upstream: `map_builder/` has no per-file licence headers (the
   package `LICENSE` covers it) and the ported files are not clang-format
