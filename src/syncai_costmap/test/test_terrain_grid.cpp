@@ -144,6 +144,8 @@ TEST(TerrainGrid, DropOffEdgeIsLethal)
   // The floor ends at x = 0.5 and the next one is 1 m down: the upper edge
   // reads a neighbour out of reach (the negative obstacle the obstacle
   // layer's height band could never see), and the floor behind it is free.
+  // The rule, not the view: the scene samples the lower floor right up to
+  // the edge, which the robot's own lidar never sees (next test).
   Scene s;
   s.surface(
     kOrigin, -kOrigin, kOrigin, -kOrigin, [](double x, double) { return x > 0.5 ? -1.0 : 0.0; });
@@ -153,6 +155,22 @@ TEST(TerrainGrid, DropOffEdgeIsLethal)
   EXPECT_GT(s.share(-1.9, 0.2, -1.9, 1.9, FREE_SPACE), 0.98);
   // The lower floor is an island from up here.
   EXPECT_GT(s.share(0.8, 1.9, -1.9, 1.9, LETHAL_OBSTACLE), 0.98);
+}
+
+// The same 1 m drop as the robot's lidar sees it (2026-11): from 0.481 m up
+// with a -7 deg lower FOV the lower floor is in view only from d / tan 7 deg
+// (~8.1 m here) past the edge, outside this 4 m window, so only the upper
+// floor has returns. The edge has no lower neighbour, so it is not lethal,
+// and past it is unknown -- FREE to MPPI. A known limit (README, "A drop-off
+// is mostly unseen"): this test pins it, so a change that fixes it shows.
+TEST(TerrainGrid, DropOffInItsOwnShadowIsNotSeen)
+{
+  Scene s;
+  s.surface(kOrigin, 0.5, kOrigin, -kOrigin, [](double, double) { return 0.0; });
+  const auto st = s.classify();
+  EXPECT_EQ(st.lethal_step, 0u);
+  EXPECT_LT(s.share(0.35, 0.5, -1.9, 1.9, LETHAL_OBSTACLE), 0.05);
+  EXPECT_GT(s.share(0.6, 1.9, -1.9, 1.9, NO_INFORMATION), 0.98);
 }
 
 TEST(TerrainGrid, RampIsFreeAndSteepSlopeIsLethal)

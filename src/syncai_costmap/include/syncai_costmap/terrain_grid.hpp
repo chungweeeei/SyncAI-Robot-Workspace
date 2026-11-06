@@ -6,7 +6,9 @@
 // rules OctomapPlanner3D judges its static map with (surface_map.hpp's
 // SurfaceMapParams -- same names, same values), so that the local costmap
 // sees what the global planner sees: a step higher than the legs take, a
-// drop-off, a slope too steep, a thing lower than the old obstacle layer's
+// drop-off whose lower floor it has seen (rarely: the -7 deg lower FOV keeps
+// ~8x the drop's depth past its edge in shadow, README "A drop-off is mostly
+// unseen"), a slope too steep, a thing lower than the old obstacle layer's
 // 0.58 m floor -- and nothing on a ramp or a kerb.
 //
 // Why this and not the obstacle layer's height band: every point above a
