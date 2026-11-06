@@ -62,12 +62,16 @@
               </ReactiveSequence>
               <ComputePathThroughPoses goals="{remaining_goals}" path="{path}" planner_id="Octo3D"/>
             </Fallback>
-            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+            <ForceSuccess>
+              <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+            </ForceSuccess>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ForceSuccess>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </ForceSuccess>
         </RecoveryNode>
       </PipelineSequence>
     </Sequence>

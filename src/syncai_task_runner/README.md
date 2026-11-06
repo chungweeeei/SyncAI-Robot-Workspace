@@ -247,16 +247,25 @@ contextual recovery:
           </ReactiveSequence>
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
         </Fallback>
-        <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+        <ForceSuccess>
+          <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+        </ForceSuccess>
       </RecoveryNode>
     </RateController>
     <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
       <FollowPath path="{path}" controller_id="FollowPath"/>
-      <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+      <ForceSuccess>
+        <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+      </ForceSuccess>
     </RecoveryNode>
   </PipelineSequence>
 </Sequence>
 ```
+
+Every recovery clear is under `ForceSuccess` (2026-11), like the new-goal
+one: `RecoveryNode` fails outright when its recovery child fails, so a clear
+that timed out or found no service ended the goal with its retries unused.
+The same in `patrol.xml` and `dock.xml`.
 
 **Octo3D, judged on its own overlay.** `Octo3D` (OctomapPlanner3D on the
 map's `octomap.bt`) routes over the floor surfaces and between floors over a

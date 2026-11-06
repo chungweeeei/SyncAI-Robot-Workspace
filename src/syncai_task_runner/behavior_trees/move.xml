@@ -141,6 +141,15 @@
   controller's local_costmap; relative service names resolve under the
   robot namespace because every node in the stack shares it.
 
+  Every recovery clear is under ForceSuccess (2026-11), as the new-goal one
+  always was. RecoveryNode fails outright when its recovery child fails, so
+  a clear that timed out (the costmap's mutex or the planner's executor
+  busy past server_timeout) or found no service ended the goal with the
+  retries unused -- a FollowPath that would have been retried after a
+  blocker left, or a plan that would have been retried on the next scan.
+  A retry without the clear is still the retry: the stale marks it would
+  have dropped age out anyway (obstacle_memory, the overlay's 30 s).
+
   Failure attribution (2026-10). The navigator fills NavigateToGoal's
   error_code from the blackboard keys failed_node / failure_msg, which
   ComputePathToPose and FollowPath write when their goal is aborted (last
@@ -195,12 +204,16 @@
               </ReactiveSequence>
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="Octo3D"/>
             </Fallback>
-            <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+            <ForceSuccess>
+              <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+            </ForceSuccess>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ForceSuccess>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </ForceSuccess>
         </RecoveryNode>
       </PipelineSequence>
     </Sequence>

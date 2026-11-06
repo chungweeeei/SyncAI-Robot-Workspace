@@ -275,8 +275,10 @@ and judges every cell on each update:
    heights) seed the flood too, so a ramp whose foot the lidar never looked
    at is still the floor the planner says it is; a level path seeds nothing.
 4. **Step**: an 8-neighbour whose ground differs by more than
-   `max_step_height` (0.17, a riser) → LETHAL: a wall foot, a ledge, a
-   drop-off — the negative obstacle the band could never see.
+   `max_step_height` (0.17, a riser) → LETHAL: a wall foot, a ledge — and a
+   drop-off **only once the floor below it has a ground estimate**, which
+   the robot's own lidar rarely gives (see "A drop-off is mostly unseen"
+   below).
 5. **Slope**: the plane fitted under the `robot_radius` disc steeper than
    `max_slope_deg` (20) → LETHAL, judged only when the disc spans more than a
    step (a level floor with a kerb is not fitted) and at least
@@ -327,8 +329,24 @@ overhang longer than that — the underside is taken for a surface and is an
 island. An underside between `body_clearance` and 0.75 m up lifts the ground
 and reads as an obstacle (conservative, for a few centimetres of clearance).
 Unknown cells
-are free to MPPI unless the costmap tracks unknown space, so the far side of a
-drop the lidar has not looked over is not yet a wall; the drop's edge is.
+are free to MPPI unless the costmap tracks unknown space.
+
+**A drop-off is mostly unseen** (corrected 2026-11; this said "the drop's
+edge is [lethal]"). From 0.481 m up with the MID360's −7° lower FOV, a point
+on the lower floor x metres past an edge of depth d is in view only when the
+line to it clears the edge *and* lies inside the FOV, and the two together
+need x ≥ d / tan 7° ≈ **8 × d** (0.2 m deep: 1.6 m; 0.5 m: 4 m, past the
+local costmap's 2 m half-width; 1 m: 8 m), from any distance. So the cells
+just past a drop deeper than a step are never seen: the edge has no lower
+neighbour for the step rule, it stays FREE, and the cells beyond it are
+NO_INFORMATION — FREE to MPPI. The island rule does not help either: a lower
+floor seen at all is lethal, an unseen one is not there. What keeps the
+robot off a drop is the global planner: Octo3D plans on the map, where a
+ledge is a cut between components, and MPPI tracks that path; a detour the
+optimizer takes round a blocker near a drop has no local protection.
+`test_terrain_grid`'s `DropOffEdgeIsLethal` samples the lower floor up to
+the edge (the rule, not the view); `DropOffInItsOwnShadowIsNotSeen` is the
+view.
 A person's **ghost**: the floor within 3.9 m is never re-seen while the robot
 stands, so a person who blocks it for longer than the floor memory round them
 lasts leaves their legs' returns (the lowest ~0.3 m up, the lower FOV edge at
@@ -439,7 +457,7 @@ paths start passing suspiciously close to walls.
 
 `test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
 syncai_costmap`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
-step, drop-off, ramp, slope, box, person, wall foot, a stair's underside
+step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a stair's underside
 overhead (and with no floor seen under it), a stair lethal with and
 without a climbing path, the window moving — with no ROS; it also builds on a workstation
 with plain `clang++` against `include/` and googletest.
