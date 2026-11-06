@@ -20,9 +20,6 @@ void ComputePathThroughPosesAction::on_tick()
 {
   getInput("goals", goal_.goals);
   getInput("planner_id", goal_.planner_id);
-  if (getInput("start", goal_.start)) {
-    goal_.use_start = true;
-  }
 }
 
 void ComputePathThroughPosesAction::on_wait_for_result(

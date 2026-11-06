@@ -124,9 +124,10 @@ protected:
   // one place, abortPlan(), with the error_code the exception maps to.
 
   /**
-   * @brief Get the starting pose from costmap or message
-   * @param goal Goal to find start from (use_start / start: both actions)
+   * @brief Get the starting pose: the robot's, from the costmap
+   * @param goal Goal whose use_start is checked (both actions)
    * @param start The starting pose to use
+   * @throw syncai_nav_core::PlannerException when use_start is set (refused)
    * @throw syncai_nav_core::PlannerTFError when there is no robot pose
    */
   template <typename GoalT>
