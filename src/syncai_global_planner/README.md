@@ -198,13 +198,13 @@ code the exception maps to and its `what()` as `error_msg`:
 | unknown `planner_id` | `InvalidPlanner` | 201 `INVALID_PLANNER` |
 | no robot pose, a pose not transformable | `PlannerTFError` | 202 `TF_ERROR` |
 | `start_outside_map` / `goal_outside_map` | `StartOutsideMapBounds` / `GoalOutsideMapBounds` | 203 / 204 |
-| `start_unavailable` / `goal_unavailable` | `StartOccupied` / `GoalOccupied` | 205 / 206 |
+| `start_unavailable` / `goal_unavailable` | `StartOccupied` / `GoalOccupied` | 205 / 206 (nothing standable near it, or a person on the goal) |
 | `timeout`, `search_limit` | `PlannerTimedOut` | 207 `TIMEOUT` |
 | `no_path` | `NoValidPathCouldBeFound` | 208 `NO_VALID_PATH` |
 | an empty route | `NoViapointsGiven` | 209 |
 | `map_not_loaded` / `map_loading` | `MapNotLoaded` / `MapLoading` | 220 / 221 |
 | `start_in_keepout` / `goal_in_keepout` | `StartInKeepout` / `GoalInKeepout` | 222 / 223 |
-| `disconnected` | `GroundDisconnected` | 224 `DISCONNECTED` |
+| `disconnected` | `GroundDisconnected` | 224 `DISCONNECTED` — also a goal whose only standable ground near it is on a component the start is not joined to (`goalSnapFailure()`, 2026-11; the snap refuses those cells, and it was 206 until then, so the backend retried a goal on an unjoined floor) |
 | an empty path, an untyped `PlannerException`, any other exception | — | 200 `PLAN_FAILED` |
 
 The task runner copies the code into `NavigateToGoal` / `NavigateThroughGoals`

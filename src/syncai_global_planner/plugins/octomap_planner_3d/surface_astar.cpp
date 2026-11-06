@@ -189,6 +189,7 @@ SnapResult SurfaceAStar::snap(
     return out;
   }
   char buf[256];
+  out.other_component = best_other != kNoCell;
   if (best_other != kNoCell) {
     double ox, oy;
     m.cellXY(best_other, ox, oy);
@@ -224,6 +225,14 @@ SnapResult SurfaceAStar::snap(
       "pick one";
   }
   return out;
+}
+
+PlanFailure goalSnapFailure(const SnapResult & g)
+{
+  if (g.outside) {
+    return PlanFailure::GoalOutsideMap;
+  }
+  return g.other_component ? PlanFailure::Disconnected : PlanFailure::GoalUnavailable;
 }
 
 SnapResult SurfaceAStar::snapGoal(
