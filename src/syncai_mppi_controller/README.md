@@ -88,7 +88,7 @@ differences are these:
 | Libraries are `libsyncai_mppi_controller.so` / `libsyncai_mppi_critics.so` | So they can never be confused with an apt nav2's `libmppi_controller.so`. |
 | **`findClosestPathPt` is nav2's later one** (2026-11) | Humble's `lower_bound` version dereferenced `end()` once a trajectory was longer than the path left (near the goal, on a short leg between cusps), and `PathAlignCritic` then read `path_pts_valid` and the path one past their ends; an answer equal to its start index came back as 0, so the rest of the trajectory was aligned to the path's start. Replaced by nav2's own forward scan (navigation2 #4174, Jazzy on, never backported): clamped to the last point, never before the start index. `test/test_utils.cpp`. |
 | **A fallback retry scores again** (`Optimizer::fallback()`, 2026-11) | The fail flag was cleared only at the start of a cycle, so a retry ran with it set, `CriticManager` scored nothing and the retry failed at once — `retry_attempt_limit` was dead (nav2 main still has it). Cleared on the retry now; **`retry_attempt_limit` is 0** all the same, the behaviour the back-out, `failure_tolerance` and `move.xml`'s retries were tuned on: a real retry samples round a zero sequence and finds a slow creep the walking floor would raise to `walk_vx_min` unchecked. |
-| No `benchmark/`; one gtest | `test/test_utils.cpp` (`findClosestPathPt`), header-only, no node. The rest is linters, as in the other nav ports here. |
+| No `benchmark/`; two gtests | `test/test_utils.cpp` (`findClosestPathPt`), header-only, no node; `test/test_parameters_handler.cpp`, `ParametersHandler` on a plain node (which sets run the Optimizer's post callback, which are refused). The rest is linters, as in the other nav ports here. |
 
 ## Topics (all relative to `/<robot_id>`)
 
@@ -143,10 +143,23 @@ for a day between).
 - **Two plugins, one costmap mutex.** Both controllers lock the local costmap
   for the whole of a cycle. Only the controller named in the FollowPath goal
   runs, so loading both costs memory, not CPU.
-- **`ParametersHandler` warns "Parameter … not found"** on every dynamic
-  parameter set on the server that is not one of MPPI's (for example
-  `FollowPathRPP3D.*` or `failure_tolerance`). Upstream behaves the same way, and
-  the set still succeeds.
+- **A runtime set of one of MPPI's own parameters keeps the control
+  sequence** (2026-11). `ParametersHandler`'s callback sees every set on the
+  server; upstream ran the Optimizer's `reset()` after each of them, so a
+  console change mid-goal — even `goal_checker.*` or `FollowPathRPP3D.*` —
+  dropped the warm start and the robot braked. Now a set with none of MPPI's
+  dynamic parameters in it is ignored (and no longer warns "Parameter … not
+  found"), and one with them re-applies the constraints and regenerates the
+  noise; only a new `batch_size` / `time_steps` resets the optimizer.
+  `model_dt` and `motion_model` are refused at runtime (startup only;
+  upstream's dynamic `motion_model` wrote through a reference to a dead local),
+  and a set of a startup-only one (`critics`) is accepted with a warning that
+  it applies after a restart. A parameter may have several dynamic
+  callbacks (upstream: one per name): `ConstraintCritic` follows `vx_max` /
+  `vy_max` / `vx_min` with its own, so a console `vx_max` reaches its limit as
+  well as the optimizer's constraints (until 2026-11 the critic kept its
+  startup copy). `PathAngleCritic`'s reversing flag still reads `vx_min` at
+  startup only.
 - **Build flags.** The x86 flags in `CMakeLists.txt` (`-mavx2` …) are tested
   with `check_cxx_compiler_flag` and drop out on arm64. The whole package is
   built `-O3 -ffast-math` as upstream builds it. It is deliberately not

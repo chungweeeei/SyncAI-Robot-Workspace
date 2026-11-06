@@ -282,13 +282,12 @@ protected:
   double approach_dist_{0.0};
   double approach_rotate_min_angle_{0.25};
   // applyApproachScaling(): its deceleration, the distance from the path's
-  // end where it reaches walk_vx_min, the optimizer's own vx_max it slows
-  // down from, and the distance along the path to its end as of the cycle's
-  // transformPath() -- nullopt while the path in view stops short of the end
-  // (PathHandler::transformedGoal()).
+  // end where it reaches walk_vx_min, and the distance along the path to its
+  // end as of the cycle's transformPath() -- nullopt while the path in view
+  // stops short of the end (PathHandler::transformedGoal()). (vx_max_, the
+  // linear cap's top until 2026-11-03, went unused and was removed.)
   double approach_decel_{0.0};
   double approach_floor_dist_{0.2};
-  double vx_max_{0.0};
   // rotateToGoalHeading()'s stop from the walking floor; <= 0 uses
   // max_linear_accel.
   double goal_stop_decel_{0.0};

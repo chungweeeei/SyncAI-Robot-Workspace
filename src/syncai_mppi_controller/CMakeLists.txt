@@ -124,10 +124,13 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
-  # Header-only helpers, no node: utils.hpp's findClosestPathPt.
+  # utils.hpp's findClosestPathPt: header-only, no node.
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_utils test/test_utils.cpp)
   target_link_libraries(test_utils ${PROJECT_NAME})
+  # ParametersHandler on a plain node (needs rclcpp, no costmap or TF).
+  ament_add_gtest(test_parameters_handler test/test_parameters_handler.cpp)
+  target_link_libraries(test_parameters_handler ${PROJECT_NAME})
 endif()
 
 ament_export_include_directories(include)

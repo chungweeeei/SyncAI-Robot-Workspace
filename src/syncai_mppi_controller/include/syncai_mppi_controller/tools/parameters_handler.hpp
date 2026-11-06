@@ -19,13 +19,13 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "syncai_util/node_utils.hpp"
-#include "rclcpp/rclcpp.hpp"
 #include "rclcpp/parameter_value.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "syncai_util/node_utils.hpp"
 
 namespace mppi
 {
@@ -109,12 +109,25 @@ public:
   }
 
   /**
-    * @brief Set a parameter to a dynamic parameter callback
+    * @brief Add a dynamic parameter callback; a name may have several (not
+    * upstream, 2026-11: upstream kept one per name, so a second reader of a
+    * parameter -- ConstraintCritic's vx_max beside the Optimizer's -- kept its
+    * startup copy with no warning)
     * @param name Name of parameter
     * @param callback Parameter callback
     */
   template<typename T>
   void addDynamicParamCallback(const std::string & name, T && callback);
+
+  /**
+    * @brief Refuse every runtime set of a parameter (not upstream, 2026-11)
+    * @param name Full parameter name
+    * @param reason The set's refusal reason: why it is read at startup only
+    */
+  void addReadOnly(const std::string & name, const std::string & reason)
+  {
+    read_only_[name] = reason;
+  }
 
 protected:
   /**
@@ -155,11 +168,18 @@ protected:
 
   bool verbose_{false};
 
-  std::unordered_map<std::string, std::function<get_param_func_t>>
-  get_param_callbacks_;
+  std::unordered_map<std::string, std::vector<std::function<get_param_func_t>>>
+    get_param_callbacks_;
 
   std::vector<std::function<pre_callback_t>> pre_callbacks_;
   std::vector<std::function<post_callback_t>> post_callbacks_;
+
+  // Not upstream (2026-11). The plugin namespaces this handler reads
+  // ("FollowPath"), so a set of one of their parameters that has no dynamic
+  // callback can be told apart from another plugin's or the server's.
+  std::unordered_set<std::string> prefixes_;
+  // Parameters whose runtime set is refused, with the reason.
+  std::unordered_map<std::string, std::string> read_only_;
 };
 
 inline auto ParametersHandler::getParamGetter(const std::string & ns)
@@ -176,7 +196,7 @@ inline auto ParametersHandler::getParamGetter(const std::string & ns)
 template<typename T>
 void ParametersHandler::addDynamicParamCallback(const std::string & name, T && callback)
 {
-  get_param_callbacks_[name] = callback;
+  get_param_callbacks_[name].push_back(callback);
 }
 
 template<typename T>
@@ -201,6 +221,12 @@ void ParametersHandler::getParam(
 
   syncai_util::declare_parameter_if_not_declared(
     node, name, rclcpp::ParameterValue(default_value));
+
+  // After the declaration, which runs the set callbacks once start() has
+  // registered them (verbose's own): before, it read as a startup-only set.
+  if (const auto dot = name.find('.'); dot != std::string::npos) {
+    prefixes_.insert(name.substr(0, dot));
+  }
 
   setParam<ParamT>(setting, name, node);
 

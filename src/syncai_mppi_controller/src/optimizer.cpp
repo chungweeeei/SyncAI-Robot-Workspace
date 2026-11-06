@@ -66,7 +66,14 @@ void Optimizer::getParams()
   auto & s = settings_;
   auto getParam = parameters_handler_->getParamGetter(name_);
   auto getParentParam = parameters_handler_->getParamGetter("");
-  getParam(s.model_dt, "model_dt", 0.05f);
+  // Static and refused at runtime (2026-11): setOffset() below pairs it with
+  // controller_frequency once, at startup, and the server refuses a runtime
+  // controller_frequency for the same reason.
+  getParam(s.model_dt, "model_dt", 0.05f, ParameterType::Static);
+  parameters_handler_->addReadOnly(
+    name_ + ".model_dt",
+    "it must equal 1 / controller_frequency, and both are read at startup; change the two "
+    "together and restart controller_server");
   getParam(s.time_steps, "time_steps", 56);
   getParam(s.batch_size, "batch_size", 1000);
   getParam(s.iteration_count, "iteration_count", 1);
@@ -81,11 +88,17 @@ void Optimizer::getParams()
   getParam(s.sampling_std.wz, "wz_std", 0.4);
   getParam(s.retry_attempt_limit, "retry_attempt_limit", 1);
 
-  getParam(motion_model_name, "motion_model", std::string("DiffDrive"));
+  // Static and refused at runtime (2026-11): upstream registered it dynamic,
+  // bound to motion_model_name, a local of this function -- a runtime set
+  // wrote through a reference to a dead stack variable, and setMotionModel()
+  // never ran again anyway.
+  getParam(motion_model_name, "motion_model", std::string("DiffDrive"), ParameterType::Static);
+  parameters_handler_->addReadOnly(
+    name_ + ".motion_model", "the motion model is built at startup; restart controller_server");
 
   s.constraints = s.base_constraints;
   setMotionModel(motion_model_name);
-  parameters_handler_->addPostCallback([this]() {reset();});
+  parameters_handler_->addPostCallback([this]() { onParametersChanged(); });
 
   double controller_frequency;
   getParentParam(controller_frequency, "controller_frequency", 0.0, ParameterType::Static);
@@ -129,6 +142,29 @@ void Optimizer::reset()
 
   noise_generator_.reset(settings_, isHolonomic());
   RCLCPP_INFO(logger_, "Optimizer reset");
+}
+
+void Optimizer::onParametersChanged()
+{
+  // Not upstream (2026-11), which called reset() here: the console sets
+  // MPPI's parameters while the robot drives (vx_max, accelerations, critic
+  // weights), and each set zeroed the control sequence and the warm start,
+  // so the robot braked for a few cycles and built its speed up again. Only
+  // a change of the tensors' shapes needs that now; anything else keeps the
+  // sequence and takes effect on the next cycle. The constraints are what
+  // reset() used to copy from the parameters, and the noise is regenerated
+  // so a new vx_std / wz_std is sampled at once.
+  if (
+    costs_.shape(0) != settings_.batch_size ||
+    control_sequence_.vx.shape(0) != settings_.time_steps) {
+    RCLCPP_INFO(
+      logger_, "batch_size / time_steps changed (%u x %u): resetting the optimizer",
+      settings_.batch_size, settings_.time_steps);
+    reset();
+    return;
+  }
+  settings_.constraints = settings_.base_constraints;
+  noise_generator_.reset(settings_, isHolonomic());
 }
 
 geometry_msgs::msg::TwistStamped Optimizer::evalControl(

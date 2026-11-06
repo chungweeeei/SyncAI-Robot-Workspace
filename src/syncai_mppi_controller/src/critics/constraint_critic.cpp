@@ -28,14 +28,31 @@ void ConstraintCritic::initialize()
     logger_, "ConstraintCritic instantiated with %d power and %f weight.",
     power_, weight_);
 
-  float vx_max, vy_max, vx_min;
-  getParentParam(vx_max, "vx_max", 0.5);
-  getParentParam(vy_max, "vy_max", 0.0);
-  getParentParam(vx_min, "vx_min", -0.35);
+  // The Optimizer registered these three first, and a getParam() binds a
+  // name's dynamic callback only once, so read them as startup values and add
+  // this critic's own callbacks (2026-11): the console sets FollowPath.vx_max
+  // live, and until then the Optimizer's constraints followed it while this
+  // critic kept penalising against the startup limit.
+  getParentParam(vx_max_, "vx_max", 0.5, ParameterType::Static);
+  getParentParam(vy_max_, "vy_max", 0.0, ParameterType::Static);
+  getParentParam(vx_min_, "vx_min", -0.35, ParameterType::Static);
+  updateLimits();
+  const auto follow = [this](float & limit) {
+    return [this, &limit](const rclcpp::Parameter & p) {
+      limit = static_cast<float>(p.as_double());
+      updateLimits();
+    };
+  };
+  parameters_handler_->addDynamicParamCallback(parent_name_ + ".vx_max", follow(vx_max_));
+  parameters_handler_->addDynamicParamCallback(parent_name_ + ".vy_max", follow(vy_max_));
+  parameters_handler_->addDynamicParamCallback(parent_name_ + ".vx_min", follow(vx_min_));
+}
 
-  const float min_sgn = vx_min > 0.0 ? 1.0 : -1.0;
-  max_vel_ = sqrtf(vx_max * vx_max + vy_max * vy_max);
-  min_vel_ = min_sgn * sqrtf(vx_min * vx_min + vy_max * vy_max);
+void ConstraintCritic::updateLimits()
+{
+  const float min_sgn = vx_min_ > 0.0 ? 1.0 : -1.0;
+  max_vel_ = sqrtf(vx_max_ * vx_max_ + vy_max_ * vy_max_);
+  min_vel_ = min_sgn * sqrtf(vx_min_ * vx_min_ + vy_max_ * vy_max_);
 }
 
 void ConstraintCritic::score(CriticData & data)

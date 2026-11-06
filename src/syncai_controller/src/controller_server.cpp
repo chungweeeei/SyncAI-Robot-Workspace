@@ -929,6 +929,17 @@ bool ControllerServer::updateGlobalPath()
     auto goal = action_server_->accept_pending_goal();
     std::string current_controller;
     if (findControllerId(goal->controller_id, current_controller)) {
+      // A preempt does not reset the controller (computeControl() has why),
+      // except when it switches controllers, as acceptDockGoal() does: the
+      // newcomer has not run this goal, and without it it would start from
+      // whatever its last goal left -- the acceleration clamp's baseline,
+      // MPPI's warm start, stair mode. No tree switches mid-goal today.
+      if (current_controller != current_controller_) {
+        RCLCPP_INFO(
+          get_logger(), "Preempt switches controller %s -> %s; resetting %s",
+          current_controller_.c_str(), current_controller.c_str(), current_controller.c_str());
+        controllers_[current_controller]->reset();
+      }
       current_controller_ = current_controller;
     } else {
       RCLCPP_ERROR(
@@ -1260,6 +1271,23 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
       continue;
     }
 
+    // Refused at runtime (2026-11). Every controller reads it once, at
+    // startup: MPPI pairs it with its model_dt (setOffset(): the warm-start
+    // shift is on only when 1 / controller_frequency == model_dt, and a
+    // longer period throws), and MPPI, RPP 3D and Docking take 1 / f as the
+    // dt of their acceleration clamps. A runtime set changed the loop's rate
+    // under all of them, so every clamp and the warm start ran on a dt that
+    // was no longer true. The backend's settings page does not offer it.
+    if (name == "controller_frequency") {
+      result.successful = false;
+      result.reason =
+        "controller_frequency cannot be changed at runtime: the controllers read it at startup "
+        "(MPPI's model_dt must equal 1 / controller_frequency); change it in the params file, "
+        "with FollowPath.model_dt, and restart controller_server";
+      RCLCPP_WARN(get_logger(), "%s", result.reason.c_str());
+      return result;
+    }
+
     if (!dynamic_params_lock_.try_lock()) {
       RCLCPP_WARN(
         get_logger(),
@@ -1271,9 +1299,7 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
     }
 
     if (type == ParameterType::PARAMETER_DOUBLE) {
-      if (name == "controller_frequency") {
-        controller_frequency_ = parameter.as_double();
-      } else if (name == "min_x_velocity_threshold") {
+      if (name == "min_x_velocity_threshold") {
         min_x_velocity_threshold_ = parameter.as_double();
       } else if (name == "min_y_velocity_threshold") {
         min_y_velocity_threshold_ = parameter.as_double();

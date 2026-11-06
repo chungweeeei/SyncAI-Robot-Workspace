@@ -858,7 +858,7 @@ Server-level (`/**/controller_server`):
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `controller_frequency` | `20.0` | Control loop rate; also `1/f` is RPP's `control_duration_`, the `dt` in both accel clamps |
+| `controller_frequency` | `20.0` | Control loop rate; also `1/f` is RPP's `control_duration_`, the `dt` in both accel clamps. Startup only: a runtime set is refused (must stay 1 / MPPI's `model_dt`) |
 | `min_x_velocity_threshold` | `0.0001` | Odom twist below this reads as zero, in both places the server hands the twist on — RPP's `computeVelocityCommands()` and the goal checker's `isGoalReached()`. Config sets `0.001`: an order of magnitude above the default but still far below Point-LIO's body-sway noise, so in practice it only decides what `StoppedGoalChecker` accepts as "stopped" |
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
@@ -883,7 +883,7 @@ The `Docking` / `Undocking` plugin parameters (`k_phi`, `k_delta`, `beta`,
 documented, with their rationale, in the params file — see "Docking" for the
 ones that are placeholders until the robot has been measured.
 
-`controller_frequency`, the three velocity thresholds, `failure_tolerance` and
+The three velocity thresholds, `failure_tolerance` and
 `goal_reached_max_remaining_path` are **dynamically reconfigurable** — but the
 callback takes the same mutex the control loop holds, so a change is rejected
 with a warning while a goal is executing. Plugin parameters (anything with a `.`
@@ -895,6 +895,13 @@ with a `reason` before touching a member (2026-11-03: until then their
 "rejecting update" was a `continue` that still returned success, so the node
 held a value the controller was not using); a caller mixing server and plugin
 parameters should send the server's in a set of its own, first.
+**`controller_frequency` is refused at runtime** (2026-11): every controller
+reads it once, at startup — MPPI pairs it with `FollowPath.model_dt` (also
+refused) for the warm-start shift, and MPPI, RPP 3D and Docking take 1 / f as
+their acceleration clamps' dt — so a live change left all of them on a dt that
+was no longer true. Change both in the params file and restart. A preempt that
+**switches controllers** resets the newcomer (as a dock preempt does); one that
+keeps the controller still does not.
 
 ### The runtime overlay (console settings)
 

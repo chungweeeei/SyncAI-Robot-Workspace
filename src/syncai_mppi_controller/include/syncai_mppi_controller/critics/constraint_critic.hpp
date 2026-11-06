@@ -45,10 +45,18 @@ public:
   float getMinVelConstraint() {return min_vel_;}
 
 protected:
+  // max_vel_ / min_vel_ from the three limits below.
+  void updateLimits();
+
   unsigned int power_{0};
   float weight_{0};
   float min_vel_;
   float max_vel_;
+  // The Optimizer's parameters, read here too and kept current by a callback
+  // of this critic's own (2026-11; read once at startup until then).
+  float vx_max_{0.0f};
+  float vy_max_{0.0f};
+  float vx_min_{0.0f};
 };
 
 }  // namespace mppi::critics

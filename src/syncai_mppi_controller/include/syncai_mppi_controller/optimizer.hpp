@@ -138,6 +138,12 @@ protected:
   void getParams();
 
   /**
+   * @brief Apply a runtime parameter change: a full reset() only when the
+   * batch or horizon size changed, else the constraints and the noise alone
+   */
+  void onParametersChanged();
+
+  /**
    * @brief Set the motion model of the vehicle platform
    * @param model Model string to use
    */
