@@ -1,6 +1,5 @@
 #include "syncai_pointlio/map_builder/ivox_map.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <utility>
@@ -86,31 +85,40 @@ void IVoxMap::nearestSearch(
   if (k <= 0) return;
   const float max_sq = static_cast<float>(max_range * max_range);
   const Key key = keyOf(point);
-  std::vector<std::pair<float, const PointType *>> candidates;
-  candidates.reserve(static_cast<std::size_t>(k) * m_nearby.size());
+  // A bounded top-k: the k nearest so far, kept sorted by insertion, with the
+  // acceptance radius shrunk to the k-th distance once there are k. This
+  // used to collect every point under max_range (5 m, so practically every
+  // point of the 7 grids: ~1000 a query on robot01's map) and partial_sort
+  // them, ~2.6x this one's time at 800 - 3000 candidates in a host benchmark
+  // (2026-11-06) and growing with the grids' population. Same k nearest,
+  // ties aside.
+  // Fully sorted, where upstream only puts the nearest first: the callers
+  // read the k-th distance for the sqrt(5) m gate and points_near[0] as the
+  // nearest.
+  const std::size_t k_size = static_cast<std::size_t>(k);
+  std::vector<std::pair<float, const PointType *>> best;
+  best.reserve(k_size);
+  float worst = max_sq;
   for (const Key & delta : m_nearby) {
     auto it = m_grids.find(key + delta);
     if (it == m_grids.end()) continue;
     for (const PointType & q : it->second->points) {
       const float d = sq_dist(q, point);
-      if (d < max_sq) candidates.emplace_back(d, &q);
+      if (d >= worst) continue;
+      // Not full: grow by one. Full: the last (farthest) slot is overwritten.
+      if (best.size() < k_size) best.emplace_back();
+      std::size_t j = best.size() - 1;
+      while (j > 0 && best[j - 1].first > d) {
+        best[j] = best[j - 1];
+        --j;
+      }
+      best[j] = {d, &q};
+      if (best.size() == k_size) worst = best.back().first;
     }
   }
-  auto by_dist = [](
-                   const std::pair<float, const PointType *> & a,
-                   const std::pair<float, const PointType *> & b) { return a.first < b.first; };
-  // Fully sorted, where upstream only puts the nearest first: the callers
-  // read the k-th distance for the sqrt(5) m gate and points_near[0] as the
-  // nearest.
-  if (candidates.size() > static_cast<std::size_t>(k)) {
-    std::partial_sort(candidates.begin(), candidates.begin() + k, candidates.end(), by_dist);
-    candidates.resize(k);
-  } else {
-    std::sort(candidates.begin(), candidates.end(), by_dist);
-  }
-  nearest.reserve(candidates.size());
-  distances.reserve(candidates.size());
-  for (const auto & c : candidates) {
+  nearest.reserve(best.size());
+  distances.reserve(best.size());
+  for (const auto & c : best) {
     nearest.push_back(*c.second);
     distances.push_back(c.first);
   }
