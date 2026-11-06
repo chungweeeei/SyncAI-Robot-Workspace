@@ -372,6 +372,11 @@
       step_edge_cost_scaling: 5.0
       step_edge_one_cell: 0.5
       kerb_cost_multiplier: 1.5
+      # A cell's cost is multiplied by 1 + gap_cost_weight x the share of its
+      # footprint disc that is never-observed gap (footprint_min_support lets
+      # up to 20 % through), so a route prefers ground the lidar saw. Not
+      # declared until 2026-11 (this 1.0 was the struct's, the only value).
+      gap_cost_weight: 1.0
 
       # ---- dynamic obstacles (2026-10-21) ----
       # The surface map is static, so on its own a replan returns the route

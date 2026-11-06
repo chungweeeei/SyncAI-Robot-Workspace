@@ -1279,6 +1279,21 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
     // dt of their acceleration clamps. A runtime set changed the loop's rate
     // under all of them, so every clamp and the warm start ran on a dt that
     // was no longer true. The backend's settings page does not offer it.
+    // Also startup only (2026-11; accepted and never used before): the robot
+    // height's frame and offset, which MPPI's path handler, RPP 3D and
+    // StairMode copy at startup too, and the dock defaults, checked against
+    // controller_plugins / goal_checker_plugins once in the constructor.
+    if (
+      name == "body_frame" || name == "lidar_height" || name == "default_dock_controller_id" ||
+      name == "default_dock_goal_checker_id") {
+      result.successful = false;
+      result.reason = name +
+                      " cannot be changed at runtime: it is read once at startup (by the plugins "
+                      "too); change it in the params file and restart controller_server";
+      RCLCPP_WARN(get_logger(), "%s", result.reason.c_str());
+      return result;
+    }
+
     if (name == "controller_frequency") {
       result.successful = false;
       result.reason =

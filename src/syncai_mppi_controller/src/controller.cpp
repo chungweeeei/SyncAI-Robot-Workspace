@@ -88,6 +88,20 @@ void MPPIController::initialize(
   getParam(stair_turn_dist_, "stair_turn_dist", 0.15);
   getParam(stair_turn_done_angle_, "stair_turn_done_angle", 0.087);
   getParam(stair_descend_backwards_, "stair_descend_backwards", true);
+  // StairMode declares its parameters on the node itself, so the handler had
+  // no callback for them and a runtime set (the console's stair_standoff) was
+  // stored and never used (2026-11). The window and settle time follow a set;
+  // the switch and the policy ids are refused.
+  for (const auto & key : syncai_util::StairMode::runtimeParameters()) {
+    parameters_handler_->addDynamicParamCallback(
+      name_ + "." + key,
+      [this, key](const rclcpp::Parameter & p) { stair_mode_.setParameter(key, p.as_double()); });
+  }
+  for (const auto & key : syncai_util::StairMode::startupParameters()) {
+    parameters_handler_->addReadOnly(
+      name_ + "." + key,
+      "flipped mid-goal it could leave the robot in the stair policy; restart controller_server");
+  }
   // The server's own parameter, read the way the Optimizer reads it.
   auto getParentParam = parameters_handler_->getParamGetter("");
   double controller_frequency;

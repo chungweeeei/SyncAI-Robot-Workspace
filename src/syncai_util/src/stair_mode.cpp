@@ -15,6 +15,41 @@ namespace syncai_util
 
 using syncai_util::geometry_utils::euclidean_distance;
 
+const std::vector<std::string> & StairMode::runtimeParameters()
+{
+  static const std::vector<std::string> keys = {
+    "stair_min_rise",         "stair_enter_dist",      "stair_standoff",
+    "stair_exit_behind_dist", "stair_exit_ahead_dist", "stair_policy_settle_time"};
+  return keys;
+}
+
+const std::vector<std::string> & StairMode::startupParameters()
+{
+  static const std::vector<std::string> keys = {
+    "use_stair_mode", "stair_policy_mode", "flat_policy_mode"};
+  return keys;
+}
+
+bool StairMode::setParameter(const std::string & key, double value)
+{
+  if (key == "stair_min_rise") {
+    params_.min_rise = value;
+  } else if (key == "stair_enter_dist") {
+    params_.enter_dist = value;
+  } else if (key == "stair_standoff") {
+    params_.standoff = value;
+  } else if (key == "stair_exit_behind_dist") {
+    params_.exit_behind_dist = value;
+  } else if (key == "stair_exit_ahead_dist") {
+    params_.exit_ahead_dist = value;
+  } else if (key == "stair_policy_settle_time") {
+    params_.settle_time = value;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 void StairMode::initialize(const rclcpp::Node::SharedPtr & node, const std::string & plugin_name)
 {
   logger_ = node->get_logger();

@@ -242,6 +242,25 @@ public:
   const Params & params() const { return params_; }
 
   /**
+   * @brief A runtime set of one of initialize()'s parameters (2026-11)
+   * @param key The parameter's name without the plugin prefix (`stair_standoff`)
+   * @param value The new value
+   * @return false when `key` is not one runtimeParameters() lists
+   *
+   * Both controllers route their dynamic-parameter callbacks through this;
+   * until 2026-11 RPP 3D handled two of the nine keys and MPPI none, so a
+   * console stair_standoff was stored and never used. The window and the
+   * settle time are read every cycle, so a change takes effect on the next.
+   */
+  bool setParameter(const std::string & key, double value);
+  // The keys setParameter() takes: the windows and the settle time.
+  static const std::vector<std::string> & runtimeParameters();
+  // The keys a runtime set must be refused for: use_stair_mode and the two
+  // policy ids. Flipped mid-goal they could leave the robot in the stair
+  // policy with nothing left to switch it back, so they are startup only.
+  static const std::vector<std::string> & startupParameters();
+
+  /**
    * @brief Height span (max z - min z) of `path` from `behind` metres before
    * pose `idx` to `ahead` metres after it, along the path on x / y
    */
