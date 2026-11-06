@@ -1203,6 +1203,16 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
   bool next_allow_reversing = allow_reversing_;
   for (const auto & parameter : parameters) {
     const auto & name = parameter.get_name();
+    for (const auto & key : syncai_util::StairMode::startupParameters()) {
+      if (name == plugin_name_ + "." + key) {
+        result.successful = false;
+        result.reason = name +
+                        " cannot be changed at runtime: flipped mid-goal it could leave the robot "
+                        "in the stair policy; restart controller_server";
+        RCLCPP_WARN(logger_, "Rejecting parameter update: %s", result.reason.c_str());
+        return result;
+      }
+    }
     if (
       name == plugin_name_ + ".inflation_cost_scaling_factor" &&
       parameter.get_type() == ParameterType::PARAMETER_DOUBLE && parameter.as_double() <= 0.0) {
@@ -1231,6 +1241,11 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
 
+    if (
+      type == ParameterType::PARAMETER_DOUBLE && name.rfind(plugin_name_ + ".", 0) == 0 &&
+      stair_mode_.setParameter(name.substr(plugin_name_.size() + 1), parameter.as_double())) {
+      continue;  // StairMode's window or settle time
+    }
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == plugin_name_ + ".inflation_cost_scaling_factor") {
         inflation_cost_scaling_factor_ = parameter.as_double();
@@ -1267,8 +1282,12 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         max_linear_accel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".rotate_to_heading_min_angle") {
         rotate_to_heading_min_angle_ = parameter.as_double();
-      } else if (name == plugin_name_ + ".stair_min_rise") {
-        stair_mode_.params().min_rise = parameter.as_double();
+      } else if (name == plugin_name_ + ".approach_velocity_scaling_dist") {
+        approach_velocity_scaling_dist_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".rotate_to_heading_min_angular_vel") {
+        rotate_to_heading_min_angular_vel_ = parameter.as_double();
+      } else if (name == plugin_name_ + ".max_robot_pose_search_dist") {
+        max_robot_pose_search_dist_ = parameter.as_double();
       } else if (name == plugin_name_ + ".stair_linear_vel") {
         stair_linear_vel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".stair_lookahead_dist") {
@@ -1279,8 +1298,6 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         stair_turn_dist_ = parameter.as_double();
       } else if (name == plugin_name_ + ".stair_turn_done_angle") {
         stair_turn_done_angle_ = parameter.as_double();
-      } else if (name == plugin_name_ + ".stair_policy_settle_time") {
-        stair_mode_.params().settle_time = parameter.as_double();
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
       if (name == plugin_name_ + ".stair_descend_backwards") {
@@ -1295,6 +1312,10 @@ RegulatedPurePursuitController3D::dynamicParametersCallback(
         use_rotate_to_heading_ = parameter.as_bool();
       } else if (name == plugin_name_ + ".allow_reversing") {
         allow_reversing_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_collision_detection") {
+        use_collision_detection_ = parameter.as_bool();
+      } else if (name == plugin_name_ + ".use_interpolation") {
+        use_interpolation_ = parameter.as_bool();
       }
     }
   }

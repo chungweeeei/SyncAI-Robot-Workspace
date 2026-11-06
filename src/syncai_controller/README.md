@@ -894,6 +894,19 @@ with a `reason` before touching a member (2026-11-03: until then their
 "rejecting update" was a `continue` that still returned success, so the node
 held a value the controller was not using); a caller mixing server and plugin
 parameters should send the server's in a set of its own, first.
+**`body_frame`, `lidar_height` and `default_dock_controller_id` /
+`default_dock_goal_checker_id` are refused at runtime too** (2026-11; accepted
+and never used before): the plugins copy the first two at startup, and the
+dock defaults are checked against the plugin lists once. **Every RPP 3D
+parameter now applies live** (`approach_velocity_scaling_dist`,
+`rotate_to_heading_min_angular_vel`, `max_robot_pose_search_dist`,
+`use_collision_detection` and `use_interpolation` were read once), and so do
+**StairMode's window and settle time on both controllers**
+(`StairMode::setParameter()`: `stair_min_rise`, `stair_enter_dist`,
+`stair_standoff`, `stair_exit_behind_dist`, `stair_exit_ahead_dist`,
+`stair_policy_settle_time`) — the console's `stair_standoff` was stored and
+unused on both until 2026-11. `use_stair_mode` and the two policy ids are
+refused: flipped mid-goal they could leave the robot in the stair policy.
 **`controller_frequency` is refused at runtime** (2026-11): every controller
 reads it once, at startup — MPPI pairs it with `FollowPath.model_dt` (also
 refused) for the warm-start shift, and MPPI, RPP 3D and Docking take 1 / f as

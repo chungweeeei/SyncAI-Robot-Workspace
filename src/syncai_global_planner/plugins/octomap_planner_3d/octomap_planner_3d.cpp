@@ -131,6 +131,9 @@ void OctomapPlanner3D::initialize(
   dp("body_clearance", rclcpp::ParameterValue(map_params_.body_clearance));
   dp("max_step_height", rclcpp::ParameterValue(map_params_.max_step_height));
   dp("max_slope_deg", rclcpp::ParameterValue(map_params_.max_slope_deg));
+  // Declared since 2026-11: the params file has set it since 2026-10-14 and
+  // nothing read it, so the struct's default (the same 0.8) was in force.
+  dp("footprint_min_support", rclcpp::ParameterValue(map_params_.footprint_min_support));
   dp(
     "max_unknown_clearance_cells", rclcpp::ParameterValue(map_params_.max_unknown_clearance_cells));
   dp("min_known_free_above", rclcpp::ParameterValue(map_params_.min_known_free_above));
@@ -188,6 +191,8 @@ void OctomapPlanner3D::initialize(
   dp("snap_single_layer", rclcpp::ParameterValue(search_params_.snap_single_layer));
   dp("stair_cost_multiplier", rclcpp::ParameterValue(search_params_.stair_cost_multiplier));
   dp("step_edge_cost_weight", rclcpp::ParameterValue(search_params_.step_edge_cost_weight));
+  // Declared since 2026-11 (the struct's 1.0 was the only value).
+  dp("gap_cost_weight", rclcpp::ParameterValue(search_params_.gap_cost_weight));
   dp("step_edge_cost_scaling", rclcpp::ParameterValue(search_params_.step_edge_cost_scaling));
   dp("step_edge_one_cell", rclcpp::ParameterValue(search_params_.step_edge_one_cell));
   dp("kerb_cost_multiplier", rclcpp::ParameterValue(search_params_.kerb_cost_multiplier));
@@ -217,6 +222,7 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".body_clearance", map_params_.body_clearance);
   node->get_parameter(name + ".max_step_height", map_params_.max_step_height);
   node->get_parameter(name + ".max_slope_deg", map_params_.max_slope_deg);
+  node->get_parameter(name + ".footprint_min_support", map_params_.footprint_min_support);
   node->get_parameter(
     name + ".max_unknown_clearance_cells", map_params_.max_unknown_clearance_cells);
   node->get_parameter(name + ".min_known_free_above", map_params_.min_known_free_above);
@@ -272,6 +278,7 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".snap_single_layer", search_params_.snap_single_layer);
   node->get_parameter(name + ".stair_cost_multiplier", search_params_.stair_cost_multiplier);
   node->get_parameter(name + ".step_edge_cost_weight", search_params_.step_edge_cost_weight);
+  node->get_parameter(name + ".gap_cost_weight", search_params_.gap_cost_weight);
   node->get_parameter(name + ".step_edge_cost_scaling", search_params_.step_edge_cost_scaling);
   node->get_parameter(name + ".step_edge_one_cell", search_params_.step_edge_one_cell);
   node->get_parameter(name + ".kerb_cost_multiplier", search_params_.kerb_cost_multiplier);
@@ -1564,6 +1571,8 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         search_params_.stair_cost_multiplier = v;
       } else if (key == "step_edge_cost_weight") {
         search_params_.step_edge_cost_weight = v;
+      } else if (key == "gap_cost_weight") {
+        search_params_.gap_cost_weight = v;
       } else if (key == "step_edge_cost_scaling") {
         search_params_.step_edge_cost_scaling = v;
       } else if (key == "step_edge_one_cell") {

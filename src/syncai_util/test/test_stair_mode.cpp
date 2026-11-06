@@ -628,3 +628,28 @@ TEST(StairModeSlope, FromThePlanAtTheRobot)
   h.sm.setPlan(levelPath());
   EXPECT_EQ(h.sm.slopeAhead(levelPath().poses.size(), 10.0), 0);
 }
+
+// The controllers' dynamic-parameter callbacks route through setParameter():
+// every runtime key reaches its field, and the startup-only ones are not
+// among them (until 2026-11 a console stair_standoff was stored and unused).
+TEST(StairModeParameters, RuntimeKeysReachTheirFieldsAndStartupKeysDoNot)
+{
+  StairMode sm;
+  EXPECT_TRUE(sm.setParameter("stair_min_rise", 0.4));
+  EXPECT_TRUE(sm.setParameter("stair_enter_dist", 1.2));
+  EXPECT_TRUE(sm.setParameter("stair_standoff", 0.7));
+  EXPECT_TRUE(sm.setParameter("stair_exit_behind_dist", 0.5));
+  EXPECT_TRUE(sm.setParameter("stair_exit_ahead_dist", 4.0));
+  EXPECT_TRUE(sm.setParameter("stair_policy_settle_time", 2.0));
+  EXPECT_DOUBLE_EQ(sm.params().min_rise, 0.4);
+  EXPECT_DOUBLE_EQ(sm.params().enter_dist, 1.2);
+  EXPECT_DOUBLE_EQ(sm.params().standoff, 0.7);
+  EXPECT_DOUBLE_EQ(sm.params().exit_behind_dist, 0.5);
+  EXPECT_DOUBLE_EQ(sm.params().exit_ahead_dist, 4.0);
+  EXPECT_DOUBLE_EQ(sm.params().settle_time, 2.0);
+  EXPECT_EQ(StairMode::runtimeParameters().size(), 6u);
+  for (const auto & key : StairMode::startupParameters()) {
+    EXPECT_FALSE(sm.setParameter(key, 1.0)) << key;
+  }
+  EXPECT_FALSE(sm.setParameter("stair_linear_vel", 0.3));  // the controller's, not StairMode's
+}

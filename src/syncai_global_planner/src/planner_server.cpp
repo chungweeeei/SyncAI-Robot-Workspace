@@ -205,7 +205,7 @@ void PlannerServer::configure()
   // clear_plan below; after a failure the route stays up for
   // plan_idle_clear_time (see republishPlan()). 0 disables, leaving the
   // plan-time publish only.
-  get_parameter("plan_idle_clear_time", plan_idle_clear_time_);
+  plan_idle_clear_time_.store(get_parameter("plan_idle_clear_time").as_double());
   double plan_republish_rate;
   get_parameter("plan_republish_rate", plan_republish_rate);
   if (plan_republish_rate > 0.0) {
@@ -737,18 +737,18 @@ void PlannerServer::republishPlan()
   // Checked before the subscriber test, so a viewer that subscribes later
   // does not get a stale route either.
   bool idle = false;
+  const double idle_clear_time = plan_idle_clear_time_.load();
   {
     std::lock_guard<std::mutex> lock(last_plan_mutex_);
-    idle = plan_idle_clear_time_ > 0.0 && !last_plan_.poses.empty() &&
+    idle = idle_clear_time > 0.0 && !last_plan_.poses.empty() &&
            std::chrono::steady_clock::now() - last_plan_used_ >
-             std::chrono::duration<double>(plan_idle_clear_time_);
+             std::chrono::duration<double>(idle_clear_time);
   }
   if (idle) {
     char reason[96];
     std::snprintf(
       reason, sizeof(reason),
-      "no navigation planned or checked it for %.0f s (plan_idle_clear_time)",
-      plan_idle_clear_time_);
+      "no navigation planned or checked it for %.0f s (plan_idle_clear_time)", idle_clear_time);
     dropPlan(reason);
     return;
   }
@@ -838,12 +838,30 @@ rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallbac
   std::lock_guard<std::mutex> lock(dynamic_params_lock_);
   rcl_interfaces::msg::SetParametersResult result;
 
+  // Startup only, refused before anything is applied (2026-11; accepted and
+  // never used before, so a set read back as live): the republish timer is
+  // created once with its period, and the planner plugins are loaded once.
+  for (const auto & parameter : parameters) {
+    const auto & name = parameter.get_name();
+    if (name == "plan_republish_rate" || name == "planner_plugins") {
+      result.successful = false;
+      result.reason = name +
+                      " cannot be changed at runtime: it is read once at startup; change it in "
+                      "the params file and restart planner_server";
+      RCLCPP_WARN(get_logger(), "[PlannerServer][%s] %s", __func__, result.reason.c_str());
+      return result;
+    }
+  }
+
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
 
     if (type == ParameterType::PARAMETER_DOUBLE) {
-      if (name == "expected_planner_frequency") {
+      if (name == "plan_idle_clear_time") {
+        // Read by the republish timer every tick, so a set applies at once.
+        plan_idle_clear_time_.store(parameter.as_double());
+      } else if (name == "expected_planner_frequency") {
         if (parameter.as_double() > 0) {
           max_planner_duration_ = 1 / parameter.as_double();
           RCLCPP_INFO(

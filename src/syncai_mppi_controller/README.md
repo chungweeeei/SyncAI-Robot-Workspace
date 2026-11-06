@@ -159,7 +159,9 @@ for a day between).
   `vy_max` / `vx_min` with its own, so a console `vx_max` reaches its limit as
   well as the optimizer's constraints (until 2026-11 the critic kept its
   startup copy). `PathAngleCritic`'s reversing flag still reads `vx_min` at
-  startup only.
+  startup only. StairMode's parameters, which it declares on the node itself,
+  have handler callbacks too (2026-11): the window and settle time follow a
+  set, `use_stair_mode` and the policy ids are refused.
 - **Build flags.** The x86 flags in `CMakeLists.txt` (`-mavx2` …) are tested
   with `check_cxx_compiler_flag` and drop out on arm64. The whole package is
   built `-O3 -ffast-math` as upstream builds it. It is deliberately not

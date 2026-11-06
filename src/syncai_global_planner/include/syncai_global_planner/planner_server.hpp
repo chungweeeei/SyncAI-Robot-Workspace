@@ -1,6 +1,7 @@
 #ifndef SYNCAI_GLOBAL_PLANNER__PLANNER_SERVER_HPP_
 #define SYNCAI_GLOBAL_PLANNER__PLANNER_SERVER_HPP_
 
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <memory>
@@ -321,9 +322,9 @@ protected:
   // When the last plan was made or last checked by is_path_valid, under
   // last_plan_mutex_; republishPlan() drops a plan unused for
   // plan_idle_clear_time (s, 0 = never), the end of a failed navigation's
-  // route.
+  // route. Atomic: a runtime set (2026-11) lands on the parameter thread.
   std::chrono::steady_clock::time_point last_plan_used_;
-  double plan_idle_clear_time_{30.0};
+  std::atomic<double> plan_idle_clear_time_{30.0};
 
   // Called by the task_runner when a navigation succeeds or is cancelled, and
   // by Octo3D on a map switch
