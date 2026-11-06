@@ -340,7 +340,6 @@ protected:
   double min_theta_velocity_threshold_;
 
   double failure_tolerance_;
-  bool publish_zero_velocity_;
 
   // Goal checking is gated on path progress: proximity to the end pose alone
   // cannot decide completion of a path that loops back onto its own start

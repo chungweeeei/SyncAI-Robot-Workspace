@@ -126,7 +126,7 @@ loop at controller_frequency:
     computeAndPublishVelocity()
     isGoalReached()?            → break
 
-publishZeroVelocity() (if publish_zero_velocity)
+publishZeroVelocity()   (always: driver_manager has no cmd_vel watchdog)
 succeeded_current()
 ```
 
@@ -639,7 +639,7 @@ loop at controller_frequency:
     isDockReached()?            → break  (goal checker on end_pose_, both already odom; no
                                            goal_reached_max_remaining_path gate -- a 2-pose path
                                            cannot loop back onto its start)
-publishZeroVelocity()  (always, not gated on publish_zero_velocity: driver_manager has no watchdog)
+publishZeroVelocity()  (always: driver_manager has no watchdog)
 succeeded_current(result with the final residuals)
 ```
 
@@ -863,7 +863,6 @@ Server-level (`/**/controller_server`):
 | `min_y_velocity_threshold` | `0.0001` | Config sets `0.5` — a differential/quadruped base has no meaningful lateral velocity, so this discards it |
 | `min_theta_velocity_threshold` | `0.0001` | Config sets `0.001`, same reasoning as `min_x_velocity_threshold` |
 | `failure_tolerance` | `0.0` | Seconds to tolerate controller exceptions; `-1.0` = forever. **Config sets `3.0`**, which is materially different from the default: at `0.0` the first `PlannerException` out of the controller (MPPI's "Optimizer fail to compute path" when every candidate collides, RPP's "collision ahead", a transform failure) fails the goal outright; with a positive value the server logs the exception, publishes a **zero** `cmd_vel` for that cycle, and only fails with "Controller patience exceeded" once that long has passed since the last valid command, with the robot braking rather than coasting. It was `0.3` (six control cycles of grace for a TF hiccup or a sway-induced collision flag) until 2026-10, when it was raised so a blocked path **re-routes**: the detour comes from the BT's 1 Hz path-validity check (`IsPathValid`, and the replan it triggers) — then on a 2D global costmap that updated at 1 Hz out of phase with it, on `Octo3D`'s dynamic overlay since 2026-10-21 — up to ~2.2–2.5 s after a blocker appears inside RPP's ~0.6 m projection, and at `0.3` `FollowPath` aborted first — its `RecoveryNode` cleared the local costmap and re-sent the same old path, RPP refused again, and the whole `NavigateToPose` failed in under a second. The timer resets on the first valid command, so the longer window costs nothing once the new path arrives — and deliberately **not** when a replanned path is accepted on preempt (`updateGlobalPath`): a drivable path resets it on its first cycle anyway, and while `is_path_valid` ran RPP's own footprint test on the 2D costmap (until 2026-10-28) a refused path was replanned once a second, so a reset per preempt would leave the progress checker's 30 s as the only abort. The progress checker's 30 s remains the outer bound on standing still. Each attempt still aborts ~3 s after the controller starts refusing (for MPPI, only once no candidate trajectory clears the blocker); how many attempts (and so how long the robot waits for a blocker to leave) is `move.xml`'s `FollowPath` retry count, four since 2026-10-14 (~16 s, to outlast `IsPathValid`'s 10 s `blocked_time`). Covers controller exceptions and robot-pose lookup failures, not the progress checker — see above |
-| `publish_zero_velocity` | `true` | Send one stop command on success |
 | `goal_reached_max_remaining_path` | `1.0` | The patrol-loop gate above, from the robot's forward-only place on the path to the end of the leg being driven; `<= 0` disables |
 | `cusp_min_angle` | `2.0` | A turn sharper than this (rad) is a cusp, where the path is cut into legs (above); `<= 0` hands every path over whole |
 | `cusp_window` | `0.4` | Path length (m) read before and after a pose for its turn; four cells, so an A* return leg one cell aside is one turn |

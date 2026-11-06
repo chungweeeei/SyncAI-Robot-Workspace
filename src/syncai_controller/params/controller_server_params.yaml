@@ -54,7 +54,6 @@
     # which the server does not tolerate, so FollowPath aborted on the first
     # such cycle (three aborts in 4.4 s beside one blocker on robot01).
     failure_tolerance: 3.0
-    publish_zero_velocity: true
     # Gate the goal check on path progress: only consult the goal checker once
     # the remaining path length (from the robot's place on the path) is
     # below this many meters. Without it, a patrol loop whose last waypoint

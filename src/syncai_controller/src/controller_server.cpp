@@ -71,7 +71,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("min_theta_velocity_threshold", rclcpp::ParameterValue(0.0001));
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
-  declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
   declare_parameter("goal_reached_max_remaining_path", rclcpp::ParameterValue(1.0));
   // Height-aware tracking of paths with z (path_height.hpp). Shared with the
   // controller plugins, which read these server-level names.
@@ -155,7 +154,6 @@ void ControllerServer::configure()
   RCLCPP_INFO(get_logger(), "Controller frequency set to %.4fHz", controller_frequency_);
 
   get_parameter("failure_tolerance", failure_tolerance_);
-  get_parameter("publish_zero_velocity", publish_zero_velocity_);
   get_parameter("goal_reached_max_remaining_path", goal_reached_max_remaining_path_);
   get_parameter("default_dock_controller_id", default_dock_controller_id_);
   get_parameter("default_dock_goal_checker_id", default_dock_goal_checker_id_);
@@ -454,9 +452,13 @@ void ControllerServer::computeControl()
 
   RCLCPP_DEBUG(get_logger(), "Controller succeeded, setting result");
 
-  if (publish_zero_velocity_) {
-    publishZeroVelocity();
-  }
+  // Always (2026-11): upstream's publish_zero_velocity, false, left the last
+  // command running after success -- driver_manager has no cmd_vel watchdog,
+  // so the robot walked on at the final rotation's turn or the walking
+  // floor. Its use upstream, goals chained without a stop between them, is
+  // not one here: a patrol is one goal, cusp legs hand over inside it, and a
+  // new path arrives as a preempt. The parameter went with it.
+  publishZeroVelocity();
 
   action_server_->succeeded_current();
 }
@@ -760,9 +762,8 @@ void ControllerServer::dockControl()
     return;
   }
 
-  // Always, not gated on publish_zero_velocity_: a robot that has reached the
-  // dock pose must stop, and driver_manager has no cmd_vel watchdog that
-  // would stop it otherwise.
+  // Always: a robot that has reached the dock pose must stop, and
+  // driver_manager has no cmd_vel watchdog that would stop it otherwise.
   publishZeroVelocity();
   dock_action_server_->succeeded_current(makeDockResult(DockAction::Result::NONE, ""));
 }
