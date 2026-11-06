@@ -50,6 +50,17 @@
     # person. A waypoint missed by this is driven back to only if the path is
     # replanned before the next one is passed. A first value, unmeasured.
     waypoint_passed_radius: 1.0
+    # ... and that is on the robot's floor (2026-11): the waypoint's z within
+    # this of the robot's ground height. The radius is planar, so without it
+    # a robot on 1F dropped the 2F waypoint above it. 1.0 tells storeys apart
+    # (2.5 m and more) and forgives a client's z off by a step or a ramp.
+    waypoint_passed_z_tolerance: 1.0
+    # The ground height: body_frame's z in global_frame minus lidar_height,
+    # base_link being planar. The same two as controller_server's and
+    # Octo3D's (body_frame is prefixed with <robot_id>/ by the launch file);
+    # change them together.
+    body_frame: pointlio_body
+    lidar_height: 0.481
 
     # BT node plugins (shared libraries) to load into the factory. Only the
     # nodes ported so far are listed — extend as recovery/condition/control

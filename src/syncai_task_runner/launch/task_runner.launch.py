@@ -75,6 +75,7 @@ def launch_setup(context, *args, **kwargs):
                 # yaml default with the robot_id prefix here. Later entries
                 # in this list take precedence over the params file.
                 "base_frame": f"{robot_id}/base_link",
+                "body_frame": f"{robot_id}/pointlio_body",
             },
         ],
     )
