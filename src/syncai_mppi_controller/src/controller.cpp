@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <iterator>
 
 #include "syncai_costmap/cost_values.hpp"
@@ -88,8 +89,8 @@ void MPPIController::initialize(
   getParam(stair_turn_dist_, "stair_turn_dist", 0.15);
   getParam(stair_turn_done_angle_, "stair_turn_done_angle", 0.087);
   getParam(stair_descend_backwards_, "stair_descend_backwards", true);
-  // Not upstream; see narrowSpeedLimit(). narrow_linear_vel <= 0 disables it.
-  getParam(narrow_linear_vel_, "narrow_linear_vel", 0.0);
+  // Not upstream; see slowSpeedLimit(). slow_linear_vel <= 0 disables it.
+  getParam(slow_linear_vel_, "slow_linear_vel", 0.0);
   // StairMode declares its parameters on the node itself, so the handler had
   // no callback for them and a runtime set (the console's stair_standoff) was
   // stored and never used (2026-11). The window and settle time follow a set;
@@ -115,8 +116,7 @@ void MPPIController::initialize(
   path_handler_.initialize(parent_, name_, costmap_ros_, tf_buffer_, parameters_handler_.get());
   collision_checker_.setCostmap(costmap_ros_->getCostmap());
   trajectory_visualizer_.on_configure(
-    parent_, name_,
-    costmap_ros_->getGlobalFrameID(), parameters_handler_.get());
+    parent_, name_, costmap_ros_->getGlobalFrameID(), parameters_handler_.get());
 
   // Not upstream. The optimal trajectory is the "local path" the rest of
   // this stack has asked for since RPP, which has none to show; upstream only
@@ -151,13 +151,12 @@ void MPPIController::reset()
   stair_ramp_valid_ = false;
   stair_corner_latched_ = false;
   stair_turn_blocked_ = false;
-  // The next cycle looks again (narrowSpeedLimit()).
-  narrow_active_ = false;
+  // The next cycle looks again (slowSpeedLimit()).
+  slow_active_ = false;
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
-  const geometry_msgs::msg::PoseStamped & robot_pose,
-  const geometry_msgs::msg::Twist & robot_speed,
+  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
   syncai_nav_core::GoalChecker * goal_checker)
 {
   try {
@@ -193,11 +192,12 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
       last_cmd_vel_ = cmd.twist;
       return cmd;
     }
-    // Through a narrow passage at narrow_linear_vel at most: the optimizer
-    // is told, so what it plans is what is driven (reset() restores vx_max,
-    // hence every cycle), and the command is held to it after the floors.
-    const double narrow_cap = narrowSpeedLimit(robot_pose);
-    optimizer_.setSpeedLimit(narrow_cap);
+    // Through a span the planner marks slow at slow_linear_vel at most: the
+    // optimizer is told, so what it plans is what is driven (reset() restores
+    // vx_max, hence every cycle), and the command is held to it after the
+    // floors.
+    const double slow_cap = slowSpeedLimit(robot_pose);
+    optimizer_.setSpeedLimit(slow_cap);
     try {
       cmd = computeVelocityCommandsImpl(robot_pose, robot_speed, goal_checker);
     } catch (const syncai_nav_core::PlannerException & e) {
@@ -223,8 +223,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
     }
     applyWalkFloor(cmd.twist);
     applyApproachScaling(cmd.twist);
-    if (narrow_cap > 0.0) {
-      cmd.twist.linear.x = std::min(cmd.twist.linear.x, narrow_cap);
+    if (slow_cap > 0.0) {
+      cmd.twist.linear.x = std::min(cmd.twist.linear.x, slow_cap);
     }
     clampAcceleration(cmd.twist);
     applyTurnFloor(cmd.twist);
@@ -1047,8 +1047,9 @@ bool MPPIController::climbStairs(
     double target = stair_reverse_ ? -stair_linear_vel_ : stair_linear_vel_;
     size_t corner_idx = 0;
     double corner_heading = 0.0;
-    if (syncai_util::StairMode::findCorner(
-          plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+    if (
+      syncai_util::StairMode::findCorner(
+        plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
       const auto & cp = plan.poses[corner_idx].pose.position;
       const double corner_dist = std::hypot(cp.x - x, cp.y - y);
       // The S-curve from the stair speed stops in 0.75 v^2 / a (0.19 m at
@@ -1118,18 +1119,20 @@ bool MPPIController::climbStairs(
   return true;
 }
 
-double MPPIController::narrowSpeedLimit(const geometry_msgs::msg::PoseStamped & robot_pose)
+double MPPIController::slowSpeedLimit(const geometry_msgs::msg::PoseStamped & robot_pose)
 {
-  // Not upstream (2026-11-02): over a passage narrower than the robot turns
-  // in -- the planner's kind "narrow" on plan_crossings, its span grown by a
-  // lead either side (path_postprocess.hpp's findNarrowPassages()) -- the
-  // optimizer may ask for narrow_linear_vel at most. dp's 2F lab door, 0.75 m
-  // between the jambs and ~0.6 m free in this costmap for the 0.46 m
-  // footprint: at vx_max (0.80) MPPI reached it 20-70 deg off its axis, going
-  // in and coming out, and from there no candidate cleared the jambs and the
-  // way back was shut too ("Every candidate collides and backing out is
-  // blocked"). Slower, it has the cycles to come round to the axis before
-  // the jambs, and keeps its obstacle avoidance through the door.
+  // Not upstream (2026-11-02): over a span the planner marks `slow` on
+  // plan_crossings the optimizer may ask for slow_linear_vel at most. Today
+  // that is a passage narrower than the robot turns in, its span grown by a
+  // lead either side (path_postprocess.hpp's findNarrowPassages()): dp's 2F
+  // lab door, 0.75 m between the jambs and ~0.6 m free in this costmap for
+  // the 0.46 m footprint. At vx_max (0.80) MPPI reached it 20-70 deg off its
+  // axis, going in and coming out, and from there no candidate cleared the
+  // jambs and the way back was shut too ("Every candidate collides and
+  // backing out is blocked"). Slower, it has the cycles to come round to the
+  // axis before the jambs, and keeps its obstacle avoidance through the door.
+  // Read by the bit, not the kind (2026-11-07): what the planner marks slow
+  // is its business, and the kind and width are for the log only.
   //
   // Rejected the same day: taking the robot from the optimizer over the span
   // (square up in place, then a pure-pursuit carrot, the direct approach's
@@ -1137,13 +1140,13 @@ double MPPIController::narrowSpeedLimit(const geometry_msgs::msg::PoseStamped & 
   // check refused every pass in the sim -- "blocked 0.48 m ahead (+0.02
   // rad)" with the robot on the line -- the optimizer got through anyway,
   // and the three legs took 40 / 116 / 41 s against 15 / 63 / 21 s without.
-  if (narrow_linear_vel_ <= 0.0) {
+  if (slow_linear_vel_ <= 0.0) {
     return 0.0;
   }
-  std::vector<syncai_util::PlanCrossing> passages;
+  std::vector<syncai_util::PlanCrossing> spans;
   bool inside = false;
-  double width = 0.0;
-  if (stair_mode_.plannerPassages(passages) && !passages.empty()) {
+  const syncai_util::PlanCrossing * in = nullptr;
+  if (stair_mode_.plannerSlow(spans) && !spans.empty()) {
     std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
     // The robot's place in the plan, as stair mode reads it (climbStairs()).
     path_handler_.transformPath(robot_pose);
@@ -1151,26 +1154,32 @@ double MPPIController::narrowSpeedLimit(const geometry_msgs::msg::PoseStamped & 
     const size_t remaining = path_handler_.remainingPoses();
     if (remaining <= full) {
       const size_t idx = full - remaining;
-      for (const auto & p : passages) {
+      for (const auto & p : spans) {
         if (p.first <= idx && idx <= p.last) {
           inside = true;
-          width = p.width;
+          in = &p;
           break;
         }
       }
     }
   }
-  if (inside != narrow_active_) {
-    narrow_active_ = inside;
+  if (inside != slow_active_) {
+    slow_active_ = inside;
     if (inside) {
+      char what[64];
+      if (in->width > 0.0) {
+        std::snprintf(what, sizeof what, "%s, %.2f m wide", in->kind.c_str(), in->width);
+      } else {
+        std::snprintf(what, sizeof what, "%s", in->kind.c_str());
+      }
       RCLCPP_INFO(
-        logger_, "Narrow passage %.2f m wide: through it at %.2f m/s at most", width,
-        narrow_linear_vel_);
+        logger_, "Planner's slow span (%s, poses %zu..%zu): through it at %.2f m/s at most", what,
+        in->first, in->last, slow_linear_vel_);
     } else {
-      RCLCPP_INFO(logger_, "Out of the narrow passage: back to vx_max");
+      RCLCPP_INFO(logger_, "Out of the planner's slow span: back to vx_max");
     }
   }
-  return inside ? narrow_linear_vel_ : 0.0;
+  return inside ? slow_linear_vel_ : 0.0;
 }
 
 bool MPPIController::startBackOut(const geometry_msgs::msg::PoseStamped & robot_pose)
@@ -1307,8 +1316,7 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
 }
 
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
-  const geometry_msgs::msg::PoseStamped & robot_pose,
-  const geometry_msgs::msg::Twist & robot_speed,
+  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
   syncai_nav_core::GoalChecker * goal_checker)
 {
 #ifdef BENCHMARK_TESTING
@@ -1395,8 +1403,16 @@ void MPPIController::publishLocalPlan(const rclcpp::Time & stamp)
 
 void MPPIController::setPlan(const nav_msgs::msg::Path & path)
 {
+  setPlanLeg(path, 0, path.poses.size());
+}
+
+void MPPIController::setPlanLeg(
+  const nav_msgs::msg::Path & path, size_t plan_first, size_t plan_poses)
+{
   path_handler_.setPath(path);
-  stair_mode_.setPlan(path);
+  // With the leg's place in the plan, so the planner's word for the whole
+  // plan (plan_crossings) is matched and shifted to it (2026-11-07).
+  stair_mode_.setPlan(path, plan_first, plan_poses);
   // controller_server resets the goal checker with every path; the final
   // rotation's latch follows it (see rotateToGoalHeading()), and so does the
   // direct approach's, whose goal may have moved with the path.
@@ -1407,8 +1423,8 @@ void MPPIController::setPlan(const nav_msgs::msg::Path & path)
   rotating_to_path_ = false;
   // One back-out per path (startBackOut()); one under way runs to its stop.
   back_out_used_ = false;
-  // narrowSpeedLimit() looks the new path's spans up on the next cycle.
-  narrow_active_ = false;
+  // slowSpeedLimit() looks the new path's spans up on the next cycle.
+  slow_active_ = false;
 }
 
 }  // namespace syncai_mppi_controller

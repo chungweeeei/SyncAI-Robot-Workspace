@@ -80,6 +80,12 @@ public:
   void setPlan(const nav_msgs::msg::Path & path) override;
 
   /**
+   * @brief setPlan() for one leg of a cut plan, with the leg's place in it
+   * for the stair mode's match against the planner's word (2026-11-07)
+   */
+  void setPlanLeg(const nav_msgs::msg::Path & leg, size_t plan_first, size_t plan_poses) override;
+
+  /**
    * @brief Clear per-goal state: zero the acceleration-clamp baseline so the
    * first command of a new goal ramps up from a standstill.
    */

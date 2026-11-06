@@ -73,17 +73,28 @@ TEST(PlanCrossings, ANarrowPassageCarriesItsWidthAndAxis)
   n.last = 77;
   n.width = 0.65;
   n.heading = -1.466;
+  n.slow = true;
   c.crossings = {n};
   const std::string json = toJson(c);
   EXPECT_NE(json.find("\"width\""), std::string::npos);
+  EXPECT_NE(json.find("\"slow\":true"), std::string::npos);
   PlanCrossings back;
   std::string error;
   ASSERT_TRUE(fromJson(json, back, error)) << error;
   ASSERT_EQ(back.crossings.size(), 1u);
   EXPECT_EQ(back.crossings[0].kind, "narrow");
   EXPECT_FALSE(back.crossings[0].stair_gait);
+  EXPECT_TRUE(back.crossings[0].slow);
   EXPECT_DOUBLE_EQ(back.crossings[0].width, 0.65);
   EXPECT_DOUBLE_EQ(back.crossings[0].heading, -1.466);
+
+  // The 2026-11-02 format, without "slow": read as not slow, the kind alone.
+  n.slow = false;
+  c.crossings = {n};
+  const std::string old = toJson(c);
+  EXPECT_EQ(old.find("\"slow\""), std::string::npos);
+  ASSERT_TRUE(fromJson(old, back, error)) << error;
+  EXPECT_FALSE(back.crossings[0].slow);
 }
 
 TEST(PlanCrossings, UnknownAppliesToNoPlanAndEmptyIsStillAnAnswer)

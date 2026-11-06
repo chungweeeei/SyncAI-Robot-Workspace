@@ -42,7 +42,7 @@
 #include "syncai_nav_core/goal_checker.hpp"
 
 #ifdef __APPLE__
-  #include "syncai_mppi_controller/tools/apple_utils.hpp"
+#include "syncai_mppi_controller/tools/apple_utils.hpp"
 #endif
 
 namespace mppi
@@ -63,7 +63,7 @@ public:
   /**
    * @brief Destructor for mppi::Optimizer
    */
-  ~Optimizer() {shutdown();}
+  ~Optimizer() { shutdown(); }
 
   /**
    * @brief Initializes optimizer on startup
@@ -121,7 +121,7 @@ public:
   /**
    * @brief Cap the forward speed the optimized sequence may ask for, as
    * upstream's setSpeedLimit() does through the same constraints. Not upstream
-   * here (the port had none; see MPPIController::narrowSpeedLimit()). reset()
+   * here (the port had none; see MPPIController::slowSpeedLimit()). reset()
    * restores vx_max, so a caller sets it every cycle it wants it.
    * @param vx_max The cap (m/s); <= 0 restores the vx_max parameter
    */
@@ -206,8 +206,7 @@ protected:
    * @param state fill state
    */
   void integrateStateVelocities(
-    models::Trajectories & trajectories,
-    const models::State & state) const;
+    models::Trajectories & trajectories, const models::State & state) const;
 
   /**
    * @brief Rollout velocities in state to poses
@@ -215,8 +214,7 @@ protected:
    * @param state fill state
    */
   void integrateStateVelocities(
-    xt::xtensor<float, 2> & trajectories,
-    const xt::xtensor<float, 2> & state) const;
+    xt::xtensor<float, 2> & trajectories, const xt::xtensor<float, 2> & state) const;
 
   /**
    * @brief Update control sequence with state controls weighted by costs
@@ -232,8 +230,8 @@ protected:
    * @param stamp Timestamp to use
    * @return TwistStamped of command to send to robot base
    */
-  geometry_msgs::msg::TwistStamped
-  getControlFromSequenceAsTwist(const builtin_interfaces::msg::Time & stamp);
+  geometry_msgs::msg::TwistStamped getControlFromSequenceAsTwist(
+    const builtin_interfaces::msg::Time & stamp);
 
   /**
    * @brief Whether the motion model is holonomic
@@ -317,24 +315,24 @@ protected:
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 };
 
-template<typename E>
+template <typename E>
 inline auto cumsum_1d(const E & expression)
 {
-  #ifdef __APPLE__
+#ifdef __APPLE__
   return utils::manual_cumsum_1d(expression);
-  #else
+#else
   return xt::cumsum(expression, 0);
-  #endif
+#endif
 }
 
-template<typename E>
+template <typename E>
 inline auto cumsum_2d(const E & expression, int axis)
 {
- #ifdef __APPLE__
+#ifdef __APPLE__
   return utils::manual_cumsum_2d(expression, axis);
- #else
+#else
   return xt::cumsum(expression, axis);
- #endif
+#endif
 }
 
 }  // namespace mppi

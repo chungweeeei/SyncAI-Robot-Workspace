@@ -18,6 +18,9 @@ std::string toJson(const PlanCrossings & c)
     nlohmann::ordered_json e;
     e["kind"] = x.kind;
     e["gait"] = x.stair_gait ? "stair" : "flat";
+    if (x.slow) {
+      e["slow"] = true;  // absent = false, so a reader of the 2026-11-02 format reads on
+    }
     e["evidence"] = x.evidence;
     e["rise"] = x.rise;
     e["first"] = x.first;
@@ -99,6 +102,9 @@ bool fromJson(const std::string & json, PlanCrossings & out, std::string & error
       return false;
     }
     x.stair_gait = gait == "stair";
+    if (e.contains("slow") && e["slow"].is_boolean()) {
+      x.slow = e["slow"].get<bool>();
+    }
     if (e.contains("evidence") && e["evidence"].is_string()) {
       x.evidence = e["evidence"].get<std::string>();
     }

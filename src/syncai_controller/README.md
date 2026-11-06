@@ -434,7 +434,17 @@ before. Without the word for this plan — a planner that keeps none (`known:
 false`), a sidecar for an older plan, or none yet — the rise test alone
 decides, exactly as before. The landing corners the planner lays (`turns` in
 the sidecar) are not read yet: `findCorner()` still finds them from the
-path's geometry.
+path's geometry. Of a crossing the stair mode reads two bits and nothing
+else (2026-11-07): its gait, for this gate, and `slow`, handed to MPPI's
+speed cap (`StairMode::plannerSlow()`); what the planner called it — a
+kerb, a ramp, a narrow door — is for the log. And the plan a plugin holds
+may be one **leg** of the planner's (the server cuts a path at its cusps,
+above): the server hands each leg with its place in the plan
+(`Controller::setPlanLeg`), the stair mode matches the sidecar on the
+plan's stamp and pose count and shifts its spans to the leg. Until
+2026-11-07 every leg of a cut plan failed the match — the word was for a
+plan of another length — and a patrol out through a door and back lost the
+door's speed cap and the sill's flat gait on every leg.
 
 **Run on robot01**: HIMLOCO climbs the stair with the policy switched standing
 still (no `Stand` first) and the settle time above. The state

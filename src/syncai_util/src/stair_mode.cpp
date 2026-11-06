@@ -139,12 +139,14 @@ void StairMode::configure(
   publish();
 }
 
-void StairMode::setPlan(const nav_msgs::msg::Path & full_plan)
+void StairMode::setPlan(const nav_msgs::msg::Path & full_plan, size_t plan_first, size_t plan_poses)
 {
   full_plan_ = full_plan;
   plan_has_height_ = pathHasHeight(full_plan);
   medianHeights(full_plan_);
   suppressed_said_ = false;
+  plan_first_ = plan_first;
+  plan_poses_ = plan_poses > 0 ? plan_poses : full_plan.poses.size();
 }
 
 void StairMode::setCrossings(const PlanCrossings & crossings)
@@ -153,33 +155,57 @@ void StairMode::setCrossings(const PlanCrossings & crossings)
   crossings_ = crossings;
 }
 
+bool StairMode::crossingsForPlan() const
+{
+  // The planner's plan, not the leg: a leg keeps the plan's stamp
+  // (path_cusps.hpp) and setPlan() was told the plan's count.
+  return crossings_.isFor(
+    full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, plan_poses_);
+}
+
+bool StairMode::spanOnLeg(const PlanCrossing & c, size_t & first, size_t & last) const
+{
+  if (full_plan_.poses.empty()) {
+    return false;
+  }
+  const size_t leg_last = plan_first_ + full_plan_.poses.size() - 1;
+  if (c.last < plan_first_ || c.first > leg_last) {
+    return false;  // wholly on another leg
+  }
+  first = c.first > plan_first_ ? c.first - plan_first_ : 0;
+  last = std::min(c.last, leg_last) - plan_first_;
+  return true;
+}
+
 bool StairMode::plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) const
 {
   spans.clear();
   std::lock_guard<std::mutex> lock(crossings_mutex_);
-  if (!crossings_.isFor(
-        full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, full_plan_.poses.size())) {
+  if (!crossingsForPlan()) {
     return false;
   }
   for (const PlanCrossing & c : crossings_.crossings) {
-    if (c.stair_gait) {
-      spans.emplace_back(c.first, c.last);
+    size_t first, last;
+    if (c.stair_gait && spanOnLeg(c, first, last)) {
+      spans.emplace_back(first, last);
     }
   }
   return true;
 }
 
-bool StairMode::plannerPassages(std::vector<PlanCrossing> & passages) const
+bool StairMode::plannerSlow(std::vector<PlanCrossing> & spans) const
 {
-  passages.clear();
+  spans.clear();
   std::lock_guard<std::mutex> lock(crossings_mutex_);
-  if (!crossings_.isFor(
-        full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, full_plan_.poses.size())) {
+  if (!crossingsForPlan()) {
     return false;
   }
   for (const PlanCrossing & c : crossings_.crossings) {
-    if (c.kind == "narrow") {
-      passages.push_back(c);
+    size_t first, last;
+    if (c.slow && spanOnLeg(c, first, last)) {
+      spans.push_back(c);
+      spans.back().first = first;
+      spans.back().last = last;
     }
   }
   return true;

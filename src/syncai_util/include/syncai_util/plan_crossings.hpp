@@ -15,6 +15,19 @@
 // takes (a stair, a kerb, a walked gap), the gait it is taken in, and where
 // it is on the plan, and the followers read it instead of guessing.
 //
+// What a follower reads is two bits per span, and nothing else (2026-11-07):
+// `gait` (stair / flat: which policy walks it) and `slow` (walk it at the
+// controller's slow speed). Everything else a crossing carries -- its kind
+// (stair, kerb, ramp, narrow), evidence, rise, width, heading -- is what the
+// planner knew when it decided, kept for the log, the CLI and the operator,
+// and no follower switches on it. Why: until 2026-11-07 each kind the planner
+// added (kerb, ramp, gap, narrow) needed a matching case in the stair mode
+// and the terrain layer (`kind == "narrow"`, a waiver per kind), and the
+// list of terrains had no end. With the contract at two bits the planner may
+// tell a slope from a sill from a door as finely as it likes; the controllers
+// read the policy and the speed, the local costmap reads where the stair
+// gait is (its corridor ends there), and nothing downstream changes.
+//
 // One JSON object on a std_msgs/String (`plan_crossings`, reliable,
 // transient_local, depth 1, published by planner_server beside `plan`):
 //
@@ -22,13 +35,18 @@
 //    "plan_stamp": {"sec": 0, "nanosec": 0}, "frame_id": "map", "poses": 532,
 //    "crossings": [{"kind": "stair", "gait": "stair", "evidence": "track",
 //                   "rise": 5.4, "first": 120, "last": 341, "turns": [200, 260],
-//                   "pts": [[x, y, z], ...]}]}
+//                   "pts": [[x, y, z], ...]},
+//                  {"kind": "narrow", "gait": "flat", "slow": true, ...,
+//                   "width": 0.65, "heading": -1.47}]}
 //
 // - plan_stamp / poses identify the plan (nav_msgs/Path) it was made for:
 //   the path the planner returned, as ComputePathToPose hands it to the BT
 //   and FollowPath to the controller. A follower applies the indices only
 //   to that plan; `plan` itself is trimmed and restamped on every republish,
-//   so the terrain layer reads pts instead.
+//   so the terrain layer reads pts instead. A controller handed one leg of
+//   that plan (controller_server cuts it at its cusps) still matches on the
+//   whole plan's count and shifts the indices by the leg's start
+//   (StairMode::setPlan).
 // - first / last are inclusive pose indices into that plan; turns are pose
 //   indices too (a switchback's landing corners); pts are those poses'
 //   positions, first to last, in frame_id.
@@ -36,13 +54,12 @@
 //   planner without crossings): a follower falls back to its own judgement.
 //   true with no crossings says the plan crosses nothing -- every rise on it
 //   is floor the flat gait walks.
-// - kind "narrow" (2026-11-02) is not terrain but a passage narrower than the
-//   robot can turn in (a door: path_postprocess.hpp's findNarrowPassages),
-//   always the flat gait, evidence "geometry", with two more fields: width,
-//   its narrowest (m), and heading, the axis the plan takes it along (rad,
-//   frame_id). Its span includes a lead either side, where to square up
-//   before it. It says nothing about the floor: the terrain layer does not
-//   waive anything on it, and the stair mode reads gaits only.
+// - slow (absent = false) asks the flat gait's controller for its slow
+//   speed over the span. The planner sets it on a passage narrower than the
+//   robot can turn in (kind "narrow": a door, path_postprocess.hpp's
+//   findNarrowPassages, its span grown by a lead either side where to square
+//   up; width and heading say how narrow and which way). A stair-gait span
+//   never needs it: the stair mode has its own speed.
 //
 // Not a syncai_common message on purpose: the backend does not read it, and a
 // typed message is a change in another repository (CLAUDE.md, "Out of tree");
@@ -65,14 +82,17 @@ struct PlanCrossing
   {
     double x, y, z;
   };
+  // ---- what a follower reads ----
+  bool stair_gait{false};    // "gait": "stair" (true) or "flat"; the route's, so a kerb
+                             // onto a stair's top step is "stair" too
+  bool slow{false};          // "slow": the flat gait's controller caps its speed here
+  size_t first{0}, last{0};  // inclusive pose indices into the plan
+  std::vector<Point> pts;    // the plan's poses first .. last
+  // ---- what the planner knew (the log and the CLI; no follower switches on it) ----
   std::string kind;           // "stair", "kerb", "ramp", "narrow"
-  bool stair_gait{false};     // "gait": "stair" (true) or "flat"; the route's, so a kerb
-                              // onto a stair's top step is "stair" too
   std::string evidence;       // "track", "geometry", "declared"
-  double rise{0.0};           // height between its two ends (m)
-  size_t first{0}, last{0};   // inclusive pose indices into the plan
+  double rise{0.0};           // height between its two ends (m, >= 0)
   std::vector<size_t> turns;  // pose indices of the turns in place (a switchback's landings)
-  std::vector<Point> pts;     // the plan's poses first .. last
   // "narrow" only (0 otherwise, and not written): the narrowest width (m)
   // and the axis the plan takes the passage along (rad, frame_id).
   double width{0.0};
