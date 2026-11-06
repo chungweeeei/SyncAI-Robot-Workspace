@@ -711,9 +711,9 @@ something to verify or edit here.
 
 `syncai_sys_manager` has `test_wifi_manager.py`; the C++ packages have the
 ament linter tests that come with the package templates (never enforced, and
-they would fail) plus seven ROS-free gtests: `syncai_global_planner`'s
+they would fail) plus eight ROS-free gtests: `syncai_global_planner`'s
 `test_surface_map` (surface map, search, stair links, dynamic overlay),
-`syncai_util`'s `test_stair_mode`, `test_path_progress` and `test_path_cusps`, `syncai_costmap`'s `test_terrain_grid`
+`syncai_util`'s `test_stair_mode`, `test_path_progress` and `test_path_cusps`, `syncai_mppi_controller`'s `test_utils` (`findClosestPathPt`), `syncai_costmap`'s `test_terrain_grid`
 and `syncai_localizer`'s `test_localizability` and `test_last_pose_store`. CI does not run them; use
 `colcon test`. `syncai_mapping`'s gtests live in its own repo, and the backend's
 pytest suite in that repo.

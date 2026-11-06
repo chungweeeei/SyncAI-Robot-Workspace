@@ -706,18 +706,40 @@ inline unsigned int removePosesAfterFirstInversion(nav_msgs::msg::Path & path)
 /**
  * @brief Compare to trajectory points to find closest path point along integrated distances
  * @param vec Vect to check
- * @return dist Distance to look for
+ * @param dist Distance to look for
+ * @param init Starting index to search from (the previous answer: the search only moves forward)
+ * @return The index in [init, vec.size() - 1] whose distance is closest to dist
+ *
+ * Not Humble's (2026-11): Humble's lower_bound version dereferenced end() when
+ * dist was past the path's last integrated distance -- a trajectory longer
+ * than the path left, near the goal or on a short leg between cusps -- and
+ * PathAlignCritic then indexed path_pts_valid and the path one past their
+ * ends; and when the answer was init it returned 0, so the critic aligned the
+ * rest of that trajectory to the start of the path. This is nav2's own fix
+ * (navigation2 #4174, Jazzy on, never backported to Humble): a forward scan
+ * that clamps to the last point and never returns less than init.
  */
 inline size_t findClosestPathPt(const std::vector<float> & vec, float dist, size_t init = 0)
 {
-  auto iter = std::lower_bound(vec.begin() + init, vec.end(), dist);
-  if (iter == vec.begin() + init) {
+  const size_t size = vec.size();
+  if (size == 0) {
     return 0;
   }
-  if (dist - *(iter - 1) < *iter - dist) {
-    return iter - 1 - vec.begin();
+  if (init >= size) {
+    return size - 1;
   }
-  return iter - vec.begin();
+  float distim1 = init != 0 ? vec[init] : 0.0f;  // First is 0, no accumulated distance yet
+  for (size_t i = init + 1; i < size; i++) {
+    const float disti = vec[i];
+    if (disti > dist) {
+      if (dist - distim1 < disti - dist) {
+        return i - 1;
+      }
+      return i;
+    }
+    distim1 = disti;
+  }
+  return size - 1;
 }
 
 }  // namespace mppi::utils

@@ -119,7 +119,10 @@ loop at controller_frequency:
                                   valid command. A clear makes the costmap
                                   non-current for one update, a stale cloud
                                   (terrain_layer cloud_timeout) until it returns
-    updateGlobalPath()          ← accept a preempting goal in place, no restart
+    updateGlobalPath()          ← accept a preempting goal in place, no restart;
+                                  an unknown controller / goal checker in it
+                                  terminates the goal → zero velocity, return
+                                  (2026-11; it drove the old path on before)
     computeAndPublishVelocity()
     isGoalReached()?            → break
 

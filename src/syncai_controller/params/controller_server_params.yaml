@@ -497,6 +497,16 @@
       # a cycle past 50 ms shows up as "Control loop missed its desired rate".
       batch_size: 1000
       iteration_count: 1
+      # 0, upstream 1 (2026-11): a cycle in which every candidate collides
+      # throws at once (failure_tolerance, then startBackOut()), with no
+      # second optimize from a reset sequence. Until 2026-11 a retry never
+      # scored anything (Optimizer::fallback() left the fail flag set), so
+      # 0 is the behaviour everything here was tuned on: the back-out,
+      # failure_tolerance and move.xml's retries. A real retry samples round
+      # a zero sequence and tends to find a slow creep, which the walking
+      # floor then raises to walk_vx_min without a collision check at that
+      # speed -- measure on the robot before turning it on.
+      retry_attempt_limit: 0
       # 0.2 (upstream's) -> 0.3 (2026-10-20): MPPI never reached vx_max on a
       # straight. There the only critic that pays for speed is
       # PathFollowCritic (cost_weight x end point to carrot: w * N * dt per

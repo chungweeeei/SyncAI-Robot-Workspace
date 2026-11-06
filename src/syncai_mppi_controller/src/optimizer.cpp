@@ -171,6 +171,13 @@ bool Optimizer::fallback(bool fail)
   }
 
   reset();
+  // Not upstream (2026-11; Humble and nav2 main alike): the flag was only
+  // ever cleared in prepare(), at the start of a cycle, so a retry ran with
+  // it still set, CriticManager::evalTrajectoriesScores() broke out before
+  // the first critic, and the retry failed without scoring a trajectory --
+  // retry_attempt_limit was dead. Cleared here, a retry is a real one. The
+  // params file keeps it at 0 all the same (its comment has why).
+  critics_data_.fail_flag = false;
 
   if (++counter > settings_.retry_attempt_limit) {
     counter = 0;
