@@ -182,10 +182,18 @@ Two guards keep the superseded goal's outcome from landing on its successor
   sent under the current one, and otherwise stands at the old goal until the new
   path lands and sends it. Before, reaching the old goal in that window
   succeeded the tree — the new goal reported reached, at the old one's place.
-  Not covered: a replan of the old goal already in flight when the preempt
-  came lands its path as the new goal's (`ComputePathToPose` does not re-target
-  a running plan), so that path counts as the new goal's until the next 1 Hz
-  check replans.
+- **A plan in flight is re-targeted.** A preempt that lands while the planner
+  is still working on the old goal (its first plan, a blocked-path replan, or
+  the plan of an earlier preempt) is re-sent by `ComputePathToPose` /
+  `ComputePathThroughPoses` (`on_wait_for_result`), and the old goal's answer
+  is dropped by its goal id; the planner starts the new goal as soon as the
+  plan in hand is done. Before, that answer landed as the new goal's first path
+  -- the robot turned onto a route to the old goal until the next 1 Hz check
+  replanned, and could reach its end and succeed the new goal (2026-11).
+  Accepted: `GlobalUpdatedGoal` was not ticked meanwhile, so it reports the
+  change at the next 1 Hz check and the new goal is planned once more
+  (`number_of_replans` one higher), as in nav2. A patrol re-sends too when the
+  robot passes a waypoint mid-plan, since `remaining_goals` is the input.
 
 ### RViz goal poses
 
