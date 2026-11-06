@@ -208,8 +208,10 @@ protected:
   /**
    * @brief Calls setPlannerPath method with an updated path received from
    * action server
+   * @return false when a preempting goal named an unknown controller or goal
+   * checker and was terminated; the caller stops the robot and leaves the loop
    */
-  void updateGlobalPath();
+  bool updateGlobalPath();
 
   /**
    * @brief One INFO line describing a path just handed to the controller (a

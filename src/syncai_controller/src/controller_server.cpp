@@ -415,7 +415,10 @@ void ControllerServer::computeControl()
         return;  // cancelled while waiting; stopped and terminated there
       }
 
-      updateGlobalPath();
+      if (!updateGlobalPath()) {
+        publishZeroVelocity();
+        return;
+      }
 
       computeAndPublishVelocity();
 
@@ -915,29 +918,34 @@ std::shared_ptr<ControllerServer::DockAction::Result> ControllerServer::makeDock
   return result;
 }
 
-void ControllerServer::updateGlobalPath()
+bool ControllerServer::updateGlobalPath()
 {
+  // false = the preempting goal was refused and terminated: computeControl()
+  // stops the robot and leaves the loop. Until 2026-11 this returned nothing
+  // and the loop went on driving the old path with no goal behind it, and a
+  // cancel was then refused, since there was no goal to cancel (upstream's
+  // too, Humble and nav2 main alike).
   if (action_server_->is_preempt_requested()) {
     auto goal = action_server_->accept_pending_goal();
     std::string current_controller;
     if (findControllerId(goal->controller_id, current_controller)) {
       current_controller_ = current_controller;
     } else {
-      RCLCPP_INFO(
-        get_logger(), "Terminating action, invalid controller %s requested.",
+      RCLCPP_ERROR(
+        get_logger(), "Terminating action, invalid controller %s requested; stopping the robot",
         goal->controller_id.c_str());
       action_server_->terminate_current();
-      return;
+      return false;
     }
     std::string current_goal_checker;
     if (findGoalCheckerId(goal->goal_checker_id, current_goal_checker)) {
       current_goal_checker_ = current_goal_checker;
     } else {
-      RCLCPP_INFO(
-        get_logger(), "Terminating action, invalid goal checker %s requested.",
+      RCLCPP_ERROR(
+        get_logger(), "Terminating action, invalid goal checker %s requested; stopping the robot",
         goal->goal_checker_id.c_str());
       action_server_->terminate_current();
-      return;
+      return false;
     }
     // Deliberately not reset here: last_valid_cmd_time_ and the progress
     // checker. failure_tolerance is "seconds since the last command the
@@ -955,6 +963,7 @@ void ControllerServer::updateGlobalPath()
     setPlannerPath(goal->path);
     logPath("FollowPath replan", current_path_);
   }
+  return true;
 }
 
 void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & velocity)
