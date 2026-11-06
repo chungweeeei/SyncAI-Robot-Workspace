@@ -17,7 +17,6 @@ LayeredCostmap::LayeredCostmap(std::string global_frame, bool rolling_window, bo
 : combined_costmap_(),
   global_frame_(global_frame),
   rolling_window_(rolling_window),
-  current_(false),
   minx_(0.0),
   miny_(0.0),
   maxx_(0.0),
@@ -164,12 +163,15 @@ void LayeredCostmap::updateMap(double robot_x, double robot_y, double robot_yaw)
 
 bool LayeredCostmap::isCurrent()
 {
-  current_ = true;
+  // A local, not upstream's current_ member (2026-11): this is called from
+  // the controller's thread every cycle while the costmap's thread updates
+  // the layers, and nothing else read the member it wrote.
+  bool current = true;
   for (vector<std::shared_ptr<Layer>>::iterator plugin = plugins_.begin(); plugin != plugins_.end();
        ++plugin) {
-    current_ = current_ && ((*plugin)->isCurrent() || !(*plugin)->isEnabled());
+    current = current && ((*plugin)->isCurrent() || !(*plugin)->isEnabled());
   }
-  return current_;
+  return current;
 }
 
 std::string LayeredCostmap::staleLayers() const

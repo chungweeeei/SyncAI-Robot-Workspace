@@ -109,9 +109,12 @@ bool zoneContains(const KeepoutZone & z, double x, double y, double zz);
 // discOffsets(block_radius + m.params.clearance_cost_radius); link_cut is
 // set per link of `links` (null = no links). nullptr when nothing was hit --
 // no core cell and no link cut -- which is the consumers' fast path.
+// `zone_hits`, when given, gets one count per zone: its core cells plus the
+// stair links it cuts -- 0 for a zone that forbids nothing (a z band on no
+// floor, a polygon off the map), which the caller warns about.
 KeepoutMaskPtr buildKeepoutMask(
   const SurfaceMap & m, const StairLinks * links, const std::vector<KeepoutZone> & zones,
-  double block_radius);
+  double block_radius, std::vector<size_t> * zone_hits = nullptr);
 
 // The first zone whose core holds cell c (re-tests the polygons; for
 // messages), or nullptr.

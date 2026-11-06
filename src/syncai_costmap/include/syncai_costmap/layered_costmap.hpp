@@ -159,7 +159,6 @@ private:
   // reads its cells -- and the per-update warning buried the planner log.
   bool robot_out_of_bounds_{false};
 
-  bool current_;
   double minx_, miny_, maxx_, maxy_;
   unsigned int bx0_, bxn_, by0_, byn_;
 
