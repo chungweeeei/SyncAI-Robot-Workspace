@@ -831,10 +831,7 @@ int runPlan(
   // The goal is never moved off a mark, as in the plugin (snapGoal()).
   const SnapResult g = astar.snapGoal(gx, gy, gz, sp, m.cells[s.cell].component, blocked);
   if (g.cell == kNoCell) {
-    std::printf(
-      "plan: %s: %s\n",
-      planFailureName(g.outside ? PlanFailure::GoalOutsideMap : PlanFailure::GoalUnavailable),
-      g.detail.c_str());
+    std::printf("plan: %s: %s\n", planFailureName(goalSnapFailure(g)), g.detail.c_str());
     return 1;
   }
   double sxc, syc, gxc, gyc;

@@ -194,6 +194,17 @@ TEST(SurfaceAStar, TwoFloorsSnapSeparatelyAndNeverConnect)
   const SnapResult refused = astar.snap(6.0, 4.0, 5.48, p, m->cells[lo.cell].component);
   EXPECT_EQ(refused.cell, kNoCell);
   EXPECT_NE(refused.detail.find("component"), std::string::npos);
+  // ... which is disconnected ground (224, permanent), not goal_unavailable
+  // (206, retried) -- the snap is where a goal on an unjoined floor fails.
+  EXPECT_TRUE(refused.other_component);
+  EXPECT_EQ(goalSnapFailure(refused), PlanFailure::Disconnected);
+  // Nothing standable at all near the hint is still goal_unavailable, and
+  // off the grid goal_outside_map.
+  const SnapResult nothing = astar.snap(6.0, 4.0, 2.5, p, m->cells[lo.cell].component);
+  ASSERT_EQ(nothing.cell, kNoCell);
+  EXPECT_FALSE(nothing.other_component);
+  EXPECT_EQ(goalSnapFailure(nothing), PlanFailure::GoalUnavailable);
+  EXPECT_EQ(goalSnapFailure(astar.snap(500.0, 4.0, 0.0, p)), PlanFailure::GoalOutsideMap);
   const PlanResult r = astar.plan(lo.cell, hi.cell, p);
   EXPECT_EQ(r.failure, PlanFailure::Disconnected);
 }

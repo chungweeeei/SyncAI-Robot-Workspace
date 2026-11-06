@@ -1188,8 +1188,7 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
                                        goal.pose.position.x, goal.pose.position.y, goal_z,
                                        search_params_, component, &blocked);
     if (g.cell == o3d::kNoCell) {
-      return fail(
-        g.outside ? o3d::PlanFailure::GoalOutsideMap : o3d::PlanFailure::GoalUnavailable, g.detail);
+      return fail(o3d::goalSnapFailure(g), g.detail);
     }
     // Said every time: a goal whose z is this far off is one the backend or
     // the console placed without the ground's height, and on a map whose

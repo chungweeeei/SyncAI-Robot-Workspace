@@ -136,8 +136,21 @@ struct SnapResult
   // snapGoal() only: the goal's own cell was found and is within a dynamic
   // mark's block_radius, so the goal is refused rather than moved.
   bool occupied = false;
+  // No cell, and the nearest standable surface was on ground the preferred
+  // component (the start's) is not joined to: another floor with no stair
+  // link, an island. Permanent, unlike an empty radius (2026-11).
+  bool other_component = false;
   std::string detail;  // why nothing qualified, when cell == kNoCell
 };
+
+// The failure a goal snap that found no cell is (2026-11): outside the grid,
+// disconnected ground (DISCONNECTED 224, permanent), or nothing standable /
+// a person on it (GOAL_OCCUPIED 206, retry may help). Until 2026-11 the
+// disconnected case was goal_unavailable too: the snap refuses another
+// component's cells before plan() could see them, so plan()'s own
+// Disconnected never fired for a goal and the backend retried a goal on an
+// unjoined floor as if a person stood on it.
+PlanFailure goalSnapFailure(const SnapResult & g);
 
 struct PlanResult
 {
