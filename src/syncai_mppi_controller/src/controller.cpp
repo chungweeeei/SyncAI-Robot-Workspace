@@ -96,10 +96,6 @@ void MPPIController::initialize(
 
   // Configure composed objects
   optimizer_.initialize(parent_, name_, costmap_ros_, parameters_handler_.get());
-  // The optimizer's own vx_max, which applyApproachScaling() scales down
-  // from. Static: ParametersHandler keeps one dynamic callback per name, the
-  // optimizer's, so a runtime change of vx_max would not reach this copy.
-  getParam(vx_max_, "vx_max", 0.5, ParameterType::Static);
   path_handler_.initialize(parent_, name_, costmap_ros_, tf_buffer_, parameters_handler_.get());
   collision_checker_.setCostmap(costmap_ros_->getCostmap());
   trajectory_visualizer_.on_configure(
