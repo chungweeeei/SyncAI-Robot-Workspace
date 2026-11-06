@@ -278,7 +278,8 @@ protected:
   std::vector<std::string> default_types_;
   std::vector<std::string> planner_ids_;
   std::vector<std::string> planner_types_;
-  double max_planner_duration_{0.0};
+  // Atomic: read by the three action threads, set by the parameter callback.
+  std::atomic<double> max_planner_duration_{0.0};
   std::string planner_ids_concat_;
 
   // TF buffer (borrowed from the costmap node)
@@ -334,9 +335,14 @@ protected:
   // instead of replacing it with whatever a fresh plan returns every tick
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
 
-  // Dynamic parameters handler
+  // Dynamic parameters handler. No lock against the plans (2026-11): every
+  // action held one (dynamic_params_lock_) for its whole cycle, TF waits and
+  // the wait for a scan after clear_overlay included, while all it guarded
+  // was max_planner_duration_, now atomic -- so a console preview held up the
+  // BT's replan and every set_parameters on this node until it finished.
+  // rclcpp runs the parameter callbacks one set at a time; the planners
+  // guard their own state (Octo3D: its mutex_, held for the search only).
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
-  std::mutex dynamic_params_lock_;
 };
 
 }  // namespace syncai_global_planner

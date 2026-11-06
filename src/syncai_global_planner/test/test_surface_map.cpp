@@ -593,9 +593,14 @@ TEST(StairLinks, AnUnwalkedUStairIsLaidAsFlightsAndCorners)
   EXPECT_EQ(l.n_flights, 2u) << l.geometry;
   EXPECT_EQ(l.turns.size(), 2u) << l.geometry;
   // The two corners are on the landing, past the wall's end.
+  // On the landing's floor, as are the arriving flight's head and the
+  // leaving one's foot either side of them: a corner under the floor (the
+  // walk's ground, until 2026-11) is a dip stair mode reads as a descent.
   for (const size_t t : l.turns) {
     EXPECT_GT(l.pts[t].x, 4.74) << l.geometry;
-    EXPECT_NEAR(l.pts[t].z, 1.02, 0.25) << l.geometry;
+    EXPECT_NEAR(l.pts[t].z, 1.02, 0.06) << l.geometry;
+    EXPECT_DOUBLE_EQ(l.pts[t - 1].z, l.pts[t].z) << l.geometry;
+    EXPECT_DOUBLE_EQ(l.pts[t + 1].z, l.pts[t].z) << l.geometry;
   }
   SurfaceAStar astar(m, links);
   SearchParams p;

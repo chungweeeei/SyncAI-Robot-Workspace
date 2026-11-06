@@ -155,15 +155,15 @@ ended on, under one lock and one overlay snapshot; each waypoint's z picks
 its floor (`goal_z_mode`); every pose faces the next and only the last
 waypoint's heading is kept, so the controllers turn only at the end. A
 failure names the leg and the waypoint (`[leg 2 of 3: waypoint (…) ->
-waypoint 2 (…)]`). The two actions share `dynamic_params_lock_` and
-`Octo3D`'s lock, so a route and a single plan never run at once; a route
+waypoint 2 (…)]`). The two actions share `Octo3D`'s lock, so a route and a
+single plan never search at once; a route
 becomes the last plan like any other (`plan`, `is_path_valid`, `clear_plan`).
 
 **`preview_path_to_pose`** (2026-11, `syncai_common/ComputePathToPose`, the
 same goal and result) is the console's route preview: the operator aims a
 goal, sees the route `Octo3D` would take, and only then sends the robot. It
 runs `compute_path_to_pose`'s cycle (`planToPose()`) on its own server and
-thread, under the same two locks, and differs in one step: the path is
+thread, under the same planner lock, and differs in one step: the path is
 answered to the caller and **not published or kept as the last plan**. A
 preview on `plan` would be drawn on every console as the route being driven
 (the backend forwards `plan` to the telemetry socket), and one kept as the
@@ -173,7 +173,13 @@ flag on `compute_path_to_pose` either: that server takes one goal at a time,
 and a preview sent mid-navigation would preempt the BT's replan. A newer
 preview preempts an older one, which is all two consoles previewing at once
 cost. A failure carries the same `error_code` / `error_msg` a navigation's
-plan would, logged as `Preview request` / `preview of …`.
+plan would, logged as `Preview request` / `preview of …`. It holds up a
+navigation's plan, or a `set_parameters` on this node, for its search alone
+(`Octo3D`'s lock: milliseconds — 0.02 s for 111 m across dp's floors on a
+laptop): until 2026-11 every action held a server-wide lock
+(`dynamic_params_lock_`) for its whole cycle, TF lookups and the wait for a
+scan after `clear_overlay` included, for the sake of one value
+(`max_planner_duration_`, now atomic).
 
 ### Why a plan failed: the error code (2026-11)
 
@@ -606,7 +612,15 @@ which the plugin and the CLI now keep until the links are built: by surfaces
 alone a wall that runs into the slab above and a landing nobody saw the floor
 of look the same, and dp's first landing holds faces 0.3 m below and 0.1 m
 above its floor side by side. The landing's height is the one most columns of
-its near metre hold a face at, not the walk's (0.2 m low there). Until then
+its near metre hold a face at, not the walk's (0.2 m low there) — and since
+2026-11 it is the height of everything on a turning landing (an L's is read
+in a 0.5 m disc round its corner): both corners, the arriving flight's head
+and the leaving one's foot. Until then only the blocking test used it; the
+corners stood at the walk's ground and the head / foot where the march along
+the axis stopped, so dp's walked stair dipped 0.1 m at its first and third
+landings and 0.2 m into its second (a stray face under the floor), which
+reads to stair mode as a step down where the robot stops to turn. `--stats`
+prints each turn's height against the points either side. Until 2026-10-24
 the corners came from the walk (0.5–1 m out, each flight's own head / foot),
 capped at half a depth measured along one ray: on dp's second landing the ray
 went through a gap in the scanned far wall (2.3 m read for 1.05 m), and the two
