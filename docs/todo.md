@@ -59,7 +59,7 @@ branch: fix/pointlio-map-gate-gravity
 最終驗證：上車長跑至少 3 天，看處理時間、地圖點數、|g|、P3 pitch 偏差是否平穩；時機由使用者決定。
 
 #### 目前做到哪
-U1（b888700）、規劃 todo（ef416ad）已提交並推上 origin。U2（IVoxMap 自己保證一格一點、第一個 scan 也套用、搜尋半徑 √5 m、health 加 refused、map_resolution 0.2）完成並提交。重播（11-08 資料 1.0 倍速）：0.2 m 的走路 eff 94%（最差 scan p1 89%）、殘差 2.33 cm、處理時間約同全新地圖的舊版，地圖點數有上限、每圈新增遞減；靜止位置 3 cm 內、無跳 scan。0.25 m 的對照重播在跑（只供參考）。robot 的 install/ 參數檔是 symlink：yaml 的 0.2 會在下次啟動生效，robot 要先重新編譯 syncai_pointlio。U3 的門檻：正常走路最差 scan eff p1 約 89%（0.2 m 重播）與 robot 歷史 88% 一致，0.85 可沿用但要再用重播確認誤擋次數。下一步 U3 的單位說明。
+U1（b888700）、規劃 todo（ef416ad）已提交並推上 origin。U2（IVoxMap 自己保證一格一點、第一個 scan 也套用、搜尋半徑 √5 m、health 加 refused、map_resolution 0.2）完成並提交。重播（11-08 資料 1.0 倍速）：0.2 m 的走路 eff 94%（最差 scan p1 89%）、殘差 2.33 cm、處理時間約同全新地圖的舊版，地圖點數有上限、每圈新增遞減；靜止位置 3 cm 內、無跳 scan。0.25 m 的對照重播在跑（只供參考）。robot 的 install/ 參數檔是 symlink：yaml 的 0.2 會在下次啟動生效，robot 要先重新編譯 syncai_pointlio。U3 的門檻：正常走路最差 scan eff p1 約 89%（0.2 m 重播）與 robot 歷史 88% 一致，0.85 可沿用但要再用重播確認誤擋次數。U3（d31ef90）已提交；11-09 上車爬折返梯時，比例條件在位姿正確下關門，地圖凍結後再也打不開而發散（docs/pointlio-divergence-2026-11-09.md），fc5cba2 先在參數檔關閉閘門。下一步：決定閘門判斷什麼、reset 由誰觸發（該報告 §7.2、§7.3），並在閘門關閉、錄影開著的情況下重爬這座樓梯。
 
 ### 1.2 零速度更新（cmd_vel 線速度為 0 時約束平移速度）
 
