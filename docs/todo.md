@@ -1,0 +1,79 @@
+# TODO
+
+快速 catchup：目前進行中的是 1.1（branch `fix/pointlio-map-gate-gravity`），規劃段在該項目底下，「目前做到哪」寫在規劃段最後。
+
+## 1. Point-LIO 長時間運轉的穩定性
+
+### 1.1 Point-LIO 地圖維護 + 重力約束
+branch: fix/pointlio-map-gate-gravity
+改動點: src/syncai_pointlio/include/syncai_pointlio/map_builder/ivox_map.h, src/syncai_pointlio/src/map_builder/ivox_map.cpp, src/syncai_pointlio/include/syncai_pointlio/map_builder/lidar_processor.h, src/syncai_pointlio/src/map_builder/lidar_processor.cpp, src/syncai_pointlio/include/syncai_pointlio/map_builder/map_builder.h, src/syncai_pointlio/src/map_builder/map_builder.cpp, src/syncai_pointlio/include/syncai_pointlio/map_builder/map_insert_gate.h, src/syncai_pointlio/src/map_builder/imu_initializer.cpp, src/syncai_pointlio/include/syncai_pointlio/map_builder/commons.h, src/syncai_pointlio/include/syncai_pointlio/pointlio_node.hpp, src/syncai_pointlio/src/pointlio_node.cpp, src/syncai_pointlio/params/pointlio_params.yaml, src/syncai_pointlio/CMakeLists.txt, src/syncai_pointlio/package.xml, src/syncai_pointlio/test/test_ivox_map.cpp, src/syncai_pointlio/test/test_map_insert_gate.cpp, src/syncai_pointlio/test/test_fixed_gravity.cpp, src/syncai_pointlio/README.md, CLAUDE.md
+
+#### 影響範圍
+每格：現在怎麼做｜檔:行｜動或不動。
+
+| 實例＼層 | ↓ 往下的模組 | 本身 | ↑ 往上的模組 |
+|---|---|---|---|
+| src/syncai_pointlio/include/syncai_pointlio/map_builder/ivox_map.h | 用 commons.h 的 PointType / PointVec｜commons.h:7｜不動 | 每個 grid 只有點列表，不知道哪些 voxel 已有點｜ivox_map.h:57｜動（U2：grid 加 voxel 佔用集合、addPoints 說明、拒絕計數） | LidarProcessor 持有它、node 讀 numGrids / numPoints / numEvicted｜lidar_processor.h:76、pointlio_node.cpp:649｜動（U2：node 印拒絕計數） |
+| src/syncai_pointlio/src/map_builder/ivox_map.cpp | 無｜不動 | addPoints 給什麼收什麼｜ivox_map.cpp:54｜動（U2：已佔用的 voxel 直接拒絕） | incrCloudMap / initCloudMap 呼叫 addPoints｜lidar_processor.cpp:43、:87｜動（U2） |
+| src/syncai_pointlio/include/syncai_pointlio/map_builder/lidar_processor.h | 依賴 IVoxMap、PointEKF｜lidar_processor.h:8｜不動 | incrCloudMap 宣告；m_nearest_points 供平面擬合與 voxel 判斷｜lidar_processor.h:51、:92｜動（U2：incrCloudMap 說明改寫） | MapBuilder 呼叫 incrCloudMap、stats()｜map_builder.cpp:120｜動（U3） |
+| src/syncai_pointlio/src/map_builder/lidar_processor.cpp | IVoxMap::addPoints / nearestSearch｜ivox_map.cpp:54、:79｜動（U2） | incrCloudMap 用最近 5 鄰居判斷 voxel 是否已有點｜lidar_processor.cpp:43｜動（U2：刪掉鄰居判斷，整批交給 addPoints） | MapBuilder::process 結尾呼叫｜map_builder.cpp:120｜動（U3） |
+| src/syncai_pointlio/include/syncai_pointlio/map_builder/map_builder.h | LidarUpdateStats｜lidar_processor.h:36｜不動 | ScanHealth 記每個 scan 的匹配與 IMU 統計｜map_builder.h:22｜動（U3：記這個 scan 有沒有寫入地圖） | PointLIONode::recordHealth 讀 health()｜pointlio_node.cpp:560｜動（U3） |
+| src/syncai_pointlio/src/map_builder/map_builder.cpp | incrCloudMap、stats()｜lidar_processor.cpp:43｜動（U2） | 每個 scan 無條件 incrCloudMap｜map_builder.cpp:120｜動（U3：先過閘門）；satu_acc 計數讀設定值｜map_builder.cpp:27｜不動 | timerCB 呼叫 process()｜pointlio_node.cpp:511｜不動 |
+| src/syncai_pointlio/include/syncai_pointlio/map_builder/map_insert_gate.h | 目前沒有｜（新檔）｜新增（U3：只依賴 LidarUpdateStats 與 Config） | 目前沒有｜（新檔）｜新增（U3：寫入閘門純函式） | 目前沒有｜（新檔）｜新增（U3：MapBuilder::process 呼叫） |
+| src/syncai_pointlio/src/map_builder/point_ekf.cpp | 無｜不動 | updateIMU 依 satu_acc 丟軸、setConfig 讀設定｜point_ekf.cpp:103、:46｜不動（U4 靠初始共變異數，U5 只改值） | MapBuilder::processIMU｜map_builder.cpp:13｜不動 |
+| src/syncai_pointlio/include/syncai_pointlio/map_builder/point_ekf.h | 無｜不動 | State::gravity 9.81、g 為 3 維向量｜point_ekf.h:26｜不動 | IMUInitializer 設定 g 與 P｜imu_initializer.cpp:35｜不動 |
+| src/syncai_pointlio/src/map_builder/imu_initializer.cpp | PointEKF 的 x() / P()｜point_ekf.h:68｜不動 | g 的初始共變異數寫死 1e-4｜imu_initializer.cpp:49｜動（U4：改由設定決定，預設 0） | MapBuilder 在 IMU_INIT 呼叫｜map_builder.cpp:45｜不動 |
+| src/syncai_pointlio/include/syncai_pointlio/map_builder/commons.h | 無｜不動 | Config：地圖、雜訊、satu、gravity_align｜commons.h:29｜動（U3：閘門門檻；U4：g 初始共變異數） | 外殼宣告參數填入 Config｜pointlio_node.cpp:148｜動 |
+| src/syncai_pointlio/include/syncai_pointlio/pointlio_node.hpp | ScanHealth、IVoxMap 計數｜map_builder.h:22｜動（U3） | HealthWindow 彙整每秒統計｜pointlio_node.hpp:121｜動（U2、U3：加計數） | 無｜不動 |
+| src/syncai_pointlio/src/pointlio_node.cpp | MapBuilder / IVoxMap / Config｜pointlio_node.cpp:148、:649｜動 | 參數宣告｜pointlio_node.cpp:170；health 行格式｜pointlio_node.cpp:700｜動（U2、U3、U4：新參數、行尾新欄位） | lio_odom / body_cloud 的使用者（localizer、mapping、lio_bridge、costmap、planner）｜syncai_localizer/launch:247｜不動（介面不變） |
+| src/syncai_pointlio/params/pointlio_params.yaml | 節點宣告的參數｜pointlio_node.cpp:170｜動 | satu_acc 30｜pointlio_params.yaml:100；地圖參數｜:85｜動（U3、U4 新參數；U5 satu_acc） | launch 載入｜launch/pointlio.launch.py:78｜不動 |
+| src/syncai_pointlio/CMakeLists.txt | PCL、Eigen、Sophus｜CMakeLists.txt:61｜不動 | 核心原始碼直接編進 executable｜CMakeLists.txt:68｜動（U1：核心編成 library、加 gtest） | colcon / CI build｜.github/workflows/ci.yml｜不動 |
+| src/syncai_pointlio/package.xml | 無｜不動 | test_depend 只有 lint｜package.xml:45｜動（U1：加 ament_cmake_gtest） | rosdep / CI｜scripts/build.sh｜不動 |
+| src/syncai_pointlio/test/test_ivox_map.cpp | IVoxMap｜ivox_map.h:28｜新增 | 目前沒有｜（新檔）｜新增（U1 骨架、U2 測試） | colcon test｜CMakeLists.txt:110｜動（U1） |
+| src/syncai_pointlio/test/test_map_insert_gate.cpp | map_insert_gate.h｜（新檔）｜新增 | 目前沒有｜（新檔）｜新增（U3） | colcon test｜CMakeLists.txt:110｜動（U3） |
+| src/syncai_pointlio/test/test_fixed_gravity.cpp | PointEKF、IMUInitializer｜point_ekf.h:45｜不動 | 目前沒有｜（新檔）｜新增（U4、U5） | colcon test｜CMakeLists.txt:110｜動（U4） |
+| src/syncai_pointlio/README.md | 無｜不動 | 局部地圖、health log、參數表｜README.md:126、:232、:283｜動（每單位同步） | 無｜不動 |
+| CLAUDE.md | 無｜不動 | pointlio 那列描述 first-wins 與局部地圖｜CLAUDE.md:93｜動（U2、U3、U4 收尾時改描述） | 無｜不動 |
+| src/syncai_costmap/src/terrain_grid.cpp（同類：地圖容器） | 無｜不動 | 滾動網格，射線清除與記憶時間，本身有上限｜terrain_grid.cpp｜不動 | TerrainLayer｜terrain_layer.hpp｜不動 |
+| src/syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.cpp（同類：地圖容器） | 無｜不動 | 動態障礙疊加層，30 秒遺忘，本身有上限｜dynamic_overlay.cpp｜不動 | Octo3D｜octomap_planner_3d｜不動 |
+
+#### 診斷
+- 地圖：「每個 0.3 m voxel 一點」的規則不在 IVoxMap 裡，由 incrCloudMap 只看最近 5 鄰居判斷，已有點的 voxel 會再收第二點；寫入沒有任何條件，滑動時錯的位姿被寫成走廊副本。前者是結構偏離（容器不擁有自己的不變條件），也是病因，所以改結構。
+- 重力：g 是沒有過程雜訊的 3 維向量，靜止時 |g| 與 ba 沿重力的分配看不出來，走路時一路被推低（兩種地圖都是 −0.014/h）；satu_acc 30 m/s² 丟掉 3.06–4.0 g 的有效樣本（被丟的約 90% 有效），IMU z 軸硬削頂在 4.004 g。
+- 冷啟動重播：同一段資料新狀態不會滑；2.5 倍速重現跳 scan 也不會滑，所以跳 scan 單獨不是主因。
+
+#### 決定（全局確認時定案）
+- 一格一點：地圖內精確判定（grid 記錄已佔用的 voxel），刪掉 incrCloudMap 的鄰居判斷。
+- 寫入閘門：eff 低於門檻或速度超過門檻就不寫；門檻參數獨立，不重用 health.max_speed。
+- 重力：固定 g（初始共變異數 0，無過程雜訊，之後不會被修正）。
+- satu_acc：略低於削頂值，約 39.0 m/s²。
+- 編譯與測試在用完即丟的容器裡，以現有 install/ 當唯讀底層，只把 syncai_pointlio 編到 build_fix/、install_fix/，不碰 robot01 的 build/、install/。
+
+#### 單位、順序、驗證
+| 單位 | 內容 | 驗證 |
+|---|---|---|
+| U2 | IVoxMap 地圖內一格一點，刪 incrCloudMap 鄰居判斷，health 加拒絕計數 | 單元：角落點、邊界點、重複寫入、LRU 後計數；壓力：同一平面加雜訊重複寫入，點數不超過 voxel 數；重播：點數下降、eff / 殘差不變差、行為不變 |
+| U3 | 寫入閘門（eff + 速度），health 加未寫入計數 | 單元：用 11-08 的數值做表格測試與邊界值；壓力：漂移中的位姿序列不長出副本；重播：正常圈未寫入次數接近 0 |
+| U4 | 固定 g（初始共變異數參數，預設 0） | 單元：大量 IMU / 光達更新後 g 完全不變；壓力：長時間含衝擊的 IMU 序列 |g| 不漂；重播：|g| 全程 9.81、|ba| 小 |
+| U5 | satu_acc 調到削頂值以下 | 單元：3.5 g 樣本被使用、4.004 g 被丟；重播：sat 計數只剩削頂樣本 |
+
+最終驗證：上車長跑至少 3 天，看處理時間、地圖點數、|g|、P3 pitch 偏差是否平穩；時機由使用者決定。
+
+#### 目前做到哪
+全局已確認。使用者要求先修跳 scan：對應 U2（地圖內一格一點封頂點數）。U1 已提交（b888700：map_builder 核心編成 STATIC library `pointlio_map_builder`、gtest `test_ivox_map` 釘住搜尋與 LRU 的現有行為）；使用者已自己 push 到 origin/fix/pointlio-map-gate-gravity。docs/ 底下只 commit 這份 todo，分析報告留在本機（使用者指示）。隔離編譯：用完即丟的容器以 install/ 為唯讀底層，`colcon --log-base log_fix build --packages-select syncai_pointlio --build-base build_fix --install-base install_fix --allow-overriding syncai_pointlio --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON`；clang-format 14 裝在 scratchpad（pip --target）。U2 的單位說明已給（四個決定待使用者確認：整張地圖共用一份 voxel 集合、第一個 scan 也套用、搜尋半徑改成 √5 m、行尾加累計 refused N）。
+
+### 1.2 零速度更新（cmd_vel 線速度為 0 時約束平移速度）
+
+### 1.3 腿部運動學速度量測（motor_states + G23 URDF）
+
+### 1.4 LOST 後在充電座上自動 reset_odometry
+
+### 1.5 lio-recorder：localizer 不收斂的 LOST 不觸發存檔，或調高 MAX_SAVES
+
+### 1.6 map_nearby：上游實際是 18（程式碼 fallback），修正 README / CLAUDE.md「upstream's 6」的說法
+
+### 1.7 分析文件更正：IMU z 軸在 4.004 g 削頂，「最大 3.94 g、沒有削頂」不成立
+
+### 1.8 提高陀螺儀信任（imu_meas_omg_cov）的重播實驗
+
+### 1.9 錄一整晚原始資料，供之後每個版本離線比對
