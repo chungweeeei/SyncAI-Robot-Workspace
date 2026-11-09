@@ -220,6 +220,15 @@ void PointLIONode::loadParameters()
     this->declare_parameter("near_search_num", m_builder_config.near_search_num);
   m_builder_config.gravity_align =
     this->declare_parameter("gravity_align", m_builder_config.gravity_align);
+  m_builder_config.gravity_init_cov =
+    this->declare_parameter("gravity_init_cov", m_builder_config.gravity_init_cov);
+  // A negative covariance would make P indefinite and the update gains meaningless.
+  if (!(m_builder_config.gravity_init_cov >= 0.0)) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] gravity_init_cov %g must be >= 0; using 0 (g fixed)",
+      __func__, m_builder_config.gravity_init_cov);
+    m_builder_config.gravity_init_cov = 0.0;
+  }
   m_builder_config.esti_il = this->declare_parameter("esti_il", m_builder_config.esti_il);
 
   // IMU <- lidar extrinsic. Flat double arrays because ROS parameters have no

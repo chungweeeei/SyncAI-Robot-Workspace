@@ -715,13 +715,13 @@ something to verify or edit here.
 
 `syncai_sys_manager` has `test_wifi_manager.py`; the C++ packages have the
 ament linter tests that come with the package templates (never enforced, and
-they would fail) plus ten gtests, all ROS-free but one: `syncai_global_planner`'s
+they would fail) plus eleven gtests, all ROS-free but one: `syncai_global_planner`'s
 `test_surface_map` (surface map, search, stair links, dynamic overlay),
 `syncai_util`'s `test_stair_mode`, `test_path_progress` and `test_path_cusps`, `syncai_mppi_controller`'s `test_utils` (`findClosestPathPt`) and `test_parameters_handler` (on a plain rclcpp node), `syncai_costmap`'s `test_terrain_grid`,
 `syncai_localizer`'s `test_localizability` and `test_last_pose_store`, and `syncai_pointlio`'s
-`test_ivox_map` (the local map's search and eviction against a brute-force oracle; the
-LIO core under `map_builder/` is a ROS-free static library the node and the test both
-link). CI does not run them; use
+`test_ivox_map` (the local map's search and eviction against a brute-force oracle) and
+`test_fixed_gravity` (gravity held fixed, `satu_acc` against the IMU's clip; the LIO core
+under `map_builder/` is a ROS-free static library the node and the tests link). CI does not run them; use
 `colcon test`. `syncai_mapping`'s gtests live in its own repo, and the backend's
 pytest suite in that repo.
 

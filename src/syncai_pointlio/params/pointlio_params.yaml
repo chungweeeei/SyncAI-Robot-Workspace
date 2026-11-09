@@ -100,9 +100,12 @@
     imu_meas_acc_cov: 0.1
 
     # saturation thresholds: axes at/over these are dropped from the IMU update
-    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale, ~3g)
+    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale). satu_acc sits
+    # just under the IMU's clip, 4.004 g = 39.28 at imu_acc_scale 9.81, so only
+    # clipped samples are dropped; at 30 (3.06 g) it also dropped the gait's
+    # 3.06-4.0 g impacts, ~90 % of them real readings (2026-11-09)
     satu_gyro: 35.0
-    satu_acc: 30.0
+    satu_acc: 39.0
 
     # point-to-plane measurement
     lidar_meas_cov: 0.01
@@ -114,6 +117,12 @@
     near_search_num: 5
 
     gravity_align: true
+    # initial covariance of the gravity state; with no process noise, 0 holds g
+    # at 9.81 along the init's direction for good (2026-11-09). At the port's
+    # 0.0001 walking pushed |g| down ~0.014 an hour on robot01, because at rest
+    # |g| and the accelerometer bias along gravity explain the same reading.
+    # Write a float
+    gravity_init_cov: 0.0
     esti_il: false
 
     # IMU <- lidar extrinsic. r_il is the row-major 3x3 rotation flattened into a
