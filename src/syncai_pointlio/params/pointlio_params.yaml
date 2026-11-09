@@ -101,8 +101,11 @@
     # 1.5 m/s at 16:16:03 and under 85 % at :04 (README, "The map gate", has the
     # replay of those hours through these values). Write the speed and the
     # ratio as floats. enabled: false = every scan inserted, as before.
+    # Off for now (2026-11-09): the gate has not been built, tested or replayed
+    # on the 0.2 m one-point-per-voxel map yet, whose healthy share the
+    # thresholds still have to be checked against.
     map_gate:
-      enabled: true
+      enabled: false
       max_speed: 1.5
       min_effective_ratio: 0.85
       min_near_points: 50
