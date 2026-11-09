@@ -89,29 +89,6 @@
     map_capacity: 1000000
     map_nearby: 6
 
-    # The map gate (2026-11-09): a scan placed by a pose that is running away is
-    # not inserted into the local map, so it cannot build the copy of the map
-    # the next scans lock onto (robot01, 2026-11-08 16:16: 37 m standing still,
-    # ~400 grids of a shifted corridor). A scan fails over max_speed or with
-    # effective / near under min_effective_ratio (judged from min_near_points
-    # near points); a failing scan is never inserted, close_after_scans of them
-    # in a row close the gate to every scan until open_after_scans pass in a
-    # row. Thresholds from robot01's 11 h on 11-08 before the slides: walking
-    # never went over 1.45 m/s nor a scan under 86 %; the run-away was over
-    # 1.5 m/s at 16:16:03 and under 85 % at :04 (README, "The map gate", has the
-    # replay of those hours through these values). Write the speed and the
-    # ratio as floats. enabled: false = every scan inserted, as before.
-    # Off for now (2026-11-09): the gate has not been built, tested or replayed
-    # on the 0.2 m one-point-per-voxel map yet, whose healthy share the
-    # thresholds still have to be checked against.
-    map_gate:
-      enabled: false
-      max_speed: 1.5
-      min_effective_ratio: 0.85
-      min_near_points: 50
-      close_after_scans: 3
-      open_after_scans: 50
-
     # process noise driving the omg/acc random-walk states
     gyr_cov_output: 1000.0
     acc_cov_output: 500.0

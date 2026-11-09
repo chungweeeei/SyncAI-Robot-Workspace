@@ -137,8 +137,6 @@ struct HealthWindow
   double speed_max = 0.0;
   double cost_ms_sum = 0.0;
   double cost_ms_max = 0.0;
-  // Scans the map gate kept out of the local map (MapInsertGate).
-  int not_inserted = 0;
 };
 
 struct StateData
@@ -202,10 +200,6 @@ public:
   // and the `lio health:` line once the window is over, every timerCB tick.
   void recordHealth(double cost_ms);
   void reportHealth();
-  // The map gate's turns (MapInsertGate), after every MAPPING scan: a WARN
-  // when it closes, with what the scan that closed it failed on, an INFO when
-  // it reopens, with how long it was closed.
-  void reportMapGate();
   // The publish half of timerCB, once the builder is MAPPING: TF, odometry,
   // the deskewed clouds, all for m_package.
   void publishResults();
@@ -253,10 +247,6 @@ private:
   std::chrono::steady_clock::time_point m_last_health_report = std::chrono::steady_clock::now();
   bool m_health_seen_mapping = false;
   bool m_health_idle_warned = false;
-  // When the map gate last closed, and MapBuilder::numNotInserted() then.
-  // timerCB / resetCB only.
-  std::chrono::steady_clock::time_point m_map_gate_closed_at;
-  std::size_t m_map_gate_not_inserted_at_close = 0;
   StateData m_state_data;
   SyncPackage m_package;
   NodeConfig m_node_config;

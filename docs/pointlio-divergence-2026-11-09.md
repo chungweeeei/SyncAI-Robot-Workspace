@@ -35,6 +35,10 @@ switchback staircase: four flights, z 0.15 → 5.6 m, 13:57:41–13:58:33.
 **Mitigation in place:** fc5cba2 (14:17) sets `map_gate.enabled: false` in the params file. The run
 restarted at 14:18 has every scan inserted again.
 
+**Resolution:** the gate was removed (§7.1). It only ever acted between a run-away and the reset
+that clears the local map anyway, and the share it judged cannot tell a wrong pose from a surface
+the map has not got yet.
+
 **Not verified:** that the same staircase passes with the gate off. The run after 14:18 stayed on
 the top level (§6).
 
@@ -227,9 +231,25 @@ From the numbers in `map_insert_gate.h`'s header (from the 11-08 data):
 (`scripts/record/lio_ring_record.sh`, `docker-compose.recorder.yml`) was not running. The logs of
 §8 are the only record, and multilog rotates them out.
 
-### 7.1 Keep the gate off
+### 7.1 Remove the gate
 
-Done (fc5cba2). Every scan is written, as before d31ef90. The 11-08 protection is off with it.
+Done: d31ef90 and fc5cba2 reverted, every scan is written as before d31ef90. Why not the
+speed-only gate of §7.2:
+
+- **What it protects is thrown away anyway.** `pointlio/reset` starts an empty `IVoxMap`, so the gate
+  only matters between a run-away and the reset. With it or without it the pose is wrong there and
+  a reset is the way out (§6.4); the localizer, matching the independent `map.pcd`, already reports
+  LOST (seven times on 11-08).
+- **It catches what cannot recover and misses what could.** 1.5 m/s catches a full run-away, which
+  never comes back by itself; a slide the old map could still pull back (16:05 on 11-08) passes both
+  tests.
+- **Any reopening judged on the local map dead-locks** once the robot walks somewhere the frozen
+  map does not cover, which is §3.2.
+
+What is worth keeping is the detection, not the gate: a run-away's speed raising a signal that
+starts a reset (§7.3), and velocity measurements (zero-velocity updates, leg kinematics) that stop
+the run-away in the filter. Both are in `todo.md` (1.2–1.4). §7.2 below is the comparison that led
+here.
 
 ### 7.2 What the gate should judge
 
