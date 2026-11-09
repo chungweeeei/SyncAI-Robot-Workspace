@@ -392,6 +392,11 @@ protected:
   std::string default_dock_controller_id_;
   std::string default_dock_goal_checker_id_;
   double dock_approach_timeout_;
+  // How far from the robot a dock goal's target may be, and how far off the
+  // target's own axis the robot may stand, at acceptance and on a preempt
+  // (acceptDockGoal() has why).
+  double dock_max_start_distance_{1.5};
+  double dock_max_start_lateral_{0.3};
   // Per dock goal: the resolved timeout, when the clock started, and the
   // robot pose of the last cycle that had one (the result's final residuals).
   double dock_timeout_;

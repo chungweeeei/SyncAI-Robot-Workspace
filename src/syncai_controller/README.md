@@ -607,7 +607,7 @@ last cycle that had a robot pose (`-1.0` distance when none did). Feedback
 | `NONE` 0 | `SUCCEEDED`; `CANCELED`; **`ABORTED` + `NONE` = superseded by a preempting dock goal** (default result from `accept_pending_goal`) | yes / yes / — |
 | `TRANSFORM_FAILED` 301 | No transform from the goal's `frame_id` into odom; robot pose unavailable at acceptance | yes |
 | `CONTROLLER_BUSY` 302 | `follow_path` holds the lock | **no** |
-| `FAILED_TO_CONTROL` 303 | any `PlannerException` (patience exceeded, no progress, the plugin's own throws), `error_msg` = its text | yes |
+| `FAILED_TO_CONTROL` 303 | any `PlannerException` (patience exceeded, no progress, the plugin's own throws), `error_msg` = its text; and a target the robot is not in front of (below) | yes |
 | `TIMEOUT` 304 | the per-goal timeout | yes |
 | `INVALID_PLUGIN` 305 | an id not in `controller_plugins` / `goal_checker_plugins`; `error_msg` lists them | yes |
 
@@ -623,7 +623,8 @@ the hundreds, as for 1xx / 2xx. Only the trees `dock.xml` / `undock.xml` in
 ```
 bounded lock (100 ms)                   ← else CONTROLLER_BUSY, no zero twist
 acceptDockGoal(goal)                    ← ids resolved (empty → defaults), the goal pose transformed into
-                                          odom ONCE (stamp Time(0)), robot pose fetched, a 2-pose path
+                                          odom ONCE (stamp Time(0)), robot pose fetched, the start-pose
+                                          gate (below), a 2-pose path
                                           [robot start, dock pose] handed to setPlannerPath();
                                           controller->reset() + progress checker reset per goal
 loop at controller_frequency:
@@ -633,7 +634,8 @@ loop at controller_frequency:
     (no wait for isCurrent())   ← the docking controller reads no cost data; waiting would only
                                    turn a dead sensor into an unbounded stall past the goal's timeout
     preempt requested?          → accept in place: acceptDockGoal(goal, is_preempt=true) -- no
-                                   controller reset (the cmd_vel sawtooth), the clock restarts
+                                   controller reset (the cmd_vel sawtooth), the clock restarts;
+                                   refused by the start-pose gate → zero velocity, return
     computeVelocityCycle()      ← shared with FollowPath
     publish feedback, publish velocity
     isDockReached()?            → break  (goal checker on end_pose_, both already odom; no
@@ -642,6 +644,20 @@ loop at controller_frequency:
 publishZeroVelocity()  (always: driver_manager has no watchdog)
 succeeded_current(result with the final residuals)
 ```
+
+**An approach starts only in front of its target** (2026-11). `acceptDockGoal()`
+refuses a goal — new or preempting — when the robot stands more than
+`dock_max_start_distance` (1.5 m) from the target or more than
+`dock_max_start_lateral` (0.3 m) off the target's axis (`FAILED_TO_CONTROL`,
+zero velocity). `dock.xml` stages 1.0 m out to 0.10 m and `undock.xml` backs
+out 1.0 m straight, so both pass with room; a hand-sent goal `x: 1.0` in
+`<robot_id>/base_link` passes too. It exists for the preempt: `dock.xml`'s
+staging leg runs once, so a same-tree preempt that moved `{goal}` after it
+(during the MPC switch, or mid-approach, where the `DockToPose` BT node re-sends
+the moved pose in place) handed the new dock straight to this blind controller,
+however far, round whatever stood between. Now the goal fails `DOCK_FAILED`,
+`dock.xml` restores RL, and the dock re-sent after it stages again. A pose moved
+within the gate is still re-targeted in place.
 
 **The dock pose is tracked in odom, never map.** The goal usually arrives in
 `map` (the task stores it there); the loop transforms it into the local
@@ -872,6 +888,8 @@ Server-level (`/**/controller_server`):
 | `default_dock_controller_id` | `Docking` | What a `DockToPose` goal's empty `controller_id` resolves to; must be in `controller_plugins`, or the server warns at startup and refuses such goals with `INVALID_PLUGIN` (FollowPath keeps working) |
 | `default_dock_goal_checker_id` | `dock_goal_checker` | Same for `goal_checker_id` |
 | `dock_approach_timeout` | `60.0` | Seconds a dock goal with `timeout <= 0` gets before `TIMEOUT`; dynamically reconfigurable |
+| `dock_max_start_distance` | `1.5` | Furthest (m) the robot may stand from a dock goal's target at acceptance or on a preempt ("An approach starts only in front of its target"); dynamically reconfigurable |
+| `dock_max_start_lateral` | `0.3` | Furthest (m) the robot may stand off the target's axis, likewise |
 | `progress_checker_plugin` / `goal_checker_plugins` / `controller_plugins` | see above | `goal_checker_plugins` is ordered: the first entry is the empty-id default |
 
 The `Docking` / `Undocking` plugin parameters (`k_phi`, `k_delta`, `beta`,

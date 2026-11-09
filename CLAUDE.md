@@ -534,7 +534,11 @@ they are properties of the nodes in `src/`, not of the backend:
 - **The last metre is blind.** The docking controller reads no costmap;
   avoidance is the staging leg. Something that steps between the robot and the
   dock after staging is pushed against until the progress checker (30 s) or
-  `failure_tolerance` ends the goal. The MPC switch is confirmed from the
+  `failure_tolerance` ends the goal. A dock pose moved by a preempt after
+  the staging leg is refused unless the robot still stands in front of it
+  (`dock_max_start_distance` 1.5 m / `dock_max_start_lateral` 0.3 m,
+  2026-11): `DOCK_FAILED`, RL restored, never a blind drive to the new dock;
+  send a moved dock once the current one has ended. The MPC switch is confirmed from the
   controller's own report (`mode` data[1] = 5, since `set_motion_key` is
   one-way UDP) and followed by 3 s of settling; no report within 5 s fails the
   dock (`DOCK_FAILED`, RL restored).
