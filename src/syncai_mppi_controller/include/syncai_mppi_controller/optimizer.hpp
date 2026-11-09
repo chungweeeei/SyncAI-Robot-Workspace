@@ -19,7 +19,10 @@
 #include <xtensor/xview.hpp>
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
@@ -89,11 +92,14 @@ public:
    * @param goal_checker Object to check if goal is completed
    * @return TwistStamped of the MPPI control
    */
+  // last_cmd: the command the controller sent last cycle (after its own
+  // floors and clamps). Not upstream; TC-MPPI conditions its samples on it,
+  // the iid sampler ignores it.
   geometry_msgs::msg::TwistStamped evalControl(
     const geometry_msgs::msg::PoseStamped & robot_pose,
     const geometry_msgs::msg::Twist & robot_speed, const nav_msgs::msg::Path & plan,
     const std::optional<geometry_msgs::msg::Pose> & goal,
-    syncai_nav_core::GoalChecker * goal_checker);
+    syncai_nav_core::GoalChecker * goal_checker, const geometry_msgs::msg::Twist & last_cmd);
 
   /**
    * @brief Get the trajectories generated in a cycle for visualization
@@ -209,6 +215,9 @@ protected:
    */
   void updateControlSequence();
 
+  // Upstream's gamma control cost, the iid sampler's importance term.
+  void addGammaControlCost();
+
   /**
    * @brief Convert control sequence to a twist commant
    * @param stamp Timestamp to use
@@ -234,6 +243,17 @@ protected:
    * @param fail Whether the system failed to recover from
    */
   bool fallback(bool fail);
+
+  // Not upstream: TC-MPPI (tools/time_correlated.hpp). The one parse of
+  // noise_model / tc_*: on initialisation a bad value throws, as an unknown
+  // motion_model does; on a runtime change it logs and keeps the priors
+  // (dropped to iid if they no longer fit time_steps). A no-op unless one of
+  // its inputs changed since the last successful build.
+  void rebuildPriors(bool throw_on_error);
+
+  // Pushes last_cmd onto the head the samples are conditioned on, or refills
+  // the head with it when the last cycle was not this optimizer's.
+  void updateTcHead(double stamp, const geometry_msgs::msg::Twist & last_cmd);
 
 protected:
   rclcpp::Node::WeakPtr parent_;
@@ -268,6 +288,22 @@ protected:
     std::nullopt,
     std::nullopt,
     std::nullopt};  /// Caution, keep references
+
+  // TC-MPPI. tc_priors_ == nullptr is the iid sampler (upstream's), and
+  // everything below it is unused then.
+  std::string noise_model_;
+  int tc_depth_{2};
+  std::vector<double> tc_vx_weights_, tc_wz_weights_;
+  std::shared_ptr<const tc::Priors> tc_priors_;
+  // What tc_priors_ was last built from: noise_model, tc_depth, time_steps,
+  // model_dt and the two weight lists. nullopt until the first build.
+  using TcInputs = std::tuple<
+    std::string, int, unsigned int, float, std::vector<double>, std::vector<double>>;
+  std::optional<TcInputs> tc_built_;
+  std::vector<float> tc_head_vx_, tc_head_wz_;  // the last d sent, oldest first
+  std::optional<double> tc_head_stamp_;          // nullopt: refill the head
+  std::vector<float> tc_ubar_vx_, tc_ubar_wz_;    // prior means (eq. 18)
+  models::ControlSequence tc_mean_;              // sampling means (eq. 19)
 
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 };

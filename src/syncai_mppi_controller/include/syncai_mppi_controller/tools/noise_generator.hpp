@@ -28,6 +28,7 @@
 #include "syncai_mppi_controller/tools/parameters_handler.hpp"
 #include "syncai_mppi_controller/models/control_sequence.hpp"
 #include "syncai_mppi_controller/models/state.hpp"
+#include "syncai_mppi_controller/tools/time_correlated.hpp"
 
 namespace mppi
 {
@@ -77,7 +78,9 @@ public:
    * @param settings Settings of controller
    * @param is_holonomic If base is holonomic
    */
-  void reset(mppi::models::OptimizerSettings & settings, bool is_holonomic);
+  void reset(
+    mppi::models::OptimizerSettings & settings, bool is_holonomic,
+    std::shared_ptr<const tc::Priors> priors = nullptr);
 
 protected:
   /**
@@ -100,6 +103,8 @@ protected:
 
   mppi::models::OptimizerSettings settings_;
   bool is_holonomic_;
+  // Not upstream: TC-MPPI's noise basis; nullptr = iid (upstream's).
+  std::shared_ptr<const tc::Priors> priors_;
 
   std::thread noise_thread_;
   std::condition_variable noise_cond_;

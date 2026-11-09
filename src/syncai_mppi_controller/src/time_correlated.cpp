@@ -215,6 +215,20 @@ void addWeightTerm(
   }
 }
 
+std::shared_ptr<const Priors> buildPriors(
+  size_t T, size_t d, float h, const std::vector<double> & vx_weights,
+  const std::vector<double> & wz_weights, std::string & error)
+{
+  auto vx = buildAxisPrior(T, d, h, std::vector<float>(vx_weights.begin(), vx_weights.end()));
+  auto wz = buildAxisPrior(T, d, h, std::vector<float>(wz_weights.begin(), wz_weights.end()));
+  if (!vx || !wz) {
+    error = std::string(!vx ? "tc_vx_weights" : "tc_wz_weights") + " needs tc_depth + 1 = " +
+            std::to_string(d + 1) + " finite weights, the first > 0 and the rest >= 0";
+    return nullptr;
+  }
+  return std::make_shared<const Priors>(Priors{std::move(*vx), std::move(*wz)});
+}
+
 std::vector<float> marginalStd(const AxisPrior & p)
 {
   std::vector<float> sd(p.T);

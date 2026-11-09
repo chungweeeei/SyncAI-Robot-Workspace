@@ -1276,7 +1276,8 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
   std::unique_lock<syncai_costmap::Costmap::mutex_t> costmap_lock(*(costmap->getMutex()));
 
   geometry_msgs::msg::TwistStamped cmd = optimizer_.evalControl(
-    robot_pose, robot_speed, transformed_plan, path_handler_.transformedGoal(), goal_checker);
+    robot_pose, robot_speed, transformed_plan, path_handler_.transformedGoal(), goal_checker,
+    last_cmd_vel_);
 
 #ifdef BENCHMARK_TESTING
   auto end = std::chrono::system_clock::now();

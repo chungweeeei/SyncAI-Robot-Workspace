@@ -36,7 +36,9 @@
 #define SYNCAI_MPPI_CONTROLLER__TOOLS__TIME_CORRELATED_HPP_
 
 #include <cstddef>
+#include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace mppi::tc
@@ -77,6 +79,22 @@ void correlate(const AxisPrior & p, const float * E, float * out, size_t batch);
 void addWeightTerm(
   const AxisPrior & p, const float * u_hat, const float * u_bar, const float * V,
   float lambda, float * costs, size_t batch);
+
+// Both axes of a diff-drive robot (vx, wz), built together or not at all, so
+// the optimizer never samples one axis correlated and the other iid. The
+// optimizer and the noise thread share one immutable instance; a null
+// pointer is the iid sampler.
+struct Priors
+{
+  AxisPrior vx;
+  AxisPrior wz;
+};
+
+// The parameters' one parse: nullptr with `error` set when either axis'
+// weights are illegal (see buildAxisPrior()).
+std::shared_ptr<const Priors> buildPriors(
+  size_t T, size_t d, float h, const std::vector<double> & vx_weights,
+  const std::vector<double> & wz_weights, std::string & error);
 
 // sqrt(diag(Htt^-1)): each step's marginal standard deviation, for tuning the
 // weights against the iid sampler's vx_std / wz_std.

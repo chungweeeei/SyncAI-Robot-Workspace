@@ -235,3 +235,15 @@ TEST(TimeCorrelated, WeightTermVanishesWhenMeansAgree)
   EXPECT_FLOAT_EQ(costs[0], 1.0f);
   EXPECT_FLOAT_EQ(costs[3], 4.0f);
 }
+
+// Both axes or neither, with the axis named on refusal.
+TEST(TimeCorrelated, PriorsAreBuiltForBothAxesOrNeither)
+{
+  std::string error;
+  EXPECT_TRUE(mppi::tc::buildPriors(32, 2, 0.05f, {11.0, 1.0, 0.02}, {6.0, 0.5, 0.01}, error));
+  EXPECT_TRUE(error.empty());
+  EXPECT_FALSE(mppi::tc::buildPriors(32, 2, 0.05f, {11.0, 1.0, 0.02}, {6.0, 0.5}, error));
+  EXPECT_NE(error.find("tc_wz_weights"), std::string::npos);
+  EXPECT_FALSE(mppi::tc::buildPriors(32, 2, 0.05f, {0.0, 1.0, 0.02}, {6.0, 0.5, 0.01}, error));
+  EXPECT_NE(error.find("tc_vx_weights"), std::string::npos);
+}
