@@ -115,7 +115,7 @@ void MapBuilder::process(SyncPackage & package)
   m_group_poses.push_back({package.cloud_end_time, m_kf->x().r_wi, m_kf->x().t_wi});
   m_health.lidar = m_lidar_processor->stats();
 
-  // Each map_resolution voxel keeps the first point that landed in it (see incrCloudMap).
+  // Each map_resolution voxel keeps the first point that landed in it, which the map enforces.
   // Done incrementally: the map is not rebuilt, only the incoming points are judged for insertion
   m_lidar_processor->incrCloudMap();
 }

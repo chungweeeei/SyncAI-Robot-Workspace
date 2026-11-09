@@ -70,7 +70,12 @@
     # Coarser than fastlio2 (0.15): every point group costs an EKF update, keep
     # headroom on Jetson. Lower for more detail if time cost allows.
     scan_resolution: 0.25
-    map_resolution: 0.3
+    # The local map's voxel, each holding one point (2026-11-09; the port's 0.3
+    # before). Once the map held that rule itself, 0.3 left the map sparser than
+    # the old one, which leaked a second point into many voxels: replaying the
+    # 11-08 run, walking eff 94 -> 86 % and residual 2.62 -> 2.87 cm. At 0.2 they
+    # are 94 % and 2.33 cm, at about the old cost, and still bounded.
+    map_resolution: 0.2
 
     # The local map (IVoxMap): upstream Point-LIO's grid-map branch values. 2 m grids, a
     # search over the grid and its 6 face neighbours (0 / 6 / 18 / 26), and an
@@ -95,9 +100,12 @@
     imu_meas_acc_cov: 0.1
 
     # saturation thresholds: axes at/over these are dropped from the IMU update
-    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale, ~3g)
+    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale). satu_acc sits
+    # just under the IMU's clip, 4.004 g = 39.28 at imu_acc_scale 9.81, so only
+    # clipped samples are dropped; at 30 (3.06 g) it also dropped the gait's
+    # 3.06-4.0 g impacts, ~90 % of them real readings (2026-11-09)
     satu_gyro: 35.0
-    satu_acc: 30.0
+    satu_acc: 39.0
 
     # point-to-plane measurement
     lidar_meas_cov: 0.01
@@ -109,6 +117,12 @@
     near_search_num: 5
 
     gravity_align: true
+    # initial covariance of the gravity state; with no process noise, 0 holds g
+    # at 9.81 along the init's direction for good (2026-11-09). At the port's
+    # 0.0001 walking pushed |g| down ~0.014 an hour on robot01, because at rest
+    # |g| and the accelerometer bias along gravity explain the same reading.
+    # Write a float
+    gravity_init_cov: 0.0
     esti_il: false
 
     # IMU <- lidar extrinsic. r_il is the row-major 3x3 rotation flattened into a

@@ -34,7 +34,14 @@
   planner branch, not before it, so a preempt that moves the dock pose (the
   navigator swaps {goal}, GlobalUpdatedGoal fires) recomputes the staging
   pose before the replan; computed once at the top it would be stale for the
-  rest of the goal. The SimpleGoalChecker ends the leg within
+  rest of the goal. That holds only until the staging leg succeeds: the
+  Sequence does not go back to it, so a preempt that moves the dock pose
+  during the MPC half reaches DockToPose as is. The controller server
+  refuses it unless the robot still stands in front of the new pose
+  (dock_max_start_distance 1.5 m / dock_max_start_lateral 0.3 m, 2026-11;
+  before, the blind approach drove to wherever the new dock was), the goal
+  fails DOCK_FAILED with RL restored, and a dock re-sent after it stages
+  again. The SimpleGoalChecker ends the leg within
   xy_goal_tolerance (0.10 m) and yaw_goal_tolerance (0.2 rad) of the staging
   pose; that residual is the docking controller's starting error.
 

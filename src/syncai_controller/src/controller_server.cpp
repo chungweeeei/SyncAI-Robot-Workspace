@@ -89,6 +89,8 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("default_dock_controller_id", rclcpp::ParameterValue("Docking"));
   declare_parameter("default_dock_goal_checker_id", rclcpp::ParameterValue("dock_goal_checker"));
   declare_parameter("dock_approach_timeout", rclcpp::ParameterValue(60.0));
+  declare_parameter("dock_max_start_distance", rclcpp::ParameterValue(1.5));
+  declare_parameter("dock_max_start_lateral", rclcpp::ParameterValue(0.3));
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<syncai_costmap::CostmapROS>(
@@ -158,6 +160,8 @@ void ControllerServer::configure()
   get_parameter("default_dock_controller_id", default_dock_controller_id_);
   get_parameter("default_dock_goal_checker_id", default_dock_goal_checker_id_);
   get_parameter("dock_approach_timeout", dock_approach_timeout_);
+  get_parameter("dock_max_start_distance", dock_max_start_distance_);
+  get_parameter("dock_max_start_lateral", dock_max_start_lateral_);
   get_parameter("body_frame", body_frame_);
   get_parameter("lidar_height", body_height_);
   get_parameter("goal_z_tolerance", goal_z_tolerance_);
@@ -831,6 +835,41 @@ bool ControllerServer::acceptDockGoal(
     return false;
   }
 
+  // The robot must stand where a dock approach starts: within
+  // dock_max_start_distance of the target and dock_max_start_lateral of its
+  // axis -- in front of a dock at the staging pose, or on the dock with the
+  // back-out pose behind it. The approach is blind (no costmap, no path),
+  // so this is the only thing that keeps it to the space the staging leg
+  // just drove through. Checked on a preempt too (2026-11), which is where
+  // it matters: dock.xml's staging leg runs once, so a same-tree preempt
+  // that moves {goal} after it -- during the MPC switch, or mid-approach,
+  // where DockToPose re-sends the moved pose in place -- handed the new
+  // dock straight to this controller, however far away, round whatever
+  // stood between. Refused, the robot stops, dock.xml restores RL and the
+  // goal is DOCK_FAILED; a dock re-sent once this one has ended stages
+  // again. FAILED_TO_CONTROL for want of a code of its own: the 3xx table
+  // is syncai_common's, and the dock trees report DOCK_FAILED either way.
+  {
+    const double yaw = tf2::getYaw(dock_odom.pose.orientation);
+    const double dx = start.pose.position.x - dock_odom.pose.position.x;
+    const double dy = start.pose.position.y - dock_odom.pose.position.y;
+    const double distance = std::hypot(dx, dy);
+    const double lateral = -dx * std::sin(yaw) + dy * std::cos(yaw);
+    if (distance > dock_max_start_distance_ || std::fabs(lateral) > dock_max_start_lateral_) {
+      char buf[320];
+      std::snprintf(
+        buf, sizeof(buf),
+        "the robot is %.2f m from the target and %.2f m off its axis (limits "
+        "dock_max_start_distance %.2f m, dock_max_start_lateral %.2f m): the approach is blind, "
+        "so it starts only from in front of the target -- a dock pose moved after the staging "
+        "leg needs a new one; re-send the dock",
+        distance, std::fabs(lateral), dock_max_start_distance_, dock_max_start_lateral_);
+      error_code = DockAction::Result::FAILED_TO_CONTROL;
+      error_msg = buf;
+      return false;
+    }
+  }
+
   // The one log line that explains "it docked somewhere else" after a
   // relocalize: the pose as the task gave it, and where that is in odom now.
   RCLCPP_INFO(
@@ -1327,6 +1366,10 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
         goal_reached_max_remaining_path_ = parameter.as_double();
       } else if (name == "dock_approach_timeout") {
         dock_approach_timeout_ = parameter.as_double();
+      } else if (name == "dock_max_start_distance") {
+        dock_max_start_distance_ = parameter.as_double();
+      } else if (name == "dock_max_start_lateral") {
+        dock_max_start_lateral_ = parameter.as_double();
       } else if (name == "goal_z_tolerance") {
         goal_z_tolerance_ = parameter.as_double();
       } else if (name == "cusp_min_angle") {

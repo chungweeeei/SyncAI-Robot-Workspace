@@ -32,7 +32,7 @@ struct Config
   double lidar_min_range = 0.5;
   double lidar_max_range = 20.0;
   double scan_resolution = 0.25;
-  double map_resolution = 0.3;
+  double map_resolution = 0.2;
 
   // The local map (IVoxMap): grid edge in metres, LRU capacity in grids, and the grids a
   // nearest search looks in (0, 6, 18 or 26 neighbours). Upstream Point-LIO's values.
@@ -50,8 +50,11 @@ struct Config
   double imu_meas_acc_cov = 0.1;
   // Saturation thresholds: axes at/over these are dropped from the IMU update.
   // satu_gyro in rad/s; satu_acc in m/s^2 AFTER imu_acc_scale is applied.
+  // satu_acc sits just under the MID360 IMU's clip (4.004 g = 39.28 m/s^2 at
+  // imu_acc_scale 9.81): at 30 it also dropped the gait's 3.06-4.0 g impacts,
+  // ~90 % of them real readings (2026-11-09).
   double satu_gyro = 35.0;
-  double satu_acc = 30.0;
+  double satu_acc = 39.0;
 
   double lidar_meas_cov = 0.01;
   double plane_thr = 0.1;
@@ -62,6 +65,13 @@ struct Config
   int imu_init_num = 20;
   int near_search_num = 5;
   bool gravity_align = true;
+  // Initial covariance of the gravity state g (m^2/s^4 per axis). g has no
+  // process noise, so at 0 it is never corrected: 9.81 along the direction
+  // the static init found, for good. The port's 1e-4 let the updates move it,
+  // and since at rest |g| and the accelerometer bias along gravity explain the
+  // same reading, walking pushed |g| down ~0.014 an hour on robot01 (both
+  // local-map rules), tilting the world with it. The bias now takes it.
+  double gravity_init_cov = 0.0;
   bool esti_il = false;
   M3D r_il = M3D::Identity();
   V3D t_il = V3D::Zero();

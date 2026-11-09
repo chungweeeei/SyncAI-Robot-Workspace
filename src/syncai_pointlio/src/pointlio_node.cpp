@@ -220,6 +220,15 @@ void PointLIONode::loadParameters()
     this->declare_parameter("near_search_num", m_builder_config.near_search_num);
   m_builder_config.gravity_align =
     this->declare_parameter("gravity_align", m_builder_config.gravity_align);
+  m_builder_config.gravity_init_cov =
+    this->declare_parameter("gravity_init_cov", m_builder_config.gravity_init_cov);
+  // A negative covariance would make P indefinite and the update gains meaningless.
+  if (!(m_builder_config.gravity_init_cov >= 0.0)) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] gravity_init_cov %g must be >= 0; using 0 (g fixed)",
+      __func__, m_builder_config.gravity_init_cov);
+    m_builder_config.gravity_init_cov = 0.0;
+  }
   m_builder_config.esti_il = this->declare_parameter("esti_il", m_builder_config.esti_il);
 
   // IMU <- lidar extrinsic. Flat double arrays because ROS parameters have no
@@ -692,9 +701,10 @@ void PointLIONode::reportHealth()
   //  them, the worst scan's effective share, mean |residual| | update chunks
   //  with a match / all | IMU samples, saturated samples, largest |axis| |
   //  speed now and the window's max | position / attitude 1-sigma | bias and
-  //  gravity norms | timerCB cost per scan | the local map's grids, points
-  //  and the grids its LRU has dropped since the last reset (last, so a
-  //  parser of the older lines keeps its field positions).
+  //  gravity norms | timerCB cost per scan | the local map's grids, points,
+  //  the grids its LRU has dropped and the points it refused because their
+  //  voxel was taken, both since the last reset (last, so a parser of the
+  //  older lines keeps its field positions; refused came after evicted).
   const double scans = w.scans;
   char line[512];
   std::snprintf(
@@ -702,12 +712,12 @@ void PointLIONode::reportHealth()
     "lio health: %d scans in %.1f s | pts %.0f near %.0f%% eff %.0f%% (min %.0f%%) res %.2f cm | "
     "chunks %d/%d | imu %d sat acc %d gyro %d max |a| %.1f |w| %.2f | v %.2f max %.2f m/s | "
     "std p %.2f cm r %.3f deg | |ba| %.3f |bg| %.4f |g| %.3f | cost %.1f max %.1f ms | "
-    "map %zu grids %zu pts evicted %zu",
+    "map %zu grids %zu pts evicted %zu refused %zu",
     w.scans, window, w.points / scans, near_pct, eff_pct, 100.0 * w.effective_ratio_min, res_cm,
     w.chunks_updated, w.chunks, w.imu_samples, w.acc_saturated, w.gyro_saturated, w.acc_abs_max,
     w.gyro_abs_max, x.v.norm(), w.speed_max, std_p_cm, std_r_deg, x.ba.norm(), x.bg.norm(),
     x.g.norm(), w.cost_ms_sum / scans, w.cost_ms_max, map.numGrids(), map.numPoints(),
-    map.numEvicted());
+    map.numEvicted(), map.numRefused());
   if (reasons.empty()) {
     RCLCPP_INFO(this->get_logger(), "%s", line);
   } else {

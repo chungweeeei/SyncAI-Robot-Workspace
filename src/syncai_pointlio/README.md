@@ -136,16 +136,41 @@ of the ikd-tree the port came with:
   `map_nearby` (6) face neighbours only. That is approximate: on a random
   dense cloud one query in ten gets a different 5-neighbour set than an exact
   search would. Upstream accepts it for the speed.
-- **Insertion: the first point in a voxel stays.** A point is added only when
-  none of the neighbours its update just found lies in its `map_resolution`
-  (0.3 m) voxel (`LidarProcessor::incrCloudMap`), upstream Point-LIO's rule.
-  The port had FAST-LIO2's instead — add the point if it is nearer the voxel
-  centre than its neighbours, and let the ikd-tree replace the voxel's point
-  with it — under which each voxel held an extreme over every scan ever
-  inserted, which walks off the true surface over a night of laps and thickens
-  every plane the update fits (`docs/pointlio-map-gravity-fixes.md` §2). The
-  cost of first-wins: whatever the first observation got wrong, a person
-  standing there included, stays until a `reset`.
+- **Insertion: one point per voxel, the first.** Each `map_resolution`
+  (0.2 m) voxel holds at most one point, the first that landed in it
+  (upstream's first-wins), and `IVoxMap` enforces it itself from one set of
+  the voxels it holds a point in — one set for the whole map, so the rule
+  holds also where a voxel spans two grids (at 0.3 m, 2 m is not a multiple
+  of the voxel); an evicted grid frees its voxels. Every scan, the first
+  included, goes through it.
+  Until 2026-11-09 the rule was judged outside the map
+  (`LidarProcessor::incrCloudMap`, as upstream) from the 5 nearest neighbours
+  the update had found — with the pose before that point's update — so a
+  voxel took a second point whenever its first was not among them. On robot01
+  the map grew all through a 70 h run (46 k → 281 k points, 83 → 290 per grid,
+  still ~300 more per lap on the third day); the search visits every point of
+  the nearby grids, so a scan's cost went 36 → 68 ms and scans were skipped
+  while walking. Now the points per grid are bounded by the voxels in it.
+  The voxel went 0.3 → 0.2 m with it: held strictly, 0.3 m left the map
+  sparser than the leaky one and the planes fit worse. Replaying the 11-08
+  run (32 min, three laps, a fresh start each time):
+
+  | | old rule, 0.3 m | one per voxel, 0.3 m | one per voxel, 0.2 m |
+  |---|---|---|---|
+  | walking eff / worst scan p1 | 94 % / 88 % | 86 % / 78 % | 94 % / 89 % |
+  | walking residual | 2.62 cm | 2.87 cm | 2.33 cm |
+  | walking cost, median / p90 | 54 / 70 ms | 50 / 60 ms | 55 / 69 ms |
+  | points at the end; added in laps 2, 3 | 42.6 k; 6.8 k, 5.2 k | 19.7 k; 2.2 k, 1.4 k | 38.4 k; 4.8 k, 3.3 k |
+
+  All three stayed on the dock within 3 cm and skipped no scan. Whether the
+  0.2 m map stops growing over a night is for a long run to show; a fresh
+  map's cost is about the old one's, and it can no longer grow per voxel.
+  The port before that had FAST-LIO2's rule — keep the point nearest each
+  voxel's centre — whose kept point is an extreme over every scan ever
+  inserted and walks off the true surface over a night of laps. The cost of
+  first-wins: whatever the first observation got wrong, a person standing
+  there included, stays until a `reset`. The health line's `refused` counts
+  the points turned away.
 - **The LRU.** Grids are ordered by their last insertion and the oldest is
   dropped whole past `map_capacity` grids. A search does not count as use (it
   runs on `MP_PROC_NUM` threads and must not write), so a grid the robot sees
@@ -159,14 +184,29 @@ of the ikd-tree the port came with:
   Upstream's 2 m / 6 are its `config/*.yaml` and launch values; the code's
   own fallback for `ivox_nearby_type` is 18, which `mapping_horizon.launch`
   gets by not setting it. Its first-wins voxel is `filter_size_map` (0.4 on
-  the Avia, 0.5 elsewhere); ours stays the port's `map_resolution` 0.3. Its
-  first map is `init_map_size` points gathered over the first scans; ours is
-  the whole first scan, as the ikd-tree's `Build()` was. Its search only puts
-  the nearest neighbour first; ours sorts all k, because `updateChunk` reads
-  the k-th distance for the √5 m gate. It evicts as each new grid passes
+  the Avia, 0.5 elsewhere); ours is `map_resolution` 0.2, and it is held by
+  the map, where upstream judges it from the update's neighbours (see
+  Insertion). Its first map is `init_map_size` points gathered
+  over the first scans; ours is the whole first scan, one point per voxel like
+  any other. Its search only puts the nearest neighbour first; ours sorts all
+  k, because `updateChunk` reads the k-th distance for the √5 m gate. Its
+  search reaches 5 m; ours stops at that gate's √5 m, since nothing farther
+  can be in a plane the update uses (upstream's farther candidates fed its
+  voxel test) — the same points are selected. It evicts as each new grid passes
   capacity; ours after the scan's batch, so a grid the scan just made is never
   the one dropped. Its `ivox3d.h` is faster-lio's (GPL-2.0), so `IVoxMap` is
   a rewrite, not a copy.
+- **Tests.** `test/test_ivox_map.cpp` pins what the map returns and keeps
+  against a brute-force oracle: the k nearest inside one grid and across its
+  face neighbours, the corner grids a search does not look in, that a √5 m
+  search selects what the gate keeps, the LRU's eviction order, and one point
+  per voxel — a taken voxel whose point is not among the newcomer's nearest, a
+  voxel spanning two grids, duplicates in one batch, an evicted grid's voxels
+  freed, and a wall seen 300 times holding exactly the voxels it touched. The
+  LIO core under `map_builder/` has no ROS in it and is
+  built as the static library `pointlio_map_builder`, which the node and the
+  test both link, so a change to the map or the filter is testable without a
+  ROS graph.
 
 ### The reset contract
 
@@ -204,6 +244,38 @@ parameters / extrinsics stay as launched. The comments in
 `SyncAI-Robot-Interface` since the pgo port) are the specification; the client
 is `syncai_mapping`'s `pgo_node`.
 
+### Gravity and the accelerometer's clip
+
+**Gravity is fixed** (2026-11-09). The state's `g` is a 3-vector with no
+process noise; the port started it with a 1e-4 covariance, so the updates
+moved it. At rest `|g|` and the accelerometer bias along gravity explain the
+same reading, so nothing tells them apart, and on robot01 walking pushed
+`|g|` down ~0.014 an hour on both local-map rules — a gravity that weakens,
+and with its direction free, a world that tilts. `gravity_init_cov` (default
+`0.0`) is that initial covariance: at 0 the covariance rows of `g` start zero
+and stay zero through every prediction and update, so `g` keeps 9.81 along
+the direction the static init found until the next `reset`, and the bias
+`ba` takes what `g` used to. What that costs: a wrong init (done in motion)
+is kept for good, as it already was in practice, and the bias random walk
+(`b_acc_cov`) is now all that follows a slow change in the accelerometer.
+`|g|` on the health line therefore reads 9.810 always; a different value
+means a non-zero `gravity_init_cov`.
+
+**`satu_acc` sits just under the clip** (39.0 m/s², 2026-11-09). The MID360's
+IMU clips at 4.004 g, 39.28 m/s² at `imu_acc_scale` 9.81. An axis at or over
+`satu_acc` is dropped from the update; at the port's 30 m/s² (3.06 g) that
+also dropped the gait's 3.06–4.0 g impacts, ~90 % of them real readings, so
+the update saw a gait with its peaks cut off. Only the clipped samples are
+dropped now, and `sat acc` on the health line counts just those. If
+`imu_acc_scale` is ever 10 (the code default), the clip is 40.04 m/s² and
+39.0 also drops 3.9–4.0 g readings — still under the clip, which is what
+matters.
+
+`test/test_fixed_gravity.cpp` runs a minute of a synthetic gait with the
+position pinned and compares `g` bit for bit (and the same walk moving it at
+the port's 1e-4), and feeds a 3.5 g impact and a clipped sample through
+`updateIMU`.
+
 ### Falling behind
 
 The timer takes one scan per 20 ms tick, and the sensor callbacks only buffer.
@@ -239,7 +311,7 @@ and its cause not at all. Since 2026-11-02 it logs one `lio health:` line per
 `health.summary_period` (1 s), from numbers the filter already has:
 
 ```
-lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms | map 812 grids 95210 pts evicted 0
+lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms | map 812 grids 95210 pts evicted 0 refused 4120533
 ```
 
 (Illustrative numbers: a healthy robot's have not been recorded yet.)
@@ -251,16 +323,16 @@ lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm |
 | `eff` / `(min …)` | Share that fit a plane and passed the residual gate, i.e. the update's rows; window mean / worst scan | `near` high but `eff` low: surroundings that are not planar (grass, foliage, people) |
 | `res` | Mean \|n·p + d\| of those points before their update | Growing: the map and the scan disagree more |
 | `chunks a/b` | Update chunks with at least one matched point / all | `a < b`: stretches of the scan that were IMU propagation only |
-| `imu`, `sat acc` / `gyro`, `max \|a\|` / `\|w\|` | IMU samples fused, samples with an axis at or over `satu_acc` / `satu_gyro` (dropped from the update), largest \|axis\| (m/s² after `imu_acc_scale`; rad/s) | Any saturation: gait impacts past the limit — the 2026-10-30 dock bag peaked at ~33 m/s² against `satu_acc` 30 |
+| `imu`, `sat acc` / `gyro`, `max \|a\|` / `\|w\|` | IMU samples fused, samples with an axis at or over `satu_acc` / `satu_gyro` (dropped from the update), largest \|axis\| (m/s² after `imu_acc_scale`; rad/s) | Any saturation: samples at the IMU's clip (4.004 g), since `satu_acc` 39.0 sits just under it — the 2026-10-30 dock bag peaked at ~33 m/s², dropped at the old 30 |
 | `v … max …` | Speed (world frame) at the last scan, and the window's largest | Over the robot's 0.8 m/s: running away |
 | `std p` / `r` | Position / attitude 1σ from the covariance | Shrinking while `res` grows: an over-confident filter discounting its scans |
-| `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | `\|g\|` drifting from 9.81, biases walking off |
+| `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | Biases walking off. `\|g\|` is 9.810 at `gravity_init_cov` 0 (see "Gravity and the accelerometer's clip"); it drifted when it was estimated |
 | `cost` | `timerCB` per processed scan, mean / max, against the lidar's 100 ms | See "Falling behind" |
-| `map … grids … pts evicted …` | The local map's grids and points, and the grids its LRU has dropped since the last `reset` (see "The local map"); last on the line, so a parser of the earlier fields keeps their positions | `pts` still growing on a route already driven: first-wins is adding voxels the earlier laps left empty — a pose off the surfaces it mapped |
+| `map … grids … pts evicted … refused …` | The local map's grids and points, the grids its LRU has dropped and the points it turned away because their voxel already held one, both since the last `reset` (see "The local map"); last on the line, so a parser of the earlier fields keeps their positions (`refused` came after `evicted`) | `pts` still growing on a route already driven: the scans are landing in voxels the earlier laps left empty — a pose off the surfaces it mapped. `refused` climbs by roughly the scan's points every scan once a place is mapped |
 
 The line is a **WARN** with every reason that holds appended after ` -- `
-(`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 31.2 >=
-satu_acc 30.0 dropped from the update`, `1 of 10 scans matched no plane (IMU
+(`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 39.3 >=
+satu_acc 39.0 dropped from the update`, `1 of 10 scans matched no plane (IMU
 only)`, and — only with `health.min_effective_ratio` > 0 — `effective ratio
 down to …`); otherwise INFO. A window with no scan at all after the node has
 been mapping is one WARN, `no scan processed in the last 1.0 s (status …, lidar
@@ -292,24 +364,25 @@ The launch layers the two frame names on top.
 | `world_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | The YAML said `lidar` until 2026-10, and the code default still does; `pointlio_odom` is what `syncai_mapping`'s `pgo_node` derives in a bare run |
 | `body_frame` | `pointlio_body` | `<robot_id>/pointlio_body` | The lidar's IMU (see "The frames"); `body` until 2026-10, and still the code default |
 | `lidar_type` | `0` | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
-| `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is fixed at 9.81. `satu_acc` is compared **after** scaling. |
+| `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is 9.81 (and stays there, see `gravity_init_cov`). robot01's YAML says `9.81`. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |
 | `max_lidar_backlog` / `max_lidar_skip` | `0.3` / `2` | | The backlog guard (see "Falling behind"): beyond `max_lidar_backlog` seconds of buffered scans the oldest are skipped, at most `max_lidar_skip` in a row, their IMU still fused. **Write a float** for the first. `<= 0.0` processes every scan however late |
 | `health.summary_period` / `health.max_speed` / `health.min_effective_ratio` | `1.0` / `1.5` / `0.0` | | The health log (see "The health log"): one `lio health:` line per period (`<= 0.0` = off), a WARN when the speed exceeds `max_speed` (the robot tops out at 0.8 m/s) or a scan's matched share falls under `min_effective_ratio` (`0.0` = unchecked until a healthy robot's ratio is measured). **Write floats** |
 | `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
-| `scan_resolution` / `map_resolution` | `0.25` / `0.3` | | Voxel sizes. Coarser than fastlio2's 0.15: every point group costs an EKF update, keep headroom on the Jetson. |
+| `scan_resolution` / `map_resolution` | `0.25` / `0.2` | | Voxel sizes: the scan's downsampling, and the local map's one-point-per-voxel. The scan is coarser than fastlio2's 0.15 because every point group costs an EKF update; keep headroom on the Jetson. The map's is finer than the scan's so that scans from different poses fill it in (see "The local map" for why 0.2 and not the port's 0.3). |
 | `map_grid_resolution` / `map_capacity` / `map_nearby` | `2.0` / `1000000` / `6` | | The local map (see "The local map"): grid edge (m), LRU capacity (grids), search neighbourhood (`0` / `6` / `18` / `26`). Upstream Point-LIO's values. Out-of-range values log an ERROR and fall back to these. **Write the resolution as a float.** |
 | `gyr_cov_output` / `acc_cov_output` | `1000.0` / `500.0` | | Process noise driving the omg / acc random-walk states. At 1000 the output model tracks the raw gyro almost instantly, which is why the bridge's yaw rate is not the bias-free estimate it looks like. |
 | `b_gyr_cov` / `b_acc_cov` | `0.0001` | | Bias random walk |
 | `imu_meas_omg_cov` / `imu_meas_acc_cov` | `0.1` | | IMU-as-measurement noise |
-| `satu_gyro` / `satu_acc` | `35.0` / `30.0` | | Saturation: axes at/over these are dropped from the IMU update (rad/s; m/s² after scaling, ≈3 g) |
+| `satu_gyro` / `satu_acc` | `35.0` / `39.0` | | Saturation: axes at/over these are dropped from the IMU update (rad/s; m/s² after scaling). `satu_acc` sits just under the IMU's 4.004 g clip; 30 (≈3 g) until 2026-11-09 (see "Gravity and the accelerometer's clip"). **Write floats** |
 | `lidar_meas_cov` / `plane_thr` | `0.01` / `0.1` | | Point-to-plane measurement |
 | `batch_max_points` | `500` | | Same-timestamp groups larger than this are split into sequential chunks |
 | `imu_init_num` | `20` | | Samples averaged by the static init (≈0.1 s at 200 Hz) |
 | `near_search_num` | `5` | | Map neighbours per point, for the plane fit |
 | `gravity_align` | `true` | | Rotate the initial pose so gravity is −z |
+| `gravity_init_cov` | `0.0` | | Initial covariance of the gravity state. `0` holds `g` fixed for good; the port's `0.0001` let the updates move it, and it drifted (see "Gravity and the accelerometer's clip"). Negative logs an ERROR and uses 0. **Write a float** |
 | `esti_il` | `false` | | Estimate the lidar → IMU extrinsic online |
 | `r_il` / `t_il` | identity / `[-0.011, -0.02329, 0.04412]` | | IMU ← lidar extrinsic. `r_il` is the row-major 3×3 flattened to 9 doubles (ROS parameters have no matrix type); the node checks the lengths and keeps the default with an ERROR log on a mismatch. |
 
