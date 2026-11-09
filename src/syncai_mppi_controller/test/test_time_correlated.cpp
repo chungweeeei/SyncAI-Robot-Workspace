@@ -59,14 +59,14 @@ TEST(TimeCorrelated, StepSizeScalesDifferences)
 
 TEST(TimeCorrelated, RejectsIllegalParameters)
 {
-  EXPECT_FALSE(buildAxisPrior(0, 0, 0.05f, {1.0f}));             // no horizon
-  EXPECT_FALSE(buildAxisPrior(8, 1, 0.0f, {1.0f, 1.0f}));        // h = 0
-  EXPECT_FALSE(buildAxisPrior(8, 1, -0.05f, {1.0f, 1.0f}));      // h < 0
-  EXPECT_FALSE(buildAxisPrior(8, 2, 0.05f, {1.0f, 1.0f}));       // R too short
-  EXPECT_FALSE(buildAxisPrior(8, 1, 0.05f, {0.0f, 1.0f}));       // R0 = 0
-  EXPECT_FALSE(buildAxisPrior(8, 1, 0.05f, {1.0f, -1.0f}));      // R1 < 0
-  EXPECT_FALSE(buildAxisPrior(8, 1, 0.05f, {NAN, 1.0f}));        // not a number
-  EXPECT_TRUE(buildAxisPrior(8, 1, 0.05f, {1.0f, 0.0f}));        // R1 = 0 is fine
+  EXPECT_FALSE(buildAxisPrior(0, 0, 0.05f, {1.0f}));         // no horizon
+  EXPECT_FALSE(buildAxisPrior(8, 1, 0.0f, {1.0f, 1.0f}));    // h = 0
+  EXPECT_FALSE(buildAxisPrior(8, 1, -0.05f, {1.0f, 1.0f}));  // h < 0
+  EXPECT_FALSE(buildAxisPrior(8, 2, 0.05f, {1.0f, 1.0f}));   // R too short
+  EXPECT_FALSE(buildAxisPrior(8, 1, 0.05f, {0.0f, 1.0f}));   // R0 = 0
+  EXPECT_FALSE(buildAxisPrior(8, 1, 0.05f, {1.0f, -1.0f}));  // R1 < 0
+  EXPECT_FALSE(buildAxisPrior(8, 1, 0.05f, {NAN, 1.0f}));    // not a number
+  EXPECT_TRUE(buildAxisPrior(8, 1, 0.05f, {1.0f, 0.0f}));    // R1 = 0 is fine
 }
 
 // d = 0 is vanilla MPPI: the mean is the warm start, the samples are iid with

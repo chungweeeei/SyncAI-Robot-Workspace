@@ -448,11 +448,11 @@ void Optimizer::updateControlSequence()
     // TC-MPPI's importance weight (eq. 23) in place of the gamma term.
     const auto & p = *tc_priors_;
     tc::addWeightTerm(
-      p.vx, tc_mean_.vx.data(), tc_ubar_vx_.data(), state_.cvx.data(), s.temperature,
-      costs_.data(), s.batch_size);
+      p.vx, tc_mean_.vx.data(), tc_ubar_vx_.data(), state_.cvx.data(), s.temperature, costs_.data(),
+      s.batch_size);
     tc::addWeightTerm(
-      p.wz, tc_mean_.wz.data(), tc_ubar_wz_.data(), state_.cwz.data(), s.temperature,
-      costs_.data(), s.batch_size);
+      p.wz, tc_mean_.wz.data(), tc_ubar_wz_.data(), state_.cwz.data(), s.temperature, costs_.data(),
+      s.batch_size);
   } else {
     addGammaControlCost();
   }
@@ -499,9 +499,8 @@ void Optimizer::rebuildPriors(bool throw_on_error)
   // Every runtime set runs this (onParametersChanged()), a critic weight or
   // vx_max too; only a change of what the priors are built from rebuilds
   // them, or each console set would restart the head and log the std again.
-  const TcInputs inputs{
-    noise_model_, tc_depth_, settings_.time_steps, settings_.model_dt, tc_vx_weights_,
-    tc_wz_weights_};
+  const TcInputs inputs{noise_model_,       tc_depth_,      settings_.time_steps,
+                        settings_.model_dt, tc_vx_weights_, tc_wz_weights_};
   if (tc_built_ && *tc_built_ == inputs) {
     return;
   }
@@ -512,8 +511,8 @@ void Optimizer::rebuildPriors(bool throw_on_error)
       error = "tc_depth must be >= 0";
     } else {
       priors = tc::buildPriors(
-        settings_.time_steps, static_cast<size_t>(tc_depth_), settings_.model_dt,
-        tc_vx_weights_, tc_wz_weights_, error);
+        settings_.time_steps, static_cast<size_t>(tc_depth_), settings_.model_dt, tc_vx_weights_,
+        tc_wz_weights_, error);
     }
   } else if (noise_model_ != "iid") {
     error = "noise_model '" + noise_model_ + "' is neither 'iid' nor 'time_correlated'";

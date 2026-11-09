@@ -297,13 +297,13 @@ protected:
   std::shared_ptr<const tc::Priors> tc_priors_;
   // What tc_priors_ was last built from: noise_model, tc_depth, time_steps,
   // model_dt and the two weight lists. nullopt until the first build.
-  using TcInputs = std::tuple<
-    std::string, int, unsigned int, float, std::vector<double>, std::vector<double>>;
+  using TcInputs =
+    std::tuple<std::string, int, unsigned int, float, std::vector<double>, std::vector<double>>;
   std::optional<TcInputs> tc_built_;
   std::vector<float> tc_head_vx_, tc_head_wz_;  // the last d sent, oldest first
-  std::optional<double> tc_head_stamp_;          // nullopt: refill the head
-  std::vector<float> tc_ubar_vx_, tc_ubar_wz_;    // prior means (eq. 18)
-  models::ControlSequence tc_mean_;              // sampling means (eq. 19)
+  std::optional<double> tc_head_stamp_;         // nullopt: refill the head
+  std::vector<float> tc_ubar_vx_, tc_ubar_wz_;  // prior means (eq. 18)
+  models::ControlSequence tc_mean_;             // sampling means (eq. 19)
 
   rclcpp::Logger logger_{rclcpp::get_logger("MPPIController")};
 };

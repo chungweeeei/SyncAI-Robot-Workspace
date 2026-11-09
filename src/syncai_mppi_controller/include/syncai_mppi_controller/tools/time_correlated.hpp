@@ -60,13 +60,11 @@ struct AxisPrior
 // The boundary: T >= 1, h > 0, R.size() == d + 1, every R_i >= 0 and R0 > 0
 // (the last makes Htt positive definite whatever the rest are). Anything else
 // is nullopt, and the caller refuses the parameters.
-std::optional<AxisPrior> buildAxisPrior(
-  size_t T, size_t d, float h, const std::vector<float> & R);
+std::optional<AxisPrior> buildAxisPrior(size_t T, size_t d, float h, const std::vector<float> & R);
 
 // U_hat = Htt^-1 (R0 u_warm - Hht^T u_head). u_warm has T entries, u_head d,
 // oldest first (u_head[d-1] is the command sent last).
-std::vector<float> samplingMean(
-  const AxisPrior & p, const float * u_warm, const float * u_head);
+std::vector<float> samplingMean(const AxisPrior & p, const float * u_warm, const float * u_head);
 
 // U_bar = -Htt^-1 Hht^T u_head.
 std::vector<float> priorMean(const AxisPrior & p, const float * u_head);
@@ -77,8 +75,8 @@ void correlate(const AxisPrior & p, const float * E, float * out, size_t batch);
 // costs[k] += lambda (U_hat - U_bar)^T Htt V[k], V row-major batch x T: the
 // importance-sampling term of eq. 23.
 void addWeightTerm(
-  const AxisPrior & p, const float * u_hat, const float * u_bar, const float * V,
-  float lambda, float * costs, size_t batch);
+  const AxisPrior & p, const float * u_hat, const float * u_bar, const float * V, float lambda,
+  float * costs, size_t batch);
 
 // Both axes of a diff-drive robot (vx, wz), built together or not at all, so
 // the optimizer never samples one axis correlated and the other iid. The

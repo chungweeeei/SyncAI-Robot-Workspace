@@ -118,8 +118,7 @@ bool validParameters(size_t T, size_t d, float h, const std::vector<float> & R)
 
 }  // namespace
 
-std::optional<AxisPrior> buildAxisPrior(
-  size_t T, size_t d, float h, const std::vector<float> & R)
+std::optional<AxisPrior> buildAxisPrior(size_t T, size_t d, float h, const std::vector<float> & R)
 {
   if (!validParameters(T, d, h, R)) {
     return std::nullopt;
@@ -194,8 +193,8 @@ void correlate(const AxisPrior & p, const float * E, float * out, size_t batch)
 }
 
 void addWeightTerm(
-  const AxisPrior & p, const float * u_hat, const float * u_bar, const float * V,
-  float lambda, float * costs, size_t batch)
+  const AxisPrior & p, const float * u_hat, const float * u_bar, const float * V, float lambda,
+  float * costs, size_t batch)
 {
   const size_t T = p.T;
   std::vector<float> w(T, 0.0f);  // lambda Htt (U_hat - U_bar)
@@ -222,8 +221,9 @@ std::shared_ptr<const Priors> buildPriors(
   auto vx = buildAxisPrior(T, d, h, std::vector<float>(vx_weights.begin(), vx_weights.end()));
   auto wz = buildAxisPrior(T, d, h, std::vector<float>(wz_weights.begin(), wz_weights.end()));
   if (!vx || !wz) {
-    error = std::string(!vx ? "tc_vx_weights" : "tc_wz_weights") + " needs tc_depth + 1 = " +
-            std::to_string(d + 1) + " finite weights, the first > 0 and the rest >= 0";
+    error = std::string(!vx ? "tc_vx_weights" : "tc_wz_weights") +
+            " needs tc_depth + 1 = " + std::to_string(d + 1) +
+            " finite weights, the first > 0 and the rest >= 0";
     return nullptr;
   }
   return std::make_shared<const Priors>(Priors{std::move(*vx), std::move(*wz)});

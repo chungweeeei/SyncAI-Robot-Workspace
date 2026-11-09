@@ -15,19 +15,19 @@
 #ifndef SYNCAI_MPPI_CONTROLLER__TOOLS__NOISE_GENERATOR_HPP_
 #define SYNCAI_MPPI_CONTROLLER__TOOLS__NOISE_GENERATOR_HPP_
 
-#include <string>
-#include <memory>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-
 #include <xtensor/xtensor.hpp>
 #include <xtensor/xview.hpp>
 
-#include "syncai_mppi_controller/models/optimizer_settings.hpp"
-#include "syncai_mppi_controller/tools/parameters_handler.hpp"
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+
 #include "syncai_mppi_controller/models/control_sequence.hpp"
+#include "syncai_mppi_controller/models/optimizer_settings.hpp"
 #include "syncai_mppi_controller/models/state.hpp"
+#include "syncai_mppi_controller/tools/parameters_handler.hpp"
 #include "syncai_mppi_controller/tools/time_correlated.hpp"
 
 namespace mppi

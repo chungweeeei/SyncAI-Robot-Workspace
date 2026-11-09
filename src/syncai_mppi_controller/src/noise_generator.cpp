@@ -120,10 +120,10 @@ void NoiseGenerator::generateNoisedControls()
   // sampling mean, not the warm start, in setNoisedControls()'s caller.
   if (priors_) {
     const auto correlated = [&](const tc::AxisPrior & axis, xt::xtensor<float, 2> & out) {
-        const auto E = xt::eval(xt::random::randn<float>({s.batch_size, s.time_steps}));
-        out = xt::xtensor<float, 2>::from_shape({s.batch_size, s.time_steps});
-        tc::correlate(axis, E.data(), out.data(), s.batch_size);
-      };
+      const auto E = xt::eval(xt::random::randn<float>({s.batch_size, s.time_steps}));
+      out = xt::xtensor<float, 2>::from_shape({s.batch_size, s.time_steps});
+      tc::correlate(axis, E.data(), out.data(), s.batch_size);
+    };
     correlated(priors_->vx, noises_vx_);
     correlated(priors_->wz, noises_wz_);
     return;
