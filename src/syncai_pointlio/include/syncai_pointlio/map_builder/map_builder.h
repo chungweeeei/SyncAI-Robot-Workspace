@@ -1,6 +1,7 @@
 #pragma once
 #include "syncai_pointlio/map_builder/imu_initializer.h"
 #include "syncai_pointlio/map_builder/lidar_processor.h"
+#include "syncai_pointlio/map_builder/map_insert_gate.h"
 
 enum BuilderStatus
 {
@@ -19,9 +20,12 @@ enum BuilderStatus
 //    at or over satu_acc / satu_gyro.
 //  - acc_abs_max / gyro_abs_max: the largest |axis| seen (m/s^2 after
 //    imu_acc_scale; rad/s).
+//  - insert: the map gate's verdict on the scan (MapInsertGate): whether its
+//    points went into the local map, and why not (2026-11-09).
 struct ScanHealth
 {
   LidarUpdateStats lidar;
+  MapInsertGate::Verdict insert;
   int imu_samples = 0;
   int acc_saturated = 0;
   int gyro_saturated = 0;
@@ -38,6 +42,9 @@ public:
     BuilderStatus status() { return m_status; }
     // The last process() call's; zero lidar numbers outside MAPPING.
     const ScanHealth & health() const { return m_health; }
+    // MAPPING scans the map gate kept out of the local map since construction.
+    std::size_t numNotInserted() const { return m_num_not_inserted; }
+    bool insertGateOpen() const { return m_insert_gate.isOpen(); }
     std::shared_ptr<LidarProcessor> lidar_processor() { return m_lidar_processor; }
 
     // Motion-compensate one scan of the last process() call into the body
@@ -63,6 +70,8 @@ private:
     std::shared_ptr<PointEKF> m_kf;
     std::shared_ptr<IMUInitializer> m_imu_initializer;
     std::shared_ptr<LidarProcessor> m_lidar_processor;
+    MapInsertGate m_insert_gate;
+    std::size_t m_num_not_inserted = 0;
     Vec<PointGroup> m_groups;
     // Post-update state after each group of the last MAPPING frame, plus the
     // end-of-scan state last; times ascending. Read by deskewToEndBody.

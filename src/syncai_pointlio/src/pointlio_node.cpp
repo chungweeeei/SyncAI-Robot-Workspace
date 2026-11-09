@@ -195,6 +195,62 @@ void PointLIONode::loadParameters()
     m_builder_config.map_nearby = 6;
   }
 
+  // The map gate (MapInsertGate): which scans go into the local map at all.
+  // Checked for the same reason as the map's: a count under one would close
+  // or reopen the gate on no evidence, and a ratio outside [0, 1] or a speed
+  // that is not positive would fail every scan or none without saying so.
+  m_builder_config.map_gate_enabled =
+    this->declare_parameter("map_gate.enabled", m_builder_config.map_gate_enabled);
+  m_builder_config.map_gate_max_speed =
+    this->declare_parameter("map_gate.max_speed", m_builder_config.map_gate_max_speed);
+  m_builder_config.map_gate_min_effective_ratio = this->declare_parameter(
+    "map_gate.min_effective_ratio", m_builder_config.map_gate_min_effective_ratio);
+  m_builder_config.map_gate_min_near =
+    this->declare_parameter("map_gate.min_near_points", m_builder_config.map_gate_min_near);
+  m_builder_config.map_gate_close_after =
+    this->declare_parameter("map_gate.close_after_scans", m_builder_config.map_gate_close_after);
+  m_builder_config.map_gate_open_after =
+    this->declare_parameter("map_gate.open_after_scans", m_builder_config.map_gate_open_after);
+  if (!(m_builder_config.map_gate_max_speed > 0.0)) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_gate.max_speed %.2f must be > 0; using 1.5",
+      __func__, m_builder_config.map_gate_max_speed);
+    m_builder_config.map_gate_max_speed = 1.5;
+  }
+  if (!(m_builder_config.map_gate_min_effective_ratio >= 0.0 &&
+        m_builder_config.map_gate_min_effective_ratio <= 1.0)) {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "[PointLIONode][%s] map_gate.min_effective_ratio %.2f is not in [0, 1]; using 0.85", __func__,
+      m_builder_config.map_gate_min_effective_ratio);
+    m_builder_config.map_gate_min_effective_ratio = 0.85;
+  }
+  if (m_builder_config.map_gate_min_near < 1) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_gate.min_near_points %d must be >= 1; using 50",
+      __func__, m_builder_config.map_gate_min_near);
+    m_builder_config.map_gate_min_near = 50;
+  }
+  if (m_builder_config.map_gate_close_after < 1) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_gate.close_after_scans %d must be >= 1; using 3",
+      __func__, m_builder_config.map_gate_close_after);
+    m_builder_config.map_gate_close_after = 3;
+  }
+  if (m_builder_config.map_gate_open_after < 1) {
+    RCLCPP_ERROR(
+      this->get_logger(), "[PointLIONode][%s] map_gate.open_after_scans %d must be >= 1; using 50",
+      __func__, m_builder_config.map_gate_open_after);
+    m_builder_config.map_gate_open_after = 50;
+  }
+  if (!m_builder_config.map_gate_enabled) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[PointLIONode][%s] map_gate.enabled is false: every scan goes into the local map, also "
+      "one placed by a pose that is running away",
+      __func__);
+  }
+
   // Point-LIO output model
   m_builder_config.gyr_cov_output =
     this->declare_parameter("gyr_cov_output", m_builder_config.gyr_cov_output);
@@ -514,6 +570,7 @@ void PointLIONode::timerCB()
   auto t3 = std::chrono::steady_clock::now();
   if (mapping) {
     recordHealth(std::chrono::duration<double, std::milli>(t3 - t1).count());
+    reportMapGate();
   }
 
   // Both numbers, because the total is the real per-scan budget: a scan
@@ -583,7 +640,68 @@ void PointLIONode::recordHealth(double cost_ms)
   w.speed_max = std::max(w.speed_max, m_kf->x().v.norm());
   w.cost_ms_sum += cost_ms;
   w.cost_ms_max = std::max(w.cost_ms_max, cost_ms);
+  if (!s.insert.insert) ++w.not_inserted;
   m_health_seen_mapping = true;
+}
+
+namespace
+{
+// What a scan failed the map gate on, each with its number and threshold.
+std::string mapGateFailure(const MapInsertGate::Verdict & v, const Config & c)
+{
+  std::string out;
+  char buf[160];
+  if (v.speed_failed) {
+    std::snprintf(
+      buf, sizeof(buf), "speed %.2f m/s over map_gate.max_speed %.2f", v.speed,
+      c.map_gate_max_speed);
+    out += buf;
+  }
+  if (v.ratio_failed) {
+    std::snprintf(
+      buf, sizeof(buf),
+      "%seffective/near %.0f%% (%d of %d) under map_gate.min_effective_ratio %.0f%%",
+      out.empty() ? "" : " and ", 100.0 * v.ratio, v.effective, v.near,
+      100.0 * c.map_gate_min_effective_ratio);
+    out += buf;
+  }
+  return out;
+}
+}  // namespace
+
+void PointLIONode::reportMapGate()
+{
+  const MapInsertGate::Verdict & v = m_builder->health().insert;
+  if (v.closed_now) {
+    m_map_gate_closed_at = std::chrono::steady_clock::now();
+    // The scan that closed the gate was itself kept out, so it is counted.
+    m_map_gate_not_inserted_at_close = m_builder->numNotInserted() - 1;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[PointLIONode][%s] local map writes paused: %d scans in a row failed "
+      "(map_gate.close_after_scans), the last on %s. No scan goes into the map until %d pass in a "
+      "row (map_gate.open_after_scans). Point-LIO's pose is suspect while it lasts; if it does "
+      "not reopen, reset_odometry with the robot standing still",
+      __func__, m_builder_config.map_gate_close_after, mapGateFailure(v, m_builder_config).c_str(),
+      m_builder_config.map_gate_open_after);
+  } else if (v.opened_now) {
+    const double closed_s =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - m_map_gate_closed_at)
+        .count();
+    char ratio[64];
+    if (v.ratio < 0.0) {
+      std::snprintf(ratio, sizeof(ratio), "not judged, %d near points", v.near);
+    } else {
+      std::snprintf(ratio, sizeof(ratio), "%.0f%%", 100.0 * v.ratio);
+    }
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[PointLIONode][%s] local map writes resumed: %d scans in a row passed "
+      "(map_gate.open_after_scans; the last at %.2f m/s, effective/near %s) after %.1f s paused "
+      "with %zu scans kept out of the map",
+      __func__, m_builder_config.map_gate_open_after, v.speed, ratio, closed_s,
+      m_builder->numNotInserted() - m_map_gate_not_inserted_at_close);
+  }
 }
 
 // The `lio health:` line (NodeConfig::health_*). Every number the filter
@@ -678,6 +796,12 @@ void PointLIONode::reportHealth()
       w.scans);
     add(buf);
   }
+  if (w.not_inserted > 0) {
+    std::snprintf(
+      buf, sizeof(buf), "%d of %d scans kept out of the local map (map gate %s)", w.not_inserted,
+      w.scans, m_builder->insertGateOpen() ? "open" : "closed");
+    add(buf);
+  }
   if (
     m_node_config.health_min_effective_ratio > 0.0 &&
     w.effective_ratio_min < m_node_config.health_min_effective_ratio) {
@@ -694,8 +818,10 @@ void PointLIONode::reportHealth()
   //  speed now and the window's max | position / attitude 1-sigma | bias and
   //  gravity norms | timerCB cost per scan | the local map's grids, points,
   //  the grids its LRU has dropped and the points it refused because their
-  //  voxel was taken, both since the last reset (last, so a parser of the
-  //  older lines keeps its field positions; refused came after evicted).
+  //  voxel was taken, both since the last reset, and the scans the map gate
+  //  kept out of it since then (last, so a parser of the older lines keeps
+  //  its field positions; refused came after evicted, unwritten after
+  //  refused).
   const double scans = w.scans;
   char line[512];
   std::snprintf(
@@ -703,12 +829,12 @@ void PointLIONode::reportHealth()
     "lio health: %d scans in %.1f s | pts %.0f near %.0f%% eff %.0f%% (min %.0f%%) res %.2f cm | "
     "chunks %d/%d | imu %d sat acc %d gyro %d max |a| %.1f |w| %.2f | v %.2f max %.2f m/s | "
     "std p %.2f cm r %.3f deg | |ba| %.3f |bg| %.4f |g| %.3f | cost %.1f max %.1f ms | "
-    "map %zu grids %zu pts evicted %zu refused %zu",
+    "map %zu grids %zu pts evicted %zu refused %zu unwritten %zu",
     w.scans, window, w.points / scans, near_pct, eff_pct, 100.0 * w.effective_ratio_min, res_cm,
     w.chunks_updated, w.chunks, w.imu_samples, w.acc_saturated, w.gyro_saturated, w.acc_abs_max,
     w.gyro_abs_max, x.v.norm(), w.speed_max, std_p_cm, std_r_deg, x.ba.norm(), x.bg.norm(),
     x.g.norm(), w.cost_ms_sum / scans, w.cost_ms_max, map.numGrids(), map.numPoints(),
-    map.numEvicted(), map.numRefused());
+    map.numEvicted(), map.numRefused(), m_builder->numNotInserted());
   if (reasons.empty()) {
     RCLCPP_INFO(this->get_logger(), "%s", line);
   } else {
@@ -831,6 +957,8 @@ void PointLIONode::resetCB(
   m_health = HealthWindow();
   m_health_seen_mapping = false;
   m_health_idle_warned = false;
+  // The new MapBuilder's gate starts open.
+  m_map_gate_not_inserted_at_close = 0;
 
   response->success = true;
   response->message = "LIO reset; re-initialising IMU (robot must be still).";

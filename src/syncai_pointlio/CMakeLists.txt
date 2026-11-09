@@ -78,6 +78,7 @@ add_library(pointlio_map_builder STATIC
   src/map_builder/ivox_map.cpp
   src/map_builder/lidar_processor.cpp
   src/map_builder/map_builder.cpp
+  src/map_builder/map_insert_gate.cpp
 )
 target_include_directories(pointlio_map_builder PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -141,6 +142,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_ivox_map test/test_ivox_map.cpp)
   target_link_libraries(test_ivox_map pointlio_map_builder)
+
+  # ROS-free: which scans the map gate lets into the local map, including
+  # robot01's 2026-11-08 run-away replayed from its health log.
+  ament_add_gtest(test_map_insert_gate test/test_map_insert_gate.cpp)
+  target_link_libraries(test_map_insert_gate pointlio_map_builder)
 endif()
 
 ament_package()

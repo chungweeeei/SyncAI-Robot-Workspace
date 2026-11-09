@@ -40,6 +40,17 @@ struct Config
   int map_capacity = 1000000;
   int map_nearby = 6;
 
+  // Which scans are inserted into the local map at all (MapInsertGate, where
+  // the values come from): the speed and effective / near share a scan fails
+  // on, the near points below which the share is not judged, and the failing
+  // scans in a row that close the gate / passing scans in a row that reopen it.
+  bool map_gate_enabled = true;
+  double map_gate_max_speed = 1.5;
+  double map_gate_min_effective_ratio = 0.85;
+  int map_gate_min_near = 50;
+  int map_gate_close_after = 3;
+  int map_gate_open_after = 50;
+
   // Point-LIO output model: omg/acc are random-walk states, these drive them.
   double gyr_cov_output = 1000.0;
   double acc_cov_output = 500.0;

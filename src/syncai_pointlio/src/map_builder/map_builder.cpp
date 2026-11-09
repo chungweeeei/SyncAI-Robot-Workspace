@@ -2,7 +2,8 @@
 
 #include <algorithm>
 
-MapBuilder::MapBuilder(Config & config, std::shared_ptr<PointEKF> kf) : m_config(config), m_kf(kf)
+MapBuilder::MapBuilder(Config & config, std::shared_ptr<PointEKF> kf)
+: m_config(config), m_kf(kf), m_insert_gate(config)
 {
   m_kf->setConfig(config);
   m_imu_initializer = std::make_shared<IMUInitializer>(config, kf);
@@ -115,6 +116,15 @@ void MapBuilder::process(SyncPackage & package)
   m_group_poses.push_back({package.cloud_end_time, m_kf->x().r_wi, m_kf->x().t_wi});
   m_health.lidar = m_lidar_processor->stats();
 
+  // Only a scan the gate passes is inserted: one placed at a pose that is running away would
+  // build the copy of the map the next scans match (MapInsertGate). The speed is the one at
+  // the end of the scan, as lio_odom carries it.
+  m_health.insert =
+    m_insert_gate.judge(m_kf->x().v.norm(), m_health.lidar.near, m_health.lidar.effective);
+  if (!m_health.insert.insert) {
+    ++m_num_not_inserted;
+    return;
+  }
   // Each map_resolution voxel keeps the first point that landed in it, which the map enforces.
   // Done incrementally: the map is not rebuilt, only the incoming points are judged for insertion
   m_lidar_processor->incrCloudMap();
