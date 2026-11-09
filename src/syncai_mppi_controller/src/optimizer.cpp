@@ -18,6 +18,7 @@
 #include <xtensor/xnoalias.hpp>
 #include <xtensor/xrandom.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -96,8 +97,15 @@ void Optimizer::getParams()
   parameters_handler_->addReadOnly(
     name_ + ".motion_model", "the motion model is built at startup; restart controller_server");
 
+  // Not upstream: TC-MPPI (controller_server_params.yaml has the notes).
+  getParam(noise_model_, "noise_model", std::string("iid"));
+  getParam(tc_depth_, "tc_depth", 2);
+  getParam(tc_vx_weights_, "tc_vx_weights", std::vector<double>{1.1, 0.0, 0.0011});
+  getParam(tc_wz_weights_, "tc_wz_weights", std::vector<double>{0.63, 0.0, 0.00063});
+
   s.constraints = s.base_constraints;
   setMotionModel(motion_model_name);
+  rebuildPriors(true);
   parameters_handler_->addPostCallback([this]() { onParametersChanged(); });
 
   double controller_frequency;
@@ -140,7 +148,8 @@ void Optimizer::reset()
   costs_ = xt::zeros<float>({settings_.batch_size});
   generated_trajectories_.reset(settings_.batch_size, settings_.time_steps);
 
-  noise_generator_.reset(settings_, isHolonomic());
+  noise_generator_.reset(settings_, isHolonomic(), tc_priors_);
+  tc_head_stamp_.reset();
   RCLCPP_INFO(logger_, "Optimizer reset");
 }
 
@@ -154,6 +163,9 @@ void Optimizer::onParametersChanged()
   // sequence and takes effect on the next cycle. The constraints are what
   // reset() used to copy from the parameters, and the noise is regenerated
   // so a new vx_std / wz_std is sampled at once.
+  // TC-MPPI's priors first: they are built for one time_steps / model_dt as
+  // well as for the tc_* values, and both branches below hand them on.
+  rebuildPriors(false);
   if (
     costs_.shape(0) != settings_.batch_size ||
     control_sequence_.vx.shape(0) != settings_.time_steps) {
@@ -164,21 +176,29 @@ void Optimizer::onParametersChanged()
     return;
   }
   settings_.constraints = settings_.base_constraints;
-  noise_generator_.reset(settings_, isHolonomic());
+  noise_generator_.reset(settings_, isHolonomic(), tc_priors_);
 }
 
 geometry_msgs::msg::TwistStamped Optimizer::evalControl(
   const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
   const nav_msgs::msg::Path & plan, const std::optional<geometry_msgs::msg::Pose> & goal,
-  syncai_nav_core::GoalChecker * goal_checker)
+  syncai_nav_core::GoalChecker * goal_checker, const geometry_msgs::msg::Twist & last_cmd)
 {
   prepare(robot_pose, robot_speed, plan, goal, goal_checker);
+  if (tc_priors_) {
+    updateTcHead(rclcpp::Time(robot_pose.header.stamp).seconds(), last_cmd);
+  }
 
   do {
     optimize();
   } while (fallback(critics_data_.fail_flag));
 
-  utils::savitskyGolayFilter(control_sequence_, control_history_, settings_);
+  // TC-MPPI's smoothness is in its samples; filtering their weighted mean as
+  // well would smooth twice and pull the first command off the sent ones the
+  // samples were joined to.
+  if (!tc_priors_) {
+    utils::savitskyGolayFilter(control_sequence_, control_history_, settings_);
+  }
   auto control = getControlFromSequenceAsTwist(plan.header.stamp);
 
   if (settings_.shift_control_sequence) {
@@ -274,7 +294,21 @@ void Optimizer::shiftControlSequence()
 
 void Optimizer::generateNoisedTrajectories()
 {
-  noise_generator_.setNoisedControls(state_, control_sequence_);
+  if (tc_priors_) {
+    // TC-MPPI: the samples are centred on the warm start low-passed and
+    // joined to the sent commands (U_hat, eq. 19), not on the warm start.
+    const auto & p = *tc_priors_;
+    const auto u_hat_vx = tc::samplingMean(p.vx, control_sequence_.vx.data(), tc_head_vx_.data());
+    const auto u_hat_wz = tc::samplingMean(p.wz, control_sequence_.wz.data(), tc_head_wz_.data());
+    tc_ubar_vx_ = tc::priorMean(p.vx, tc_head_vx_.data());
+    tc_ubar_wz_ = tc::priorMean(p.wz, tc_head_wz_.data());
+    tc_mean_ = control_sequence_;
+    std::copy(u_hat_vx.begin(), u_hat_vx.end(), tc_mean_.vx.begin());
+    std::copy(u_hat_wz.begin(), u_hat_wz.end(), tc_mean_.wz.begin());
+    noise_generator_.setNoisedControls(state_, tc_mean_);
+  } else {
+    noise_generator_.setNoisedControls(state_, control_sequence_);
+  }
   noise_generator_.generateNextNoises();
   updateStateVelocities(state_);
   integrateStateVelocities(generated_trajectories_, state_);
@@ -410,6 +444,38 @@ xt::xtensor<float, 2> Optimizer::getOptimizedTrajectory()
 void Optimizer::updateControlSequence()
 {
   auto & s = settings_;
+  if (tc_priors_) {
+    // TC-MPPI's importance weight (eq. 23) in place of the gamma term.
+    const auto & p = *tc_priors_;
+    tc::addWeightTerm(
+      p.vx, tc_mean_.vx.data(), tc_ubar_vx_.data(), state_.cvx.data(), s.temperature, costs_.data(),
+      s.batch_size);
+    tc::addWeightTerm(
+      p.wz, tc_mean_.wz.data(), tc_ubar_wz_.data(), state_.cwz.data(), s.temperature, costs_.data(),
+      s.batch_size);
+  } else {
+    addGammaControlCost();
+  }
+
+  auto && costs_normalized = costs_ - xt::amin(costs_, immediate);
+  auto && exponents = xt::eval(xt::exp(-1 / settings_.temperature * costs_normalized));
+  auto && softmaxes = xt::eval(exponents / xt::sum(exponents, immediate));
+  auto && softmaxes_extened = xt::eval(xt::view(softmaxes, xt::all(), xt::newaxis()));
+
+  xt::noalias(control_sequence_.vx) = xt::sum(state_.cvx * softmaxes_extened, 0, immediate);
+  xt::noalias(control_sequence_.wz) = xt::sum(state_.cwz * softmaxes_extened, 0, immediate);
+  if (isHolonomic()) {
+    xt::noalias(control_sequence_.vy) = xt::sum(state_.cvy * softmaxes_extened, 0, immediate);
+  }
+
+  applyControlSequenceConstraints();
+}
+
+void Optimizer::addGammaControlCost()
+{
+  // Upstream's control cost, moved out unchanged: the iid sampler's
+  // importance term.
+  auto & s = settings_;
   auto bounded_noises_vx = state_.cvx - control_sequence_.vx;
   auto bounded_noises_wz = state_.cwz - control_sequence_.wz;
   xt::noalias(costs_) +=
@@ -426,19 +492,89 @@ void Optimizer::updateControlSequence()
       xt::view(control_sequence_.vy, xt::newaxis(), xt::all()) * bounded_noises_vy,
       1, immediate);
   }
+}
 
-  auto && costs_normalized = costs_ - xt::amin(costs_, immediate);
-  auto && exponents = xt::eval(xt::exp(-1 / settings_.temperature * costs_normalized));
-  auto && softmaxes = xt::eval(exponents / xt::sum(exponents, immediate));
-  auto && softmaxes_extened = xt::eval(xt::view(softmaxes, xt::all(), xt::newaxis()));
-
-  xt::noalias(control_sequence_.vx) = xt::sum(state_.cvx * softmaxes_extened, 0, immediate);
-  xt::noalias(control_sequence_.wz) = xt::sum(state_.cwz * softmaxes_extened, 0, immediate);
-  if (isHolonomic()) {
-    xt::noalias(control_sequence_.vy) = xt::sum(state_.cvy * softmaxes_extened, 0, immediate);
+void Optimizer::rebuildPriors(bool throw_on_error)
+{
+  // Every runtime set runs this (onParametersChanged()), a critic weight or
+  // vx_max too; only a change of what the priors are built from rebuilds
+  // them, or each console set would restart the head and log the std again.
+  const TcInputs inputs{noise_model_,       tc_depth_,      settings_.time_steps,
+                        settings_.model_dt, tc_vx_weights_, tc_wz_weights_};
+  if (tc_built_ && *tc_built_ == inputs) {
+    return;
   }
+  std::string error;
+  std::shared_ptr<const tc::Priors> priors;
+  if (noise_model_ == "time_correlated") {
+    if (tc_depth_ < 0) {
+      error = "tc_depth must be >= 0";
+    } else {
+      priors = tc::buildPriors(
+        settings_.time_steps, static_cast<size_t>(tc_depth_), settings_.model_dt, tc_vx_weights_,
+        tc_wz_weights_, error);
+    }
+  } else if (noise_model_ != "iid") {
+    error = "noise_model '" + noise_model_ + "' is neither 'iid' nor 'time_correlated'";
+  }
+  if (!error.empty()) {
+    if (throw_on_error) {
+      throw std::runtime_error(error);
+    }
+    // Kept only while they still fit: priors for another time_steps would
+    // meet a batch of the new shape in the noise generator.
+    if (tc_priors_ && tc_priors_->vx.T != settings_.time_steps) {
+      RCLCPP_ERROR(
+        logger_, "%s; the TC-MPPI priors were built for %zu steps, not %u: sampling iid",
+        error.c_str(), tc_priors_->vx.T, settings_.time_steps);
+      tc_priors_.reset();
+      return;
+    }
+    RCLCPP_ERROR(logger_, "%s; keeping the sampler as it was", error.c_str());
+    return;
+  }
+  tc_built_ = inputs;
+  tc_priors_ = priors;
+  if (!tc_priors_) {
+    return;
+  }
+  const size_t d = tc_priors_->vx.d;
+  tc_head_vx_.assign(d, 0.0f);
+  tc_head_wz_.assign(d, 0.0f);
+  tc_head_stamp_.reset();
+  // The spread is the weights' now: say what it came out at, to compare
+  // with the iid vx_std / wz_std it replaces.
+  const auto vx_sd = tc::marginalStd(tc_priors_->vx);
+  const auto wz_sd = tc::marginalStd(tc_priors_->wz);
+  const size_t m = vx_sd.size() / 2;
+  RCLCPP_INFO(
+    logger_,
+    "TC-MPPI sampling, depth %zu: marginal std vx %.3f / %.3f / %.3f, wz %.3f / %.3f / %.3f "
+    "(first / middle / last step); vx_std, wz_std, gamma and the Savitzky-Golay filter are "
+    "unused",
+    d, vx_sd.front(), vx_sd[m], vx_sd.back(), wz_sd.front(), wz_sd[m], wz_sd.back());
+}
 
-  applyControlSequenceConstraints();
+void Optimizer::updateTcHead(double stamp, const geometry_msgs::msg::Twist & last_cmd)
+{
+  // The head is the last d commands sent. A cycle that was not this
+  // optimizer's -- a reset, or a gap longer than one period while the
+  // controller drove by itself (stairs, the final rotation, the approach) --
+  // leaves no history to trust, so the head starts over as d copies of the
+  // last command: continuous with it, at rest in every derivative.
+  const auto vx = static_cast<float>(last_cmd.linear.x);
+  const auto wz = static_cast<float>(last_cmd.angular.z);
+  const double dt = tc_head_stamp_ ? stamp - *tc_head_stamp_ : -1.0;
+  if (dt <= 0.0 || dt > 1.5 * settings_.model_dt) {
+    std::fill(tc_head_vx_.begin(), tc_head_vx_.end(), vx);
+    std::fill(tc_head_wz_.begin(), tc_head_wz_.end(), wz);
+  } else if (!tc_head_vx_.empty()) {
+    std::rotate(tc_head_vx_.begin(), tc_head_vx_.begin() + 1, tc_head_vx_.end());
+    std::rotate(tc_head_wz_.begin(), tc_head_wz_.begin() + 1, tc_head_wz_.end());
+    tc_head_vx_.back() = vx;
+    tc_head_wz_.back() = wz;
+  }
+  tc_head_stamp_ = stamp;
 }
 
 geometry_msgs::msg::TwistStamped Optimizer::getControlFromSequenceAsTwist(

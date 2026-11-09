@@ -535,6 +535,31 @@
       wz_std: 0.4
       temperature: 0.3
       gamma: 0.015
+      # TC-MPPI (2026-11-09, not upstream; M. Lee and D. Lee, ICRA 2025,
+      # written from the paper -- its code is unpublished). "iid" is
+      # upstream's sampler and everything above; "time_correlated" draws
+      # every candidate as a smooth sequence instead: Gaussian with precision
+      # sum_i R_i / model_dt^(2i) D_i^T D_i over the horizon, conditioned on
+      # the last tc_depth commands actually sent (last_cmd_vel_, after the
+      # walk floor and the clamp), so the first step continues the last one.
+      # In that mode vx_std, wz_std, gamma and the Savitzky-Golay filter are
+      # unused: the spread is the weights' alone. tc_*_weights are
+      # [R0, R1, R2] for tc_depth 2 (tc_depth + 1 values, R0 > 0); scaling all
+      # three by c scales the spread by 1/sqrt(c) and keeps the correlation
+      # length, R2 / R0 sets it. The defaults give a mid-horizon marginal std
+      # of 0.303 (vx) / 0.400 (wz) -- today's vx_std / wz_std -- small at the
+      # first step (0.06 / 0.08, the samples are joined to the sent command)
+      # and growing to 0.55 / 0.72 at the last, with samples correlated over
+      # ~0.3 s; the controller log prints the figures at startup. A runtime
+      # `ros2 param set ... noise_model time_correlated` switches it without
+      # a reset: the warm start is kept, the head refilled from the last
+      # command (an illegal value logs and keeps the sampler). The accel clamp,
+      # walk floor and in_place_wz_min stay: they are the gait's, not noise.
+      # Unmeasured on the robot.
+      noise_model: "iid"
+      tc_depth: 2
+      tc_vx_weights: [1.1, 0.0, 0.0011]
+      tc_wz_weights: [0.63, 0.0, 0.00063]
       # Path kept ahead of the robot, measured along it; the path handler
       # also cuts it where it leaves the local costmap, so the window's 2 m
       # half-width caps it on a straight run. This is MPPI's lookahead.

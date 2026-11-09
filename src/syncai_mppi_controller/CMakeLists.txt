@@ -81,7 +81,12 @@ add_library(${PROJECT_NAME} SHARED
   src/path_handler.cpp
   src/parameters_handler.cpp
   src/noise_generator.cpp
+  src/time_correlated.cpp
 )
+
+# The TC-MPPI core validates its parameters with isfinite / NaN comparisons,
+# which -ffast-math (above) lets the compiler fold away; keep NaN real here.
+set_source_files_properties(src/time_correlated.cpp PROPERTIES COMPILE_OPTIONS -fno-finite-math-only)
 
 add_library(syncai_mppi_critics SHARED
   src/critics/cost_critic.cpp
@@ -131,6 +136,9 @@ if(BUILD_TESTING)
   # ParametersHandler on a plain node (needs rclcpp, no costmap or TF).
   ament_add_gtest(test_parameters_handler test/test_parameters_handler.cpp)
   target_link_libraries(test_parameters_handler ${PROJECT_NAME})
+  # ROS-free: the TC-MPPI sampling core only (tools/time_correlated.hpp).
+  ament_add_gtest(test_time_correlated test/test_time_correlated.cpp src/time_correlated.cpp)
+  target_include_directories(test_time_correlated PRIVATE include)
 endif()
 
 ament_export_include_directories(include)

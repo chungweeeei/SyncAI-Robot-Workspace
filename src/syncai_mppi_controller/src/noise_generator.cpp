@@ -73,14 +73,20 @@ void NoiseGenerator::setNoisedControls(
   xt::noalias(state.cwz) = control_sequence.wz + noises_wz_;
 }
 
-void NoiseGenerator::reset(mppi::models::OptimizerSettings & settings, bool is_holonomic)
+void NoiseGenerator::reset(
+  mppi::models::OptimizerSettings & settings, bool is_holonomic,
+  std::shared_ptr<const tc::Priors> priors)
 {
-  settings_ = settings;
-  is_holonomic_ = is_holonomic;
-
   // Recompute the noises on reset, initialization, and fallback
   {
     std::unique_lock<std::mutex> guard(noise_lock_);
+    // Not upstream: the settings (upstream wrote them before taking the
+    // lock, racing the noise thread) and TC-MPPI's priors change hands
+    // together under the one lock, so the thread never pairs a basis built
+    // for one time_steps with a batch shaped for another.
+    settings_ = settings;
+    is_holonomic_ = is_holonomic;
+    priors_ = std::move(priors);
     xt::noalias(noises_vx_) = xt::zeros<float>({settings_.batch_size, settings_.time_steps});
     xt::noalias(noises_vy_) = xt::zeros<float>({settings_.batch_size, settings_.time_steps});
     xt::noalias(noises_wz_) = xt::zeros<float>({settings_.batch_size, settings_.time_steps});
@@ -107,6 +113,21 @@ void NoiseGenerator::noiseThread()
 void NoiseGenerator::generateNoisedControls()
 {
   auto & s = settings_;
+
+  // Not upstream: TC-MPPI. Standard normals through each axis' basis B,
+  // so every sample row is a smooth sequence with covariance Htt^-1 (the
+  // spread is the weights', not vx_std / wz_std). The optimizer adds the
+  // sampling mean, not the warm start, in setNoisedControls()'s caller.
+  if (priors_) {
+    const auto correlated = [&](const tc::AxisPrior & axis, xt::xtensor<float, 2> & out) {
+      const auto E = xt::eval(xt::random::randn<float>({s.batch_size, s.time_steps}));
+      out = xt::xtensor<float, 2>::from_shape({s.batch_size, s.time_steps});
+      tc::correlate(axis, E.data(), out.data(), s.batch_size);
+    };
+    correlated(priors_->vx, noises_vx_);
+    correlated(priors_->wz, noises_wz_);
+    return;
+  }
 
   xt::noalias(noises_vx_) = xt::random::randn<float>(
     {s.batch_size, s.time_steps}, 0.0f,
