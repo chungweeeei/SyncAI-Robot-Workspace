@@ -141,6 +141,12 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_ivox_map test/test_ivox_map.cpp)
   target_link_libraries(test_ivox_map pointlio_map_builder)
+
+  # ROS-free: the gravity state stays fixed through IMU and lidar updates at
+  # gravity_init_cov 0, and satu_acc keeps a gait impact but drops a clipped
+  # sample.
+  ament_add_gtest(test_fixed_gravity test/test_fixed_gravity.cpp)
+  target_link_libraries(test_fixed_gravity pointlio_map_builder)
 endif()
 
 ament_package()

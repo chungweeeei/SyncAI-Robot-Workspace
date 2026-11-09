@@ -46,7 +46,8 @@ bool IMUInitializer::initialize(SyncPackage & package)
   m_kf->P().block<3, 3>(9, 9) = M3D::Identity() * 0.00001;
   m_kf->P().block<3, 3>(15, 15) = M3D::Identity() * 0.0001;
   m_kf->P().block<3, 3>(18, 18) = M3D::Identity() * 0.0001;
-  m_kf->P().block<3, 3>(21, 21) = M3D::Identity() * 0.0001;
+  // g: 0 by default, which with no process noise holds it fixed (Config::gravity_init_cov).
+  m_kf->P().block<3, 3>(21, 21) = M3D::Identity() * m_config.gravity_init_cov;
   // omg & acc: the two blocks below are the states pointlio adds
   m_kf->P().block<3, 3>(24, 24) = M3D::Identity() * 0.01;
   m_kf->P().block<3, 3>(27, 27) = M3D::Identity() * 0.01;
