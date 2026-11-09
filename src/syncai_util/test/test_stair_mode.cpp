@@ -759,6 +759,43 @@ TEST(StairModePlanner, CrossingsForAnotherPlanAreIgnored)
   EXPECT_EQ(firstHold(again, path), expected);
 }
 
+TEST(StairModePlanner, TheHeldPlansWordOutlivesALaterPlansAndAClear)
+{
+  // The word for the plan held is not always the newest on the topic: a
+  // replan's comes before FollowPath brings its path, and a finished goal's
+  // clear (known, for no plan) can land after the next goal's plan. Neither
+  // evicts it: the flight is still walked flat. Kept a few deep only -- the
+  // word four messages back is gone, and the heights decide again.
+  const auto path = stairPath();
+  Harness plain;
+  plain.sm.setReportedPolicy(0);
+  plain.sm.setPlan(path);
+  const size_t expected = firstHold(plain, path);
+  ASSERT_LT(expected, path.poses.size());
+
+  syncai_util::PlanCrossings clear;  // dropPlan()'s: known, no plan
+  clear.known = true;
+  const auto other = crossingsFor(path, kLevelIn, kLevelIn + kFlight, true, true);
+
+  Harness h;
+  h.sm.setReportedPolicy(0);
+  h.sm.setPlan(path);
+  h.sm.setCrossings(crossingsFor(path, kLevelIn - 2, kLevelIn + kFlight + 2, false));
+  h.sm.setCrossings(other);
+  h.sm.setCrossings(clear);
+  EXPECT_EQ(firstHold(h, path), path.poses.size());
+  EXPECT_TRUE(h.sent.empty());
+
+  Harness gone;
+  gone.sm.setReportedPolicy(0);
+  gone.sm.setPlan(path);
+  gone.sm.setCrossings(crossingsFor(path, kLevelIn - 2, kLevelIn + kFlight + 2, false));
+  for (int i = 0; i < 4; ++i) {
+    gone.sm.setCrossings(i % 2 ? clear : other);
+  }
+  EXPECT_EQ(firstHold(gone, path), expected);
+}
+
 TEST(StairModePlanner, SlowSpansAreThisPlansOnlyAndChangeNoGait)
 {
   // A slow span (a narrow door) before the flight, beside the flight's stair
@@ -799,9 +836,12 @@ TEST(StairModePlanner, SlowSpansAreThisPlansOnlyAndChangeNoGait)
   EXPECT_DOUBLE_EQ(slow[0].heading, 1.0);
   EXPECT_EQ(firstHold(h, path), expected);
 
-  c.poses += 1;  // another plan's
-  h.sm.setCrossings(c);
-  EXPECT_FALSE(h.sm.plannerSlow(slow));
+  c.poses += 1;  // another plan's: no word for this one
+  Harness other;
+  other.sm.setReportedPolicy(0);
+  other.sm.setPlan(path);
+  other.sm.setCrossings(c);
+  EXPECT_FALSE(other.sm.plannerSlow(slow));
   EXPECT_TRUE(slow.empty());
 }
 

@@ -722,15 +722,18 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::str
     last_plan_used_ = std::chrono::steady_clock::now();
     clear_resends_left_ = 0;
   }
-  auto msg = std::make_unique<nav_msgs::msg::Path>(path);
-  if (plan_publisher_->get_subscription_count() > 0) {
-    plan_publisher_->publish(std::move(msg));
-  }
-
-  // Before the action's result goes back, so the controller usually has it
-  // when FollowPath brings the path; a late one is matched on arrival (the
-  // stamp ties it to the plan). A planner that says nothing is `known:
-  // false`, which leaves the followers to their own judgement.
+  // The crossings before the plan (2026-11-09). Before the action's result
+  // goes back, so the controller usually has them when FollowPath brings
+  // the path; a late one is matched on arrival (the stamp ties it to the
+  // plan). And before `plan`, because the terrain layer cannot tie them to
+  // it (`plan` is trimmed and restamped on every re-send) and pairs the
+  // plan it holds with the last word it read: sent the other way round, a
+  // new plan met the old plan's word for a moment, and a stair on the new
+  // plan that the old one did not take was in the corridor, its step rule
+  // off. Two topics have no ordering between them in DDS, but one thread's
+  // two writes to the same reader process arrive in order in practice. A
+  // planner that says nothing is `known: false`, which leaves the followers
+  // to their own judgement.
   syncai_nav_core::GlobalPlanner * planner = findPlanner(planner_id);
   std::string json = planner ? planner->planAnnotations(path) : std::string();
   if (json.empty()) {
@@ -739,6 +742,11 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::str
   std_msgs::msg::String crossings;
   crossings.data = std::move(json);
   crossings_publisher_->publish(crossings);
+
+  auto msg = std::make_unique<nav_msgs::msg::Path>(path);
+  if (plan_publisher_->get_subscription_count() > 0) {
+    plan_publisher_->publish(std::move(msg));
+  }
 }
 
 void PlannerServer::republishPlan()

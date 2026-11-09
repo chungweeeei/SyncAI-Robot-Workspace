@@ -152,15 +152,22 @@ void StairMode::setPlan(const nav_msgs::msg::Path & full_plan, size_t plan_first
 void StairMode::setCrossings(const PlanCrossings & crossings)
 {
   std::lock_guard<std::mutex> lock(crossings_mutex_);
-  crossings_ = crossings;
+  recent_crossings_.push_back(crossings);
+  while (recent_crossings_.size() > kRecentCrossings) {
+    recent_crossings_.pop_front();
+  }
 }
 
-bool StairMode::crossingsForPlan() const
+const PlanCrossings * StairMode::crossingsForPlan() const
 {
   // The planner's plan, not the leg: a leg keeps the plan's stamp
   // (path_cusps.hpp) and setPlan() was told the plan's count.
-  return crossings_.isFor(
-    full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, plan_poses_);
+  for (auto it = recent_crossings_.rbegin(); it != recent_crossings_.rend(); ++it) {
+    if (it->isFor(full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, plan_poses_)) {
+      return &*it;
+    }
+  }
+  return nullptr;
 }
 
 bool StairMode::spanOnLeg(const PlanCrossing & c, size_t & first, size_t & last) const
@@ -181,10 +188,11 @@ bool StairMode::plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) co
 {
   spans.clear();
   std::lock_guard<std::mutex> lock(crossings_mutex_);
-  if (!crossingsForPlan()) {
+  const PlanCrossings * word = crossingsForPlan();
+  if (!word) {
     return false;
   }
-  for (const PlanCrossing & c : crossings_.crossings) {
+  for (const PlanCrossing & c : word->crossings) {
     size_t first, last;
     if (c.stair_gait && spanOnLeg(c, first, last)) {
       spans.emplace_back(first, last);
@@ -197,10 +205,11 @@ bool StairMode::plannerSlow(std::vector<PlanCrossing> & spans) const
 {
   spans.clear();
   std::lock_guard<std::mutex> lock(crossings_mutex_);
-  if (!crossingsForPlan()) {
+  const PlanCrossings * word = crossingsForPlan();
+  if (!word) {
     return false;
   }
-  for (const PlanCrossing & c : crossings_.crossings) {
+  for (const PlanCrossing & c : word->crossings) {
     size_t first, last;
     if (c.slow && spanOnLeg(c, first, last)) {
       spans.push_back(c);

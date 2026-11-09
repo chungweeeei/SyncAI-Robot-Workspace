@@ -301,11 +301,19 @@ void TerrainLayer::crossingsCallback(std_msgs::msg::String::ConstSharedPtr messa
   syncai_util::PlanCrossings c;
   std::string error;
   if (!syncai_util::fromJson(message->data, c, error)) {
+    // Not kept (2026-11-09): this layer cannot tell which plan a word is for
+    // (`plan` is trimmed and restamped on every re-send), so the last word
+    // kept would open its corridor along the new plan with the old plan's
+    // stairs -- a stair on the new plan unmarked, its step rule off. An
+    // unreadable word is no word: the poses seed the reach flood only.
     RCLCPP_WARN(
       logger_,
-      "TerrainLayer: plan_crossings unreadable (%s): kept the last one, so its stairs and its "
-      "corridor stand until the next plan",
+      "TerrainLayer: plan_crossings unreadable (%s): no corridor along the plan until the next "
+      "readable one (a planner and a costmap from different builds?)",
       error.c_str());
+    std::lock_guard<std::mutex> lock(plan_mutex_);
+    crossings_known_ = false;
+    stair_pts_.clear();
     return;
   }
   // Of the planner's word this layer keeps that there was one (known) and

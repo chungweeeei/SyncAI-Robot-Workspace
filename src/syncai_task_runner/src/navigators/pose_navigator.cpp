@@ -355,7 +355,11 @@ void PoseNavigator<ActionT>::clearPlannerPlan()
   // backend and its workflow, then the new tree's clear_overlay. A clear
   // that did land after the next plan would empty that plan's route on the
   // console until the next replan (is_path_valid still finds Octo3D: with
-  // one planner loaded an empty planner id falls back to it).
+  // one planner loaded an empty planner id falls back to it). It also sends
+  // an empty plan_crossings; the controllers' stair mode keeps the last few
+  // words matched on the plan's stamp (2026-11-09), so the held plan keeps
+  // its gait and speed spans, while the terrain layer, which holds the
+  // empty plan by then, opens no corridor until the next replan.
   if (!clear_plan_client_->service_is_ready()) {
     RCLCPP_WARN(
       this->logger_,

@@ -59,6 +59,7 @@
 // cap and the sill's flat gait on every leg.
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -412,10 +413,11 @@ private:
   // full_plan_'s indices, when its crossings are for full_plan_ (true;
   // possibly none), else false.
   bool plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) const;
-  // Whether crossings_ is for the plan full_plan_ is (a leg of), and the
-  // crossing's span shifted into full_plan_'s indices and clipped to it;
-  // false for a span wholly off the leg. Under crossings_mutex_.
-  bool crossingsForPlan() const;
+  // The crossings in recent_crossings_ for the plan full_plan_ is (a leg
+  // of), newest first, or nullptr; and the crossing's span shifted into
+  // full_plan_'s indices and clipped to it, false for a span wholly off the
+  // leg. Under crossings_mutex_.
+  const PlanCrossings * crossingsForPlan() const;
   bool spanOnLeg(const PlanCrossing & c, size_t & first, size_t & last) const;
   // The last pose within `dist` metres (x / y, along the path) after /
   // before `idx`.
@@ -458,11 +460,21 @@ private:
   // Written from the executor (the `mode` subscription), read in the control loop.
   std::atomic<int> reported_policy_{-1};
 
-  // The planner's last crossings, from the executor (`plan_crossings`), read
-  // in the control loop.
+  // The planner's last few crossings, from the executor (`plan_crossings`),
+  // read in the control loop. Several, not one (2026-11-09): the topic
+  // carries every plan's word and the clear's, and the plan this controller
+  // holds is not always the newest one said -- a replan's word arrives
+  // before FollowPath brings its path, and a finished goal's clear_plan
+  // (an empty word, for no plan) can land after the next goal's plan. With
+  // one slot either evicted the held plan's word, and the stair mode fell
+  // back to the heights: a sill stopped the robot for HIMLOCO again and a
+  // door lost its speed cap, for the rest of that navigation in the second
+  // case. Matched on the plan's stamp and count, so an old entry never
+  // applies to another plan.
+  static constexpr size_t kRecentCrossings = 4;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr crossings_sub_;
   mutable std::mutex crossings_mutex_;
-  PlanCrossings crossings_;
+  std::deque<PlanCrossings> recent_crossings_;
   // A rise the planner's word suppressed was logged for this plan (once).
   mutable bool suppressed_said_{false};
 };
