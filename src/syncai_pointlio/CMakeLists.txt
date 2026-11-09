@@ -65,16 +65,33 @@ find_package(Sophus REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
 
-add_executable(pointlio_node
-  src/main.cpp
-  src/pointlio_node.cpp
-  src/utils.cpp
+# The LIO core (map_builder/): the EKF, the IMU initialisation, the local map
+# and the point-to-plane update, with no ROS in it. A library of its own so
+# the node links it and a gtest links it without a ROS graph -- the map's
+# insertion rule and the gravity state are what the long-run divergences on
+# robot01 came down to, and they are only testable in isolation here. STATIC,
+# so the installed node stays the one binary it always was.
+add_library(pointlio_map_builder STATIC
   src/map_builder/commons.cpp
   src/map_builder/point_ekf.cpp
   src/map_builder/imu_initializer.cpp
   src/map_builder/ivox_map.cpp
   src/map_builder/lidar_processor.cpp
   src/map_builder/map_builder.cpp
+)
+target_include_directories(pointlio_map_builder PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${PCL_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS})
+target_link_libraries(pointlio_map_builder PUBLIC
+  ${PCL_LIBRARIES}
+)
+
+add_executable(pointlio_node
+  src/main.cpp
+  src/pointlio_node.cpp
+  src/utils.cpp
 )
 target_include_directories(pointlio_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -92,6 +109,7 @@ ament_target_dependencies(pointlio_node
   syncai_common
 )
 target_link_libraries(pointlio_node
+  pointlio_map_builder
   ${PCL_LIBRARIES}
 )
 
@@ -116,6 +134,13 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # ROS-free: the local map (IVoxMap) against a brute-force oracle -- the
+  # nearest search inside one grid and across its face neighbours, the
+  # neighbours it deliberately does not look in, and the LRU's eviction order.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_ivox_map test/test_ivox_map.cpp)
+  target_link_libraries(test_ivox_map pointlio_map_builder)
 endif()
 
 ament_package()

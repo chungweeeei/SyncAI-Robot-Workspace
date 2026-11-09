@@ -167,6 +167,13 @@ of the ikd-tree the port came with:
   capacity; ours after the scan's batch, so a grid the scan just made is never
   the one dropped. Its `ivox3d.h` is faster-lio's (GPL-2.0), so `IVoxMap` is
   a rewrite, not a copy.
+- **Tests.** `test/test_ivox_map.cpp` pins what the map returns and keeps
+  against a brute-force oracle: the k nearest inside one grid and across its
+  face neighbours, the corner grids a search does not look in, and the LRU's
+  eviction order. The LIO core under `map_builder/` has no ROS in it and is
+  built as the static library `pointlio_map_builder`, which the node and the
+  test both link, so a change to the map or the filter is testable without a
+  ROS graph.
 
 ### The reset contract
 
