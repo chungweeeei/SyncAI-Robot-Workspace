@@ -136,16 +136,41 @@ of the ikd-tree the port came with:
   `map_nearby` (6) face neighbours only. That is approximate: on a random
   dense cloud one query in ten gets a different 5-neighbour set than an exact
   search would. Upstream accepts it for the speed.
-- **Insertion: the first point in a voxel stays.** A point is added only when
-  none of the neighbours its update just found lies in its `map_resolution`
-  (0.3 m) voxel (`LidarProcessor::incrCloudMap`), upstream Point-LIO's rule.
-  The port had FAST-LIO2's instead — add the point if it is nearer the voxel
-  centre than its neighbours, and let the ikd-tree replace the voxel's point
-  with it — under which each voxel held an extreme over every scan ever
-  inserted, which walks off the true surface over a night of laps and thickens
-  every plane the update fits (`docs/pointlio-map-gravity-fixes.md` §2). The
-  cost of first-wins: whatever the first observation got wrong, a person
-  standing there included, stays until a `reset`.
+- **Insertion: one point per voxel, the first.** Each `map_resolution`
+  (0.2 m) voxel holds at most one point, the first that landed in it
+  (upstream's first-wins), and `IVoxMap` enforces it itself from one set of
+  the voxels it holds a point in — one set for the whole map, so the rule
+  holds also where a voxel spans two grids (at 0.3 m, 2 m is not a multiple
+  of the voxel); an evicted grid frees its voxels. Every scan, the first
+  included, goes through it.
+  Until 2026-11-09 the rule was judged outside the map
+  (`LidarProcessor::incrCloudMap`, as upstream) from the 5 nearest neighbours
+  the update had found — with the pose before that point's update — so a
+  voxel took a second point whenever its first was not among them. On robot01
+  the map grew all through a 70 h run (46 k → 281 k points, 83 → 290 per grid,
+  still ~300 more per lap on the third day); the search visits every point of
+  the nearby grids, so a scan's cost went 36 → 68 ms and scans were skipped
+  while walking. Now the points per grid are bounded by the voxels in it.
+  The voxel went 0.3 → 0.2 m with it: held strictly, 0.3 m left the map
+  sparser than the leaky one and the planes fit worse. Replaying the 11-08
+  run (32 min, three laps, a fresh start each time):
+
+  | | old rule, 0.3 m | one per voxel, 0.3 m | one per voxel, 0.2 m |
+  |---|---|---|---|
+  | walking eff / worst scan p1 | 94 % / 88 % | 86 % / 78 % | 94 % / 89 % |
+  | walking residual | 2.62 cm | 2.87 cm | 2.33 cm |
+  | walking cost, median / p90 | 54 / 70 ms | 50 / 60 ms | 55 / 69 ms |
+  | points at the end; added in laps 2, 3 | 42.6 k; 6.8 k, 5.2 k | 19.7 k; 2.2 k, 1.4 k | 38.4 k; 4.8 k, 3.3 k |
+
+  All three stayed on the dock within 3 cm and skipped no scan. Whether the
+  0.2 m map stops growing over a night is for a long run to show; a fresh
+  map's cost is about the old one's, and it can no longer grow per voxel.
+  The port before that had FAST-LIO2's rule — keep the point nearest each
+  voxel's centre — whose kept point is an extreme over every scan ever
+  inserted and walks off the true surface over a night of laps. The cost of
+  first-wins: whatever the first observation got wrong, a person standing
+  there included, stays until a `reset`. The health line's `refused` counts
+  the points turned away.
 - **The LRU.** Grids are ordered by their last insertion and the oldest is
   dropped whole past `map_capacity` grids. A search does not count as use (it
   runs on `MP_PROC_NUM` threads and must not write), so a grid the robot sees
@@ -159,14 +184,29 @@ of the ikd-tree the port came with:
   Upstream's 2 m / 6 are its `config/*.yaml` and launch values; the code's
   own fallback for `ivox_nearby_type` is 18, which `mapping_horizon.launch`
   gets by not setting it. Its first-wins voxel is `filter_size_map` (0.4 on
-  the Avia, 0.5 elsewhere); ours stays the port's `map_resolution` 0.3. Its
-  first map is `init_map_size` points gathered over the first scans; ours is
-  the whole first scan, as the ikd-tree's `Build()` was. Its search only puts
-  the nearest neighbour first; ours sorts all k, because `updateChunk` reads
-  the k-th distance for the √5 m gate. It evicts as each new grid passes
+  the Avia, 0.5 elsewhere); ours is `map_resolution` 0.2, and it is held by
+  the map, where upstream judges it from the update's neighbours (see
+  Insertion). Its first map is `init_map_size` points gathered
+  over the first scans; ours is the whole first scan, one point per voxel like
+  any other. Its search only puts the nearest neighbour first; ours sorts all
+  k, because `updateChunk` reads the k-th distance for the √5 m gate. Its
+  search reaches 5 m; ours stops at that gate's √5 m, since nothing farther
+  can be in a plane the update uses (upstream's farther candidates fed its
+  voxel test) — the same points are selected. It evicts as each new grid passes
   capacity; ours after the scan's batch, so a grid the scan just made is never
   the one dropped. Its `ivox3d.h` is faster-lio's (GPL-2.0), so `IVoxMap` is
   a rewrite, not a copy.
+- **Tests.** `test/test_ivox_map.cpp` pins what the map returns and keeps
+  against a brute-force oracle: the k nearest inside one grid and across its
+  face neighbours, the corner grids a search does not look in, that a √5 m
+  search selects what the gate keeps, the LRU's eviction order, and one point
+  per voxel — a taken voxel whose point is not among the newcomer's nearest, a
+  voxel spanning two grids, duplicates in one batch, an evicted grid's voxels
+  freed, and a wall seen 300 times holding exactly the voxels it touched. The
+  LIO core under `map_builder/` has no ROS in it and is
+  built as the static library `pointlio_map_builder`, which the node and the
+  test both link, so a change to the map or the filter is testable without a
+  ROS graph.
 
 ### The reset contract
 
@@ -239,7 +279,7 @@ and its cause not at all. Since 2026-11-02 it logs one `lio health:` line per
 `health.summary_period` (1 s), from numbers the filter already has:
 
 ```
-lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms | map 812 grids 95210 pts evicted 0
+lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm | chunks 98/100 | imu 200 sat acc 0 gyro 0 max |a| 21.3 |w| 1.20 | v 0.62 max 0.71 m/s | std p 1.10 cm r 0.080 deg | |ba| 0.051 |bg| 0.0030 |g| 9.810 | cost 18.2 max 25.0 ms | map 812 grids 95210 pts evicted 0 refused 4120533
 ```
 
 (Illustrative numbers: a healthy robot's have not been recorded yet.)
@@ -256,7 +296,7 @@ lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm |
 | `std p` / `r` | Position / attitude 1σ from the covariance | Shrinking while `res` grows: an over-confident filter discounting its scans |
 | `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | `\|g\|` drifting from 9.81, biases walking off |
 | `cost` | `timerCB` per processed scan, mean / max, against the lidar's 100 ms | See "Falling behind" |
-| `map … grids … pts evicted …` | The local map's grids and points, and the grids its LRU has dropped since the last `reset` (see "The local map"); last on the line, so a parser of the earlier fields keeps their positions | `pts` still growing on a route already driven: first-wins is adding voxels the earlier laps left empty — a pose off the surfaces it mapped |
+| `map … grids … pts evicted … refused …` | The local map's grids and points, the grids its LRU has dropped and the points it turned away because their voxel already held one, both since the last `reset` (see "The local map"); last on the line, so a parser of the earlier fields keeps their positions (`refused` came after `evicted`) | `pts` still growing on a route already driven: the scans are landing in voxels the earlier laps left empty — a pose off the surfaces it mapped. `refused` climbs by roughly the scan's points every scan once a place is mapped |
 
 The line is a **WARN** with every reason that holds appended after ` -- `
 (`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 31.2 >=
@@ -299,7 +339,7 @@ The launch layers the two frame names on top.
 | `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
 | `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
-| `scan_resolution` / `map_resolution` | `0.25` / `0.3` | | Voxel sizes. Coarser than fastlio2's 0.15: every point group costs an EKF update, keep headroom on the Jetson. |
+| `scan_resolution` / `map_resolution` | `0.25` / `0.2` | | Voxel sizes: the scan's downsampling, and the local map's one-point-per-voxel. The scan is coarser than fastlio2's 0.15 because every point group costs an EKF update; keep headroom on the Jetson. The map's is finer than the scan's so that scans from different poses fill it in (see "The local map" for why 0.2 and not the port's 0.3). |
 | `map_grid_resolution` / `map_capacity` / `map_nearby` | `2.0` / `1000000` / `6` | | The local map (see "The local map"): grid edge (m), LRU capacity (grids), search neighbourhood (`0` / `6` / `18` / `26`). Upstream Point-LIO's values. Out-of-range values log an ERROR and fall back to these. **Write the resolution as a float.** |
 | `gyr_cov_output` / `acc_cov_output` | `1000.0` / `500.0` | | Process noise driving the omg / acc random-walk states. At 1000 the output model tracks the raw gyro almost instantly, which is why the bridge's yaw rate is not the bias-free estimate it looks like. |
 | `b_gyr_cov` / `b_acc_cov` | `0.0001` | | Bias random walk |

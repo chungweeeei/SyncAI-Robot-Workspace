@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <utility>
 
-IVoxMap::IVoxMap(double grid_resolution, std::size_t capacity, int nearby)
-: m_inv_resolution(1.0 / grid_resolution), m_capacity(capacity)
+IVoxMap::IVoxMap(double grid_resolution, double voxel_resolution, std::size_t capacity, int nearby)
+: m_inv_resolution(1.0 / grid_resolution),
+  m_inv_voxel_resolution(1.0 / voxel_resolution),
+  m_capacity(capacity)
 {
   m_nearby.push_back(Key(0, 0, 0));
   if (nearby >= 6) {
@@ -51,9 +53,22 @@ IVoxMap::Key IVoxMap::keyOf(const PointType & p) const
     static_cast<int>(std::floor(p.z * m_inv_resolution)));
 }
 
+IVoxMap::Key IVoxMap::voxelOf(const PointType & p) const
+{
+  return Key(
+    static_cast<int>(std::floor(p.x * m_inv_voxel_resolution)),
+    static_cast<int>(std::floor(p.y * m_inv_voxel_resolution)),
+    static_cast<int>(std::floor(p.z * m_inv_voxel_resolution)));
+}
+
 void IVoxMap::addPoints(const PointVec & points)
 {
   for (const PointType & p : points) {
+    // A voxel that already holds a point keeps it: first-wins.
+    if (!m_occupied_voxels.insert(voxelOf(p)).second) {
+      ++m_num_refused;
+      continue;
+    }
     const Key key = keyOf(p);
     auto it = m_grids.find(key);
     if (it == m_grids.end()) {
@@ -69,6 +84,8 @@ void IVoxMap::addPoints(const PointVec & points)
   // by this scan is at the front and never the one dropped.
   while (m_grids.size() > m_capacity) {
     const Grid & oldest = m_lru.back();
+    // Each voxel's one point lives in exactly one grid, so dropping the grid frees its voxels.
+    for (const PointType & q : oldest.points) m_occupied_voxels.erase(voxelOf(q));
     m_num_points -= oldest.points.size();
     m_grids.erase(oldest.key);
     m_lru.pop_back();
