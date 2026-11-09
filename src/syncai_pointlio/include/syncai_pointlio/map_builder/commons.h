@@ -32,7 +32,7 @@ struct Config
   double lidar_min_range = 0.5;
   double lidar_max_range = 20.0;
   double scan_resolution = 0.25;
-  double map_resolution = 0.3;
+  double map_resolution = 0.2;
 
   // The local map (IVoxMap): grid edge in metres, LRU capacity in grids, and the grids a
   // nearest search looks in (0, 6, 18 or 26 neighbours). Upstream Point-LIO's values.

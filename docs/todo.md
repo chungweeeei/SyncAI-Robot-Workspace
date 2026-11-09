@@ -43,7 +43,7 @@ branch: fix/pointlio-map-gate-gravity
 - 冷啟動重播：同一段資料新狀態不會滑；2.5 倍速重現跳 scan 也不會滑，所以跳 scan 單獨不是主因。
 
 #### 決定（全局確認時定案）
-- 一格一點：地圖內精確判定（grid 記錄已佔用的 voxel），刪掉 incrCloudMap 的鄰居判斷。
+- 一格一點：地圖內精確判定，刪掉 incrCloudMap 的鄰居判斷。U2 細節（使用者確認）：整張地圖共用一份已佔用 voxel 集合（跨 grid 的 voxel 也嚴格一點，淘汰 grid 時釋放它的 voxel）；第一個 scan 也套用；updateChunk 的搜尋半徑由 5 m 收緊到 √5 m（與鄰居門檻共用一個常數，選點結果不變）；health 行尾加累計 `refused N`。U2 驗證後追加（使用者決定）：map_resolution 0.3 → 0.2，因為嚴格一格一點在 0.3 m 讓匹配變差（走路 eff 94 → 86%），0.2 m 回到 94%、殘差 2.33 cm。
 - 寫入閘門：eff 低於門檻或速度超過門檻就不寫；門檻參數獨立，不重用 health.max_speed。
 - 重力：固定 g（初始共變異數 0，無過程雜訊，之後不會被修正）。
 - satu_acc：略低於削頂值，約 39.0 m/s²。
@@ -52,7 +52,6 @@ branch: fix/pointlio-map-gate-gravity
 #### 單位、順序、驗證
 | 單位 | 內容 | 驗證 |
 |---|---|---|
-| U2 | IVoxMap 地圖內一格一點，刪 incrCloudMap 鄰居判斷，health 加拒絕計數 | 單元：角落點、邊界點、重複寫入、LRU 後計數；壓力：同一平面加雜訊重複寫入，點數不超過 voxel 數；重播：點數下降、eff / 殘差不變差、行為不變 |
 | U3 | 寫入閘門（eff + 速度），health 加未寫入計數 | 單元：用 11-08 的數值做表格測試與邊界值；壓力：漂移中的位姿序列不長出副本；重播：正常圈未寫入次數接近 0 |
 | U4 | 固定 g（初始共變異數參數，預設 0） | 單元：大量 IMU / 光達更新後 g 完全不變；壓力：長時間含衝擊的 IMU 序列 |g| 不漂；重播：|g| 全程 9.81、|ba| 小 |
 | U5 | satu_acc 調到削頂值以下 | 單元：3.5 g 樣本被使用、4.004 g 被丟；重播：sat 計數只剩削頂樣本 |
@@ -60,7 +59,7 @@ branch: fix/pointlio-map-gate-gravity
 最終驗證：上車長跑至少 3 天，看處理時間、地圖點數、|g|、P3 pitch 偏差是否平穩；時機由使用者決定。
 
 #### 目前做到哪
-全局已確認。使用者要求先修跳 scan：對應 U2（地圖內一格一點封頂點數）。U1 已提交（b888700：map_builder 核心編成 STATIC library `pointlio_map_builder`、gtest `test_ivox_map` 釘住搜尋與 LRU 的現有行為）；使用者已自己 push 到 origin/fix/pointlio-map-gate-gravity。docs/ 底下只 commit 這份 todo，分析報告留在本機（使用者指示）。隔離編譯：用完即丟的容器以 install/ 為唯讀底層，`colcon --log-base log_fix build --packages-select syncai_pointlio --build-base build_fix --install-base install_fix --allow-overriding syncai_pointlio --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON`；clang-format 14 裝在 scratchpad（pip --target）。U2 的單位說明已給（四個決定待使用者確認：整張地圖共用一份 voxel 集合、第一個 scan 也套用、搜尋半徑改成 √5 m、行尾加累計 refused N）。
+U1（b888700）、規劃 todo（ef416ad）已提交並推上 origin。U2（IVoxMap 自己保證一格一點、第一個 scan 也套用、搜尋半徑 √5 m、health 加 refused、map_resolution 0.2）完成並提交。重播（11-08 資料 1.0 倍速）：0.2 m 的走路 eff 94%（最差 scan p1 89%）、殘差 2.33 cm、處理時間約同全新地圖的舊版，地圖點數有上限、每圈新增遞減；靜止位置 3 cm 內、無跳 scan。0.25 m 的對照重播在跑（只供參考）。robot 的 install/ 參數檔是 symlink：yaml 的 0.2 會在下次啟動生效，robot 要先重新編譯 syncai_pointlio。U3 的門檻：正常走路最差 scan eff p1 約 89%（0.2 m 重播）與 robot 歷史 88% 一致，0.85 可沿用但要再用重播確認誤擋次數。下一步 U3 的單位說明。
 
 ### 1.2 零速度更新（cmd_vel 線速度為 0 時約束平移速度）
 

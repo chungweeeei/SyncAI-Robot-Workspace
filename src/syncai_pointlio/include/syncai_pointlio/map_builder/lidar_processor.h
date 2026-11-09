@@ -48,8 +48,11 @@ class LidarProcessor
 public:
   LidarProcessor(Config & config, std::shared_ptr<PointEKF> kf);
 
+  // Offer the last scan's points, in the world frame, to the map, which keeps
+  // the first point in each voxel and refuses the rest.
   void incrCloudMap();
 
+  // Seed the map with the first scan, under the same rule.
   void initCloudMap(PointVec & point_vec);
 
   // Downsample the scan, re-sort by per-point time and split it into

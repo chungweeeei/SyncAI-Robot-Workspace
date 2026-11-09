@@ -19,13 +19,20 @@ namespace
 // (`lidar_type: 1`), whose one group per scan is cut into batch_max_points
 // chunks. 64 is a round number well above the fork/join break-even, not tuned.
 constexpr int kMinParallelChunk = 64;
+
+// A point is matched only when its near_search_num-th map neighbour lies within this squared
+// distance (upstream's 5 m^2, sqrt(5) ~ 2.24 m), so the neighbour search is bounded there too:
+// nothing farther can be part of a plane the update uses, and the search's acceptance radius
+// starts that small. It searched 5 m, because the voxel test once read the farther candidates.
+constexpr double kMaxNeighbourSqDist = 5.0;
 }  // namespace
 
 LidarProcessor::LidarProcessor(Config & config, std::shared_ptr<PointEKF> kf)
 : m_config(config), m_kf(kf)
 {
   m_map = std::make_shared<IVoxMap>(
-    m_config.map_grid_resolution, m_config.map_capacity, m_config.map_nearby);
+    m_config.map_grid_resolution, m_config.map_resolution, m_config.map_capacity,
+    m_config.map_nearby);
   m_cloud_down_lidar.reset(new CloudType);
   m_cloud_down_world.reset(new CloudType(10000, 1));
   m_norm_vec.reset(new CloudType(10000, 1));
@@ -48,45 +55,21 @@ void LidarProcessor::incrCloudMap()
   // at each point group's own time (equivalent to point-by-point undistortion), so it is used
   // as is here and not recomputed.
   //
-  // A point is added only if no map point already sits in its map_resolution voxel, judged on
-  // the neighbours the update just found for it: the first point in a voxel stays there for
-  // good. This is upstream Point-LIO's rule (both branches). The port had FAST-LIO2's
-  // instead -- add the point if it is nearer the voxel centre than its neighbours, and let the
-  // ikd-tree's downsampling replace the voxel's point with it -- under which each voxel held the
-  // minimum, over every scan ever inserted, of the distance to its centre. With ~4 800 scans per
-  // 8-minute dock rest and a hundred laps a night, that minimum walks off the true surface by a
-  // few sigma of the observation spread, in a different direction in every voxel, and the
-  // planes the update fits get thicker all night (docs/pointlio-map-gravity-fixes.md §2: dock
-  // match ratio 84 % -> 59 %, walking residual 2.55 -> 3.01 cm, then a divergence at P3).
-  // First-wins cannot drift that way. Its own cost: whatever the first observation got wrong,
-  // a person standing there included, stays until the map is reset.
-  const double res = m_config.map_resolution;
-  int size = m_cloud_down_lidar->size();
-  PointVec point_to_add;
-  point_to_add.reserve(size);
-  for (int i = 0; i < size; i++) {
-    const PointType & point_world = m_cloud_down_world->points[i];
-    const PointVec & points_near = m_nearest_points[i];
-    const float cx = (std::floor(point_world.x / res) + 0.5) * res;
-    const float cy = (std::floor(point_world.y / res) + 0.5) * res;
-    const float cz = (std::floor(point_world.z / res) + 0.5) * res;
-    bool need_add = true;
-    for (const PointType & q : points_near) {
-      if (
-        std::fabs(q.x - cx) < 0.5 * res && std::fabs(q.y - cy) < 0.5 * res &&
-        std::fabs(q.z - cz) < 0.5 * res) {
-        need_add = false;
-        break;
-      }
-    }
-    if (need_add) point_to_add.push_back(point_world);
-  }
-  m_map->addPoints(point_to_add);
+  // The map keeps the first point in each map_resolution voxel and refuses the rest
+  // (IVoxMap), upstream Point-LIO's first-wins. The port had FAST-LIO2's rule instead -- keep
+  // the point nearest each voxel's centre -- whose kept point is the minimum over every scan
+  // ever inserted and walks off the surface over a night of laps. First-wins cannot drift that
+  // way; its own cost is that whatever the first observation got wrong, a person standing there
+  // included, stays until the map is reset.
+  const int size = static_cast<int>(m_cloud_down_lidar->size());
+  const PointVec scan_world(
+    m_cloud_down_world->points.begin(), m_cloud_down_world->points.begin() + size);
+  m_map->addPoints(scan_world);
 }
 
 void LidarProcessor::initCloudMap(PointVec & point_vec)
 {
-  // The whole first scan, not thinned per voxel: there is nothing to match it against yet.
+  // The whole first scan, through the same one-point-per-voxel rule as every later one.
   m_map->addPoints(point_vec);
 }
 
@@ -166,12 +149,13 @@ void LidarProcessor::updateChunk(int begin, int end)
     point_world.intensity = point_body.intensity;
     std::vector<float> point_sq_dist;
     auto & points_near = m_nearest_points[i];
-    // Searched out to upstream's 5 m, the gate below keeps sqrt(5) m. The candidates past the
-    // gate still matter: incrCloudMap judges a point's voxel by this list.
-    m_map->nearestSearch(point_world, m_config.near_search_num, 5.0, points_near, point_sq_dist);
+    // Fewer than near_search_num neighbours within the bound means the point is not matched.
+    m_map->nearestSearch(
+      point_world, m_config.near_search_num, std::sqrt(kMaxNeighbourSqDist), points_near,
+      point_sq_dist);
     if (
       points_near.size() >= static_cast<size_t>(m_config.near_search_num) &&
-      point_sq_dist[m_config.near_search_num - 1] <= 5)
+      point_sq_dist[m_config.near_search_num - 1] <= kMaxNeighbourSqDist)
       m_point_selected_flag[i] = true;
     else
       m_point_selected_flag[i] = false;

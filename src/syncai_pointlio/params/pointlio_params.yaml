@@ -70,7 +70,12 @@
     # Coarser than fastlio2 (0.15): every point group costs an EKF update, keep
     # headroom on Jetson. Lower for more detail if time cost allows.
     scan_resolution: 0.25
-    map_resolution: 0.3
+    # The local map's voxel, each holding one point (2026-11-09; the port's 0.3
+    # before). Once the map held that rule itself, 0.3 left the map sparser than
+    # the old one, which leaked a second point into many voxels: replaying the
+    # 11-08 run, walking eff 94 -> 86 % and residual 2.62 -> 2.87 cm. At 0.2 they
+    # are 94 % and 2.33 cm, at about the old cost, and still bounded.
+    map_resolution: 0.2
 
     # The local map (IVoxMap): upstream Point-LIO's grid-map branch values. 2 m grids, a
     # search over the grid and its 6 face neighbours (0 / 6 / 18 / 26), and an
