@@ -108,7 +108,12 @@ void DockToPoseAction::on_wait_for_result(
   // mid-approach: the navigator swaps {goal}, this node sees the new pose and
   // sets goal_updated_, BtActionNode sends it, and the server's dock loop
   // accepts the pending goal in place (controller_server polls
-  // is_preempt_requested() every cycle, as it does for FollowPath).
+  // is_preempt_requested() every cycle, as it does for FollowPath). Only
+  // while the robot still stands in front of the new pose: the approach is
+  // blind and dock.xml stages once, so the server refuses a target past
+  // dock_max_start_distance / dock_max_start_lateral (2026-11; before, a
+  // moved dock was driven to wherever it was) and this node fails the dock
+  // with its reason.
   geometry_msgs::msg::PoseStamped new_pose;
   getInput("dock_pose", new_pose);
   if (!new_pose.header.frame_id.empty() && fillPlanarPose(new_pose, goal_)) {

@@ -86,6 +86,15 @@
     default_dock_controller_id: "Docking"
     default_dock_goal_checker_id: "dock_goal_checker"
     dock_approach_timeout: 60.0
+    # Where a dock approach may start (2026-11): the robot within
+    # dock_max_start_distance of the target and dock_max_start_lateral of
+    # its axis, at acceptance and on a preempt; otherwise the goal is
+    # refused and the robot stops. The approach is blind, so this keeps it
+    # to the space the staging leg drove through: dock.xml stages 1.0 m out
+    # to 0.10 m, undock.xml backs out 1.0 m straight. A dock pose moved by a
+    # preempt after the staging leg used to be driven to wherever it was.
+    dock_max_start_distance: 1.5
+    dock_max_start_lateral: 0.3
 
     # Paths with heights (2026-10): OctomapPlanner3D writes the ground height
     # on every pose, and its stair links climb. On dp1f_1012's spiral stair
