@@ -1132,7 +1132,8 @@ double MPPIController::slowSpeedLimit(const geometry_msgs::msg::PoseStamped & ro
   // backing out is blocked"). Slower, it has the cycles to come round to the
   // axis before the jambs, and keeps its obstacle avoidance through the door.
   // Read by the bit, not the kind (2026-11-07): what the planner marks slow
-  // is its business, and the kind and width are for the log only.
+  // is its business, and the kind and width are for the log only -- since
+  // 2026-11-10 it marks its walked gaps too, with nothing changed here.
   //
   // Rejected the same day: taking the robot from the optimizer over the span
   // (square up in place, then a pure-pursuit carrot, the direct approach's

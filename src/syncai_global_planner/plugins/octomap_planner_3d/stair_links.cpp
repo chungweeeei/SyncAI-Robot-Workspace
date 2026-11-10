@@ -1958,14 +1958,6 @@ CellId marchLead(const SurfaceMap & m, CellId c, double ux, double uy, double le
   return end;
 }
 
-// A cell's height as the kerbs, the step edges and a route's poses read it
-// (SurfaceMap::zFloor): the measured floor where the cloud gave one, the
-// voxel's top face otherwise.
-double floorOrTop(const SurfaceMap & m, CellId c)
-{
-  return m.zFloor(c);
-}
-
 // Whether something stands on the straight line from a to b: an occupied
 // voxel in the band the body needs, above the floor interpolated between
 // the two ends, at any sample along it. The band starts two cells up, clear
@@ -2100,7 +2092,8 @@ void gapLinks(
       continue;
     }
     const uint32_t ca = m.cells[prev].component, cb = m.cells[c].component;
-    const double za = floorOrTop(m, prev), zb = floorOrTop(m, c);
+    // The measured floor (SurfaceMap::zFloor), as a route's poses read it.
+    const double za = m.zFloor(prev), zb = m.zFloor(c);
     const double rise = std::fabs(zb - za);
     if (rise > p.gap_max_rise + 1e-9 || rise >= p.min_rise - 1e-9) {
       // A climb. Between two floors it is the stair walker's (laid above, or
@@ -2268,7 +2261,7 @@ const char * crossingEvidenceName(CrossingEvidence e)
 std::string linkName(const StairLink & l, const char * arrow)
 {
   char buf[96];
-  if (l.leads && l.evidence == CrossingEvidence::Track) {
+  if (l.walkedGap()) {
     std::snprintf(
       buf, sizeof buf, "gap kf %zu %s %zu (%s) at (%.1f, %.1f)", l.kf_a, arrow, l.kf_b,
       crossingKindName(l.kind), (l.pts[1].x + l.pts[2].x) / 2, (l.pts[1].y + l.pts[2].y) / 2);
@@ -2286,7 +2279,7 @@ LinkCounts countLinks(const StairLinks & links)
 {
   LinkCounts n;
   for (const StairLink & l : links.links) {
-    if (l.leads && l.evidence == CrossingEvidence::Track) {
+    if (l.walkedGap()) {
       (l.kind == CrossingKind::Kerb ? n.gap_kerbs : n.gap_ramps) += 1;
     } else if (l.leads) {
       ++n.kerbs;

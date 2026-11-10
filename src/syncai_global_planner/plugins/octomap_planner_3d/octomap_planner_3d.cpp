@@ -770,7 +770,7 @@ bool OctomapPlanner3D::buildMap(
           f.heading_deg, f.width, l.length);
       }
       for (const auto & l : links->links) {
-        if (l.leads && l.evidence == o3d::CrossingEvidence::Track) {
+        if (l.walkedGap()) {
           RCLCPP_INFO(
             logger_, "[OctomapPlanner3D][%s]   %s: z %.2f -> %.2f, rise %.2f m, %.1f m long",
             __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.rise, l.length);
@@ -1251,6 +1251,7 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       syncai_util::PlanCrossing x;
       x.kind = o3d::crossingKindName(l.kind);
       x.stair_gait = l.gait() == o3d::CrossingGait::Stair;  // the route's below
+      x.slow = l.slow();                                    // while in the flat gait, below
       x.evidence = o3d::crossingEvidenceName(l.evidence);
       x.rise = l.rise;
       x.first = base + sp.first;
@@ -1300,6 +1301,8 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     o3d::routeStairGaits(wps, rc, stair_params_.min_rise, stair_params_.stair_min_rise_window);
     for (size_t i = 0; i < crossings.size(); ++i) {
       crossings[i].stair_gait = rc[i].stair;
+      // A stair-gait span has the stair mode's own speed (plan_crossings.hpp).
+      crossings[i].slow = crossings[i].slow && !rc[i].stair;
     }
   }
   {

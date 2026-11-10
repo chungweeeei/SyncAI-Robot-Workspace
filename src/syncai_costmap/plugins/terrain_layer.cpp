@@ -408,11 +408,16 @@ std::vector<TerrainPathPose> TerrainLayer::pathPoses(bool & corridor)
     }
     // A pose within the corridor's radius of a stair span's point is the
     // stair's: its lead on the floor before the flight included, which the
-    // rules pass on their own.
+    // rules pass on their own. On the stair's floor only (2026-11-10): a
+    // pose under or over a flight -- a patrol along the 1F corridor a
+    // stairwell stands above, before it climbs it -- is within the radius in
+    // x / y and more than plan_z_band from every point of the span, and
+    // marked it lost its corridor, its sills and kerbs walled off again.
     const double r = terrain_.params.plan_radius;
+    const double z_band = terrain_.params.plan_z_band;
     for (auto & p : out) {
       for (const auto & s : stairs) {
-        if (std::hypot(p.x - s.x, p.y - s.y) <= r) {
+        if (std::hypot(p.x - s.x, p.y - s.y) <= r && std::fabs(p.z - s.z) <= z_band) {
           p.stair = true;
           break;
         }

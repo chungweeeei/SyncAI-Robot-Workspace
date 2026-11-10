@@ -459,10 +459,16 @@
       # stair link now (Octo3D, 2026-10-19), with no turn to cut. At 0.4 the
       # carrot's bearing passed approach_rotate_min_angle (0.25 rad) at ~10 cm
       # of sideways sway -- a stop and an in-place turn on the stairs -- and at
-      # 0.5 m/s 10 cm asked ~0.63 rad/s, the turn cap. At 0.6 those are ~15 cm
-      # and ~0.28 rad/s; a switchback's landing turn (walked link) is cut by
-      # ~0.15-0.2 m. FollowPathRPP3D keeps its own 0.4. Unmeasured.
-      stair_lookahead_dist: 0.6
+      # 0.5 m/s 10 cm asked ~0.63 rad/s, the turn cap. At 0.6 those were ~15 cm
+      # and ~0.28 rad/s; a switchback's landing turn (walked link) was cut by
+      # ~0.15-0.2 m. FollowPathRPP3D keeps its own 0.4.
+      # 0.6 -> 0.8 (2026-11-10, sim trial). On dp's west stairs (sim, patrol
+      # 1F+2F) 8 falls in ~38 runs, each 1-5 s after "Stairs: turning in place"
+      # of mostly 14-21 deg: at 0.6 the sway still stopped the robot on a
+      # tread to turn. At 0.8 the turn needs ~20 cm of sway (1.2 m flights);
+      # the landing corners are unaffected, the carrot is held at the corner.
+      # Unmeasured on the robot.
+      stair_lookahead_dist: 0.8
       # The landing corners (2026-10-21; StairMode::findCorner()): a heading
       # change over stair_turn_angle within 0.2 m either side is a corner.
       # The carrot is held at it, the robot stops stair_turn_dist before it
@@ -489,7 +495,8 @@
       # as narrow_linear_vel, renamed 2026-11-07 when the controller stopped
       # reading the kind): over a span the planner marks `slow` on
       # plan_crossings -- today a passage narrower than its narrow_max_width
-      # 0.85, the footprint's diagonal, plus its narrow_lead; whatever else
+      # 0.85, the footprint's diagonal, plus its narrow_lead, and every walked
+      # gap (2026-11-10: a doorway the footprint rule closed); whatever else
       # it marks later, without a change here -- the optimizer's vx_max is
       # this, and so is the command. dp's 2F lab door is ~0.6 m free in this
       # costmap; at 0.80 MPPI reached it 20-70 deg off its axis, twice, and

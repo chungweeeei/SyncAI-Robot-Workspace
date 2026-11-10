@@ -174,11 +174,13 @@
 // planner lays for the flat gait, which is every pose outside a stair-gait
 // span of plan_crossings -- this grid judges no terrain at all: within
 // plan_radius of such a pose, on ground within plan_z_band of its height,
-// the step, slope and reach rules are not run and the obstacle rule's ground
+// the step and slope rules are not run and the obstacle rule's ground
 // is the plan's own height there (the planner's measured floor, interpolated
 // along the plan), so a return more than min_obstacle_height above the floor
 // the map says is there is an obstacle and the floor itself, a sill's riser
-// or a slope's rise included, is not. Why: these rules are the planner's,
+// or a slope's rise included, is not. The reach rule still runs (the plan's
+// poses seed its flood, so the plan's own floor is reached): a thing standing
+// on the corridor under the obstacle band is an island, as anywhere. Why: these rules are the planner's,
 // re-run here on worse data (the -7 deg blind cone, grazing-angle returns,
 // 0.05 m cells), and each walked sill, short slope and kerb the planner laid
 // for the flat gait was walled off again until a matching waiver was added

@@ -174,7 +174,8 @@
 // laid blind over ground the rules rejected, and the walk may have bent
 // round a door post the chord cuts through, so with the octree to hand the
 // band the body needs above the chord is checked for occupied voxels, and a
-// gap with something standing on its line is refused with a note too.
+// gap with something standing on its line is refused with a note too. A
+// route takes a gap at the controller's slow speed (StairLink::slow()).
 //
 // What a link says about the terrain -- its kind, its rise, the gait that
 // takes it -- is what the controllers read off the planner's sidecar instead
@@ -421,6 +422,21 @@ struct StairLink
   {
     return kind == CrossingKind::Stair ? CrossingGait::Stair : CrossingGait::Flat;
   }
+  // A walked gap (see the header): laid from the track over ground the rules
+  // rejected, leads either side.
+  bool walkedGap() const { return leads && evidence == CrossingEvidence::Track; }
+  // Whether a route takes the link at the controller's slow speed
+  // (plan_crossings' `slow`) while it is walked in the flat gait: every
+  // walked gap (2026-11-10). One of the things a gap bridges is a doorway
+  // the footprint rule closed -- narrower than dp's 2F lab door -- and
+  // findNarrowPassages cannot see it: it measures the floor either side of
+  // a waypoint on a traversable cell, and a gap's chord has none, so with a
+  // wide room either end the narrowest doors of all went out without the
+  // bit and MPPI came to them at vx_max. Every gap rather than a width
+  // measured on the chord: the chord is laid blind over ground the map has
+  // wrong or missing, which is no place to measure a door, and a sill or a
+  // short slope of 2.5 m at most costs seconds at the slow speed.
+  bool slow() const { return walkedGap(); }
 };
 
 // One walked flight that became a row of straight links, for the logs.

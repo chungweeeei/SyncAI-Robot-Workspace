@@ -58,8 +58,11 @@
 //   speed over the span. The planner sets it on a passage narrower than the
 //   robot can turn in (kind "narrow": a door, path_postprocess.hpp's
 //   findNarrowPassages, its span grown by a lead either side where to square
-//   up; width and heading say how narrow and which way). A stair-gait span
-//   never needs it: the stair mode has its own speed.
+//   up; width and heading say how narrow and which way), and on every walked
+//   gap it takes in the flat gait (2026-11-10, StairLink::slow(): a doorway
+//   the footprint rule closed is narrower still, and the narrow test cannot
+//   see it). A stair-gait span never needs it: the stair mode has its own
+//   speed.
 //
 // Not a syncai_common message on purpose: the backend does not read it, and a
 // typed message is a change in another repository (CLAUDE.md, "Out of tree");

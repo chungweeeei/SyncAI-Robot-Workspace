@@ -332,7 +332,9 @@ landing hid a 0.35 m box), and the next kind would have needed the next. Of
 the planner's word (**`plan_crossings`**, `syncai_util/plan_crossings.hpp`,
 latched, a fresh set with every plan and an empty one with every clear) the
 layer reads one bit per crossing, its gait: a pose within `plan_radius` of a
-**stair-gait** span's points is the stair's and opens nothing (the flight
+**stair-gait** span's points, and within `plan_z_band` of their height
+(2026-11-10: a pose on the floor under a flight is not the stair's, and
+used to lose its corridor), is the stair's and opens nothing (the flight
 stays lethal, below), and with no word for the plan at all (`known: false`,
 or none yet) no pose does — the poses seed the reach flood only, as every
 plan did before. A person on the corridor stays lethal (legs reach far above

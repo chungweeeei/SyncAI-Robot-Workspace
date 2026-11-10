@@ -908,10 +908,11 @@ int runPlan(
     const StairLink & l = astar.links()->links[u.link];
     const bool stair = gaits[i].stair;
     std::printf(
-      "plan:   %s %s: z %.2f -> %.2f, %.1f m (%s gait%s)\n", crossingKindName(l.kind),
+      "plan:   %s %s: z %.2f -> %.2f, %.1f m (%s gait%s%s)\n", crossingKindName(l.kind),
       linkName(l, u.reversed ? "<-" : "->").c_str(), m.zTop(u.reversed ? l.b : l.a),
       m.zTop(u.reversed ? l.a : l.b), l.length, stair ? "stair" : "flat",
-      stair != (l.gait() == CrossingGait::Stair) ? ", the route's, not the link's" : "");
+      stair != (l.gait() == CrossingGait::Stair) ? ", the route's, not the link's" : "",
+      l.slow() && !stair ? ", slow" : "");
   }
   for (const NarrowSpan & n : findNarrowPassages(m, path, narrow_width, narrow_lead)) {
     std::printf(
@@ -1499,7 +1500,7 @@ int main(int argc, char ** argv)
       stair_params.gap_max_length, stair_params.gap_anchor_min_area, stair_params.kerb_lead,
       links->gap_refused);
     for (const StairLink & l : links->links) {
-      if (l.leads && l.evidence == CrossingEvidence::Track) {
+      if (l.walkedGap()) {
         std::printf(
           "  %s: z %.2f -> %.2f (component %u -> %u), rise %.2f m, %.1f m long\n",
           linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
