@@ -114,6 +114,7 @@ README). The camera is not configured in the instance INI.
 | `syncai_robot_state` | **Aggregates odom / battery / wifi / motor_states / `mode` / `safety_locked` / TF into `syncai_common/RobotState` — not in this repo** (`chungweeeei/SyncAI-Robot-State`, Rust / rclrs; edit it there). Runs at **1 Hz** (`publish_rate: 1.0` in its params). `RobotState.mode` polls `syncai_sys_manager`'s `get_mode` and reads `AUTO` until the first answer; `state` is `UNINITIALIZED` (no pose) / `WARNING` (battery < 20 %, cleared above 25 %) / `IDLE`. Reports only. `transform_tolerance` has no effect: it does not expire a stale transform. |
 | `syncai_sys_manager` | Python. Five managers behind ROS services: wifi (`scan_wifi` / `connect_wifi`, `wifi_status` at 1 Hz from a cache refreshed every 5 s), mDNS (`avahi-publish <robot_id>.local`), conf (declares `robot_id`), monitor (host memory / disk to stdout at 1 Hz), and **node** (`NodeManager` — byobu session lifecycle, `switch_mode` / `get_mode` / `restart_mode`; see "Running the stack"). Also ships the host udev rules (`udev/99-syncai-devices.rules`). |
 | `syncai_camera_feeder` | **The single opener of `/dev/syncai/camera0` — not in this repo** (`chungweeeei/SyncAI-Robot-Camera-Feeder`, Rust / rclrs + GStreamer; edit it there). One `v4l2src` (MJPEG 1280×720@60) teed, undecoded, into RTP/JPEG on `udp://127.0.0.1:5008` for the WebRTC worker and `image_raw/compressed` (30 Hz, SensorData QoS, frame `<robot_id>/camera_optical_frame`); it exits on any pipeline error and its launch respawns it. Needs the `dev` stage's `libgstreamer1.0-dev` / `libgstreamer-plugins-base1.0-dev`. |
+| `syncai_landmark_detection` | **Finds a known landmark with the robot's own sensors — not in this repo** (`chungweeeei/SyncAI-Robot-Landmark-Detection`, C++; edit it there), for the last metre of a charge. The node `landmark_detector` serves `detect_landmark` (`syncai_common/DetectLandmark`) through pluginlib detector plugins (made like the planner's and controller's); ArUco is the first, reading `syncai_camera_feeder`'s `image_raw/compressed` + `camera_info` only while polled, so it never opens the camera. It only detects: no motion, no threshold on what it returns. Nothing in the session specs starts it. Its CMake requires the `dev` stage's `libopencv-contrib-dev` (the aruco module). |
 
 **rclrs params files are keyed on a bare `/**`**, not the `/**/<node>` the rest
 of this workspace uses: rclrs matches a key only when it is exactly `/**` or
@@ -122,7 +123,7 @@ every parameter falls back to its code default.
 
 ### Out-of-tree packages and the Rust underlay
 
-What `src/` holds: the `syncai_*` packages above plus `src/third-party/`. Six
+What `src/` holds: the `syncai_*` packages above plus `src/third-party/`. Seven
 of those packages are not tracked here and are materialised back into `src/`
 by `vcs import < dependencies.repos` (every entry on branch `dev`, over HTTPS):
 
@@ -134,6 +135,7 @@ by `vcs import < dependencies.repos` (every entry on branch `dev`, over HTTPS):
 | `syncai_robot_state` | `chungweeeei/SyncAI-Robot-State` |
 | `syncai_lio_bridge` | `chungweeeei/SyncAI-LIO-Bridge` |
 | `syncai_camera_feeder` | `chungweeeei/SyncAI-Robot-Camera-Feeder` |
+| `syncai_landmark_detection` | `chungweeeei/SyncAI-Robot-Landmark-Detection` |
 
 Each kept its package name, executables and launch file when it moved, so the
 session specs did not change. Edit them in their own checkouts: a change made
@@ -268,11 +270,12 @@ throwaway container never reaches robot01, so a missing dep is a `Dockerfile`
 change. The script restores the `livox_ros_driver2` `package.xml` when a
 `vcs import` has deleted it, and refuses to start on an empty vcs checkout,
 naming the `.repos` file to import per missing directory (a `dir:repos` table
-of the six third-party and six first-party checkouts). The first-party checks
+of the six third-party and seven first-party checkouts). The first-party checks
 matter most: an absent `src/syncai_common` fails every package, but an absent
 `syncai_mapping` / `_driver_manager` / `_robot_state` / `_lio_bridge` /
-`_camera_feeder` fails *nothing* — colcon builds a workspace with no way to
-save a map, no gait bridge, no `RobotState`, no odometry and no camera. After
+`_camera_feeder` / `_landmark_detection` fails *nothing* — colcon builds a
+workspace with no way to save a map, no gait bridge, no `RobotState`, no
+odometry, no camera and no charger detection. After
 colcon it deletes the rclrs nodes' installed `share/<pkg>/rust/` source copy
 together with its `rust_packages` index marker — a marker left without its
 directory makes cargo fail every later Rust build. Its `build:` block
@@ -687,7 +690,7 @@ something to verify or edit here.
   rosbags), `/map/`, `/models/`, `/config/calibration/` (each robot's own
   camera intrinsics, made on the robot), `/config/state/` (per-robot runtime
   state: the localizer's `last_pose.json`) and `/config/params/` (per-robot
-  runtime parameter overlays the backend writes) are gitignored, as are the six
+  runtime parameter overlays the backend writes) are gitignored, as are the seven
   `dependencies.repos` checkouts and `src/syncai_backend/` (so a clone of the
   backend kept there for development can never be committed back in). `.env`
   holds secrets — never commit it.

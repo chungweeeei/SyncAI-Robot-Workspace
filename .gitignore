@@ -131,6 +131,7 @@ src/syncai_driver_manager/
 src/syncai_robot_state/
 src/syncai_lio_bridge/
 src/syncai_camera_feeder/
+src/syncai_landmark_detection/
 
 # Written by colcon-ros-cargo on every build that reaches an ament_cargo package
 # (a [patch.crates-io] table pointing rclrs and the message crates at install/

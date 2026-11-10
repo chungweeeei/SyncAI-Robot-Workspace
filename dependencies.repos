@@ -24,7 +24,7 @@
 # the initial commit). interface used to say `main` until 2026-09, which left
 # `vcs import` without the ResetLIO srv syncai_pointlio serves.
 #
-# HTTPS rather than the SSH remotes: all six repos are public, so the build
+# HTTPS rather than the SSH remotes: every repo here is public, so the build
 # container needs no keys. `git@github.com:chungweeeei/<repo>.git` is the same
 # checkout for anyone who prefers to push over SSH.
 #
@@ -124,4 +124,14 @@ repositories:
   src/syncai_camera_feeder:
     type: git
     url: https://github.com/chungweeeei/SyncAI-Robot-Camera-Feeder.git
+    version: dev
+
+  # Landmark detection (SyncAI-Robot-Landmark-Detection, 2026-11), for the
+  # last metre of a charge: the landmark_detector node serving detect_landmark
+  # (syncai_common's DetectLandmark) and its detector plugins, ArUco the
+  # first. It configures only with OpenCV's contrib aruco module,
+  # libopencv-contrib-dev in the Dockerfile.
+  src/syncai_landmark_detection:
+    type: git
+    url: https://github.com/chungweeeei/SyncAI-Robot-Landmark-Detection.git
     version: dev
