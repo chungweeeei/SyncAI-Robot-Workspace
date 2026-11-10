@@ -9,5 +9,8 @@
     <class type="syncai_controller::RegulatedPurePursuitController3D" base_class_type="syncai_nav_core::Controller">
       <description>Regulated pure pursuit for paths with heights (OctomapPlanner3D): matches the plan in 3D and switches the gait policy for stairs</description>
     </class>
+    <class type="syncai_controller::ApproachController" base_class_type="syncai_nav_core::Controller">
+      <description>Holonomic approach to a target that keeps being corrected (the last metre of a charge): strafes onto the target's axis with the nose on a view point, walks in through a gate; odom frame, no costmap</description>
+    </class>
   </library>
 </class_libraries>

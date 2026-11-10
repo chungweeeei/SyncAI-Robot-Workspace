@@ -71,6 +71,9 @@ plugins/
   regulated_pure_pursuit_controller/   the controller (911 lines)
   regulated_pure_pursuit_controller_3d/  RPP 3D: a copy of it plus 3D matching and
                                          the stair mode (feature/octomap-planner-3d)
+  approach_controller/                 the charging approach (2026-11):
+    approach_controller.cpp              the syncai_nav_core::Controller plugin
+    approach_law.cpp                     its law, ROS-free (test/test_approach_law.cpp)
   simple_progress_checker.cpp          ProgressChecker
   simple_goal_checker.cpp              GoalChecker
 plugins.xml                      pluginlib manifest, exported to syncai_nav_core
@@ -607,6 +610,67 @@ moment but not for a sustained turn: two robot01 backing-out runs tapered to
 several seconds, after any `scale_fwd` / `scale_turn_*` change. The reverse
 floor and `scale_back` were never measured.
 
+## Charging approach
+
+`syncai_controller::ApproachController`, loaded as `Charging` (2026-11): the
+last metre onto a charger, to a target that every new sighting of the
+charger's tag corrects. It is meant for the `track_pose` action
+(`syncai_common/TrackPose`), **which controller_server does not serve yet**;
+until then the plugin is loaded and unused.
+
+Why not `Docking`: the graceful law only walks forward and turns, and a
+charger's tolerance is lateral. SyncAI-Robot-Charger (its `scripts/align.py`)
+had to put the robot within ~3 cm of the tag's axis at 0.3 m; forward-and-turn
+can only do that by backing out and coming in again, and its arc swings the
+camera off the tag. This one strafes, which MPC does.
+
+The law (`approach_law.hpp`, ROS-free) takes the errors in the **target's**
+frame — along its axis, across it, the heading — controls each axis on its own,
+and rotates the command into the body frame:
+
+- the nose points at a **view point** `view_distance` beyond the target along
+  its heading (the tag, for a dock that far in front of it), and at the
+  target's own yaw within `final_heading_distance`. On the axis the two
+  coincide, so the strafe that takes out the lateral error keeps the tag in
+  the middle of the image (the aligner turned on the tag's bearing for the
+  same reason);
+- further than `rotate_in_place_angle` off it, the robot only turns;
+- it walks in only while the lateral and heading errors are inside a **gate**
+  (`gate_lateral_min + gate_lateral_slope × distance left`, `gate_heading`),
+  which once closed reopens at `gate_reopen_ratio` of both — the aligner's
+  FAST / SLOW / STOP tiers, reduced to open / closed. Closed, it strafes and
+  turns in place;
+- past the target it backs up, gate or not; walking in, the speed is capped by
+  `speed_table_*` by the distance left.
+
+Every axis is **floored** (a gait floor: below it nothing moves) and has a
+**band with hysteresis**: inside `tolerance` it stops, and starts again only
+beyond `tolerance + hysteresis`. The band has to be wider than floor ×
+latency, what the gait carries on after a stop, or the axis hunts across it
+for good; the defaults are sized for ~0.3 s. `test_approach_law`'s
+`ASlowerGaitNeedsBandsAsWideAsItsOvershoot` shows both sides at 0.6 s. In the
+log that failure is the robot alternating `align` / `hold` about once a second
+with one axis's error swinging past its band in each line. The bands also have
+to sit inside the goal checker's tolerances, or the robot holds still short of
+success.
+
+What it inherits from `Docking`: blind (no costmap); the target held in odom
+and nothing else; the acceleration clamp on its own previous command;
+`setPlan()` is a target change, not a new goal, so a new sighting touches
+neither the bands nor the clamp. What it does not do is judge a target: a
+wrong pose (a mirrored PnP solution) is driven to, and whoever publishes the
+poses decides which are trusted.
+
+Logs: one INFO line per change of mode (`rotate to view` / `align` /
+`approach` / `reverse` / `hold`) with each error against its band, which
+heading it is holding (view point or target yaw) and the gate. rviz:
+`approach_target` (the target in odom, subscriber-gated).
+
+Tuning order, none of it measured yet: `v_lateral_min` under MPC (a guess
+of 0.10; hold vy 0.06 / 0.08 / 0.10 for 2 s each way and read `/odom`) → the
+gait's latency (step a command and time the first motion in `/odom`) → the
+bands against floor × latency → the gate → the speed table.
+
 ## Plugins
 
 Three plugin types, all loaded through pluginlib against `syncai_nav_core`
@@ -614,13 +678,14 @@ interfaces. Selection is by ID: the parameter names an ID, and `<id>.plugin`
 names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
-two entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
-2D navigation, and two more until 2026-11-12):
+three entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
+2D navigation, and two more until 2026-11-12; `Charging` came on 2026-11):
 
 | ID | Plugin | Used by |
 |---|---|---|
 | `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, patrol.xml) |
 | `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, the A/B (`controller_id` in move.xml) |
+| `Charging` | `syncai_controller::ApproachController` | `track_pose` (not served yet) |
 
 The IDs are what a goal's `controller_id` field selects.
 

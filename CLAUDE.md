@@ -702,6 +702,8 @@ the host too); the C++ packages have the
 ament linter tests that come with the package templates (never enforced, and
 they would fail) plus fourteen gtests, all ROS-free but one: `syncai_global_planner`'s
 `test_surface_map` (surface map, search, stair links, dynamic overlay),
+`syncai_controller`'s `test_approach_law` (the charging approach in closed loop against a
+robot with the gait's latency),
 `syncai_util`'s `test_stair_mode`, `test_path_progress`, `test_path_cusps` and `test_plan_crossings`, `syncai_mppi_controller`'s `test_utils` (`findClosestPathPt`), `test_parameters_handler` (on a plain rclcpp node) and `test_time_correlated` (TC-MPPI sampling), `syncai_costmap`'s `test_terrain_grid`,
 `syncai_localizer`'s `test_localizability` and `test_last_pose_store`, `syncai_task_runner`'s
 `test_waypoint_progress` (which waypoints of a patrol route are passed), and `syncai_pointlio`'s

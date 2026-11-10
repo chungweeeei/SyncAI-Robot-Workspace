@@ -53,6 +53,8 @@ add_library(${library_name}_plugins SHARED
   plugins/simple_progress_checker.cpp
   plugins/simple_goal_checker.cpp
   plugins/regulated_pure_pursuit_controller_3d/regulated_pure_pursuit_controller_3d.cpp
+  plugins/approach_controller/approach_law.cpp
+  plugins/approach_controller/approach_controller.cpp
 )
 
 target_include_directories(${library_name}_plugins PUBLIC
@@ -112,6 +114,18 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # ROS-free: the ApproachController's law, in closed loop against a robot
+  # with the gait's latency. Compiled from its source alone, so it needs none
+  # of the plugin library's ROS dependencies.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_approach_law
+    test/test_approach_law.cpp
+    plugins/approach_controller/approach_law.cpp
+  )
+  target_include_directories(test_approach_law PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
 endif()
 
 ament_export_include_directories(include)
