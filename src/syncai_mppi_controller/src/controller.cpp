@@ -1047,9 +1047,8 @@ bool MPPIController::climbStairs(
     double target = stair_reverse_ ? -stair_linear_vel_ : stair_linear_vel_;
     size_t corner_idx = 0;
     double corner_heading = 0.0;
-    if (
-      syncai_util::StairMode::findCorner(
-        plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
+    if (syncai_util::StairMode::findCorner(
+          plan, stair_turn_angle_, 0.2, corner_idx, corner_heading)) {
       const auto & cp = plan.poses[corner_idx].pose.position;
       const double corner_dist = std::hypot(cp.x - x, cp.y - y);
       // The S-curve from the stair speed stops in 0.75 v^2 / a (0.19 m at

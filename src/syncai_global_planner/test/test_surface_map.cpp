@@ -301,18 +301,18 @@ TEST(PathPostprocess, ANarrowDoorIsOnePassageAndAWideDoorOrAWallBesideIsNone)
 {
   // findNarrowPassages at the plugin's 0.85 m (the footprint's diagonal) and
   // 0.5 m lead. The plan's own waypoints, as the plugin measures them.
-  const auto route = [](const std::shared_ptr<const SurfaceMap> & m, double sx, double sy,
-                        double gx, double gy) {
-    SurfaceAStar astar(m);
-    SearchParams p;
-    const SnapResult a = astar.snap(sx, sy, 0.0, p);
-    const SnapResult b = astar.snap(gx, gy, 0.0, p);
-    EXPECT_NE(a.cell, kNoCell);
-    EXPECT_NE(b.cell, kNoCell);
-    const PlanResult r = astar.plan(a.cell, b.cell, p);
-    EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
-    return resamplePath(*m, shortcutPath(*m, r.cells), 0.1);
-  };
+  const auto route =
+    [](const std::shared_ptr<const SurfaceMap> & m, double sx, double sy, double gx, double gy) {
+      SurfaceAStar astar(m);
+      SearchParams p;
+      const SnapResult a = astar.snap(sx, sy, 0.0, p);
+      const SnapResult b = astar.snap(gx, gy, 0.0, p);
+      EXPECT_NE(a.cell, kNoCell);
+      EXPECT_NE(b.cell, kNoCell);
+      const PlanResult r = astar.plan(a.cell, b.cell, p);
+      EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
+      return resamplePath(*m, shortcutPath(*m, r.cells), 0.1);
+    };
   {
     // The wall scene's 0.8 m door (y 3.6..4.4): one passage round the
     // doorway, its width within a cell of 0.8, taken along +x, the lead
