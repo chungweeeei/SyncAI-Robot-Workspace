@@ -634,6 +634,15 @@ RUN apt-get update && apt-get install -y \
     libopengl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# syncai_landmark_detection (dependencies.repos, 2026-11): its ArUco detector
+# is OpenCV's contrib aruco module, which jammy ships apart from libopencv-dev
+# (that one comes with ros-humble-cv-bridge above). Without it the package's
+# find_package(OpenCV ... aruco) fails at configure; rosdep check only reports
+# the key (scripts/build.sh), so the build gets that far.
+RUN apt-get update && apt-get install -y \
+    libopencv-contrib-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Prebuilt Livox-SDK2 / GTSAM / Sophus / Ceres / Iridescence, one COPY per
 # builder stage (each stage holds only its own library under /out/usr/local).
 COPY --from=livox /out/usr/local /usr/local

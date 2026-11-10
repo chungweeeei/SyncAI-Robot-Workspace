@@ -97,10 +97,11 @@ die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
 #   - an absent src/syncai_common fails every package at once with a message
 #     about a missing ament package;
 #   - an absent first-party package (syncai_mapping, syncai_driver_manager,
-#     syncai_robot_state, syncai_lio_bridge, syncai_camera_feeder) fails
-#     NOTHING. colcon happily builds a workspace with nothing to save a map
-#     with, no bridge to the gait controller, nothing publishing RobotState, no
-#     odometry source and no camera feed, so the mapping session's lio window
+#     syncai_robot_state, syncai_lio_bridge, syncai_camera_feeder,
+#     syncai_landmark_detection) fails NOTHING. colcon happily builds a
+#     workspace with nothing to save a map with, no bridge to the gait
+#     controller, nothing publishing RobotState, no odometry source, no camera
+#     feed and nothing to find a charger by, so the mapping session's lio window
 #     dies on a missing package, the robot stands still at the first cmd_vel,
 #     the console's telemetry never arrives, and the nav session's costmaps
 #     wait forever on an odom -> base_link nobody broadcasts.
@@ -119,7 +120,8 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
              syncai_driver_manager:dependencies.repos \
              syncai_robot_state:dependencies.repos \
              syncai_lio_bridge:dependencies.repos \
-             syncai_camera_feeder:dependencies.repos; do
+             syncai_camera_feeder:dependencies.repos \
+             syncai_landmark_detection:dependencies.repos; do
     dir="${entry%%:*}"
     repos="${entry##*:}"
     if [ -z "$(ls -A "src/${dir}" 2>/dev/null)" ]; then
@@ -129,7 +131,7 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
 done
 if [ -n "${missing}" ]; then
     # Deduplicate: five empty third-party dirs are still one missing import, and
-    # so are six empty first-party ones.
+    # so are seven empty first-party ones.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
     die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
         "$(for l in ${lists}; do printf '\n  vcs import --recursive < %s' "$l"; done)"
