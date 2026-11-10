@@ -88,6 +88,7 @@ void MPPIController::initialize(
   getParam(stair_turn_angle_, "stair_turn_angle", M_PI / 4);
   getParam(stair_turn_dist_, "stair_turn_dist", 0.15);
   getParam(stair_turn_done_angle_, "stair_turn_done_angle", 0.087);
+  getParam(stair_rotate_min_angle_, "stair_rotate_min_angle", 0.6);
   getParam(stair_descend_backwards_, "stair_descend_backwards", true);
   // Not upstream; see slowSpeedLimit(). slow_linear_vel <= 0 disables it.
   getParam(slow_linear_vel_, "slow_linear_vel", 0.0);
@@ -1095,7 +1096,21 @@ bool MPPIController::climbStairs(
     const double dist = std::hypot(dx, dy);
     const double bearing = angles::shortest_angular_distance(yaw, std::atan2(dy, dx));
     // No isApproachBlocked() here: the flight is lethal in the costmap.
-    if (!stair_turning_ && std::fabs(bearing) > approach_rotate_min_angle_) {
+    // Off a corner the turn starts only past stair_rotate_min_angle (0.6 rad)
+    // and the walk steers under it (2026-11-10). With approach_rotate_min_angle
+    // (14 deg) everywhere, a few cm of the gait's sideways sway past the
+    // carrot stopped the robot on a tread to turn in place: dp's patrol 1F+2F
+    // in the sim fell on the west stairs in 8 of ~38 runs at a 0.6 m carrot
+    // and 4 of 14 at 0.8, each 1-5 s after such a turn, most of 14-21 deg and
+    // often alternating in sign. A corner keeps the 14 deg: the turn onto the
+    // next flight is made standing, as before. So does a robot that stands
+    // (after the policy switch, after a turn): lining up costs no stop there,
+    // and from the hold the first riser is ~0.6 m ahead of the front feet,
+    // too close to steer 34 deg out before it.
+    const bool standing = std::fabs(last_cmd_vel_.linear.x) < 1e-3;
+    const double rotate_min =
+      stair_corner_latched_ || standing ? approach_rotate_min_angle_ : stair_rotate_min_angle_;
+    if (!stair_turning_ && std::fabs(bearing) > rotate_min) {
       stair_turning_ = true;
       RCLCPP_INFO(
         logger_, "Stairs: turning in place %.0f deg onto the path%s", bearing * 180.0 / M_PI,
@@ -1108,6 +1123,18 @@ bool MPPIController::climbStairs(
       // Slowing to the turn on the S-curve rather than rotateInPlace()'s ramp.
       vx = stairSpeed(0.0, now);
     } else if (dist > 1e-3) {
+      // Steering a bearing the walk used to stop for, the speed comes down to
+      // walk_vx_min (2026-11-10). trackPoint()'s arc asks wz = 2 v sin(b) / d:
+      // at 0.5 m/s on a 0.6 m carrot that is past final_rotation_wz (0.65)
+      // from 23 deg, so the robot would yaw at the cap on a tread and still
+      // fall short of the arc; at 0.30 m/s it is 0.56 rad/s at 34 deg. Two
+      // levels, not a speed off the bearing: stairSpeed() starts a new curve
+      // whenever its target changes.
+      if (
+        walk_vx_min_ > 0.0 && std::fabs(bearing) > approach_rotate_min_angle_ &&
+        std::fabs(target) > walk_vx_min_) {
+        target = std::copysign(walk_vx_min_, target);
+      }
       // On an S-curve up to stair_linear_vel, then at it (stairSpeed()); down
       // to a stop before a corner.
       trackPoint(bearing, dist, stairSpeed(target, now), vx, wz);

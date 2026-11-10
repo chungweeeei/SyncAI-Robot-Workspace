@@ -77,6 +77,127 @@ std::vector<CellId> shortcutPath(
   return out;
 }
 
+namespace
+{
+
+// A walk over the floor by points rather than cells (an arc's samples are not
+// cell centres): each point's column is resolved to the layer within one step
+// of the last one, as lineOfSight() resolves a segment's, and the smallest
+// clearance met is kept.
+struct FloorWalk
+{
+  const SurfaceMap & m;
+  const BlockedView * blocked;
+  const StairLinks * links;
+  int kz;
+  CellId last = kNoCell;
+  float clearance = std::numeric_limits<float>::infinity();
+
+  bool step(double x, double y)
+  {
+    const int ix = m.ixOf(x), iy = m.iyOf(y);
+    if (!m.inGrid(ix, iy)) {
+      return false;
+    }
+    const CellId c = m.layerNear(m.col(ix, iy), kz, m.step_cells);
+    if (c == kNoCell || !m.traversable(c) || (blocked && blocked->blocked(m, c))) {
+      return false;
+    }
+    if (c == last) {
+      return true;
+    }
+    if (links && last != kNoCell && links->kerbCrossing(m, last, c)) {
+      return false;
+    }
+    clearance = std::min(clearance, blocked ? blocked->clearance(m, c) : m.cells[c].clearance_d);
+    kz = m.cells[c].kz;
+    last = c;
+    return true;
+  }
+  // The straight line from (x0, y0), not sampled itself, to (x1, y1).
+  bool line(double x0, double y0, double x1, double y1)
+  {
+    const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(x1 - x0, y1 - y0) / ds())));
+    for (int k = 1; k <= n; ++k) {
+      const double t = static_cast<double>(k) / n;
+      if (!step(x0 + t * (x1 - x0), y0 + t * (y1 - y0))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  double ds() const { return m.res / 4; }
+};
+
+}  // namespace
+
+CornerArc cornerArc(
+  const SurfaceMap & m, CellId a, CellId v, CellId b, double radius, const BlockedView * blocked,
+  const StairLinks * links)
+{
+  CornerArc out;
+  double ax, ay, vx, vy, bx, by;
+  m.cellXY(a, ax, ay);
+  m.cellXY(v, vx, vy);
+  m.cellXY(b, bx, by);
+  double u1x = ax - vx, u1y = ay - vy, u2x = bx - vx, u2y = by - vy;
+  const double l1 = std::hypot(u1x, u1y), l2 = std::hypot(u2x, u2y);
+  if (l1 < 1e-9 || l2 < 1e-9) {
+    return out;
+  }
+  u1x /= l1, u1y /= l1, u2x /= l2, u2y /= l2;
+  // The angle between the two segments at v: pi on a straight line, 0 where
+  // the route turns back on itself.
+  const double phi = std::acos(std::clamp(u1x * u2x + u1y * u2y, -1.0, 1.0));
+  out.turn = M_PI - phi;
+  if (phi < 1e-3 || out.turn < 1e-3) {
+    return out;  // a reversal has no arc, a straight line needs none
+  }
+  const double half = phi / 2;
+  // Tangent points no further than half-way along either segment, so the
+  // arcs of two neighbouring corners never overlap.
+  out.max_radius = std::tan(half) * std::min(l1, l2) / 2;
+  if (radius <= 0.0 || radius > out.max_radius + 1e-9) {
+    return out;
+  }
+  const double t = radius / std::tan(half);
+  const double t1x = vx + u1x * t, t1y = vy + u1y * t, t2x = vx + u2x * t, t2y = vy + u2y * t;
+  const double bl = std::hypot(u1x + u2x, u1y + u2y);
+  const double to_centre = radius / std::sin(half);
+  const double cx = vx + (u1x + u2x) / bl * to_centre, cy = vy + (u1y + u2y) / bl * to_centre;
+  out.deviation = to_centre - radius;
+
+  // The two segment ends the arc replaces, each walked out from v: their
+  // clearance, and the layer the arc has to start on and land on.
+  FloorWalk in{m, blocked, links, m.cells[v].kz};
+  FloorWalk outw{m, blocked, links, m.cells[v].kz};
+  if (
+    !in.step(vx, vy) || !in.line(vx, vy, t1x, t1y) || !outw.step(vx, vy) ||
+    !outw.line(vx, vy, t2x, t2y)) {
+    return out;
+  }
+  FloorWalk arc{m, blocked, links, in.kz};
+  if (!arc.step(t1x, t1y)) {
+    return out;
+  }
+  const double a0 = std::atan2(t1y - cy, t1x - cx);
+  const double side = (t1x - cx) * (t2y - cy) - (t1y - cy) * (t2x - cx) > 0 ? 1.0 : -1.0;
+  const int n = std::max(1, static_cast<int>(std::ceil(radius * out.turn / arc.ds())));
+  for (int k = 1; k <= n; ++k) {
+    const double ang = a0 + side * out.turn * k / n;
+    if (!arc.step(cx + radius * std::cos(ang), cy + radius * std::sin(ang))) {
+      return out;
+    }
+  }
+  if (arc.last != outw.last) {
+    return out;  // came down on another layer than the segment does
+  }
+  out.ok = true;
+  out.clearance = arc.clearance;
+  out.replaced = std::min(in.clearance, outw.clearance);
+  return out;
+}
+
 std::vector<Waypoint> resamplePath(
   const SurfaceMap & m, const std::vector<CellId> & cells, double spacing)
 {

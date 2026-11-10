@@ -336,8 +336,12 @@ protected:
   double stair_turn_angle_{M_PI / 4};
   double stair_turn_dist_{0.15};
   double stair_turn_done_angle_{0.087};
+  // Off a corner, the bearing past which the climb stops to turn in place;
+  // under it the walk steers (climbStairs(), 2026-11-10).
+  double stair_rotate_min_angle_{0.6};
   // The in-place turn on the stairs is latched: in past
-  // approach_rotate_min_angle, out under stair_turn_done_angle.
+  // approach_rotate_min_angle at a corner (stair_rotate_min_angle elsewhere),
+  // out under stair_turn_done_angle.
   bool stair_turning_{false};
   // The turn round at the bottom of a descent (climbStairs()) keeps the way
   // round it started on (+1 / -1): near 180 deg the shortest way flips with

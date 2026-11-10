@@ -733,6 +733,29 @@ dp1f_1012), and RPP 3D climbs a stretch rising 0.3 m within 1 m in a stair mode
 that switches the gait policy (`syncai_controller/README.md`, "Paths with
 heights" and "Stairs").
 
+**Corners** (2026-11-10, measured, nothing changed yet). The output is a
+polyline: the shortcut straightens, it does not smooth, and every vertex is a
+sharp turn. `cornerArc()` is the arc that would round one — tangent to both
+segments, its tangent points at most half-way along the shorter, walked over
+the floor as the shortcut walks a segment — and the CLI's `--corners 0.5 0.2`
+reports, per vertex of a `--plan`, the largest arc that keeps the clearance of
+the segment ends it replaces and the largest that keeps 0.2 m. Seven routes
+across dp (570 m) say rounding is not where the sharpness comes from. Of 258
+shortcut vertices 101 turn 20° or more, and 73 of those have room for an arc
+under 0.3 m, which passes a centimetre inside its corner: they are 45° doglegs
+0.1–0.6 m long, in pairs. The clearance rule is what leaves them. A route
+down a corridor runs on the ridge of the clearance field, which on a grid not
+square to the corridor is a staircase, and a straight line between two ridge
+cells crosses cells 5 cm less clear, so "never closer than the cells it
+replaces", held exactly, refuses it and the shortcut advances a cell at a
+time. Tried in a scratch build, letting a shortcut segment come 0.1 m (one
+cell) closer than the cells it replaces: 90 vertices, 48 turns of 20° or more,
+none with under 0.3 m of room, and the routes' total turning 4469° → 2357°
+(outdoor_1027, eight routes: 69 → 37 vertices, 998° → 785°). The arcs' own
+clearance was never the limit — on every corner with room, the arc that keeps
+the replaced clearance is the largest that fits. So the order, if this is
+taken up: the shortcut's tolerance first, arcs on what is left.
+
 **Measured on dp1f_1012_v2** (2026-10-13; 1F and 2F, 2 576 keyframes): 1.26 M
 columns, 724 k surface cells (24 k inferred), 158 k traversable in 146
 components, the two floors being 118 k and 33 k. 86 % of the keyframes stand
@@ -819,7 +842,10 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
 poses carry the floor's z, so an
 `Octo3D` route lies on the floor of the point cloud. (`Octo3D/raw_plan`, the
 un-shortcut chain behind `publish_raw_plan`, was removed on 2026-10-28; the
-CLI's `--plan` reports the raw chain's length, and `--no-shortcut` keeps it.) Offline, `--dump-html`
+CLI's `--plan` reports the raw chain's length, and `--no-shortcut` keeps it;
+`--corners <radius> <clearance>` (2026-11-10) lists each shortcut vertex with
+the largest arc that would round it, a measurement that changes no path, see
+"Corners" below.) Offline, `--dump-html`
 writes a self-contained three.js page (~6 MB for a site map; the same page
 style as the OctoMap viewer `clean_map`'s display build makes): the
 traversable cells coloured by floor height, hole-filled ones tinted, a

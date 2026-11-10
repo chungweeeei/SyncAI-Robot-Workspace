@@ -85,6 +85,11 @@ void usage()
     "  --narrow <width> <lead>  each --plan's narrow passages (path_postprocess.hpp): narrower\n"
     "                           than width (m, 0 = off), grown by lead (m) either side; the\n"
     "                           plugin's narrow_max_width / narrow_lead (0.85 0.5)\n"
+    "  --corners <radius> <clearance>\n"
+    "                           each --plan's corners, rounded (cornerArc, path_postprocess.hpp;\n"
+    "                           a measurement, the path is not changed): per shortcut vertex the\n"
+    "                           largest arc up to radius (m) that keeps the clearance of the\n"
+    "                           segments it replaces, and the largest that keeps clearance (m)\n"
     "  --no-stair-links         no stair links at all: neither the --poses track's flights\n"
     "                           nor the stairs detected off the map (--param stair_detect=0\n"
     "                           keeps the track's only), nor the kerb links (--param\n"
@@ -783,6 +788,88 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
   return static_cast<bool>(out);
 }
 
+// --corners: what rounding the corners of a plan would come to, before any of
+// it is built (cornerArc, path_postprocess.hpp). The floor stretches are cut
+// and shortcut as buildPath cuts them -- but for the vertices a stairCrossing
+// drops either side of a straight stair -- and each vertex inside one is tried
+// with arcs from max_radius down in 5 cm steps to one cell, under two rules:
+// "kept", no closer to the boundary than the two segment ends the arc
+// replaces (the shortcut's own rule), and "floor", no closer than
+// min_clearance unless those segment ends already were. A turn above the
+// controller server's cusp_min_angle (2.0 rad) is a cusp the route is cut at
+// and stays sharp; a vertex next to a stretch's end stands beside a crossing,
+// where the approach is meant to be straight, and is only marked; a vertex
+// the route goes straight through (the shortcut advancing a cell at a time
+// along a line it could not span) is counted and not listed.
+void reportCorners(
+  const SurfaceMap & m, const StairLinks * links, const PlanResult & r, const BlockedView & blocked,
+  double max_radius, double min_clearance)
+{
+  const double kCusp = 2.0;
+  size_t corners = 0, in_line = 0, cusps = 0, kept = 0, floored = 0;
+  size_t from = 0;
+  const auto stretch = [&](size_t to, bool link_before, bool link_after) {
+    const std::vector<CellId> seg(
+      r.cells.begin() + static_cast<std::ptrdiff_t>(from),
+      r.cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
+    from = to + 1;
+    const std::vector<CellId> v = shortcutPath(m, seg, &blocked, links);
+    for (size_t i = 1; i + 1 < v.size(); ++i) {
+      const CornerArc geo = cornerArc(m, v[i - 1], v[i], v[i + 1], 0.0, &blocked, links);
+      if (geo.max_radius <= 0.0) {
+        ++in_line;
+        continue;
+      }
+      double x, y;
+      m.cellXY(v[i], x, y);
+      ++corners;
+      const bool by_link = (i == 1 && link_before) || (i + 2 == v.size() && link_after);
+      if (geo.turn > kCusp) {
+        ++cusps;
+        std::printf(
+          "plan:   corner (%.2f, %.2f): turns %.0f deg, a cusp, left sharp\n", x, y,
+          geo.turn * 180.0 / M_PI);
+        continue;
+      }
+      // The largest arc under each rule, and the clearance it comes to.
+      double r_kept = 0.0, r_floor = 0.0, dev_floor = 0.0;
+      float cl_floor = 0.0f, replaced = blocked.clearance(m, v[i]);
+      for (double rad = std::min(max_radius, geo.max_radius); rad >= m.res - 1e-9; rad -= 0.05) {
+        const CornerArc arc = cornerArc(m, v[i - 1], v[i], v[i + 1], rad, &blocked, links);
+        if (!arc.ok) {
+          continue;
+        }
+        if (
+          r_floor == 0.0 && arc.clearance >= std::min<double>(arc.replaced, min_clearance) - 1e-4) {
+          r_floor = rad;
+          dev_floor = arc.deviation;
+          cl_floor = arc.clearance;
+          replaced = arc.replaced;
+        }
+        if (arc.clearance >= arc.replaced - 1e-4f) {
+          r_kept = rad;
+          break;  // kept implies floor, and the radii only get smaller
+        }
+      }
+      kept += r_kept > 0.0;
+      floored += r_floor > 0.0;
+      std::printf(
+        "plan:   corner (%.2f, %.2f): turns %.0f deg, clearance %.2f m, room for %.2f m; arc "
+        "%.2f m kept, %.2f m floor (clearance %.2f m, %.2f m inside the corner)%s\n",
+        x, y, geo.turn * 180.0 / M_PI, replaced, geo.max_radius, r_kept, r_floor, cl_floor,
+        dev_floor, by_link ? ", beside a crossing" : "");
+    }
+  };
+  for (size_t i = 0; i < r.links.size(); ++i) {
+    stretch(r.links[i].index, i > 0, true);
+  }
+  stretch(r.cells.size() - 1, !r.links.empty(), false);
+  std::printf(
+    "plan:   corners: %zu (and %zu vertices in a line), %zu cusps; arcs up to %.2f m: %zu keep "
+    "the clearance they had, %zu keep %.2f m\n",
+    corners, in_line, cusps, max_radius, kept, floored, min_clearance);
+}
+
 // mask: the dynamic overlay's snapshot (--dynamic), or null; keepout: the
 // map's keepout mask (--keepout), or null. Read exactly as the plugin reads
 // them: the search and the shortcut keep off both, with the disc round the
@@ -794,7 +881,7 @@ int runPlan(
   double gy, double gz, bool shortcut, const std::string & out_path,
   std::vector<PlannedPath> * planned, const DynamicMask * mask, const KeepoutMask * keepout,
   const std::vector<KeepoutZone> & zones, const StairLinkParams & stair_params, double narrow_width,
-  double narrow_lead)
+  double narrow_lead, double corner_radius, double corner_clearance)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -920,6 +1007,9 @@ int runPlan(
       "%.0f deg\n",
       n.width, n.first, n.last, path[n.first].x, path[n.first].y, path[n.last].x, path[n.last].y,
       n.heading * 180.0 / M_PI);
+  }
+  if (corner_radius > 0.0 && shortcut) {
+    reportCorners(m, astar.links(), r, blocked, corner_radius, corner_clearance);
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1244,6 +1334,7 @@ int main(int argc, char ** argv)
   std::string write_bt_path;
   bool shortcut = true;
   double narrow_width = 0.85, narrow_lead = 0.5;  // --narrow
+  double corner_radius = 0.0, corner_clearance = 0.0;  // --corners
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&](const char * what) -> std::string {
@@ -1315,6 +1406,9 @@ int main(int argc, char ** argv)
     } else if (a == "--narrow") {
       narrow_width = std::atof(next("--narrow").c_str());
       narrow_lead = std::atof(next("--narrow").c_str());
+    } else if (a == "--corners") {
+      corner_radius = std::atof(next("--corners").c_str());
+      corner_clearance = std::atof(next("--corners").c_str());
     } else if (a == "--no-stair-links") {
       stair_links = false;
     } else if (a == "--floor-pcd") {
@@ -1624,7 +1718,8 @@ int main(int argc, char ** argv)
       }
       rc |= runPlan(
         astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned, mask.get(),
-        keepout.get(), zones, stair_params, narrow_width, narrow_lead);
+        keepout.get(), zones, stair_params, narrow_width, narrow_lead, corner_radius,
+        corner_clearance);
     }
   }
   if (!image_path.empty()) {

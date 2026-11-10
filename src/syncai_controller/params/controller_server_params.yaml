@@ -467,8 +467,10 @@
       # of mostly 14-21 deg: at 0.6 the sway still stopped the robot on a
       # tread to turn. At 0.8 the turn needs ~20 cm of sway (1.2 m flights);
       # the landing corners are unaffected, the carrot is held at the corner.
-      # Unmeasured on the robot.
-      stair_lookahead_dist: 0.8
+      # 0.8 -> 0.6 (2026-11-10): 0.8 fell as often (4 in 14), so the carrot is
+      # back and the in-place turn off a corner waits for stair_rotate_min_angle
+      # instead.
+      stair_lookahead_dist: 0.6
       # The landing corners (2026-10-21; StairMode::findCorner()): a heading
       # change over stair_turn_angle within 0.2 m either side is a corner.
       # The carrot is held at it, the robot stops stair_turn_dist before it
@@ -480,6 +482,18 @@
       stair_turn_angle: 0.785
       stair_turn_dist: 0.15
       stair_turn_done_angle: 0.087
+      # Off a corner (2026-11-10): the climb stops to turn in place only past
+      # 0.6 rad (34 deg) and steers under it. With the corner's 14 deg on the
+      # whole flight, the gait's sway stopped the robot on a tread to turn,
+      # and dp's patrol 1F+2F (sim) fell on the west stairs 1-5 s after such
+      # turns of 14-21 deg (8 in ~38 runs at a 0.6 m carrot, 4 in 14 at 0.8).
+      # A robot that stands (after the policy switch, after a turn) still
+      # lines up from 14 deg before it walks: no extra stop, and the first
+      # riser is too close to steer onto. Steering a bearing over 14 deg the
+      # walk slows to walk_vx_min, so the arc stays under final_rotation_wz
+      # (0.56 rad/s at 34 deg; at 0.5 m/s it capped from 23 deg). Unmeasured
+      # on the robot.
+      stair_rotate_min_angle: 0.6
       # Down backwards (2026-10-21): HIMLOCO descends a flight facing the
       # risers as it climbs one, so on a path that goes down the robot turns
       # round at the top (its tail onto the path, past approach_rotate_min_angle

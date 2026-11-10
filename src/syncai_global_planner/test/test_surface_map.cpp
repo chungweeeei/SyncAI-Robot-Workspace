@@ -297,6 +297,38 @@ TEST(SurfaceAStar, PlansThroughTheDoorAndKeepsClearance)
   }
 }
 
+TEST(PathPostprocess, ACornerOnOpenFloorTakesAnArcUpToHalfItsShorterSegment)
+{
+  // cornerArc on the flat scene: a right angle with 3 m and 1 m legs, well
+  // clear of the edges.
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const CellId a = astar.snap(3.0, 3.0, 0.0, p).cell;
+  const CellId v = astar.snap(6.0, 3.0, 0.0, p).cell;
+  const CellId b = astar.snap(6.0, 4.0, 0.0, p).cell;
+  ASSERT_NE(a, kNoCell);
+  ASSERT_NE(v, kNoCell);
+  ASSERT_NE(b, kNoCell);
+  const CornerArc arc = cornerArc(*m, a, v, b, 0.4);
+  EXPECT_NEAR(arc.turn, M_PI / 2, 1e-6);
+  // tan(45 deg) x half the 1 m leg.
+  EXPECT_NEAR(arc.max_radius, 0.5, 1e-6);
+  EXPECT_TRUE(arc.ok);
+  EXPECT_NEAR(arc.deviation, 0.4 * (std::sqrt(2.0) - 1.0), 1e-6);
+  // Open floor: the arc is as clear as the corner it replaces.
+  EXPECT_FLOAT_EQ(arc.clearance, arc.replaced);
+  // An arc that would reach past half the short leg is refused, the geometry
+  // still reported; a straight line and a reversal have no arc at all.
+  const CornerArc wide = cornerArc(*m, a, v, b, 0.6);
+  EXPECT_FALSE(wide.ok);
+  EXPECT_NEAR(wide.max_radius, 0.5, 1e-6);
+  const CellId on = astar.snap(8.0, 3.0, 0.0, p).cell;
+  ASSERT_NE(on, kNoCell);
+  EXPECT_FALSE(cornerArc(*m, a, v, on, 0.2).ok);
+  EXPECT_FALSE(cornerArc(*m, a, v, a, 0.2).ok);
+}
+
 TEST(PathPostprocess, ANarrowDoorIsOnePassageAndAWideDoorOrAWallBesideIsNone)
 {
   // findNarrowPassages at the plugin's 0.85 m (the footprint's diagonal) and

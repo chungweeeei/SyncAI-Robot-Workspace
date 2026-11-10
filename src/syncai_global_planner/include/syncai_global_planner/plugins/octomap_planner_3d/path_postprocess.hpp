@@ -79,6 +79,39 @@ std::vector<CellId> shortcutPath(
   const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked = nullptr,
   const StairLinks * links = nullptr);
 
+// A corner of a shortcut chain, rounded (2026-11-10, a measurement so far:
+// nothing in buildPath calls it, the CLI's --corners reports it per vertex).
+// The shortcut leaves a polyline, every vertex a sharp turn; this is the arc
+// of `radius` tangent to both segments at vertex v (a and b its neighbours in
+// the chain), walked over the floor as lineOfSight walks a segment --
+// traversable, step-continuous, off the marks and the zones, over no kerb a
+// link crosses -- and landing on the layer the segment itself reaches.
+//
+// What it cannot decide is the clearance rule, which is why both numbers come
+// back. An arc lies inside its corner, and a shortcut's vertices are where
+// the line of sight broke, usually round the very obstacle the corner turns
+// about: held to the shortcut's own rule (no closer to the boundary than the
+// part it replaces, `replaced`) such a corner cannot be rounded at all, and
+// only a floor on `clearance` in metres lets it. --corners counts the corners
+// either rule rounds on a real map before one is chosen.
+//
+// The arc is sampled every quarter cell, not supercovered: a cell it clips by
+// less than that is not seen. Good enough to count corners with; the rounding
+// itself, if it comes, wants the supercover.
+struct CornerArc
+{
+  double turn = 0.0;  // how far the route turns at v (rad, 0 = straight on)
+  double max_radius =
+    0.0;                   // the radius whose tangent points sit half-way along the shorter segment
+  bool ok = false;         // the arc of `radius` fits (<= max_radius) and stays on the floor
+  float clearance = 0.0f;  // the arc's smallest clearance (ok only)
+  float replaced = 0.0f;   // the smallest clearance of the two segment ends it replaces (ok only)
+  double deviation = 0.0;  // how far inside v the arc passes (m)
+};
+CornerArc cornerArc(
+  const SurfaceMap & m, CellId a, CellId v, CellId b, double radius,
+  const BlockedView * blocked = nullptr, const StairLinks * links = nullptr);
+
 // Points every `spacing` metres (xy) along the polyline through the cell
 // centres, first and last cell included. z is the top face of the surface
 // under each point when one exists within three cells of the interpolated
