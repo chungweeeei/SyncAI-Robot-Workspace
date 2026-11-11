@@ -12,6 +12,12 @@ layout). Three choices are fixed here because each one cost a wrong answer on ro
   * equidistant by default. plumb_bob fits this lens as well inside the image but folds back
     57 deg off axis, so lidar points beyond it project as ghosts in the middle of the image.
 
+An equidistant fit can fold too, where no board corner held the polynomial: robot01's first fit
+of 2026-11-11, with almost no corners in the image's outer ring, turned over 73.4 deg off axis and
+sent rays from beside the camera back to 466 px from the centre. A fold whose rays land inside the
+image is a WARNING, as is any image pixel no ray reaches; the cure is views with the board pushed
+into the image corners.
+
 --split-half fits the even and the odd views on their own: OpenCV's plumb_bob fit can stop in a
 local minimum (one half of robot01's views converged to fx 818, which the full solution explained
 better than the half's own fit did), and two halves that disagree for real mean too few tilted
@@ -75,11 +81,16 @@ def main():
     print(f"fx {K[0, 0]:.2f}  fy {K[1, 1]:.2f}  cx {K[0, 2]:.2f}  cy {K[1, 2]:.2f}")
     print(f"D  {np.array2string(D, precision=6)}")
     h, v, dg = cam.fov_deg()
-    print(f"FOV h {h:.1f}  v {v:.1f}  diag {dg:.1f} deg; model monotonic to {np.degrees(cam.max_angle):.1f} deg off axis")
-    lost = cam.unreachable_fraction()
-    if lost > 0:
-        print(f"WARNING: {lost:.1%} of the image (its corners) has no ray in this model: it folds back "
-              f"{np.degrees(cam.max_angle):.0f} deg off axis. Prefer --model equidistant.")
+    fold = cam.fold_report()
+    print(f"FOV h {h:.1f}  v {v:.1f}  diag {dg:.1f} deg; model monotonic to {fold.fold_deg:.1f} deg off axis")
+    # A fold inside the image (pixels with no ray) always sends rays back into it too.
+    if fold.ghosts_in_image:
+        remedy = ("collect views with the board pushed into the image corners and refit"
+                  if a.model == "equidistant" else "prefer --model equidistant")
+        lost = f"; {fold.unreachable:.1%} of the image has no ray at all" if fold.unreachable > 0 else ""
+        print(f"WARNING: the model folds back {fold.fold_deg:.1f} deg off axis: rays beyond it come back "
+              f"to {fold.ghost_px:.0f} px from the principal point, inside the image{lost}. "
+              f"Lidar points beside the camera would be drawn there: {remedy}.")
     worst = np.argsort(-errs)[:5]
     print("worst views: " + ", ".join(f"{e:.2f}" for e in errs[worst]))
 

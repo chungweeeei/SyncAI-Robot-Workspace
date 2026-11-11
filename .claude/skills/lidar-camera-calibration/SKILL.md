@@ -45,7 +45,10 @@ procedure with a person who moves the board and the robot while you run the tool
    visible means the holder repeats poses: ask for new positions, not longer holds.
 3. **Fit.** `fit_intrinsics.py <dir> --out <work>/intrinsics/camera0.yaml --split-half`
    (equidistant). Accept on the doc's criteria; both split halves must say `agrees` (a
-   `local minimum` verdict is fine, `DISAGREES` means collect more close, tilted views).
+   `local minimum` verdict is fine, `DISAGREES` means collect more close, tilted views). A fold-back
+   `WARNING` means the image corners lack corners even when every cell is covered: resume
+   `collect_board.py` on the same directory, have the holder push the board into each image corner
+   (kneel and hold it low for the bottom two), and refit.
 4. **Compare** with the installed file: `compare_intrinsics.py <dir> <new> config/calibration/<robot_id>/camera0.yaml`.
    Report fx / fy / cx / cy, the RMS of both on the same views, and the FOV.
 5. **Install** (after the user agrees): back up, copy, `docker compose exec -T robot01 pkill -f camera_feeder_node`

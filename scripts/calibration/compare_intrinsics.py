@@ -46,11 +46,14 @@ def main():
 
         K = cam.K
         fh, fv, fd = cam.fov_deg()
+        fold = cam.fold_report()
+        ghosts = (f", rays past it come back to {fold.ghost_px:.0f} px from the centre, inside the image"
+                  if fold.ghosts_in_image else "")
         print(f"== {label}  ({cam.model})")
         print(f"   fx {K[0, 0]:8.2f}  fy {K[1, 1]:8.2f}  cx {K[0, 2]:7.2f}  cy {K[1, 2]:7.2f}")
         print(f"   D  {np.array2string(cam.D, precision=4, suppress_small=True)}")
         print(f"   FOV h {fh:5.1f}  v {fv:5.1f}  diag {fd:5.1f} deg (nan: that edge has no ray); "
-              f"monotonic to {np.degrees(cam.max_angle):.1f} deg off axis")
+              f"monotonic to {fold.fold_deg:.1f} deg off axis{ghosts}")
         print(f"   board RMS with K, D fixed: all {rms(np.ones_like(edge)):.3f} px  centre {rms(~edge):.3f}  "
               f"edge {rms(edge):.3f}  worst view {errs.max():.2f}\n")
 
