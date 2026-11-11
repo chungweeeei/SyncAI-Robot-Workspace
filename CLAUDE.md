@@ -716,7 +716,10 @@ something to verify or edit here.
 
 ## Tests
 
-`syncai_sys_manager` has `test_wifi_manager.py`; the C++ packages have the
+`syncai_sys_manager` has `test_wifi_manager.py`, and `scripts/calibration/` has
+`test_calib_common.py` (where a camera model folds back, on robot01's 2026-11-11 fits
+and random lenses, and the outer-ring corner count; numpy + OpenCV only, so it runs on
+the host too); the C++ packages have the
 ament linter tests that come with the package templates (never enforced, and
 they would fail) plus thirteen gtests, all ROS-free but one: `syncai_global_planner`'s
 `test_surface_map` (surface map, search, stair links, dynamic overlay),
@@ -739,7 +742,7 @@ only when no run has built that Dockerfile yet; both `.repos` files imported;
 **ccache** (turned on by CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` environment
 variables in the workflow only, so robot01's builds are unchanged; the cache
 is in the Actions cache, saved by `main` / `dev` pushes only, one entry per
-branch); `test_wifi_manager.py`;
+branch); `test_wifi_manager.py` and `test_calib_common.py`;
 then a **smoke test** (`.github/scripts/smoke_test.sh`): every pane of the three
 session specs, started with their `sleep` offsets against a generated 5 × 5 m
 fixture map (`robot_id: ci_smoke`, a pcd only), failed if any launch has exited

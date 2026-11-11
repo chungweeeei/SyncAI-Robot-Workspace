@@ -10,6 +10,7 @@ direct_visual_lidar_calibration's preprocessed directories: <bag>.png, <bag>.ply
 whose "results" hold poses as [x, y, z, qx, qy, qz, qw] -- the camera in the lidar frame, i.e.
 exactly the URDF joint lidar_top -> camera_optical_frame.
 """
+import collections
 import configparser
 import functools
 import glob
@@ -44,9 +45,18 @@ def normalize_model(name):
     raise SystemExit(f"camera model {name!r} is not one of plumb_bob, equidistant")
 
 
+# Rays are judged out to this angle off the optical axis: the lidar sees all round, so a model has
+# to map the whole front half-space one-to-one before a projection of its points can be trusted.
+RAY_MAX_DEG = 89.0
+
+# What Camera.fold_report() returns; the fields are described there.
+FoldReport = collections.namedtuple("FoldReport", ["fold_deg", "ghost_px", "ghosts_in_image", "unreachable"])
+
+
 @functools.lru_cache(maxsize=32)
-def _ray_limit(model, dist):
-    th = np.linspace(0.0, np.radians(89.0), 8901)
+def _distorted_radius(model, dist):
+    """(angles off axis in rad, normalized distorted radius of each) on a 0.01 deg grid."""
+    th = np.linspace(0.0, np.radians(RAY_MAX_DEG), 8901)
     if model == "equidistant":
         k1, k2, k3, k4 = dist[:4]
         rd = th * (1 + k1 * th**2 + k2 * th**4 + k3 * th**6 + k4 * th**8)
@@ -55,9 +65,13 @@ def _ray_limit(model, dist):
         k3 = dist[4] if len(dist) > 4 else 0.0
         r = np.tan(th)
         rd = r * (1 + k1 * r**2 + k2 * r**4 + k3 * r**6)
+    return th, rd
+
+
+def _fold_index(rd):
+    """Index of the last sample before the radius stops growing, or None if it never does."""
     fold = np.flatnonzero(np.diff(rd) <= 0)
-    i = int(fold[0]) if len(fold) else len(th) - 1
-    return float(th[i]), float(rd[i])
+    return int(fold[0]) if len(fold) else None
 
 
 def ray_limit(model, D):
@@ -67,9 +81,13 @@ def ray_limit(model, D):
     A wide lens fitted with plumb_bob folds back: on robot01's (2026-10-20) the polynomial peaks
     57 deg off axis, so a lidar point 65 deg off axis projected into the middle of the image and
     the image corners had no ray at all. Kannala-Brandt fits of the same lens stay monotonic to
-    89 deg. Projection below drops every ray past the limit instead of drawing a ghost.
+    89 deg when the board was seen in the image corners, and not when it was not (2026-11-11:
+    73.4 deg). Projection below drops every ray past the limit instead of drawing a ghost.
     """
-    return _ray_limit(model, tuple(float(x) for x in np.ravel(D)))
+    th, rd = _distorted_radius(model, tuple(float(x) for x in np.ravel(D)))
+    i = _fold_index(rd)
+    i = len(th) - 1 if i is None else i
+    return float(th[i]), float(rd[i])
 
 
 class Camera:
@@ -112,12 +130,37 @@ class Camera:
         n[rd > ray_limit(self.model, self.D)[1]] = np.nan
         return n
 
-    def unreachable_fraction(self):
-        """Share of the image's pixels that no ray of the model reaches (plumb_bob past its fold)."""
+    def fold_report(self):
+        """Where the model turns back on itself, and what that does to this image (a FoldReport).
+
+        fold_deg: the largest angle off axis still mapped monotonically, RAY_MAX_DEG if none.
+        ghost_px: how close to the principal point the rays past the fold come back (NaN when the
+        model never folds). ghosts_in_image: whether some of them land inside the image, where any
+        projection without an angle guard of its own (OpenCV's fisheye.projectPoints, or
+        direct_visual_lidar_calibration's) draws lidar points from beside the camera; robot01's
+        first fit of 2026-11-11 sent rays 73-89 deg off axis back to 466 px, and only its
+        unreachable share, zero, had been checked. unreachable: the share of the image's pixels no
+        ray reaches, because the fold lies inside the image (plumb_bob on this lens).
+        """
+        if self.size is None:
+            raise ValueError("fold_report needs the image size")
         w, h = self.size
+        fx, fy, cx, cy = self.K[0, 0], self.K[1, 1], self.K[0, 2], self.K[1, 2]
+        th, rd = _distorted_radius(self.model, tuple(float(x) for x in self.D))
+        i = _fold_index(rd)
+        peak = rd[-1] if i is None else rd[i]
+        # Normalized radius of every 4th pixel, against the largest radius the model reaches.
         gx, gy = np.meshgrid(np.arange(0, w, 4), np.arange(0, h, 4))
-        rd = np.hypot((gx - self.K[0, 2]) / self.K[0, 0], (gy - self.K[1, 2]) / self.K[1, 1])
-        return float(np.mean(rd > ray_limit(self.model, self.D)[1]))
+        unreachable = float(np.mean(np.hypot((gx - cx) / fx, (gy - cy) / fy) > peak))
+        if i is None:
+            return FoldReport(RAY_MAX_DEG, float("nan"), False, unreachable)
+        # A ray past the fold lands inside the image when its radius is under the farthest
+        # corner's along that corner's direction.
+        corners = np.array([[0, 0], [w, 0], [0, h], [w, h]], np.float64)
+        corner_rd = np.max(np.hypot((corners[:, 0] - cx) / fx, (corners[:, 1] - cy) / fy))
+        ghost_rd = float(rd[i:].min())
+        return FoldReport(float(np.degrees(th[i])), ghost_rd * (fx + fy) / 2, ghost_rd < corner_rd,
+                          unreachable)
 
     def fov_deg(self):
         """(horizontal, vertical, diagonal) field of view; NaN where an edge has no ray."""
@@ -264,6 +307,30 @@ def coverage(views, shape):
         for x, y in c:
             cov[min(3, int(4 * y / h)), min(3, int(4 * x / w))] += 1
     return cov
+
+
+# A corner is in the image's outer ring at this share of the way from the image centre to the
+# image corner or beyond: the radii where only the distortion polynomial's top terms act.
+OUTER_RING = 0.8
+
+# Outer-ring corners wanted in each quadrant. robot01's first collection of 2026-11-11 had
+# 0 / 13 / 1 / 0 and its fit folded 73.4 deg off axis; with 75 / 55 / 59 / 200 it stayed monotonic.
+# One lens's evidence, so a guide for the person collecting: the fit's fold check is the gate.
+OUTER_RING_EACH = 40
+
+
+def outer_ring_counts(views, shape):
+    """Outer-ring corners per quadrant of the image: (top-left, top-right, bottom-left, bottom-right)."""
+    h, w = shape
+    if not views:
+        return 0, 0, 0, 0
+    corners = np.vstack([np.asarray(c, np.float64).reshape(-1, 2) for c in views])
+    dx, dy = corners[:, 0] - w / 2, corners[:, 1] - h / 2
+    # The image centre stands in for the principal point, which is unknown while collecting.
+    in_ring = np.hypot(dx, dy) >= OUTER_RING * np.hypot(w / 2, h / 2) - 1e-9
+    quadrant = 2 * (dy >= 0) + (dx >= 0)
+    counts = np.bincount(quadrant[in_ring], minlength=4)
+    return tuple(int(n) for n in counts)
 
 
 def load_views(collect_dir, pattern):

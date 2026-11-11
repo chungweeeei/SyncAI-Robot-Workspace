@@ -73,7 +73,9 @@ How to move the board — the first two points are what failed twice before they
   longer focal length from a nearer board; tilted views are what pin the focal length down.
 - **Cover the whole image, corners included.** Keep all 70 corners in frame (no detection
   otherwise) but push the board into every corner and along every edge: that is where the
-  distortion is measured. Image right is the board holder's left.
+  distortion is measured. Image right is the board holder's left; the bottom corners need the
+  board held low, kneeling. A corner cell with a few corners in it is not enough (lesson 9): the
+  status's outer-ring line counts the corners near each image corner.
 - **Hold each pose for about a second, then move somewhere new.** A count that stops rising while
   the board is visible means the poses repeat.
 
@@ -83,8 +85,13 @@ The status file's check lines are guidance for the person collecting, not a gate
 |---|---|---|
 | usable views (squares ≥ 15 px) | 60+ | 63 of 100 kept |
 | every cell of the 4×4 grid covered | all 16 | all 16 (top-left thin: 24 corners) |
+| outer ring (≥ 0.8 of the way from the image centre to a corner), per quadrant | 40+ each | not measured then |
 | tilted ≥ 0.15 each way, both axes | 3+ each | tilt_x +4 / −6, tilt_y +2 / −3 |
 | close views (size ≥ 0.3) | 3+ | 2 |
+
+The outer-ring target comes from robot01's collection of 2026-11-11: with 0 / 13 / 1 / 0 the fit
+folded 73.4° off axis, with 75 / 55 / 59 / 200 it stayed monotonic. That is one lens's evidence,
+so `fit_intrinsics.py`'s fold check, not this line, is what decides (step 2).
 
 `tilt_x` / `tilt_y` are log ratios of the board's opposite edges (`calib_common.board_tilt`):
 `tilt_x` moves when the board is tipped about an axis along its rows of 7 corners, `tilt_y` about
@@ -101,7 +108,8 @@ It drops views with squares under `--min-square` (15 px), does **no** outlier re
 **equidistant** model (`--model plumb_bob` exists for comparison; it takes minutes on the Orin
 where equidistant takes seconds), and with `--split-half` refits the even and the odd views alone.
 It prints the coverage, the RMS for square-on and tilted views separately, K / D, the field of view
-and how far off axis the model stays monotonic.
+and how far off axis the model stays monotonic — with a `WARNING` when it folds back short of 89°
+and the rays past the fold land inside the image (lesson 9).
 
 Accept when:
 
@@ -110,7 +118,9 @@ Accept when:
   in a worse optimum than the full one, which is the optimiser, not the data. `DISAGREES` means the
   views do not determine fx: collect more close, tilted views;
 - fx ≈ fy, and cx / cy within ~30 px of the image centre;
-- no empty coverage cell (the fit warns otherwise).
+- no empty coverage cell (the fit warns otherwise);
+- no fold-back `WARNING`: the model stays monotonic past the image corners. With one, run
+  `collect_board.py` again on the same directory, push the board into the image corners, and refit.
 
 ### 3. Compare with the installed file (optional)
 
@@ -262,8 +272,8 @@ Lessons from robot01, 2026-10-19/20, in the order they were learned.
    projected onto the image's right edge and one at 65° to x = 567, the middle of the image, while
    3.9 % of the image (its corners) had no ray at all. Inside the image both models fit the board
    equally (0.55 vs 0.56 px), but a lidar sees all around, so plumb_bob would paint points from
-   beside the camera into the picture. Kannala-Brandt (`equidistant`) stays monotonic past 89°.
-   The two fits put the principal point 15 px apart — it is the weakly determined part, and the
+   beside the camera into the picture. Kannala-Brandt (`equidistant`) stays monotonic past 89° —
+   given views in the image corners (lesson 9). The two fits put the principal point 15 px apart — it is the weakly determined part, and the
    reason the extrinsic must follow any intrinsics change.
 6. **Tilted views keep a higher residual** (median 0.75 px against 0.19 px square-on) that neither
    a bent board, a print-scale error nor a richer distortion model (rational, k1–k6) explained per
@@ -279,6 +289,18 @@ Lessons from robot01, 2026-10-19/20, in the order they were learned.
    pos02 — away from the tape measure, and in directions that disagree. The tape is good to
    1–2 cm, about 3–7 px at 2 m; a rotation error does not shrink with distance (1° ≈ 12 px
    everywhere).
+9. **An equidistant fit folds too, where no corner held it** (robot01, 2026-11-11). The first fit
+   passed every check above — RMS 0.43 px, both halves `agrees`, all 16 cells covered — but the
+   four corner cells held 42 / 82 / 2 / 5 corners and almost none lay in the image's outer ring.
+   Its k3 / k4 turned the polynomial over 73.4° off axis, right at the image corner, so rays
+   73–89° off axis came back to 466 px from the centre: lidar points from beside the camera
+   painted inside the picture by any projection without an angle guard (the tools here cut rays
+   at the fold; OpenCV's `fisheye.projectPoints` and dvlc do not). OpenCV's fisheye calibration
+   does not check the model is monotonic, and the pixels-without-a-ray test that caught plumb_bob
+   (lesson 5) stayed silent, because the peak lay a pixel beyond the farthest corner. Views of the
+   board pushed into the four corners (corners at least 0.8 of the way from the image centre to
+   its corner: 14 → 389) made the refit monotonic to 89° and moved K by under 1 px: only the
+   outer distortion was wrong.
 
 ## robot01, 2026-10-20
 
