@@ -6,9 +6,11 @@
 // never connect, and a goal snaps to the floor the robot is on -- except
 // over a stair the robot walked, which a stair link joins in both directions
 // while a walked kerb makes no stair link. The dynamic overlay's and the
-// keepout zones' cases follow, each introduced by its own banner, and the
-// kerbs' (2026-10-29) last: a kerb is crossed square on a kerb link and
-// never run along.
+// keepout zones' cases follow, each introduced by its own banner, then the
+// kerbs' (2026-10-29): a kerb is crossed square on a kerb link and never run
+// along; and the walked gaps' (2026-11-02) last: a sill or a short slope the
+// track crossed between two rooms is bridged square as a flat-gait crossing,
+// and a climb onto something that is not a floor is refused.
 
 #include <gtest/gtest.h>
 
@@ -287,11 +289,171 @@ TEST(SurfaceAStar, PlansThroughTheDoorAndKeepsClearance)
   for (size_t i = 1; i < chain.size(); ++i) {
     EXPECT_TRUE(lineOfSight(*m, chain[i - 1], chain[i], min_clear - 1e-4f));
   }
+  // With slack (ShortcutSlack) a segment may come a cell closer than the
+  // cells it replaces, never under the floor for it: no more vertices than
+  // the exact rule leaves, and every segment within the eased limit.
+  const ShortcutSlack slack{0.1, 0.2};
+  EXPECT_FLOAT_EQ(slack.limit(0.55f), 0.45f);
+  EXPECT_FLOAT_EQ(slack.limit(0.25f), 0.2f);
+  EXPECT_FLOAT_EQ(slack.limit(0.1f), 0.1f);
+  EXPECT_FLOAT_EQ(ShortcutSlack{}.limit(0.3f), 0.3f);
+  const auto eased = shortcutPath(*m, r.cells, nullptr, nullptr, slack);
+  EXPECT_LE(eased.size(), chain.size());
+  EXPECT_EQ(eased.front(), a.cell);
+  EXPECT_EQ(eased.back(), b.cell);
+  for (size_t i = 1; i < eased.size(); ++i) {
+    EXPECT_TRUE(lineOfSight(*m, eased[i - 1], eased[i], slack.limit(min_clear) - 1e-4f));
+  }
   const auto path = resamplePath(*m, chain, 0.1);
   ASSERT_GE(path.size(), 2u);
   for (size_t i = 1; i < path.size(); ++i) {
     EXPECT_LE(std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y), 0.1 + 1e-6);
     EXPECT_NEAR(path[i].z, 0.0, 1e-9);
+  }
+}
+
+TEST(PathPostprocess, ACornerOnOpenFloorTakesAnArcUpToHalfItsShorterSegment)
+{
+  // cornerArc on the flat scene: a right angle with 3 m and 1 m legs, well
+  // clear of the edges.
+  const auto m = build("flat");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const CellId a = astar.snap(3.0, 3.0, 0.0, p).cell;
+  const CellId v = astar.snap(6.0, 3.0, 0.0, p).cell;
+  const CellId b = astar.snap(6.0, 4.0, 0.0, p).cell;
+  ASSERT_NE(a, kNoCell);
+  ASSERT_NE(v, kNoCell);
+  ASSERT_NE(b, kNoCell);
+  const CornerArc arc = cornerArc(*m, a, v, b, 0.4);
+  EXPECT_NEAR(arc.turn, M_PI / 2, 1e-6);
+  // tan(45 deg) x half the 1 m leg.
+  EXPECT_NEAR(arc.max_radius, 0.5, 1e-6);
+  EXPECT_TRUE(arc.ok);
+  EXPECT_NEAR(arc.deviation, 0.4 * (std::sqrt(2.0) - 1.0), 1e-6);
+  // Open floor: the arc is as clear as the corner it replaces.
+  EXPECT_FLOAT_EQ(arc.clearance, arc.replaced);
+  // An arc that would reach past half the short leg is refused, the geometry
+  // still reported; a straight line and a reversal have no arc at all.
+  const CornerArc wide = cornerArc(*m, a, v, b, 0.6);
+  EXPECT_FALSE(wide.ok);
+  EXPECT_NEAR(wide.max_radius, 0.5, 1e-6);
+  const CellId on = astar.snap(8.0, 3.0, 0.0, p).cell;
+  ASSERT_NE(on, kNoCell);
+  EXPECT_FALSE(cornerArc(*m, a, v, on, 0.2).ok);
+  EXPECT_FALSE(cornerArc(*m, a, v, a, 0.2).ok);
+}
+
+TEST(PathPostprocess, BuildPathRoundsTheCornersOfARouteThroughADoor)
+{
+  // The wall scene's door, taken from one side of the room to the other: the
+  // shortcut leaves a polyline that turns at the door. With corner_radius the
+  // same route turns less at its sharpest pose, keeps its ends, stays on
+  // traversable floor and is no longer; without it buildPath is as before.
+  const auto m = build("wall");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const SnapResult a = astar.snap(3.0, 6.5, 0.0, p);
+  const SnapResult b = astar.snap(9.0, 1.5, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  const PlanResult r = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  const auto maxTurn = [](const std::vector<Waypoint> & path) {
+    double worst = 0.0;
+    for (size_t i = 1; i + 1 < path.size(); ++i) {
+      const double h0 = std::atan2(path[i].y - path[i - 1].y, path[i].x - path[i - 1].x);
+      const double h1 = std::atan2(path[i + 1].y - path[i].y, path[i + 1].x - path[i].x);
+      worst = std::max(worst, std::fabs(std::remainder(h1 - h0, 2 * M_PI)));
+    }
+    return worst;
+  };
+  const auto length = [](const std::vector<Waypoint> & path) {
+    double len = 0.0;
+    for (size_t i = 1; i < path.size(); ++i) {
+      len += std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    }
+    return len;
+  };
+  const ShortcutSlack slack{0.1, 0.2};
+  const auto sharp =
+    buildPath(*m, nullptr, r.cells, {}, true, 0.1, nullptr, nullptr, nullptr, slack);
+  const auto round =
+    buildPath(*m, nullptr, r.cells, {}, true, 0.1, nullptr, nullptr, nullptr, slack, 0.5);
+  ASSERT_GE(sharp.size(), 3u);
+  ASSERT_GE(round.size(), 3u);
+  EXPECT_GT(maxTurn(sharp), 0.3);  // the scene does have a corner
+  EXPECT_LT(maxTurn(round), maxTurn(sharp));
+  EXPECT_LE(length(round), length(sharp) + 1e-6);
+  EXPECT_NEAR(round.front().x, sharp.front().x, 1e-9);
+  EXPECT_NEAR(round.front().y, sharp.front().y, 1e-9);
+  EXPECT_NEAR(round.back().x, sharp.back().x, 1e-9);
+  EXPECT_NEAR(round.back().y, sharp.back().y, 1e-9);
+  for (const Waypoint & w : round) {
+    EXPECT_NE(m->traversableAt(w.x, w.y, w.z), kNoCell) << w.x << ", " << w.y;
+  }
+}
+
+TEST(PathPostprocess, ANarrowDoorIsOnePassageAndAWideDoorOrAWallBesideIsNone)
+{
+  // findNarrowPassages at the plugin's 0.85 m (the footprint's diagonal) and
+  // 0.5 m lead. The plan's own waypoints, as the plugin measures them.
+  const auto route =
+    [](const std::shared_ptr<const SurfaceMap> & m, double sx, double sy, double gx, double gy) {
+      SurfaceAStar astar(m);
+      SearchParams p;
+      const SnapResult a = astar.snap(sx, sy, 0.0, p);
+      const SnapResult b = astar.snap(gx, gy, 0.0, p);
+      EXPECT_NE(a.cell, kNoCell);
+      EXPECT_NE(b.cell, kNoCell);
+      const PlanResult r = astar.plan(a.cell, b.cell, p);
+      EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
+      return resamplePath(*m, shortcutPath(*m, r.cells), 0.1);
+    };
+  {
+    // The wall scene's 0.8 m door (y 3.6..4.4): one passage round the
+    // doorway, its width within a cell of 0.8, taken along +x, the lead
+    // reaching ~0.5 m of route back from where it narrows.
+    const auto m = build("wall");
+    const auto path = route(m, 3.0, 6.0, 9.0, 6.0);
+    const auto spans = findNarrowPassages(*m, path, 0.85, 0.5);
+    ASSERT_EQ(spans.size(), 1u);
+    const NarrowSpan & n = spans[0];
+    EXPECT_LT(n.width, 0.85);
+    EXPECT_GT(n.width, 0.6);
+    EXPECT_GT(std::cos(n.heading), 0.0);
+    size_t door = path.size();
+    for (size_t i = 0; i < path.size(); ++i) {
+      if (std::fabs(path[i].x - 6.05) < 0.06) {
+        door = i;
+      }
+    }
+    ASSERT_LT(door, path.size());
+    EXPECT_LE(n.first, door);
+    EXPECT_GE(n.last, door);
+    EXPECT_GT(std::hypot(path[door].x - path[n.first].x, path[door].y - path[n.first].y), 0.5);
+    // Off: nothing.
+    EXPECT_TRUE(findNarrowPassages(*m, path, 0.0, 0.5).empty());
+  }
+  {
+    // A 1.2 m door: the robot turns in it, no passage.
+    synthetic::SceneBuilder b(0.1);
+    b.flatFloor(0, 12, 0, 8, 0.0);
+    b.box(6.0, 6.1, 0.0, 3.4, 0.0, 2.0);
+    b.box(6.0, 6.1, 4.6, 8.0, 0.0, 2.0);
+    const auto tree = b.finish();
+    const auto m = buildSurfaceMap(*tree, SurfaceMapParams{});
+    EXPECT_TRUE(findNarrowPassages(*m, route(m, 3.0, 4.0, 9.0, 4.0), 0.85, 0.5).empty());
+  }
+  {
+    // Walking 0.4 m beside one long wall: the nearer side alone is close,
+    // which is what clearance_d would have said; both sides are measured.
+    synthetic::SceneBuilder b(0.1);
+    b.flatFloor(0, 12, 0, 8, 0.0);
+    b.box(0.0, 12.0, 4.6, 4.7, 0.0, 2.0);
+    const auto tree = b.finish();
+    const auto m = buildSurfaceMap(*tree, SurfaceMapParams{});
+    EXPECT_TRUE(findNarrowPassages(*m, route(m, 1.0, 4.2, 11.0, 4.2), 0.85, 0.5).empty());
   }
 }
 
@@ -502,7 +664,8 @@ TEST(StairLinks, AWalkedKerbMakesNoStairLinkAndAnUnwalkedDropIsReported)
   const auto links = buildStairLinks(
     *m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.15; }), StairLinkParams{});
   for (const StairLink & l : links->links) {
-    EXPECT_TRUE(l.kerb);
+    EXPECT_EQ(l.kind, CrossingKind::Kerb);
+    EXPECT_EQ(l.evidence, CrossingEvidence::Geometry);  // the kerb line's, not a walked gap
   }
   EXPECT_TRUE(links->notes.empty());
   SurfaceAStar astar(m, links);
@@ -514,7 +677,7 @@ TEST(StairLinks, AWalkedKerbMakesNoStairLinkAndAnUnwalkedDropIsReported)
   const PlanResult r = astar.plan(a.cell, b.cell, p);
   EXPECT_EQ(r.failure, PlanFailure::None) << r.detail;
   ASSERT_EQ(r.links.size(), 1u);
-  EXPECT_TRUE(links->links[r.links[0].link].kerb);
+  EXPECT_EQ(links->links[r.links[0].link].kind, CrossingKind::Kerb);
 
   const auto d = build("drop");
   const auto none =
@@ -1562,7 +1725,8 @@ TEST(Kerbs, KerbLinksCrossSquareWithALeadEitherSide)
   EXPECT_EQ(links->kerbs, 1u);
   EXPECT_TRUE(links->notes.empty());
   for (const StairLink & l : links->links) {
-    EXPECT_TRUE(l.kerb && l.straight && l.detected);
+    EXPECT_TRUE(l.kind == CrossingKind::Kerb && l.straight && l.detected);
+    EXPECT_EQ(l.gait(), CrossingGait::Flat);
     EXPECT_NEAR(std::fabs(l.up_x), 1.0, 0.05);  // square to the kerb along y
     ASSERT_EQ(l.pts.size(), 4u);
     EXPECT_NEAR(l.pts.front().x, 5.5, 0.11);  // half a metre before the edge ...
@@ -1594,7 +1758,7 @@ TEST(Kerbs, ARouteTakesTheKerbOnALinkAndNeverAlongIt)
   const PlanResult r = astar.plan(a.cell, b.cell, p);
   ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
   ASSERT_EQ(r.links.size(), 1u);
-  EXPECT_TRUE(links->links[r.links[0].link].kerb);
+  EXPECT_EQ(links->links[r.links[0].link].kind, CrossingKind::Kerb);
   const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
   EXPECT_NEAR(headingAtX(path, 6.0), 0.0, 5.0);
   EXPECT_NEAR(headingAtX(path, 5.7), 0.0, 5.0);  // still square half a metre before ...
@@ -1756,5 +1920,237 @@ TEST(MeasuredFloor, ARampsContourLinesVanishAndABadCloudFallsBackToTheVoxels)
   EXPECT_EQ(missing.step_edges, voxels.step_edges);
   for (const SurfaceCell & c : m->cells) {
     EXPECT_TRUE(std::isnan(c.floor_z));
+  }
+}
+
+// ---- Walked gaps (2026-11-02; stair_links.hpp) ----
+
+TEST(GapLinks, AWalkedSillBetweenTwoFloorsIsBridgedSquareAsAKerbCrossing)
+{
+  // The threshold scene: a 0.1 m step the map lost under a 0.2 m dip (the
+  // lab door's lower drift layer), so the step rule parts the floors (two
+  // components), no kerb line runs there (the two floors are not
+  // neighbours) and the stair walker makes no link of a rise under its
+  // min_rise. Walked, the gap is one kerb-kind
+  // crossing of the flat gait -- lead-in, the two anchors, lead-out, square
+  // to the sill -- that joins the floors both ways; the route takes it and
+  // holds its heading over it. Nothing is noted.
+  const auto m = build("threshold");
+  EXPECT_FALSE(connected(*m, 3.0, 4.0, 0.0, 9.0, 4.0, 0.1));
+  const auto links = buildStairLinks(
+    *m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.1; }), StairLinkParams{});
+  ASSERT_EQ(links->links.size(), 1u);
+  EXPECT_EQ(links->gap_links, 1u);
+  EXPECT_EQ(links->gap_refused, 0u);
+  EXPECT_TRUE(links->notes.empty()) << links->notes.front();
+  const StairLink & l = links->links[0];
+  EXPECT_EQ(l.kind, CrossingKind::Kerb);
+  EXPECT_EQ(l.evidence, CrossingEvidence::Track);
+  EXPECT_EQ(l.gait(), CrossingGait::Flat);
+  EXPECT_TRUE(l.straight);
+  EXPECT_FALSE(l.detected);
+  EXPECT_NEAR(l.rise, 0.1, 1e-6);
+  EXPECT_NEAR(l.up_x, 1.0, 1e-6);
+  ASSERT_EQ(l.pts.size(), 4u);
+  EXPECT_NEAR(l.pts[1].x - l.pts[0].x, 0.5, 0.11);  // the lead before the near anchor ...
+  EXPECT_NEAR(l.pts[3].x - l.pts[2].x, 0.5, 0.11);  // ... and past the far one
+  EXPECT_NEAR(l.pts[1].z, 0.0, 1e-6);
+  EXPECT_NEAR(l.pts[2].z, 0.1, 1e-6);
+  EXPECT_NE(m->cells[l.a].component, m->cells[l.b].component);
+  EXPECT_EQ(links->groupOf(m->cells[l.a].component), links->groupOf(m->cells[l.b].component));
+
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult a = astar.snap(2.0, 2.0, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  const SnapResult b = astar.snap(10.0, 6.0, 0.1, p, m->cells[a.cell].component);
+  ASSERT_NE(b.cell, kNoCell) << b.detail;
+  const PlanResult r = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  ASSERT_EQ(r.links.size(), 1u);
+  EXPECT_EQ(links->links[r.links[0].link].kind, CrossingKind::Kerb);
+  const auto path = buildPath(*m, astar.links(), r.cells, r.links, true, 0.1);
+  EXPECT_NEAR(headingAtX(path, 5.3), 0.0, 5.0);  // square on the lead before the sill ...
+  EXPECT_NEAR(headingAtX(path, 6.0), 0.0, 5.0);  // ... over it ...
+  EXPECT_NEAR(headingAtX(path, 6.6), 0.0, 5.0);  // ... and on the lead past it
+  const PlanResult back = astar.plan(b.cell, a.cell, p);
+  ASSERT_EQ(back.failure, PlanFailure::None) << back.detail;
+  ASSERT_EQ(back.links.size(), 1u);
+  EXPECT_TRUE(back.links[0].reversed);
+
+  StairLinkParams off;
+  off.gap_links = false;
+  const auto none =
+    buildStairLinks(*m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.1; }), off);
+  EXPECT_TRUE(none->links.empty());
+  EXPECT_TRUE(none->notes.empty());
+}
+
+TEST(GapLinks, AWalkedSillAboveOneStepIsARampCrossingOfTheFlatGait)
+{
+  // A 0.2 m sill over a dip: the step rule refuses it (two components), the
+  // stair walker ignores a rise under min_rise, and a track across it makes
+  // one ramp-kind crossing -- above one step, so not a kerb, but still the
+  // flat gait's. (At 0.1 m voxels a rise between one step and min_rise is
+  // always this shape; the slope rule fits a plane only over a span of more
+  // than one step, so a 0.2 m slope is level ground to it.)
+  const auto m = build("threshold_ramp");
+  EXPECT_FALSE(connected(*m, 3.0, 4.0, 0.0, 9.0, 4.0, 0.2));
+  const auto links = buildStairLinks(
+    *m, walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.2; }), StairLinkParams{});
+  ASSERT_EQ(links->gap_links, 1u);
+  EXPECT_EQ(links->gap_refused, 0u);
+  const StairLink & l = links->links.back();
+  EXPECT_EQ(l.kind, CrossingKind::Ramp);
+  EXPECT_EQ(l.evidence, CrossingEvidence::Track);
+  EXPECT_EQ(l.gait(), CrossingGait::Flat);
+  EXPECT_NEAR(l.rise, 0.2, 1e-6);
+  SurfaceAStar astar(m, links);
+  SearchParams p;
+  const SnapResult a = astar.snap(3.0, 4.0, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  const SnapResult b = astar.snap(9.0, 4.0, 0.2, p, m->cells[a.cell].component);
+  ASSERT_NE(b.cell, kNoCell) << b.detail;
+  const PlanResult r = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  ASSERT_EQ(r.links.size(), 1u);
+  EXPECT_EQ(links->links[r.links[0].link].kind, CrossingKind::Ramp);
+}
+
+TEST(GapLinks, AWalkedClimbOntoALedgeThatIsNotAFloorIsRefusedAndSaidSo)
+{
+  // The operator drives up a 0.4 m, 2.5 x 2.5 m block and down again (dp's
+  // 2F ledge, 2026-11-02). Its top is a room-sized component, not a floor:
+  // the climb is above gap_max_rise, so no gap link, and no stair link
+  // either (the stair walker anchors on floors only). The notes say so,
+  // once each way.
+  const auto m = build("ledge");
+  const auto links = buildStairLinks(
+    *m, walk(2.0, 8.5, [](double x) { return x >= 4.0 && x < 6.5 ? 0.4 : 0.0; }),
+    StairLinkParams{});
+  EXPECT_TRUE(links->links.empty());
+  EXPECT_EQ(links->gap_links, 0u);
+  EXPECT_EQ(links->gap_refused, 2u);
+  ASSERT_EQ(links->notes.size(), 2u);
+  for (const std::string & n : links->notes) {
+    EXPECT_NE(n.find("not a floor: no link"), std::string::npos) << n;
+  }
+}
+
+TEST(GapLinks, AWalkedGapWithAPostOnTheStraightLineIsRefused)
+{
+  // The threshold with a post on the sill where the walk crossed (a keyframe
+  // every 0.25 m: the walk went round it, the chord does not). With the tree
+  // to hand the chord is checked in the body's band and the gap is refused
+  // with a note; without the tree nothing can be checked and it is laid.
+  const auto tree = synthetic::makeScene("threshold_post");
+  ASSERT_NE(tree, nullptr);
+  const auto m = buildSurfaceMap(*tree, SurfaceMapParams{}, nullptr);
+  const auto w = walk(3.0, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.1; });
+  const auto links = buildStairLinks(*m, w, StairLinkParams{}, tree.get());
+  EXPECT_TRUE(links->links.empty());
+  ASSERT_EQ(links->notes.size(), 1u);
+  EXPECT_NE(links->notes[0].find("stands on the straight line"), std::string::npos)
+    << links->notes[0];
+  EXPECT_EQ(buildStairLinks(*m, w, StairLinkParams{})->links.size(), 1u);
+}
+
+TEST(GapLinks, AGentleClimbBetweenTwoFloorsIsTheStairWalkersStair)
+{
+  // two_sills: 0.4 m between two floors in two 0.2 m sills a metre apart.
+  // The stair walker lays it (min_rise between two floors) and what it lays
+  // is a stair, whatever its own ends say: judging the links by their points
+  // made ramps of the short links of dp's 2F stair, which end half-way down
+  // (2026-11-02). The sills are inside the walked stretch, so the gaps leave
+  // them alone.
+  const auto m = build("two_sills");
+  EXPECT_FALSE(connected(*m, 3.0, 4.0, 0.0, 9.0, 4.0, 0.4));
+  const auto links = buildStairLinks(
+    *m, walk(2.0, 10.0, [](double x) { return x < 6.0 ? 0.0 : (x < 7.0 ? 0.2 : 0.4); }),
+    StairLinkParams{});
+  ASSERT_GE(links->links.size(), 1u);
+  EXPECT_EQ(links->gap_links, 0u);
+  for (const StairLink & l : links->links) {
+    EXPECT_EQ(l.kind, CrossingKind::Stair);
+    EXPECT_EQ(l.gait(), CrossingGait::Stair);
+    EXPECT_FALSE(l.leads);
+    EXPECT_NEAR(l.rise, 0.4, 0.11);
+  }
+}
+
+namespace
+{
+// A straight route along x at 0.1 m spacing with the given heights.
+std::vector<Waypoint> route(double x0, double x1, const std::function<double(double)> & z)
+{
+  std::vector<Waypoint> r;
+  for (double x = x0; x <= x1 + 1e-9; x += 0.1) {
+    r.push_back({x, 0.0, z(x)});
+  }
+  return r;
+}
+}  // namespace
+
+TEST(RouteGaits, AKerbOntoAStairsTopStepIsTakenInTheStairGait)
+{
+  // dp's 2F stair as the planner takes it: a kerb link onto the top step
+  // (5.3 -> 5.1, x 1.0..1.4), 0.3 m of tread, then a stair link (5.0 -> 4.5,
+  // x 1.7..2.9). The policy cannot be switched between the two.
+  const auto r = route(0.0, 5.0, [](double x) {
+    return x < 1.2 ? 5.3 : (x < 1.7 ? 5.1 : (x < 2.9 ? 5.1 - 0.5 * (x - 1.7) : 4.5));
+  });
+  std::vector<RouteCrossing> c{{10, 14, false}, {17, 29, true}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_TRUE(c[0].stair);
+  EXPECT_TRUE(c[1].stair);
+}
+
+TEST(RouteGaits, ALoneKerbOrTwoFarApartStayFlatAndTwoCloseKerbsAreAStair)
+{
+  // A 0.15 m kerb at x 1 and another 3 m on: each the flat gait's.
+  auto r = route(0.0, 6.0, [](double x) { return x < 1.0 ? 0.0 : (x < 4.0 ? 0.15 : 0.3); });
+  std::vector<RouteCrossing> c{{8, 12, false}, {38, 42, false}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_FALSE(c[0].stair);
+  EXPECT_FALSE(c[1].stair);
+  // The same two kerbs half a metre apart: 0.3 m within a metre, a stair.
+  r = route(0.0, 6.0, [](double x) { return x < 1.0 ? 0.0 : (x < 1.5 ? 0.15 : 0.3); });
+  c = {{8, 12, false}, {13, 17, false}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_TRUE(c[0].stair);
+  EXPECT_TRUE(c[1].stair);
+}
+
+TEST(RouteGaits, TheFloorBeyondACrossingIsNotJudgedWithIt)
+{
+  // A 0.15 m kerb at the foot of a 20 deg floor slope: the slope is the flat
+  // gait's, and so is the kerb.
+  const auto r = route(
+    0.0, 4.0, [](double x) { return x < 1.0 ? 0.0 : (x < 1.5 ? 0.15 : 0.15 + 0.364 * (x - 1.5)); });
+  std::vector<RouteCrossing> c{{8, 13, false}};
+  routeStairGaits(r, c, 0.3, 1.0);
+  EXPECT_FALSE(c[0].stair);
+}
+
+TEST(GapLinks, AWalkedStairMakesNoGapLink)
+{
+  // The flight's own keyframes lie inside the stair link the walk laid, and
+  // its tread islands are under gap_anchor_min_area: nothing for the gaps.
+  const auto m = build("stairs");
+  const auto links = buildStairLinks(
+    *m,
+    walk(
+      2.0, 10.0,
+      [](double x) {
+        return x < 4.0 ? 0.0
+                       : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
+      }),
+    StairLinkParams{});
+  EXPECT_GE(links->flights.size(), 1u);
+  EXPECT_EQ(links->gap_links, 0u);
+  EXPECT_EQ(links->gap_refused, 0u);
+  for (const StairLink & l : links->links) {
+    EXPECT_EQ(l.kind, CrossingKind::Stair);
+    EXPECT_EQ(l.gait(), CrossingGait::Stair);
   }
 }

@@ -998,6 +998,12 @@ void RegulatedPurePursuitController3D::applyConstraints(
 
 void RegulatedPurePursuitController3D::setPlan(const nav_msgs::msg::Path & path)
 {
+  setPlanLeg(path, 0, path.poses.size());
+}
+
+void RegulatedPurePursuitController3D::setPlanLeg(
+  const nav_msgs::msg::Path & path, size_t plan_first, size_t plan_poses)
+{
   // Path only. last_cmd_vel_ deliberately survives: setPlan() is also the
   // mid-navigation replan entry point (the BT re-ticks FollowPath every ~3 s,
   // which arrives as an action preempt -> updateGlobalPath -> setPlan), and
@@ -1008,7 +1014,9 @@ void RegulatedPurePursuitController3D::setPlan(const nav_msgs::msg::Path & path)
   // needed 8 cycles to recover — a 0.32 Hz sawtooth on cmd_vel that burned ~16%
   // of the drive re-accelerating. Per-goal reset lives in reset().
   global_plan_ = path;
-  stair_mode_.setPlan(path);
+  // With the leg's place in the plan, so the planner's word for the whole
+  // plan (plan_crossings) is matched and shifted to it (2026-11-07).
+  stair_mode_.setPlan(path, plan_first, plan_poses);
   plan_has_height_ = pathHasHeight(path);
 }
 

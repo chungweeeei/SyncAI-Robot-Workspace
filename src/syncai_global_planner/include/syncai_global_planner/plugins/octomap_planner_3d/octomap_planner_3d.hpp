@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,10 +25,12 @@
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 #include "syncai_nav_core/global_planner.hpp"
 #include "syncai_util/node_thread.hpp"
+#include "syncai_util/plan_crossings.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/message_filter.h"
 
@@ -150,6 +153,11 @@ public:
     const nav_msgs::msg::Path & path, const geometry_msgs::msg::PoseStamped & robot_pose,
     std::vector<int32_t> & invalid_pose_indices) override;
 
+  // The crossings of the last plan planThrough() returned, as the
+  // plan_crossings JSON (syncai_util/plan_crossings.hpp), when `path` is that
+  // plan (same stamp and pose count); "" otherwise. Never takes mutex_.
+  std::string planAnnotations(const nav_msgs::msg::Path & path) override;
+
 protected:
   // The lidar cloud, transformed into the map frame and fed to the overlay.
   // Runs on the global costmap's executor thread, the one that fills tf_
@@ -235,7 +243,14 @@ protected:
   // Parameters (see planner_server_params.yaml for the reasoning).
   std::string octomap_file_, poses_file_, body_frame_, goal_z_mode_;
   double lidar_height_{0.481}, interpolation_resolution_{0.1}, path_z_offset_{0.0};
+  // Narrow passages on plan_crossings (path_postprocess.hpp): narrower than
+  // this (m, 0 = none sent), grown by narrow_lead_ (m) either side.
+  double narrow_max_width_{0.85}, narrow_lead_{0.5};
   bool shortcut_{true}, stair_links_{true};
+  // What the shortcut may give up of the search's clearance (path_postprocess.hpp).
+  octomap_planner_3d::ShortcutSlack shortcut_slack_{0.1, 0.2};
+  // The arcs laid at the plan's corners, 0 = none (buildPath).
+  double corner_radius_{0.5};
   // Read map/<name>/map.pcd for the measured floor (surface_map.hpp).
   bool measured_floor_{true};
   octomap_planner_3d::SurfaceMapParams map_params_;
@@ -259,6 +274,19 @@ protected:
   // orders those; mutex_ -> overlay lock is the one order ever taken. It
   // also carries the keepout mask for isPathValid() (setKeepout).
   std::unique_ptr<octomap_planner_3d::DynamicOverlay> overlay_;
+
+  // The last few plans' crossings (planAnnotations()), newest last, under
+  // their own lock so the server's ask after a plan never waits behind the
+  // next one. A few, not one (2026-11-07): the server asks after
+  // createPlan() has returned and let go of mutex_, and the console's route
+  // preview plans on another thread in between -- one slot then answered
+  // the navigation's plan with `known: false`, and the controllers fell back
+  // to the heights (a sill became a stair stop, the door's speed cap was
+  // off). kRecentCrossings previews between a plan and its ask would be
+  // needed to lose one now.
+  static constexpr size_t kRecentCrossings = 4;
+  std::mutex crossings_mutex_;
+  std::deque<syncai_util::PlanCrossings> recent_crossings_;
 
   // One lock around createPlan, the parameter callback and the map swap.
   std::mutex mutex_;

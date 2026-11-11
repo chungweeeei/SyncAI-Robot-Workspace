@@ -314,6 +314,14 @@ void Optimizer::generateNoisedTrajectories()
   integrateStateVelocities(generated_trajectories_, state_);
 }
 
+void Optimizer::setSpeedLimit(double vx_max)
+{
+  auto & s = settings_;
+  s.constraints.vx_max = vx_max > 0.0
+                           ? std::min(s.base_constraints.vx_max, static_cast<float>(vx_max))
+                           : s.base_constraints.vx_max;
+}
+
 bool Optimizer::isHolonomic() const {return motion_model_->isHolonomic();}
 
 void Optimizer::applyControlSequenceConstraints()

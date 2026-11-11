@@ -498,7 +498,15 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
 void ControllerServer::startLeg(size_t k)
 {
   leg_ = k;
-  controllers_[current_controller_]->setPlan(legs_[k]);
+  // With the leg's place in the plan (2026-11-07): the planner's word for
+  // it (plan_crossings) indexes the whole plan, and the plugin's stair mode
+  // shifts the spans to the leg. Legs share their cusp pose (splitAtCusps),
+  // so each starts where the one before ended.
+  size_t first = 0;
+  for (size_t i = 0; i < k; ++i) {
+    first += legs_[i].poses.size() - 1;
+  }
+  controllers_[current_controller_]->setPlanLeg(legs_[k], first, current_path_.poses.size());
 
   end_pose_ = legs_[k].poses.back();
   end_pose_.header.frame_id = legs_[k].header.frame_id;

@@ -125,6 +125,21 @@ private:
 //              in the floor, and a balcony (second floor at 1.5 m over
 //              x >= 9 with the ground floor continuing underneath)
 //   two_floors a second floor 5 m above the first over the whole area
+//   threshold  a 0.1 m step up at x = 6 over a column sunk 0.2 m: a door sill
+//              the map lost under a lower drift layer (dp's 2F lab door), so
+//              the step rule parts the two floors by one step -- a kerb to the
+//              walked gaps. The dip is within step + 1 cells of the floors, as
+//              the lab's was, so the hole-fill leaves it alone (a deeper one
+//              is a hole to it and gets filled)
+//   threshold_ramp  the same with a 0.2 m step over a 0.1 m dip: above one
+//              step, a ramp to the walked gaps
+//   threshold_post  threshold with a 0.6 m post on the sill at y 3.9..4.1,
+//              where the test's walk crosses: something on the chord
+//   two_sills  floor 0 | 0.2 m sill over a dip | a 1 m strip at 0.2 | 0.2 m
+//              sill over a dip | floor 0.4: a climb between two floors too
+//              gentle for a stair (dp's 2F step)
+//   ledge      + a 2.5 x 2.5 m, 0.4 m high block at x 4..6.5, y 2.75..5.25: a
+//              surface a robot can be driven onto that is not a floor
 inline std::unique_ptr<octomap::OcTree> makeScene(const std::string & name, double res = 0.1)
 {
   SceneBuilder b(res);
@@ -169,6 +184,29 @@ inline std::unique_ptr<octomap::OcTree> makeScene(const std::string & name, doub
   } else if (name == "two_floors") {
     b.flatFloor(0, X, 0, Y, 0.0);
     b.flatFloor(0, X, 0, Y, 5.0);
+  } else if (name == "threshold") {
+    b.floor(0, X, 0, Y, [](double x, double) { return x < 5.9 ? 0.0 : (x < 6.0 ? -0.2 : 0.1); });
+  } else if (name == "threshold_ramp") {
+    b.floor(0, X, 0, Y, [](double x, double) { return x < 5.9 ? 0.0 : (x < 6.0 ? -0.1 : 0.2); });
+  } else if (name == "threshold_post") {
+    b.floor(0, X, 0, Y, [](double x, double) { return x < 5.9 ? 0.0 : (x < 6.0 ? -0.2 : 0.1); });
+    b.box(5.9, 6.0, 3.9, 4.1, -0.2, 0.6);
+  } else if (name == "two_sills") {
+    b.floor(0, X, 0, Y, [](double x, double) {
+      if (x < 5.9) {
+        return 0.0;
+      }
+      if (x < 6.0) {
+        return -0.1;
+      }
+      if (x < 7.0) {
+        return 0.2;
+      }
+      return x < 7.1 ? 0.1 : 0.4;
+    });
+  } else if (name == "ledge") {
+    b.flatFloor(0, X, 0, Y, 0.0);
+    b.box(4.0, 6.5, 2.75, 5.25, 0.0, 0.4);
   } else {
     return nullptr;
   }

@@ -93,6 +93,12 @@ public:
     */
   void setPlan(const nav_msgs::msg::Path & path) override;
 
+  /**
+    * @brief setPlan() for one leg of a cut plan, with the leg's place in it
+    * for the stair mode's match against the planner's word (2026-11-07)
+    */
+  void setPlanLeg(const nav_msgs::msg::Path & leg, size_t plan_first, size_t plan_poses) override;
+
 protected:
   /**
     * @brief Visualize trajectories
@@ -105,8 +111,7 @@ protected:
     */
   geometry_msgs::msg::TwistStamped computeVelocityCommandsImpl(
     const geometry_msgs::msg::PoseStamped & robot_pose,
-    const geometry_msgs::msg::Twist & robot_speed,
-    syncai_nav_core::GoalChecker * goal_checker);
+    const geometry_msgs::msg::Twist & robot_speed, syncai_nav_core::GoalChecker * goal_checker);
 
   /**
     * @brief Limit the change from the last command to max_*_accel per cycle
@@ -196,6 +201,14 @@ protected:
     */
   bool climbStairs(
     const geometry_msgs::msg::PoseStamped & robot_pose, geometry_msgs::msg::TwistStamped & cmd);
+
+  /**
+    * @brief Inside a span the planner marks slow on plan_crossings (a narrow
+    * passage), the forward speed the optimizer may ask for
+    * @param robot_pose Robot pose in the costmap's global frame
+    * @return slow_linear_vel inside one, 0 (no cap) outside or when off
+    */
+  double slowSpeedLimit(const geometry_msgs::msg::PoseStamped & robot_pose);
 
   /**
     * @brief The straight walk onto a point shared by the direct approach and
@@ -323,8 +336,12 @@ protected:
   double stair_turn_angle_{M_PI / 4};
   double stair_turn_dist_{0.15};
   double stair_turn_done_angle_{0.087};
+  // Off a corner, the bearing past which the climb stops to turn in place;
+  // under it the walk steers (climbStairs(), 2026-11-10).
+  double stair_rotate_min_angle_{0.6};
   // The in-place turn on the stairs is latched: in past
-  // approach_rotate_min_angle, out under stair_turn_done_angle.
+  // approach_rotate_min_angle at a corner (stair_rotate_min_angle elsewhere),
+  // out under stair_turn_done_angle.
   bool stair_turning_{false};
   // The turn round at the bottom of a descent (climbStairs()) keeps the way
   // round it started on (+1 / -1): near 180 deg the shortest way flips with
@@ -356,6 +373,11 @@ protected:
   // Set while climbStairs() owns the robot (hold or climb), so the optimizer
   // is reset once on the way in and once on the way out.
   bool climbing_stairs_{false};
+  // The planner's slow spans (slowSpeedLimit(), 2026-11-02 as the narrow
+  // passages'): the optimizer's speed cap over one (<= 0 disables it), and
+  // whether the robot is in one, for the log on the way in and out.
+  double slow_linear_vel_{0.0};
+  bool slow_active_{false};
   // The direct approach's and the stair carrot's only obstacle test (see
   // isApproachBlocked()).
   syncai_costmap::FootprintCollisionChecker<syncai_costmap::Costmap *> collision_checker_{nullptr};

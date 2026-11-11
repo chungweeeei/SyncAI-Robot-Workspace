@@ -97,6 +97,22 @@ void StairMode::initialize(const rclcpp::Node::SharedPtr & node, const std::stri
     });
   stair_mode_pub_ = node->create_publisher<std_msgs::msg::Bool>(
     "stair_mode", rclcpp::QoS(1).reliable().transient_local());
+  // planner_server's, latched: the crossings of the plan it last made.
+  crossings_sub_ = node->create_subscription<std_msgs::msg::String>(
+    kPlanCrossingsTopic, rclcpp::QoS(1).reliable().transient_local(),
+    [this](const std_msgs::msg::String::SharedPtr msg) {
+      PlanCrossings c;
+      std::string error;
+      if (!fromJson(msg->data, c, error)) {
+        RCLCPP_WARN(
+          logger_,
+          "plan_crossings unreadable (%s): kept the last one, so a plan it was for falls back "
+          "to the path's heights alone",
+          error.c_str());
+        return;
+      }
+      setCrossings(c);
+    });
 
   send_policy_ = [this](int policy) {
     auto request = std::make_shared<syncai_common::srv::SetPolicyMode::Request>();
@@ -123,11 +139,119 @@ void StairMode::configure(
   publish();
 }
 
-void StairMode::setPlan(const nav_msgs::msg::Path & full_plan)
+void StairMode::setPlan(const nav_msgs::msg::Path & full_plan, size_t plan_first, size_t plan_poses)
 {
   full_plan_ = full_plan;
   plan_has_height_ = pathHasHeight(full_plan);
   medianHeights(full_plan_);
+  suppressed_said_ = false;
+  plan_first_ = plan_first;
+  plan_poses_ = plan_poses > 0 ? plan_poses : full_plan.poses.size();
+}
+
+void StairMode::setCrossings(const PlanCrossings & crossings)
+{
+  std::lock_guard<std::mutex> lock(crossings_mutex_);
+  recent_crossings_.push_back(crossings);
+  while (recent_crossings_.size() > kRecentCrossings) {
+    recent_crossings_.pop_front();
+  }
+}
+
+const PlanCrossings * StairMode::crossingsForPlan() const
+{
+  // The planner's plan, not the leg: a leg keeps the plan's stamp
+  // (path_cusps.hpp) and setPlan() was told the plan's count.
+  for (auto it = recent_crossings_.rbegin(); it != recent_crossings_.rend(); ++it) {
+    if (it->isFor(full_plan_.header.stamp.sec, full_plan_.header.stamp.nanosec, plan_poses_)) {
+      return &*it;
+    }
+  }
+  return nullptr;
+}
+
+bool StairMode::spanOnLeg(const PlanCrossing & c, size_t & first, size_t & last) const
+{
+  if (full_plan_.poses.empty()) {
+    return false;
+  }
+  const size_t leg_last = plan_first_ + full_plan_.poses.size() - 1;
+  if (c.last < plan_first_ || c.first > leg_last) {
+    return false;  // wholly on another leg
+  }
+  first = c.first > plan_first_ ? c.first - plan_first_ : 0;
+  last = std::min(c.last, leg_last) - plan_first_;
+  return true;
+}
+
+bool StairMode::plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) const
+{
+  spans.clear();
+  std::lock_guard<std::mutex> lock(crossings_mutex_);
+  const PlanCrossings * word = crossingsForPlan();
+  if (!word) {
+    return false;
+  }
+  for (const PlanCrossing & c : word->crossings) {
+    size_t first, last;
+    if (c.stair_gait && spanOnLeg(c, first, last)) {
+      spans.emplace_back(first, last);
+    }
+  }
+  return true;
+}
+
+bool StairMode::plannerSlow(std::vector<PlanCrossing> & spans) const
+{
+  spans.clear();
+  std::lock_guard<std::mutex> lock(crossings_mutex_);
+  const PlanCrossings * word = crossingsForPlan();
+  if (!word) {
+    return false;
+  }
+  for (const PlanCrossing & c : word->crossings) {
+    size_t first, last;
+    if (c.slow && spanOnLeg(c, first, last)) {
+      spans.push_back(c);
+      spans.back().first = first;
+      spans.back().last = last;
+    }
+  }
+  return true;
+}
+
+size_t StairMode::indexAhead(const nav_msgs::msg::Path & path, size_t idx, double dist)
+{
+  const auto & P = path.poses;
+  double d = 0.0;
+  size_t k = idx;
+  while (k + 1 < P.size()) {
+    d += std::hypot(
+      P[k + 1].pose.position.x - P[k].pose.position.x,
+      P[k + 1].pose.position.y - P[k].pose.position.y);
+    if (d > dist) {
+      break;
+    }
+    ++k;
+  }
+  return k;
+}
+
+size_t StairMode::indexBehind(const nav_msgs::msg::Path & path, size_t idx, double dist)
+{
+  const auto & P = path.poses;
+  double d = 0.0;
+  size_t k = std::min(idx, P.empty() ? size_t{0} : P.size() - 1);
+  while (k > 0) {
+    d += std::hypot(
+      P[k].pose.position.x - P[k - 1].pose.position.x,
+      P[k].pose.position.y - P[k - 1].pose.position.y);
+    if (d > dist) {
+      break;
+    }
+    --k;
+  }
+  return k;
 }
 
 void StairMode::medianHeights(nav_msgs::msg::Path & path)
@@ -363,11 +487,39 @@ bool StairMode::wantStairs(size_t remaining_poses, double lead) const
   }
   // The controller pruned everything before the pose nearest the robot.
   const size_t idx = full_plan_.poses.size() - remaining_poses;
+  double rise = 0.0;
+  size_t lo = idx, hi = idx;
   if (!on_stairs_) {
-    return stairRiseAhead(full_plan_, idx, lead, params_.enter_dist) >= params_.min_rise;
+    rise = stairRiseAhead(full_plan_, idx, lead, params_.enter_dist);
+    hi = indexAhead(full_plan_, idx, lead + params_.enter_dist);
+  } else {
+    rise = stairRise(full_plan_, idx, params_.exit_behind_dist, params_.exit_ahead_dist);
+    lo = indexBehind(full_plan_, idx, params_.exit_behind_dist);
+    hi = indexAhead(full_plan_, idx, params_.exit_ahead_dist);
   }
-  return stairRise(full_plan_, idx, params_.exit_behind_dist, params_.exit_ahead_dist) >=
-         params_.min_rise;
+  if (rise < params_.min_rise) {
+    return false;
+  }
+  // The planner's word gates it (see the class comment): the rise counts
+  // only where the window meets a stretch it lays in the stair gait.
+  std::vector<std::pair<size_t, size_t>> spans;
+  if (!plannerStairs(spans)) {
+    return true;  // no word for this plan: the heights alone, as before
+  }
+  for (const auto & s : spans) {
+    if (s.first <= hi && s.second >= lo) {
+      return true;
+    }
+  }
+  if (!suppressed_said_) {
+    suppressed_said_ = true;
+    RCLCPP_INFO(
+      logger_,
+      "Path rises %.2f m (stair_min_rise %.2f) within poses %zu..%zu, but the planner lays no "
+      "stair there (%zu stair crossings on this plan): %s in the flat gait",
+      rise, params_.min_rise, lo, hi, spans.size(), on_stairs_ ? "leaving stairs" : "walked");
+  }
+  return false;
 }
 
 void StairMode::sendPolicy(int policy)

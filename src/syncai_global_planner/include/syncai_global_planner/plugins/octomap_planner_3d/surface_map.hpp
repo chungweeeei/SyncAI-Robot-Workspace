@@ -402,6 +402,19 @@ public:
   double cx(int ix) const { return x0 + (ix + 0.5) * res; }
   double cy(int iy) const { return y0 + (iy + 0.5) * res; }
   double zTop(CellId c) const { return z0 + (cells[c].kz + 1) * res; }
+  // A cell's height as the kerbs, the step edges and (2026-11-07) a route's
+  // poses read it: the measured floor where the cloud gave one
+  // (SurfaceCell::floor_z), the voxel's top face otherwise. One height for
+  // every judge of a route -- a link's kind, routeStairGaits, the stair
+  // mode's rise test, the terrain layer's ground along the plan -- where the
+  // links' kinds read the floor and their points the voxel tops, and a
+  // 0.26 m sill the kind called a flat-gait ramp read 0.30 m of rise on the
+  // route and was walked in the stair gait.
+  double zFloor(CellId c) const
+  {
+    const float fz = cells[c].floor_z;
+    return std::isnan(fz) ? zTop(c) : static_cast<double>(fz);
+  }
   // The kz of a surface whose top face is at height z: the inverse of zTop.
   int kzOfTop(double z) const { return static_cast<int>(std::floor((z - z0) / res)) - 1; }
   bool traversable(CellId c) const { return (cells[c].flags & kTraversable) != 0; }

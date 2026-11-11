@@ -564,11 +564,12 @@ std::vector<Waypoint> marchStraight(
   return {pts.front(), pts.back()};
 }
 
-// Registers a finished link: its length, the cells it touches and the two
-// components it joins.
+// Registers a finished link: its length and rise, the cells it touches and
+// the two components it joins.
 void addLink(const SurfaceMap & m, StairLink link, StairLinks & out)
 {
   link.length = length3d(link.pts);
+  link.rise = link.pts.empty() ? 0.0 : std::fabs(link.pts.back().z - link.pts.front().z);
   const uint32_t id = static_cast<uint32_t>(out.links.size());
   out.at[link.a].push_back(id);
   out.at[link.b].push_back(id);
@@ -1677,6 +1678,7 @@ void detectStairs(
     }
     for (size_t i = first; i < out.links.size(); ++i) {
       out.links[i].detected = true;
+      out.links[i].evidence = CrossingEvidence::Geometry;
       out.links[i].kf_a = out.links[i].kf_b = 0;
     }
     for (size_t i = first_flight; i < out.flights.size(); ++i) {
@@ -1871,7 +1873,9 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       StairLink link;
       link.a = a;
       link.b = b;
-      link.kerb = true;
+      link.kind = CrossingKind::Kerb;
+      link.evidence = CrossingEvidence::Geometry;
+      link.leads = true;
       link.straight = true;
       link.detected = true;
       link.up_x = ux;
@@ -1879,10 +1883,12 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
       double ax, ay, bx, by;
       m.cellXY(a, ax, ay);
       m.cellXY(b, bx, by);
-      link.pts.push_back({ax, ay, m.zTop(a)});
-      link.pts.push_back({cx, cy, m.zTop(before)});
-      link.pts.push_back({cx + m.res * ux, cy + m.res * uy, m.zTop(after)});
-      link.pts.push_back({bx, by, m.zTop(b)});
+      // At the measured floor, as the route's poses are (2026-11-07): the
+      // kerb's step then reads its true height on the plan, not a voxel's.
+      link.pts.push_back({ax, ay, m.zFloor(a)});
+      link.pts.push_back({cx, cy, m.zFloor(before)});
+      link.pts.push_back({cx + m.res * ux, cy + m.res * uy, m.zFloor(after)});
+      link.pts.push_back({bx, by, m.zFloor(b)});
       addLink(m, std::move(link), out);
       ++links_here;
       // The crossing is a link's from here on: this cell, the high
@@ -1913,7 +1919,377 @@ void kerbLinks(const SurfaceMap & m, const StairLinkParams & p, StairLinks & out
   }
 }
 
+// ---- Walked gaps (2026-11-02; see the header) ----
+
+// Marches from cell c along (ux, uy) for lead metres over traversable cells
+// of c's own component that stay within one step of each other, half a
+// cell at a time, column by column, and returns the cell it ends on --
+// kNoCell when the grid, the component or the ground runs out first.
+// kerbLinks' march above is the same walk with the kerb's height rules
+// woven in; this is the plain one a gap's lead needs.
+CellId marchLead(const SurfaceMap & m, CellId c, double ux, double uy, double lead)
+{
+  const double half_step = m.res / 2;
+  double cx, cy;
+  m.cellXY(c, cx, cy);
+  const uint32_t comp = m.cells[c].component;
+  uint32_t last_col = m.cell_col[c];
+  int kz_prev = m.cells[c].kz;
+  CellId end = c;
+  // A quarter cell off the half-cell grid, so no sample lands on a column
+  // boundary (kerbLinks has the reason).
+  for (double s = half_step / 2; s <= lead + 1e-9; s += half_step) {
+    const int ix = m.ixOf(cx + s * ux), iy = m.iyOf(cy + s * uy);
+    if (!m.inGrid(ix, iy)) {
+      return kNoCell;
+    }
+    const uint32_t col = m.col(ix, iy);
+    if (col == last_col) {
+      continue;
+    }
+    last_col = col;
+    const CellId cell = m.layerNear(col, kz_prev, m.step_cells);
+    if (cell == kNoCell || !m.traversable(cell) || m.cells[cell].component != comp) {
+      return kNoCell;
+    }
+    kz_prev = m.cells[cell].kz;
+    end = cell;
+  }
+  return end;
+}
+
+// Whether something stands on the straight line from a to b: an occupied
+// voxel in the band the body needs, above the floor interpolated between
+// the two ends, at any sample along it. The band starts two cells up, clear
+// of the far end's own floor voxel where the chord runs below it. Without
+// the tree nothing can be checked. (at_x, at_y) is where it was found.
+bool chordBlocked(
+  const octomap::OcTree * tree, const SurfaceMap & m, const Waypoint & a, const Waypoint & b,
+  double & at_x, double & at_y)
+{
+  if (tree == nullptr) {
+    return false;
+  }
+  const double d = std::hypot(b.x - a.x, b.y - a.y);
+  const int n = std::max(1, static_cast<int>(std::ceil(d / (m.res / 2))));
+  for (int i = 0; i <= n; ++i) {
+    const double t = static_cast<double>(i) / n;
+    const double x = a.x + t * (b.x - a.x), y = a.y + t * (b.y - a.y);
+    const double z = a.z + t * (b.z - a.z);
+    for (double zz = z + 2 * m.res; zz < z + m.params.body_clearance; zz += m.res) {
+      const octomap::OcTreeNode * node = tree->search(x, y, zz);
+      if (node != nullptr && tree->isNodeOccupied(node)) {
+        at_x = x;
+        at_y = y;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The largest rise over any stretch of at most `window` (m, xy) of a
+// polyline: the controllers' stair mode's test (stairRiseAhead over
+// stair_enter_dist), max - min of z over every run of samples within the
+// window, the polyline resampled at a tenth of it.
+double maxRiseWithin(const std::vector<Waypoint> & pts, double window)
+{
+  if (pts.size() < 2) {
+    return 0.0;
+  }
+  std::vector<double> z, d;  // height, xy distance from the start
+  const double ds = std::max(window / 10.0, 1e-3);
+  z.push_back(pts.front().z);
+  d.push_back(0.0);
+  double acc = 0.0;
+  for (size_t i = 1; i < pts.size(); ++i) {
+    const double seg = std::hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    if (seg < 1e-9) {
+      continue;
+    }
+    const int n = std::max(1, static_cast<int>(std::ceil(seg / ds)));
+    for (int k = 1; k <= n; ++k) {
+      const double t = static_cast<double>(k) / n;
+      z.push_back(pts[i - 1].z + t * (pts[i].z - pts[i - 1].z));
+      d.push_back(acc + t * seg);
+    }
+    acc += seg;
+  }
+  double best = 0.0;
+  for (size_t i = 0; i < z.size(); ++i) {
+    double lo = z[i], hi = z[i];
+    for (size_t j = i + 1; j < z.size() && d[j] - d[i] <= window + 1e-9; ++j) {
+      lo = std::min(lo, z[j]);
+      hi = std::max(hi, z[j]);
+    }
+    best = std::max(best, hi - lo);
+  }
+  return best;
+}
+
+// Lays the walked gaps (see the header). Runs last: a gap inside a laid
+// stair's keyframes is that stair's own landing or flight foot and is
+// skipped, and a kerb link's two ends are in one component, so a walked
+// kerb is never a gap.
+void gapLinks(
+  const SurfaceMap & m, const octomap::OcTree * tree, const std::vector<Waypoint> & track,
+  const StairLinkParams & p, const std::vector<size_t> & comp_cells, double floor_min_cells,
+  StairLinks & out)
+{
+  if (!p.gap_links || track.size() < 2) {
+    return;
+  }
+  const double room_min_cells = p.gap_anchor_min_area / (m.res * m.res);
+  const double lead = std::max(p.kerb_lead, m.res);
+  const auto isFloor = [&](uint32_t comp) {
+    return static_cast<double>(comp_cells[comp]) >= floor_min_cells;
+  };
+  // The keyframe ranges of the stairs the track laid, straight rows and
+  // walked links alike (a detected stair has no keyframes).
+  std::vector<std::pair<size_t, size_t>> stairs;
+  for (const StairLink & l : out.links) {
+    if (l.kind == CrossingKind::Stair && l.evidence == CrossingEvidence::Track && !l.detected) {
+      stairs.emplace_back(l.kf_a, l.kf_b);
+    }
+  }
+  for (const StairFlight & f : out.flights) {
+    if (!f.detected) {
+      stairs.emplace_back(f.kf_a, f.kf_b);
+    }
+  }
+  const auto insideStair = [&](size_t ka, size_t kb) {
+    for (const auto & s : stairs) {
+      if (s.first <= ka && kb <= s.second) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // The gaps laid, by midpoint: the track crossing the same door on its way
+  // back lays nothing new, a second door into the same room does.
+  std::vector<Waypoint> laid;
+  CellId anchor = kNoCell;
+  size_t anchor_kf = 0;
+  double walked = 0.0;
+  for (size_t k = 0; k < track.size(); ++k) {
+    if (k > 0) {
+      walked += std::hypot(track[k].x - track[k - 1].x, track[k].y - track[k - 1].y);
+    }
+    const CellId c = anchorCell(m, track[k], p.anchor_z_window);
+    if (c == kNoCell || static_cast<double>(comp_cells[m.cells[c].component]) < room_min_cells) {
+      continue;
+    }
+    const CellId prev = anchor;
+    const size_t prev_kf = anchor_kf;
+    const double since = walked;
+    anchor = c;
+    anchor_kf = k;
+    walked = 0.0;
+    if (prev == kNoCell || m.cells[prev].component == m.cells[c].component) {
+      continue;
+    }
+    if (since > p.gap_max_length || insideStair(prev_kf, k)) {
+      continue;
+    }
+    const uint32_t ca = m.cells[prev].component, cb = m.cells[c].component;
+    // The measured floor (SurfaceMap::zFloor), as a route's poses read it.
+    const double za = m.zFloor(prev), zb = m.zFloor(c);
+    const double rise = std::fabs(zb - za);
+    if (rise > p.gap_max_rise + 1e-9 || rise >= p.min_rise - 1e-9) {
+      // A climb. Between two floors it is the stair walker's (laid above, or
+      // noted there); onto anything smaller the track proves only that the
+      // operator went there, which the planner must not repeat. And from
+      // min_rise up a flat-gait link laid here would be called a stair by
+      // the route judge (routeStairGaits) anyway: the two tests met at 0.3
+      // inclusive on both sides until 2026-11-07, so a 0.30 m sill was a
+      // gap link the route then took in the stair gait.
+      if (!(isFloor(ca) && isFloor(cb)) && findRoot(out.group, ca) != findRoot(out.group, cb)) {
+        const uint32_t small = isFloor(cb) ? ca : cb;
+        char buf[240];
+        std::snprintf(
+          buf, sizeof buf,
+          "keyframes %zu..%zu climb %.2f m (z %.2f -> %.2f) over %.1f m of track onto a %.1f m2 "
+          "surface that is not a floor: no link",
+          prev_kf, k, zb - za, za, zb, since, comp_cells[small] * m.res * m.res);
+        out.notes.push_back(buf);
+        ++out.gap_refused;
+      }
+      continue;
+    }
+    double ax, ay, bx, by;
+    m.cellXY(prev, ax, ay);
+    m.cellXY(c, bx, by);
+    const double dx = bx - ax, dy = by - ay, d = std::hypot(dx, dy);
+    if (d < m.res) {
+      continue;
+    }
+    const Waypoint mid{(ax + bx) / 2, (ay + by) / 2, (za + zb) / 2};
+    bool dup = false;
+    for (const Waypoint & q : laid) {
+      if (
+        std::hypot(q.x - mid.x, q.y - mid.y) <= 2 * lead &&
+        std::fabs(q.z - mid.z) <= p.anchor_z_window) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) {
+      continue;
+    }
+    const double ux = dx / d, uy = dy / d;
+    const CellId lead_in = marchLead(m, prev, -ux, -uy, lead);
+    const CellId lead_out = marchLead(m, c, ux, uy, lead);
+    if (lead_in == kNoCell || lead_out == kNoCell) {
+      char buf[200];
+      std::snprintf(
+        buf, sizeof buf,
+        "keyframes %zu..%zu cross a %.2f m rise at (%.1f, %.1f), but no straight run of %.1f m "
+        "could be laid on the %s side: no link",
+        prev_kf, k, zb - za, mid.x, mid.y, lead, lead_in == kNoCell ? "near" : "far");
+      out.notes.push_back(buf);
+      continue;
+    }
+    double wx = 0.0, wy = 0.0;
+    if (chordBlocked(tree, m, {ax, ay, m.zTop(prev)}, {bx, by, m.zTop(c)}, wx, wy)) {
+      char buf[220];
+      std::snprintf(
+        buf, sizeof buf,
+        "keyframes %zu..%zu cross a %.2f m rise at (%.1f, %.1f), but something stands on the "
+        "straight line over the gap at (%.1f, %.1f) (a door post the walk went round?): no link",
+        prev_kf, k, zb - za, mid.x, mid.y, wx, wy);
+      out.notes.push_back(buf);
+      continue;
+    }
+    StairLink link;
+    link.a = lead_in;
+    link.b = lead_out;
+    link.kf_a = prev_kf;
+    link.kf_b = k;
+    link.leads = true;
+    link.kind = rise <= m.params.max_step_height + 1e-9 ? CrossingKind::Kerb : CrossingKind::Ramp;
+    link.evidence = CrossingEvidence::Track;
+    link.straight = true;
+    // Uphill, as a kerb link's; along the walk when the two ends are level.
+    const double sgn = zb >= za ? 1.0 : -1.0;
+    link.up_x = sgn * ux;
+    link.up_y = sgn * uy;
+    double ix, iy, ox, oy;
+    m.cellXY(lead_in, ix, iy);
+    m.cellXY(lead_out, ox, oy);
+    // The lead-in, the two anchors (the last cell stood on before the gap,
+    // the first after it) and the lead-out, at the surfaces' own heights --
+    // the measured floor, as the kind above was judged and as the route's
+    // own poses are (2026-11-07; at the voxel tops a link rose up to one
+    // voxel more than its kind said): buildPath resamples the gap between
+    // the anchors as one ramp.
+    link.pts.push_back({ix, iy, m.zFloor(lead_in)});
+    link.pts.push_back({ax, ay, m.zFloor(prev)});
+    link.pts.push_back({bx, by, m.zFloor(c)});
+    link.pts.push_back({ox, oy, m.zFloor(lead_out)});
+    laid.push_back(mid);
+    addLink(m, std::move(link), out);
+    ++out.gap_links;
+  }
+}
+
 }  // namespace
+
+void routeStairGaits(
+  const std::vector<Waypoint> & route, std::vector<RouteCrossing> & crossings, double min_rise,
+  double window)
+{
+  std::vector<double> d(route.size(), 0.0);  // xy distance along the route
+  for (size_t i = 1; i < route.size(); ++i) {
+    d[i] = d[i - 1] + std::hypot(route[i].x - route[i - 1].x, route[i].y - route[i - 1].y);
+  }
+  size_t g = 0;
+  while (g < crossings.size()) {
+    size_t e = g + 1;  // one past the group
+    size_t last = crossings[g].last;
+    bool stair = crossings[g].stair;
+    while (e < crossings.size() && crossings[e].first < route.size() && last < route.size() &&
+           d[crossings[e].first] - d[last] <= window + 1e-9) {
+      last = std::max(last, crossings[e].last);
+      stair = stair || crossings[e].stair;
+      ++e;
+    }
+    const size_t first = crossings[g].first;
+    if (!stair && first < route.size() && last < route.size()) {
+      const std::vector<Waypoint> stretch(
+        route.begin() + static_cast<std::ptrdiff_t>(first),
+        route.begin() + static_cast<std::ptrdiff_t>(last) + 1);
+      stair = maxRiseWithin(stretch, window) >= min_rise - 1e-9;
+    }
+    for (size_t i = g; i < e; ++i) {
+      crossings[i].stair = stair;
+    }
+    g = e;
+  }
+}
+
+const char * crossingKindName(CrossingKind k)
+{
+  switch (k) {
+    case CrossingKind::Stair:
+      return "stair";
+    case CrossingKind::Kerb:
+      return "kerb";
+    case CrossingKind::Ramp:
+      return "ramp";
+  }
+  return "?";
+}
+
+const char * crossingGaitName(CrossingGait g)
+{
+  return g == CrossingGait::Stair ? "stair" : "flat";
+}
+
+const char * crossingEvidenceName(CrossingEvidence e)
+{
+  switch (e) {
+    case CrossingEvidence::Track:
+      return "track";
+    case CrossingEvidence::Geometry:
+      return "geometry";
+    case CrossingEvidence::Declared:
+      return "declared";
+  }
+  return "?";
+}
+
+std::string linkName(const StairLink & l, const char * arrow)
+{
+  char buf[96];
+  if (l.walkedGap()) {
+    std::snprintf(
+      buf, sizeof buf, "gap kf %zu %s %zu (%s) at (%.1f, %.1f)", l.kf_a, arrow, l.kf_b,
+      crossingKindName(l.kind), (l.pts[1].x + l.pts[2].x) / 2, (l.pts[1].y + l.pts[2].y) / 2);
+  } else if (l.leads) {
+    std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
+  } else if (l.detected) {
+    std::snprintf(buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
+  } else {
+    std::snprintf(buf, sizeof buf, "kf %zu %s %zu", l.kf_a, arrow, l.kf_b);
+  }
+  return buf;
+}
+
+LinkCounts countLinks(const StairLinks & links)
+{
+  LinkCounts n;
+  for (const StairLink & l : links.links) {
+    if (l.walkedGap()) {
+      (l.kind == CrossingKind::Kerb ? n.gap_kerbs : n.gap_ramps) += 1;
+    } else if (l.leads) {
+      ++n.kerbs;
+    } else {
+      ++n.stairs;
+      n.detected += l.detected ? 1 : 0;
+    }
+  }
+  return n;
+}
 
 std::shared_ptr<const StairLinks> buildStairLinks(
   const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
@@ -2036,6 +2412,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     detectStairs(m, tree, params, comp_cells, min_cells, *out);
   }
   kerbLinks(m, params, *out);
+  gapLinks(m, tree, track, params, comp_cells, min_cells, *out);
   for (uint32_t i = 0; i < ncomp; ++i) {
     out->group[i] = findRoot(out->group, i);
   }

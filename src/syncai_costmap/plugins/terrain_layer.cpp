@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "geometry_msgs/msg/point_stamped.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "syncai_costmap/cost_values.hpp"
 #include "syncai_util/path_height.hpp"
+#include "syncai_util/plan_crossings.hpp"
 #include "tf2/exceptions.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -50,6 +52,8 @@ void TerrainLayer::onInitialize()
   declareParameter("max_step_height", rclcpp::ParameterValue(p.max_step_height));
   declareParameter("max_slope_deg", rclcpp::ParameterValue(p.max_slope_deg));
   declareParameter("slope_min_known", rclcpp::ParameterValue(p.slope_min_known));
+  declareParameter("plan_radius", rclcpp::ParameterValue(p.plan_radius));
+  declareParameter("plan_z_band", rclcpp::ParameterValue(p.plan_z_band));
 
   node_->get_parameter(name_ + ".enabled", enabled_);
   node_->get_parameter(name_ + ".footprint_clearing_enabled", footprint_clearing_enabled_);
@@ -75,6 +79,8 @@ void TerrainLayer::onInitialize()
   node_->get_parameter(name_ + ".max_step_height", p.max_step_height);
   node_->get_parameter(name_ + ".max_slope_deg", p.max_slope_deg);
   node_->get_parameter(name_ + ".slope_min_known", p.slope_min_known);
+  node_->get_parameter(name_ + ".plan_radius", p.plan_radius);
+  node_->get_parameter(name_ + ".plan_z_band", p.plan_z_band);
   node_->get_parameter("track_unknown_space", track_unknown_space);
   node_->get_parameter("transform_tolerance", transform_tolerance_);
 
@@ -96,13 +102,15 @@ void TerrainLayer::onInitialize()
   RCLCPP_INFO(
     logger_,
     "TerrainLayer %s: cloud %s (ground = lidar z - %.3f, returns within %.1f m and "
-    "[%.1f, %.1f] m of the ground), path %s; step %.2f m, slope %.0f deg, obstacles %.2f-%.2f m "
-    "above the ground, ground memory %.0f s, obstacle memory %.1f s, ray clearing %s "
-    "(tolerance %.2f m, end margin %.2f m); not current once the newest cloud is older than "
-    "%.1f s (cloud_timeout; 0 = never)",
+    "[%.1f, %.1f] m of the ground), path %s (its corridor within %.2f m, on ground within "
+    "%.2f m of its height: the obstacle rule against the plan's height, no step or slope "
+    "rule; 0 = none); step %.2f m, slope %.0f deg, obstacles %.2f-%.2f m above the ground, "
+    "ground memory %.0f s, obstacle memory %.1f s, ray clearing %s (tolerance %.2f m, end "
+    "margin %.2f m); not current once the newest cloud is older than %.1f s (cloud_timeout; "
+    "0 = never)",
     name_.c_str(), cloud_topic_.c_str(), sensor_height_, max_range_, min_rel_z_, max_rel_z_,
-    plan_topic_.c_str(), p.max_step_height, p.max_slope_deg, p.min_obstacle_height,
-    p.body_clearance, p.ground_memory, p.obstacle_memory,
+    plan_topic_.c_str(), p.plan_radius, p.plan_z_band, p.max_step_height, p.max_slope_deg,
+    p.min_obstacle_height, p.body_clearance, p.ground_memory, p.obstacle_memory,
     p.ray_clear_tolerance > 0.0 ? "on" : "off", p.ray_clear_tolerance, p.ray_clear_end_margin,
     cloud_timeout_);
 
@@ -124,6 +132,11 @@ void TerrainLayer::onInitialize()
   plan_sub_ = node_->create_subscription<nav_msgs::msg::Path>(
     plan_topic_, rclcpp::QoS(1),
     std::bind(&TerrainLayer::planCallback, this, std::placeholders::_1), sub_opt);
+  // Beside `plan`, the planner's (latched).
+  crossings_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    joinWithParentNamespace(syncai_util::kPlanCrossingsTopic),
+    rclcpp::QoS(1).reliable().transient_local(),
+    std::bind(&TerrainLayer::crossingsCallback, this, std::placeholders::_1), sub_opt);
   cloud_sub_->subscribe();
 }
 
@@ -283,13 +296,69 @@ void TerrainLayer::planCallback(nav_msgs::msg::Path::ConstSharedPtr message)
   plan_ = *message;
 }
 
-std::vector<TerrainPathPose> TerrainLayer::pathPoses()
+void TerrainLayer::crossingsCallback(std_msgs::msg::String::ConstSharedPtr message)
+{
+  syncai_util::PlanCrossings c;
+  std::string error;
+  if (!syncai_util::fromJson(message->data, c, error)) {
+    // Not kept (2026-11-09): this layer cannot tell which plan a word is for
+    // (`plan` is trimmed and restamped on every re-send), so the last word
+    // kept would open its corridor along the new plan with the old plan's
+    // stairs -- a stair on the new plan unmarked, its step rule off. An
+    // unreadable word is no word: the poses seed the reach flood only.
+    RCLCPP_WARN(
+      logger_,
+      "TerrainLayer: plan_crossings unreadable (%s): no corridor along the plan until the next "
+      "readable one (a planner and a costmap from different builds?)",
+      error.c_str());
+    std::lock_guard<std::mutex> lock(plan_mutex_);
+    crossings_known_ = false;
+    stair_pts_.clear();
+    return;
+  }
+  // Of the planner's word this layer keeps that there was one (known) and
+  // where the stair-gait spans are (2026-11-07): the corridor along the plan
+  // is every flat-gait pose, and a stair is where it ends. A crossing's kind
+  // is not read -- a walked sill, a kerb, a short slope and a door are all
+  // the plan's floor here, and the next kind the planner lays will be too.
+  std::vector<TerrainPathPose> stairs;
+  size_t stair_spans = 0;
+  for (const auto & x : c.crossings) {
+    if (!x.stair_gait) {
+      continue;
+    }
+    ++stair_spans;
+    for (const auto & p : x.pts) {
+      stairs.push_back({p.x, p.y, p.z, true});
+    }
+  }
+  if (c.known) {
+    RCLCPP_INFO(
+      logger_,
+      "TerrainLayer: the planner's word for the new plan: %zu crossings, %zu in the stair gait "
+      "(lethal as ever); the plan's corridor opens everywhere else within %.2f m",
+      c.crossings.size(), stair_spans, terrain_.params.plan_radius);
+  }
+  std::lock_guard<std::mutex> lock(plan_mutex_);
+  crossings_frame_ = c.frame_id;
+  crossings_known_ = c.known;
+  stair_pts_ = std::move(stairs);
+}
+
+std::vector<TerrainPathPose> TerrainLayer::pathPoses(bool & corridor)
 {
   nav_msgs::msg::Path plan;
+  std::vector<TerrainPathPose> stairs;
+  std::string stairs_frame;
+  bool known = false;
   {
     std::lock_guard<std::mutex> lock(plan_mutex_);
     plan = plan_;
+    stairs = stair_pts_;
+    stairs_frame = crossings_frame_;
+    known = crossings_known_;
   }
+  corridor = false;
   std::vector<TerrainPathPose> out;
   // A level path (a 2D planner's, and the empty one a cancel leaves) says
   // nothing about where the floor goes: no seeds.
@@ -310,8 +379,52 @@ std::vector<TerrainPathPose> TerrainLayer::pathPoses()
     geometry_msgs::msg::PoseStamped in = ps, pose;
     in.header = plan.header;
     tf2::doTransform(in, pose, tf);
-    out.push_back({pose.pose.position.x, pose.pose.position.y, pose.pose.position.z});
+    out.push_back({pose.pose.position.x, pose.pose.position.y, pose.pose.position.z, false});
   }
+  // The corridor needs the planner's word: without it there is no saying
+  // where the stairs on this plan are, and the poses seed the reach flood
+  // only (as every plan did until 2026-11-07).
+  if (!known) {
+    return out;
+  }
+  if (!stairs.empty()) {
+    // The planner's frame (map), as the plan's.
+    try {
+      const auto stf = tf_->lookupTransform(global_frame_, stairs_frame, tf2::TimePointZero);
+      for (auto & p : stairs) {
+        geometry_msgs::msg::PointStamped in, o;
+        in.point.x = p.x;
+        in.point.y = p.y;
+        in.point.z = p.z;
+        tf2::doTransform(in, o, stf);
+        p = {o.point.x, o.point.y, o.point.z, true};
+      }
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *clock_, 5000,
+        "TerrainLayer: cannot transform the plan's stairs (%s) into %s: %s; no corridor",
+        stairs_frame.c_str(), global_frame_.c_str(), ex.what());
+      return out;
+    }
+    // A pose within the corridor's radius of a stair span's point is the
+    // stair's: its lead on the floor before the flight included, which the
+    // rules pass on their own. On the stair's floor only (2026-11-10): a
+    // pose under or over a flight -- a patrol along the 1F corridor a
+    // stairwell stands above, before it climbs it -- is within the radius in
+    // x / y and more than plan_z_band from every point of the span, and
+    // marked it lost its corridor, its sills and kerbs walled off again.
+    const double r = terrain_.params.plan_radius;
+    const double z_band = terrain_.params.plan_z_band;
+    for (auto & p : out) {
+      for (const auto & s : stairs) {
+        if (std::hypot(p.x - s.x, p.y - s.y) <= r && std::fabs(p.z - s.z) <= z_band) {
+          p.stair = true;
+          break;
+        }
+      }
+    }
+  }
+  corridor = true;
   return out;
 }
 
@@ -322,8 +435,9 @@ void TerrainLayer::updateBounds(
   // Before the costmap's own mutex: pathPoses() takes TF and the plan's
   // mutex, neither of which needs the costmap.
   std::vector<TerrainPathPose> path;
+  bool corridor = false;
   if (enabled_) {
-    path = pathPoses();
+    path = pathPoses(corridor);
   }
 
   std::lock_guard<Costmap::mutex_t> guard(*getMutex());
@@ -341,7 +455,7 @@ void TerrainLayer::updateBounds(
   }
   useExtraBounds(min_x, min_y, max_x, max_y);
 
-  terrain_.setPath(path);
+  terrain_.setPath(path, corridor);
   terrain_.classify(
     clock_->now().seconds(), robot_x, robot_y, robot_ground_z_, costmap_, &last_stats_);
 
@@ -358,12 +472,14 @@ void TerrainLayer::updateBounds(
     RCLCPP_DEBUG(
       logger_,
       "TerrainLayer: %zu cells with a ground estimate, %zu lethal (%zu obstacle, %zu step, "
-      "%zu slope, %zu island), %llu samples ray-cleared in all%s",
+      "%zu slope, %zu island), %zu cells on the plan's corridor (no step or slope rule), %llu "
+      "samples ray-cleared in all%s",
       last_stats_.known,
       last_stats_.lethal_obstacle + last_stats_.lethal_step + last_stats_.lethal_slope +
         last_stats_.lethal_island,
       last_stats_.lethal_obstacle, last_stats_.lethal_step, last_stats_.lethal_slope,
-      last_stats_.lethal_island, static_cast<unsigned long long>(terrain_.clearedSamples()),
+      last_stats_.lethal_island, last_stats_.on_plan,
+      static_cast<unsigned long long>(terrain_.clearedSamples()),
       has_cloud_ ? "" : " (no cloud yet)");
   }
 

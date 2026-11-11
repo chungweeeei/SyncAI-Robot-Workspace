@@ -215,6 +215,17 @@ void TerrainGrid::clearRay(double ox, double oy, double oz, double x, double y, 
   if (reach <= 0.0 || len < 1e-6) {
     return;
   }
+  // The ground bound (the header) goes further: every cell but the one the
+  // return lands in. A ray is above the surface it ends on all the way --
+  // the grazing that keeps clearing short of the end only brings it within
+  // the tolerance of a floor, never under it -- and the cells right before
+  // a wall are where the borrowed ground stands. The end cell by its index,
+  // not by a distance short of the end (2026-11-07): a diagonal ray enters
+  // its last cell up to res * sqrt 2 before its end, and `len - res` wrote
+  // the bound into the wall's own cell, which then lost its upper returns
+  // from the estimate.
+  int ex = -1, ey = -1;
+  worldToCell(x, y, ex, ey);  // outside the window: no cell matches, the walk runs out
   int ix, iy;
   if (!worldToCell(ox, oy, ix, iy)) {
     // The lidar outside the window: the rolling window is centred on the
@@ -249,15 +260,25 @@ void TerrainGrid::clearRay(double ox, double oy, double oz, double x, double y, 
 
   double s_in = 0.0;
   bool first = true;
-  while (s_in < reach) {
-    const double s_out = std::min(std::min(s_x, s_y), reach);
+  while (s_in < len) {
+    if (ix == ex && iy == ey) {
+      break;  // the cell the return lands in: the surface it hit is its own
+    }
+    const double s_out = std::min(std::min(s_x, s_y), len);
     // The lidar's own cell holds the robot's legs; the footprint is cleared
     // anyway. Every other cell: the ray's height at the middle of its
     // crossing (it drops at most a centimetre across a cell at the angles
     // the lidar sees the floor at, inside the tolerance).
     if (!first) {
       const float h = static_cast<float>(oz + dz_ds * 0.5 * (s_in + s_out));
-      clearCell(index(ix, iy), h, ts, tol);
+      if (s_in < reach) {
+        clearCell(index(ix, iy), h, ts, tol);
+      }
+      Cell & c = cells_[index(ix, iy)];
+      if (h < c.ray_lo || ts - c.ray_lo_t > static_cast<float>(params.ground_memory)) {
+        c.ray_lo = h;
+        c.ray_lo_t = ts;
+      }
     }
     first = false;
     if (s_x < s_y) {
@@ -275,9 +296,102 @@ void TerrainGrid::clearRay(double ox, double oy, double oz, double x, double y, 
   }
 }
 
-void TerrainGrid::setPath(const std::vector<TerrainPathPose> & poses)
+void TerrainGrid::setPath(const std::vector<TerrainPathPose> & poses, bool corridor)
 {
   path_ = poses;
+  corridor_ = corridor;
+}
+
+void TerrainGrid::markPlan() const
+{
+  const float inf = std::numeric_limits<float>::infinity();
+  on_plan_.assign(cells_.size(), 0);
+  plan_z_.assign(cells_.size(), -inf);
+  plan_dist_.assign(cells_.size(), inf);
+  if (!corridor_ || path_.empty() || params.plan_radius <= 0.0) {
+    return;
+  }
+  const double r = params.plan_radius;
+  const int rc = static_cast<int>(std::ceil(r / res_));
+  // The flat-gait stretches of the plan, sampled every half cell: a pose
+  // marked stair is left out with the segments either side of it, so a
+  // flight and its leads open nothing.
+  struct Sample
+  {
+    double x, y, z;
+  };
+  std::vector<Sample> samples;
+  for (size_t k = 0; k < path_.size(); ++k) {
+    const TerrainPathPose & a = path_[k];
+    if (a.stair) {
+      continue;
+    }
+    // Reaching into the window at all? The plan is metres long and the
+    // window 4 m across; a sample further than r from it marks nothing.
+    const auto inReach = [&](double x, double y) {
+      return x >= ox_ - r && y >= oy_ - r && x <= ox_ + nx_ * res_ + r && y <= oy_ + ny_ * res_ + r;
+    };
+    if (k + 1 == path_.size() || path_[k + 1].stair) {
+      if (inReach(a.x, a.y)) {
+        samples.push_back({a.x, a.y, a.z});
+      }
+      continue;
+    }
+    const TerrainPathPose & b = path_[k + 1];
+    if (!inReach(a.x, a.y) && !inReach(b.x, b.y)) {
+      continue;
+    }
+    const double len = std::hypot(b.x - a.x, b.y - a.y);
+    const int n = std::max(1, static_cast<int>(std::ceil(len / (res_ / 2))));
+    for (int s = 0; s < n; ++s) {
+      const double t = static_cast<double>(s) / n;
+      samples.push_back({a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z)});
+    }
+  }
+  // Every cell within r of a sample, with the distance to its nearest one.
+  const auto each = [&](const Sample & s, auto && f) {
+    const int cx = static_cast<int>(std::floor((s.x - ox_) / res_));
+    const int cy = static_cast<int>(std::floor((s.y - oy_) / res_));
+    for (int dy = -rc; dy <= rc; ++dy) {
+      for (int dx = -rc; dx <= rc; ++dx) {
+        const int ix = cx + dx, iy = cy + dy;
+        if (ix < 0 || iy < 0 || ix >= nx_ || iy >= ny_) {
+          continue;
+        }
+        const double ccx = ox_ + (ix + 0.5) * res_, ccy = oy_ + (iy + 0.5) * res_;
+        const double d = std::hypot(ccx - s.x, ccy - s.y);
+        if (d <= r) {
+          f(index(ix, iy), static_cast<float>(d));
+        }
+      }
+    }
+  };
+  for (const Sample & s : samples) {
+    each(s, [&](size_t i, float d) { plan_dist_[i] = std::min(plan_dist_[i], d); });
+  }
+  // The plan's height over a cell: the highest of the samples within two
+  // cells of its nearest one -- a step's riser stands in the cells the plan
+  // climbs it in, and read against the floor below, its own returns were
+  // an obstacle (a 0.3 m sill's lane a quarter lethal, 2026-11-02); read
+  // against the floor above they are the floor. Two cells, not the whole
+  // radius: on a slope the highest within 0.4 m is 0.15 m up, and a 0.2 m
+  // thing on the slope would have gone under the band.
+  const float window = static_cast<float>(2 * res_);
+  for (const Sample & s : samples) {
+    each(s, [&](size_t i, float d) {
+      if (d <= plan_dist_[i] + window) {
+        plan_z_[i] = std::max(plan_z_[i], static_cast<float>(s.z));
+      }
+    });
+  }
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    // ... on ground near the plan's height (estimateGround()'s; the robot's
+    // for a cell with none): a floor above or below the plan in the same
+    // column is not the plan's.
+    if (plan_dist_[i] <= r && std::fabs(ground_[i] - plan_z_[i]) <= params.plan_z_band) {
+      on_plan_[i] = 1;
+    }
+  }
 }
 
 void TerrainGrid::estimateGround(double now, double robot_ground_z) const
@@ -286,6 +400,7 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
   ground_known_.assign(cells_.size(), 0);
 
   const float oldest = rel(now) - static_cast<float>(params.ground_memory);
+  ground_oldest_ = oldest;
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
       const size_t i = index(ix, iy);
@@ -305,6 +420,18 @@ void TerrainGrid::estimateGround(double now, double robot_ground_z) const
               scratch_.push_back(s.z);
             }
           }
+        }
+      }
+      // A ray through this cell within the memory proves it empty at its
+      // height: no gathered sample above that is this cell's ground (the
+      // header; a jamb's returns next door to the lane).
+      {
+        const Cell & own = cells_[i];
+        if (own.ray_lo_t >= oldest) {
+          const float cap = own.ray_lo + static_cast<float>(params.ray_clear_tolerance);
+          scratch_.erase(
+            std::remove_if(scratch_.begin(), scratch_.end(), [cap](float z) { return z > cap; }),
+            scratch_.end());
         }
       }
       // Overhead returns out, against the neighbourhood's lowest (2026-10-22;
@@ -353,11 +480,29 @@ bool TerrainGrid::cellHasObstacle(size_t i, double now, double ground) const
   return false;
 }
 
+bool TerrainGrid::groundSupported(size_t i) const
+{
+  const Cell & c = cells_[i];
+  const float g = ground_[i];
+  const float lift = static_cast<float>(params.max_ground_lift);
+  for (int k = 0; k < c.count; ++k) {
+    const Sample & s = c.ring[k];
+    if (s.t >= ground_oldest_ && std::fabs(s.z - g) <= lift) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
 {
   // Least-squares plane z = a x + b y + c through the known grounds under
   // the disc; tilt = atan(hypot(a, b)). surface_map.cpp's stage 5, without
   // its residual test: a quantile ground is smoother than a voxel top face.
+  // An obstacle cell's ground is the thing's returns, not floor: left out,
+  // as Octo3D fits only the surface cells (the header has the door). So is
+  // a ground none of the cell's own returns stand on, a neighbour's (the
+  // header has the jamb's inner cells, and the band before a wall).
   const int r = static_cast<int>(std::ceil(params.robot_radius / res_));
   const double r2 = params.robot_radius * params.robot_radius;
   double sx = 0, sy = 0, sz = 0, sxx = 0, sxy = 0, syy = 0, sxz = 0, syz = 0;
@@ -375,7 +520,7 @@ bool TerrainGrid::fitSlope(int ix, int iy, double & tilt_deg) const
         continue;
       }
       const size_t j = index(nx, ny);
-      if (!ground_known_[j]) {
+      if (!ground_known_[j] || obstacle_[j] || !supported_[j]) {
         continue;
       }
       const double z = ground_[j];
@@ -497,6 +642,7 @@ void TerrainGrid::classify(
   TerrainStats * stats) const
 {
   estimateGround(now, robot_ground_z);
+  markPlan();
   floodReach(robot_x, robot_y, true, reached_);
   // The floor the robot can walk onto from where it stands, without the
   // path's seeds (they reach a stair's treads): what a sparse cell may be
@@ -505,6 +651,25 @@ void TerrainGrid::classify(
     floodReach(robot_x, robot_y, false, walkable_);
   }
   obstacleReference();
+  // 1. A return in the band above the ground: a wall foot, a box, a person, a
+  // tread two risers up. A sparse cell's band starts from obstacleReference()'s
+  // height, not the borrowed one. On the plan's corridor the ground is the
+  // plan's own height there (markPlan()), or the cell's where the lidar
+  // puts the floor higher than the map does -- never lower: a map 0.2 m
+  // under the real floor would otherwise make every floor return on the
+  // corridor an obstacle, and a thing standing on the corridor is still an
+  // island (rule 2) or above the band either way. Judged for every cell
+  // before the loop, because the slope rule's fit reads it for the cells
+  // round the one it judges.
+  obstacle_.assign(cells_.size(), 0);
+  supported_.assign(cells_.size(), 0);
+  for (size_t i = 0; i < cells_.size(); ++i) {
+    const float ref = on_plan_[i] ? std::max(obstacle_ref_[i], plan_z_[i]) : obstacle_ref_[i];
+    obstacle_[i] = cellHasObstacle(i, now, ref) ? 1 : 0;
+    // Whether the cell's own returns stand on its ground, for the slope
+    // fit: once per cell here, not once per disc cell there (the header).
+    supported_[i] = ground_known_[i] && groundSupported(i) ? 1 : 0;
+  }
   TerrainStats st;
   for (int iy = 0; iy < ny_; ++iy) {
     for (int ix = 0; ix < nx_; ++ix) {
@@ -515,10 +680,7 @@ void TerrainGrid::classify(
       }
       const double ground = ground_[i];
 
-      // 1. A return in the band above the ground: a wall foot, a box, a
-      // person, a tread two risers up. A sparse cell's band starts from
-      // obstacleReference()'s height, not the borrowed one.
-      if (cellHasObstacle(i, now, obstacle_ref_[i])) {
+      if (obstacle_[i]) {
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_obstacle;
         continue;
@@ -534,6 +696,14 @@ void TerrainGrid::classify(
       if (!reached_[i]) {
         cost[i] = LETHAL_OBSTACLE;
         ++st.lethal_island;
+        continue;
+      }
+      // On the plan's corridor the terrain is the planner's judgement, made
+      // on the map (the header): rules 3 and 4 below, its own, are not run
+      // again here on the lidar's view of the same floor.
+      if (on_plan_[i]) {
+        ++st.on_plan;
+        cost[i] = FREE_SPACE;
         continue;
       }
       // 3. The step rule: a neighbour's ground out of the legs' reach -- up

@@ -12,6 +12,7 @@
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/node_utils.hpp"
+#include "syncai_util/plan_crossings.hpp"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -194,6 +195,10 @@ void PlannerServer::configure()
 
   // Initialize pubs & subs
   plan_publisher_ = this->create_publisher<nav_msgs::msg::Path>("plan", 1);
+  // Reliable and latched: a controller that starts after the plan was made
+  // still gets the one for the plan it is handed (the stamp ties the two).
+  crossings_publisher_ = this->create_publisher<std_msgs::msg::String>(
+    syncai_util::kPlanCrossingsTopic, rclcpp::QoS(1).reliable().transient_local());
 
   // Since move.xml plans only when the current path is blocked (2026-10), a
   // plan is published once per route instead of once a second, so a viewer
@@ -717,6 +722,27 @@ void PlannerServer::publishPlan(const nav_msgs::msg::Path & path, const std::str
     last_plan_used_ = std::chrono::steady_clock::now();
     clear_resends_left_ = 0;
   }
+  // The crossings before the plan (2026-11-09). Before the action's result
+  // goes back, so the controller usually has them when FollowPath brings
+  // the path; a late one is matched on arrival (the stamp ties it to the
+  // plan). And before `plan`, because the terrain layer cannot tie them to
+  // it (`plan` is trimmed and restamped on every re-send) and pairs the
+  // plan it holds with the last word it read: sent the other way round, a
+  // new plan met the old plan's word for a moment, and a stair on the new
+  // plan that the old one did not take was in the corridor, its step rule
+  // off. Two topics have no ordering between them in DDS, but one thread's
+  // two writes to the same reader process arrive in order in practice. A
+  // planner that says nothing is `known: false`, which leaves the followers
+  // to their own judgement.
+  syncai_nav_core::GlobalPlanner * planner = findPlanner(planner_id);
+  std::string json = planner ? planner->planAnnotations(path) : std::string();
+  if (json.empty()) {
+    json = syncai_util::toJson(syncai_util::PlanCrossings{});
+  }
+  std_msgs::msg::String crossings;
+  crossings.data = std::move(json);
+  crossings_publisher_->publish(crossings);
+
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
   if (plan_publisher_->get_subscription_count() > 0) {
     plan_publisher_->publish(std::move(msg));
@@ -830,6 +856,14 @@ void PlannerServer::dropPlan(const std::string & reason)
     msg->header.stamp = now();
     plan_publisher_->publish(std::move(msg));
   }
+  // No plan, no crossings: the terrain layer stops waiving a route's steps
+  // that nothing drives any more. Known and empty, for no plan (poses 0).
+  syncai_util::PlanCrossings none;
+  none.known = true;
+  none.frame_id = costmap_ros_->getGlobalFrameID();
+  std_msgs::msg::String crossings;
+  crossings.data = syncai_util::toJson(none);
+  crossings_publisher_->publish(crossings);
 }
 
 rcl_interfaces::msg::SetParametersResult PlannerServer::dynamicParametersCallback(

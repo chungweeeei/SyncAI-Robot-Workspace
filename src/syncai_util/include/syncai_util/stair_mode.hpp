@@ -24,14 +24,47 @@
 // syncai_nav_core is the plugin interface and carries no code.
 //
 // Two ways in: initialize() for a ROS node (declares the parameters under the
-// plugin's name, creates the service client, the `mode` subscription and the
-// latched `stair_mode` publisher), configure() for a test, which injects the
-// three side effects as callbacks. Everything else is plain C++ on a Path.
+// plugin's name, creates the service client, the `mode` and `plan_crossings`
+// subscriptions and the latched `stair_mode` publisher), configure() for a
+// test, which injects the three side effects as callbacks (and the test calls
+// setCrossings() itself). Everything else is plain C++ on a Path.
+//
+// Since 2026-11-02 the planner says which stretches of its plan are stairs
+// (`plan_crossings`, syncai_util/plan_crossings.hpp), and that gates the rise
+// test: with the planner's word for the plan in hand, a rise of min_rise
+// within the window enters (or keeps) stair mode only where the window
+// overlaps a crossing the planner lays in the stair gait. A ramp, a kerb or
+// a walked gap the planner lays in the flat gait -- dp's 2F step, 0.2 m over
+// 0.5 m, a short slope at a door -- is walked in the flat gait whatever its
+// heights say. The heights still decide where: a stair crossing the planner
+// straightened (stairCrossing) starts at the floor vertex before the flight,
+// metres short of the first riser, so the span says whether and the rise
+// says where. Without the planner's word for this very plan (another
+// planner, a sidecar not yet arrived or for an older plan) the rise test
+// alone decides, as before.
+//
+// This class reads two bits of each crossing and nothing else (2026-11-07):
+// the gait, for the gate above, and `slow`, handed to the controller
+// (plannerSlow()) for its speed cap. Not the kind: a "narrow" test here was
+// the one case of a follower switching on what the planner called a thing,
+// and every kind the planner adds would have needed another.
+//
+// The plan a controller holds may be one leg of the planner's (2026-11-07):
+// controller_server cuts a path at its cusps (path_cusps.hpp) and hands the
+// plugin one leg at a time, so setPlan() takes the leg's place in the whole
+// plan and the crossings, whose spans index the whole plan, are matched on
+// its stamp and pose count and shifted to the leg. Until then every leg of a
+// cut plan failed the match -- the word was for a plan of another length --
+// and a patrol out through dp's 2F lab door and back lost the door's speed
+// cap and the sill's flat gait on every leg.
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "geometry_msgs/msg/point.hpp"
@@ -39,7 +72,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "syncai_common/srv/set_policy_mode.hpp"
+#include "syncai_util/plan_crossings.hpp"
 
 namespace syncai_util
 {
@@ -156,9 +191,16 @@ public:
     const Params & params, SendPolicyFn send_policy, ServiceReadyFn service_ready = {},
     PublishFn publish = {});
 
-  /// The plan as the controller's setPlan() received it (before any pruning),
-  /// kept with medianHeights() applied: every window and slopeAhead() read that.
-  void setPlan(const nav_msgs::msg::Path & full_plan);
+  /**
+   * @brief The plan as the controller's setPlan() received it (before any
+   * pruning), kept with medianHeights() applied: every window and
+   * slopeAhead() read that
+   * @param full_plan The plan, or one leg of the planner's (the class comment)
+   * @param plan_first The index of `full_plan`'s first pose in the planner's
+   * plan (0: the plan itself)
+   * @param plan_poses The planner's plan's pose count (0: full_plan's own)
+   */
+  void setPlan(const nav_msgs::msg::Path & full_plan, size_t plan_first = 0, size_t plan_poses = 0);
 
   /**
    * @brief Replace each inner pose's z by the median of it and its two
@@ -178,9 +220,10 @@ public:
    * values is the middle one, so every riser, landing and flight edge keeps
    * its height. Not removed: a dip two poses or more wide, or a slope whose
    * two ends round 0.1 m apart the wrong way. Rejected for this: a larger
-   * min_rise (the 0.2 m ramp would still be one voxel from it), and telling
-   * stairs from slopes by the planner's stair links (the right model, but the
-   * path would have to carry which poses are on a link; not done yet).
+   * min_rise (the 0.2 m ramp would still be one voxel from it). Telling
+   * stairs from slopes by the planner's stair links, the right model, came
+   * on 2026-11-02 (plan_crossings, the class comment); the median stays for
+   * a plan the planner says nothing about.
    */
   static void medianHeights(nav_msgs::msg::Path & path);
 
@@ -234,6 +277,21 @@ public:
 
   /// The gait controller's live policy index (from `mode` data[0]).
   void setReportedPolicy(int policy) { reported_policy_.store(policy); }
+
+  /// The planner's crossings (`plan_crossings`): applied to the plan they
+  /// were made for (same stamp and pose count) whenever that is the plan
+  /// setPlan() was given (or the plan its leg was cut from), before or after
+  /// this call. Any thread.
+  void setCrossings(const PlanCrossings & crossings);
+
+  /// The crossings the planner marks `slow` (2026-11-07; a narrow passage)
+  /// on the plan setPlan() was given, their spans in that plan's indices
+  /// (shifted to the leg, clipped to it, those off it dropped), when the
+  /// planner's crossings are for it (true; possibly none), else false. Not
+  /// stair mode's own business: it holds the one plan_crossings subscription
+  /// and the plan they are matched to, so the controller's speed cap reads
+  /// them here. Any thread.
+  bool plannerSlow(std::vector<PlanCrossing> & spans) const;
 
   bool enabled() const { return params_.enabled; }
   bool onStairs() const { return on_stairs_; }
@@ -351,6 +409,20 @@ private:
   enum class Transition { None, Entering, Leaving };
 
   bool wantStairs(size_t remaining_poses, double lead) const;
+  // The pose spans of the plan the planner lays in the stair gait, in
+  // full_plan_'s indices, when its crossings are for full_plan_ (true;
+  // possibly none), else false.
+  bool plannerStairs(std::vector<std::pair<size_t, size_t>> & spans) const;
+  // The crossings in recent_crossings_ for the plan full_plan_ is (a leg
+  // of), newest first, or nullptr; and the crossing's span shifted into
+  // full_plan_'s indices and clipped to it, false for a span wholly off the
+  // leg. Under crossings_mutex_.
+  const PlanCrossings * crossingsForPlan() const;
+  bool spanOnLeg(const PlanCrossing & c, size_t & first, size_t & last) const;
+  // The last pose within `dist` metres (x / y, along the path) after /
+  // before `idx`.
+  static size_t indexAhead(const nav_msgs::msg::Path & path, size_t idx, double dist);
+  static size_t indexBehind(const nav_msgs::msg::Path & path, size_t idx, double dist);
   // Ask the gait controller for `policy` (fire and forget: the driver's UDP has
   // no acknowledgement to wait for).
   void sendPolicy(int policy);
@@ -368,6 +440,10 @@ private:
 
   nav_msgs::msg::Path full_plan_;
   bool plan_has_height_{false};
+  // Where full_plan_ sits in the planner's plan: its first pose's index
+  // there, and that plan's pose count (setPlan()).
+  size_t plan_first_{0};
+  size_t plan_poses_{0};
   // What the robot is set up for: true once the stair policy was commanded and
   // has settled.
   bool on_stairs_{false};
@@ -383,6 +459,24 @@ private:
   int restore_policy_{-1};
   // Written from the executor (the `mode` subscription), read in the control loop.
   std::atomic<int> reported_policy_{-1};
+
+  // The planner's last few crossings, from the executor (`plan_crossings`),
+  // read in the control loop. Several, not one (2026-11-09): the topic
+  // carries every plan's word and the clear's, and the plan this controller
+  // holds is not always the newest one said -- a replan's word arrives
+  // before FollowPath brings its path, and a finished goal's clear_plan
+  // (an empty word, for no plan) can land after the next goal's plan. With
+  // one slot either evicted the held plan's word, and the stair mode fell
+  // back to the heights: a sill stopped the robot for HIMLOCO again and a
+  // door lost its speed cap, for the rest of that navigation in the second
+  // case. Matched on the plan's stamp and count, so an old entry never
+  // applies to another plan.
+  static constexpr size_t kRecentCrossings = 4;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr crossings_sub_;
+  mutable std::mutex crossings_mutex_;
+  std::deque<PlanCrossings> recent_crossings_;
+  // A rise the planner's word suppressed was logged for this plan (once).
+  mutable bool suppressed_said_{false};
 };
 
 }  // namespace syncai_util

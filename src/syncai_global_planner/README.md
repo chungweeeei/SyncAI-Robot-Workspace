@@ -525,6 +525,77 @@ mode's `min_rise`, so the gait does not change for it. The kerb scene
 (`--synthetic kerb`, a 0.15 m step): 74 links, a route from (2, 2) to
 (10, 6) crosses at y = 4.25 from x 5.55 to 6.45 in one straight line.
 
+**Walked gaps** (2026-11-02). Between a kerb (one step, one piece of
+ground) and a stair (`stair_min_rise` and more, between two floors of
+`stair_anchor_min_area`) the rules left a hole: a door sill the map lost, a
+short slope steeper than `max_slope_deg`, a doorway the footprint rule
+closed — each parts two pieces of ground the flat gait walks between, and
+the track proves it, but the stair walker anchors on floors only, so a room
+the furniture cut small never linked (dp's 2F lab, 9 m² behind a ~0.1 m
+sill the map read as a 0.3 m step), and a rise under `stair_min_rise`
+between two floors made no link on purpose. So the track is walked once
+more for **gap links** (`gap_links`): its anchors are every component of
+at least `gap_anchor_min_area` (2 m², a room), and two consecutive ones in
+different components, at most `gap_max_length` (2.5 m) of track apart and
+at most `gap_max_rise` (0.3 m; the measured floor where the cloud gave one)
+apart in height, are joined by a straight crossing — the last cell stood on
+before the gap to the first after it, with a lead of `kerb_lead` (0.5 m,
+one lead for every flat-gait crossing) marched either side over level
+ground of the same component, as a kerb link is laid, so the gap is met
+square. Its kind is **kerb** within
+`max_step_height` and **ramp** above, both the flat gait's
+(`StairLink::gait()`) and both taken at `kerb_cost_multiplier`; the track
+crossing the same gap again (the way back through a door) lays nothing new,
+a second door into the same room does. A gap inside a laid stair's
+keyframes (a landing, a flight's foot) is that stair's and is skipped. A
+rise above `gap_max_rise` is the stair walker's between two floors and
+**refused** onto anything smaller, with a startup note (`gap_refused`
+counts them): the operator drove the G23 up a 0.4 m ledge beside dp's 2F
+door by mistake, and a planner that repeated that walk would send the robot
+up it on every route to the lab. What a link says about the terrain — its
+`kind`, `rise` and `gait`, and how it was found (`evidence`: the track, the
+geometry, or a declared file, reserved) — goes out on `plan_crossings`; of
+it the followers read **two bits** (2026-11-07), the gait and `slow`, and
+the rest is the log's and the CLI's (`syncai_util/plan_crossings.hpp` has
+why: every kind laid here used to need a case in the stair mode and a waiver
+in the terrain layer, and the list of terrains has no end). A gap link a
+route takes in the flat gait is sent **`slow: true`** (2026-11-10,
+`StairLink::slow()`): one of the things a gap bridges is a doorway the
+footprint rule closed, narrower than any the narrow-passage test below
+marks, and that test cannot see it — it measures from a waypoint on a
+traversable cell, and a gap's chord has none. Every gap, not a width
+measured on the chord, which lies on ground the map has wrong or missing. A
+link's kind is its generator's: whatever the stair readers lay is a stair.
+A gap link's points, like a kerb link's and the route's own poses, are at
+the **measured floor** (`SurfaceMap::zFloor`, 2026-11-07) — the height its
+kind was judged on; at the voxel tops a 0.26 m sill the kind called a ramp
+rose 0.30 m on the route and `routeStairGaits` walked it in the stair gait.
+The stair readers' own points keep the voxel tops, where a flight's 0.3 m
+and more swallows the difference. And a walked rise at `stair_min_rise` or
+above is never a gap link (the route judge would call it a stair anyway):
+until 2026-11-07 `gap_max_rise` and `stair_min_rise` met at 0.30 inclusive
+on both sides.
+The **gait is the route's** (`routeStairGaits`): crossings within
+`stair_min_rise_window` (1 m) of each other along a route are one group,
+taken in the stair gait when any member is a stair or the route between
+the group's ends rises `stair_min_rise` within that window. dp's 2F stair
+(0.8 m, z 5.3 → 4.5 over ~2 m) is why: the planner takes it as a kerb link
+onto the top step and a stair link 0.3 m on, and judged link by link
+(tried first, 2026-11-02, on each link's own points) its top step was a
+kerb, 8 of its 24 straight links — the short ones, which end half-way down
+at z 4.8 on ground that keeps falling — were ramps, and a route over either
+would have walked the stair in the flat gait. A lone kerb or gap is never
+judged with the floor around it, so one at the foot of a 20° floor slope
+stays the flat gait's. `gap_max_rise`
+is a placeholder, not a measurement: the RL policy has not been measured on
+short slopes, and the dp sill it walked is ~0.1 m. The `threshold` scene (a
+0.1 m sill over a 0.2 m dip, the lab door's shape): one kerb crossing, the
+route over it one straight line; `threshold_ramp` (a 0.2 m sill over a
+dip): one ramp crossing — at 0.1 m voxels a rise between one step and
+`stair_min_rise` is always that shape, since the slope rule fits a plane
+only over a span of more than one step; `ledge` (a 2.5 × 2.5 m, 0.4 m block
+walked over): no link, two notes.
+
 **The measured floor** (2026-10-29). The voxels alone cannot do this for
 outdoor_1027's own kerb: 12 cm, one cell along its whole length in the
 0.1 m octomap, so a step edge with the one-cell band but no kerb, and the
@@ -652,7 +723,10 @@ search already picks their entry across the flight's width.
 supercover traversal (every cell the segment touches; Bresenham skips the
 corner cell a wall foot sits in), step-continuous along the segment, and
 never closer to the boundary than the cells it replaces (the rule Smac's
-smoother had as "never above 252"); then a resample at `interpolation_resolution` with z read back
+smoother had as "never above 252") but for `shortcut_clearance_tolerance`
+(0.1 m, one cell, never under `shortcut_clearance_floor` 0.2 m for it, since
+2026-11-10, "Corners" below), its corners then rounded with arcs up to
+`corner_radius` (0.5 m); then a resample at `interpolation_resolution` with z read back
 from the surface. Poses carry z = the floor's top face (+ `path_z_offset`),
 yaw toward the next pose, the goal's orientation last. MPPI
 (`FollowPath`), RPP 3D (`FollowPathRPP3D`) and the controller_server's goal
@@ -661,6 +735,53 @@ check read z since 2026-10 — a path whose poses do not all share one z is matc
 dp1f_1012), and RPP 3D climbs a stretch rising 0.3 m within 1 m in a stair mode
 that switches the gait policy (`syncai_controller/README.md`, "Paths with
 heights" and "Stairs").
+
+**Corners** (2026-11-10). The output is a
+polyline: the shortcut straightens, it does not smooth, and every vertex is a
+sharp turn. `cornerArc()` is the arc that would round one — tangent to both
+segments, its tangent points at most half-way along the shorter, walked over
+the floor as the shortcut walks a segment — and the CLI's `--corners 0.5 0.2`
+reports, per vertex of a `--plan`, the largest arc that keeps the clearance of
+the segment ends it replaces and the largest that keeps 0.2 m. Seven routes
+across dp (570 m) say rounding is not where the sharpness comes from. Of 258
+shortcut vertices 101 turn 20° or more, and 73 of those have room for an arc
+under 0.3 m, which passes a centimetre inside its corner: they are 45° doglegs
+0.1–0.6 m long, in pairs. The clearance rule is what leaves them. A route
+down a corridor runs on the ridge of the clearance field, which on a grid not
+square to the corridor is a staircase, and a straight line between two ridge
+cells crosses cells 5 cm less clear, so "never closer than the cells it
+replaces", held exactly, refuses it and the shortcut advances a cell at a
+time. Tried in a scratch build, letting a shortcut segment come 0.1 m (one
+cell) closer than the cells it replaces: 90 vertices, 48 turns of 20° or more,
+none with under 0.3 m of room, and the routes' total turning 4469° → 2357°
+(outdoor_1027, eight routes: 69 → 37 vertices, 998° → 785°). The arcs' own
+clearance was never the limit — on every corner with room, the arc that keeps
+the replaced clearance is the largest that fits. So the order: the shortcut's
+tolerance first, arcs on what is left.
+
+The tolerance is in since the same day (`ShortcutSlack`,
+`shortcut_clearance_tolerance` 0.1 / `shortcut_clearance_floor` 0.2): a
+segment may come 0.1 m closer to the boundary than the least clear cell of
+the sub-path it replaces, but not under 0.2 m for it, so a route through a
+doorway (0.10 m) is held to the exact rule there as before. It does not
+accumulate: each segment is held to the search's own cells. With the floor,
+the same routes: dp 95 vertices, 52 turns of 20° or more, 4 with under 0.3 m
+of room, 2524°; outdoor_1027 39 vertices, 707°.
+
+The arcs are laid since the same day too (`corner_radius` 0.5 m, `buildPath`):
+each corner of a floor stretch takes the largest arc up to that radius that
+reaches no further than half-way along its shorter segment and keeps the
+shortcut's clearance rule, tolerance included. Three kinds of corner stay
+sharp: one with no such arc; a cusp (a turn past 2.0 rad, where the
+controller server cuts the route into legs and the robot turns standing on
+the tip); and the vertex next to a stair, kerb or gap crossing, whose run-up
+is meant to be straight and square to it. Counted on the output poses (0.1 m
+apart), the same seven dp routes: poses that turn more than 15° 143 with the
+exact rule and no arcs, 71 with the tolerance, 21 with the arcs (more than
+30°: 47, 35, 11 — what is left is mostly the stairs' landing corners, laid
+sharp on purpose); outdoor_1027 28, 17, 4. A radius of 1.0 m gives the same
+counts: the segments' lengths are the limit, not the radius. Offline numbers;
+unmeasured on the robot.
 
 **Measured on dp1f_1012_v2** (2026-10-13; 1F and 2F, 2 576 keyframes): 1.26 M
 columns, 724 k surface cells (24 k inferred), 158 k traversable in 146
@@ -739,7 +860,7 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
    … --plan-poses 0 1000 --plan-poses 2000 2250 --dump-html out.html   # 3D viewer: open in a browser
    … --poses … --plan-poses 0 2000 [--no-stair-links]           # with --poses, the track's stairs are links
    … --keepout map/<name>/keepout.json --plan … --dump-image out.bmp   # the zones, as the plugin reads them (see "Keepout zones")
-   … --synthetic ramp|stairs|kerb|drop|wall|hole|two_floors      # the test scenes
+   … --synthetic ramp|stairs|kerb|drop|wall|hole|two_floors|threshold|threshold_ramp|ledge   # the test scenes
    … --param max_slope_deg=25 --param heuristic_weight=1.5       # any SurfaceMapParams / SearchParams field
 ```
 
@@ -748,7 +869,10 @@ octomap_planner_3d_cli map/<name>/octomap.bt --stats            # cells, rejects
 poses carry the floor's z, so an
 `Octo3D` route lies on the floor of the point cloud. (`Octo3D/raw_plan`, the
 un-shortcut chain behind `publish_raw_plan`, was removed on 2026-10-28; the
-CLI's `--plan` reports the raw chain's length, and `--no-shortcut` keeps it.) Offline, `--dump-html`
+CLI's `--plan` reports the raw chain's length, and `--no-shortcut` keeps it;
+`--corners <radius> <clearance>` (2026-11-10) lists each shortcut vertex with
+the largest arc that would round it, a measurement that changes no path, see
+"Corners" below.) Offline, `--dump-html`
 writes a self-contained three.js page (~6 MB for a site map; the same page
 style as the OctoMap viewer `clean_map`'s display build makes): the
 traversable cells coloured by floor height, hole-filled ones tinted, a
@@ -1071,7 +1195,9 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `step_edge_cost_radius`, `kerb_min_length`, `kerb_min_sure_cells` | `0.4`, `1.0`, `3` | The step edges' cost band, and what makes a line of step cells a kerb (see **Kerbs**). Build-time |
 | `measured_floor`, `step_edge_min_rise`, `floor_same_surface` | `true`, `0.06`, `0.05` | Read `map.pcd` beside the tree for each cell's measured floor; the metric height from which a step between two measured cells is a sure step; how far a neighbour's floor may be from a cell's own to vote in its smoothing (see **Kerbs**, *The measured floor*). Build-time |
 | `kerb_links`, `kerb_lead`, `kerb_fit_radius` | `true`, `0.5`, `0.5` | Kerb links: a straight crossing at every cell of a kerb, the lead either side, the fit of the kerb's direction (see **Kerbs**); `false` = a kerb is crossed cell to cell at any angle. Build-time |
+| `gap_links`, `gap_anchor_min_area`, `gap_max_length`, `gap_max_rise` | `true`, `2.0` m², `2.5`, `0.3` | Walked gaps: a straight crossing where the track crossed, in at most `gap_max_length`, between two components of at least `gap_anchor_min_area` no more than `gap_max_rise` apart, with `kerb_lead` either side (see **Walked gaps**); `false` = the behaviour before 2026-11-02. `gap_max_rise` is a placeholder, unmeasured. Build-time |
 | `step_edge_cost_weight`, `step_edge_cost_scaling`, `step_edge_one_cell`, `kerb_cost_multiplier` | `1.0`, `5.0`, `0.5`, `1.5` | The band's cost curve, a one-cell step's share of it, and the factor on a kerb link's length (≥ 1). Dynamic |
+| `stair_min_rise_window` | `1.0` | Crossings of a route this close together (m, along the route) are one for the gait on `plan_crossings`: the stair gait when any is a stair or the route between their ends rises `stair_min_rise` within it (see **Walked gaps**). Per plan |
 | `stair_links`, `stair_min_rise`, `stair_max_length`, `stair_anchor_z_window`, `stair_anchor_min_area`, `stair_smooth_passes` | `true`, `0.3`, `60.0`, `0.3`, `10.0` m², `2` | Stair links from the track (see **Stairs**). Build-time |
 | `stair_straight`, `stair_straight_max_flight`, `stair_straight_fit_radius`, `stair_straight_half_width`, `stair_straight_exit_reach` | `true`, `8.0`, `1.0`, `2.0`, `0.6` | Straight links across a single flight's width instead of one along the walk (see **Stairs**); `false` = the walked link only. Build-time |
 | `stair_cost_multiplier` | `2.0` | Factor on a link's 3D length (≥ 1). Dynamic |
@@ -1082,6 +1208,9 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
 | `snap_single_layer` | `true` | Nothing within `snap_z_window` and one traversable layer within `snap_xy_radius`: snap to it at any height (sloping ground under a z = 0 goal). `false` = the window is absolute. Dynamic |
 | `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |
+| `shortcut_clearance_tolerance`, `shortcut_clearance_floor` | `0.1`, `0.2` | What the shortcut may give up of the search's clearance (2026-11-10, `ShortcutSlack` in `path_postprocess.hpp`; "Corners"): a straightened segment may come `tolerance` closer to the boundary than the least clear cell it replaces, never under `floor` for it. The exact rule (both `0`) left the route in 45° doglegs along a corridor's clearance ridge. The CLI's `--shortcut-slack`. Dynamic |
+| `corner_radius` | `0.5` | The arcs at the plan's corners (2026-11-10, `buildPath` / `cornerArc()`; "Corners"): the largest arc up to this radius that fits half-way along the corner's shorter segment and keeps the shortcut's clearance rule; a cusp, a corner beside a crossing and one with no room stay sharp. `0` = the polyline as before. The CLI's `--corner-radius`. Dynamic |
+| `narrow_max_width`, `narrow_lead` | `0.85`, `0.5` | Narrow passages (2026-11-02, `findNarrowPassages()` in `path_postprocess.hpp`): every stretch of the plan where the floor between the walls either side — measured square to the route, both ways, to the first non-traversable column, + 2 × `robot_radius` — is narrower than `narrow_max_width` goes out on `plan_crossings` as kind `narrow` with its width and axis, grown by `narrow_lead` of route either side (where to square up). 0.85 m is the footprint's diagonal, the narrowest width it turns round in. dp's 2F lab door (0.75 m in `map.pcd`) reads 0.65; the robot reached it 20–70° off its axis and stuck, going in and coming out. To a cell (±0.1 m), and to what the surface map refuses: one-cell pits narrow a floor as a wall does (dp 2F at (11, −19.5): a 0.70 m "passage" between two pits' footprint rings, a map to repair). `0` = none. Logged per plan. Dynamic |
 | `dynamic.enabled`, `dynamic.topic`, `dynamic.transform_tolerance` | `true`, `pointlio/body_cloud`, `0.3` | The dynamic overlay's input (see **Dynamic obstacles**); `false` = no mark ever, every path valid, no detour (the 2026-10-20 behaviour). Startup only |
 | `dynamic.obstacle_max_range`, `dynamic.raytrace_max_range` | `2.5`, `3.0` | Planar range within which a return marks / its ray clears — the 2D obstacle layer's values until 2026-10-28. Dynamic |
 | `dynamic.self_radius` | `0.6` | Returns closer to the sensor are neither marks nor rays: the robot's own legs (0.2–0.3 m up, ~0.5 m out) sit in the band. Dynamic |
@@ -1116,6 +1245,7 @@ With the node at `/<robot_id>`:
 |---|---|---|
 | Action | `compute_path_to_pose` | `syncai_common/ComputePathToPose` (2026-11; `nav2_msgs/ComputePathToPose`'s goal, a result with `error_code` / `error_msg`) |
 | Action | `compute_path_through_poses` | `syncai_common/ComputePathThroughPoses` (2026-11) — one path through every waypoint in order, `patrol.xml`'s (see "`getPlan()` selects the plugin") |
+| Topic (out) | `plan_crossings` | `std_msgs/String`, reliable, transient_local (2026-11-02) — the crossings of each plan as JSON (`syncai_util/plan_crossings.hpp`): every stair, kerb and walked gap the plan takes, its kind, the gait it is taken in, its pose span on the plan and those poses, tied to the plan by stamp and pose count; and every narrow passage (kind `narrow`, flat gait, with `width` and `heading`; `narrow_max_width`). Sent with each plan `publishPlan()` sends, from the planner that made it (`GlobalPlanner::planAnnotations()`; `known: false` from one that keeps nothing), and empty with each clear. Not republished (the 1 Hz `plan` is restamped). Of a crossing the followers read two bits (2026-11-07) — `gait` and `slow` — and nothing of its kind: the controllers' `StairMode` enters stair mode on a rise only within a stair-gait span and hands the `slow` spans to MPPI's `slow_linear_vel` cap (a `narrow` passage is sent `slow: true`, and since 2026-11-10 so is a walked gap taken in the flat gait); the local costmap's `TerrainLayer` reads where the stair-gait spans are, and its corridor along the plan — the plan's own heights as the ground, the obstacle rule alone — ends there. The kind, evidence, rise, width and heading are for the log and the CLI. A controller handed one leg of a cut plan matches on the plan's stamp and count and shifts the spans (`StairMode::setPlan`); a preview planned between a navigation's plan and the server's ask no longer evicts its crossings (`recent_crossings_`) |
 | Service | `is_path_valid` | `nav2_msgs/IsPathValid` — is the part of a path from the robot's place on it onward free? When the path is the last plan, the planner is handed it from the robot's place on (forward-only progress, `syncai_util/path_progress.hpp`, 2026-11; a patrol route can pass back within a cell of the robot, and a whole-path nearest pose would judge that leg) and the blocked indices are shifted back to the request's. Asked of the planner that made the last plan (`GlobalPlanner::isPathValid()`; the request carries no planner id, the server remembers the last plan's): `Octo3D` judges on its dynamic overlay and its keepout zones (see **Dynamic obstacles** and **Keepout zones**). An empty remembered id — before a first plan, or after `clear_plan` — falls back to the only loaded planner, as `getPlan()` does; an id no loaded planner has answers `false` with a throttled warning, so the BT replans. Called once a second by `move.xml` / `dock.xml`'s `IsPathValid`, which replans only once the same spot has answered `false` for 10 s (`blocked_time`, 2026-10). Answers `false` for an empty path or a frame other than the costmap's; answers `true` when there is **no robot pose** (a TF miss must not force a replan whose own start lookup fails). Served on the main executor, so it never queues behind a plan. Until 2026-10-28 a path of a planner on the costmap (`GridBased`) was judged here on the global costmap instead: the centre cell `< INSCRIBED` and, with `is_path_valid.footprint_check`, no LETHAL cell under the padded footprint's perimeter at the path heading ± `heading_margin` (RPP's own collision test) |
 | Service | `planner_server/Octo3D/load_map` | `nav2_msgs/LoadMap` (2026-10-19), map_server's own type — reload `Octo3D` from `map_url` (`map/<name>/octomap.bt`; `poses.txt` from beside it) on a map switch. See "Map switch" under `OctomapPlanner3D`. Its own callback group and executor thread, so a multi-second build never stalls `is_path_valid`, `clear_plan` or the republish |
 | Service | `planner_server/Octo3D/load_keepout` | `nav2_msgs/LoadMap` (2026-10-23) — replace `Octo3D`'s keepout zones from `map_url` (`map/<name>/keepout.json`; `""` = none) on the loaded map, without rebuilding it. What the backend calls after it writes the file; a map switch needs no call, `load_map` reads the new map's own. Result table under "Keepout zones". On `load_map`'s thread |

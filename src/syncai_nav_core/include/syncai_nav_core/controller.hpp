@@ -1,6 +1,7 @@
 #ifndef SYNCAI_NAV_CORE__CONTROLLER_HPP_
 #define SYNCAI_NAV_CORE__CONTROLLER_HPP_
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -55,6 +56,28 @@ public:
    * sawtooth described there.
    */
   virtual void setPlan(const nav_msgs::msg::Path & path) = 0;
+
+  /**
+   * @brief setPlan() for one leg of a plan the server cut at its cusps
+   * (syncai_util/path_cusps.hpp; 2026-11-07)
+   * @param leg The leg: what setPlan() is otherwise given
+   * @param plan_first The index of the leg's first pose in the plan it was
+   * cut from
+   * @param plan_poses That plan's pose count
+   *
+   * The planner's word for its plan (`plan_crossings`: which stretches are
+   * stairs, which are slow) indexes the whole plan, so a plugin that reads
+   * it needs the leg's place to apply it -- the two path controllers
+   * override this to hand that to their StairMode. The server calls this
+   * for every leg, the first included, and never setPlan() itself. Default:
+   * setPlan(leg), for a plugin that reads nothing of the kind (docking).
+   */
+  virtual void setPlanLeg(const nav_msgs::msg::Path & leg, size_t plan_first, size_t plan_poses)
+  {
+    (void)plan_first;
+    (void)plan_poses;
+    setPlan(leg);
+  }
 
   /**
    * @brief Clear the controller's cross-cycle state: the robot was told to

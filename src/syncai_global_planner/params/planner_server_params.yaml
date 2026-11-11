@@ -211,6 +211,13 @@
       stair_links: true
       # Above a kerb (0.15) and one stair step, below a flight between landings.
       stair_min_rise: 0.3
+      # A route's crossings within this much of each other (m, xy, along the
+      # route) are one crossing for the gait sent on plan_crossings, the
+      # stair gait when any of them is a stair or the route between their
+      # ends rises stair_min_rise within it (2026-11-02): dp's 2F stair is a
+      # kerb link onto its top step and a stair link 0.3 m on, and the policy
+      # cannot switch between the two. The controllers' stair_enter_dist.
+      stair_min_rise_window: 1.0
       # dp1f_1012's stairwell took 32 m of track with the turns on its landings.
       stair_max_length: 60.0
       # Track ground (pose z - lidar_height) to a cell's top face.
@@ -324,6 +331,27 @@
       kerb_links: true
       kerb_lead: 0.5
       kerb_fit_radius: 0.5
+      # Walked gaps (2026-11-02): where the mapping track crossed, in at
+      # most gap_max_length of track, from one component of at least
+      # gap_anchor_min_area (a room, not a floor) to another no more than
+      # gap_max_rise higher or lower -- a door sill the map lost, a short
+      # slope the slope rule refuses, a doorway the footprint rule closed --
+      # a straight crossing square to the gap, kerb_lead either side: a kerb
+      # within max_step_height, a ramp above, both the flat gait's. A climb
+      # above gap_max_rise (or at stair_min_rise and above, which the route
+      # judge would call a stair anyway) onto anything smaller than
+      # stair_anchor_min_area is refused with a startup note (dp: the
+      # operator drove up a 0.4 m ledge beside the 2F lab by mistake).
+      # gap_max_rise equals stair_min_rise so the two regimes tile, the gap's
+      # side open at the boundary (2026-11-07; before, 0.30 exactly was a gap
+      # link the route then took in the stair gait); it is a placeholder,
+      # not a measurement of what the RL policy walks. Heights are the
+      # measured floor's where map.pcd gave one, as the route's poses are.
+      # false = the behaviour before 2026-11-02.
+      gap_links: true
+      gap_anchor_min_area: 2.0
+      gap_max_length: 2.5
+      gap_max_rise: 0.3
 
       # ---- search (dynamic) ----
       # Move length x (1 + weight * exp(-scaling * clearance_d)) inside the
@@ -491,8 +519,48 @@
       # at interpolation_resolution with z read from the surface. Poses carry
       # z = the floor's top face + path_z_offset; the 2D controllers ignore z.
       shortcut: true
+      # What the shortcut may give up of the search's clearance (2026-11-10,
+      # ShortcutSlack in path_postprocess.hpp): a straightened segment may
+      # come shortcut_clearance_tolerance closer to the boundary than the
+      # least clear cell it replaces, but not under shortcut_clearance_floor
+      # for it (a doorway's 0.10 m keeps the exact rule). Held exactly, the
+      # rule left the route a staircase of 45 deg doglegs: a corridor's
+      # clearance ridge steps sideways a cell at a time on a grid not square
+      # to it, and the line between two ridge cells crosses cells 5 cm less
+      # clear. One cell; both 0 = the exact rule. Offline numbers in the
+      # README, "Corners". Unmeasured on the robot.
+      shortcut_clearance_tolerance: 0.1
+      shortcut_clearance_floor: 0.2
+      # The arcs at the plan's corners (2026-11-10, buildPath / cornerArc in
+      # path_postprocess.hpp). The shortcut leaves a polyline, every vertex a
+      # sharp turn; each corner of a floor stretch takes the largest arc up
+      # to corner_radius that reaches no further than half-way along its
+      # shorter segment (two corners' arcs never overlap) and keeps the
+      # shortcut's own clearance rule, tolerance included. An arc lies inside
+      # its corner: 0.5 m passes 0.21 m inside a right angle, 0.04 m inside a
+      # 45 deg turn. A corner with no such arc stays sharp, and so do a cusp
+      # (a turn past 2.0 rad: the controller server cuts the route there and
+      # the robot turns standing on the tip) and the vertex next to a stair,
+      # kerb or gap crossing, whose run-up is meant to be straight. 0 = none.
+      # Unmeasured on the robot.
+      corner_radius: 0.5
       interpolation_resolution: 0.1
       path_z_offset: 0.0
+      # Narrow passages (2026-11-02, path_postprocess.hpp): every stretch of
+      # the plan where the floor between the walls either side is narrower
+      # than narrow_max_width goes out on plan_crossings as kind "narrow",
+      # with its width and axis, grown by narrow_lead either side -- where a
+      # follower squares up before it. 0.85 is the footprint's diagonal
+      # (0.70 x 0.44 m + 0.01 padding, controller_server_params.yaml): the
+      # narrowest width it can turn round in. dp's 2F lab door (0.75 m between
+      # the jambs) reads 0.65 at 0.1 m; the robot reached it 20-70 deg off
+      # its axis twice and stuck. 0.5 is a body length. The width is to a
+      # cell (+-0.1 m), and to what the surface map refuses: a few one-cell
+      # pits in a floor narrow it as a wall does (dp's 2F at (11, -19.5), a
+      # 0.8 m "passage" between two pits' footprint rings: a map to repair,
+      # docs/octomap-repair.md). 0 = none sent. Dynamic.
+      narrow_max_width: 0.85
+      narrow_lead: 0.5
 
 # The global costmap is an internal node created by planner_server
 # (constructed as a plain node named "global_costmap").

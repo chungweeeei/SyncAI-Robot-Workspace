@@ -126,6 +126,11 @@ void OctomapPlanner3D::initialize(
   dp("interpolation_resolution", rclcpp::ParameterValue(interpolation_resolution_));
   dp("path_z_offset", rclcpp::ParameterValue(path_z_offset_));
   dp("shortcut", rclcpp::ParameterValue(shortcut_));
+  dp("shortcut_clearance_tolerance", rclcpp::ParameterValue(shortcut_slack_.tolerance));
+  dp("shortcut_clearance_floor", rclcpp::ParameterValue(shortcut_slack_.floor));
+  dp("corner_radius", rclcpp::ParameterValue(corner_radius_));
+  dp("narrow_max_width", rclcpp::ParameterValue(narrow_max_width_));
+  dp("narrow_lead", rclcpp::ParameterValue(narrow_lead_));
   // Surface map (build time).
   dp("robot_radius", rclcpp::ParameterValue(map_params_.robot_radius));
   dp("body_clearance", rclcpp::ParameterValue(map_params_.body_clearance));
@@ -179,6 +184,12 @@ void OctomapPlanner3D::initialize(
   dp("kerb_links", rclcpp::ParameterValue(stair_params_.kerb_links));
   dp("kerb_lead", rclcpp::ParameterValue(stair_params_.kerb_lead));
   dp("kerb_fit_radius", rclcpp::ParameterValue(stair_params_.kerb_fit_radius));
+  // Walked gaps (build time, stair_links.hpp).
+  dp("gap_links", rclcpp::ParameterValue(stair_params_.gap_links));
+  dp("gap_anchor_min_area", rclcpp::ParameterValue(stair_params_.gap_anchor_min_area));
+  dp("gap_max_length", rclcpp::ParameterValue(stair_params_.gap_max_length));
+  dp("gap_max_rise", rclcpp::ParameterValue(stair_params_.gap_max_rise));
+  dp("stair_min_rise_window", rclcpp::ParameterValue(stair_params_.stair_min_rise_window));
   // Search (dynamic).
   dp("clearance_cost_weight", rclcpp::ParameterValue(search_params_.clearance_cost_weight));
   dp("clearance_cost_scaling", rclcpp::ParameterValue(search_params_.clearance_cost_scaling));
@@ -218,6 +229,11 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".interpolation_resolution", interpolation_resolution_);
   node->get_parameter(name + ".path_z_offset", path_z_offset_);
   node->get_parameter(name + ".shortcut", shortcut_);
+  node->get_parameter(name + ".shortcut_clearance_tolerance", shortcut_slack_.tolerance);
+  node->get_parameter(name + ".shortcut_clearance_floor", shortcut_slack_.floor);
+  node->get_parameter(name + ".corner_radius", corner_radius_);
+  node->get_parameter(name + ".narrow_max_width", narrow_max_width_);
+  node->get_parameter(name + ".narrow_lead", narrow_lead_);
   node->get_parameter(name + ".robot_radius", map_params_.robot_radius);
   node->get_parameter(name + ".body_clearance", map_params_.body_clearance);
   node->get_parameter(name + ".max_step_height", map_params_.max_step_height);
@@ -265,6 +281,11 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".kerb_links", stair_params_.kerb_links);
   node->get_parameter(name + ".kerb_lead", stair_params_.kerb_lead);
   node->get_parameter(name + ".kerb_fit_radius", stair_params_.kerb_fit_radius);
+  node->get_parameter(name + ".gap_links", stair_params_.gap_links);
+  node->get_parameter(name + ".gap_anchor_min_area", stair_params_.gap_anchor_min_area);
+  node->get_parameter(name + ".gap_max_length", stair_params_.gap_max_length);
+  node->get_parameter(name + ".gap_max_rise", stair_params_.gap_max_rise);
+  node->get_parameter(name + ".stair_min_rise_window", stair_params_.stair_min_rise_window);
   node->get_parameter(name + ".clearance_cost_weight", search_params_.clearance_cost_weight);
   node->get_parameter(name + ".clearance_cost_scaling", search_params_.clearance_cost_scaling);
   node->get_parameter(name + ".inferred_cost_multiplier", search_params_.inferred_cost_multiplier);
@@ -728,51 +749,47 @@ bool OctomapPlanner3D::buildMap(
     }
     if (have_track || stair_params_.detect || stair_params_.kerb_links) {
       links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
-      size_t detected = 0, kerb_links = 0;
-      for (const auto & l : links->links) {
-        kerb_links += l.kerb ? 1 : 0;
-        detected += (l.detected && !l.kerb) ? 1 : 0;
-      }
-      const size_t stairs = links->links.size() - kerb_links;
+      // The counts and the names are stair_links.hpp's (countLinks, linkName):
+      // the CLI's --stats prints the same, and the two are compared.
+      const o3d::LinkCounts n = o3d::countLinks(*links);
       RCLCPP_INFO(
         logger_,
         "[OctomapPlanner3D][%s] %zu stair links: %zu from %zu keyframes of %s, %zu detected off "
         "the map (min_rise %.2f m); %zu kerb links over %zu of the map's %zu kerbs (lead %.1f m)",
-        __func__, stairs, stairs - detected, track.size(), poses_file.c_str(), detected,
-        stair_params_.min_rise, kerb_links, links->kerbs, map->kerb_lines.size(),
+        __func__, n.stairs, n.stairs - n.detected, track.size(), poses_file.c_str(), n.detected,
+        stair_params_.min_rise, n.kerbs, links->kerbs, map->kerb_lines.size(),
         stair_params_.kerb_lead);
-      // "kf 2221 -> 2358", "detected at (6.5, -12.6)" (its first point), or
-      // "kerb at (6.5, -12.6)" (the cell the crossing steps up from).
-      const auto name = [](const o3d::StairLink & l) {
-        char buf[80];
-        if (l.kerb) {
-          std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
-        } else if (l.detected) {
-          std::snprintf(
-            buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
-        } else {
-          std::snprintf(buf, sizeof buf, "kf %zu -> %zu", l.kf_a, l.kf_b);
-        }
-        return std::string(buf);
-      };
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s] %zu gap links from the track (%zu kerb, %zu ramp: a rise of at "
+        "most %.2f m crossed in at most %.1f m of track between surfaces of at least %.1f m2); "
+        "%zu walked climbs refused (not onto a floor)",
+        __func__, links->gap_links, n.gap_kerbs, n.gap_ramps, stair_params_.gap_max_rise,
+        stair_params_.gap_max_length, stair_params_.gap_anchor_min_area, links->gap_refused);
       for (const auto & f : links->flights) {
         const auto & l = links->links[f.first];
         RCLCPP_INFO(
           logger_,
           "[OctomapPlanner3D][%s]   stair %s: z %.2f -> %.2f, %u straight links, "
           "uphill %.0f deg, %.1f m wide, %.1f m long",
-          __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), f.count, f.heading_deg,
-          f.width, l.length);
+          __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), f.count,
+          f.heading_deg, f.width, l.length);
       }
       for (const auto & l : links->links) {
+        if (l.walkedGap()) {
+          RCLCPP_INFO(
+            logger_, "[OctomapPlanner3D][%s]   %s: z %.2f -> %.2f, rise %.2f m, %.1f m long",
+            __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.rise, l.length);
+          continue;
+        }
         if (l.straight) {
           continue;
         }
         RCLCPP_INFO(
           logger_,
           "[OctomapPlanner3D][%s]   stair link %s: z %.2f -> %.2f, %.1f m, %zu points (%s)",
-          __func__, name(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.length, l.pts.size(),
-          l.flights ? l.geometry.c_str() : "walked track");
+          __func__, o3d::linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), l.length,
+          l.pts.size(), l.flights ? l.geometry.c_str() : "walked track");
         if (l.centred > 0) {
           RCLCPP_INFO(
             logger_,
@@ -1135,6 +1152,9 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     std::max(mask ? mask->block_radius : 0.0, keepout_ ? keepout_->block_radius : 0.0);
 
   std::vector<o3d::Waypoint> wps;
+  // The crossings the route takes, as plan_crossings tells the followers:
+  // waypoint spans now, pose spans once the poses are made (1:1).
+  std::vector<syncai_util::PlanCrossing> crossings;
   o3d::CellId leg_start = s.cell;
   double leg_start_z = start_z;
   double leg_sx = start.pose.position.x, leg_sy = start.pose.position.y;
@@ -1216,9 +1236,10 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     }
 
     size_t leg_vertices = 0;
+    std::vector<o3d::PathSpan> spans;
     const auto leg_wps = o3d::buildPath(
       *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &leg_vertices,
-      &blocked);
+      &blocked, &spans, shortcut_slack_, corner_radius_);
     // Each leg starts on the cell the one before ended on, so its first
     // waypoint repeats the joint: dropped, not driven twice.
     auto first = leg_wps.begin();
@@ -1227,7 +1248,25 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       first->y == wps.back().y && first->z == wps.back().z) {
       ++first;
     }
+    // Leg waypoint k is route waypoint base + k (the dropped joint, k = 0,
+    // is the route's last one already in).
+    const size_t base = wps.size() - static_cast<size_t>(first - leg_wps.begin());
     wps.insert(wps.end(), first, leg_wps.end());
+    for (const o3d::PathSpan & sp : spans) {
+      const o3d::StairLink & l = links_->links[r.links[sp.use].link];
+      syncai_util::PlanCrossing x;
+      x.kind = o3d::crossingKindName(l.kind);
+      x.stair_gait = l.gait() == o3d::CrossingGait::Stair;  // the route's below
+      x.slow = l.slow();                                    // while in the flat gait, below
+      x.evidence = o3d::crossingEvidenceName(l.evidence);
+      x.rise = l.rise;
+      x.first = base + sp.first;
+      x.last = base + sp.last;
+      for (const size_t t : sp.turns) {
+        x.turns.push_back(base + t);
+      }
+      crossings.push_back(std::move(x));
+    }
     vertices += leg_vertices;
     cells += r.cells.size();
     links += r.links.size();
@@ -1255,6 +1294,82 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
       pose.pose.orientation = goals.back().pose.orientation;
     }
     path.poses.push_back(pose);
+  }
+  {
+    // The gait is the route's, not each link's: a kerb onto a stair's top
+    // step is taken in the stair's gait (o3d::routeStairGaits). The legs
+    // were planned in order, so the crossings are in route order.
+    std::vector<o3d::RouteCrossing> rc;
+    rc.reserve(crossings.size());
+    for (const syncai_util::PlanCrossing & x : crossings) {
+      rc.push_back({x.first, x.last, x.stair_gait});
+    }
+    o3d::routeStairGaits(wps, rc, stair_params_.min_rise, stair_params_.stair_min_rise_window);
+    for (size_t i = 0; i < crossings.size(); ++i) {
+      crossings[i].stair_gait = rc[i].stair;
+      // A stair-gait span has the stair mode's own speed (plan_crossings.hpp).
+      crossings[i].slow = crossings[i].slow && !rc[i].stair;
+    }
+  }
+  {
+    // The narrow passages (path_postprocess.hpp), after the gaits: a passage
+    // says how to drive a stretch, not which gait, so it takes no part in
+    // routeStairGaits. Over the whole route, on the static map only -- a
+    // person in a corridor is the dynamic overlay's, not a door. Sorted in
+    // with the links' crossings, so the list stays in route order. What a
+    // follower reads of it is the `slow` bit (2026-11-07); the kind, width
+    // and heading are for the log.
+    for (const o3d::NarrowSpan & n :
+         o3d::findNarrowPassages(*map_, wps, narrow_max_width_, narrow_lead_)) {
+      syncai_util::PlanCrossing x;
+      x.kind = "narrow";
+      x.stair_gait = false;
+      x.slow = true;
+      x.evidence = "geometry";
+      x.rise = std::fabs(wps[n.last].z - wps[n.first].z);  // a height, as every link's
+      x.first = n.first;
+      x.last = n.last;
+      x.width = n.width;
+      x.heading = n.heading;
+      RCLCPP_INFO(
+        logger_,
+        "[OctomapPlanner3D][%s] narrow passage %.2f m wide at (%.2f, %.2f) -> (%.2f, %.2f), axis "
+        "%.0f deg (narrower than narrow_max_width %.2f; poses %zu..%zu)",
+        fn, n.width, wps[n.first].x, wps[n.first].y, wps[n.last].x, wps[n.last].y,
+        n.heading * 180.0 / M_PI, narrow_max_width_, n.first, n.last);
+      crossings.push_back(std::move(x));
+    }
+    std::stable_sort(
+      crossings.begin(), crossings.end(),
+      [](const syncai_util::PlanCrossing & a, const syncai_util::PlanCrossing & b) {
+        return a.first < b.first;
+      });
+  }
+  {
+    // The poses are the waypoints one for one, so a span carries over; its
+    // points are the poses' own positions, path_z_offset and all, which is
+    // what a follower holding this plan compares them with.
+    syncai_util::PlanCrossings pc;
+    pc.known = true;
+    pc.stamp_sec = path.header.stamp.sec;
+    pc.stamp_nanosec = path.header.stamp.nanosec;
+    pc.frame_id = path.header.frame_id;
+    pc.poses = path.poses.size();
+    for (syncai_util::PlanCrossing & x : crossings) {
+      if (x.first >= path.poses.size() || x.last >= path.poses.size()) {
+        continue;  // cannot happen (1:1); never sent out of range if it does
+      }
+      for (size_t i = x.first; i <= x.last; ++i) {
+        const auto & p = path.poses[i].pose.position;
+        x.pts.push_back({p.x, p.y, p.z});
+      }
+      pc.crossings.push_back(std::move(x));
+    }
+    std::lock_guard<std::mutex> lock(crossings_mutex_);
+    recent_crossings_.push_back(std::move(pc));
+    while (recent_crossings_.size() > kRecentCrossings) {
+      recent_crossings_.pop_front();
+    }
   }
 
   double length = 0.0, zmin = wps.empty() ? 0.0 : wps.front().z, zmax = zmin;
@@ -1295,6 +1410,17 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     mask ? mask->marked : size_t{0}, scan, keepout_ ? keepout_->zones : size_t{0}, iterations,
     search_s, std::chrono::duration<double>(Clock::now() - t0).count(), request.c_str());
   return path;
+}
+
+std::string OctomapPlanner3D::planAnnotations(const nav_msgs::msg::Path & path)
+{
+  std::lock_guard<std::mutex> lock(crossings_mutex_);
+  for (const syncai_util::PlanCrossings & c : recent_crossings_) {
+    if (c.isFor(path.header.stamp.sec, path.header.stamp.nanosec, path.poses.size())) {
+      return syncai_util::toJson(c);
+    }
+  }
+  return {};
 }
 
 bool OctomapPlanner3D::isPathValid(
@@ -1394,12 +1520,14 @@ bool OctomapPlanner3D::isPathValid(
     RCLCPP_DEBUG_THROTTLE(
       logger_, *clock_, 5000,
       "[OctomapPlanner3D][isPathValid] no traversable cell under path pose %zu (%.2f, %.2f, z "
-      "%.2f), the nearest the robot: on a stair or off the ground, path not judged",
+      "%.2f), the nearest the robot: on a crossing or off the ground, path not judged",
       i0, poses[i0].pose.position.x, poses[i0].pose.position.y, poses[i0].pose.position.z);
-    return valid(" (robot on a stair or off the map's ground: not judged there)");
+    return valid(" (robot on a stair, a gap or off the map's ground: not judged there)");
   }
   // Only the floor stretch the robot is on is judged: the check stops where
-  // the path leaves traversable ground (a stair link), and the stretch
+  // the path leaves traversable ground (a stair link, or a gap link's
+  // crossing -- the cells between its anchors are the ones the rules
+  // rejected), and the stretch
   // beyond is judged once the robot is on it. Judging it now would, with
   // blocked_time's 10 s wait, fire the replan while the robot is mid-flight
   // -- the case above. The disc around the robot's own cell is exempt from
@@ -1562,6 +1690,12 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         search_params_.heuristic_weight = v;
       } else if (key == "max_planning_time") {
         search_params_.max_planning_time = v;
+      } else if (key == "shortcut_clearance_tolerance") {
+        shortcut_slack_.tolerance = std::max(0.0, v);
+      } else if (key == "shortcut_clearance_floor") {
+        shortcut_slack_.floor = std::max(0.0, v);
+      } else if (key == "corner_radius") {
+        corner_radius_ = std::max(0.0, v);
       } else if (key == "snap_xy_radius") {
         search_params_.snap_xy_radius = v;
       } else if (key == "snap_z_window") {
@@ -1582,6 +1716,10 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         interpolation_resolution_ = v;
       } else if (key == "path_z_offset") {
         path_z_offset_ = v;
+      } else if (key == "narrow_max_width") {
+        narrow_max_width_ = v;
+      } else if (key == "narrow_lead") {
+        narrow_lead_ = v;
       } else if (key == "lidar_height") {
         lidar_height_ = v;
       } else if (key == "keepout.block_radius") {

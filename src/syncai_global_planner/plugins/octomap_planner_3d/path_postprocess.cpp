@@ -47,7 +47,7 @@ bool lineOfSight(
 
 std::vector<CellId> shortcutPath(
   const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked,
-  const StairLinks * links)
+  const StairLinks * links, const ShortcutSlack & slack)
 {
   std::vector<CellId> out;
   if (cells.size() < 3) {
@@ -60,12 +60,14 @@ std::vector<CellId> shortcutPath(
   size_t anchor = 0;
   while (anchor + 1 < cells.size()) {
     size_t j = anchor + 1;
-    // The clearance the replaced sub-path kept; the shortcut may not do worse.
+    // The clearance the replaced sub-path kept; the shortcut may not do worse
+    // than that by more than its slack.
     float min_clear = std::min(clearOf(cells[anchor]), clearOf(cells[j]));
     while (j + 1 < cells.size()) {
       const float next_clear = std::min(min_clear, clearOf(cells[j + 1]));
       if (!lineOfSight(
-            m, cells[anchor], cells[j + 1], next_clear - 1e-4f, nullptr, blocked, links)) {
+            m, cells[anchor], cells[j + 1], slack.limit(next_clear) - 1e-4f, nullptr, blocked,
+            links)) {
         break;
       }
       min_clear = next_clear;
@@ -77,20 +79,166 @@ std::vector<CellId> shortcutPath(
   return out;
 }
 
-std::vector<Waypoint> resamplePath(
-  const SurfaceMap & m, const std::vector<CellId> & cells, double spacing)
+namespace
+{
+
+// A walk over the floor by points rather than cells (an arc's samples are not
+// cell centres): each point's column is resolved to the layer within one step
+// of the last one, as lineOfSight() resolves a segment's, and the smallest
+// clearance met is kept.
+struct FloorWalk
+{
+  const SurfaceMap & m;
+  const BlockedView * blocked;
+  const StairLinks * links;
+  int kz;
+  CellId last = kNoCell;
+  float clearance = std::numeric_limits<float>::infinity();
+
+  bool step(double x, double y)
+  {
+    const int ix = m.ixOf(x), iy = m.iyOf(y);
+    if (!m.inGrid(ix, iy)) {
+      return false;
+    }
+    const CellId c = m.layerNear(m.col(ix, iy), kz, m.step_cells);
+    if (c == kNoCell || !m.traversable(c) || (blocked && blocked->blocked(m, c))) {
+      return false;
+    }
+    if (c == last) {
+      return true;
+    }
+    if (links && last != kNoCell && links->kerbCrossing(m, last, c)) {
+      return false;
+    }
+    clearance = std::min(clearance, blocked ? blocked->clearance(m, c) : m.cells[c].clearance_d);
+    kz = m.cells[c].kz;
+    last = c;
+    return true;
+  }
+  // The straight line from (x0, y0), not sampled itself, to (x1, y1).
+  bool line(double x0, double y0, double x1, double y1)
+  {
+    const int n = std::max(1, static_cast<int>(std::ceil(std::hypot(x1 - x0, y1 - y0) / ds())));
+    for (int k = 1; k <= n; ++k) {
+      const double t = static_cast<double>(k) / n;
+      if (!step(x0 + t * (x1 - x0), y0 + t * (y1 - y0))) {
+        return false;
+      }
+    }
+    return true;
+  }
+  double ds() const { return m.res / 4; }
+};
+
+}  // namespace
+
+CornerArc cornerArc(
+  const SurfaceMap & m, CellId a, CellId v, CellId b, double radius, const BlockedView * blocked,
+  const StairLinks * links, std::vector<Waypoint> * pts)
+{
+  CornerArc out;
+  if (pts) {
+    pts->clear();
+  }
+  double ax, ay, vx, vy, bx, by;
+  m.cellXY(a, ax, ay);
+  m.cellXY(v, vx, vy);
+  m.cellXY(b, bx, by);
+  double u1x = ax - vx, u1y = ay - vy, u2x = bx - vx, u2y = by - vy;
+  const double l1 = std::hypot(u1x, u1y), l2 = std::hypot(u2x, u2y);
+  if (l1 < 1e-9 || l2 < 1e-9) {
+    return out;
+  }
+  u1x /= l1, u1y /= l1, u2x /= l2, u2y /= l2;
+  // The angle between the two segments at v: pi on a straight line, 0 where
+  // the route turns back on itself.
+  const double phi = std::acos(std::clamp(u1x * u2x + u1y * u2y, -1.0, 1.0));
+  out.turn = M_PI - phi;
+  if (phi < 1e-3 || out.turn < 1e-3) {
+    return out;  // a reversal has no arc, a straight line needs none
+  }
+  const double half = phi / 2;
+  // Tangent points no further than half-way along either segment, so the
+  // arcs of two neighbouring corners never overlap.
+  out.max_radius = std::tan(half) * std::min(l1, l2) / 2;
+  if (radius <= 0.0 || radius > out.max_radius + 1e-9) {
+    return out;
+  }
+  const double t = radius / std::tan(half);
+  const double t1x = vx + u1x * t, t1y = vy + u1y * t, t2x = vx + u2x * t, t2y = vy + u2y * t;
+  const double bl = std::hypot(u1x + u2x, u1y + u2y);
+  const double to_centre = radius / std::sin(half);
+  const double cx = vx + (u1x + u2x) / bl * to_centre, cy = vy + (u1y + u2y) / bl * to_centre;
+  out.deviation = to_centre - radius;
+
+  // The two segment ends the arc replaces, each walked out from v: their
+  // clearance, and the layer the arc has to start on and land on.
+  FloorWalk in{m, blocked, links, m.cells[v].kz};
+  FloorWalk outw{m, blocked, links, m.cells[v].kz};
+  if (
+    !in.step(vx, vy) || !in.line(vx, vy, t1x, t1y) || !outw.step(vx, vy) ||
+    !outw.line(vx, vy, t2x, t2y)) {
+    return out;
+  }
+  FloorWalk arc{m, blocked, links, in.kz};
+  if (!arc.step(t1x, t1y)) {
+    return out;
+  }
+  if (pts) {
+    pts->push_back({t1x, t1y, m.zFloor(arc.last)});
+  }
+  const double a0 = std::atan2(t1y - cy, t1x - cx);
+  const double side = (t1x - cx) * (t2y - cy) - (t1y - cy) * (t2x - cx) > 0 ? 1.0 : -1.0;
+  const int n = std::max(1, static_cast<int>(std::ceil(radius * out.turn / arc.ds())));
+  for (int k = 1; k <= n; ++k) {
+    const double ang = a0 + side * out.turn * k / n;
+    const double x = cx + radius * std::cos(ang), y = cy + radius * std::sin(ang);
+    if (!arc.step(x, y)) {
+      return out;
+    }
+    if (pts) {
+      pts->push_back({x, y, m.zFloor(arc.last)});
+    }
+  }
+  if (arc.last != outw.last) {
+    return out;  // came down on another layer than the segment does
+  }
+  out.ok = true;
+  out.clearance = arc.clearance;
+  out.replaced = std::min(in.clearance, outw.clearance);
+  return out;
+}
+
+namespace
+{
+
+// A cell as a waypoint.
+//
+// A pose's height is the measured floor where there is one (2026-11-07,
+// SurfaceMap::zFloor), the voxel's top face otherwise: the height every
+// judge of the route then reads, from the gap links' kinds to the terrain
+// layer's ground along the plan. The voxel tops stayed on the stair
+// readers' own points (stairCrossing, the walked links), where a flight's
+// 0.3 m and more swallows the difference.
+Waypoint cellWaypoint(const SurfaceMap & m, CellId c)
+{
+  Waypoint w;
+  m.cellXY(c, w.x, w.y);
+  w.z = m.zFloor(c);
+  return w;
+}
+
+// resamplePath() over a polyline of points on the floor (cell centres, and
+// since 2026-11-10 the arcs laid at its corners), both ends kept.
+std::vector<Waypoint> resampleOnSurface(
+  const SurfaceMap & m, const std::vector<Waypoint> & line, double spacing)
 {
   std::vector<Waypoint> out;
-  if (cells.empty()) {
+  if (line.empty()) {
     return out;
   }
   spacing = std::max(spacing, m.res * 0.25);
-  auto at = [&](CellId c) {
-    Waypoint w;
-    m.cellXY(c, w.x, w.y);
-    w.z = m.zTop(c);
-    return w;
-  };
   auto surfaceZ = [&](double x, double y, double z_guess) {
     const int ix = m.ixOf(x), iy = m.iyOf(y);
     if (!m.inGrid(ix, iy)) {
@@ -98,14 +246,17 @@ std::vector<Waypoint> resamplePath(
     }
     const int kz = static_cast<int>(std::floor((z_guess - m.z0) / m.res)) - 1;
     const CellId c = m.layerNear(m.col(ix, iy), kz, 3);
-    return c == kNoCell ? z_guess : m.zTop(c);
+    return c == kNoCell ? z_guess : m.zFloor(c);
   };
-  Waypoint prev = at(cells[0]);
+  Waypoint prev = line[0];
   out.push_back(prev);
   double carry = 0.0;  // distance already covered toward the next sample
-  for (size_t i = 1; i < cells.size(); ++i) {
-    const Waypoint next = at(cells[i]);
+  for (size_t i = 1; i < line.size(); ++i) {
+    const Waypoint & next = line[i];
     const double seg = std::hypot(next.x - prev.x, next.y - prev.y);
+    if (seg < 1e-9) {
+      continue;
+    }
     double s = spacing - carry;
     while (s < seg - 1e-9) {
       const double t = s / seg;
@@ -124,6 +275,44 @@ std::vector<Waypoint> resamplePath(
     out.push_back(prev);
   }
   return out;
+}
+
+// The largest arc up to max_radius that rounds the corner at v, down in 5 cm
+// steps to one cell, keeping the clearance the shortcut itself would have to
+// (slack.limit() of what the arc replaces). False -- the corner stays sharp --
+// when none fits, and for a turn past kCuspTurn: the controller server cuts
+// a route into legs at its cusps (cusp_min_angle, 2.0 rad) and the robot
+// turns round standing on the tip, which an arc would take away.
+constexpr double kCuspTurn = 2.0;
+bool roundCorner(
+  const SurfaceMap & m, CellId a, CellId v, CellId b, double max_radius,
+  const ShortcutSlack & slack, const BlockedView * blocked, const StairLinks * links,
+  std::vector<Waypoint> & pts)
+{
+  const CornerArc geo = cornerArc(m, a, v, b, 0.0, blocked, links);
+  if (geo.max_radius <= 0.0 || geo.turn > kCuspTurn) {
+    return false;
+  }
+  for (double r = std::min(max_radius, geo.max_radius); r >= m.res - 1e-9; r -= 0.05) {
+    const CornerArc arc = cornerArc(m, a, v, b, r, blocked, links, &pts);
+    if (arc.ok && arc.clearance >= slack.limit(arc.replaced) - 1e-4f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+std::vector<Waypoint> resamplePath(
+  const SurfaceMap & m, const std::vector<CellId> & cells, double spacing)
+{
+  std::vector<Waypoint> line;
+  line.reserve(cells.size());
+  for (const CellId c : cells) {
+    line.push_back(cellWaypoint(m, c));
+  }
+  return resampleOnSurface(m, line, spacing);
 }
 
 namespace
@@ -159,18 +348,22 @@ void resamplePolyline(
   }
 }
 
-// Appends b to a, dropping b's first point when it repeats a's last.
-void append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b)
+// Appends b to a, dropping b's first point when it repeats a's last (the
+// same place, within z_tol in height: a route's poses stand at the measured
+// floor and a stair link's at the voxel tops, up to a voxel apart over the
+// same cell -- 2026-11-07). Returns how many points it dropped (0 or 1).
+size_t append(std::vector<Waypoint> & a, const std::vector<Waypoint> & b, double z_tol = 1e-9)
 {
   size_t from = 0;
   if (!a.empty() && !b.empty()) {
     const Waypoint & p = a.back();
     const Waypoint & q = b.front();
-    if (std::hypot(p.x - q.x, p.y - q.y) < 1e-9 && std::fabs(p.z - q.z) < 1e-9) {
+    if (std::hypot(p.x - q.x, p.y - q.y) < 1e-9 && std::fabs(p.z - q.z) <= z_tol) {
       from = 1;
     }
   }
   a.insert(a.end(), b.begin() + static_cast<std::ptrdiff_t>(from), b.end());
+  return from;
 }
 
 // The segment from cell p (one floor) to cell n (the other), straight across
@@ -353,9 +546,13 @@ bool stairCrossing(
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices,
-  const BlockedView * blocked)
+  const BlockedView * blocked, std::vector<PathSpan> * spans, const ShortcutSlack & slack,
+  double corner_radius)
 {
   std::vector<Waypoint> out;
+  if (spans) {
+    spans->clear();
+  }
   if (cells.empty()) {
     if (vertices) {
       *vertices = 0;
@@ -373,7 +570,7 @@ std::vector<Waypoint> buildPath(
     const std::vector<CellId> seg(
       cells.begin() + static_cast<std::ptrdiff_t>(from),
       cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
-    chains.push_back(shortcut ? shortcutPath(m, seg, blocked, links) : seg);
+    chains.push_back(shortcut ? shortcutPath(m, seg, blocked, links, slack) : seg);
     from = to + 1;
   };
   for (const LinkUse & u : uses) {
@@ -388,8 +585,8 @@ std::vector<Waypoint> buildPath(
   if (shortcut) {
     for (size_t i = 0; i < uses.size(); ++i) {
       const StairLink & link = links->links[uses[i].link];
-      if (!link.straight || link.kerb) {
-        continue;  // a kerb link's own points are the crossing (see the header)
+      if (!link.straight || link.leads) {
+        continue;  // a kerb's or a gap's own points, leads and all, are the crossing
       }
       std::vector<CellId> & A = chains[i];
       std::vector<CellId> & B = chains[i + 1];
@@ -414,29 +611,196 @@ std::vector<Waypoint> buildPath(
     }
   }
 
+  // A joint is the same cell at the floor and at its voxel top (append()).
+  const double z_tol = m.res + 1e-9;
+  // The crossing's block, appended: its first waypoint is the last one already
+  // out when append() dropped it as the joint -- append() says whether it
+  // did, so the span and the joint test cannot drift apart.
+  const auto appendSpan = [&](size_t use, const std::vector<Waypoint> & block) -> PathSpan * {
+    const size_t before = out.size();
+    const size_t dropped = append(out, block, z_tol);
+    if (!spans || out.empty()) {
+      return nullptr;
+    }
+    const size_t first = dropped > 0 && before > 0 ? before - 1 : before;
+    spans->push_back({use, std::min(first, out.size() - 1), out.size() - 1, {}});
+    return &spans->back();
+  };
+
+  // A floor stretch's waypoints: its shortcut chain with an arc laid at each
+  // corner that takes one (roundCorner), resampled. The vertex next to a
+  // crossing stays sharp: the run onto a stair or a kerb is meant to be
+  // straight, square to it, and stair mode stops stair_standoff before a
+  // flight to line up on that run.
+  const auto floorStretch = [&](size_t i) {
+    const std::vector<CellId> & c = chains[i];
+    if (!shortcut || corner_radius <= 0.0 || c.size() < 3) {
+      return resamplePath(m, c, spacing);
+    }
+    std::vector<Waypoint> line, arc;
+    line.push_back(cellWaypoint(m, c.front()));
+    for (size_t k = 1; k + 1 < c.size(); ++k) {
+      const bool by_crossing = (k == 1 && i > 0) || (k + 2 == c.size() && i < uses.size());
+      if (
+        !by_crossing &&
+        roundCorner(m, c[k - 1], c[k], c[k + 1], corner_radius, slack, blocked, links, arc)) {
+        line.insert(line.end(), arc.begin(), arc.end());
+      } else {
+        line.push_back(cellWaypoint(m, c[k]));
+      }
+    }
+    line.push_back(cellWaypoint(m, c.back()));
+    return resampleOnSurface(m, line, spacing);
+  };
+
   size_t nvert = 0;
   for (size_t i = 0; i < chains.size(); ++i) {
     nvert += chains[i].size();
-    append(out, resamplePath(m, chains[i], spacing));
+    append(out, floorStretch(i), z_tol);
     if (i >= uses.size()) {
       break;
     }
     if (!crossings[i].empty()) {
       nvert += 2;
-      append(out, crossings[i]);
+      appendSpan(i, crossings[i]);
       continue;
     }
-    std::vector<Waypoint> pts = links->links[uses[i].link].pts;
+    const StairLink & link = links->links[uses[i].link];
+    std::vector<Waypoint> pts = link.pts;
     if (uses[i].reversed) {
       std::reverse(pts.begin(), pts.end());
     }
     nvert += pts.size();
     std::vector<Waypoint> flight;
     resamplePolyline(pts, spacing, flight);
-    append(out, flight);
+    PathSpan * span = appendSpan(i, flight);
+    // A landing corner is a point of the link; the resample keeps the
+    // polyline's vertices on it or within half a spacing, so the nearest
+    // waypoint of the span is the corner.
+    if (span) {
+      for (const size_t t : link.turns) {
+        if (t >= link.pts.size()) {
+          continue;
+        }
+        const Waypoint & c = link.pts[t];
+        size_t best = span->first;
+        double best_d = std::numeric_limits<double>::infinity();
+        for (size_t k = span->first; k <= span->last; ++k) {
+          const double d = std::hypot(out[k].x - c.x, out[k].y - c.y) + std::fabs(out[k].z - c.z);
+          if (d < best_d) {
+            best_d = d;
+            best = k;
+          }
+        }
+        span->turns.push_back(best);
+      }
+      std::sort(span->turns.begin(), span->turns.end());
+    }
   }
   if (vertices) {
     *vertices = nvert;
+  }
+  return out;
+}
+
+namespace
+{
+
+// From cell c, how far (m, xy) the floor stays traversable along (nx, ny):
+// the distance to the first sample whose column has no traversable cell
+// within a step of the last one, or `limit` if there is none that close.
+double floorTo(
+  const SurfaceMap & m, CellId c, double x, double y, double nx, double ny, double limit)
+{
+  const double ds = m.res / 2;
+  int kz = m.cells[c].kz;
+  int ix = m.ixOf(x), iy = m.iyOf(y);
+  for (double s = ds; s < limit; s += ds) {
+    const int jx = m.ixOf(x + nx * s), jy = m.iyOf(y + ny * s);
+    if (jx == ix && jy == iy) {
+      continue;
+    }
+    const CellId n = m.traversableNeighbour(jx, jy, kz);
+    if (n == kNoCell) {
+      return s;
+    }
+    kz = m.cells[n].kz;
+    ix = jx;
+    iy = jy;
+  }
+  return limit;
+}
+
+}  // namespace
+
+std::vector<NarrowSpan> findNarrowPassages(
+  const SurfaceMap & m, const std::vector<Waypoint> & path, double max_width, double lead)
+{
+  std::vector<NarrowSpan> out;
+  if (max_width <= 0.0 || path.size() < 2) {
+    return out;
+  }
+  const double rr = m.params.robot_radius;
+  const double reach = std::max(0.0, max_width - 2 * rr);  // one side alone can say "wide"
+  std::vector<double> width(path.size(), std::numeric_limits<double>::infinity());
+  for (size_t i = 0; i < path.size(); ++i) {
+    const CellId c = m.traversableAt(path[i].x, path[i].y, path[i].z);
+    if (c == kNoCell) {
+      continue;
+    }
+    const Waypoint & a = path[i == 0 ? 0 : i - 1];
+    const Waypoint & b = path[std::min(i + 1, path.size() - 1)];
+    const double len = std::hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-9) {
+      continue;
+    }
+    const double nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+    const double left = floorTo(m, c, path[i].x, path[i].y, nx, ny, reach);
+    const double right = floorTo(m, c, path[i].x, path[i].y, -nx, -ny, reach);
+    width[i] = left + right + 2 * rr;
+  }
+  // Route distance at each waypoint, for the lead.
+  std::vector<double> along(path.size(), 0.0);
+  for (size_t i = 1; i < path.size(); ++i) {
+    along[i] = along[i - 1] + std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+  }
+  for (size_t i = 0; i < path.size();) {
+    if (!(width[i] < max_width)) {
+      ++i;
+      continue;
+    }
+    size_t j = i;
+    double narrowest = width[i];
+    while (j + 1 < path.size() && width[j + 1] < max_width) {
+      ++j;
+      narrowest = std::min(narrowest, width[j]);
+    }
+    NarrowSpan sp;
+    sp.width = narrowest;
+    // The axis: the route through the run, or the local direction for a
+    // run of one waypoint.
+    const Waypoint & a = path[i == j && i > 0 ? i - 1 : i];
+    const Waypoint & b = path[i == j ? std::min(j + 1, path.size() - 1) : j];
+    sp.heading = std::atan2(b.y - a.y, b.x - a.x);
+    sp.first = i;
+    while (sp.first > 0 && along[i] - along[sp.first - 1] <= lead + 1e-9) {
+      --sp.first;
+    }
+    sp.last = j;
+    while (sp.last + 1 < path.size() && along[sp.last + 1] - along[j] <= lead + 1e-9) {
+      ++sp.last;
+    }
+    if (!out.empty() && sp.first <= out.back().last + 1) {
+      NarrowSpan & prev = out.back();
+      prev.last = std::max(prev.last, sp.last);
+      if (sp.width < prev.width) {
+        prev.width = sp.width;
+        prev.heading = sp.heading;
+      }
+    } else {
+      out.push_back(sp);
+    }
+    i = j + 1;
   }
   return out;
 }

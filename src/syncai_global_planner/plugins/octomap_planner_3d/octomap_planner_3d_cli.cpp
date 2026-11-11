@@ -82,6 +82,21 @@ void usage()
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
     "  --no-shortcut            keep the raw A* cell chain\n"
+    "  --shortcut-slack <tolerance> <floor>\n"
+    "                           how much closer to the boundary than the cells it replaces a\n"
+    "                           shortcut segment may come, and the clearance it may not go\n"
+    "                           under for it (m; the plugin's shortcut_clearance_tolerance /\n"
+    "                           _floor, 0.1 0.2; 0 0 = the exact rule before 2026-11-10)\n"
+    "  --narrow <width> <lead>  each --plan's narrow passages (path_postprocess.hpp): narrower\n"
+    "                           than width (m, 0 = off), grown by lead (m) either side; the\n"
+    "                           plugin's narrow_max_width / narrow_lead (0.85 0.5)\n"
+    "  --corner-radius <m>      the arcs laid at each --plan's corners (the plugin's\n"
+    "                           corner_radius, 0.5; 0 = none, the polyline before 2026-11-10)\n"
+    "  --corners <radius> <clearance>\n"
+    "                           each --plan's corners, rounded (cornerArc, path_postprocess.hpp;\n"
+    "                           a measurement, the path is not changed): per shortcut vertex the\n"
+    "                           largest arc up to radius (m) that keeps the clearance of the\n"
+    "                           segments it replaces, and the largest that keeps clearance (m)\n"
     "  --no-stair-links         no stair links at all: neither the --poses track's flights\n"
     "                           nor the stairs detected off the map (--param stair_detect=0\n"
     "                           keeps the track's only), nor the kerb links (--param\n"
@@ -91,7 +106,8 @@ void usage()
     "paths and (with --poses) the stair links\n"
     "  --write-bt <out.bt>      write the tree (a --synthetic scene, say) as an OctoMap .bt; "
     "alone, nothing else is done\n"
-    "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors\n");
+    "synthetic scenes: flat wall ramp stairs kerb drop hole two_floors threshold threshold_ramp "
+    "ledge\n");
 }
 
 struct Pose
@@ -128,21 +144,8 @@ bool readPoses(const std::string & path, std::vector<Pose> & out)
   return true;
 }
 
-// "kf 2221 -> 2358" for a stair the track found, "detected at (5.9, -12.2)"
-// (its first point) for one found off the map, "kerb at (5.9, -12.2)" (the
-// cell the crossing steps up from) for a kerb link.
-std::string linkName(const StairLink & l, const char * arrow = "->")
-{
-  char buf[80];
-  if (l.kerb) {
-    std::snprintf(buf, sizeof buf, "kerb at (%.1f, %.1f)", l.pts[1].x, l.pts[1].y);
-  } else if (l.detected) {
-    std::snprintf(buf, sizeof buf, "detected at (%.1f, %.1f)", l.pts.front().x, l.pts.front().y);
-  } else {
-    std::snprintf(buf, sizeof buf, "kf %zu %s %zu", l.kf_a, arrow, l.kf_b);
-  }
-  return buf;
-}
+// A link's name in every line below is stair_links.hpp's linkName(), the
+// plugin's startup log's too, so the two read alike.
 
 bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, const std::string & kv)
 {
@@ -186,6 +189,16 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.kerb_lead = v;
   } else if (k == "kerb_fit_radius") {
     st.kerb_fit_radius = v;
+  } else if (k == "gap_links") {
+    st.gap_links = v != 0.0;
+  } else if (k == "gap_anchor_min_area") {
+    st.gap_anchor_min_area = v;
+  } else if (k == "gap_max_length") {
+    st.gap_max_length = v;
+  } else if (k == "gap_max_rise") {
+    st.gap_max_rise = v;
+  } else if (k == "stair_min_rise_window") {
+    st.stair_min_rise_window = v;
   } else if (k == "kerb_min_length") {
     p.kerb_min_length = v;
   } else if (k == "kerb_min_sure_cells") {
@@ -782,6 +795,88 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
   return static_cast<bool>(out);
 }
 
+// --corners: what rounding the corners of a plan would come to, before any of
+// it is built (cornerArc, path_postprocess.hpp). The floor stretches are cut
+// and shortcut as buildPath cuts them -- but for the vertices a stairCrossing
+// drops either side of a straight stair -- and each vertex inside one is tried
+// with arcs from max_radius down in 5 cm steps to one cell, under two rules:
+// "kept", no closer to the boundary than the two segment ends the arc
+// replaces (the shortcut's own rule), and "floor", no closer than
+// min_clearance unless those segment ends already were. A turn above the
+// controller server's cusp_min_angle (2.0 rad) is a cusp the route is cut at
+// and stays sharp; a vertex next to a stretch's end stands beside a crossing,
+// where the approach is meant to be straight, and is only marked; a vertex
+// the route goes straight through (the shortcut advancing a cell at a time
+// along a line it could not span) is counted and not listed.
+void reportCorners(
+  const SurfaceMap & m, const StairLinks * links, const PlanResult & r, const BlockedView & blocked,
+  double max_radius, double min_clearance, const ShortcutSlack & slack)
+{
+  const double kCusp = 2.0;
+  size_t corners = 0, in_line = 0, cusps = 0, kept = 0, floored = 0;
+  size_t from = 0;
+  const auto stretch = [&](size_t to, bool link_before, bool link_after) {
+    const std::vector<CellId> seg(
+      r.cells.begin() + static_cast<std::ptrdiff_t>(from),
+      r.cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
+    from = to + 1;
+    const std::vector<CellId> v = shortcutPath(m, seg, &blocked, links, slack);
+    for (size_t i = 1; i + 1 < v.size(); ++i) {
+      const CornerArc geo = cornerArc(m, v[i - 1], v[i], v[i + 1], 0.0, &blocked, links);
+      if (geo.max_radius <= 0.0) {
+        ++in_line;
+        continue;
+      }
+      double x, y;
+      m.cellXY(v[i], x, y);
+      ++corners;
+      const bool by_link = (i == 1 && link_before) || (i + 2 == v.size() && link_after);
+      if (geo.turn > kCusp) {
+        ++cusps;
+        std::printf(
+          "plan:   corner (%.2f, %.2f): turns %.0f deg, a cusp, left sharp\n", x, y,
+          geo.turn * 180.0 / M_PI);
+        continue;
+      }
+      // The largest arc under each rule, and the clearance it comes to.
+      double r_kept = 0.0, r_floor = 0.0, dev_floor = 0.0;
+      float cl_floor = 0.0f, replaced = blocked.clearance(m, v[i]);
+      for (double rad = std::min(max_radius, geo.max_radius); rad >= m.res - 1e-9; rad -= 0.05) {
+        const CornerArc arc = cornerArc(m, v[i - 1], v[i], v[i + 1], rad, &blocked, links);
+        if (!arc.ok) {
+          continue;
+        }
+        if (
+          r_floor == 0.0 && arc.clearance >= std::min<double>(arc.replaced, min_clearance) - 1e-4) {
+          r_floor = rad;
+          dev_floor = arc.deviation;
+          cl_floor = arc.clearance;
+          replaced = arc.replaced;
+        }
+        if (arc.clearance >= arc.replaced - 1e-4f) {
+          r_kept = rad;
+          break;  // kept implies floor, and the radii only get smaller
+        }
+      }
+      kept += r_kept > 0.0;
+      floored += r_floor > 0.0;
+      std::printf(
+        "plan:   corner (%.2f, %.2f): turns %.0f deg, clearance %.2f m, room for %.2f m; arc "
+        "%.2f m kept, %.2f m floor (clearance %.2f m, %.2f m inside the corner)%s\n",
+        x, y, geo.turn * 180.0 / M_PI, replaced, geo.max_radius, r_kept, r_floor, cl_floor,
+        dev_floor, by_link ? ", beside a crossing" : "");
+    }
+  };
+  for (size_t i = 0; i < r.links.size(); ++i) {
+    stretch(r.links[i].index, i > 0, true);
+  }
+  stretch(r.cells.size() - 1, !r.links.empty(), false);
+  std::printf(
+    "plan:   corners: %zu (and %zu vertices in a line), %zu cusps; arcs up to %.2f m: %zu keep "
+    "the clearance they had, %zu keep %.2f m\n",
+    corners, in_line, cusps, max_radius, kept, floored, min_clearance);
+}
+
 // mask: the dynamic overlay's snapshot (--dynamic), or null; keepout: the
 // map's keepout mask (--keepout), or null. Read exactly as the plugin reads
 // them: the search and the shortcut keep off both, with the disc round the
@@ -792,7 +887,9 @@ int runPlan(
   SurfaceAStar & astar, const SearchParams & sp, double sx, double sy, double sz, double gx,
   double gy, double gz, bool shortcut, const std::string & out_path,
   std::vector<PlannedPath> * planned, const DynamicMask * mask, const KeepoutMask * keepout,
-  const std::vector<KeepoutZone> & zones)
+  const std::vector<KeepoutZone> & zones, const StairLinkParams & stair_params, double narrow_width,
+  double narrow_lead, double corner_radius, double corner_clearance, const ShortcutSlack & slack,
+  double round_radius)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -858,8 +955,20 @@ int runPlan(
     raw_len += std::hypot(bx - ax, by - ay);
   }
   size_t vertices = 0;
-  const auto path =
-    buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked);
+  std::vector<PathSpan> spans;
+  const auto path = buildPath(
+    m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked, &spans, slack,
+    round_radius);
+  // The gait each crossing is taken in on this route, as the plugin sends it
+  // on plan_crossings (routeStairGaits): a link's own gait can be overruled
+  // by a stair next to it.
+  std::vector<RouteCrossing> gaits;
+  for (const PathSpan & sp : spans) {
+    gaits.push_back(
+      {sp.first, sp.last,
+       astar.links()->links[r.links[sp.use].link].gait() == CrossingGait::Stair});
+  }
+  routeStairGaits(path, gaits, stair_params.min_rise, stair_params.stair_min_rise_window);
   if (planned) {
     PlannedPath pp;
     pp.start = Waypoint{sxc, syc, m.zTop(s.cell)};
@@ -890,12 +999,26 @@ int runPlan(
     raw_cells, r.cost, r.iterations, r.search_s, total, vertices, path.size(), len, raw_len, zmin,
     zmax, min_clear, r.links.size(), mask ? mask->marked : size_t{0},
     keepout ? keepout->blocked : size_t{0});
-  for (const LinkUse & u : r.links) {
+  for (size_t i = 0; i < spans.size(); ++i) {
+    const LinkUse & u = r.links[spans[i].use];
     const StairLink & l = astar.links()->links[u.link];
+    const bool stair = gaits[i].stair;
     std::printf(
-      "plan:   %s %s: z %.2f -> %.2f, %.1f m\n", l.kerb ? "kerb" : "stairs",
+      "plan:   %s %s: z %.2f -> %.2f, %.1f m (%s gait%s%s)\n", crossingKindName(l.kind),
       linkName(l, u.reversed ? "<-" : "->").c_str(), m.zTop(u.reversed ? l.b : l.a),
-      m.zTop(u.reversed ? l.a : l.b), l.length);
+      m.zTop(u.reversed ? l.a : l.b), l.length, stair ? "stair" : "flat",
+      stair != (l.gait() == CrossingGait::Stair) ? ", the route's, not the link's" : "",
+      l.slow() && !stair ? ", slow" : "");
+  }
+  for (const NarrowSpan & n : findNarrowPassages(m, path, narrow_width, narrow_lead)) {
+    std::printf(
+      "plan:   narrow passage: %.2f m wide, poses %zu..%zu, (%.2f, %.2f) -> (%.2f, %.2f), axis "
+      "%.0f deg\n",
+      n.width, n.first, n.last, path[n.first].x, path[n.first].y, path[n.last].x, path[n.last].y,
+      n.heading * 180.0 / M_PI);
+  }
+  if (corner_radius > 0.0 && shortcut) {
+    reportCorners(m, astar.links(), r, blocked, corner_radius, corner_clearance, slack);
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1219,6 +1342,10 @@ int main(int argc, char ** argv)
   std::string out_path;
   std::string write_bt_path;
   bool shortcut = true;
+  double narrow_width = 0.85, narrow_lead = 0.5;       // --narrow
+  double corner_radius = 0.0, corner_clearance = 0.0;  // --corners
+  ShortcutSlack shortcut_slack{0.1, 0.2};              // --shortcut-slack; the plugin's defaults
+  double round_radius = 0.5;                           // --corner-radius; the plugin's default
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&](const char * what) -> std::string {
@@ -1287,6 +1414,17 @@ int main(int argc, char ** argv)
       write_bt_path = next("--write-bt");
     } else if (a == "--no-shortcut") {
       shortcut = false;
+    } else if (a == "--narrow") {
+      narrow_width = std::atof(next("--narrow").c_str());
+      narrow_lead = std::atof(next("--narrow").c_str());
+    } else if (a == "--corner-radius") {
+      round_radius = std::atof(next("--corner-radius").c_str());
+    } else if (a == "--shortcut-slack") {
+      shortcut_slack.tolerance = std::atof(next("--shortcut-slack").c_str());
+      shortcut_slack.floor = std::atof(next("--shortcut-slack").c_str());
+    } else if (a == "--corners") {
+      corner_radius = std::atof(next("--corners").c_str());
+      corner_clearance = std::atof(next("--corners").c_str());
     } else if (a == "--no-stair-links") {
       stair_links = false;
     } else if (a == "--floor-pcd") {
@@ -1457,15 +1595,28 @@ int main(int argc, char ** argv)
       track.push_back({p.x, p.y, p.z - lidar_height});
     }
     links = buildStairLinks(*map, track, stair_params, tree.get());
-    size_t kerb_links = 0;
-    for (const StairLink & l : links->links) {
-      kerb_links += l.kerb ? 1 : 0;
-    }
+    // The plugin's startup log counts the same way (countLinks).
+    const LinkCounts n = countLinks(*links);
     std::printf(
-      "stair links: %zu (min_rise %.2f m, %zu straight flights); kerb links: %zu over %zu of the "
-      "map's %zu kerbs (lead %.1f m)\n",
-      links->links.size() - kerb_links, stair_params.min_rise, links->flights.size(), kerb_links,
-      links->kerbs, map->kerb_lines.size(), stair_params.kerb_lead);
+      "stair links: %zu (%zu detected off the map; min_rise %.2f m, %zu straight flights); kerb "
+      "links: %zu over %zu of the map's %zu kerbs (lead %.1f m)\n",
+      n.stairs, n.detected, stair_params.min_rise, links->flights.size(), n.kerbs, links->kerbs,
+      map->kerb_lines.size(), stair_params.kerb_lead);
+    std::printf(
+      "gap links: %zu from the track (%zu kerb, %zu ramp; a rise of at most %.2f m over at most "
+      "%.1f m of track between surfaces of at least %.1f m2, lead %.1f m); %zu walked climbs "
+      "refused (not onto a floor)\n",
+      links->gap_links, n.gap_kerbs, n.gap_ramps, stair_params.gap_max_rise,
+      stair_params.gap_max_length, stair_params.gap_anchor_min_area, stair_params.kerb_lead,
+      links->gap_refused);
+    for (const StairLink & l : links->links) {
+      if (l.walkedGap()) {
+        std::printf(
+          "  %s: z %.2f -> %.2f (component %u -> %u), rise %.2f m, %.1f m long\n",
+          linkName(l).c_str(), map->zTop(l.a), map->zTop(l.b), map->cells[l.a].component,
+          map->cells[l.b].component, l.rise, l.length);
+      }
+    }
     for (const StairFlight & f : links->flights) {
       const StairLink & l = links->links[f.first];
       std::printf(
@@ -1583,7 +1734,8 @@ int main(int argc, char ** argv)
       }
       rc |= runPlan(
         astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned, mask.get(),
-        keepout.get(), zones);
+        keepout.get(), zones, stair_params, narrow_width, narrow_lead, corner_radius,
+        corner_clearance, shortcut_slack, round_radius);
     }
   }
   if (!image_path.empty()) {

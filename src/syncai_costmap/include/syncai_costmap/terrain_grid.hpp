@@ -116,6 +116,52 @@
 // path's heights seed the flood too, so a ramp whose foot the lidar never
 // looked at is still the floor the planner says it is.
 //
+// Slope beside an obstacle (2026-11-02): a cell the obstacle rule judges
+// lethal -- a door jamb, a wall foot, a box -- has a "ground" that is the
+// lower quantile of the thing's own returns, 0.15-0.3 m over the floor when
+// the foot is hidden, and the slope rule fitted it with the floor beside it:
+// every disc that reached a jamb spanned more than a step and tilted past
+// max_slope_deg, so a band of slope cells a disc's radius wide stood in front
+// of each jamb. dp's 2F lab door, 0.75 m between its jambs in map.pcd and
+// lethal on robot01, replayed from the sim's scans on the approach: 0.5 m of
+// free lane for a 0.46 m footprint, MPPI's every candidate in collision. The
+// fit now leaves the obstacle cells out (they are lethal anyway): 0.6 m.
+// Rejected: leaving out their 8-neighbours as well, whose 3x3 ground took the
+// jamb's returns too -- the door opened to 0.7 m, but that ring is the wall
+// foot's lethal band and a stair's edge cells, and those tests failed; and
+// estimating the ground a second time without the obstacles' returns, which
+// broke the wall foot, the box on unseen floor and the crossing's person.
+//
+// A ray through a cell bounds its ground (2026-11-03). The jamb's returns
+// also stand in the 3x3 ground of the doorway cells beside it, and a
+// wall's in the cells before it wherever the lower FOV hides its foot: a
+// borrowed ground 0.15-0.5 m up that the reach flood cannot step onto, an
+// island band along the wall and into the lane. elevation_mapping's
+// visibility cleanup (ETH, 2022) deletes a cell whose height a ray passes
+// under; here each ray records the lowest height it crossed every cell at
+// (Cell::ray_lo, in clearRay()), and a cell's estimate takes no gathered
+// sample above that height + ray_clear_tolerance: the ray proves the
+// column empty there, so a neighbour's return up there is not this cell's
+// ground. Not in the cell the ray ends in (the surface it hits), so a wall
+// keeps its own cell; the rays that end on it do cap the cells before it,
+// which is where the band was. A floor, a box top, a tread, the lower floor
+// across a drop-off: every surface lies under the rays that end on or
+// beyond it, so their estimates stay (a box under the rays to a wall behind
+// it is in the test). dp's 2F lab, the robot stuck in the pocket between the
+// door's east jamb and the east wall, replayed from the sim's scans: 73 ->
+// 96 of the pocket's 132 cells not lethal, the lane out of the door 0.5 ->
+// 0.6 m.
+//
+// And the slope fit takes only grounds the cell's own returns stand on
+// (groundSupported(), 2026-11-03). A jamb's inner cells hold too few
+// returns for the obstacle rule and the jamb's next door for a ground;
+// fitted, they tilted every disc that reached them: the lab door on the way
+// in, 0.6 m of lane between the jambs with the obstacle cells out of the fit
+// (above), 0.7 with these out too, 0.75 in map.pcd. It also ends the
+// 0.15 m slope band in front of a seen wall foot, whose cells' grounds came
+// from the wall's returns the same way: lethal starts at the wall's own
+// cell, as the obstacle layer had it, and the tests say so.
+//
 // Stairs are not this grid's business: the step and slope rules refuse a
 // flight, as Octo3D's do, and nothing here opens one. A stair is crossed
 // only over the global planner's stair link, by the controllers' stair mode,
@@ -123,6 +169,33 @@
 // (2026-10-20). An earlier draft of this layer opened a corridor along a
 // climbing path (the path's height as the ground, the band starting higher);
 // it was taken out with that decision, and git history has it.
+//
+// The plan's corridor (2026-11-07). Along the plan -- every pose of it the
+// planner lays for the flat gait, which is every pose outside a stair-gait
+// span of plan_crossings -- this grid judges no terrain at all: within
+// plan_radius of such a pose, on ground within plan_z_band of its height,
+// the step and slope rules are not run and the obstacle rule's ground
+// is the plan's own height there (the planner's measured floor, interpolated
+// along the plan), so a return more than min_obstacle_height above the floor
+// the map says is there is an obstacle and the floor itself, a sill's riser
+// or a slope's rise included, is not. The reach rule still runs (the plan's
+// poses seed its flood, so the plan's own floor is reached): a thing standing
+// on the corridor under the obstacle band is an island, as anywhere. Why: these rules are the planner's,
+// re-run here on worse data (the -7 deg blind cone, grazing-angle returns,
+// 0.05 m cells), and each walked sill, short slope and kerb the planner laid
+// for the flat gait was walled off again until a matching waiver was added
+// -- one per kind of crossing from 2026-11-02 (crossing_radius,
+// crossing_z_band, a lift of the obstacle band by the crossing's rise), and
+// the next kind would have needed the next. Off the plan the rules run as
+// before, so a wall, a drop-off or a box beside the route is what it was.
+// What the corridor trusts is the map: a floor the map has 0.3 m too high
+// (dp's drift layer) hides a 0.25 m box on the real floor there, as the
+// crossing waiver's band did. What it keeps off: a stair-gait span, where
+// the flight stays lethal to the flat gait as above (the draft's climbing
+// corridor is still not this), and a plan on another floor in the same
+// columns (plan_z_band). Not a plan the planner says nothing about
+// (plan_crossings `known: false`, or none yet): then there is no word on
+// where the stairs are, and no corridor.
 
 #include <cstddef>
 #include <cstdint>
@@ -195,18 +268,39 @@ struct TerrainParams
   // Share of the disc's cells that must have a ground estimate for the
   // slope to be judged at all.
   double slope_min_known = 0.5;
+
+  // ---- the plan's corridor (2026-11-07, setPath(); the header) ----
+  // A cell this close (m, x / y) to a flat-gait pose of the plan is judged
+  // by the obstacle rule alone, against the plan's height there as its
+  // ground. robot_radius would just cover the body's half-width centred on
+  // the line; 0.4 also keeps the inflation of a step left beside the plan
+  // off its centre line. Wider would open a real drop-off beside an
+  // unrailed ramp. (crossing_radius from 2026-11-02 to 2026-11-07, over the
+  // flat-gait crossings only, with the step and slope rules waived and the
+  // obstacle band lifted by each crossing's whole rise -- on a sill's upper
+  // landing too, where a 0.35 m box went unseen.)
+  double plan_radius = 0.4;
+  // ... and whose ground estimate is within this (m) of the plan's height
+  // there: a floor above or below the plan in the same column is not it.
+  double plan_z_band = 0.5;
 };
 
-// A pose of the global path in the grid's frame. Only its place is used (as
-// a seed of the reach flood); the height is kept for debugging.
+// A pose of the global path in the grid's frame: its place seeds the reach
+// flood, and its height is the corridor's ground (the header) -- unless it
+// lies on a stretch the planner lays in the stair gait, which seeds the
+// flood and opens no corridor (the flight stays lethal).
 struct TerrainPathPose
 {
   double x, y, z;
+  bool stair = false;
 };
 
 struct TerrainStats
 {
   size_t known = 0, lethal_obstacle = 0, lethal_step = 0, lethal_slope = 0, lethal_island = 0;
+  // Cells on the plan's corridor: judged by the obstacle rule alone, against
+  // the plan's height.
+  size_t on_plan = 0;
 };
 
 class TerrainGrid
@@ -240,7 +334,9 @@ public:
   // lie within ray_clear_tolerance of the ray's height there (the header has
   // why). The return itself is not added -- call addSample() for that; a
   // return outside the window or the layer's height band still clears along
-  // its ray, which is what a wall at 6 m is good for.
+  // its ray, which is what a wall at 6 m is good for. Every cell but the
+  // last also keeps the lowest height a ray crossed it at, a bound on its
+  // ground (the header).
   void clearRay(double ox, double oy, double oz, double x, double y, double z, double t);
   // Samples clearRay() has removed since construction, for the debug log.
   uint64_t clearedSamples() const { return cleared_; }
@@ -248,8 +344,11 @@ public:
   // The current path in the grid's frame -- only when it has heights
   // (OctomapPlanner3D's; a 2D planner's z = 0 says nothing about where the
   // floor goes) -- or an empty list. Replaces the previous call's. Every
-  // pose seeds the reach rule (see classify()).
-  void setPath(const std::vector<TerrainPathPose> & poses);
+  // pose seeds the reach rule (see classify()); every pose not marked
+  // `stair` opens the corridor along it (the header, TerrainParams::
+  // plan_radius). With `corridor` false the poses seed only: the planner
+  // has not said where the stairs on this plan are, so none may open one.
+  void setPath(const std::vector<TerrainPathPose> & poses, bool corridor = true);
 
   // Judge every cell at time `now`, with the robot at (robot_x, robot_y) on
   // ground `robot_ground_z`, which is also the estimate for cells that have
@@ -291,12 +390,24 @@ private:
     std::vector<Sample> ring;
     int count = 0;  // samples held (<= ring.size())
     int head = 0;   // next slot to overwrite
+    // The lowest height a ray crossed this cell at, and when (grid time):
+    // the ground is under it (the header). Replaced by a lower ray, or by
+    // any ray once it is older than ground_memory.
+    float ray_lo = std::numeric_limits<float>::infinity();
+    float ray_lo_t = -std::numeric_limits<float>::infinity();
   };
 
   // Ground estimate per cell from the samples, the robot's ground where
   // there are too few.
   void estimateGround(double now, double robot_ground_z) const;
+  // The slope rule's plane under the disc at (ix, iy), through the known
+  // grounds of the cells that are not obstacles (obstacle_) and that their
+  // own returns stand on (groundSupported()).
   bool fitSlope(int ix, int iy, double & tilt_deg) const;
+  // Whether a return of cell i's own, within the last estimate's memory,
+  // lies within max_ground_lift of its ground: a surface in this column,
+  // not a neighbour's borrowed through the 3x3 gather.
+  bool groundSupported(size_t i) const;
   bool cellHasObstacle(size_t i, double now, double ground) const;
   // The reach flood (classify()) into `reached`: from the robot's cell, and
   // from the path's poses when `with_path`.
@@ -327,6 +438,14 @@ private:
   // swapped with cells_ on each shift.
   std::vector<Cell> shifted_;
   std::vector<TerrainPathPose> path_;
+  bool corridor_ = true;
+  // Scratch of classify(): the cells on the plan's corridor, the plan's
+  // height at the nearest flat-gait sample over each (the obstacle rule's
+  // ground there) and that sample's distance, for the nearest to win.
+  mutable std::vector<uint8_t> on_plan_;
+  mutable std::vector<float> plan_z_;
+  mutable std::vector<float> plan_dist_;
+  void markPlan() const;
   // Scratch of classify(): the ground per cell (NaN = none), whether it came
   // from samples, the reach flood, and the neighbourhood's samples.
   mutable std::vector<float> ground_;
@@ -336,7 +455,16 @@ private:
   // reference height per cell.
   mutable std::vector<uint8_t> walkable_;
   mutable std::vector<float> obstacle_ref_;
+  // The obstacle rule's verdict per cell, before the other rules: the slope
+  // fit leaves these out (the header has why). And groundSupported() per
+  // known cell, once (2026-11-07): the fit asked it for every cell of every
+  // disc, ~80 rescans of each ring per update -- 6400 cells x 80 x 24
+  // samples, ~12 M checks at 5 Hz on the controller's costmap thread.
+  mutable std::vector<uint8_t> obstacle_;
+  mutable std::vector<uint8_t> supported_;
   mutable std::vector<float> scratch_;
+  // The last estimate's memory window (grid time), for groundSupported().
+  mutable float ground_oldest_ = 0.f;
   mutable std::vector<int> queue_;
 };
 

@@ -244,6 +244,18 @@ and judges every cell on each update:
    inside `max_rel_z`, pushed the floor seen from further off out of the
    rings and became the ground under it — islands and steps round the robot,
    MPPI failing half its cycles for 18 s, the robot standing and twitching.
+   **A ray through a cell bounds its ground** (2026-11-03; elevation_mapping's
+   visibility cleanup): `clearRay()` also records per cell the lowest height
+   a ray crossed it at within `ground_memory`, and the estimate takes no
+   gathered sample above that + `ray_clear_tolerance` — the ray proves the
+   column empty there, so a jamb's or a wall's returns next door are not
+   this cell's ground. Not in the cell a ray ends in, so a wall keeps its own
+   cell while the rays that end on it cap the cells before it, where the
+   island band stood wherever the lower FOV hid a wall's foot (dp's lab, the
+   pocket beside the door the robot stuck in: 73 → 96 of 132 cells not
+   lethal, the lane out of the door 0.5 → 0.6 m, replayed from the sim's
+   scans). Every surface lies under the rays that end on or beyond it, so a
+   box top, a tread or the floor across a drop-off keeps its estimate.
 2. **Obstacle**: a return of the cell itself younger than `obstacle_memory`
    (2 s) between `min_obstacle_height` (0.1) and `body_clearance` (0.6) above
    that ground (for a sparse cell, the reference above) → LETHAL.
@@ -282,10 +294,53 @@ and judges every cell on each update:
 5. **Slope**: the plane fitted under the `robot_radius` disc steeper than
    `max_slope_deg` (20) → LETHAL, judged only when the disc spans more than a
    step (a level floor with a kerb is not fitted) and at least
-   `slope_min_known` of it has a ground.
+   `slope_min_known` of it has a ground. The fit leaves out the cells rule 2
+   made obstacles (2026-11-02): their "ground" is the thing's own returns, and
+   a door jamb's, fitted with the floor beside it, tilted every disc that
+   reached it past the limit. dp's 2F lab door (0.75 m between the jambs,
+   lethal on robot01), replayed from the sim's scans on the approach, had a
+   0.5 m free lane for the 0.46 m footprint; 0.6 m with the jamb out of the
+   fit. The ring next to an obstacle keeps its ground (its 3x3 estimate took
+   the jamb's returns too): leaving it out opened the door to 0.7 m, but that
+   ring is a wall foot's lethal band and a stair's edge cells, and the stair
+   test lost half its lethal cells. And the fit takes only grounds a cell's
+   own returns stand on (`groundSupported()`, 2026-11-03): a jamb's inner
+   cells, too few returns for rule 2 and the jamb's next door for a ground,
+   tilted every disc that reached them (the lab door on the way in: 0.6 →
+   0.7 m, 0.75 in `map.pcd`). The 0.15 m slope band in front of a seen wall
+   foot went with it: lethal starts at the wall's own cell.
 6. Nothing seen → NO_INFORMATION; the rest FREE. Then `updateWithMax`, the
    footprint cleared (its floor is never seen and the robot's legs are in the
    cloud), and the `InflationLayer` inflates it all.
+
+**Along the plan the layer judges no terrain (the corridor, 2026-11-07).**
+Within **`plan_radius`** (0.4 m) of a pose of the plan the planner lays for
+the flat gait, on ground within **`plan_z_band`** (0.5 m) of the plan's
+height there, rules 4 and 5 are not run and rule 2's band starts at the
+plan's own height (the planner's measured floor, interpolated along the plan;
+the highest within two cells of the nearest pose, so a sill's riser is judged
+against the floor above it and a slope's band is not lifted by the slope
+ahead) or at the cell's own estimate (rule 1), whichever is higher — never
+lower, or a map 0.2 m under the real floor would make every floor return on
+the corridor an obstacle. Rules 2 and 3 run as everywhere. Why: 4 and 5 are the planner's
+own rules, re-run here on worse data (the −7° blind cone, grazing-angle
+returns, 0.05 m cells), and from 2026-11-02 each walked sill, short slope and
+kerb the planner laid for the flat gait was walled off again until a matching
+waiver was added — per kind of crossing (`crossing_radius`, `crossing_z_band`,
+the obstacle band lifted by the crossing's whole rise, which on a sill's upper
+landing hid a 0.35 m box), and the next kind would have needed the next. Of
+the planner's word (**`plan_crossings`**, `syncai_util/plan_crossings.hpp`,
+latched, a fresh set with every plan and an empty one with every clear) the
+layer reads one bit per crossing, its gait: a pose within `plan_radius` of a
+**stair-gait** span's points, and within `plan_z_band` of their height
+(2026-11-10: a pose on the floor under a flight is not the stair's, and
+used to lose its corridor), is the stair's and opens nothing (the flight
+stays lethal, below), and with no word for the plan at all (`known: false`,
+or none yet) no pose does — the poses seed the reach flood only, as every
+plan did before. A person on the corridor stays lethal (legs reach far above
+the band's floor); a drop-off the map does not have, or a box shorter than
+the map's error there, is not seen — the corridor trusts the map, as the
+crossing waiver's band did. `on_plan` in the debug stats counts the cells.
 
 The four geometry values are `SurfaceMapParams`' (Octo3D), one calibration of
 the legs; change them together.
@@ -299,7 +354,9 @@ stairs**, by decision (2026-10-20). The lethal here is what keeps MPPI's
 optimizer off a stair the robot was not routed over. A draft of the same day
 opened a corridor along a climbing path (the path's height as the ground, the
 obstacle band starting 0.3 m up) so the climb could avoid a box on the stairs;
-it was taken out with that decision, and git history has it.
+it was taken out with that decision, and git history has it. The corridor of
+2026-11-07 (above) is not it: it opens along the plan's flat-gait poses only,
+and ends where the planner's stair-gait span begins.
 
 **What a costmap clear does here**: drops the costs, keeps the returns. The
 floor the lidar can no longer see is in them, and a stale obstacle mark leaves
@@ -457,7 +514,7 @@ paths start passing suspiciously close to walls.
 
 `test/test_terrain_grid.cpp` (gtest, `colcon test --packages-select
 syncai_costmap`) runs `TerrainGrid` on synthetic scenes — floor, kerb,
-step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a stair's underside
+step, drop-off (with its lower floor sampled, and in its own shadow), ramp, slope, box, person, wall foot, a door's jambs, a wall foot and a door lane under the scan's rays, a stair's underside
 overhead (and with no floor seen under it), a stair lethal with and
 without a climbing path, the window moving — with no ROS; it also builds on a workstation
 with plain `clang++` against `include/` and googletest.
