@@ -12,7 +12,9 @@
 // previous one, so a shortcut can no more cross a kerb or jump floors than
 // the search can. It is also not allowed to come closer to the traversable
 // boundary than the sub-path it replaces, so smoothing never pulls the path
-// into the clearance band (the same rule as Smac's "never above cost 252").
+// into the clearance band (the same rule as Smac's "never above cost 252") --
+// but for a cell's worth of tolerance since 2026-11-10 (ShortcutSlack), which
+// the exact rule turned out to need.
 //
 // A route that takes a stair link (stair_links.hpp) is assembled by
 // buildPath. Over a walked link the shortcut and the floor-height lookup
@@ -47,6 +49,7 @@
 //
 // ROS-free (see surface_map.hpp).
 
+#include <algorithm>
 #include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
@@ -72,15 +75,44 @@ bool lineOfSight(
   std::vector<CellId> * out = nullptr, const BlockedView * blocked = nullptr,
   const StairLinks * links = nullptr);
 
+// How much closer to the boundary than the cells it replaces a shortcut
+// segment may come (2026-11-10). Held exactly, "never closer" left the route
+// a staircase: down a corridor the search runs on the ridge of the clearance
+// field, which on a grid not square to the corridor steps sideways a cell at
+// a time, and a straight line between two ridge cells crosses cells 5 cm less
+// clear -- refused, so the shortcut advanced cell by cell and the plan came
+// out in 45 deg doglegs 0.1-0.6 m long (dp, seven routes, 570 m: 258
+// vertices, 101 turning 20 deg or more; with 0.1 m of tolerance 90 and 48,
+// the total turning 4469 -> 2357 deg, the length 2 m shorter).
+//
+// A segment may come `tolerance` closer than the least clear cell of the
+// sub-path it replaces, but not under `floor` on the strength of it: where
+// the sub-path itself is under the floor (a doorway, 0.10 m), the rule is
+// exact again, as it was. Not cumulative -- every segment is held to the
+// search's own cells, never to another segment. Both 0 = the exact rule.
+struct ShortcutSlack
+{
+  double tolerance = 0.0;  // m
+  double floor = 0.0;      // m
+  // The clearance a segment has to keep, replacing cells no less clear than
+  // `replaced`.
+  float limit(float replaced) const
+  {
+    const float eased =
+      std::max(replaced - static_cast<float>(tolerance), static_cast<float>(floor));
+    return std::min(replaced, eased);
+  }
+};
+
 // Greedy forward shortcut: from an anchor, extend the segment while the next
 // cell is still in sight, then anchor there. The result is a sub-sequence of
 // the input (first and last cells kept).
 std::vector<CellId> shortcutPath(
   const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked = nullptr,
-  const StairLinks * links = nullptr);
+  const StairLinks * links = nullptr, const ShortcutSlack & slack = {});
 
-// A corner of a shortcut chain, rounded (2026-11-10, a measurement so far:
-// nothing in buildPath calls it, the CLI's --corners reports it per vertex).
+// A corner of a shortcut chain, rounded (2026-11-10; buildPath lays it with
+// corner_radius > 0, the CLI's --corners reports it per vertex).
 // The shortcut leaves a polyline, every vertex a sharp turn; this is the arc
 // of `radius` tangent to both segments at vertex v (a and b its neighbours in
 // the chain), walked over the floor as lineOfSight walks a segment --
@@ -96,8 +128,8 @@ std::vector<CellId> shortcutPath(
 // either rule rounds on a real map before one is chosen.
 //
 // The arc is sampled every quarter cell, not supercovered: a cell it clips by
-// less than that is not seen. Good enough to count corners with; the rounding
-// itself, if it comes, wants the supercover.
+// less than that (2.5 cm) is not seen. With pts set, those samples, each at
+// its cell's floor height.
 struct CornerArc
 {
   double turn = 0.0;  // how far the route turns at v (rad, 0 = straight on)
@@ -110,7 +142,8 @@ struct CornerArc
 };
 CornerArc cornerArc(
   const SurfaceMap & m, CellId a, CellId v, CellId b, double radius,
-  const BlockedView * blocked = nullptr, const StairLinks * links = nullptr);
+  const BlockedView * blocked = nullptr, const StairLinks * links = nullptr,
+  std::vector<Waypoint> * pts = nullptr);
 
 // Points every `spacing` metres (xy) along the polyline through the cell
 // centres, first and last cell included. z is the top face of the surface
@@ -138,10 +171,17 @@ struct PathSpan
 // way it is taken and resampled at the same spacing, spliced in between.
 // With vertices set, the number of vertices before resampling (shortcut
 // vertices plus link points); with spans set, one PathSpan per use, in order.
+// With corner_radius > 0 (2026-11-10) each corner of a floor stretch takes
+// the largest arc up to that radius that fits half-way along its shorter
+// segment and keeps the shortcut's own clearance rule, slack included; a
+// corner with no such arc, a cusp (a turn past 2.0 rad, where the controller
+// server cuts the route and the robot turns standing) and the vertex next to
+// a crossing stay sharp.
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices = nullptr,
-  const BlockedView * blocked = nullptr, std::vector<PathSpan> * spans = nullptr);
+  const BlockedView * blocked = nullptr, std::vector<PathSpan> * spans = nullptr,
+  const ShortcutSlack & slack = {}, double corner_radius = 0.0);
 
 // Narrow passages (2026-11-02): the stretches of a route where the floor
 // between the walls either side is narrower than the robot can turn in. dp's

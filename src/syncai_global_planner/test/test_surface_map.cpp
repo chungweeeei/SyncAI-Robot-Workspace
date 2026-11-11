@@ -289,6 +289,21 @@ TEST(SurfaceAStar, PlansThroughTheDoorAndKeepsClearance)
   for (size_t i = 1; i < chain.size(); ++i) {
     EXPECT_TRUE(lineOfSight(*m, chain[i - 1], chain[i], min_clear - 1e-4f));
   }
+  // With slack (ShortcutSlack) a segment may come a cell closer than the
+  // cells it replaces, never under the floor for it: no more vertices than
+  // the exact rule leaves, and every segment within the eased limit.
+  const ShortcutSlack slack{0.1, 0.2};
+  EXPECT_FLOAT_EQ(slack.limit(0.55f), 0.45f);
+  EXPECT_FLOAT_EQ(slack.limit(0.25f), 0.2f);
+  EXPECT_FLOAT_EQ(slack.limit(0.1f), 0.1f);
+  EXPECT_FLOAT_EQ(ShortcutSlack{}.limit(0.3f), 0.3f);
+  const auto eased = shortcutPath(*m, r.cells, nullptr, nullptr, slack);
+  EXPECT_LE(eased.size(), chain.size());
+  EXPECT_EQ(eased.front(), a.cell);
+  EXPECT_EQ(eased.back(), b.cell);
+  for (size_t i = 1; i < eased.size(); ++i) {
+    EXPECT_TRUE(lineOfSight(*m, eased[i - 1], eased[i], slack.limit(min_clear) - 1e-4f));
+  }
   const auto path = resamplePath(*m, chain, 0.1);
   ASSERT_GE(path.size(), 2u);
   for (size_t i = 1; i < path.size(); ++i) {
@@ -327,6 +342,56 @@ TEST(PathPostprocess, ACornerOnOpenFloorTakesAnArcUpToHalfItsShorterSegment)
   ASSERT_NE(on, kNoCell);
   EXPECT_FALSE(cornerArc(*m, a, v, on, 0.2).ok);
   EXPECT_FALSE(cornerArc(*m, a, v, a, 0.2).ok);
+}
+
+TEST(PathPostprocess, BuildPathRoundsTheCornersOfARouteThroughADoor)
+{
+  // The wall scene's door, taken from one side of the room to the other: the
+  // shortcut leaves a polyline that turns at the door. With corner_radius the
+  // same route turns less at its sharpest pose, keeps its ends, stays on
+  // traversable floor and is no longer; without it buildPath is as before.
+  const auto m = build("wall");
+  SurfaceAStar astar(m);
+  SearchParams p;
+  const SnapResult a = astar.snap(3.0, 6.5, 0.0, p);
+  const SnapResult b = astar.snap(9.0, 1.5, 0.0, p);
+  ASSERT_NE(a.cell, kNoCell);
+  ASSERT_NE(b.cell, kNoCell);
+  const PlanResult r = astar.plan(a.cell, b.cell, p);
+  ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
+  const auto maxTurn = [](const std::vector<Waypoint> & path) {
+    double worst = 0.0;
+    for (size_t i = 1; i + 1 < path.size(); ++i) {
+      const double h0 = std::atan2(path[i].y - path[i - 1].y, path[i].x - path[i - 1].x);
+      const double h1 = std::atan2(path[i + 1].y - path[i].y, path[i + 1].x - path[i].x);
+      worst = std::max(worst, std::fabs(std::remainder(h1 - h0, 2 * M_PI)));
+    }
+    return worst;
+  };
+  const auto length = [](const std::vector<Waypoint> & path) {
+    double len = 0.0;
+    for (size_t i = 1; i < path.size(); ++i) {
+      len += std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    }
+    return len;
+  };
+  const ShortcutSlack slack{0.1, 0.2};
+  const auto sharp =
+    buildPath(*m, nullptr, r.cells, {}, true, 0.1, nullptr, nullptr, nullptr, slack);
+  const auto round =
+    buildPath(*m, nullptr, r.cells, {}, true, 0.1, nullptr, nullptr, nullptr, slack, 0.5);
+  ASSERT_GE(sharp.size(), 3u);
+  ASSERT_GE(round.size(), 3u);
+  EXPECT_GT(maxTurn(sharp), 0.3);  // the scene does have a corner
+  EXPECT_LT(maxTurn(round), maxTurn(sharp));
+  EXPECT_LE(length(round), length(sharp) + 1e-6);
+  EXPECT_NEAR(round.front().x, sharp.front().x, 1e-9);
+  EXPECT_NEAR(round.front().y, sharp.front().y, 1e-9);
+  EXPECT_NEAR(round.back().x, sharp.back().x, 1e-9);
+  EXPECT_NEAR(round.back().y, sharp.back().y, 1e-9);
+  for (const Waypoint & w : round) {
+    EXPECT_NE(m->traversableAt(w.x, w.y, w.z), kNoCell) << w.x << ", " << w.y;
+  }
 }
 
 TEST(PathPostprocess, ANarrowDoorIsOnePassageAndAWideDoorOrAWallBesideIsNone)

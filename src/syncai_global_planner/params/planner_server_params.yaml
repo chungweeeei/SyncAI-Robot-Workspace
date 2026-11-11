@@ -519,6 +519,31 @@
       # at interpolation_resolution with z read from the surface. Poses carry
       # z = the floor's top face + path_z_offset; the 2D controllers ignore z.
       shortcut: true
+      # What the shortcut may give up of the search's clearance (2026-11-10,
+      # ShortcutSlack in path_postprocess.hpp): a straightened segment may
+      # come shortcut_clearance_tolerance closer to the boundary than the
+      # least clear cell it replaces, but not under shortcut_clearance_floor
+      # for it (a doorway's 0.10 m keeps the exact rule). Held exactly, the
+      # rule left the route a staircase of 45 deg doglegs: a corridor's
+      # clearance ridge steps sideways a cell at a time on a grid not square
+      # to it, and the line between two ridge cells crosses cells 5 cm less
+      # clear. One cell; both 0 = the exact rule. Offline numbers in the
+      # README, "Corners". Unmeasured on the robot.
+      shortcut_clearance_tolerance: 0.1
+      shortcut_clearance_floor: 0.2
+      # The arcs at the plan's corners (2026-11-10, buildPath / cornerArc in
+      # path_postprocess.hpp). The shortcut leaves a polyline, every vertex a
+      # sharp turn; each corner of a floor stretch takes the largest arc up
+      # to corner_radius that reaches no further than half-way along its
+      # shorter segment (two corners' arcs never overlap) and keeps the
+      # shortcut's own clearance rule, tolerance included. An arc lies inside
+      # its corner: 0.5 m passes 0.21 m inside a right angle, 0.04 m inside a
+      # 45 deg turn. A corner with no such arc stays sharp, and so do a cusp
+      # (a turn past 2.0 rad: the controller server cuts the route there and
+      # the robot turns standing on the tip) and the vertex next to a stair,
+      # kerb or gap crossing, whose run-up is meant to be straight. 0 = none.
+      # Unmeasured on the robot.
+      corner_radius: 0.5
       interpolation_resolution: 0.1
       path_z_offset: 0.0
       # Narrow passages (2026-11-02, path_postprocess.hpp): every stretch of

@@ -47,7 +47,7 @@ bool lineOfSight(
 
 std::vector<CellId> shortcutPath(
   const SurfaceMap & m, const std::vector<CellId> & cells, const BlockedView * blocked,
-  const StairLinks * links)
+  const StairLinks * links, const ShortcutSlack & slack)
 {
   std::vector<CellId> out;
   if (cells.size() < 3) {
@@ -60,12 +60,14 @@ std::vector<CellId> shortcutPath(
   size_t anchor = 0;
   while (anchor + 1 < cells.size()) {
     size_t j = anchor + 1;
-    // The clearance the replaced sub-path kept; the shortcut may not do worse.
+    // The clearance the replaced sub-path kept; the shortcut may not do worse
+    // than that by more than its slack.
     float min_clear = std::min(clearOf(cells[anchor]), clearOf(cells[j]));
     while (j + 1 < cells.size()) {
       const float next_clear = std::min(min_clear, clearOf(cells[j + 1]));
       if (!lineOfSight(
-            m, cells[anchor], cells[j + 1], next_clear - 1e-4f, nullptr, blocked, links)) {
+            m, cells[anchor], cells[j + 1], slack.limit(next_clear) - 1e-4f, nullptr, blocked,
+            links)) {
         break;
       }
       min_clear = next_clear;
@@ -133,9 +135,12 @@ struct FloorWalk
 
 CornerArc cornerArc(
   const SurfaceMap & m, CellId a, CellId v, CellId b, double radius, const BlockedView * blocked,
-  const StairLinks * links)
+  const StairLinks * links, std::vector<Waypoint> * pts)
 {
   CornerArc out;
+  if (pts) {
+    pts->clear();
+  }
   double ax, ay, vx, vy, bx, by;
   m.cellXY(a, ax, ay);
   m.cellXY(v, vx, vy);
@@ -180,13 +185,20 @@ CornerArc cornerArc(
   if (!arc.step(t1x, t1y)) {
     return out;
   }
+  if (pts) {
+    pts->push_back({t1x, t1y, m.zFloor(arc.last)});
+  }
   const double a0 = std::atan2(t1y - cy, t1x - cx);
   const double side = (t1x - cx) * (t2y - cy) - (t1y - cy) * (t2x - cx) > 0 ? 1.0 : -1.0;
   const int n = std::max(1, static_cast<int>(std::ceil(radius * out.turn / arc.ds())));
   for (int k = 1; k <= n; ++k) {
     const double ang = a0 + side * out.turn * k / n;
-    if (!arc.step(cx + radius * std::cos(ang), cy + radius * std::sin(ang))) {
+    const double x = cx + radius * std::cos(ang), y = cy + radius * std::sin(ang);
+    if (!arc.step(x, y)) {
       return out;
+    }
+    if (pts) {
+      pts->push_back({x, y, m.zFloor(arc.last)});
     }
   }
   if (arc.last != outw.last) {
@@ -198,26 +210,35 @@ CornerArc cornerArc(
   return out;
 }
 
-std::vector<Waypoint> resamplePath(
-  const SurfaceMap & m, const std::vector<CellId> & cells, double spacing)
+namespace
+{
+
+// A cell as a waypoint.
+//
+// A pose's height is the measured floor where there is one (2026-11-07,
+// SurfaceMap::zFloor), the voxel's top face otherwise: the height every
+// judge of the route then reads, from the gap links' kinds to the terrain
+// layer's ground along the plan. The voxel tops stayed on the stair
+// readers' own points (stairCrossing, the walked links), where a flight's
+// 0.3 m and more swallows the difference.
+Waypoint cellWaypoint(const SurfaceMap & m, CellId c)
+{
+  Waypoint w;
+  m.cellXY(c, w.x, w.y);
+  w.z = m.zFloor(c);
+  return w;
+}
+
+// resamplePath() over a polyline of points on the floor (cell centres, and
+// since 2026-11-10 the arcs laid at its corners), both ends kept.
+std::vector<Waypoint> resampleOnSurface(
+  const SurfaceMap & m, const std::vector<Waypoint> & line, double spacing)
 {
   std::vector<Waypoint> out;
-  if (cells.empty()) {
+  if (line.empty()) {
     return out;
   }
   spacing = std::max(spacing, m.res * 0.25);
-  // A pose's height is the measured floor where there is one (2026-11-07,
-  // SurfaceMap::zFloor), the voxel's top face otherwise: the height every
-  // judge of the route then reads, from the gap links' kinds to the terrain
-  // layer's ground along the plan. The voxel tops stayed on the stair
-  // readers' own points (stairCrossing, the walked links), where a flight's
-  // 0.3 m and more swallows the difference.
-  auto at = [&](CellId c) {
-    Waypoint w;
-    m.cellXY(c, w.x, w.y);
-    w.z = m.zFloor(c);
-    return w;
-  };
   auto surfaceZ = [&](double x, double y, double z_guess) {
     const int ix = m.ixOf(x), iy = m.iyOf(y);
     if (!m.inGrid(ix, iy)) {
@@ -227,12 +248,15 @@ std::vector<Waypoint> resamplePath(
     const CellId c = m.layerNear(m.col(ix, iy), kz, 3);
     return c == kNoCell ? z_guess : m.zFloor(c);
   };
-  Waypoint prev = at(cells[0]);
+  Waypoint prev = line[0];
   out.push_back(prev);
   double carry = 0.0;  // distance already covered toward the next sample
-  for (size_t i = 1; i < cells.size(); ++i) {
-    const Waypoint next = at(cells[i]);
+  for (size_t i = 1; i < line.size(); ++i) {
+    const Waypoint & next = line[i];
     const double seg = std::hypot(next.x - prev.x, next.y - prev.y);
+    if (seg < 1e-9) {
+      continue;
+    }
     double s = spacing - carry;
     while (s < seg - 1e-9) {
       const double t = s / seg;
@@ -251,6 +275,44 @@ std::vector<Waypoint> resamplePath(
     out.push_back(prev);
   }
   return out;
+}
+
+// The largest arc up to max_radius that rounds the corner at v, down in 5 cm
+// steps to one cell, keeping the clearance the shortcut itself would have to
+// (slack.limit() of what the arc replaces). False -- the corner stays sharp --
+// when none fits, and for a turn past kCuspTurn: the controller server cuts
+// a route into legs at its cusps (cusp_min_angle, 2.0 rad) and the robot
+// turns round standing on the tip, which an arc would take away.
+constexpr double kCuspTurn = 2.0;
+bool roundCorner(
+  const SurfaceMap & m, CellId a, CellId v, CellId b, double max_radius,
+  const ShortcutSlack & slack, const BlockedView * blocked, const StairLinks * links,
+  std::vector<Waypoint> & pts)
+{
+  const CornerArc geo = cornerArc(m, a, v, b, 0.0, blocked, links);
+  if (geo.max_radius <= 0.0 || geo.turn > kCuspTurn) {
+    return false;
+  }
+  for (double r = std::min(max_radius, geo.max_radius); r >= m.res - 1e-9; r -= 0.05) {
+    const CornerArc arc = cornerArc(m, a, v, b, r, blocked, links, &pts);
+    if (arc.ok && arc.clearance >= slack.limit(arc.replaced) - 1e-4f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+std::vector<Waypoint> resamplePath(
+  const SurfaceMap & m, const std::vector<CellId> & cells, double spacing)
+{
+  std::vector<Waypoint> line;
+  line.reserve(cells.size());
+  for (const CellId c : cells) {
+    line.push_back(cellWaypoint(m, c));
+  }
+  return resampleOnSurface(m, line, spacing);
 }
 
 namespace
@@ -484,7 +546,8 @@ bool stairCrossing(
 std::vector<Waypoint> buildPath(
   const SurfaceMap & m, const StairLinks * links, const std::vector<CellId> & cells,
   const std::vector<LinkUse> & uses, bool shortcut, double spacing, size_t * vertices,
-  const BlockedView * blocked, std::vector<PathSpan> * spans)
+  const BlockedView * blocked, std::vector<PathSpan> * spans, const ShortcutSlack & slack,
+  double corner_radius)
 {
   std::vector<Waypoint> out;
   if (spans) {
@@ -507,7 +570,7 @@ std::vector<Waypoint> buildPath(
     const std::vector<CellId> seg(
       cells.begin() + static_cast<std::ptrdiff_t>(from),
       cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
-    chains.push_back(shortcut ? shortcutPath(m, seg, blocked, links) : seg);
+    chains.push_back(shortcut ? shortcutPath(m, seg, blocked, links, slack) : seg);
     from = to + 1;
   };
   for (const LinkUse & u : uses) {
@@ -564,10 +627,36 @@ std::vector<Waypoint> buildPath(
     return &spans->back();
   };
 
+  // A floor stretch's waypoints: its shortcut chain with an arc laid at each
+  // corner that takes one (roundCorner), resampled. The vertex next to a
+  // crossing stays sharp: the run onto a stair or a kerb is meant to be
+  // straight, square to it, and stair mode stops stair_standoff before a
+  // flight to line up on that run.
+  const auto floorStretch = [&](size_t i) {
+    const std::vector<CellId> & c = chains[i];
+    if (!shortcut || corner_radius <= 0.0 || c.size() < 3) {
+      return resamplePath(m, c, spacing);
+    }
+    std::vector<Waypoint> line, arc;
+    line.push_back(cellWaypoint(m, c.front()));
+    for (size_t k = 1; k + 1 < c.size(); ++k) {
+      const bool by_crossing = (k == 1 && i > 0) || (k + 2 == c.size() && i < uses.size());
+      if (
+        !by_crossing &&
+        roundCorner(m, c[k - 1], c[k], c[k + 1], corner_radius, slack, blocked, links, arc)) {
+        line.insert(line.end(), arc.begin(), arc.end());
+      } else {
+        line.push_back(cellWaypoint(m, c[k]));
+      }
+    }
+    line.push_back(cellWaypoint(m, c.back()));
+    return resampleOnSurface(m, line, spacing);
+  };
+
   size_t nvert = 0;
   for (size_t i = 0; i < chains.size(); ++i) {
     nvert += chains[i].size();
-    append(out, resamplePath(m, chains[i], spacing), z_tol);
+    append(out, floorStretch(i), z_tol);
     if (i >= uses.size()) {
       break;
     }

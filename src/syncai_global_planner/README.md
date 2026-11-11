@@ -723,7 +723,10 @@ search already picks their entry across the flight's width.
 supercover traversal (every cell the segment touches; Bresenham skips the
 corner cell a wall foot sits in), step-continuous along the segment, and
 never closer to the boundary than the cells it replaces (the rule Smac's
-smoother had as "never above 252"); then a resample at `interpolation_resolution` with z read back
+smoother had as "never above 252") but for `shortcut_clearance_tolerance`
+(0.1 m, one cell, never under `shortcut_clearance_floor` 0.2 m for it, since
+2026-11-10, "Corners" below), its corners then rounded with arcs up to
+`corner_radius` (0.5 m); then a resample at `interpolation_resolution` with z read back
 from the surface. Poses carry z = the floor's top face (+ `path_z_offset`),
 yaw toward the next pose, the goal's orientation last. MPPI
 (`FollowPath`), RPP 3D (`FollowPathRPP3D`) and the controller_server's goal
@@ -733,7 +736,7 @@ dp1f_1012), and RPP 3D climbs a stretch rising 0.3 m within 1 m in a stair mode
 that switches the gait policy (`syncai_controller/README.md`, "Paths with
 heights" and "Stairs").
 
-**Corners** (2026-11-10, measured, nothing changed yet). The output is a
+**Corners** (2026-11-10). The output is a
 polyline: the shortcut straightens, it does not smooth, and every vertex is a
 sharp turn. `cornerArc()` is the arc that would round one — tangent to both
 segments, its tangent points at most half-way along the shorter, walked over
@@ -753,8 +756,32 @@ cell) closer than the cells it replaces: 90 vertices, 48 turns of 20° or more,
 none with under 0.3 m of room, and the routes' total turning 4469° → 2357°
 (outdoor_1027, eight routes: 69 → 37 vertices, 998° → 785°). The arcs' own
 clearance was never the limit — on every corner with room, the arc that keeps
-the replaced clearance is the largest that fits. So the order, if this is
-taken up: the shortcut's tolerance first, arcs on what is left.
+the replaced clearance is the largest that fits. So the order: the shortcut's
+tolerance first, arcs on what is left.
+
+The tolerance is in since the same day (`ShortcutSlack`,
+`shortcut_clearance_tolerance` 0.1 / `shortcut_clearance_floor` 0.2): a
+segment may come 0.1 m closer to the boundary than the least clear cell of
+the sub-path it replaces, but not under 0.2 m for it, so a route through a
+doorway (0.10 m) is held to the exact rule there as before. It does not
+accumulate: each segment is held to the search's own cells. With the floor,
+the same routes: dp 95 vertices, 52 turns of 20° or more, 4 with under 0.3 m
+of room, 2524°; outdoor_1027 39 vertices, 707°.
+
+The arcs are laid since the same day too (`corner_radius` 0.5 m, `buildPath`):
+each corner of a floor stretch takes the largest arc up to that radius that
+reaches no further than half-way along its shorter segment and keeps the
+shortcut's clearance rule, tolerance included. Three kinds of corner stay
+sharp: one with no such arc; a cusp (a turn past 2.0 rad, where the
+controller server cuts the route into legs and the robot turns standing on
+the tip); and the vertex next to a stair, kerb or gap crossing, whose run-up
+is meant to be straight and square to it. Counted on the output poses (0.1 m
+apart), the same seven dp routes: poses that turn more than 15° 143 with the
+exact rule and no arcs, 71 with the tolerance, 21 with the arcs (more than
+30°: 47, 35, 11 — what is left is mostly the stairs' landing corners, laid
+sharp on purpose); outdoor_1027 28, 17, 4. A radius of 1.0 m gives the same
+counts: the segments' lengths are the limit, not the radius. Offline numbers;
+unmeasured on the robot.
 
 **Measured on dp1f_1012_v2** (2026-10-13; 1F and 2F, 2 576 keyframes): 1.26 M
 columns, 724 k surface cells (24 k inferred), 158 k traversable in 146
@@ -1181,6 +1208,8 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
 | `snap_single_layer` | `true` | Nothing within `snap_z_window` and one traversable layer within `snap_xy_radius`: snap to it at any height (sloping ground under a z = 0 goal). `false` = the window is absolute. Dynamic |
 | `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |
+| `shortcut_clearance_tolerance`, `shortcut_clearance_floor` | `0.1`, `0.2` | What the shortcut may give up of the search's clearance (2026-11-10, `ShortcutSlack` in `path_postprocess.hpp`; "Corners"): a straightened segment may come `tolerance` closer to the boundary than the least clear cell it replaces, never under `floor` for it. The exact rule (both `0`) left the route in 45° doglegs along a corridor's clearance ridge. The CLI's `--shortcut-slack`. Dynamic |
+| `corner_radius` | `0.5` | The arcs at the plan's corners (2026-11-10, `buildPath` / `cornerArc()`; "Corners"): the largest arc up to this radius that fits half-way along the corner's shorter segment and keeps the shortcut's clearance rule; a cusp, a corner beside a crossing and one with no room stay sharp. `0` = the polyline as before. The CLI's `--corner-radius`. Dynamic |
 | `narrow_max_width`, `narrow_lead` | `0.85`, `0.5` | Narrow passages (2026-11-02, `findNarrowPassages()` in `path_postprocess.hpp`): every stretch of the plan where the floor between the walls either side — measured square to the route, both ways, to the first non-traversable column, + 2 × `robot_radius` — is narrower than `narrow_max_width` goes out on `plan_crossings` as kind `narrow` with its width and axis, grown by `narrow_lead` of route either side (where to square up). 0.85 m is the footprint's diagonal, the narrowest width it turns round in. dp's 2F lab door (0.75 m in `map.pcd`) reads 0.65; the robot reached it 20–70° off its axis and stuck, going in and coming out. To a cell (±0.1 m), and to what the surface map refuses: one-cell pits narrow a floor as a wall does (dp 2F at (11, −19.5): a 0.70 m "passage" between two pits' footprint rings, a map to repair). `0` = none. Logged per plan. Dynamic |
 | `dynamic.enabled`, `dynamic.topic`, `dynamic.transform_tolerance` | `true`, `pointlio/body_cloud`, `0.3` | The dynamic overlay's input (see **Dynamic obstacles**); `false` = no mark ever, every path valid, no detour (the 2026-10-20 behaviour). Startup only |
 | `dynamic.obstacle_max_range`, `dynamic.raytrace_max_range` | `2.5`, `3.0` | Planar range within which a return marks / its ray clears — the 2D obstacle layer's values until 2026-10-28. Dynamic |

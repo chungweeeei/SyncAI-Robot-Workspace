@@ -82,9 +82,16 @@ void usage()
     "height)\n"
     "  --out <path.csv>         write the planned path (x,y,z per line)\n"
     "  --no-shortcut            keep the raw A* cell chain\n"
+    "  --shortcut-slack <tolerance> <floor>\n"
+    "                           how much closer to the boundary than the cells it replaces a\n"
+    "                           shortcut segment may come, and the clearance it may not go\n"
+    "                           under for it (m; the plugin's shortcut_clearance_tolerance /\n"
+    "                           _floor, 0.1 0.2; 0 0 = the exact rule before 2026-11-10)\n"
     "  --narrow <width> <lead>  each --plan's narrow passages (path_postprocess.hpp): narrower\n"
     "                           than width (m, 0 = off), grown by lead (m) either side; the\n"
     "                           plugin's narrow_max_width / narrow_lead (0.85 0.5)\n"
+    "  --corner-radius <m>      the arcs laid at each --plan's corners (the plugin's\n"
+    "                           corner_radius, 0.5; 0 = none, the polyline before 2026-11-10)\n"
     "  --corners <radius> <clearance>\n"
     "                           each --plan's corners, rounded (cornerArc, path_postprocess.hpp;\n"
     "                           a measurement, the path is not changed): per shortcut vertex the\n"
@@ -803,7 +810,7 @@ bool dumpPcd(const SurfaceMap & m, const std::string & path)
 // along a line it could not span) is counted and not listed.
 void reportCorners(
   const SurfaceMap & m, const StairLinks * links, const PlanResult & r, const BlockedView & blocked,
-  double max_radius, double min_clearance)
+  double max_radius, double min_clearance, const ShortcutSlack & slack)
 {
   const double kCusp = 2.0;
   size_t corners = 0, in_line = 0, cusps = 0, kept = 0, floored = 0;
@@ -813,7 +820,7 @@ void reportCorners(
       r.cells.begin() + static_cast<std::ptrdiff_t>(from),
       r.cells.begin() + static_cast<std::ptrdiff_t>(to) + 1);
     from = to + 1;
-    const std::vector<CellId> v = shortcutPath(m, seg, &blocked, links);
+    const std::vector<CellId> v = shortcutPath(m, seg, &blocked, links, slack);
     for (size_t i = 1; i + 1 < v.size(); ++i) {
       const CornerArc geo = cornerArc(m, v[i - 1], v[i], v[i + 1], 0.0, &blocked, links);
       if (geo.max_radius <= 0.0) {
@@ -881,7 +888,8 @@ int runPlan(
   double gy, double gz, bool shortcut, const std::string & out_path,
   std::vector<PlannedPath> * planned, const DynamicMask * mask, const KeepoutMask * keepout,
   const std::vector<KeepoutZone> & zones, const StairLinkParams & stair_params, double narrow_width,
-  double narrow_lead, double corner_radius, double corner_clearance)
+  double narrow_lead, double corner_radius, double corner_clearance, const ShortcutSlack & slack,
+  double round_radius)
 {
   const SurfaceMap & m = astar.map();
   const auto t0 = std::chrono::steady_clock::now();
@@ -948,8 +956,9 @@ int runPlan(
   }
   size_t vertices = 0;
   std::vector<PathSpan> spans;
-  const auto path =
-    buildPath(m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked, &spans);
+  const auto path = buildPath(
+    m, astar.links(), r.cells, r.links, shortcut, 0.1, &vertices, &blocked, &spans, slack,
+    round_radius);
   // The gait each crossing is taken in on this route, as the plugin sends it
   // on plan_crossings (routeStairGaits): a link's own gait can be overruled
   // by a stair next to it.
@@ -1009,7 +1018,7 @@ int runPlan(
       n.heading * 180.0 / M_PI);
   }
   if (corner_radius > 0.0 && shortcut) {
-    reportCorners(m, astar.links(), r, blocked, corner_radius, corner_clearance);
+    reportCorners(m, astar.links(), r, blocked, corner_radius, corner_clearance, slack);
   }
   if (!out_path.empty()) {
     std::ofstream out(out_path);
@@ -1335,6 +1344,8 @@ int main(int argc, char ** argv)
   bool shortcut = true;
   double narrow_width = 0.85, narrow_lead = 0.5;  // --narrow
   double corner_radius = 0.0, corner_clearance = 0.0;  // --corners
+  ShortcutSlack shortcut_slack{0.1, 0.2};              // --shortcut-slack; the plugin's defaults
+  double round_radius = 0.5;                           // --corner-radius; the plugin's default
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&](const char * what) -> std::string {
@@ -1406,6 +1417,11 @@ int main(int argc, char ** argv)
     } else if (a == "--narrow") {
       narrow_width = std::atof(next("--narrow").c_str());
       narrow_lead = std::atof(next("--narrow").c_str());
+    } else if (a == "--corner-radius") {
+      round_radius = std::atof(next("--corner-radius").c_str());
+    } else if (a == "--shortcut-slack") {
+      shortcut_slack.tolerance = std::atof(next("--shortcut-slack").c_str());
+      shortcut_slack.floor = std::atof(next("--shortcut-slack").c_str());
     } else if (a == "--corners") {
       corner_radius = std::atof(next("--corners").c_str());
       corner_clearance = std::atof(next("--corners").c_str());
@@ -1719,7 +1735,7 @@ int main(int argc, char ** argv)
       rc |= runPlan(
         astar, search, v[0], v[1], v[2], v[3], v[4], v[5], shortcut, out_path, &planned, mask.get(),
         keepout.get(), zones, stair_params, narrow_width, narrow_lead, corner_radius,
-        corner_clearance);
+        corner_clearance, shortcut_slack, round_radius);
     }
   }
   if (!image_path.empty()) {

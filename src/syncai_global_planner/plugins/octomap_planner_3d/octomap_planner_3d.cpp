@@ -126,6 +126,9 @@ void OctomapPlanner3D::initialize(
   dp("interpolation_resolution", rclcpp::ParameterValue(interpolation_resolution_));
   dp("path_z_offset", rclcpp::ParameterValue(path_z_offset_));
   dp("shortcut", rclcpp::ParameterValue(shortcut_));
+  dp("shortcut_clearance_tolerance", rclcpp::ParameterValue(shortcut_slack_.tolerance));
+  dp("shortcut_clearance_floor", rclcpp::ParameterValue(shortcut_slack_.floor));
+  dp("corner_radius", rclcpp::ParameterValue(corner_radius_));
   dp("narrow_max_width", rclcpp::ParameterValue(narrow_max_width_));
   dp("narrow_lead", rclcpp::ParameterValue(narrow_lead_));
   // Surface map (build time).
@@ -226,6 +229,9 @@ void OctomapPlanner3D::initialize(
   node->get_parameter(name + ".interpolation_resolution", interpolation_resolution_);
   node->get_parameter(name + ".path_z_offset", path_z_offset_);
   node->get_parameter(name + ".shortcut", shortcut_);
+  node->get_parameter(name + ".shortcut_clearance_tolerance", shortcut_slack_.tolerance);
+  node->get_parameter(name + ".shortcut_clearance_floor", shortcut_slack_.floor);
+  node->get_parameter(name + ".corner_radius", corner_radius_);
   node->get_parameter(name + ".narrow_max_width", narrow_max_width_);
   node->get_parameter(name + ".narrow_lead", narrow_lead_);
   node->get_parameter(name + ".robot_radius", map_params_.robot_radius);
@@ -1233,7 +1239,7 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
     std::vector<o3d::PathSpan> spans;
     const auto leg_wps = o3d::buildPath(
       *map_, links_.get(), r.cells, r.links, shortcut_, interpolation_resolution_, &leg_vertices,
-      &blocked, &spans);
+      &blocked, &spans, shortcut_slack_, corner_radius_);
     // Each leg starts on the cell the one before ended on, so its first
     // waypoint repeats the joint: dropped, not driven twice.
     auto first = leg_wps.begin();
@@ -1684,6 +1690,12 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         search_params_.heuristic_weight = v;
       } else if (key == "max_planning_time") {
         search_params_.max_planning_time = v;
+      } else if (key == "shortcut_clearance_tolerance") {
+        shortcut_slack_.tolerance = std::max(0.0, v);
+      } else if (key == "shortcut_clearance_floor") {
+        shortcut_slack_.floor = std::max(0.0, v);
+      } else if (key == "corner_radius") {
+        corner_radius_ = std::max(0.0, v);
       } else if (key == "snap_xy_radius") {
         search_params_.snap_xy_radius = v;
       } else if (key == "snap_z_window") {

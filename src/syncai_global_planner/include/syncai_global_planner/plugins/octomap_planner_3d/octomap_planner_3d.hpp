@@ -25,6 +25,7 @@
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
 #include "syncai_nav_core/global_planner.hpp"
@@ -246,6 +247,10 @@ protected:
   // this (m, 0 = none sent), grown by narrow_lead_ (m) either side.
   double narrow_max_width_{0.85}, narrow_lead_{0.5};
   bool shortcut_{true}, stair_links_{true};
+  // What the shortcut may give up of the search's clearance (path_postprocess.hpp).
+  octomap_planner_3d::ShortcutSlack shortcut_slack_{0.1, 0.2};
+  // The arcs laid at the plan's corners, 0 = none (buildPath).
+  double corner_radius_{0.5};
   // Read map/<name>/map.pcd for the measured floor (surface_map.hpp).
   bool measured_floor_{true};
   octomap_planner_3d::SurfaceMapParams map_params_;
