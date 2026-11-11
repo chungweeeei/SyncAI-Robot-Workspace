@@ -180,3 +180,18 @@ windows:
     panes:
       - cmd: ros2 launch syncai_camera_feeder camera_feeder.launch.py
         log: camera_feeder
+
+  # ---------- Window 8: landmark_detector (detect_landmark, the charger's tag) --
+  # syncai_landmark_detection (its own repo, imported by dependencies.repos):
+  # serves <robot_id>/detect_landmark for the last metre of a charge. It only
+  # subscribes to camera_feeder's image_raw/compressed + camera_info -- never
+  # opens the camera, so it is not a second opener -- and only while a caller
+  # polls it (idle_timeout 5 s), so standing here costs nothing between docks.
+  # No `sleep:`: camera_info is latched, so a detector up before the feeder
+  # still gets it, and until then a call answers "waiting for camera_info".
+  # Nav session only: docking is an AUTO-mode task, and start_mapping.yaml has
+  # no use for it.
+  - name: landmark_detector
+    panes:
+      - cmd: ros2 launch syncai_landmark_detection landmark_detector.launch.py
+        log: landmark_detector
