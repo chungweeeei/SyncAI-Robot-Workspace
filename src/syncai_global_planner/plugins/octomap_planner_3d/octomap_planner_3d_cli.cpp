@@ -1342,7 +1342,7 @@ int main(int argc, char ** argv)
   std::string out_path;
   std::string write_bt_path;
   bool shortcut = true;
-  double narrow_width = 0.85, narrow_lead = 0.5;  // --narrow
+  double narrow_width = 0.85, narrow_lead = 0.5;       // --narrow
   double corner_radius = 0.0, corner_clearance = 0.0;  // --corners
   ShortcutSlack shortcut_slack{0.1, 0.2};              // --shortcut-slack; the plugin's defaults
   double round_radius = 0.5;                           // --corner-radius; the plugin's default
