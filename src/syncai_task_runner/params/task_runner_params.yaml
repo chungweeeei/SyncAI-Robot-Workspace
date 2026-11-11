@@ -74,10 +74,13 @@
     # nodes ported so far are listed — extend as recovery/condition/control
     # nodes are added. XML tag names must match what each plugin registers.
     # The list is duplicated as the C++ default in syncai_task_runner.cpp;
-    # keep the two in sync. A library is loaded at startup, but a node and
-    # its wait for its server exist only once a tree using the tag is loaded,
-    # so a missing server fails that tree's goal (ABORTED, NONE), not this
-    # node.
+    # keep the two in sync. The next three are the gait nodes (written for
+    # dock.xml / undock.xml, 2026-10; the trees and the other docking nodes
+    # but ComputeStagingPose went on 2026-11-12; charge.xml uses them): a
+    # library is loaded at startup, but a node and its wait for its server
+    # exist only once a tree using the tag is loaded, so they cost nothing at
+    # boot, and a missing set_motion_key fails that tree's goal (ABORTED,
+    # NONE), not this node.
     plugin_lib_names:
       - syncai_compute_path_to_pose_action_bt_node
       - syncai_compute_path_through_poses_action_bt_node
@@ -88,3 +91,14 @@
       - syncai_rate_controller_bt_node
       - syncai_is_path_valid_condition_bt_node
       - syncai_globally_updated_goal_condition_bt_node
+      - syncai_set_motion_key_service_bt_node
+      - syncai_wait_action_bt_node
+      - syncai_wait_for_motion_state_action_bt_node
+      # charge.xml (2026-11): DetectLandmark / PublishLandmark, TrackPose and
+      # ComputeStagingPose (dock.xml's, kept for the staging leg). Like the
+      # gait nodes, they cost nothing until a charge tree is loaded;
+      # detect_landmark is not waited for at all (the node polls it),
+      # track_pose at the first charge goal.
+      - syncai_compute_staging_pose_action_bt_node
+      - syncai_detect_landmark_action_bt_node
+      - syncai_track_pose_action_bt_node

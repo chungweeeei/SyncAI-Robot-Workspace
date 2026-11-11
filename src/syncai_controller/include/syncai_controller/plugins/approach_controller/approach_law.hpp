@@ -5,16 +5,10 @@
 #include <utility>
 #include <vector>
 
+#include "syncai_controller/planar_pose.hpp"
+
 namespace syncai_controller
 {
-
-/** @brief A planar pose: x / y in metres, yaw in radians, all in one frame (odom). */
-struct Pose2
-{
-  double x{0.0};
-  double y{0.0};
-  double yaw{0.0};
-};
 
 /** @brief A body-frame command: forward, left, counter-clockwise. */
 struct Velocity2
@@ -38,9 +32,14 @@ struct ApproachLawParams
   // lateral error (the SyncAI-Robot-Charger aligner turned on the tag's
   // bearing for the same reason). Within final_heading_distance of the target
   // (along its axis) the nose points the target's own yaw instead. 0: always
-  // the target's yaw.
+  // the target's yaw. Once on the target's yaw it goes back to the view point
+  // only beyond final_heading_distance + final_heading_hysteresis: the two
+  // references differ by up to ~0.14 rad at the hand-over (the gate's lateral
+  // limit seen from 0.4 m), a step a robot rocking across one threshold would
+  // take on every pass, with gate_heading 0.15 just above it.
   double view_distance{0.30};
   double final_heading_distance{0.10};
+  double final_heading_hysteresis{0.05};
   // Further off the reference heading than this: turn in place, nothing
   // else, until it is not (the aligner's first step, "face the marker").
   double rotate_in_place_angle{0.5};
@@ -63,6 +62,16 @@ struct ApproachLawParams
   double k_yaw{1.0};
   double v_angular_min{0.15};
   double v_angular_max{0.30};
+
+  // The floors are the GAIT's, so they are owed in the body frame: with the
+  // nose on the view point the body is turned off the target's axis by some
+  // delta, and a strafe of v_lateral_min along that axis is only
+  // v_lateral_min * cos(delta) of body vy -- under the floor, a strafe that
+  // never starts. compute() therefore raises both floors by 1 / cos(delta),
+  // delta capped at kMaxFloorDelta so a robot far off the axis is not sent
+  // twice the floor. The small cross component this leaves on the other body
+  // axis is under its floor by construction; whether the gait drops it (and
+  // the strafe then creeps along the axis) is to be measured.
 
   // Per axis: inside `tolerance` the axis stops; stopped, it starts again only
   // beyond tolerance + hysteresis. With every axis floored, a single band
@@ -155,7 +164,13 @@ private:
   bool lateral_active_{false};
   bool heading_active_{false};
   bool gate_open_{false};
+  // The heading reference has been handed over to the target's yaw (see
+  // final_heading_hysteresis).
+  bool on_target_yaw_{false};
 };
+
+// The most the floors are raised for: 1 / cos(1.0 rad) = 1.85.
+constexpr double kMaxFloorDelta = 1.0;
 
 const char * toString(ApproachLaw::Mode mode);
 

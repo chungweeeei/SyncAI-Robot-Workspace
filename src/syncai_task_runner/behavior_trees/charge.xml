@@ -1,0 +1,144 @@
+<!--
+  Charge (2026-11): navigate to a staging pose in front of the charger with
+  move.xml's machinery, check that the charger's tag is in view, switch the
+  gait to MPC, and walk the last metre onto the charger on the tag itself --
+  TrackPose following the sightings PublishLandmark publishes -- ending
+  there, standing on the charger in MPC.
+
+  Selected per goal by NavigateToGoal.behavior_tree ("charge.xml"), like
+  dock.xml, whose header is the design record for everything this tree
+  shares with it: the staging leg (move.xml with goal="{staging_pose}"), the
+  overlay clear, the MPC switch and its check (SetMotionKey 5 ->
+  WaitForMotionState 5 -> Wait 3000), RL restored only on a failure after the
+  switch was attempted, no lie-down (the caller's LIEDOWN step), no in-tree
+  retry of the approach, the attribution and the status sentences. Keep the
+  two in step. What is different here, and why:
+
+  The goal's `pose` is the TAG, not where the robot ends: the charger's
+  marker in the map, its yaw pointing out of its face (what the console's
+  Charger waypoint stores from its Detect button). The map pose is only good
+  enough to get in front of the charger. ComputeStagingPose facing_landmark
+  puts the staging pose `distance` out along that yaw, turned to face the
+  tag: 1.3 m, where the tag fills enough of the image for a pose and the
+  robot has 0.76 m to walk in.
+
+  Why not dock.xml with the tag's pose: DockToPose drives to a pose fixed in
+  odom at acceptance, so it ends wherever the map said the charger was -- off
+  by the localizer's error and the waypoint's, centimetres either way, on
+  contacts that take about three. TrackPose (syncai_common/TrackPose,
+  controller_server) drives to where the TAG is seen to be, corrected by
+  every sighting, with the Charging controller (ApproachController), which
+  strafes: a charger's tolerance is across its axis, and Docking's law only
+  walks forward and turns.
+
+  DetectLandmark before the gait switch: the tag has to be in view from the
+  staging pose, or the approach would end LOST five seconds after an MPC
+  switch nobody needed. It also wakes the detector, which sleeps until
+  polled (its first answers are SENSOR_STARTING). 5 s, then DOCK_FAILED with
+  the detector's last word; the gait was not touched, so nothing is
+  restored.
+
+  The last metre is a Parallel of two nodes, because the detector publishes
+  nothing by itself and the controller judges nothing:
+   - PublishLandmark polls detect_landmark and publishes the sightings it
+     TRUSTS on tracked_landmark -- not ambiguous (ArUco's mirrored solution
+     not yet ruled out), at least 3 sightings in a row. It never succeeds;
+     it fails only when detection cannot work at all (unknown landmark, the
+     detector silent or SENSOR_UNAVAILABLE for 5 s). A tag out of view is
+     not its failure: nothing is published, and TrackPose's pose_timeout
+     (stop) and lost_timeout (LOST) judge that.
+   - TrackPose follows that topic. Its success ends the Parallel
+     (success_threshold 1) and halts the publisher; either one failing
+     fails it (failure_threshold 1), which cancels the approach.
+  Dropping every ambiguous sighting is the first setting, not a finding: the
+  ambiguity is worst near the tag's axis at about a metre -- the staging
+  pose -- where the two solutions also nearly coincide. PublishLandmark logs
+  how many it dropped when it ends; if the approach starves there, set
+  accept_ambiguous and let track_pose's own test (targets that scatter in
+  odom stop the robot) hold the flips.
+
+  THE CHARGER'S GEOMETRY IS THE TrackPose offset AND NOWHERE ELSE: offset_x
+  is where base_link stands on the charger, metres out from the tag along
+  its face normal, and offset_yaw pi turns the robot to face it. 0.54 =
+  SyncAI-Robot-Charger's stop, 0.27 m from the tag at the CAMERA, plus the
+  camera's 0.27 m ahead of base_link (G23.urdf). Derived, not measured: lay
+  the robot on the charger and read the tag's distance in base_link. The
+  Charging controller's view_distance (controller_server_params.yaml) must
+  equal it -- that is the point the nose is held on, the tag.
+
+  filter_window 1.0: track_pose drives to the median of the last second of
+  sightings (taken into odom, where a charger stands still), because one
+  sighting's yaw noise moves the target centimetres across its axis; the
+  same window is its test that the odometry is holding still. The server
+  freezes the target once the robot is inside the goal checker's
+  tolerances, where the tag may leave the image.
+
+  Leaving the charger is undock.xml, unchanged: MPC, 1 m straight back,
+  blind, RL. A robot laid down on the charger is stood up by the caller
+  first.
+
+  A preempt that moves {goal} after the staging leg reaches neither node:
+  TrackPose's goal has no pose in it, and the tag in view is the one driven
+  to. Send a moved charger once this goal has ended.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="Charge">
+      <!-- New goal, clean obstacle memory: move.xml's first node (see dock.xml's header) -->
+      <ForceSuccess>
+        <ClearEntireCostmap name="ClearDynamicOverlay-NewGoal" service_name="planner_server/Octo3D/clear_overlay" server_timeout="1000"/>
+      </ForceSuccess>
+      <!-- Staging leg: move.xml with goal="{staging_pose}"; see move.xml for the why -->
+      <PipelineSequence name="NavigateToStaging">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <Fallback name="FallbackComputePathToPose">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <!-- Judged by Octo3D on its dynamic overlay (see move.xml) -->
+                <IsPathValid path="{path}" server_timeout="100" blocked_time="10.0"/>
+              </ReactiveSequence>
+              <Sequence name="PlanToStaging">
+                <!-- {goal} is the charger's tag: stage in front of it, facing it -->
+                <ComputeStagingPose dock_pose="{goal}" distance="1.3" facing_landmark="true" staging_pose="{staging_pose}"/>
+                <ComputePathToPose goal="{staging_pose}" path="{path}" planner_id="Octo3D"/>
+              </Sequence>
+            </Fallback>
+            <ForceSuccess>
+              <ClearEntireCostmap name="ClearDynamicOverlay-Context" service_name="planner_server/Octo3D/clear_overlay"/>
+            </ForceSuccess>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="4" retry_refill_time="60.0" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ForceSuccess>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </ForceSuccess>
+        </RecoveryNode>
+      </PipelineSequence>
+
+      <!-- The tag must be in view before the gait is switched for it (header) -->
+      <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000"/>
+
+      <!-- MPC half: restore RL on any failure after the switch was attempted -->
+      <Fallback name="ChargeInMpc">
+        <Sequence name="SwitchAndApproach">
+          <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for charging"/>
+          <SetMotionKey key="5" server_timeout="500"/>
+          <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (dock.xml) -->
+          <WaitForMotionState state="5" timeout="5000"/>
+          <Wait msec="3000"/>
+          <Parallel name="ApproachOnTheTag" success_threshold="1" failure_threshold="1">
+            <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000"/>
+            <TrackPose pose_topic="tracked_landmark" offset_x="0.54" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
+          </Parallel>
+        </Sequence>
+        <ForceFailure>
+          <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
+        </ForceFailure>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+</root>

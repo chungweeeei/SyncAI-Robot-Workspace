@@ -42,6 +42,7 @@ struct LawDouble
 const LawDouble kLawDoubles[] = {
   {"view_distance", &ApproachLawParams::view_distance},
   {"final_heading_distance", &ApproachLawParams::final_heading_distance},
+  {"final_heading_hysteresis", &ApproachLawParams::final_heading_hysteresis},
   {"rotate_in_place_angle", &ApproachLawParams::rotate_in_place_angle},
   {"k_x", &ApproachLawParams::k_x},
   {"v_linear_min", &ApproachLawParams::v_linear_min},

@@ -52,6 +52,7 @@ set(executable_name controller_server)
 add_library(${library_name}_plugins SHARED
   plugins/simple_progress_checker.cpp
   plugins/simple_goal_checker.cpp
+  plugins/approach_goal_checker.cpp
   plugins/regulated_pure_pursuit_controller_3d/regulated_pure_pursuit_controller_3d.cpp
   plugins/approach_controller/approach_law.cpp
   plugins/approach_controller/approach_controller.cpp
@@ -124,6 +125,19 @@ if(BUILD_TESTING)
     plugins/approach_controller/approach_law.cpp
   )
   target_include_directories(test_approach_law PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  # It also reads the params file, for the rule no code can check: the charge
+  # goal checker's tolerances against where the law lets each axis rest.
+  target_compile_definitions(test_approach_law PRIVATE
+    CONTROLLER_PARAMS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/params/controller_server_params.yaml"
+  )
+
+  # ROS-free, header-only: track_pose's target filter (median, spread, freeze).
+  ament_add_gtest(test_track_target_filter
+    test/test_track_target_filter.cpp
+  )
+  target_include_directories(test_track_target_filter PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
 endif()

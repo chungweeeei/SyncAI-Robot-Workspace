@@ -77,6 +77,61 @@
     cusp_min_angle: 2.0
     cusp_window: 0.4
 
+    # Where a charge's approach may start: the robot within
+    # dock_max_start_distance of its first target and dock_max_start_lateral
+    # of that target's axis; otherwise the goal is refused and the robot
+    # stops. The approach is blind, so this keeps it to the space the staging
+    # leg drove through (charge.xml stages 1.3 m out). Written for the
+    # dock_to_pose approach (2026-11, gone 2026-11-12 with the dock trees),
+    # whose names they keep: a dock pose moved by a preempt after the staging
+    # leg used to be driven to wherever it was.
+    dock_max_start_distance: 1.5
+    dock_max_start_lateral: 0.3
+
+    # TrackPose (track_pose, 2026-11): the last metre of a charge, to a pose
+    # that every sighting of the charger's tag corrects. The two ids are what
+    # an empty goal field resolves to (entries of the lists below; a missing
+    # one only warns and refuses track goals), the three durations what a
+    # zero Duration in the goal does:
+    #  - pose_timeout: the newest pose older than this -> the robot stops and
+    #    waits (HOLDING). A pose's age is from its STAMP, the image's capture,
+    #    so it includes the camera and detector latency (~0.1-0.2 s);
+    #  - lost_timeout: no usable target this long -> the goal ends (LOST, or
+    #    TRANSFORM_FAILED / TARGET_UNSTABLE when poses came and were no use);
+    #  - max_duration: the whole goal. No progress checker runs here (a robot
+    #    standing still for a pose is not stuck), so this is the bound.
+    default_track_controller_id: "Charging"
+    default_track_goal_checker_id: "charge_goal_checker"
+    track_pose_timeout: 0.5
+    track_lost_timeout: 5.0
+    track_max_duration: 90.0
+    # The guards on the odometry. The target is held in odom, so the odometry
+    # has to be right only from one pose to the next -- a slow drift is
+    # corrected by every sighting -- but the approach is blind, and a
+    # Point-LIO that lags or diverges (2026-10-30, 2026-11-09) must stop it,
+    # not steer it:
+    #  - track_transform_wait: a pose is taken into odom at its own stamp;
+    #    when the odometry has not reached that stamp yet (it lags the camera
+    #    on a saturated CPU) the pose waits this long, then is dropped and
+    #    counted (feedback poses_rejected). Dropped poses age the target into
+    #    pose_timeout; they do not end the goal by themselves.
+    #  - track_target_max_spread_*: with a goal's target_filter_window the
+    #    target is the median of that window, and the robot stops while 80 %
+    #    of the window does not lie within these of it (targets that scatter:
+    #    the odometry running away or reset, or the detector flipping between
+    #    a tag's two solutions). Wide to start with -- a tag's yaw noise at
+    #    1 m alone scatters the target by centimetres -- and to be tightened
+    #    from the once-a-second "spread" in the log.
+    #  - track_min_poses: fewer targets than this in the window is no target.
+    #  - track_max_odom_speed: the robot's net speed in odom over 0.4 s. This
+    #    action commands 0.25 m/s at most; four times that is the odometry,
+    #    not the robot. Stops at once, ends the goal after failure_tolerance.
+    track_transform_wait: 0.3
+    track_target_max_spread_xy: 0.08
+    track_target_max_spread_yaw: 0.2
+    track_min_poses: 3
+    track_max_odom_speed: 1.0
+
     # Paths with heights (2026-10): OctomapPlanner3D writes the ground height
     # on every pose, and its stair links climb. On dp1f_1012's spiral stair
     # the path is back over the same x / y every 8.1 m, 2.5 m higher, so a
@@ -107,8 +162,8 @@
     # the navigation checker stays first. Until 2026-10 an empty id only fell
     # back with exactly one checker loaded, and adding a second would have
     # failed every BT navigation.
-    goal_checker_plugins: ["goal_checker"]
-    # Two controllers, one local costmap. FollowPath is MPPI
+    goal_checker_plugins: ["goal_checker", "charge_goal_checker"]
+    # Three controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
     # local costmap and bends round a blocker inside it, which RPP cannot --
     # RPP tracks the path and refuses to drive when the path is blocked. It
@@ -182,6 +237,39 @@
       # is the first sign this has become too narrow.
       yaw_goal_tolerance: 0.2
       stateful: true
+
+    # The track_pose default: the goal checker of a charge (2026-11). Not a
+    # SimpleGoalChecker like the dock trees' dock_goal_checker (gone
+    # 2026-11-12), which accepted a robot the moment it entered a 5 cm
+    # radius, still walking -- the Charging controller's bands (1-1.5 cm)
+    # were never reached, and a charger's tolerance is across its axis, which
+    # a radius does not say. This one takes along / lateral / yaw in the
+    # target's frame, does not latch, and wants all three held for
+    # settle_time (approach_goal_check.hpp).
+    #
+    # EACH TOLERANCE MUST BE WIDER than where Charging lets that axis rest,
+    # its tolerance + hysteresis (x 0.02 m, lateral 0.03 m, heading 0.08 rad),
+    # or the law stands still short of what this accepts and the goal runs
+    # into max_duration. Nothing checks it at run time (two plugins);
+    # test_approach_law reads both blocks and fails on it. Change them
+    # together.
+    #
+    # lateral 0.035 is WIDER than the ~3 cm SyncAI-Robot-Charger held at the
+    # contacts. It cannot be tightened here alone: the band under it is
+    # floor x latency (0.10 m/s x 0.3 s), both unmeasured under MPC. Measure
+    # v_lateral_min and the latency first, then narrow Charging's bands and
+    # this with them. Meanwhile the result's final_lateral_error says what
+    # each charge achieved.
+    charge_goal_checker:
+      plugin: "syncai_controller::ApproachGoalChecker"
+      along_tolerance: 0.025
+      lateral_tolerance: 0.035
+      yaw_tolerance: 0.09
+      # Longer than a pass straight through a tolerance at that axis's floor
+      # (the strafe: 0.07 m at 0.10 m/s = 0.7 s), so a robot crossing the
+      # target has not arrived. track_pose freezes the target while this
+      # runs (a new sighting would restart it).
+      settle_time: 1.0
 
     FollowPath:
       plugin: "syncai_mppi_controller::MPPIController"
@@ -897,18 +985,26 @@
     # firmware and gait, not under this stack's MPC, and says so where used.
     #
     # The bands must sit inside the goal checker's tolerances, or the robot
-    # holds still outside them and never succeeds: worst case at rest is
-    # hypot(x 0.02, lateral 0.03) = 0.036 m and heading 0.08 rad, under
-    # dock_goal_checker's 0.05 m / 0.1 rad. Change them together.
+    # holds still outside them and never succeeds: at rest an axis may sit at
+    # its tolerance + hysteresis (x 0.02 m, lateral 0.03 m, heading 0.08 rad),
+    # each under charge_goal_checker's (0.025 / 0.035 / 0.09). Change them
+    # together; test_approach_law fails when they cross.
     Charging:
       plugin: "syncai_controller::ApproachController"
       # The nose points at the point this far beyond the target along its
-      # heading -- the tag, for a dock 0.30 m in front of it (the charger's
-      # dock_center_x_m was 0.27) -- and at the target's own yaw within
-      # final_heading_distance of it. Set view_distance to the dock's offset
-      # from its tag.
-      view_distance: 0.30
+      # heading -- the tag -- and at the target's own yaw within
+      # final_heading_distance of it (back on the view point only beyond
+      # final_heading_distance + final_heading_hysteresis, so the reference
+      # does not flip on a robot rocking across one line). view_distance IS
+      # the dock's offset from its tag: charge.xml's TrackPose offset_x is the
+      # one place that distance is decided, and this must equal it.
+      # 0.54 = SyncAI-Robot-Charger's stop, 0.27 m from the tag AT THE CAMERA
+      # (its dock_center_x_m), plus the camera's 0.27 m ahead of base_link
+      # (G23.urdf: lidar_top 0.195 + camera 0.07). Derived, not measured: lay
+      # the robot on the charger and read the tag's distance in base_link.
+      view_distance: 0.54
       final_heading_distance: 0.10
+      final_heading_hysteresis: 0.05
       # Turn in place first when the nose is further off the view point than
       # this (~29 deg): what the charger's aligner did before anything else.
       rotate_in_place_angle: 0.5
@@ -929,6 +1025,13 @@
       # left, which driver_manager's scale_left / scale_right would absorb
       # here). The first thing to measure: hold a vy of 0.06 / 0.08 / 0.10 for
       # 2 s under MPC each way and read /odom.
+      # Both floors are owed in the BODY frame: with the nose on the tag the
+      # body is turned off the dock's axis, so the law raises them by
+      # 1 / cos(that angle) and the body's vy still meets v_lateral_min
+      # (2026-11; before, a strafe from 0.3 m off the axis was sent 0.096).
+      # The small forward / back component that goes with such a strafe is
+      # under v_linear_min: measure the strafe at a yawed body too, and
+      # whether it creeps along the axis.
       k_y: 0.5
       v_lateral_min: 0.10
       v_lateral_max: 0.20

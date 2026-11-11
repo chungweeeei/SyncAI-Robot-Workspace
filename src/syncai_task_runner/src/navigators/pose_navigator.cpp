@@ -51,6 +51,35 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
   {"FollowPath",
    {GoalResult::FOLLOW_PATH_FAILED,
     "Path following failed: the robot could not reach the goal along its path"}},
+  // The gait nodes, written for the docking branch of dock.xml / undock.xml
+  // (2026-10), which went on 2026-11-12 with DockToPose and
+  // ComputeBackOutPose and their rows. 300 is the docking range's base, the
+  // same contract as 100 / 200; the gait switch stays mapped there because a
+  // dock-like last metre is what it was written for -- a tree that switches
+  // the gait for anything else needs a tree-aware answer. charge.xml uses
+  // both. Wait never fails on a configured tree and has no row. A refused
+  // key is a gait switch (MPC or RL).
+  {"SetMotionKey",
+   {GoalResult::DOCK_FAILED, "Gait switch failed: the gait controller refused a motion command"}},
+  // 2026-10-14: the check after a gait switch; the detail names the state
+  // waited for and the last one the controller reported.
+  {"WaitForMotionState",
+   {GoalResult::DOCK_FAILED,
+    "Gait switch failed: the gait controller did not reach the requested motion state"}},
+  // charge.xml (2026-11). DOCK_FAILED (300), as the dock trees' were (gone
+  // 2026-11-12): a charge is the docking step with a tag to aim at, and the
+  // backend switches on the hundreds. TrackPose's own 33x (LOST,
+  // TARGET_UNSTABLE, ...) is in the detail; it is not put in error_code,
+  // whose table is NavigateToGoal's and has no 33x. ComputeStagingPose
+  // (dock.xml's until 2026-11-12) fails only on a goal pose it cannot use.
+  {"ComputeStagingPose",
+   {GoalResult::DOCK_FAILED, "Charging failed: the charger's pose is unusable"}},
+  {"DetectLandmark",
+   {GoalResult::DOCK_FAILED, "Charging failed: the charger's marker was not seen"}},
+  {"PublishLandmark",
+   {GoalResult::DOCK_FAILED, "Charging failed: the landmark detector stopped answering"}},
+  {"TrackPose",
+   {GoalResult::DOCK_FAILED, "Charging failed: the approach to the charger did not complete"}},
 };
 
 // The planner's own reasons (2026-11): ComputePathToPose's error_code, which

@@ -27,6 +27,12 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
     "syncai_rate_controller_bt_node",
     "syncai_is_path_valid_condition_bt_node",
     "syncai_globally_updated_goal_condition_bt_node",
+    "syncai_set_motion_key_service_bt_node",
+    "syncai_wait_action_bt_node",
+    "syncai_wait_for_motion_state_action_bt_node",
+    "syncai_compute_staging_pose_action_bt_node",
+    "syncai_detect_landmark_action_bt_node",
+    "syncai_track_pose_action_bt_node",
   };
 
   syncai_util::declare_parameter_if_not_declared(

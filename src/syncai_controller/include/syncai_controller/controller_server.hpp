@@ -1,7 +1,11 @@
 #ifndef SYNCAI_CONTROLLER__CONTROLLER_SERVER_HPP_
 #define SYNCAI_CONTROLLER__CONTROLLER_SERVER_HPP_
 
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -9,10 +13,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_msgs/action/follow_path.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "syncai_common/action/track_pose.hpp"
+#include "syncai_controller/track_target_filter.hpp"
 #include "syncai_costmap/costmap_ros.hpp"
 #include "syncai_nav_core/controller.hpp"
 #include "syncai_nav_core/goal_checker.hpp"
@@ -22,6 +29,7 @@
 #include "syncai_util/path_cusps.hpp"
 #include "syncai_util/path_progress.hpp"
 #include "syncai_util/simple_action_server.hpp"
+#include "tf2/LinearMath/Transform.h"
 #include "tf2_ros/transform_listener.h"
 
 namespace syncai_controller
@@ -38,9 +46,13 @@ namespace syncai_controller
  * which must be called after the node is owned by a shared_ptr — performs the
  * rest of the setup (nav2's on_configure + on_activate merged).
  *
- * The execute callback runs on its own worker thread (SimpleActionServer with
- * spin_thread=true) and takes dynamic_params_lock_ for the whole goal, so a
- * parameter change is refused mid-goal. The members the loop writes --
+ * The action servers -- two since 2026-11, with TrackPose (track_pose; DockToPose, the third, went on
+ * 2026-11-12) --
+ * are mutually exclusive on dynamic_params_lock_: each
+ * execute callback runs on its own worker thread (SimpleActionServer with
+ * spin_thread=true), takes the lock for the whole goal, and a goal that finds
+ * it held by another server is refused at once (FollowPath: terminated with
+ * a log line; TrackPose: CONTROLLER_BUSY). The members the loops write --
  * current_controller_, current_goal_checker_, end_pose_, current_path_,
  * last_valid_cmd_time_ -- are safe only because of that; do not touch them
  * from anywhere that does not hold the lock.
@@ -140,6 +152,25 @@ protected:
    * @throw syncai_nav_core::PlannerException as computeAndPublishVelocity did
    */
   bool computeVelocityCycle(VelocityCycle & cycle);
+
+  /**
+   * @brief The first half of computeVelocityCycle(): the robot pose, with the
+   * failure_tolerance handling of an outage. Split out (2026-11) for
+   * track_pose, which needs the pose on cycles it commands nothing (holding
+   * for a pose) and runs no progress checker.
+   * @return false when the pose is unavailable within failure_tolerance: zero
+   *   velocity has been published and the controller reset
+   * @throw syncai_nav_core::PlannerException past failure_tolerance
+   */
+  bool cycleRobotPose(geometry_msgs::msg::PoseStamped & pose);
+
+  /**
+   * @brief The second half: the controller's command for `pose`, with the
+   * failure_tolerance handling of a controller that throws (a zero command is
+   * returned inside the window).
+   * @throw syncai_nav_core::PlannerException past failure_tolerance
+   */
+  geometry_msgs::msg::TwistStamped controllerCommand(const geometry_msgs::msg::PoseStamped & pose);
 
   /**
    * @brief Calls setPlannerPath method with an updated path received from
@@ -316,6 +347,129 @@ protected:
    * goal checker (a stateful one has latched the previous leg's end)
    */
   void startLeg(size_t k);
+
+  // How far from the robot a track goal's first target may be, and how far
+  // off the target's own axis the robot may stand (trackControl() has why).
+  // Named for the dock_to_pose start gate they were written for (gone
+  // 2026-11-12).
+  double dock_max_start_distance_{1.5};
+  double dock_max_start_lateral_{0.3};
+
+  // ---- TrackPose (track_pose, 2026-11) ----------------------------------
+  // The second action on the same lock: drive to a pose that keeps being
+  // corrected (a charger's tag, sighting by sighting), held in odom. See
+  // trackControl().
+
+  /**
+   * @brief TrackPose action server callback. Each tracked pose is taken into
+   * the costmap's global frame (odom) at its own stamp, the goal's offset
+   * applied, projected onto the floor and put through a TrackTargetFilter;
+   * the controller plugin is handed the filter's target through setPlan().
+   * No path, no costmap, no progress checker. Blocks until the goal ends.
+   *
+   * The odometry is trusted from one pose to the next and no further, and
+   * what it does when it fails is guarded, because the approach is blind:
+   * a pose it has not reached yet is waited for (track_transform_wait) and
+   * then dropped; targets that scatter in odom stop the robot and, past
+   * lost_timeout, end the goal TARGET_UNSTABLE; a robot pose moving faster
+   * than track_max_odom_speed (nothing here commands a quarter of it) stops
+   * the robot and, past failure_tolerance, ends the goal.
+   */
+  void trackControl();
+
+  /** @brief One track goal's resolved settings and running state. */
+  struct TrackRun
+  {
+    std::string pose_topic;
+    std::string tracked_frame;
+    tf2::Transform offset;
+    // False until startTrackGoal() has accepted the goal (a goal refused for
+    // the lock has no clock to report an elapsed time from).
+    bool started{false};
+    double pose_timeout{0.0};
+    double lost_timeout{0.0};
+    double max_duration{0.0};
+    rclcpp::Time start;
+    TrackTargetFilter filter;
+    // Counters for the feedback and for telling LOST from TRANSFORM_FAILED.
+    uint32_t received{0};
+    uint32_t rejected{0};
+    uint32_t accepted{0};
+    // tracked_frame mode: the stamp of the last transform taken as a pose.
+    rclcpp::Time last_frame_stamp{0, 0, RCL_ROS_TIME};
+    // The last cycle that had a target to drive to (or the start), and the
+    // counters then: what lost_timeout is measured from and sorted by.
+    rclcpp::Time last_usable;
+    uint32_t received_at_usable{0};
+    uint32_t accepted_at_usable{0};
+    bool checked_start{false};
+    uint8_t state{0};
+    // The last cycle that had both a robot pose and a target (the result).
+    bool have_errors{false};
+    TargetErrors errors;
+    // Recent robot poses (stamp [s], x, y), for the odometry speed guard.
+    std::deque<std::array<double, 3>> pose_history;
+    rclcpp::Time odom_fast_since{0, 0, RCL_ROS_TIME};
+    bool odom_fast{false};
+  };
+
+  /**
+   * @brief Resolve a track goal (plugins, offset, timeouts), subscribe to its
+   * topic and reset the per-goal state. Nothing is commanded.
+   * @return false with the result code and reason when the goal is refused
+   */
+  bool startTrackGoal(
+    const syncai_common::action::TrackPose::Goal & goal, TrackRun & run, uint16_t & error_code,
+    std::string & error_msg);
+
+  /**
+   * @brief Move what has arrived on the tracked topic (or the tracked frame's
+   * newest transform) into run.filter as targets in odom. A pose that cannot
+   * be transformed at its stamp yet stays queued for track_transform_wait.
+   */
+  void intakeTrackedPoses(TrackRun & run);
+
+  std::shared_ptr<syncai_common::action::TrackPose::Result> makeTrackResult(
+    const TrackRun & run, uint16_t error_code, const std::string & error_msg);
+
+  using TrackAction = syncai_common::action::TrackPose;
+  using TrackActionServer = syncai_util::SimpleActionServer<TrackAction>;
+  std::unique_ptr<TrackActionServer> track_action_server_;
+
+  // What an empty controller_id / goal_checker_id and a zero Duration
+  // resolve to.
+  std::string default_track_controller_id_;
+  std::string default_track_goal_checker_id_;
+  double track_pose_timeout_{0.5};
+  double track_lost_timeout_{5.0};
+  double track_max_duration_{90.0};
+  // TrackTargetFilter's limits and minimum, for a goal with a filter window.
+  double track_target_max_spread_xy_{0.08};
+  double track_target_max_spread_yaw_{0.2};
+  int track_min_poses_{3};
+  // How long a pose waits for the odometry to reach its stamp.
+  double track_transform_wait_{0.3};
+  // Net robot speed in odom, over kTrackSpeedBaseline, above which the
+  // odometry is not believed.
+  double track_max_odom_speed_{1.0};
+
+  // The tracked topic's subscription (alive for one goal) and what it has
+  // received, handed from the node's executor thread to the track loop.
+  struct TrackedPose
+  {
+    geometry_msgs::msg::PoseStamped pose;
+    rclcpp::Time arrival;
+    // Already in poses_received (a pose waiting for its transform is seen by
+    // more than one cycle).
+    bool counted{false};
+  };
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr track_pose_sub_;
+  std::mutex track_inbox_mutex_;
+  std::deque<TrackedPose> track_inbox_;
+
+  // Which action holds dynamic_params_lock_, for the line a refused goal
+  // logs: a string literal, written by the holder once it owns the lock.
+  std::atomic<const char *> driving_{"another action"};
 };
 
 }  // namespace syncai_controller

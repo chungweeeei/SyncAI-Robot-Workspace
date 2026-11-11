@@ -42,8 +42,8 @@ std::string ApproachLawParams::validate() const
   if (k_x <= 0.0 || k_y <= 0.0 || k_yaw <= 0.0) {
     return "k_x, k_y and k_yaw must be > 0";
   }
-  if (view_distance < 0.0 || final_heading_distance < 0.0) {
-    return "view_distance and final_heading_distance must be >= 0";
+  if (view_distance < 0.0 || final_heading_distance < 0.0 || final_heading_hysteresis < 0.0) {
+    return "view_distance, final_heading_distance and final_heading_hysteresis must be >= 0";
   }
   if (
     x_tolerance <= 0.0 || lateral_tolerance <= 0.0 || heading_tolerance <= 0.0 ||
@@ -98,6 +98,7 @@ void ApproachLaw::reset()
   lateral_active_ = false;
   heading_active_ = false;
   gate_open_ = false;
+  on_target_yaw_ = false;
 }
 
 bool ApproachLaw::band(bool active, double error, double tolerance, double hysteresis)
@@ -148,8 +149,14 @@ Velocity2 ApproachLaw::compute(
   // atan(lateral / (along + view_distance)), small once the gate has let the
   // robot walk that far. Closer in the view point's bearing turns fast with
   // every centimetre of strafe, and the final heading is the target's anyway.
+  // The hand-over has hysteresis (see final_heading_hysteresis).
+  if (on_target_yaw_) {
+    on_target_yaw_ = e.along <= p.final_heading_distance + p.final_heading_hysteresis;
+  } else {
+    on_target_yaw_ = e.along <= p.final_heading_distance;
+  }
   e.heading_ref = target.yaw;
-  if (p.view_distance > 0.0 && e.along > p.final_heading_distance) {
+  if (p.view_distance > 0.0 && !on_target_yaw_) {
     const double vx = target.x + p.view_distance * c;
     const double vy = target.y + p.view_distance * s;
     e.heading_ref = std::atan2(vy - robot.y, vx - robot.x);
@@ -184,31 +191,40 @@ Velocity2 ApproachLaw::compute(
       gate_open_ = std::fabs(e.lateral) <= reopen_lateral && std::fabs(e.heading) <= reopen_heading;
     }
 
+    // Target frame -> body frame: rotate by -(robot yaw - target yaw). With
+    // the body turned to keep the tag in view, a pure strafe along the
+    // target's axis is a body command with some forward in it, and the other
+    // way round (the aligner did the same with its Rz).
+    const double delta = normalize(robot.yaw - target.yaw);
+    const double cd = std::cos(delta);
+    const double sd = std::sin(delta);
+    // The gait's floors are body-frame: each axis's floor is raised so its
+    // main body component still meets it (see ApproachLawParams). A cap under
+    // the raised floor gives way to it, as forwardCap() does for the table.
+    const double raise = 1.0 / std::cos(std::min(std::fabs(delta), kMaxFloorDelta));
+    const double linear_floor = p.v_linear_min * raise;
+    const double lateral_floor = p.v_lateral_min * raise;
+
     double v_along = 0.0;
     if (x_active_ && e.along < 0.0) {
       // Past the target: back up whatever the gate says. Backing away from
       // the dock is the safe direction, and the tag only grows in the image.
-      v_along = floored(e.along, p.k_x, p.v_linear_min, p.v_reverse_max);
+      v_along = floored(e.along, p.k_x, linear_floor, std::max(p.v_reverse_max, linear_floor));
       m = Mode::Reverse;
     } else if (x_active_ && gate_open_) {
-      v_along = floored(e.along, p.k_x, p.v_linear_min, forwardCap(e.along));
+      v_along = floored(e.along, p.k_x, linear_floor, std::max(forwardCap(e.along), linear_floor));
       m = Mode::Approach;
     } else if (x_active_ || lateral_active_ || heading_active_) {
       m = Mode::Align;
     }
     const double v_lateral =
-      lateral_active_ ? floored(e.lateral, p.k_y, p.v_lateral_min, p.v_lateral_max) : 0.0;
+      lateral_active_
+        ? floored(e.lateral, p.k_y, lateral_floor, std::max(p.v_lateral_max, lateral_floor))
+        : 0.0;
     if (heading_active_) {
       cmd.wz = floored(e.heading, p.k_yaw, p.v_angular_min, p.v_angular_max);
     }
 
-    // Target frame -> body frame: rotate by -(robot yaw - target yaw). With
-    // the body turned to keep the tag in view, a pure strafe along the
-    // target's axis is a body command with some forward in it, and the other
-    // way round (the aligner did the same with its Rz).
-    const double delta = robot.yaw - target.yaw;
-    const double cd = std::cos(delta);
-    const double sd = std::sin(delta);
     cmd.vx = cd * v_along + sd * v_lateral;
     cmd.vy = -sd * v_along + cd * v_lateral;
   }

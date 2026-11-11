@@ -44,6 +44,7 @@ The package is split into a **host node** and **navigators**:
 | `PoseNavigator<ActionT>` (`navigators/pose_navigator.{hpp,cpp}`) | The concrete navigator: loads `move.xml` (or `patrol.xml`), computes feedback, fills the result. One template, four explicit instantiations — `NavigateToPoseNavigator` (`nav2_msgs`), `NavigateToGoalNavigator` (`syncai_common`) and, since 2026-11, the patrol route's `NavigateThroughPosesNavigator` (`nav2_msgs`) and `NavigateThroughGoalsNavigator` (`syncai_common`). The places they differ (action name, whether the result has `error_code`, which one owns the rviz `goal_pose` subscriber, one `pose` or a list of `poses`, the default tree) sit in a `PoseNavigatorTraits<ActionT>` specialisation behind `if constexpr`. The actions share field names on purpose; that is what lets one body compile for all four. |
 | `behavior_trees/move.xml` | The default tree: `Octo3D` + `FollowPath` (MPPI) — see "Which tree a goal runs" |
 | `behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11): `move.xml` planning through the waypoints still ahead — see "The patrol route" |
+| `behavior_trees/charge.xml` | The charge tree (2026-11): staging in front of the charger's tag, then the last metre on the tag itself ("Charging") |
 
 `Navigator` is templated on the action type because each navigator binds a
 different one. With two of them the `NavigatorMutex` is load-bearing: the two
@@ -103,7 +104,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `PLAN_FAILED` = 200 | the planner branch failed the tree — `ComputePathToPose` (or, for a route, `ComputePathThroughPoses`) aborted twice, the second time after the `clear_overlay` recovery — and the planner gave no finer reason | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | 201–224 (2026-11) | the same, with the planner's own reason: its result's `error_code`, copied unchanged — `GOAL_IN_KEEPOUT` 223, `GOAL_OCCUPIED` 206, `NO_VALID_PATH` 208, `MAP_NOT_LOADED` 220, … (`syncai_common`'s `ComputePathToPose.action` has the table, with whether a retry can help) | a sentence for the code, then the planner's: `Planning failed: the goal is inside a keepout zone (planner compute_path_to_pose aborted the goal: goal_in_keepout: the goal lies inside keepout zone 'z1'; … [start (…) -> goal (…)])` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
-| `DOCK_FAILED` = 300 | no node maps to it. The code stays in the interface (the backend switches on the hundreds, and a code is never renumbered or reused) | — |
+| `DOCK_FAILED` = 300 | `charge.xml` (2026-11): `ComputeStagingPose` rejected the charger's pose, `DetectLandmark` did not see the tag from the staging pose, `SetMotionKey` refused (`LOCKED`), `WaitForMotionState` never saw the state it waited for, `PublishLandmark` (the detector stopped answering) or `TrackPose` (the approach, with `track_pose`'s reason and 33x code in the detail). It was the docking branch of `dock.xml` / `undock.xml` until 2026-11-12. A charge can still end 100 / 200: that is the staging leg | `Charging failed: the approach to the charger did not complete (...)` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -382,7 +383,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | Copied to the BT nodes' client node. The navigator's own robot-pose lookups (feedback, waypoints, the "Begin navigating" line) take the newest transform without waiting since 2026-11: with a wait, every tick of a TF outage blocked the BT thread this long (the 20 Hz tree under 10 Hz) and logged an unthrottled ERROR |
-| `plugin_lib_names` | nine BT node libraries | Must list every library whose tags `move.xml` and `patrol.xml` use — and lists every node library `syncai_behavior_tree` builds. A node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `plugin_lib_names` | sixteen BT node libraries | Must list every library whose tags `move.xml`, `patrol.xml` and `charge.xml` use — which is every node library `syncai_behavior_tree` builds. The charge tree's six (`SetMotionKey`, `Wait`, `WaitForMotionState`, `ComputeStagingPose`, `DetectLandmark`, `TrackPose`) cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
 | `default_nav_through_poses_bt_xml` | `<share>/behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11), declared lazily by its navigator like `default_bt_xml` |
 | `waypoint_passed_radius` | `1.0` m | The two routes only: a waypoint the robot comes within this of (x / y) is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. Also the radius within which the path's own pass of a waypoint is looked for (2026-11, below). A first value, unmeasured |
 | `waypoint_passed_z_tolerance` | `1.0` m | 2026-11: and only when its z is within this of the robot's ground height, so a waypoint on another floor is never passed from below or above it. Storeys are 2.5 m and more apart |
@@ -473,6 +474,9 @@ ros2 action send_goal /<robot_id>/navigate_through_goals syncai_common/action/Na
 | Subscriber | `goal_pose` | `geometry_msgs/PoseStamped` (RViz) → `navigate_to_pose` |
 | Action client | `compute_path_to_pose` | `syncai_common/ComputePathToPose` (2026-11), via the BT node |
 | Action client | `follow_path` | via the BT node |
+| Action client | `track_pose` | `syncai_common/TrackPose`, via the `TrackPose` BT node — `charge.xml` only (2026-11) |
+| Service client | `detect_landmark` | `syncai_common/DetectLandmark`, polled by the `DetectLandmark` / `PublishLandmark` BT nodes — `charge.xml` only; not waited for at tree load |
+| Publisher | `tracked_landmark` | `geometry_msgs/PoseStamped`, the charger's tag as `PublishLandmark` trusts it, in the camera's frame — what `track_pose` follows during a charge |
 | Service client | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap`, via the `ClearEntireCostmap` BT node — `move.xml`'s / `patrol.xml`'s two planner-side clears, dropping `Octo3D`'s dynamic-obstacle marks (2026-10-21; `global_costmap/clear_entirely_global_costmap` on the 2D trees until 2026-10-28) |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
 | Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** and, since 2026-10-22, **SUCCEEDED**, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Success was left out at first because the re-send is trimmed to the robot, but the trim starts at the nearest pose anywhere on the plan, so the stub grew back along the route once the robot moved off the goal. Not on failure (the route explains the failure); the planner drops that route itself once no navigation has used it for its `plan_idle_clear_time` (30 s, 2026-10-25). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
@@ -514,19 +518,59 @@ ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
 
 ```
 
-## Switching the gait (no tree does today)
+## Switching the gait
 
-The BT gait nodes (`SetMotionKey`, `Wait`, `WaitForMotionState`) were removed
-with nothing left to use them; git history has them. What a tree that switches
-the gait again has to know about the gait controller: `set_motion_key` is
-one-way UDP, so its `success` means only that the datagram left; the
-controller's own report on `mode` data[1] (MPC = 5, Locomotion = 1, read off
-the robot on 2026-10-14) is the check, and the switch was seen after 49 ms on
-robot01. A settling time after it (3 s was used) is a judgement, not a
-measurement: nothing reports when the gait under MPC is steady. `MODE Z`
-(stand, `key="0"`) is **not** a no-op for a robot already standing in MPC — on
-robot01 it took the robot down and up again (2026-10-15). A cancel halts a tree
-before any restore step runs, so a cancelled gait switch would leave MPC on.
+The BT gait nodes (`SetMotionKey`, `Wait`, `WaitForMotionState`) are
+`charge.xml`'s (2026-11). What a tree that switches the gait has to know about
+the gait controller: `set_motion_key` is one-way UDP, so its `success` means
+only that the datagram left; the controller's own report on `mode` data[1]
+(MPC = 5, Locomotion = 1, read off the robot on 2026-10-14) is the check, and
+the switch was seen after 49 ms on robot01. The settling time after it (3 s,
+raised from 2 s on 2026-10-15) is a judgement, not a measurement: nothing
+reports when the gait under MPC is steady. `MODE Z` (stand, `key="0"`) is
+**not** a no-op for a robot already standing in MPC — on robot01 it took the
+robot down and up again (2026-10-15). A cancel halts a tree before any RL
+restore runs, so a cancelled gait switch leaves MPC on.
+
+## Charging
+
+`behavior_trees/charge.xml` (2026-11), by `behavior_tree: charge.xml`. The
+goal's `pose` is the **charger's tag** in the map, its yaw pointing out of
+its face (what the console's Charger waypoint stores) — not where the robot
+ends. `dock.xml` (gone 2026-11-12) with that pose would have ended wherever the map
+says the charger is, off by the localizer's error on contacts that take about 3 cm; this tree
+uses the map only to get in front of the charger and walks the last metre on
+the tag as the camera sees it.
+
+`move.xml`'s structure to a staging pose 1.3 m out along the tag's yaw,
+facing it (`ComputeStagingPose facing_landmark`) → `DetectLandmark` (the tag
+must be in view, 5 s, before the gait is touched; it also wakes the
+detector) → `SetMotionKey 5` → `WaitForMotionState 5` → `Wait 3000` → a
+`Parallel` of `PublishLandmark` (polls `detect_landmark`, publishes the
+sightings it trusts on `tracked_landmark`) and `TrackPose` (`track_pose`,
+controller `Charging`, goal checker `charge_goal_checker`, a 1 s filter
+window). `TrackPose`'s success ends the tree, **standing on the charger in
+MPC**; any failure after the switch restores RL and is `DOCK_FAILED`, with
+`track_pose`'s own reason and 33x code in the detail (`LOST`,
+`TARGET_UNSTABLE`, …). No lie-down, as for a dock; nothing leaves the charger since `undock.xml`
+went (2026-11-12).
+
+**The charger's geometry is `TrackPose`'s `offset_x` in the tree and nowhere
+else** — 0.54 m from the tag to `base_link`, derived (the charger repo's
+0.27 m at the camera + the camera's 0.27 m ahead of `base_link`), not
+measured; `Charging.view_distance` in the controller's params must equal it.
+What the approach does when the odometry or the detector misbehaves is
+`syncai_controller`'s README, "Tracking a pose". Needs the `landmark_detector`
+window of the nav session.
+
+```bash
+ros2 action send_goal /<robot_id>/navigate_to_goal syncai_common/action/NavigateToGoal \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: 1.0, y: 2.0}, \
+    orientation: {w: 1.0}}}, behavior_tree: 'charge.xml'}" --feedback
+```
+`always_reload_bt_xml: false` compares the file name string, so send it the
+same way every time; alternating move and charge goals reconstructs the tree on
+each switch (milliseconds, every server already up).
 
 ## Gotchas
 

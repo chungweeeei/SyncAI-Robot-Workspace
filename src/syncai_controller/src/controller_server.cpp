@@ -82,6 +82,24 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("cusp_min_angle", rclcpp::ParameterValue(2.0));
   declare_parameter("cusp_window", rclcpp::ParameterValue(0.4));
 
+  // TrackPose (track_pose, 2026-11). The ids and the three durations are what
+  // an empty / zero goal field resolves to; the rest are the server's guards
+  // on the odometry (trackControl() has them). dock_max_start_* are the
+  // dock_to_pose start gate's (gone 2026-11-12), kept by name for the
+  // approach's first target.
+  declare_parameter("dock_max_start_distance", rclcpp::ParameterValue(1.5));
+  declare_parameter("dock_max_start_lateral", rclcpp::ParameterValue(0.3));
+  declare_parameter("default_track_controller_id", rclcpp::ParameterValue("Charging"));
+  declare_parameter("default_track_goal_checker_id", rclcpp::ParameterValue("charge_goal_checker"));
+  declare_parameter("track_pose_timeout", rclcpp::ParameterValue(0.5));
+  declare_parameter("track_lost_timeout", rclcpp::ParameterValue(5.0));
+  declare_parameter("track_max_duration", rclcpp::ParameterValue(90.0));
+  declare_parameter("track_target_max_spread_xy", rclcpp::ParameterValue(0.08));
+  declare_parameter("track_target_max_spread_yaw", rclcpp::ParameterValue(0.2));
+  declare_parameter("track_min_poses", rclcpp::ParameterValue(3));
+  declare_parameter("track_transform_wait", rclcpp::ParameterValue(0.3));
+  declare_parameter("track_max_odom_speed", rclcpp::ParameterValue(1.0));
+
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<syncai_costmap::CostmapROS>(
     "local_costmap", std::string{get_namespace()}, "local_costmap");
@@ -90,6 +108,8 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 ControllerServer::~ControllerServer()
 {
   action_server_.reset();
+  track_action_server_.reset();
+  track_pose_sub_.reset();
   dyn_params_handler_.reset();
   odom_sub_.reset();
   // Plugin maps must be cleared before their class loaders (members declared
@@ -145,6 +165,18 @@ void ControllerServer::configure()
 
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("goal_reached_max_remaining_path", goal_reached_max_remaining_path_);
+  get_parameter("dock_max_start_distance", dock_max_start_distance_);
+  get_parameter("dock_max_start_lateral", dock_max_start_lateral_);
+  get_parameter("default_track_controller_id", default_track_controller_id_);
+  get_parameter("default_track_goal_checker_id", default_track_goal_checker_id_);
+  get_parameter("track_pose_timeout", track_pose_timeout_);
+  get_parameter("track_lost_timeout", track_lost_timeout_);
+  get_parameter("track_max_duration", track_max_duration_);
+  get_parameter("track_target_max_spread_xy", track_target_max_spread_xy_);
+  get_parameter("track_target_max_spread_yaw", track_target_max_spread_yaw_);
+  get_parameter("track_min_poses", track_min_poses_);
+  get_parameter("track_transform_wait", track_transform_wait_);
+  get_parameter("track_max_odom_speed", track_max_odom_speed_);
   get_parameter("body_frame", body_frame_);
   get_parameter("lidar_height", body_height_);
   get_parameter("goal_z_tolerance", goal_z_tolerance_);
@@ -215,6 +247,24 @@ void ControllerServer::configure()
     get_logger(), "Controller Server has %s controllers available.",
     controller_ids_concat_.c_str());
 
+  // Not fatal: FollowPath must keep working from a params file that does not
+  // load the charging plugins. The first track goal then fails with
+  // INVALID_PLUGIN and the list of what is loaded.
+  if (controllers_.find(default_track_controller_id_) == controllers_.end()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "default_track_controller_id '%s' is not in controller_plugins (%s); track_pose goals "
+      "with an empty controller_id will be refused",
+      default_track_controller_id_.c_str(), controller_ids_concat_.c_str());
+  }
+  if (goal_checkers_.find(default_track_goal_checker_id_) == goal_checkers_.end()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "default_track_goal_checker_id '%s' is not in goal_checker_plugins (%s); track_pose goals "
+      "with an empty goal_checker_id will be refused",
+      default_track_goal_checker_id_.c_str(), goal_checker_ids_concat_.c_str());
+  }
+
   odom_sub_ = std::make_unique<syncai_util::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
 
@@ -226,6 +276,16 @@ void ControllerServer::configure()
     shared_from_this(), "follow_path", std::bind(&ControllerServer::computeControl, this), nullptr,
     std::chrono::milliseconds(500), true);
 
+  // The TrackPose server, built the same way. spin_thread=true gives it its
+  // own callback group and executor thread for goal / cancel / accepted
+  // handling, and SimpleActionServer runs the execute callback itself on a
+  // std::async worker, so the two execute callbacks never share a thread:
+  // what serialises them is dynamic_params_lock_ (see the class comment),
+  // not the executor.
+  track_action_server_ = std::make_unique<TrackActionServer>(
+    shared_from_this(), "track_pose", std::bind(&ControllerServer::trackControl, this), nullptr,
+    std::chrono::milliseconds(500), true);
+
   // No speed_limit subscription (2026-10-28): nav2_msgs/SpeedLimit was
   // upstream's speed-filter channel, nothing in the stack or the backend
   // ever published it, and the costmap filters it came with are gone.
@@ -233,6 +293,7 @@ void ControllerServer::configure()
   // Activation phase (nav2 on_activate)
   costmap_ros_->activate();
   action_server_->activate();
+  track_action_server_->activate();
 
   // Add callback for dynamic parameters
   dyn_params_handler_ = add_on_set_parameters_callback(
@@ -316,11 +377,13 @@ void ControllerServer::computeControl()
   // refused goal, not a hang.
   std::unique_lock<std::timed_mutex> lock(dynamic_params_lock_, std::chrono::milliseconds(100));
   if (!lock.owns_lock()) {
-    // No zero twist here: cmd_vel belongs to whoever holds the lock.
-    RCLCPP_ERROR(get_logger(), "follow_path refused: dynamic_params_lock_ held for over 100 ms");
+    // No zero twist here: cmd_vel belongs to the loop that holds the lock,
+    // and a zero from this thread would stop a charge approach mid-way.
+    RCLCPP_ERROR(get_logger(), "follow_path refused: %s is driving the robot", driving_.load());
     action_server_->terminate_current();
     return;
   }
+  driving_ = "follow_path";
 
   try {
     std::string c_name = action_server_->get_current_goal()->controller_id;
@@ -496,10 +559,25 @@ bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
 {
   // The body of computeAndPublishVelocity(), split out so a second loop can
   // run the same pose lookup, patience handling, progress check and
-  // controller call with a different feedback. Nothing in here touches the
-  // action server.
-  geometry_msgs::msg::PoseStamped & pose = cycle.pose;
+  // controller call with a different feedback. Nothing in here touches an
+  // action server. Split once more (2026-11) into its two halves for
+  // track_pose, which runs them without the progress check between.
+  if (!cycleRobotPose(cycle.pose)) {
+    return false;
+  }
 
+  if (!progress_checker_->check(cycle.pose)) {
+    // The checker logs where the robot stood and for how long.
+    throw syncai_nav_core::PlannerException(
+      "Failed to make progress (progress checker '" + progress_checker_id_ + "')");
+  }
+
+  cycle.cmd_vel = controllerCommand(cycle.pose);
+  return true;
+}
+
+bool ControllerServer::cycleRobotPose(geometry_msgs::msg::PoseStamped & pose)
+{
   if (!getRobotPose(pose)) {
     // Under failure_tolerance like an exception out of the controller. Upstream
     // throws here unconditionally, so a single stale odom -> base_link (the LIO
@@ -537,16 +615,15 @@ bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
     }
     throw syncai_nav_core::PlannerException("Failed to obtain robot pose (" + frames + ")");
   }
+  return true;
+}
 
-  if (!progress_checker_->check(pose)) {
-    // The checker logs where the robot stood and for how long.
-    throw syncai_nav_core::PlannerException(
-      "Failed to make progress (progress checker '" + progress_checker_id_ + "')");
-  }
-
+geometry_msgs::msg::TwistStamped ControllerServer::controllerCommand(
+  const geometry_msgs::msg::PoseStamped & pose)
+{
   geometry_msgs::msg::Twist twist = getThresholdedTwist(odom_sub_->getTwist());
 
-  geometry_msgs::msg::TwistStamped & cmd_vel_2d = cycle.cmd_vel;
+  geometry_msgs::msg::TwistStamped cmd_vel_2d;
 
   try {
     cmd_vel_2d = controllers_[current_controller_]->computeVelocityCommands(
@@ -581,7 +658,7 @@ bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
     }
   }
 
-  return true;
+  return cmd_vel_2d;
 }
 
 bool ControllerServer::updateGlobalPath()
@@ -641,6 +718,718 @@ bool ControllerServer::updateGlobalPath()
     logPath("FollowPath replan", current_path_);
   }
   return true;
+}
+
+namespace
+{
+// The odometry speed guard measures the robot's NET displacement over this
+// long, not from one cycle to the next: the pose is the lidar's, carried by a
+// body that rocks a few centimetres with every step, and the odometry
+// updates at half the control rate, so a cycle-to-cycle speed reads 0.5 m/s
+// on a robot walking at 0.1.
+constexpr double kTrackSpeedBaseline = 0.4;
+// A frozen target is let go only once the robot is this many tolerances off
+// it, not at the tolerance itself: this close the tracked thing may be out
+// of view, so letting go at the first millimetre outside would leave a robot
+// with no fresh pose holding still until LOST, 1 mm from done. Between the
+// two the controller corrects against the frozen target.
+constexpr double kTrackFreezeRelease = 2.0;
+
+const char * trackStateName(uint8_t state)
+{
+  using Feedback = syncai_common::action::TrackPose::Feedback;
+  switch (state) {
+    case Feedback::WAITING_FOR_POSE:
+      return "WAITING_FOR_POSE";
+    case Feedback::TRACKING:
+      return "TRACKING";
+    case Feedback::HOLDING:
+      return "HOLDING";
+  }
+  return "not started";
+}
+}  // namespace
+
+void ControllerServer::trackControl()
+{
+  // The same bounded lock as the other two loops, and the same rule: nothing
+  // is published before it is owned.
+  std::unique_lock<std::timed_mutex> lock(dynamic_params_lock_, std::chrono::milliseconds(100));
+  TrackRun run;
+  if (!lock.owns_lock()) {
+    const std::string busy = std::string(driving_.load()) + " is driving the robot";
+    RCLCPP_ERROR(get_logger(), "track_pose refused: %s", busy.c_str());
+    track_action_server_->terminate_current(
+      makeTrackResult(run, TrackAction::Result::CONTROLLER_BUSY, busy));
+    return;
+  }
+  driving_ = "track_pose";
+
+  RCLCPP_INFO(get_logger(), "Received a track goal, begin computing control effort.");
+
+  // The tracked topic is subscribed for one goal only; every way out drops it.
+  struct EndTracking
+  {
+    ControllerServer * server;
+    ~EndTracking()
+    {
+      server->track_pose_sub_.reset();
+      std::lock_guard<std::mutex> inbox_lock(server->track_inbox_mutex_);
+      server->track_inbox_.clear();
+    }
+  } end_tracking{this};
+
+  using Feedback = TrackAction::Feedback;
+  using Result = TrackAction::Result;
+
+  // Stop, and end the goal with `code`.
+  const auto fail = [this, &run](uint16_t code, const std::string & msg) {
+    RCLCPP_ERROR(get_logger(), "track_pose aborted: %s", msg.c_str());
+    publishZeroVelocity();
+    track_action_server_->terminate_current(makeTrackResult(run, code, msg));
+  };
+
+  try {
+    uint16_t error_code = Result::NONE;
+    std::string error_msg;
+    if (!startTrackGoal(*track_action_server_->get_current_goal(), run, error_code, error_msg)) {
+      RCLCPP_ERROR(get_logger(), "track_pose rejected: %s", error_msg.c_str());
+      publishZeroVelocity();
+      track_action_server_->terminate_current(makeTrackResult(run, error_code, error_msg));
+      return;
+    }
+
+    last_valid_cmd_time_ = now();
+    bool was_tracking = false;
+    char buf[400];
+    rclcpp::WallRate loop_rate(controller_frequency_);
+    const auto pace = [this, &loop_rate]() {
+      if (!loop_rate.sleep()) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000, "Track control loop missed its desired rate of %.4fHz",
+          controller_frequency_);
+        loop_rate.reset();
+      }
+    };
+
+    while (rclcpp::ok()) {
+      if (track_action_server_ == nullptr || !track_action_server_->is_server_active()) {
+        RCLCPP_DEBUG(get_logger(), "Track action server unavailable or inactive. Stopping.");
+        return;
+      }
+
+      if (track_action_server_->is_cancel_requested()) {
+        RCLCPP_INFO(get_logger(), "Track goal was canceled. Stopping the robot.");
+        track_action_server_->terminate_all(makeTrackResult(run, Result::NONE, ""));
+        publishZeroVelocity();
+        return;
+      }
+
+      if (track_action_server_->is_preempt_requested()) {
+        // A new goal is a new thing to track: nothing of the old one carries
+        // over (unlike a new POSE, which is the same goal seen again), so the
+        // robot stops until the new goal has a target of its own.
+        RCLCPP_INFO(get_logger(), "A new track goal replaces the running one.");
+        publishZeroVelocity();
+        auto goal = track_action_server_->accept_pending_goal();
+        if (!startTrackGoal(*goal, run, error_code, error_msg)) {
+          RCLCPP_ERROR(get_logger(), "track_pose preempt rejected: %s", error_msg.c_str());
+          track_action_server_->terminate_current(makeTrackResult(run, error_code, error_msg));
+          return;
+        }
+        was_tracking = false;
+        last_valid_cmd_time_ = now();
+      }
+
+      const rclcpp::Time t = now();
+      if ((t - run.start).seconds() > run.max_duration) {
+        std::snprintf(
+          buf, sizeof(buf),
+          "max_duration %.1f s elapsed in state %s before the goal checker '%s' accepted the pose "
+          "(%u poses received, %u dropped)",
+          run.max_duration, trackStateName(run.state), current_goal_checker_.c_str(), run.received,
+          run.rejected);
+        fail(Result::TIMEOUT, buf);
+        return;
+      }
+
+      // The robot pose, with FollowPath's patience for an outage (zero is
+      // published and the controller reset inside).
+      geometry_msgs::msg::PoseStamped pose;
+      if (!cycleRobotPose(pose)) {
+        was_tracking = false;
+        pace();
+        continue;
+      }
+      const Pose2 robot{
+        pose.pose.position.x, pose.pose.position.y, tf2::getYaw(pose.pose.orientation)};
+
+      // Guard 1: an odometry that moves the robot faster than anything this
+      // action commands is not an odometry to drive blind on. Point-LIO
+      // diverging reads exactly so (2026-11-09: 2 -> 20 m/s within seconds),
+      // and every target taken meanwhile is in a frame that is running away.
+      {
+        const double stamp = t.seconds();
+        run.pose_history.push_back({stamp, robot.x, robot.y});
+        while (run.pose_history.size() > 2 &&
+               run.pose_history[1][0] <= stamp - kTrackSpeedBaseline) {
+          run.pose_history.pop_front();
+        }
+        const auto & old = run.pose_history.front();
+        const double dt = stamp - old[0];
+        const double speed =
+          dt >= kTrackSpeedBaseline ? std::hypot(robot.x - old[1], robot.y - old[2]) / dt : 0.0;
+        if (speed > track_max_odom_speed_) {
+          if (!run.odom_fast) {
+            run.odom_fast = true;
+            run.odom_fast_since = t;
+            RCLCPP_ERROR(
+              get_logger(),
+              "track_pose: the odometry moved the robot %.2f m in %.2f s (%.2f m/s, limit "
+              "track_max_odom_speed %.2f; nothing here commands that): stopping, and dropping "
+              "the %zu targets held -- they were placed in a frame that is not holding still",
+              speed * dt, dt, speed, track_max_odom_speed_, run.filter.size());
+            controllers_[current_controller_]->reset();
+            goal_checkers_[current_goal_checker_]->reset();
+            run.filter.clear();
+          }
+          publishZeroVelocity();
+          was_tracking = false;
+          const double fast_for = (t - run.odom_fast_since).seconds();
+          if (fast_for > std::max(failure_tolerance_, 1.0)) {
+            std::snprintf(
+              buf, sizeof(buf),
+              "the odometry has moved the robot faster than track_max_odom_speed (%.2f m/s) for "
+              "%.1f s, last %.2f m/s: it is not to be trusted for a blind approach (Point-LIO "
+              "diverging?)",
+              track_max_odom_speed_, fast_for, speed);
+            fail(Result::FAILED_TO_CONTROL, buf);
+            return;
+          }
+          pace();
+          continue;
+        }
+        if (run.odom_fast) {
+          run.odom_fast = false;
+          RCLCPP_WARN(
+            get_logger(),
+            "track_pose: the odometry is back under track_max_odom_speed after %.1f s; waiting "
+            "for new targets",
+            (t - run.odom_fast_since).seconds());
+          // What arrived meanwhile would be placed with the poses of an
+          // odometry that was running away.
+          std::lock_guard<std::mutex> inbox_lock(track_inbox_mutex_);
+          track_inbox_.clear();
+        }
+      }
+
+      intakeTrackedPoses(run);
+
+      // The goal checker's tolerances, in the target's frame, for the freeze.
+      // A checker that reports none (lowest()) never freezes the target.
+      geometry_msgs::msg::Pose pose_tolerance;
+      geometry_msgs::msg::Twist vel_tolerance;
+      const bool have_tolerance =
+        goal_checkers_[current_goal_checker_]->getTolerances(pose_tolerance, vel_tolerance) &&
+        pose_tolerance.position.x > 0.0 && pose_tolerance.position.y > 0.0;
+      const double tol_along = pose_tolerance.position.x;
+      const double tol_lateral = pose_tolerance.position.y;
+      const double tol_yaw = have_tolerance ? tf2::getYaw(pose_tolerance.orientation) : 0.0;
+      const auto within = [&](const TargetErrors & e, double ratio) {
+        return have_tolerance && std::fabs(e.along) <= ratio * tol_along &&
+               std::fabs(e.lateral) <= ratio * tol_lateral && std::fabs(e.yaw) <= ratio * tol_yaw;
+      };
+
+      // A frozen target is let go once the robot has left it (see
+      // kTrackFreezeRelease); what follows then judges the live window.
+      if (run.filter.frozen()) {
+        const TargetErrors e = targetErrors(robot, run.filter.target());
+        if (!within(e, kTrackFreezeRelease)) {
+          run.filter.unfreeze();
+          RCLCPP_INFO(
+            get_logger(),
+            "track_pose: target released -- the robot left it: along %+.3f m (tolerance %.3f), "
+            "lateral %+.3f m (%.3f), yaw %+.3f rad (%.3f), released beyond %.0fx; following "
+            "the tracked poses again (%zu in the window)",
+            e.along, tol_along, e.lateral, tol_lateral, e.yaw, tol_yaw, kTrackFreezeRelease,
+            run.filter.size());
+        }
+      }
+
+      const bool has_target = run.filter.hasTarget();
+      const double newest = run.filter.newestStamp();
+      const double pose_age = newest >= 0.0 ? t.seconds() - newest : -1.0;
+      const bool fresh = pose_age >= 0.0 && pose_age <= run.pose_timeout;
+      double spread_xy = 0.0;
+      double spread_yaw = 0.0;
+      run.filter.spread(spread_xy, spread_yaw);
+      const bool stable = run.filter.stable();
+
+      Pose2 target;
+      TargetErrors errors;
+      if (has_target) {
+        target = run.filter.target();
+        errors = targetErrors(robot, target);
+        run.errors = errors;
+        run.have_errors = true;
+      }
+
+      // Inside the goal checker's tolerances on a target worth keeping: hold
+      // it. The checker's settling is then timed against ONE target, and
+      // pose_timeout no longer applies -- this close a charger's tag may have
+      // left the image.
+      if (!run.filter.frozen() && has_target && fresh && stable && within(errors, 1.0)) {
+        run.filter.freeze();
+        RCLCPP_INFO(
+          get_logger(),
+          "track_pose: target frozen at (%.3f, %.3f, yaw %+.3f) -- the robot is inside the goal "
+          "checker's tolerances (along %+.3f m, lateral %+.3f m, yaw %+.3f rad); settling "
+          "against it, tracked poses no longer move it",
+          target.x, target.y, target.yaw, errors.along, errors.lateral, errors.yaw);
+      }
+
+      uint8_t state = Feedback::TRACKING;
+      if (!run.filter.frozen()) {
+        if (!has_target) {
+          state = Feedback::WAITING_FOR_POSE;
+        } else if (!fresh || !stable) {
+          state = Feedback::HOLDING;
+        }
+      }
+
+      if (state != run.state) {
+        // The numbers that decided it.
+        RCLCPP_INFO(
+          get_logger(),
+          "track_pose: %s -> %s: %zu targets in the window (need %zu), newest %.2f s old "
+          "(pose_timeout %.2f), spread %.3f m / %.3f rad (limits %.3f / %.3f)%s; %u poses "
+          "received, %u dropped",
+          trackStateName(run.state), trackStateName(state), run.filter.size(),
+          run.filter.params().window > 0.0 ? run.filter.params().min_poses : std::size_t{1},
+          pose_age, run.pose_timeout, spread_xy, spread_yaw, run.filter.params().max_spread_xy,
+          run.filter.params().max_spread_yaw, run.filter.frozen() ? ", target frozen" : "",
+          run.received, run.rejected);
+        run.state = state;
+      }
+
+      bool reached = false;
+      if (state == Feedback::TRACKING) {
+        run.last_usable = t;
+        run.received_at_usable = run.received;
+        run.accepted_at_usable = run.accepted;
+
+        if (!run.checked_start) {
+          // Blind, so it starts only from in front of its target: a
+          // preempt that moved the goal after the staging leg would otherwise
+          // hand a far target straight to this controller, round whatever
+          // stood between (the dock_to_pose gate's reason, gone 2026-11-12,
+          // whose parameters these are). Checked on the first target,
+          // because a track goal has none when it is accepted.
+          run.checked_start = true;
+          const double distance = std::hypot(errors.along, errors.lateral);
+          if (
+            distance > dock_max_start_distance_ ||
+            std::fabs(errors.lateral) > dock_max_start_lateral_) {
+            std::snprintf(
+              buf, sizeof(buf),
+              "the robot is %.2f m from the first target and %.2f m off its axis (limits "
+              "dock_max_start_distance %.2f m, dock_max_start_lateral %.2f m): the approach is "
+              "blind, so it starts only from in front of the target",
+              distance, std::fabs(errors.lateral), dock_max_start_distance_,
+              dock_max_start_lateral_);
+            fail(Result::FAILED_TO_CONTROL, buf);
+            return;
+          }
+          RCLCPP_INFO(
+            get_logger(),
+            "track_pose: first target (%.3f, %.3f, yaw %+.3f) in '%s', %.3f m ahead, %+.3f m "
+            "across, %+.3f rad",
+            target.x, target.y, target.yaw, pose.header.frame_id.c_str(), errors.along,
+            errors.lateral, errors.yaw);
+        }
+
+        // The plugin reads the last pose of a path; the robot's pose leads it
+        // as in a dock's. Straight to setPlan(), not setPlannerPath(): that
+        // one resets the goal checker, whose settling must survive a target
+        // that is the same goal seen again.
+        geometry_msgs::msg::PoseStamped target_pose;
+        target_pose.header.frame_id = pose.header.frame_id;
+        target_pose.header.stamp = t;
+        target_pose.pose.position.x = target.x;
+        target_pose.pose.position.y = target.y;
+        target_pose.pose.orientation =
+          syncai_util::geometry_utils::orientationAroundZAxis(target.yaw);
+        nav_msgs::msg::Path path;
+        path.header = target_pose.header;
+        path.poses = {pose, target_pose};
+        path.poses.front().header = path.header;
+        controllers_[current_controller_]->setPlan(path);
+        end_pose_ = target_pose;
+
+        if (!was_tracking) {
+          // Standing still for a pose was not a failure to command.
+          last_valid_cmd_time_ = t;
+        }
+        const geometry_msgs::msg::TwistStamped cmd_vel = controllerCommand(pose);
+        publishVelocity(cmd_vel);
+        was_tracking = true;
+
+        reached = goal_checkers_[current_goal_checker_]->isGoalReached(
+          pose.pose, target_pose.pose, getThresholdedTwist(odom_sub_->getTwist()));
+      } else {
+        // Zero, every cycle: driver_manager repeats the last command it got.
+        if (was_tracking) {
+          // The plugin's band state and ramp baseline, and the checker's
+          // settling, belong to a robot that was moving.
+          controllers_[current_controller_]->reset();
+          goal_checkers_[current_goal_checker_]->reset();
+          was_tracking = false;
+        }
+        publishZeroVelocity();
+        last_valid_cmd_time_ = t;
+
+        const double unusable_for = (t - run.last_usable).seconds();
+        if (unusable_for > run.lost_timeout) {
+          const uint32_t received = run.received - run.received_at_usable;
+          const uint32_t accepted = run.accepted - run.accepted_at_usable;
+          uint16_t code = Result::LOST;
+          if (received == 0) {
+            std::snprintf(
+              buf, sizeof(buf),
+              "no tracked pose for %.1f s (lost_timeout %.1f); %u received since the goal began",
+              unusable_for, run.lost_timeout, run.received);
+          } else if (accepted == 0) {
+            code = Result::TRANSFORM_FAILED;
+            std::snprintf(
+              buf, sizeof(buf),
+              "%u poses arrived in %.1f s and none could be transformed into '%s' at its stamp "
+              "(each waited track_transform_wait %.2f s): an unknown frame, or the odometry lags "
+              "the poses by more than that",
+              received, unusable_for, costmap_ros_->getGlobalFrameID().c_str(),
+              track_transform_wait_);
+          } else if (has_target && fresh && !stable) {
+            code = Result::TARGET_UNSTABLE;
+            std::snprintf(
+              buf, sizeof(buf),
+              "for %.1f s the targets in the %.1f s window have not agreed on one: spread %.3f m "
+              "/ %.3f rad over %zu targets (limits %.3f / %.3f). The tracked thing moves, the "
+              "odometry is drifting fast or was reset, or the publisher alternates between two "
+              "poses",
+              unusable_for, run.filter.params().window, spread_xy, spread_yaw, run.filter.size(),
+              run.filter.params().max_spread_xy, run.filter.params().max_spread_yaw);
+          } else {
+            std::snprintf(
+              buf, sizeof(buf),
+              "no usable target for %.1f s (lost_timeout %.1f): %u poses arrived, %zu in the "
+              "window (need %zu), the newest %.2f s old (pose_timeout %.2f)",
+              unusable_for, run.lost_timeout, received, run.filter.size(),
+              run.filter.params().min_poses, pose_age, run.pose_timeout);
+          }
+          fail(code, buf);
+          return;
+        }
+      }
+
+      auto feedback = std::make_shared<Feedback>();
+      feedback->state = state;
+      if (has_target) {
+        feedback->distance_to_target = static_cast<float>(std::hypot(errors.along, errors.lateral));
+        feedback->lateral_error = static_cast<float>(errors.lateral);
+        feedback->yaw_error = static_cast<float>(errors.yaw);
+      }
+      feedback->pose_age = static_cast<float>(pose_age);
+      feedback->poses_received = run.received;
+      feedback->poses_rejected = run.rejected;
+      feedback->tracking_time = t - run.start;
+      track_action_server_->publish_feedback(feedback);
+
+      // Once a second, for the same reason as the dock loop's line: the
+      // feedback reaches only the BT node.
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Tracking %.1f s, %s%s: robot (%.3f, %.3f, yaw %+.3f) in '%s'; to the target along %+.3f "
+        "m, lateral %+.3f m, yaw %+.3f rad; newest pose %.2f s old, %zu in the window, spread "
+        "%.3f m / %.3f rad; %u received, %u dropped",
+        (t - run.start).seconds(), trackStateName(state),
+        run.filter.frozen() ? " (target frozen)" : "", robot.x, robot.y, robot.yaw,
+        pose.header.frame_id.c_str(), errors.along, errors.lateral, errors.yaw, pose_age,
+        run.filter.size(), spread_xy, spread_yaw, run.received, run.rejected);
+
+      if (reached) {
+        RCLCPP_INFO(
+          get_logger(),
+          "Reached the tracked target after %.1f s: along %+.3f m, lateral %+.3f m, yaw %+.3f "
+          "rad (goal checker '%s'); %u poses received, %u dropped",
+          (t - run.start).seconds(), errors.along, errors.lateral, errors.yaw,
+          current_goal_checker_.c_str(), run.received, run.rejected);
+        break;
+      }
+
+      pace();
+    }
+  } catch (syncai_nav_core::PlannerException & e) {
+    RCLCPP_ERROR(
+      get_logger(), "track_pose aborted (controller '%s'): %s", current_controller_.c_str(),
+      e.what());
+    publishZeroVelocity();
+    track_action_server_->terminate_current(
+      makeTrackResult(run, Result::FAILED_TO_CONTROL, e.what()));
+    return;
+  } catch (std::exception & e) {
+    RCLCPP_ERROR(
+      get_logger(), "track_pose aborted by an unexpected exception (controller '%s'): %s",
+      current_controller_.c_str(), e.what());
+    publishZeroVelocity();
+    track_action_server_->terminate_current(
+      makeTrackResult(run, Result::FAILED_TO_CONTROL, std::string("unexpected: ") + e.what()));
+    return;
+  }
+
+  // Always: driver_manager has no cmd_vel watchdog.
+  publishZeroVelocity();
+  track_action_server_->succeeded_current(makeTrackResult(run, TrackAction::Result::NONE, ""));
+}
+
+bool ControllerServer::startTrackGoal(
+  const TrackAction::Goal & goal, TrackRun & run, uint16_t & error_code, std::string & error_msg)
+{
+  run = TrackRun();
+  track_pose_sub_.reset();
+  {
+    std::lock_guard<std::mutex> inbox_lock(track_inbox_mutex_);
+    track_inbox_.clear();
+  }
+
+  if (goal.pose_topic.empty() == goal.tracked_frame.empty()) {
+    error_code = TrackAction::Result::INVALID_GOAL;
+    error_msg = goal.pose_topic.empty()
+                  ? "neither pose_topic nor tracked_frame is set; exactly one is needed"
+                  : "both pose_topic ('" + goal.pose_topic + "') and tracked_frame ('" +
+                      goal.tracked_frame + "') are set; exactly one is needed";
+    return false;
+  }
+  const auto & q = goal.target_offset.orientation;
+  const double q_norm = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (!(q_norm > 1e-6)) {
+    error_code = TrackAction::Result::INVALID_GOAL;
+    error_msg =
+      "target_offset.orientation is a zero quaternion, not a rotation (no rotation is "
+      "w: 1.0)";
+    return false;
+  }
+  if (!(goal.target_filter_window >= 0.0f)) {
+    error_code = TrackAction::Result::INVALID_GOAL;
+    error_msg = "target_filter_window must be >= 0 (0 = no filter)";
+    return false;
+  }
+
+  // Empty ids resolve to the track defaults here, as a dock goal's do.
+  const std::string controller_id =
+    goal.controller_id.empty() ? default_track_controller_id_ : goal.controller_id;
+  std::string controller;
+  if (!findControllerId(controller_id, controller)) {
+    error_code = TrackAction::Result::INVALID_PLUGIN;
+    error_msg =
+      "controller '" + controller_id + "' is not loaded; available: " + controller_ids_concat_;
+    return false;
+  }
+  const std::string goal_checker_id =
+    goal.goal_checker_id.empty() ? default_track_goal_checker_id_ : goal.goal_checker_id;
+  std::string goal_checker;
+  if (!findGoalCheckerId(goal_checker_id, goal_checker)) {
+    error_code = TrackAction::Result::INVALID_PLUGIN;
+    error_msg = "goal checker '" + goal_checker_id +
+                "' is not loaded; available: " + goal_checker_ids_concat_;
+    return false;
+  }
+
+  // No point starting a loop that fails on its first cycle.
+  geometry_msgs::msg::PoseStamped start;
+  if (!getRobotPose(start)) {
+    error_code = TrackAction::Result::FAILED_TO_CONTROL;
+    error_msg = "robot pose unavailable in '" + costmap_ros_->getGlobalFrameID() + "'";
+    return false;
+  }
+
+  run.pose_topic = goal.pose_topic;
+  run.tracked_frame = goal.tracked_frame;
+  run.offset = tf2::Transform(
+    tf2::Quaternion(q.x / q_norm, q.y / q_norm, q.z / q_norm, q.w / q_norm),
+    tf2::Vector3(
+      goal.target_offset.position.x, goal.target_offset.position.y, goal.target_offset.position.z));
+  const auto or_default = [](const builtin_interfaces::msg::Duration & d, double fallback) {
+    const double s = rclcpp::Duration(d).seconds();
+    return s > 0.0 ? s : fallback;
+  };
+  run.pose_timeout = or_default(goal.pose_timeout, track_pose_timeout_);
+  run.lost_timeout = or_default(goal.lost_timeout, track_lost_timeout_);
+  run.max_duration = or_default(goal.max_duration, track_max_duration_);
+
+  TrackTargetFilterParams filter;
+  filter.window = goal.target_filter_window;
+  filter.min_poses = static_cast<std::size_t>(std::max(track_min_poses_, 1));
+  filter.max_spread_xy = track_target_max_spread_xy_;
+  filter.max_spread_yaw = track_target_max_spread_yaw_;
+  run.filter.configure(filter);
+
+  current_controller_ = controller;
+  current_goal_checker_ = goal_checker;
+  controllers_[current_controller_]->reset();
+  goal_checkers_[current_goal_checker_]->reset();
+
+  if (!run.pose_topic.empty()) {
+    // Best effort, so a reliable and a best-effort publisher both match; the
+    // callback only queues -- the transform needs the stamp's TF, which the
+    // loop waits for.
+    track_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+      run.pose_topic, rclcpp::SensorDataQoS().keep_last(10),
+      [this](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+        std::lock_guard<std::mutex> inbox_lock(track_inbox_mutex_);
+        track_inbox_.push_back(TrackedPose{*msg, now(), false});
+        // Bounded: the loop empties it every cycle while a goal runs.
+        while (track_inbox_.size() > 50) {
+          track_inbox_.pop_front();
+        }
+      });
+  }
+
+  run.start = now();
+  run.last_usable = run.start;
+  run.started = true;
+
+  const double offset_yaw = tf2::getYaw(run.offset.getRotation());
+  const std::string filtering = filter.window > 0.0
+                                  ? "target = median of " + seconds(filter.window) +
+                                      " s of poses, at least " + std::to_string(filter.min_poses)
+                                  : "no filter: each pose is the target";
+  RCLCPP_INFO(
+    get_logger(),
+    "Track goal: %s '%s', offset (%.3f, %.3f, yaw %+.3f) in its frame; controller '%s', goal "
+    "checker '%s'; pose_timeout %.2f s, lost_timeout %.1f s, max_duration %.1f s; %s",
+    run.pose_topic.empty() ? "frame" : "topic",
+    run.pose_topic.empty() ? run.tracked_frame.c_str() : track_pose_sub_->get_topic_name(),
+    run.offset.getOrigin().x(), run.offset.getOrigin().y(), offset_yaw, controller.c_str(),
+    goal_checker.c_str(), run.pose_timeout, run.lost_timeout, run.max_duration, filtering.c_str());
+  return true;
+}
+
+void ControllerServer::intakeTrackedPoses(TrackRun & run)
+{
+  const std::string & global_frame = costmap_ros_->getGlobalFrameID();
+  const auto tf = costmap_ros_->getTfBuffer();
+  const rclcpp::Time t = now();
+
+  // A tracked pose in odom -> the target: the offset in the pose's own frame,
+  // then the floor (x, y, yaw).
+  const auto take = [&run](const tf2::Transform & tracked_in_odom, double stamp) {
+    const tf2::Transform target = tracked_in_odom * run.offset;
+    run.filter.add(
+      stamp,
+      Pose2{target.getOrigin().x(), target.getOrigin().y(), tf2::getYaw(target.getRotation())});
+    ++run.accepted;
+  };
+
+  if (!run.tracked_frame.empty()) {
+    try {
+      const geometry_msgs::msg::TransformStamped transform =
+        tf->lookupTransform(global_frame, run.tracked_frame, tf2::TimePointZero);
+      const rclcpp::Time stamp(transform.header.stamp, RCL_ROS_TIME);
+      // A static transform carries no stamp: it is true now.
+      const bool is_static = stamp.nanoseconds() == 0;
+      if (is_static || stamp > run.last_frame_stamp) {
+        run.last_frame_stamp = stamp;
+        ++run.received;
+        tf2::Transform tracked_in_odom;
+        tf2::fromMsg(transform.transform, tracked_in_odom);
+        take(tracked_in_odom, is_static ? t.seconds() : stamp.seconds());
+      }
+    } catch (const tf2::TransformException & e) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000, "track_pose: no transform from '%s' to '%s': %s",
+        run.tracked_frame.c_str(), global_frame.c_str(), e.what());
+    }
+    return;
+  }
+
+  std::deque<TrackedPose> arrived;
+  {
+    std::lock_guard<std::mutex> inbox_lock(track_inbox_mutex_);
+    arrived.swap(track_inbox_);
+  }
+  std::deque<TrackedPose> waiting;
+  for (auto & item : arrived) {
+    if (!item.counted) {
+      item.counted = true;
+      ++run.received;
+    }
+    const auto & q = item.pose.pose.orientation;
+    if (!(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w > 1e-6)) {
+      ++run.rejected;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "track_pose: dropped a pose whose orientation is a zero quaternion (%u of %u dropped)",
+        run.rejected, run.received);
+      continue;
+    }
+    // At the pose's OWN stamp: it is where the tracked thing was when it was
+    // seen, and the robot has moved since. An unstamped pose (a hand-typed
+    // test) is taken as true when it arrived.
+    const rclcpp::Time stamp(item.pose.header.stamp, RCL_ROS_TIME);
+    const bool unstamped = stamp.nanoseconds() == 0;
+    try {
+      const geometry_msgs::msg::TransformStamped transform = tf->lookupTransform(
+        global_frame, item.pose.header.frame_id,
+        unstamped ? tf2::TimePointZero : tf2_ros::fromMsg(item.pose.header.stamp));
+      tf2::Transform frame_in_odom;
+      tf2::Transform pose_in_frame;
+      tf2::fromMsg(transform.transform, frame_in_odom);
+      tf2::fromMsg(item.pose.pose, pose_in_frame);
+      take(frame_in_odom * pose_in_frame, unstamped ? item.arrival.seconds() : stamp.seconds());
+    } catch (const tf2::TransformException & e) {
+      // Guard 2: the odometry behind the camera. Point-LIO publishes a scan's
+      // pose after it has processed the scan, and on a saturated CPU that is
+      // later than the image the pose was seen in -- the transform at the
+      // image's stamp does not exist YET. Waited for, then dropped and
+      // counted; never the end of the goal by itself (TrackPose.action).
+      const double waited = (t - item.arrival).seconds();
+      if (waited < track_transform_wait_) {
+        waiting.push_back(item);
+      } else {
+        ++run.rejected;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "track_pose: dropped a pose stamped %.2f s ago in '%s' after waiting %.2f s for its "
+          "transform into '%s' (track_transform_wait %.2f): %s -- %u of %u poses dropped so far",
+          unstamped ? waited : (t - stamp).seconds(), item.pose.header.frame_id.c_str(), waited,
+          global_frame.c_str(), track_transform_wait_, e.what(), run.rejected, run.received);
+      }
+    }
+  }
+  if (!waiting.empty()) {
+    std::lock_guard<std::mutex> inbox_lock(track_inbox_mutex_);
+    track_inbox_.insert(track_inbox_.begin(), waiting.begin(), waiting.end());
+  }
+}
+
+std::shared_ptr<ControllerServer::TrackAction::Result> ControllerServer::makeTrackResult(
+  const TrackRun & run, uint16_t error_code, const std::string & error_msg)
+{
+  auto result = std::make_shared<TrackAction::Result>();
+  result->error_code = error_code;
+  result->error_msg = error_msg;
+  if (run.started) {
+    result->total_elapsed_time = now() - run.start;
+  }
+  if (run.have_errors) {
+    result->final_distance_error =
+      static_cast<float>(std::hypot(run.errors.along, run.errors.lateral));
+    result->final_lateral_error = static_cast<float>(run.errors.lateral);
+    result->final_yaw_error = static_cast<float>(run.errors.yaw);
+  } else {
+    // Documented sentinel: no cycle had both a robot pose and a target.
+    result->final_distance_error = -1.0f;
+  }
+  return result;
 }
 
 void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & velocity)
@@ -946,8 +1735,11 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
     // was no longer true. The backend's settings page does not offer it.
     // Also startup only (2026-11; accepted and never used before): the robot
     // height's frame and offset, which MPPI's path handler, RPP 3D and
-    // StairMode copy at startup too.
-    if (name == "body_frame" || name == "lidar_height") {
+    // StairMode copy at startup too, and the track defaults, checked against
+    // controller_plugins / goal_checker_plugins once in the constructor.
+    if (
+      name == "body_frame" || name == "lidar_height" || name == "default_track_controller_id" ||
+      name == "default_track_goal_checker_id") {
       result.successful = false;
       result.reason = name +
                       " cannot be changed at runtime: it is read once at startup (by the plugins "
@@ -993,6 +1785,28 @@ rcl_interfaces::msg::SetParametersResult ControllerServer::dynamicParametersCall
         cusp_params_.min_angle = parameter.as_double();
       } else if (name == "cusp_window") {
         cusp_params_.window = parameter.as_double();
+      } else if (name == "dock_max_start_distance") {
+        dock_max_start_distance_ = parameter.as_double();
+      } else if (name == "dock_max_start_lateral") {
+        dock_max_start_lateral_ = parameter.as_double();
+      } else if (name == "track_pose_timeout") {
+        track_pose_timeout_ = parameter.as_double();
+      } else if (name == "track_lost_timeout") {
+        track_lost_timeout_ = parameter.as_double();
+      } else if (name == "track_max_duration") {
+        track_max_duration_ = parameter.as_double();
+      } else if (name == "track_target_max_spread_xy") {
+        track_target_max_spread_xy_ = parameter.as_double();
+      } else if (name == "track_target_max_spread_yaw") {
+        track_target_max_spread_yaw_ = parameter.as_double();
+      } else if (name == "track_transform_wait") {
+        track_transform_wait_ = parameter.as_double();
+      } else if (name == "track_max_odom_speed") {
+        track_max_odom_speed_ = parameter.as_double();
+      }
+    } else if (type == ParameterType::PARAMETER_INTEGER) {
+      if (name == "track_min_poses") {
+        track_min_poses_ = static_cast<int>(parameter.as_int());
       }
     }
 

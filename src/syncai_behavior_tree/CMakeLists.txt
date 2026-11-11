@@ -75,6 +75,37 @@ add_library(syncai_clear_costmap_service_bt_node SHARED
   plugins/action/clear_costmap_service.cpp)
 list(APPEND plugin_libs syncai_clear_costmap_service_bt_node)
 
+# Gait switching (2026-10, written for dock.xml / undock.xml, which went on
+# 2026-11-12 with DockToPose and ComputeBackOutPose; charge.xml uses these
+# three and ComputeStagingPose)
+add_library(syncai_set_motion_key_service_bt_node SHARED
+  plugins/action/set_motion_key_service.cpp)
+list(APPEND plugin_libs syncai_set_motion_key_service_bt_node)
+
+add_library(syncai_wait_action_bt_node SHARED
+  plugins/action/wait_action.cpp)
+list(APPEND plugin_libs syncai_wait_action_bt_node)
+
+add_library(syncai_wait_for_motion_state_action_bt_node SHARED
+  plugins/action/wait_for_motion_state.cpp)
+list(APPEND plugin_libs syncai_wait_for_motion_state_action_bt_node)
+
+# Charging (2026-11): the nodes charge.xml uses. detect_landmark registers
+# two tags, DetectLandmark and PublishLandmark. ComputeStagingPose was
+# dock.xml's (2026-10) and stayed for charge.xml's staging leg when the dock
+# trees went on 2026-11-12.
+add_library(syncai_compute_staging_pose_action_bt_node SHARED
+  plugins/action/compute_staging_pose.cpp)
+list(APPEND plugin_libs syncai_compute_staging_pose_action_bt_node)
+
+add_library(syncai_detect_landmark_action_bt_node SHARED
+  plugins/action/detect_landmark.cpp)
+list(APPEND plugin_libs syncai_detect_landmark_action_bt_node)
+
+add_library(syncai_track_pose_action_bt_node SHARED
+  plugins/action/track_pose_action.cpp)
+list(APPEND plugin_libs syncai_track_pose_action_bt_node)
+
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)

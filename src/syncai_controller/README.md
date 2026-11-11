@@ -35,6 +35,12 @@ floor) takes its planar code path, `dev`'s, unchanged. Until 2026-10-28 that
 tree was `move_3d.xml`, run on a 3D map in place of the 2D `move.xml`
 (`GridBased`), where `FollowPathRPP` was the A/B.
 
+Since 2026-11 it serves a **second, `TrackPose`** (`syncai_common`, on
+`track_pose`): drive to a pose that keeps being corrected — the last metre of
+a charge, on the charger's tag as it is seen — with the `Charging` plugin and
+its own goal checker, on the same lock. See "Charging approach" and
+"Tracking a pose".
+
 ```
 syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server
                                                    │
@@ -76,6 +82,12 @@ plugins/
     approach_law.cpp                     its law, ROS-free (test/test_approach_law.cpp)
   simple_progress_checker.cpp          ProgressChecker
   simple_goal_checker.cpp              GoalChecker
+  approach_goal_checker.cpp            GoalChecker of a charge (its test, ROS-free, is
+                                       include/.../plugins/approach_goal_check.hpp)
+include/syncai_controller/
+  track_target_filter.hpp          track_pose's targets in odom: median, spread, freeze
+                                   (ROS-free, test/test_track_target_filter.cpp)
+  planar_pose.hpp                  Pose2 and the errors in a target's frame, shared
 plugins.xml                      pluginlib manifest, exported to syncai_nav_core
 params/controller_server_params.yaml       the only params file (the former 2D/sim and
                                            3D/real-robot variants were merged back into it)
@@ -654,6 +666,18 @@ with one axis's error swinging past its band in each line. The bands also have
 to sit inside the goal checker's tolerances, or the robot holds still short of
 success.
 
+The floors are the gait's, so they are owed in the **body** frame (2026-11):
+with the nose on the view point the body is turned off the target's axis, and
+a strafe of `v_lateral_min` along that axis was only `× cos` of body vy — 0.096
+from 0.3 m off the axis at 0.7 m, a strafe that would not start. The law raises
+both floors by `1 / cos` of that angle (capped at 1 rad). The small forward /
+back component such a strafe carries is under `v_linear_min`; whether the gait
+drops it, and the strafe then creeps along the axis, is to be measured. And
+the heading reference is handed from the view point to the target's yaw
+**once**: back to the view point only beyond `final_heading_distance +
+final_heading_hysteresis` (0.05), because the two differ by up to ~0.14 rad
+there and `gate_heading` is 0.15.
+
 What it inherits from `Docking`: blind (no costmap); the target held in odom
 and nothing else; the acceleration clamp on its own previous command;
 `setPlan()` is a target change, not a new goal, so a new sighting touches
@@ -667,9 +691,94 @@ heading it is holding (view point or target yaw) and the gate. rviz:
 `approach_target` (the target in odom, subscriber-gated).
 
 Tuning order, none of it measured yet: `v_lateral_min` under MPC (a guess
-of 0.10; hold vy 0.06 / 0.08 / 0.10 for 2 s each way and read `/odom`) → the
-gait's latency (step a command and time the first motion in `/odom`) → the
-bands against floor × latency → the gate → the speed table.
+of 0.10; hold vy 0.06 / 0.08 / 0.10 for 2 s each way and read `/odom`, and
+once more with a little vx beside it, as a strafe from off the axis sends) →
+the gait's latency (step a command and time the first motion in `/odom`) → the
+bands against floor × latency, **and `charge_goal_checker`'s tolerances with
+them** → the gate → the speed table.
+
+## Tracking a pose
+
+`track_pose` (`syncai_common/TrackPose`, 2026-11), the action `Charging` was
+written for and `charge.xml`'s last metre. The goal names a
+`geometry_msgs/PoseStamped` topic (or a TF frame) and a fixed offset; every
+pose is taken into the local costmap's global frame (**odom**) **at its own
+stamp**, the offset applied, the result projected onto the floor, and the
+controller handed it through `setPlan()`. No path, no costmap, no progress
+checker (a robot standing still for a pose is not stuck; `max_duration` is
+the bound). Feedback state `WAITING_FOR_POSE` / `TRACKING` / `HOLDING`.
+
+**Why odom, and what that costs.** A charger stands still, so in a fixed
+frame every sighting lands on the same point: the target can be *filtered*,
+and sightings that do not agree can be *noticed*. Neither is possible in the
+robot's own frame. The odometry then has to be right only from one sighting
+to the next — a slow drift is corrected by each new one, which a
+`dock_to_pose` (one transform, at acceptance) cannot say. What a *failing*
+odometry does is guarded, because the approach is blind:
+
+- **It lags the camera** (Point-LIO behind on a saturated CPU): the transform
+  at an image's stamp does not exist yet. The pose waits
+  `track_transform_wait` (0.3 s), then is dropped and counted
+  (`poses_rejected`). Dropped poses age the target into `pose_timeout`
+  (`HOLDING`); only when poses came and none was usable for `lost_timeout`
+  does the goal end, `TRANSFORM_FAILED`.
+- **It runs away** (Point-LIO diverging, 2026-11-09: 2 → 20 m/s in seconds):
+  the robot's net speed in odom over 0.4 s above `track_max_odom_speed`
+  (1.0; nothing here commands 0.25) stops the robot, drops the targets
+  held, and ends the goal `FAILED_TO_CONTROL` after `failure_tolerance`.
+- **It jumps or drifts fast** (a `reset_odometry` under the goal), or the
+  detector flips between a tag's two solutions: with the goal's
+  `target_filter_window` the window's targets scatter. While 80 % of them do
+  not lie within `track_target_max_spread_*` of their median the robot
+  stops; `lost_timeout` of that is `TARGET_UNSTABLE`.
+
+**The target** is `TrackTargetFilter`'s (ROS-free): with a window, the median
+of the last `target_filter_window` seconds (x and y each, the yaw about its
+circular mean), from `track_min_poses` targets up. A tag's yaw is its
+noisiest reading and the offset turns it into centimetres across the target's
+axis — 1° at 1 m is 2.3 cm, over `Charging`'s lateral band — so unfiltered
+the strafe starts and stops on noise. Window 0 (a tracked thing that moves):
+the newest pose, no stability test.
+
+**The goal checker** is `charge_goal_checker` (`ApproachGoalChecker`), not
+`dock_goal_checker`: that one latches a robot the moment it enters a 5 cm
+radius, still walking, so `Charging`'s 1–1.5 cm bands were never reached,
+and a charger's tolerance is across its axis. This one takes along / lateral
+/ yaw in the target's frame and wants all three held for `settle_time`
+(1 s, longer than a pass straight through a tolerance at that axis's floor).
+**Each tolerance must be wider than where `Charging` lets that axis rest**
+(its tolerance + hysteresis), or the law stands still short of success until
+`max_duration`; two plugins, so nothing checks it at run time —
+`test_approach_law` reads both blocks of the params file. The lateral 0.035
+is wider than the ~3 cm the contacts take: it follows the law's band, which
+is floor × latency, both unmeasured. `final_lateral_error` in the result is
+what each charge achieved.
+
+**The target freezes** once the robot is inside the checker's tolerances
+(read through `getTolerances()`): the settling is then timed against one
+target, and `pose_timeout` no longer applies — this close the tag may have
+left the image. It is released when the robot is more than twice the
+tolerances off it; between the two the controller corrects against the
+frozen target.
+
+**The approach starts only in front of its target**, as a dock's
+(`dock_max_start_distance` / `dock_max_start_lateral`), checked on the first
+target since a track goal has none when it is accepted.
+
+Logs: one line per second (state, robot pose, the three errors, the newest
+pose's age, the window's size and spread, poses received / dropped), one per
+change of state with the numbers that decided it, and one each for a target
+frozen, released, or dropped for its transform. An unstamped pose (a
+hand-typed `ros2 topic pub`) is taken as true when it arrived.
+
+```bash
+# By hand (MPC, the robot near the odom origin and facing +x): a target fixed at
+# (0.6, 0) in odom. It must be within dock_max_start_distance / _lateral.
+ros2 topic pub -r 10 /<robot_id>/tracked_landmark geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: <robot_id>/odom}, pose: {position: {x: 0.6}, orientation: {w: 1.0}}}"
+ros2 action send_goal /<robot_id>/track_pose syncai_common/action/TrackPose \
+  "{pose_topic: tracked_landmark, target_offset: {orientation: {w: 1.0}}, target_filter_window: 1.0}" --feedback
+```
 
 ## Plugins
 
@@ -685,7 +794,7 @@ three entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
 |---|---|---|
 | `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, patrol.xml) |
 | `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, the A/B (`controller_id` in move.xml) |
-| `Charging` | `syncai_controller::ApproachController` | `track_pose` (not served yet) |
+| `Charging` | `syncai_controller::ApproachController` | `track_pose`, charge.xml |
 
 The IDs are what a goal's `controller_id` field selects.
 
@@ -713,11 +822,15 @@ one):
 |---|---|
 | `SimpleGoalChecker` | xy distance, then yaw. `stateful: true` latches the xy check once satisfied, so the final in-place rotation cannot fail it by drifting. `symmetric_yaw_tolerance` also accepts goal yaw + 180° for symmetric robots. |
 
+| `ApproachGoalChecker` | along / lateral / yaw in the **goal's frame**, each with its own tolerance, all three held for `settle_time`; never latched. The checker of a charge ("Tracking a pose"). |
+
 `StoppedGoalChecker` (also requires the robot to have stopped) and
 `PositionGoalChecker` (position only) were deleted on 2026-10-28: ported,
 built, never loaded.
 
 One `SimpleGoalChecker` instance is configured, `goal_checker` (navigation).
+One `ApproachGoalChecker`, `charge_goal_checker` (0.025 m along / 0.035 m lateral /
+0.09 rad, 1 s), is the `track_pose` default.
 **An empty `goal_checker_id` resolves to the first entry of
 `goal_checker_plugins`, however many are loaded** (2026-10). Upstream — and this
 server until then — only fell back when exactly one was loaded, which was fine
@@ -748,6 +861,14 @@ Server-level (`/**/controller_server`):
 | `body_frame` | `pointlio_body` | The frame whose z, minus `lidar_height`, is the robot's ground height, for paths with heights (above). The launch file prefixes it with `<robot_id>/`. Also read by the controller plugins |
 | `lidar_height` | `0.481` | `body_frame`'s height above the feet — the planner's `Octo3D.lidar_height`; change both together |
 | `goal_z_tolerance` | `0.5` | Paths with heights: how far the ground under the robot may be from the end pose's height for the goal to count. Dynamically reconfigurable |
+| `dock_max_start_distance` | `1.5` | Furthest (m) the robot may stand from a track goal's first target (named for the `dock_to_pose` gate, gone 2026-11-12); dynamically reconfigurable |
+| `dock_max_start_lateral` | `0.3` | Furthest (m) the robot may stand off the target's axis, likewise |
+| `default_track_controller_id` / `default_track_goal_checker_id` | `Charging` / `charge_goal_checker` | What a `TrackPose` goal's empty ids resolve to; missing ones warn at startup and refuse such goals with `INVALID_PLUGIN` |
+| `track_pose_timeout` / `track_lost_timeout` / `track_max_duration` | `0.5` / `5.0` / `90.0` | What a zero `Duration` in a `TrackPose` goal resolves to (s): stop and wait, give up, the whole goal. Dynamically reconfigurable, as the five below |
+| `track_transform_wait` | `0.3` | How long (s) a tracked pose waits for the odometry to reach its stamp before it is dropped and counted |
+| `track_target_max_spread_xy` / `_yaw` | `0.08` / `0.2` | With a goal's `target_filter_window`: the robot stops while 80 % of the window's targets do not lie within these (m, rad) of their median |
+| `track_min_poses` | `3` | With a filter window: fewer targets than this in it is no target yet |
+| `track_max_odom_speed` | `1.0` | Net robot speed in odom over 0.4 s (m/s) above which the odometry is not believed: stop at once, `FAILED_TO_CONTROL` after `failure_tolerance` |
 | `progress_checker_plugin` / `goal_checker_plugins` / `controller_plugins` | see above | `goal_checker_plugins` is ordered: the first entry is the empty-id default |
 
 The three velocity thresholds, `failure_tolerance` and
