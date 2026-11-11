@@ -54,6 +54,7 @@ def status_text(views, pattern, shape, min_square, kept, seen, visible):
     tilts = np.array([cc.board_tilt(c, pattern) for c in usable]).reshape(-1, 2)
     sizes = np.array([cc.board_size(c, pattern, shape) for c in usable])
     cov = cc.coverage(usable, shape)
+    ring = cc.outer_ring_counts(usable, shape)
     tilted = int(np.sum(np.abs(tilts).max(1) >= cc.TILT)) if len(usable) else 0
 
     def mark(ok):
@@ -71,6 +72,9 @@ def status_text(views, pattern, shape, min_square, kept, seen, visible):
         "",
         f"{mark(len(usable) >= TARGET_USABLE)}usable views {len(usable)} / {TARGET_USABLE}",
         f"{mark((cov > 0).all())}every cell of the grid below covered",
+        f"{mark(min(ring) >= cc.OUTER_RING_EACH)}outer ring (>= {cc.OUTER_RING:g} of the way to an image corner), "
+        f"{cc.OUTER_RING_EACH}+ each: top-left {ring[0]}  top-right {ring[1]}  "
+        f"bottom-left {ring[2]}  bottom-right {ring[3]}",
         f"{mark(min(counts.values()) >= TARGET_TILTED_EACH)}tilted >= {cc.TILT} each way, "
         f"{TARGET_TILTED_EACH}+ each: tilt_x +{counts['x+']} / -{counts['x-']}   "
         f"tilt_y +{counts['y+']} / -{counts['y-']}",

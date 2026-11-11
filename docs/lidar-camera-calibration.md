@@ -73,7 +73,9 @@ How to move the board — the first two points are what failed twice before they
   longer focal length from a nearer board; tilted views are what pin the focal length down.
 - **Cover the whole image, corners included.** Keep all 70 corners in frame (no detection
   otherwise) but push the board into every corner and along every edge: that is where the
-  distortion is measured. Image right is the board holder's left.
+  distortion is measured. Image right is the board holder's left; the bottom corners need the
+  board held low, kneeling. A corner cell with a few corners in it is not enough (lesson 9): the
+  status's outer-ring line counts the corners near each image corner.
 - **Hold each pose for about a second, then move somewhere new.** A count that stops rising while
   the board is visible means the poses repeat.
 
@@ -83,8 +85,13 @@ The status file's check lines are guidance for the person collecting, not a gate
 |---|---|---|
 | usable views (squares ≥ 15 px) | 60+ | 63 of 100 kept |
 | every cell of the 4×4 grid covered | all 16 | all 16 (top-left thin: 24 corners) |
+| outer ring (≥ 0.8 of the way from the image centre to a corner), per quadrant | 40+ each | not measured then |
 | tilted ≥ 0.15 each way, both axes | 3+ each | tilt_x +4 / −6, tilt_y +2 / −3 |
 | close views (size ≥ 0.3) | 3+ | 2 |
+
+The outer-ring target comes from robot01's collection of 2026-11-11: with 0 / 13 / 1 / 0 the fit
+folded 73.4° off axis, with 75 / 55 / 59 / 200 it stayed monotonic. That is one lens's evidence,
+so `fit_intrinsics.py`'s fold check, not this line, is what decides (step 2).
 
 `tilt_x` / `tilt_y` are log ratios of the board's opposite edges (`calib_common.board_tilt`):
 `tilt_x` moves when the board is tipped about an axis along its rows of 7 corners, `tilt_y` about

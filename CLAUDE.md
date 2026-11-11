@@ -718,7 +718,8 @@ something to verify or edit here.
 
 `syncai_sys_manager` has `test_wifi_manager.py`, and `scripts/calibration/` has
 `test_calib_common.py` (where a camera model folds back, on robot01's 2026-11-11 fits
-and random lenses; numpy + OpenCV only, so it runs on the host too); the C++ packages have the
+and random lenses, and the outer-ring corner count; numpy + OpenCV only, so it runs on
+the host too); the C++ packages have the
 ament linter tests that come with the package templates (never enforced, and
 they would fail) plus thirteen gtests, all ROS-free but one: `syncai_global_planner`'s
 `test_surface_map` (surface map, search, stair links, dynamic overlay),

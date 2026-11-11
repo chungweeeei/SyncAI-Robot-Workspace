@@ -309,6 +309,30 @@ def coverage(views, shape):
     return cov
 
 
+# A corner is in the image's outer ring at this share of the way from the image centre to the
+# image corner or beyond: the radii where only the distortion polynomial's top terms act.
+OUTER_RING = 0.8
+
+# Outer-ring corners wanted in each quadrant. robot01's first collection of 2026-11-11 had
+# 0 / 13 / 1 / 0 and its fit folded 73.4 deg off axis; with 75 / 55 / 59 / 200 it stayed monotonic.
+# One lens's evidence, so a guide for the person collecting: the fit's fold check is the gate.
+OUTER_RING_EACH = 40
+
+
+def outer_ring_counts(views, shape):
+    """Outer-ring corners per quadrant of the image: (top-left, top-right, bottom-left, bottom-right)."""
+    h, w = shape
+    if not views:
+        return 0, 0, 0, 0
+    corners = np.vstack([np.asarray(c, np.float64).reshape(-1, 2) for c in views])
+    dx, dy = corners[:, 0] - w / 2, corners[:, 1] - h / 2
+    # The image centre stands in for the principal point, which is unknown while collecting.
+    in_ring = np.hypot(dx, dy) >= OUTER_RING * np.hypot(w / 2, h / 2) - 1e-9
+    quadrant = 2 * (dy >= 0) + (dx >= 0)
+    counts = np.bincount(quadrant[in_ring], minlength=4)
+    return tuple(int(n) for n in counts)
+
+
 def load_views(collect_dir, pattern):
     """The vNNN_*.npy corners collect_board.py saved. Returns (names, views, (h, w))."""
     npys = sorted(glob.glob(os.path.join(collect_dir, "v*.npy")))

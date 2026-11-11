@@ -47,6 +47,12 @@ def describe(views, pattern, shape):
         print("    " + " ".join(f"{v:5d}" for v in row))
     if not (cov > 0).all():
         print("  WARNING: part of the image has no corners; the distortion there is extrapolated")
+    ring = cc.outer_ring_counts(views, shape)
+    print(f"  outer ring (>= {cc.OUTER_RING:g} of the way to an image corner): top-left {ring[0]}  "
+          f"top-right {ring[1]}  bottom-left {ring[2]}  bottom-right {ring[3]}")
+    if min(ring) < cc.OUTER_RING_EACH:
+        print(f"  WARNING: under {cc.OUTER_RING_EACH} outer-ring corners in a quadrant; the polynomial may "
+              "fold there (see the fold check below)")
     return tilted
 
 

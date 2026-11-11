@@ -105,3 +105,51 @@ def test_fold_report_invariants_over_random_lenses():
             assert rep.ghosts_in_image or rep.unreachable == 0
     assert 0 < folded < 1000, "the random lenses must exercise both branches"
     assert time.perf_counter() - start < 30.0
+
+
+# ---------------------------------------------------------------- outer_ring_counts
+
+SHAPE = (SIZE[1], SIZE[0])  # (h, w), as load_views returns it
+
+
+def at_ring_ratio(ratio, quadrant):
+    """The pixel `ratio` of the way from the image centre to one image corner."""
+    w, h = SIZE
+    corner = {"tl": (0, 0), "tr": (w, 0), "bl": (0, h), "br": (w, h)}[quadrant]
+    return [w / 2 + ratio * (corner[0] - w / 2), h / 2 + ratio * (corner[1] - h / 2)]
+
+
+def test_outer_ring_counts_each_quadrant_on_its_own():
+    view = np.array([at_ring_ratio(0.95, "tl"), at_ring_ratio(0.95, "tr"), at_ring_ratio(0.95, "tr"),
+                     at_ring_ratio(0.95, "bl"), at_ring_ratio(0.95, "br"), at_ring_ratio(0.95, "br"),
+                     at_ring_ratio(0.95, "br")])
+    assert cc.outer_ring_counts([view], SHAPE) == (1, 2, 1, 3)
+
+
+def test_outer_ring_counts_starts_at_the_ring_ratio():
+    on_ring = np.array([at_ring_ratio(cc.OUTER_RING, q) for q in ("tl", "tr", "bl", "br")])
+    inside = np.array([at_ring_ratio(cc.OUTER_RING - 0.01, q) for q in ("tl", "tr", "bl", "br")])
+    assert cc.outer_ring_counts([on_ring], SHAPE) == (1, 1, 1, 1)
+    assert cc.outer_ring_counts([inside], SHAPE) == (0, 0, 0, 0)
+
+
+def test_outer_ring_counts_ignores_the_middle_and_empty_input():
+    middle = np.array([[640.0, 360.0], [300.0, 200.0], [1000.0, 500.0]])
+    assert cc.outer_ring_counts([middle], SHAPE) == (0, 0, 0, 0)
+    assert cc.outer_ring_counts([], SHAPE) == (0, 0, 0, 0)
+
+
+def test_outer_ring_counts_matches_a_brute_force_count_at_scale():
+    rng = np.random.default_rng(11)
+    views = [rng.uniform([0, 0], SIZE, size=(70, 2)) for _ in range(2000)]
+    start = time.perf_counter()
+    counts = cc.outer_ring_counts(views, SHAPE)
+    elapsed = time.perf_counter() - start
+    w, h = SIZE
+    expected = [0, 0, 0, 0]
+    for view in views:
+        for x, y in view:
+            if np.hypot(x - w / 2, y - h / 2) >= cc.OUTER_RING * np.hypot(w / 2, h / 2):
+                expected[(2 if y >= h / 2 else 0) + (1 if x >= w / 2 else 0)] += 1
+    assert counts == tuple(expected)
+    assert elapsed < 5.0

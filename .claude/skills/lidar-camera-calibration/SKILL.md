@@ -37,6 +37,8 @@ procedure with a person who moves the board and the robot while you run the tool
    ways about both axes). On "progress?", read `<work>/intrinsics/board01/status.txt` and turn every
    `--` line into one concrete instruction:
    - empty grid cells → where in the image to put the board (image right = the holder's left);
+   - outer ring short in a quadrant → push the board into that image corner, all 70 corners still
+     in frame and the board turned to face the lens (for the bottom two: kneel, board held low);
    - tilt counts short → which way to tip (`tilt_x`: nod the rows' edges towards / away;
      `tilt_y`: turn like a door) — check a recent view's corners to tell which physical motion
      moves which number if unsure;
