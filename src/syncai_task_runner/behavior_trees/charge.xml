@@ -1,18 +1,18 @@
 <!--
   Charge (2026-11): navigate to a staging pose in front of the charger with
-  move.xml's machinery, check that the charger's tag is in view, switch the
-  gait to MPC, and walk the last metre onto the charger on the tag itself --
-  TrackPose following the sightings PublishLandmark publishes -- ending
-  there, standing on the charger in MPC.
+  move.xml's machinery, switch the gait to MPC and let it settle, then look
+  for the charger's tag and walk the last metre onto the charger on the tag
+  itself -- TrackPose following the sightings PublishLandmark publishes --
+  and lie down there, on the contacts.
 
-  Selected per goal by NavigateToGoal.behavior_tree ("charge.xml"), like
-  dock.xml, whose header is the design record for everything this tree
-  shares with it: the staging leg (move.xml with goal="{staging_pose}"), the
-  overlay clear, the MPC switch and its check (SetMotionKey 5 ->
-  WaitForMotionState 5 -> Wait 3000), RL restored only on a failure after the
-  switch was attempted, no lie-down (the caller's LIEDOWN step), no in-tree
-  retry of the approach, the attribution and the status sentences. Keep the
-  two in step. What is different here, and why:
+  Selected per goal by NavigateToGoal.behavior_tree ("charge.xml"). Until
+  2026-11-12 dock.xml sat beside it, and its header (git history) is the
+  design record for what the two shared: the staging leg (move.xml with
+  goal="{staging_pose}"), the overlay clear, the MPC switch and its check
+  (SetMotionKey 5 -> WaitForMotionState 5 -> Wait 3000), RL restored only on
+  a failure after the switch was attempted, no in-tree retry of the
+  approach, the attribution and the status sentences. What is different
+  here, and why:
 
   The goal's `pose` is the TAG, not where the robot ends: the charger's
   marker in the map, its yaw pointing out of its face (what the console's
@@ -31,12 +31,14 @@
   strafes: a charger's tolerance is across its axis, and Docking's law only
   walks forward and turns.
 
-  DetectLandmark before the gait switch: the tag has to be in view from the
-  staging pose, or the approach would end LOST five seconds after an MPC
-  switch nobody needed. It also wakes the detector, which sleeps until
-  polled (its first answers are SENSOR_STARTING). 5 s, then DOCK_FAILED with
-  the detector's last word; the gait was not touched, so nothing is
-  restored.
+  Detection starts only once the gait has switched and settled (2026-11-12,
+  on request; it ran before the switch until then): DetectLandmark waits up
+  to 5 s for the first trusted sighting of the tag, standing in MPC, then
+  the approach starts. It also wakes the detector, which sleeps until polled
+  (its first answers are SENSOR_STARTING). Inside the MPC half, so a tag not
+  in view is DOCK_FAILED with the detector's last word AND RL restored -- the
+  price of the order is an MPC switch for nothing when the tag cannot be
+  seen from the staging pose.
 
   The last metre is a Parallel of two nodes, because the detector publishes
   nothing by itself and the controller judges nothing:
@@ -73,9 +75,20 @@
   freezes the target once the robot is inside the goal checker's
   tolerances, where the tag may leave the image.
 
-  Leaving the charger is undock.xml, unchanged: MPC, 1 m straight back,
-  blind, RL. A robot laid down on the charger is stood up by the caller
-  first.
+  The tree LIES THE ROBOT DOWN on the charger (2026-11-12, on request):
+  after TrackPose succeeds, SetMotionKey key="2" (`MODE X`) and a Wait of
+  4000 ms, so SUCCEEDED means "lying on the charger". dock.xml did the same
+  from 2026-10-14 to 2026-10-15 and dropped it for the backend's LIEDOWN
+  step; a charge needs the contacts loaded, so here it is part of the step.
+  There is no report of a lie-down to wait for (WaitForMotionState knows
+  MPC = 5 and RL = 1 only), so the 4000 ms is dock.xml's guess, not a
+  measurement. It sits AFTER the MPC half's Fallback: a refused lie-down
+  fails the goal (DOCK_FAILED, SetMotionKey's reason) but does not send RL,
+  which would start the locomotion policy on the contacts -- the robot is
+  left standing on the charger in MPC.
+
+  Nothing leaves the charger since undock.xml went (2026-11-12): a robot
+  lying on it has to be stood up (STANDUP) and backed off by the caller.
 
   A preempt that moves {goal} after the staging leg reaches neither node:
   TrackPose's goal has no pose in it, and the tag in view is the one driven
@@ -119,9 +132,6 @@
         </RecoveryNode>
       </PipelineSequence>
 
-      <!-- The tag must be in view before the gait is switched for it (header) -->
-      <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000"/>
-
       <!-- MPC half: restore RL on any failure after the switch was attempted -->
       <Fallback name="ChargeInMpc">
         <Sequence name="SwitchAndApproach">
@@ -130,6 +140,9 @@
           <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (dock.xml) -->
           <WaitForMotionState state="5" timeout="5000"/>
           <Wait msec="3000"/>
+          <!-- Only now look for the tag (header): standing still in MPC -->
+          <SetBlackboard output_key="nav_status_msg" value="Looking for the charger's marker"/>
+          <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000"/>
           <Parallel name="ApproachOnTheTag" success_threshold="1" failure_threshold="1">
             <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000"/>
             <TrackPose pose_topic="tracked_landmark" offset_x="0.54" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
@@ -139,6 +152,14 @@
           <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
         </ForceFailure>
       </Fallback>
+
+      <!-- On the charger: lie down on the contacts (header). After the
+           Fallback on purpose -- a refused lie-down must not send RL -->
+      <Sequence name="LieDownOnCharger">
+        <SetBlackboard output_key="nav_status_msg" value="Lying down on the charger"/>
+        <SetMotionKey name="LieDown" key="2" server_timeout="500"/>
+        <Wait msec="4000"/>
+      </Sequence>
     </Sequence>
   </BehaviorTree>
 </root>

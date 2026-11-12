@@ -104,7 +104,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `PLAN_FAILED` = 200 | the planner branch failed the tree — `ComputePathToPose` (or, for a route, `ComputePathThroughPoses`) aborted twice, the second time after the `clear_overlay` recovery — and the planner gave no finer reason | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | 201–224 (2026-11) | the same, with the planner's own reason: its result's `error_code`, copied unchanged — `GOAL_IN_KEEPOUT` 223, `GOAL_OCCUPIED` 206, `NO_VALID_PATH` 208, `MAP_NOT_LOADED` 220, … (`syncai_common`'s `ComputePathToPose.action` has the table, with whether a retry can help) | a sentence for the code, then the planner's: `Planning failed: the goal is inside a keepout zone (planner compute_path_to_pose aborted the goal: goal_in_keepout: the goal lies inside keepout zone 'z1'; … [start (…) -> goal (…)])` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
-| `DOCK_FAILED` = 300 | `charge.xml` (2026-11): `ComputeStagingPose` rejected the charger's pose, `DetectLandmark` did not see the tag from the staging pose, `SetMotionKey` refused (`LOCKED`), `WaitForMotionState` never saw the state it waited for, `PublishLandmark` (the detector stopped answering) or `TrackPose` (the approach, with `track_pose`'s reason and 33x code in the detail). It was the docking branch of `dock.xml` / `undock.xml` until 2026-11-12. A charge can still end 100 / 200: that is the staging leg | `Charging failed: the approach to the charger did not complete (...)` |
+| `DOCK_FAILED` = 300 | `charge.xml` (2026-11): `ComputeStagingPose` rejected the charger's pose, `DetectLandmark` did not see the tag (after the MPC switch), `SetMotionKey` refused (`LOCKED`), `WaitForMotionState` never saw the state it waited for, `PublishLandmark` (the detector stopped answering) or `TrackPose` (the approach, with `track_pose`'s reason and 33x code in the detail). It was the docking branch of `dock.xml` / `undock.xml` until 2026-11-12. A charge can still end 100 / 200: that is the staging leg | `Charging failed: the approach to the charger did not complete (...)` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -543,17 +543,21 @@ uses the map only to get in front of the charger and walks the last metre on
 the tag as the camera sees it.
 
 `move.xml`'s structure to a staging pose 1.3 m out along the tag's yaw,
-facing it (`ComputeStagingPose facing_landmark`) → `DetectLandmark` (the tag
-must be in view, 5 s, before the gait is touched; it also wakes the
-detector) → `SetMotionKey 5` → `WaitForMotionState 5` → `Wait 3000` → a
-`Parallel` of `PublishLandmark` (polls `detect_landmark`, publishes the
-sightings it trusts on `tracked_landmark`) and `TrackPose` (`track_pose`,
-controller `Charging`, goal checker `charge_goal_checker`, a 1 s filter
-window). `TrackPose`'s success ends the tree, **standing on the charger in
-MPC**; any failure after the switch restores RL and is `DOCK_FAILED`, with
-`track_pose`'s own reason and 33x code in the detail (`LOST`,
-`TARGET_UNSTABLE`, …). No lie-down, as for a dock; nothing leaves the charger since `undock.xml`
-went (2026-11-12).
+facing it (`ComputeStagingPose facing_landmark`) → `SetMotionKey 5` →
+`WaitForMotionState 5` → `Wait 3000` → `DetectLandmark` (detection starts
+only now, standing in MPC: the tag must be seen within 5 s; it also wakes the
+detector) → a `Parallel` of `PublishLandmark` (polls `detect_landmark`,
+publishes the sightings it trusts on `tracked_landmark`) and `TrackPose`
+(`track_pose`, controller `Charging`, goal checker `charge_goal_checker`, a
+1 s filter window) → `SetMotionKey 2` + `Wait 4000`: the tree **lies the
+robot down on the charger** (2026-11-12), so SUCCEEDED means lying on the
+contacts. Any failure from the switch through the approach restores RL and
+is `DOCK_FAILED`, with `track_pose`'s own reason and 33x code in the detail
+(`LOST`, `TARGET_UNSTABLE`, …); a tag not in view costs an MPC switch and
+its restore. A refused lie-down is `DOCK_FAILED` too but sends no RL — the
+robot stays standing on the charger in MPC. The 4000 ms is a guess (nothing
+reports a lie-down). Nothing leaves the charger since `undock.xml` went
+(2026-11-12): STANDUP, then a back-off, is the caller's.
 
 **The charger's geometry is `TrackPose`'s `offset_x` in the tree and nowhere
 else** — 0.54 m from the tag to `base_link`, derived (the charger repo's
