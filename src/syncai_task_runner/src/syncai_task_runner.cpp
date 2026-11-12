@@ -12,14 +12,15 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
 : rclcpp::Node("task_runner", "", options.automatically_declare_parameters_from_overrides(true))
 {
   // BT node plugins ported so far. Extend this list as more nodes
-  // (recovery, condition, control, decorator) are added. The last five are
-  // the docking nodes (dock.xml / undock.xml, 2026-10): a library is
-  // dlopen'ed at startup, but a node -- and its wait for its server -- is
-  // constructed only when a tree that uses the tag is loaded, so listing
-  // them costs nothing at boot and the session's sleep offsets are
-  // unchanged; dock_to_pose and set_motion_key are first waited for at the
-  // first dock goal, and a missing one fails THAT goal (ABORTED, error_code
-  // NONE), not this node.
+  // (recovery, condition, control, decorator) are added. The last three are
+  // the gait nodes (written for dock.xml / undock.xml, 2026-10; the trees and
+  // the other docking nodes went on 2026-11-12, and no tree uses these
+  // today): a library is dlopen'ed at startup, but a node -- and its wait for
+  // its server -- is constructed only when a tree that uses the tag is
+  // loaded, so listing them costs nothing at boot and the session's sleep
+  // offsets are unchanged; set_motion_key would be first waited for at the
+  // first goal of a tree that uses it, and a missing one fails THAT goal
+  // (ABORTED, error_code NONE), not this node.
   const std::vector<std::string> plugin_libs = {
     "syncai_compute_path_to_pose_action_bt_node",
     "syncai_compute_path_through_poses_action_bt_node",
@@ -30,10 +31,7 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
     "syncai_rate_controller_bt_node",
     "syncai_is_path_valid_condition_bt_node",
     "syncai_globally_updated_goal_condition_bt_node",
-    "syncai_dock_to_pose_action_bt_node",
     "syncai_set_motion_key_service_bt_node",
-    "syncai_compute_staging_pose_action_bt_node",
-    "syncai_compute_back_out_pose_action_bt_node",
     "syncai_wait_action_bt_node",
     "syncai_wait_for_motion_state_action_bt_node",
   };

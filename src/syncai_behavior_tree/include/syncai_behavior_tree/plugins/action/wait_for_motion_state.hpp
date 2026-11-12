@@ -16,7 +16,7 @@ namespace syncai_behavior_tree
 /**
  * @brief Return RUNNING until the gait controller REPORTS a motion state,
  * then SUCCESS; FAILURE after `timeout` ms. The check that the docking trees'
- * fixed Waits after a SetMotionKey stood in for (2026-10-14).
+ * (gone 2026-11-12) fixed Waits after a SetMotionKey stood in for (2026-10-14).
  *
  * Why it is needed: set_motion_key is one-way UDP and its `success` only
  * means the datagram left the driver. The controller's own view comes back
@@ -32,8 +32,8 @@ namespace syncai_behavior_tree
  * a freshness rule would turn a quiet link into a timeout for a robot that is
  * in the right state. The cost is the opposite case -- a stale sample from
  * before a switch that silently failed -- which the step after this node
- * (a docking approach the gait does not execute) surfaces as a dock failure
- * rather than a hang.
+ * (a slow approach the gait does not execute) surfaces as that step's
+ * failure rather than a hang.
  *
  * Own callback group and executor, like IsPathValidCondition: spinning the
  * shared task_runner node from inside a tick would run unrelated callbacks.

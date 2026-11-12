@@ -36,7 +36,7 @@
     plan_idle_clear_time: 30.0
 
     # One planner since 2026-10-28: Octo3D, the OctoMap surface planner for
-    # the quadruped (OctomapPlanner3D, below), which move.xml / dock.xml
+    # the quadruped (OctomapPlanner3D, below), which move.xml / patrol.xml
     # name. Until then GridBased (SmacPlanner2D on the global costmap) was
     # loaded beside it for 2D maps, with NavFn and StraightLine built as
     # fallbacks, and a goal ran the 2D or the *_3d.xml trees by Octo3D's

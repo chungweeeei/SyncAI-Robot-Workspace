@@ -17,11 +17,10 @@ namespace syncai_behavior_tree
  * Why not BT.CPP's built-in Delay: that one is a decorator that postpones
  * its child's first tick, so every wait in a tree has to wrap the step that
  * follows it, which reads badly once a tree has two. And the docking trees'
- * waits are placeholders: they stand in for a check that the gait controller
- * has reached the mode it was just sent (its reported code for MPC is not
- * known yet, see dock.xml's header), and when that check exists it replaces
- * this node in the same position -- a decorator around the next step would
- * not.
+ * (gone 2026-11-12) first waits were placeholders for a check that the gait
+ * controller has reached the mode it was just sent; when that check came
+ * (WaitForMotionState) it took this node's position -- a decorator around
+ * the next step would not have let it.
  */
 class WaitAction : public BT::StatefulActionNode
 {

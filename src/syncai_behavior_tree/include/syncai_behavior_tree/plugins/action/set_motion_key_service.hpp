@@ -15,13 +15,14 @@ namespace syncai_behavior_tree
  * syncai_common::srv::SetMotionKey -- syncai_driver_manager's gait-mode
  * switch (set_motion_key). The key goes to the gait controller verbatim:
  * "0" stand, "1" RL locomotion, "2" lie down, "3" damping, "4" e-stop,
- * "5" MPC. The docking trees use it to switch to MPC before the approach and
- * back to RL afterwards.
+ * "5" MPC. Written for the docking trees (2026-10), which switched to MPC
+ * before the approach and back to RL afterwards; they went on 2026-11-12 and
+ * no tree uses it today.
  *
  * The response's `success` means the driver sent the UDP datagram, nothing
  * more: the gait controller never acknowledges a mode command, and the mode
- * it reports back (the `mode` topic) has no known value for MPC yet. The
- * tree is responsible for the wait that follows (dock.xml's header).
+ * it reports back (the `mode` topic) comes on another channel. The tree is
+ * responsible for the wait that follows (WaitForMotionState).
  */
 class SetMotionKeyService : public BtServiceNode<syncai_common::srv::SetMotionKey>
 {
@@ -46,7 +47,7 @@ public:
     std::shared_ptr<syncai_common::srv::SetMotionKey::Response> response) override;
 
   /**
-   * @brief A driver that never answers says nothing about docking: report the
+   * @brief A driver that never answers says nothing about the step: report the
    * failure unattributed, so the navigator reports UNKNOWN with the message
    */
   void on_timeout() override;
