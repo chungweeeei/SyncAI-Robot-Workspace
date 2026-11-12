@@ -28,8 +28,8 @@ uses.
 ## SimpleActionServer
 
 The largest and most load-bearing piece (635 lines). Every action server in the
-stack — `NavigateToPose`, `ComputePathToPose`, `FollowPath`, `DockToPose` —
-is a `SimpleActionServer<ActionT>`.
+stack — `NavigateToPose`, `ComputePathToPose`, `FollowPath` (and, until
+docking went on 2026-11-12, `DockToPose`) — is a `SimpleActionServer<ActionT>`.
 
 It wraps `rclcpp_action::Server` with a **single worker thread and a one-slot
 pending-goal queue**, which is what turns "handle N concurrent goals" into the

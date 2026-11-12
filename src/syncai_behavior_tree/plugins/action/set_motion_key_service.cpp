@@ -53,7 +53,7 @@ BT::NodeStatus SetMotionKeyService::on_completion(
 void SetMotionKeyService::on_timeout()
 {
   // Unattributed, the same rule as BtActionNode's unacknowledged goal: a
-  // silent driver says the stack is not all there, not that docking failed.
+  // silent driver says the stack is not all there, not that the step failed.
   report_failure(
     service_name_ + " '" + key_ + "' did not answer within " +
       std::to_string(server_timeout_.count()) + " ms",

@@ -758,7 +758,7 @@ void PlannerServer::republishPlan()
   // still drew a failed goal's route 1.5 h after the task had ended, since a
   // re-send every second also kept the backend's 6 s expiry from firing.
   // Nothing here hears that a navigation failed, but every running one asks
-  // is_path_valid each BT tick (1 Hz, move*.xml and dock*.xml), so a route
+  // is_path_valid each BT tick (1 Hz, move.xml and patrol.xml), so a route
   // neither planned nor checked for that long belongs to no navigation.
   // Checked before the subscriber test, so a viewer that subscribes later
   // does not get a stale route either.

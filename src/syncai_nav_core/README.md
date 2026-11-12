@@ -22,7 +22,7 @@ depend on, so neither has to depend on the other.
 | Header | Class | Implemented by |
 |---|---|---|
 | `global_planner.hpp` | `GlobalPlanner` | `syncai_global_planner`: `OctomapPlanner3D` (id `Octo3D`) — the only one since 2026-10-28, when `NavfnPlanner`, `StraightLinePlanner` and `SmacPlanner2D` (id `GridBased`) went with 2D navigation |
-| `controller.hpp` | `Controller` | `syncai_mppi_controller`: `MPPIController` (id `FollowPath`); `syncai_controller`: `RegulatedPurePursuitController3D` (`FollowPathRPP3D`), `DockingController` (`Docking` / `Undocking`) |
+| `controller.hpp` | `Controller` | `syncai_mppi_controller`: `MPPIController` (id `FollowPath`); `syncai_controller`: `RegulatedPurePursuitController3D` (`FollowPathRPP3D`); `DockingController` (`Docking` / `Undocking`) until docking went on 2026-11-12 |
 | `goal_checker.hpp` | `GoalChecker` | `syncai_controller`: `SimpleGoalChecker` (`StoppedGoalChecker` and `PositionGoalChecker`, never loaded, were deleted 2026-10-28) |
 | `progress_checker.hpp` | `ProgressChecker` | `syncai_controller`: `SimpleProgressChecker` (`PoseProgressChecker` likewise) |
 | `exceptions.hpp` | `PlannerException` and, since 2026-11, its typed planning subclasses | thrown by the controller path (the base) and by the planners and `planner_server` (the subclasses) |

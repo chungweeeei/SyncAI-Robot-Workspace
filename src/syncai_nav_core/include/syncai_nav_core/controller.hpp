@@ -70,7 +70,7 @@ public:
    * it needs the leg's place to apply it -- the two path controllers
    * override this to hand that to their StairMode. The server calls this
    * for every leg, the first included, and never setPlan() itself. Default:
-   * setPlan(leg), for a plugin that reads nothing of the kind (docking).
+   * setPlan(leg), for a plugin that reads nothing of the kind.
    */
   virtual void setPlanLeg(const nav_msgs::msg::Path & leg, size_t plan_first, size_t plan_poses)
   {

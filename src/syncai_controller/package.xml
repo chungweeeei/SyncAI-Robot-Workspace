@@ -3,7 +3,7 @@
 <package format="3">
   <name>syncai_controller</name>
   <version>0.0.0</version>
-  <description>Controller action server (FollowPath, DockToPose) hosting controller plugins, ported from nav2_controller</description>
+  <description>Controller action server (FollowPath) hosting controller plugins, ported from nav2_controller</description>
   <maintainer email="chungweeeei@gmail.com">ros</maintainer>
   <license>Apache-2.0</license>
 
@@ -18,10 +18,9 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>
-  <!-- The dock_to_pose action type, and SetPolicyMode: RPP 3D switches the gait
-       controller's RL policy for stairs. syncai_common is vcs-imported from
-       SyncAI-Robot-Interface (dependencies.repos, branch dev); its
-       DockToPose.action must be merged there before this package builds. -->
+  <!-- SetPolicyMode: RPP 3D switches the gait controller's RL policy for
+       stairs. syncai_common is vcs-imported from SyncAI-Robot-Interface
+       (dependencies.repos, branch dev). -->
   <depend>syncai_common</depend>
   <depend>syncai_costmap</depend>
   <depend>syncai_nav_core</depend>
