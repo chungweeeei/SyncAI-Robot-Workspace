@@ -1,14 +1,16 @@
 # Launch the non-lifecycle task_runner node — the BT action server that
-# exposes the navigate_to_pose (nav2_msgs) and navigate_to_goal
-# (syncai_common, with a failure reason in the result) actions and ticks the
-# behavior tree for whichever one a goal arrives on. It talks to the planner
-# (compute_path_to_pose) and controller (follow_path) action servers, so
+# exposes navigate_to_pose (nav2_msgs), navigate_to_goal (syncai_common, with
+# a failure reason in the result) and the patrol route's two,
+# navigate_through_poses (nav2_msgs) and navigate_through_goals
+# (syncai_common), and ticks the behavior tree for whichever one a goal
+# arrives on. It talks to the planner (compute_path_to_pose /
+# compute_path_through_poses) and controller (follow_path) action servers, so
 # those must be running for a goal to succeed.
 #
 # robot_id is read from the system config INI at launch time (same convention
 # as sys_manager.launch.py) and is used both as the node namespace and to
-# rewrite the base_frame parameter, since TF frame names are not namespaced
-# by ROS. The global_frame stays "map".
+# rewrite the base_frame and body_frame parameters, since TF frame names are
+# not namespaced by ROS. The global_frame stays "map".
 
 import configparser
 import os

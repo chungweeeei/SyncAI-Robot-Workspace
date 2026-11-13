@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "builtin_interfaces/msg/time.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_msgs/action/navigate_through_poses.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
@@ -198,9 +199,9 @@ protected:
   // leg (2026-11). A replan (another stamp) starts it over.
   syncai_util::PathProgress feedback_progress_;
 
-  // navigate_through_poses only: a waypoint within this of the robot is
-  // passed and dropped from remaining_goals, so a replan starts from the
-  // next one (the last one is never dropped).
+  // The two routes only: a waypoint within this of the robot is passed and
+  // dropped from remaining_goals, so a replan starts from the next one (the
+  // last one is never dropped).
   double waypoint_passed_radius_{1.0};
   // And within this of the robot's ground height (2026-11): the radius is
   // planar, so on a two-storey route the robot on 1F passed the 2F waypoint
@@ -210,6 +211,14 @@ protected:
   double waypoint_passed_z_tolerance_{1.0};
   std::string body_frame_{"pointlio_body"};
   double lidar_height_{0.481};
+  // The second way a waypoint is passed (waypoint_progress.hpp): the robot's
+  // place on the path is beyond the path's pass of it. Where on the path the
+  // last passed waypoint was, the bound the next one's pass is looked for
+  // from, and the path (stamp and pose count) that index is of -- another
+  // path starts it at 0.
+  size_t waypoint_path_from_{0};
+  builtin_interfaces::msg::Time waypoint_path_stamp_;
+  size_t waypoint_path_size_{0};
 };
 
 using NavigateToPoseNavigator = PoseNavigator<nav2_msgs::action::NavigateToPose>;
@@ -218,10 +227,11 @@ using NavigateThroughPosesNavigator = PoseNavigator<nav2_msgs::action::NavigateT
 using NavigateThroughGoalsNavigator = PoseNavigator<syncai_common::action::NavigateThroughGoals>;
 
 // Defined once, in pose_navigator.cpp, so the node -> error_code table stays a
-// .cpp-private detail and the library serves both actions.
+// .cpp-private detail and the library serves all four actions.
 extern template class PoseNavigator<nav2_msgs::action::NavigateToPose>;
 extern template class PoseNavigator<syncai_common::action::NavigateToGoal>;
 extern template class PoseNavigator<nav2_msgs::action::NavigateThroughPoses>;
+extern template class PoseNavigator<syncai_common::action::NavigateThroughGoals>;
 
 }  // namespace syncai_task_runner
 
