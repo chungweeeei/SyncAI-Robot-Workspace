@@ -47,21 +47,6 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
   {"FollowPath",
    {GoalResult::FOLLOW_PATH_FAILED,
     "Path following failed: the robot could not reach the goal along its path"}},
-  // The gait nodes, written for the docking branch of dock.xml / undock.xml
-  // (2026-10), which went on 2026-11-12 with DockToPose, ComputeStagingPose
-  // and ComputeBackOutPose and their rows. 300 is the docking range's base,
-  // the same contract as 100 / 200; the gait switch stays mapped there
-  // because a dock-like last metre is what it was written for -- a tree that
-  // switches the gait for anything else needs a tree-aware answer. No tree
-  // uses either node today. Wait never fails on a configured tree and has no
-  // row. A refused key is a gait switch (MPC or RL).
-  {"SetMotionKey",
-   {GoalResult::DOCK_FAILED, "Gait switch failed: the gait controller refused a motion command"}},
-  // 2026-10-14: the check after a gait switch; the detail names the state
-  // waited for and the last one the controller reported.
-  {"WaitForMotionState",
-   {GoalResult::DOCK_FAILED,
-    "Gait switch failed: the gait controller did not reach the requested motion state"}},
 };
 
 // The planner's own reasons (2026-11): ComputePathToPose's error_code, which
@@ -120,12 +105,12 @@ FailureReason readFailureReason(const BT::Blackboard::Ptr & blackboard)
     // A planner node's own finer code (failure_code, 2026-11): only inside
     // the planning range and above its base, so a node that wrote none (0)
     // or a stray value keeps its row's code. Read for the planner nodes only
-    // -- a node that writes failed_node by hand (Wait) does not write it.
+    // -- a node that writes failed_node by hand does not write it.
     uint16_t code = 0;
     blackboard->get<uint16_t>(keys::kFailureCode, code);
     if (
       stage->second.first == GoalResult::PLAN_FAILED && code > GoalResult::PLAN_FAILED &&
-      code < GoalResult::DOCK_FAILED) {
+      code < GoalResult::PLAN_FAILED + 100) {
       const auto sentence = kPlanningSentenceByCode.find(code);
       const char * text =
         sentence != kPlanningSentenceByCode.end() ? sentence->second : stage->second.second;
@@ -270,9 +255,8 @@ bool PoseNavigator<ActionT>::goalReceived(typename ActionT::Goal::ConstSharedPtr
     // Two causes, one return value: the file is missing, or a node in it
     // threw while being constructed -- a BtActionNode / BtServiceNode whose
     // server is not up within wait_for_service_timeout (a server only some
-    // tree uses, set_motion_key for one, is first waited for here, at that
-    // tree's first goal, not at startup). BtActionServer logged which just
-    // above this line.
+    // tree uses is first waited for here, at that tree's first goal, not at
+    // startup). BtActionServer logged which just above this line.
     RCLCPP_ERROR(
       this->logger_,
       "[PoseNavigator][%s] %s: could not load BT %s (file missing, or a node's server is down "

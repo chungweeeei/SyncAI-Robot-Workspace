@@ -105,9 +105,8 @@
     # ORDER MATTERS: a FollowPath goal that names no goal checker (move.xml
     # names none, and the BT node defaults it to "") gets the FIRST entry, so
     # the navigation checker stays first. Until 2026-10 an empty id only fell
-    # back with exactly one checker loaded, and adding the second (the dock
-    # trees' dock_goal_checker, 2026-10 to 2026-11-12) would have failed every
-    # BT navigation.
+    # back with exactly one checker loaded, and adding a second would have
+    # failed every BT navigation.
     goal_checker_plugins: ["goal_checker"]
     # Two controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
@@ -120,9 +119,7 @@
     # controller_id="FollowPathRPP3D" with no rebuild. Only the controller a
     # goal names runs; the other costs memory, not CPU. FollowPathRPP, dev's
     # 2D RPP (the FollowPath until MPPI), went with 2D navigation on
-    # 2026-10-28; Docking and Undocking, the pose-to-pose DockingController
-    # the dock_to_pose action drove, went with the dock and undock trees on
-    # 2026-11-12.
+    # 2026-10-28.
     controller_plugins: ["FollowPath", "FollowPathRPP3D"]
 
     progress_checker:

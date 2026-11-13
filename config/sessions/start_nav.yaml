@@ -186,10 +186,10 @@ windows:
   # serves <robot_id>/detect_landmark for the last metre of a charge. It only
   # subscribes to camera_feeder's image_raw/compressed + camera_info -- never
   # opens the camera, so it is not a second opener -- and only while a caller
-  # polls it (idle_timeout 5 s), so standing here costs nothing between docks.
+  # polls it (idle_timeout 5 s), so standing here costs nothing between charges.
   # No `sleep:`: camera_info is latched, so a detector up before the feeder
   # still gets it, and until then a call answers "waiting for camera_info".
-  # Nav session only: docking is an AUTO-mode task, and start_mapping.yaml has
+  # Nav session only: charging is an AUTO-mode task, and start_mapping.yaml has
   # no use for it.
   - name: landmark_detector
     panes:

@@ -35,9 +35,6 @@ floor) takes its planar code path, `dev`'s, unchanged. Until 2026-10-28 that
 tree was `move_3d.xml`, run on a 3D map in place of the 2D `move.xml`
 (`GridBased`), where `FollowPathRPP` was the A/B.
 
-From 2026-10 to 2026-11-12 the same node also served `DockToPose`, the last
-metre onto and off a charging dock; it went with docking (see "Docking").
-
 ```
 syncai_task_runner ──FollowPath (nav2_msgs)──►  controller_server
                                                    │
@@ -125,14 +122,13 @@ progress"), threshold the odom twist, call
 `controller->computeVelocityCommands(pose, twist, goal_checker)`, publish
 feedback (`speed` and `distance_to_goal`, the latter measured along the remaining
 path from the closest pose), and publish the twist. Since 2026-10 everything up
-to the controller call is `computeVelocityCycle()` (split out for the dock loop,
-gone 2026-11-12); only the feedback and the publish follow it.
+to the controller call is `computeVelocityCycle()`; only the feedback and the
+publish follow it.
 
 **A goal holds `dynamic_params_lock_` throughout** (a `std::timed_mutex` since
 2026-10), taken with a 100 ms bound: long enough to wait out a parameter
-callback, far shorter than any goal. The bound was for the dock loop
-(2026-10 → 2026-11-12), the one other holder that held it for seconds; the only
-holder besides a goal now is a parameter callback (microseconds), so a
+callback, far shorter than any goal. The only holder besides a goal is a
+parameter callback (microseconds), so a
 `follow_path refused: dynamic_params_lock_ held for over 100 ms` means something
 holds it that should not. The refused goal publishes no zero twist — `cmd_vel`
 belongs to whoever holds the lock.
@@ -599,28 +595,12 @@ The clamp deliberately does **not** wrap `rotateToHeading()`'s output. That
 function ends with a `sqrt(2·α·θ)` deceleration cap; a symmetric acceleration
 clamp applied on top of it would pull the command back up and cancel the cap.
 
-## Docking (2026-10 → removed 2026-11-12)
+## Driving the gait under MPC
 
-From 2026-10 to 2026-11-12 this node served a second action, `DockToPose`
-(`syncai_common`, on `dock_to_pose`): drive to ONE planar pose and stop there,
-the last metre onto a charging dock (`dock.xml`) or 1 m straight back off it
-(`undock.xml`). Its loop, `dockControl()`, shared the per-cycle body with
-FollowPath (`computeVelocityCycle()`, still split out) and one `timed_mutex`
-with it, so the two servers refused each other (`CONTROLLER_BUSY` 302). The
-plugin was `syncai_controller::DockingController`, a port of Humble's
-`nav2_graceful_controller` (Park & Kuipers' smooth control law, the one
-`opennav_docking` uses), loaded twice as `Docking` and `Undocking`
-(`allow_backward`) with its own `dock_goal_checker`, the target transformed
-into odom once at acceptance, and **no costmap** — the dock is itself a lethal
-cell, so the last metre was driven blind after a staging leg. It went with the
-dock and undock trees, the backend's DOCK / UNDOCK steps and the
-`DockToPose` action itself; git history has the code, and the
-params file's `Docking` block as it was has the rationale for every value.
-
-What it measured that still holds for anything driving the gait under MPC:
-the walking floor under MPC is **0.05 m/s** (2026-10-14; RL's is ~0.3 m/s),
+Nothing drives the gait under MPC today; measured on robot01 for anything
+that does again: the walking floor under MPC is **0.05 m/s** (2026-10-14; RL's is ~0.3 m/s),
 and the in-place turn floor somewhere in 0.09–0.15 rad/s (0.03 held for a
-moment but not for a sustained turn: two robot01 undocks tapered to
+moment but not for a sustained turn: two robot01 backing-out runs tapered to
 0.087–0.094 rad/s and the yaw froze until the progress checker aborted;
 0.15 was used, unmeasured). Both are pre-scale, and re-measured by stepping a
 20 Hz `cmd_vel` down until odom shows no steady motion, holding each step for
@@ -635,8 +615,7 @@ names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
 two entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
-2D navigation; four until 2026-11-12, when `Docking` / `Undocking` went with
-docking):
+2D navigation, and two more until 2026-11-12):
 
 | ID | Plugin | Used by |
 |---|---|---|
@@ -673,13 +652,11 @@ one):
 `PositionGoalChecker` (position only) were deleted on 2026-10-28: ported,
 built, never loaded.
 
-One `SimpleGoalChecker` instance is configured, `goal_checker` (navigation);
-`dock_goal_checker` (0.05 m / 0.1 rad) went with docking on 2026-11-12.
+One `SimpleGoalChecker` instance is configured, `goal_checker` (navigation).
 **An empty `goal_checker_id` resolves to the first entry of
 `goal_checker_plugins`, however many are loaded** (2026-10). Upstream — and this
 server until then — only fell back when exactly one was loaded, which was fine
-with one entry; adding `dock_goal_checker` (2026-10 → 2026-11-12) would
-otherwise have failed every BT-issued `FollowPath` at once, because `move.xml` sets `controller_id` and no
+with one entry; adding a second checker would otherwise have failed every BT-issued `FollowPath` at once, because `move.xml` sets `controller_id` and no
 `goal_checker_id` (the BT node defaults it to `""`). The asymmetry with
 controllers is deliberate: MPPI vs RPP is a decision a goal must make, while
 goal checkers differ only in tolerance and the first listed is the navigation

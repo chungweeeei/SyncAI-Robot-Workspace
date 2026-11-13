@@ -17,8 +17,7 @@ syncai_task_runner ──ComputePathToPose (syncai_common)──►  planner_ser
 ```
 
 **One planner is loaded: `OctomapPlanner3D` as `Octo3D`**, the planner
-`move.xml` and `patrol.xml` ask for (and `dock.xml`'s staging leg did, until
-docking went on 2026-11-12). Both trees check their path
+`move.xml` and `patrol.xml` ask for. Both trees check their path
 once a second with `is_path_valid`, which the server answers by asking the
 planner that made the path; `Octo3D` judges it on its own dynamic-obstacle
 overlay (2026-10-21, "Dynamic obstacles" below).
@@ -255,7 +254,7 @@ the `octomap::OcTree` that `syncai_mapping`'s `clean_map --octomap 1` writes
 beside `map.pcd` (0.1 m; free **and** occupied, so never-seen space is
 unknown; hit floor-band voxels kept occupied). It is the only planner loaded
 (since 2026-10-28; until then it ran beside `GridBased`, and a 3D map's
-`move_3d.xml` / `dock_3d.xml` asked for it), so every navigation goal plans
+`move_3d.xml` asked for it), so every navigation goal plans
 here, with `controller_id="FollowPath"` — MPPI, which follows a path with
 heights in 3D and climbs stairs since 2026-10-20; `FollowPathRPP3D` is the
 A/B — `syncai_controller/README.md`. A plan sent while the map is still

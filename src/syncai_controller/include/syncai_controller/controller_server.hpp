@@ -30,9 +30,7 @@ namespace syncai_controller
 /**
  * @class syncai_controller::ControllerServer
  * @brief This class hosts variety of plugins of different algorithms to
- * complete control tasks from the exposed FollowPath action server. (From
- * 2026-10 to 2026-11-12 a second one, DockToPose, drove the same plugins at
- * ONE pose; it went with the dock and undock trees.)
+ * complete control tasks from the exposed FollowPath action server.
  *
  * Unlike nav2_controller, this node derives from rclcpp::Node. Initialization
  * is split into a two-phase pattern: the constructor only declares parameters
@@ -121,9 +119,8 @@ protected:
   void computeAndPublishVelocity();
 
   /**
-   * @brief The per-cycle body (split out for the dock loop, gone
-   * 2026-11-12): robot pose lookup
-   * (with the failure_tolerance handling), progress checker, thresholded odom
+   * @brief The per-cycle body: robot pose lookup (with the
+   * failure_tolerance handling), progress checker, thresholded odom
    * twist, the controller call and its failure_tolerance handling.
    */
   struct VelocityCycle
@@ -231,9 +228,8 @@ protected:
   // dynamicParametersCallback() (so parameter changes are refused mid-goal).
   // A timed_mutex since 2026-10, acquired with a 100 ms bound rather than a
   // plain try_lock: the parameter callback holds it for microseconds, a goal
-  // (the dock loop's, until 2026-11-12) for seconds, and 100 ms tells the two
-  // apart without ever refusing a goal that merely landed inside a parameter
-  // update.
+  // for its whole run, and 100 ms tells the two apart without ever refusing a
+  // goal that merely landed inside a parameter update.
   std::timed_mutex dynamic_params_lock_;
 
   // The controller needs a costmap node
