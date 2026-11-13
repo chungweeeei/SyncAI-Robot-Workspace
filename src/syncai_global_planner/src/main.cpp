@@ -21,10 +21,14 @@ int main(int argc, char ** argv)
     return 0;
   }
 
-  // A SingleThreadedExecutor suffices here: the ComputePathToPose execute
-  // callback (including the blocking waitForCostmap) runs on the
-  // SimpleActionServer's own spin thread, and the costmap node is spun by its
-  // own NodeThread. This executor only services parameter callbacks.
+  // A SingleThreadedExecutor suffices here: each planner action's execute
+  // callback runs on its SimpleActionServer's own spin thread, Octo3D's
+  // load_map / load_keepout on theirs, and the costmap node is spun by its
+  // own NodeThread. This executor serves what is left, all of it short:
+  // is_path_valid, clear_plan, Octo3D's clear_overlay, the plan republish
+  // timer and the parameter services -- one thread, which is what lets those
+  // callbacks share state without a lock (Octo3D's isPathValid() reads members
+  // its parameter callback writes).
   // Note: do NOT add the costmap node here — its NodeThread already spins it.
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);

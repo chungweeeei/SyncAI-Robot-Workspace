@@ -240,7 +240,7 @@ that decided it. In order of appearance:
 | `no TF map -> <robot_id>/pointlio_body (<tf error>) …` | WARN, 5 s | The planner cannot place the robot on a floor: a plan takes the request's z (0 — wrong upstairs) and the path check keeps the path unchecked |
 | `Plan cleared: <reason>` | INFO | `clear_plan called` (the task runner, on a success or a cancel; `load_map`) or the `plan_idle_clear_time` expiry |
 | `load_map '<file>' done in N s` / `reload from '<file>' failed: …` | INFO / ERROR | The end of a map switch, after the build's own surface-map, stair-link and keepout lines |
-| `parameters set: …` / `parameter change refused: …` | INFO / WARN | A runtime `ros2 param set` on `Octo3D.*`, with what it changed; a refusal names the values already applied before the refused one |
+| `parameters set: …` / `parameter change refused: …` | INFO / WARN | A runtime `ros2 param set` on `Octo3D.*`, with what it changed. A set is all or nothing since 2026-11: a refusal (a build-time key, a negative length / radius / time) puts back the values of the same set that came before the refused one, where until then they stayed in force in the plugin while `get_parameters` showed the old ones |
 
 The `is_path_valid` lines are logged on a change (and every 5 s while
 blocked) because the BT asks once a second for the whole navigation.
@@ -1146,12 +1146,13 @@ inside it is `start_in_keepout`, a goal inside it `goal_in_keepout`, and on
 | Parameter | Default | Notes |
 |---|---|---|
 | `planner_plugins` | `["Octo3D"]` (config: `["Octo3D"]`) | IDs; each needs `<id>.plugin` naming the type. With one loaded, an empty `planner_id` in a goal picks it; with more, an empty id is an error. Until 2026-10-28 the default was NavFn as `GridBased`, and the config loaded `GridBased` (SmacPlanner2D) beside `Octo3D`. Startup only: a runtime set is refused (2026-11) |
-| `expected_planner_frequency` | `1.0` (config: `20.0`) | Warning threshold only — a plan taking longer than 50 ms logs a missed-rate warning. Generous by design: the BT asks for a plan once per goal and again only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit |
+| `expected_planner_frequency` | `1.0` (config: `2.0`) | Warning threshold only — a plan request taking longer than 0.5 s logs "Plan took N s". Generous by design: the BT asks for a plan once per goal and again only when the current path is blocked, so the warning is a canary for a pathological search, not a cadence anyone is trying to hit. `20.0` (50 ms) until 2026-11: the time includes `Octo3D`'s wait for a scan after `clear_overlay` (~0.1 s at every new goal), which tripped it on four plans in five |
 | `plan_republish_rate` | `1.0` (config: `1.0`) | Hz at which the last plan is re-sent on `plan`, restamped and trimmed to start at the robot's place on it — forward-only progress since 2026-11 (`syncai_util/path_progress.hpp`), so a patrol route that comes back past the robot is not cut to its later leg (the whole plan when the robot pose is unavailable); `0` = only when a plan is made. Needed since `move.xml` plans only when the path is blocked: without it a viewer subscribing mid-drive never sees the route. The planner cannot tell when the navigation finished, so the task_runner reports a goal that **succeeded or was cancelled** through `clear_plan`; after a failure the last route keeps showing for `plan_idle_clear_time`. Startup only: a runtime set is refused since 2026-11 (it was accepted and never used; the timer is made once) |
 | `plan_idle_clear_time` | `30.0` (config: `30.0`) | s (2026-10-25) after which a plan that no navigation has made or checked (`is_path_valid`, which every running tree calls once a second) is dropped, as `clear_plan` drops it; `0` = never. The end of a **failed** navigation's route, which nothing else clears: until then it stayed on `plan` until the next goal (on dp, 1.5 h after the task ended), and the 1 Hz re-send kept the backend's own expiry from firing. Checked before the subscriber test, so a viewer subscribing later gets no stale route. Logs "Plan cleared: no navigation planned or checked it for N s (plan_idle_clear_time)". Dynamic since 2026-11 (accepted and unused before) |
 
-`expected_planner_frequency` is the only parameter the *server's* dynamic
-callback handles, and it takes the same mutex the plan cycle holds.
+`expected_planner_frequency` and `plan_idle_clear_time` are the parameters
+the *server's* dynamic callback handles; both are atomics, so a set takes no
+lock and never waits for a plan.
 `Octo3D` registers its own callback (see its table). Swapping the *plugin*
 needs a restart. Removed on 2026-10-28 with 2D navigation:
 `costmap_wait_timeout` (how long a `GridBased` goal waited for the costmap
@@ -1306,9 +1307,13 @@ ros2 service call /<robot_id>/planner_server/Octo3D/clear_overlay \
   costmap's terrain layer uses the same value; a planner disc narrower than
   the robot plans paths MPPI then cannot drive. (Until 2026-10-28 the rule
   was the global costmap's footprint against the local one.)
-- **Dynamic parameter changes wait for a plan in progress** on the shared
-  mutex, and only `expected_planner_frequency` is handled at all — plugin
-  parameters go to each plugin's own callback.
+- **A set of an `Octo3D.*` parameter waits for a plan in progress**: the
+  plugin's callback takes the lock a plan holds from its start snap to its
+  last pose (at most `max_planning_time` plus the post-processing), and it
+  runs on the main executor, so `is_path_valid`, `clear_overlay` and the
+  `plan` re-send wait with it. The BT keeps its path on an `is_path_valid`
+  timeout, so the cost is one late check. The server's own two parameters
+  are atomics and wait for nothing.
 - **`is_path_valid` is answered by the planner that made the last plan**
   (`Octo3D`, on its dynamic overlay — "Dynamic obstacles"). The request
   carries no planner id; the server remembers the last plan's, and an empty
@@ -1325,9 +1330,10 @@ ros2 service call /<robot_id>/planner_server/Octo3D/clear_overlay \
   needed a planner_server restart, and without one `Octo3D` went on planning
   on the old site's map). A build-time parameter change still needs the
   restart — the session's `plan_ctrl` pane, or `restart_mode`.
-- **`Octo3D` trips the `expected_planner_frequency` warning** on a long
-  plan only in theory (a 50 m search is a few ms); if it does, it is the
-  canary described under Parameters, not a fault.
+- **`Octo3D` trips the `expected_planner_frequency` warning** (0.5 s) on a
+  long plan only in theory (a 100 m search is ~40 ms, and the wait for a
+  scan after `clear_overlay` ~0.1 s); if it does, it is the canary
+  described under Parameters, not a fault.
 - **Without `map.pcd`, a 10–13 cm kerb is invisible to the kerb links.**
   The voxels make such a kerb a one-cell step along most of its length --
   the same as the contour lines a gently sloping road makes every metre or

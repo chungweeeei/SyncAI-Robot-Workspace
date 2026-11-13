@@ -228,7 +228,8 @@ protected:
 
   /**
    * @brief Timer callback: re-send the last plan on `plan`, restamped and
-   * trimmed to start at the pose nearest the robot
+   * trimmed to start at the robot's forward-only place on it
+   * (last_plan_progress_), or drop it once plan_idle_clear_time has passed
    */
   void republishPlan();
 
