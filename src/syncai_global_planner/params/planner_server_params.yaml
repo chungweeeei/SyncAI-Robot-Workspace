@@ -14,12 +14,17 @@
 
     # Warn if a plan takes longer than 1/expected_planner_frequency seconds.
     # This is a warning threshold only — nothing throttles or aborts on it.
-    # 20 Hz (50 ms) is a generous ceiling: the BT asks for a plan once per
-    # goal and again only when is_path_valid has said the current one is
-    # blocked for blocked_time (move.xml), so the warning is a canary for a
-    # pathological search, not a cadence anyone is trying to hit. An Octo3D
-    # plan (~1 ms for 25 m, ~30 ms 1F -> 2F on dp1f_1012) lands well under it.
-    expected_planner_frequency: 20.0
+    # The BT asks for a plan once per goal and again only when is_path_valid
+    # has said the current one is blocked for blocked_time (move.xml), so the
+    # warning is a canary for a pathological search, not a cadence anyone is
+    # trying to hit. 2 Hz (0.5 s), not the 20 Hz (50 ms) it was until 2026-11:
+    # the time measured is the whole request, and since the first plan after
+    # clear_overlay waits for a scan (Octo3D's waitForScanAfterClear, ~0.1 s,
+    # which move.xml causes at every new goal) four plans in five on robot01
+    # tripped 50 ms with a search of under a millisecond -- a warning on
+    # every goal is no canary. An Octo3D search itself is ~1 ms for 25 m and
+    # ~40 ms for 100 m; a wait that runs out (0.5 s) has its own warning.
+    expected_planner_frequency: 2.0
 
     # Re-send the last plan on `plan` this often (Hz), restamped; 0 = publish
     # only when a plan is made. The BT plans once per goal and on a blocked

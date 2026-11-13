@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -72,6 +73,14 @@ namespace
     default:
       throw nc::PlannerException(what);
   }
+}
+
+// The values a tuple of references refers to, copied: the parameter
+// callback's "as it was" (dynamicParametersCallback()).
+template <typename... T>
+std::tuple<T...> valuesOf(const std::tuple<T &...> & refs)
+{
+  return std::tuple<T...>(refs);
 }
 
 }  // namespace
@@ -662,17 +671,48 @@ bool OctomapPlanner3D::buildMap(
   const std::string & octomap_file, const std::string & poses_file,
   const std::string & keepout_file, std::string & error)
 {
+  // Nothing a build throws may leave this function (2026-11). It runs on the
+  // boot thread, where an exception nobody catches is std::terminate, and on
+  // the load_map service's thread, where it ends the executor the same way:
+  // either takes planner_server down, where the contract of a map that does
+  // not build is "no map, every plan fails map_not_loaded, the node stays
+  // up". buildMapUnguarded() catches what the tree and the surface map throw
+  // itself; the stair links (a std::out_of_range from their own tables), the
+  // keepout rasteriser and a std::bad_alloc on a large site came after that
+  // try and went straight out.
+  try {
+    return buildMapUnguarded(octomap_file, poses_file, keepout_file, error);
+  } catch (const std::exception & e) {
+    error = std::string("building the stair links or the keepout zones threw: ") + e.what();
+  }
+  RCLCPP_ERROR(
+    logger_,
+    "[OctomapPlanner3D][%s] %s; every plan with planner_id %s will fail with map_not_loaded",
+    __func__, error.c_str(), name_.c_str());
+  // The swap at the end of the build may have thrown half-way (the search's
+  // scratch arrays are sized to the map there), so nothing of it is kept: a
+  // map_ without its astar_ is a plan through a null pointer.
+  std::lock_guard<std::mutex> lock(mutex_);
+  map_.reset();
+  links_.reset();
+  astar_.reset();
+  zones_.clear();
+  keepout_.reset();
+  overlay_->setMap(nullptr);
+  build_error_ = error;
+  building_ = false;
+  return false;
+}
+
+bool OctomapPlanner3D::buildMapUnguarded(
+  const std::string & octomap_file, const std::string & poses_file,
+  const std::string & keepout_file, std::string & error)
+{
   using Clock = std::chrono::steady_clock;
   const auto t0 = Clock::now();
   std::shared_ptr<const o3d::SurfaceMap> map;
   o3d::BuildStats stats;
   error.clear();
-  double keepout_block_radius;
-  {
-    // Written by the parameter callback under mutex_; this build is not.
-    std::lock_guard<std::mutex> lock(mutex_);
-    keepout_block_radius = keepout_block_radius_;
-  }
   // Freed once the stair links are built, before the map is handed over: a
   // 7 M node tree is ~300 MB resident, the surface map ~30 MB. The links
   // read it for the walls round the landings' turns.
@@ -818,6 +858,16 @@ bool OctomapPlanner3D::buildMap(
   // the fixed file without a rebuild.
   std::vector<o3d::KeepoutZone> zones;
   o3d::KeepoutMaskPtr keepout;
+  double keepout_block_radius;
+  {
+    // Written by the parameter callback under mutex_; this build is not.
+    // Read here, not at the top of the build (2026-11): a set during the
+    // seconds the tree takes finds no map to re-rasterise on, so the mask
+    // below has to be made with the value as it is now, or the zones' ring
+    // and the parameter disagree until the next load.
+    std::lock_guard<std::mutex> lock(mutex_);
+    keepout_block_radius = keepout_block_radius_;
+  }
   loadKeepout(keepout_file, *map, links.get(), keepout_block_radius, zones, keepout);
   std::lock_guard<std::mutex> lock(mutex_);
   map_ = map;
@@ -1668,6 +1718,23 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
   const std::string prefix = name_ + ".";
+  // All of a set or none of it (2026-11). rclcpp rejects the whole set when
+  // one parameter is refused, so the node's parameters keep their old values
+  // -- but this loop writes each member as it goes, and until then the ones
+  // before the refused one stayed written: the plugin ran on values
+  // get_parameters did not show, and the backend's settings page, which
+  // persists a set only when it succeeds, had them live and unsaved until the
+  // next restart. Everything a set can write is copied here and put back on
+  // a refusal; what a new value has to rebuild (the keepout ring, the
+  // overlay's disc) is done once, after the loop, when the set stands.
+  const auto live = [this]() {
+    return std::tie(
+      search_params_, shortcut_slack_, corner_radius_, interpolation_resolution_, path_z_offset_,
+      narrow_max_width_, narrow_lead_, lidar_height_, keepout_block_radius_, dynamic_params_,
+      shortcut_, goal_z_mode_, body_frame_);
+  };
+  const auto before = valuesOf(live());
+  bool keepout_radius_set = false, dynamic_set = false;
   // A runtime change is otherwise invisible in the log, and a plan after it
   // is read against the values the log last showed.
   std::string changed;
@@ -1680,7 +1747,21 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
     const auto type = p.get_type();
     if (type == rclcpp::ParameterType::PARAMETER_DOUBLE) {
       const double v = p.as_double();
-      if (key == "clearance_cost_weight") {
+      // Lengths, radii and times: a negative one (or a NaN) has no meaning
+      // any of their readers handles -- a negative snap_xy_radius fails
+      // every goal, a negative dynamic.block_radius blocks nothing -- so it
+      // is refused here rather than found out on the next plan. 0 keeps the
+      // meaning each key gives it (max_planning_time: unlimited).
+      static const char * const kNonNegative[] = {
+        "snap_xy_radius",   "snap_z_window", "max_planning_time",   "interpolation_resolution",
+        "narrow_max_width", "narrow_lead",   "keepout.block_radius"};
+      const bool non_negative =
+        key.rfind("dynamic.", 0) == 0 ||
+        std::find(std::begin(kNonNegative), std::end(kNonNegative), key) != std::end(kNonNegative);
+      if (non_negative && !(v >= 0.0)) {
+        result.successful = false;
+        result.reason = key + " must not be negative (got " + p.value_to_string() + ")";
+      } else if (key == "clearance_cost_weight") {
         search_params_.clearance_cost_weight = v;
       } else if (key == "clearance_cost_scaling") {
         search_params_.clearance_cost_scaling = v;
@@ -1723,20 +1804,9 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
       } else if (key == "lidar_height") {
         lidar_height_ = v;
       } else if (key == "keepout.block_radius") {
-        // The zones are kept as parsed, so the ring is re-rasterised here
-        // (milliseconds) and the mask swapped like a load_keepout's. mutex_
-        // is held; the overlay lock after it is the one order ever taken.
+        // Re-rasterised after the loop, once the whole set stands.
         keepout_block_radius_ = v;
-        if (map_) {
-          keepout_ = o3d::buildKeepoutMask(*map_, links_.get(), zones_, keepout_block_radius_);
-          overlay_->setKeepout(keepout_);
-          RCLCPP_INFO(
-            logger_,
-            "[OctomapPlanner3D][%s] keepout.block_radius %.2f m: %zu zones, %zu cells blocked (%zu "
-            "core), %zu stair links cut",
-            __func__, v, zones_.size(), keepout_ ? keepout_->blocked : size_t{0},
-            keepout_ ? keepout_->core : size_t{0}, keepout_ ? keepout_->links_cut : size_t{0});
-        }
+        keepout_radius_set = true;
       } else if (key.rfind("dynamic.", 0) == 0) {
         // The overlay's own values take effect on the next scan / snapshot;
         // the transform tolerance is bound into the message filter.
@@ -1760,7 +1830,7 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
         }
         if (result.successful) {
           dynamic_params_ = dyn;
-          overlay_->setParams(dynamic_params_);
+          dynamic_set = true;  // handed to the overlay after the loop
         }
       } else {
         result.successful = false;
@@ -1817,14 +1887,33 @@ rcl_interfaces::msg::SetParametersResult OctomapPlanner3D::dynamicParametersCall
       changed += (changed.empty() ? "" : ", ") + key + " = " + p.value_to_string();
     }
   }
-  // rclcpp rejects the whole set on a refusal; the values before the refused
-  // one are already in the members, so say which they are.
   if (!result.successful) {
+    // rclcpp rejects the whole set on a refusal, so the members go back to
+    // what they were: nothing of it is in force.
+    live() = before;
     RCLCPP_WARN(
       logger_, "[OctomapPlanner3D][%s] parameter change refused: %s%s%s", __func__,
       result.reason.c_str(),
-      changed.empty() ? "" : "; already applied in this plugin: ", changed.c_str());
-  } else if (!changed.empty()) {
+      changed.empty() ? "" : "; not applied either, the set is one: ", changed.c_str());
+    return result;
+  }
+  if (keepout_radius_set && map_) {
+    // The zones are kept as parsed, so the ring is re-rasterised here
+    // (milliseconds) and the mask swapped like a load_keepout's. mutex_ is
+    // held; the overlay lock after it is the one order ever taken.
+    keepout_ = o3d::buildKeepoutMask(*map_, links_.get(), zones_, keepout_block_radius_);
+    overlay_->setKeepout(keepout_);
+    RCLCPP_INFO(
+      logger_,
+      "[OctomapPlanner3D][%s] keepout.block_radius %.2f m: %zu zones, %zu cells blocked (%zu "
+      "core), %zu stair links cut",
+      __func__, keepout_block_radius_, zones_.size(), keepout_ ? keepout_->blocked : size_t{0},
+      keepout_ ? keepout_->core : size_t{0}, keepout_ ? keepout_->links_cut : size_t{0});
+  }
+  if (dynamic_set) {
+    overlay_->setParams(dynamic_params_);
+  }
+  if (!changed.empty()) {
     RCLCPP_INFO(logger_, "[OctomapPlanner3D][%s] parameters set: %s", __func__, changed.c_str());
   }
   return result;

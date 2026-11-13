@@ -174,8 +174,13 @@ protected:
   // mask, swap them in and clear building_. Runs on the boot thread, or on
   // the load_map service's thread for a reload. On failure sets build_error_
   // (= error) and leaves no map. The files are passed in rather than read
-  // from the members, which a reload changes.
+  // from the members, which a reload changes. Never throws: whatever the
+  // build throws is a failed build (see the .cpp).
   bool buildMap(
+    const std::string & octomap_file, const std::string & poses_file,
+    const std::string & keepout_file, std::string & error);
+  // The build itself, which buildMap() wraps; may throw.
+  bool buildMapUnguarded(
     const std::string & octomap_file, const std::string & poses_file,
     const std::string & keepout_file, std::string & error);
 
@@ -317,8 +322,8 @@ protected:
   // octomap_file / poses_file / keepout.file back into the parameters,
   // which the parameter callback otherwise refuses.
   std::atomic<bool> updating_file_params_{false};
-  // Declared last: destroyed first, so the service thread stops before the
-  // members it uses go.
+  // Stopped by the destructor before anything else goes (it resets this
+  // first), so the service thread never outlives the members it uses.
   std::unique_ptr<syncai_util::NodeThread> load_map_thread_;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;

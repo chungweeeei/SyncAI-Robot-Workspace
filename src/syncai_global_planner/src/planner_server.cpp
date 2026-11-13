@@ -247,12 +247,13 @@ void PlannerServer::configure()
     std::chrono::milliseconds(500), true);
 
   // The console's route preview, on its own thread too. It plans under the
-  // same planner lock, so it waits behind a navigation's search rather than
-  // racing it (milliseconds: the lock is held for the search alone, not the
-  // TF waits round it), but it never publishes on `plan` or replaces the
-  // last plan: a preview
-  // there would be drawn on every console as the route being driven, and
-  // is_path_valid would judge a running navigation's path against it.
+  // same planner lock, so it waits behind a navigation's plan rather than
+  // racing it (milliseconds: Octo3D holds the lock from the start snap to
+  // the last pose, tens of ms on a long route, and not for its wait for a
+  // scan after clear_overlay), but it never publishes on `plan` or replaces
+  // the last plan: a preview there would be drawn on every console as the
+  // route being driven, and is_path_valid would judge a running
+  // navigation's path against it.
   action_server_preview_ = std::make_unique<ActionServerToPose>(
     this->shared_from_this(), "preview_path_to_pose", std::bind(&PlannerServer::previewPlan, this),
     nullptr, std::chrono::milliseconds(500), true);
