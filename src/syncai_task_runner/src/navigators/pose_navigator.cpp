@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -12,9 +13,12 @@
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "syncai_behavior_tree/blackboard_keys.hpp"
+#include "syncai_task_runner/waypoint_progress.hpp"
 #include "syncai_util/geometry_utils.hpp"
 #include "syncai_util/path_height.hpp"
-#include "syncai_util/robot_utils.hpp"
+#include "tf2/exceptions.h"
+#include "tf2/time.h"
+#include "tf2_ros/buffer.h"
 
 namespace syncai_task_runner
 {
@@ -132,6 +136,32 @@ FailureReason readFailureReason(const BT::Blackboard::Ptr & blackboard)
       "Navigation failed without a node reporting a reason (see the task_runner log)"};
   }
   return {GoalResult::UNKNOWN, failed_node + ": " + failure_msg};
+}
+
+// The robot's pose in `global_frame`, from the newest transform in the buffer
+// and without waiting for one (2026-11). syncai_util::getCurrentPose() was
+// called here with transform_tolerance, which changes nothing while the
+// transform is there (it asks for the latest either way) and, while it is
+// not, waits that long on the BT thread at every tick -- the 20 Hz tree ran
+// at under 10 Hz for as long as TF was down, each tick with an unthrottled
+// ERROR from the helper and a "tick rate exceeded" beside it. The callers
+// say what a missing pose costs them, throttled; `error` is tf2's reason.
+bool lookupRobotPose(
+  const tf2_ros::Buffer & tf, const std::string & global_frame, const std::string & robot_frame,
+  geometry_msgs::msg::PoseStamped & pose, std::string & error)
+{
+  try {
+    const auto t = tf.lookupTransform(global_frame, robot_frame, tf2::TimePointZero);
+    pose.header = t.header;
+    pose.pose.position.x = t.transform.translation.x;
+    pose.pose.position.y = t.transform.translation.y;
+    pose.pose.position.z = t.transform.translation.z;
+    pose.pose.orientation = t.transform.rotation;
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    error = ex.what();
+    return false;
+  }
 }
 
 }  // namespace
@@ -353,9 +383,10 @@ void PoseNavigator<ActionT>::onLoop()
   auto feedback_msg = std::make_shared<typename ActionT::Feedback>();
 
   geometry_msgs::msg::PoseStamped current_pose;
-  if (!syncai_util::getCurrentPose(
-        current_pose, *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
-        this->feedback_utils_.robot_frame, this->feedback_utils_.transform_tolerance)) {
+  std::string pose_error;
+  if (!lookupRobotPose(
+        *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
+        this->feedback_utils_.robot_frame, current_pose, pose_error)) {
     // No feedback and no waypoint tracking this tick (2026-11). A failed
     // lookup leaves current_pose at the identity in the robot's own frame, and
     // everything below read it as the robot standing on the map origin: every
@@ -367,25 +398,27 @@ void PoseNavigator<ActionT>::onLoop()
     // pose themselves, and a TF gap of a few ticks should not end a patrol.
     RCLCPP_WARN_THROTTLE(
       this->logger_, *this->clock_, 2000,
-      "[PoseNavigator][%s] %s: no robot pose (%s -> %s within %.2f s); waypoints and feedback "
-      "not updated until it is back",
+      "[PoseNavigator][%s] %s: no robot pose (%s -> %s: %s); waypoints and feedback not updated "
+      "until it is back",
       __func__, this->getName().c_str(), this->feedback_utils_.global_frame.c_str(),
-      this->feedback_utils_.robot_frame.c_str(), this->feedback_utils_.transform_tolerance);
+      this->feedback_utils_.robot_frame.c_str(), pose_error.c_str());
     return;
   }
 
   // Named type, not auto: initialised from a dependent expression the variable
   // would be dependent too, and every get<T>() below would need `template`.
   BT::Blackboard::Ptr blackboard = this->bt_action_server_->getBlackboard();
+  // The path being driven and the robot's place on it, forward only
+  // (feedback_progress_): planar, like the pose it is measured from. Kept
+  // for the waypoints below.
+  nav_msgs::msg::Path current_path;
+  size_t place = 0;
   try {
-    // Get current path points
-    nav_msgs::msg::Path current_path;
     blackboard->get<nav_msgs::msg::Path>(path_blackboard_id_, current_path);
+    place = feedback_progress_.update(current_path, current_pose.pose, false);
 
-    // From the robot's place on the path, forward only (feedback_progress_):
-    // planar, like the pose it is measured from.
-    double distance_remaining = syncai_util::geometry_utils::calculate_path_length(
-      current_path, feedback_progress_.update(current_path, current_pose.pose, false));
+    double distance_remaining =
+      syncai_util::geometry_utils::calculate_path_length(current_path, place);
 
     // Default value for time remaining
     rclcpp::Duration estimated_time_remaining = rclcpp::Duration::from_seconds(0.0);
@@ -400,7 +433,18 @@ void PoseNavigator<ActionT>::onLoop()
 
     feedback_msg->distance_remaining = distance_remaining;
     feedback_msg->estimated_time_remaining = estimated_time_remaining;
-  } catch (...) {
+  } catch (const std::exception & ex) {
+    // Said (2026-11; a silent catch-all until then): what throws here is the
+    // blackboard's `path_blackboard_id` holding another type than a Path --
+    // a tree written against other keys -- and the feedback then read 0 m
+    // remaining for the whole goal with nothing in the log.
+    current_path = nav_msgs::msg::Path();
+    place = 0;
+    RCLCPP_WARN_THROTTLE(
+      this->logger_, *this->clock_, 5000,
+      "[PoseNavigator][%s] %s: cannot read the path from blackboard key '%s' (%s); "
+      "distance_remaining and estimated_time_remaining are 0",
+      __func__, this->getName().c_str(), path_blackboard_id_.c_str(), ex.what());
   }
 
   if constexpr (Traits::kThroughPoses) {
@@ -416,6 +460,10 @@ void PoseNavigator<ActionT>::onLoop()
     // dropped the 2F waypoint above it, and the replan after skipped it. With
     // no ground height (body_frame's TF missing) nothing is dropped this tick:
     // keeping a waypoint one tick longer is harmless, dropping one is not.
+    // Or, since 2026-11, the robot's place on the path is beyond where the
+    // path passes the waypoint (waypoint_progress.hpp): a robot that went by
+    // further off than the radius left that waypoint, and every one after
+    // it, in the list for the next replan to drive back through.
     std::vector<geometry_msgs::msg::PoseStamped> remaining;
     double ground_z = 0.0;
     std::string z_error;
@@ -432,23 +480,33 @@ void PoseNavigator<ActionT>::onLoop()
     }
     if (blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>(
           keys::kRemainingGoals, remaining)) {
-      size_t passed = 0;
-      while (have_z && remaining.size() - passed > 1 &&
-             syncai_util::geometry_utils::euclidean_distance(
-               remaining[passed].pose, current_pose.pose) <= waypoint_passed_radius_ &&
-             std::abs(remaining[passed].pose.position.z - ground_z) <=
-               waypoint_passed_z_tolerance_) {
-        ++passed;
+      // The path's passes are looked for from the last passed waypoint's on;
+      // another path (a replan restamps) is the route through what is still
+      // ahead, from its start.
+      if (
+        current_path.header.stamp != waypoint_path_stamp_ ||
+        current_path.poses.size() != waypoint_path_size_) {
+        waypoint_path_stamp_ = current_path.header.stamp;
+        waypoint_path_size_ = current_path.poses.size();
+        waypoint_path_from_ = 0;
       }
+      const WaypointPassParams pass_params{waypoint_passed_radius_, waypoint_passed_z_tolerance_};
+      const size_t passed = have_z ? countPassedWaypoints(
+                                       remaining, current_pose.pose, ground_z, current_path, place,
+                                       waypoint_path_from_, pass_params)
+                                   : 0;
       if (passed > 0) {
         for (size_t i = 0; i < passed; ++i) {
           RCLCPP_INFO(
             this->logger_,
-            "[PoseNavigator][%s] %s: passed waypoint (%.2f, %.2f, z %.2f) within %.2f m, robot's "
-            "ground z %.2f; %zu still ahead",
+            "[PoseNavigator][%s] %s: passed waypoint (%.2f, %.2f, z %.2f): robot %.2f m from it "
+            "(waypoint_passed_radius %.2f), ground z %.2f, at pose %zu of the path's %zu; %zu "
+            "still ahead",
             __func__, this->getName().c_str(), remaining[i].pose.position.x,
-            remaining[i].pose.position.y, remaining[i].pose.position.z, waypoint_passed_radius_,
-            ground_z, remaining.size() - i - 1);
+            remaining[i].pose.position.y, remaining[i].pose.position.z,
+            syncai_util::geometry_utils::euclidean_distance(remaining[i].pose, current_pose.pose),
+            waypoint_passed_radius_, ground_z, place, current_path.poses.size(),
+            remaining.size() - i - 1);
         }
         remaining.erase(remaining.begin(), remaining.begin() + static_cast<std::ptrdiff_t>(passed));
         blackboard->set<std::vector<geometry_msgs::msg::PoseStamped>>(
@@ -520,21 +578,36 @@ void PoseNavigator<ActionT>::onPreempt(typename ActionT::Goal::ConstSharedPtr go
 template <class ActionT>
 void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSharedPtr goal)
 {
+  // Where the robot starts from, for the log line only. Without a pose it
+  // says so (2026-11): the failed lookup's result was ignored and the line
+  // read "from current location (0.00, 0.00)", the map origin, as if the
+  // robot stood there. The goal still runs; the planner fails it with its
+  // own TF error if the pose stays missing.
   geometry_msgs::msg::PoseStamped current_pose;
-  syncai_util::getCurrentPose(
-    current_pose, *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
-    this->feedback_utils_.robot_frame, this->feedback_utils_.transform_tolerance);
+  std::string pose_error;
+  char from[160];
+  if (lookupRobotPose(
+        *this->feedback_utils_.tf, this->feedback_utils_.global_frame,
+        this->feedback_utils_.robot_frame, current_pose, pose_error)) {
+    std::snprintf(
+      from, sizeof from, "current location (%.2f, %.2f)", current_pose.pose.position.x,
+      current_pose.pose.position.y);
+  } else {
+    std::snprintf(
+      from, sizeof from, "an unknown location (no robot pose, %s -> %s)",
+      this->feedback_utils_.global_frame.c_str(), this->feedback_utils_.robot_frame.c_str());
+    RCLCPP_WARN(
+      this->logger_, "[PoseNavigator][%s] %s: no robot pose at the start of the goal: %s", __func__,
+      this->getName().c_str(), pose_error.c_str());
+  }
 
   if constexpr (Traits::kThroughPoses) {
     RCLCPP_INFO(
-      this->logger_,
-      "Begin navigating from current location (%.2f, %.2f) through %zu poses to (%.2f, %.2f)",
-      current_pose.pose.position.x, current_pose.pose.position.y, goal->poses.size(),
-      goal->poses.back().pose.position.x, goal->poses.back().pose.position.y);
+      this->logger_, "Begin navigating from %s through %zu poses to (%.2f, %.2f)", from,
+      goal->poses.size(), goal->poses.back().pose.position.x, goal->poses.back().pose.position.y);
   } else {
     RCLCPP_INFO(
-      this->logger_, "Begin navigating from current location (%.2f, %.2f) to (%.2f, %.2f)",
-      current_pose.pose.position.x, current_pose.pose.position.y, goal->pose.pose.position.x,
+      this->logger_, "Begin navigating from %s to (%.2f, %.2f)", from, goal->pose.pose.position.x,
       goal->pose.pose.position.y);
   }
 
@@ -566,10 +639,14 @@ void PoseNavigator<ActionT>::initializeGoalPose(typename ActionT::Goal::ConstSha
     blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
   }
   feedback_progress_.reset();
+  // A new route: its waypoints' passes are looked for from its path's start.
+  waypoint_path_stamp_ = builtin_interfaces::msg::Time();
+  waypoint_path_size_ = 0;
+  waypoint_path_from_ = 0;
 
-  // Drop the previous goal's path. move.xml keeps {path} for as long as
-  // IsPathValid accepts it (the 2D tree) or for the whole goal (the Octo3D
-  // tree, which plans once per goal), and nothing else clears it between goals
+  // Drop the previous goal's path. The trees keep {path} for as long as
+  // IsPathValid accepts it and the goal is the same (they replan only on a
+  // path blocked for blocked_time), and nothing else clears it between goals
   // (haltAllActions() only halts nodes still RUNNING, so ComputePathToPose's
   // halt() rarely runs). A stale path that is still free would otherwise be
   // followed from wherever it starts when the same goal is sent again. On a

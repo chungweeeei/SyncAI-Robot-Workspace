@@ -39,8 +39,8 @@ public:
 
 protected:
   // The navigators hosted on this node and the mutex that keeps only one
-  // active: one robot, so one navigation at a time across both actions (the
-  // loser gets ABORTED with an empty result). pose_navigator_ is the nav2
+  // active: one robot, so one navigation at a time across all four actions
+  // (the loser gets ABORTED with an empty result). pose_navigator_ is the nav2
   // action the backend sends today; goal_navigator_ is syncai_common's
   // NavigateToGoal, the same navigation with a failure reason in the result
   // (2026-10). The nav2 one goes when the backend has migrated.

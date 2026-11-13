@@ -381,10 +381,10 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `global_frame` | `map` | Stays unprefixed |
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
-| `transform_tolerance` | `0.1` | |
+| `transform_tolerance` | `0.1` | Copied to the BT nodes' client node. The navigator's own robot-pose lookups (feedback, waypoints, the "Begin navigating" line) take the newest transform without waiting since 2026-11: with a wait, every tick of a TF outage blocked the BT thread this long (the 20 Hz tree under 10 Hz) and logged an unthrottled ERROR |
 | `plugin_lib_names` | nine BT node libraries | Must list every library whose tags `move.xml` and `patrol.xml` use — and lists every node library `syncai_behavior_tree` builds. A node (and its wait for its server) is constructed only when a tree using its tag is loaded |
 | `default_nav_through_poses_bt_xml` | `<share>/behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11), declared lazily by its navigator like `default_bt_xml` |
-| `waypoint_passed_radius` | `1.0` m | `navigate_through_poses` only: a waypoint the robot comes within this of (x / y) is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. A first value, unmeasured |
+| `waypoint_passed_radius` | `1.0` m | The two routes only: a waypoint the robot comes within this of (x / y) is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. Also the radius within which the path's own pass of a waypoint is looked for (2026-11, below). A first value, unmeasured |
 | `waypoint_passed_z_tolerance` | `1.0` m | 2026-11: and only when its z is within this of the robot's ground height, so a waypoint on another floor is never passed from below or above it. Storeys are 2.5 m and more apart |
 | `body_frame` / `lidar_height` | `<robot_id>/pointlio_body` (launch) / `0.481` | The robot's ground height for the test above (`syncai_util::lookupGroundZ`), as controller_server and `Octo3D` read it; keep the three in step |
 | `default_bt_xml` | `<share>/behavior_trees/move.xml` | Declared lazily by the navigator. A goal's `behavior_tree` may be a bare file name (`patrol.xml`), resolved against the same `behavior_trees/` directory, or an absolute path. (Until 2026-10-28 a 3D map swapped any of them for its `_3d.xml` sibling.) |
@@ -427,8 +427,17 @@ height means nothing is dropped that tick) — never the last, at its loop rate,
 and reports what is left as
 `number_of_poses_remaining`. So passing a waypoint is not a changed goal and
 does not replan; a replan for a blocked path starts from the next waypoint.
-A waypoint the robot misses by more than the radius (a wide detour) is
-driven back to only if the path is replanned before the next one is passed.
+A waypoint the robot goes by further off than the radius (a wide detour
+round someone standing on it) is passed too, since 2026-11: once the robot's
+place on the path (forward only) is beyond where the path itself passes the
+waypoint -- the nearest pose of the path's first run inside the same radius
+and z tolerance, looked for from the last passed waypoint's place on, so an
+A -> B -> A route's second A never matches the path's start
+(`waypoint_progress.hpp`, `test/test_waypoint_progress.cpp`). By the radius
+alone that waypoint stayed at the head of the list and, the list being
+dropped from the front only, so did every later one the robot then drove
+through: the next replan went back to the missed one and through them all
+again, and `number_of_poses_remaining` stood still.
 nav2 does the dropping in the tree (`RemovePassedGoals`, ported here once and
 removed unused in 2026-07); in the navigator it runs at 20 Hz instead of the
 planner branch's 1 Hz and needs no TF buffer on the blackboard.

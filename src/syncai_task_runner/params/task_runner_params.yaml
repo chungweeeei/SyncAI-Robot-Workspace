@@ -15,6 +15,10 @@
     global_frame: map
     base_frame: base_link
     odom_topic: odom
+    # Copied to the BT nodes' client node. The navigator's own pose lookups
+    # (feedback, waypoints) take the newest transform without waiting since
+    # 2026-11: a wait this long at every tick halved the tree's rate for as
+    # long as TF was down.
     transform_tolerance: 0.1
 
     # BT engine loop period in ms: 50 ms => the whole tree is ticked at 20 Hz.
@@ -47,8 +51,12 @@
     # last one never is; blackboard_keys.hpp, remaining_goals). Wide because
     # a waypoint is passed through, not stopped on: the robot only comes
     # within the path's tracking error of it, more on an MPPI detour round a
-    # person. A waypoint missed by this is driven back to only if the path is
-    # replanned before the next one is passed. A first value, unmeasured.
+    # person. A first value, unmeasured. Since 2026-11 a waypoint the robot
+    # went by further off than this is passed too, once its place on the path
+    # is beyond where the path passes the waypoint (waypoint_progress.hpp;
+    # the path's pass is looked for within this same radius). Before, a
+    # missed waypoint stayed at the head of the list with every later one
+    # behind it, and the next replan drove back through them all.
     waypoint_passed_radius: 1.0
     # ... and that is on the robot's floor (2026-11): the waypoint's z within
     # this of the robot's ground height. The radius is planar, so without it

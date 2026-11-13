@@ -37,9 +37,11 @@ set(dependencies
   tf2_ros
 )
 
-# The pose navigator: one template, instantiated for nav2_msgs/NavigateToPose
-# and syncai_common/NavigateToGoal (the explicit instantiations are at the
-# bottom of the .cpp, which is why one library serves both)
+# The pose navigator: one template, instantiated for nav2_msgs/NavigateToPose,
+# syncai_common/NavigateToGoal and the two patrol routes,
+# nav2_msgs/NavigateThroughPoses and syncai_common/NavigateThroughGoals (the
+# explicit instantiations are at the bottom of the .cpp, which is why one
+# library serves all four)
 add_library(syncai_pose_navigator SHARED
   src/navigators/pose_navigator.cpp
 )
@@ -97,6 +99,15 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Header-only: which waypoints of a patrol route the robot has passed
+  # (waypoint_progress.hpp), on synthetic routes; no ROS node.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_waypoint_progress test/test_waypoint_progress.cpp)
+  target_include_directories(test_waypoint_progress PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_waypoint_progress geometry_msgs nav_msgs)
 endif()
 
 ament_export_include_directories(include)
