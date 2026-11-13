@@ -273,9 +273,8 @@ bool ControllerServer::findGoalCheckerId(
   // An empty name resolves to the FIRST entry of goal_checker_plugins,
   // however many are loaded. Upstream (and this server until 2026-10) only
   // fell back when exactly one was loaded, which was fine while the list had
-  // one entry; adding dock_goal_checker beside goal_checker (2026-10, gone
-  // with the dock trees on 2026-11-12) would have failed every BT-issued
-  // FollowPath at once, because move.xml sets
+  // one entry; adding a second checker beside goal_checker would have failed
+  // every BT-issued FollowPath at once, because move.xml sets
   // controller_id and no goal_checker_id (the BT node defaults it to ""),
   // and nothing in the tree would ever have set it. The asymmetry with
   // findControllerId() -- which still refuses an empty id with several
@@ -310,12 +309,11 @@ bool ControllerServer::findGoalCheckerId(
 
 void ControllerServer::computeControl()
 {
-  // Bounded, not blocking: written for the dock_to_pose loop (2026-10, gone
-  // 2026-11-12), whose goal held the lock for seconds -- a FollowPath goal
-  // arriving then had to fail, not queue up and start moving the robot the
-  // moment the dock ended. The only other holder now is a parameter callback
+  // Bounded, not blocking: the only other holder is a parameter callback
   // (microseconds), so a refusal here means something holds the lock that
-  // should not; kept bounded so that shows as a refused goal, not a hang.
+  // should not, and a goal must fail rather than queue up and start moving
+  // the robot whenever that something lets go. Bounded so that shows as a
+  // refused goal, not a hang.
   std::unique_lock<std::timed_mutex> lock(dynamic_params_lock_, std::chrono::milliseconds(100));
   if (!lock.owns_lock()) {
     // No zero twist here: cmd_vel belongs to whoever holds the lock.
@@ -496,11 +494,10 @@ void ControllerServer::computeAndPublishVelocity()
 
 bool ControllerServer::computeVelocityCycle(VelocityCycle & cycle)
 {
-  // The body of computeAndPublishVelocity() until 2026-10, split out so the
-  // dock loop (gone 2026-11-12) ran the same pose lookup, patience handling,
-  // progress check and controller call and only the feedback differed.
-  // Nothing in here touches the action server; kept split for the next loop
-  // that publishes a different feedback.
+  // The body of computeAndPublishVelocity(), split out so a second loop can
+  // run the same pose lookup, patience handling, progress check and
+  // controller call with a different feedback. Nothing in here touches the
+  // action server.
   geometry_msgs::msg::PoseStamped & pose = cycle.pose;
 
   if (!getRobotPose(pose)) {

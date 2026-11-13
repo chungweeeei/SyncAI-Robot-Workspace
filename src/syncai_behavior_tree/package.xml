@@ -18,7 +18,7 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
-  <!-- Client types only (SetMotionKey, the planner actions);
+  <!-- Client types only (the planner actions);
        no BT node reads an action's error-code constants. -->
   <depend>syncai_common</depend>
   <depend>syncai_util</depend>

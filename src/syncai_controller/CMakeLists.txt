@@ -16,8 +16,7 @@ find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
-# SetPolicyMode, for RPP 3D's stair mode (and, until 2026-11-12, the
-# dock_to_pose action type). syncai_common is vcs-imported from
+# SetPolicyMode, for RPP 3D's stair mode. syncai_common is vcs-imported from
 # SyncAI-Robot-Interface.
 find_package(syncai_common REQUIRED)
 find_package(syncai_costmap REQUIRED)

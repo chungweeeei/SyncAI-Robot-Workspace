@@ -189,8 +189,7 @@ public:
    * ClearEntireCostmap nodes must stay silent on a timeout (move.xml's header
    * -- one only runs because an action node just failed, and a write here
    * would replace that node's attribution with one that maps to UNKNOWN). A
-   * node whose timeout IS the failure (SetMotionKey) overrides it to call
-   * report_failure().
+   * node whose timeout IS the failure overrides it to call report_failure().
    */
   virtual void on_timeout() {}
 

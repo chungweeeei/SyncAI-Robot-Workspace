@@ -103,7 +103,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `PLAN_FAILED` = 200 | the planner branch failed the tree — `ComputePathToPose` (or, for a route, `ComputePathThroughPoses`) aborted twice, the second time after the `clear_overlay` recovery — and the planner gave no finer reason | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | 201–224 (2026-11) | the same, with the planner's own reason: its result's `error_code`, copied unchanged — `GOAL_IN_KEEPOUT` 223, `GOAL_OCCUPIED` 206, `NO_VALID_PATH` 208, `MAP_NOT_LOADED` 220, … (`syncai_common`'s `ComputePathToPose.action` has the table, with whether a retry can help) | a sentence for the code, then the planner's: `Planning failed: the goal is inside a keepout zone (planner compute_path_to_pose aborted the goal: goal_in_keepout: the goal lies inside keepout zone 'z1'; … [start (…) -> goal (…)])` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
-| `DOCK_FAILED` = 300 | no tree reaches it today. It was the docking branch of `dock.xml` / `undock.xml` (2026-10 → 2026-11-12); the gait nodes' rows stay mapped to it — `SetMotionKey` refused (`LOCKED`), or `WaitForMotionState` never saw the state it waited for — for the next tree that switches the gait | `Docking failed: the gait controller refused a motion command (gait switch)` |
+| `DOCK_FAILED` = 300 | no node maps to it. The code stays in the interface (the backend switches on the hundreds, and a code is never renumbered or reused) | — |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -219,8 +219,7 @@ refused.
 From 2026-10-19 to 2026-10-28 a map was 2D (`gridmap.yaml`) or 3D
 (`octomap.bt`), and on a 3D map — the planner's latched
 `planner_server/Octo3D/map_available`, the `map_3d_topic` parameter — a
-`<stem>_3d.xml` beside the resolved file replaced it (`move_3d.xml`,
-`dock_3d.xml`). 2D navigation was removed on 2026-10-28: the 3D trees took
+`<stem>_3d.xml` beside the resolved file replaced it (`move_3d.xml`). 2D navigation was removed on 2026-10-28: the 3D trees took
 the plain names, the 2D ones (`GridBased` on the gridmap, exactly `dev`'s)
 and the per-goal swap went, and this node no longer subscribes to
 `map_available`.
@@ -383,7 +382,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | |
-| `plugin_lib_names` | twelve BT node libraries | Must list every library whose tags `move.xml` and `patrol.xml` use — and lists every node library `syncai_behavior_tree` builds, the three gait nodes (`SetMotionKey`, `Wait`, `WaitForMotionState`) included although no tree uses them since the docking trees went (2026-11-12). They cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `plugin_lib_names` | nine BT node libraries | Must list every library whose tags `move.xml` and `patrol.xml` use — and lists every node library `syncai_behavior_tree` builds. A node (and its wait for its server) is constructed only when a tree using its tag is loaded |
 | `default_nav_through_poses_bt_xml` | `<share>/behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11), declared lazily by its navigator like `default_bt_xml` |
 | `waypoint_passed_radius` | `1.0` m | `navigate_through_poses` only: a waypoint the robot comes within this of (x / y) is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. A first value, unmeasured |
 | `waypoint_passed_z_tolerance` | `1.0` m | 2026-11: and only when its z is within this of the robot's ground height, so a waypoint on another floor is never passed from below or above it. Storeys are 2.5 m and more apart |
@@ -468,7 +467,6 @@ ros2 action send_goal /<robot_id>/navigate_through_goals syncai_common/action/Na
 | Service client | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap`, via the `ClearEntireCostmap` BT node — `move.xml`'s / `patrol.xml`'s two planner-side clears, dropping `Octo3D`'s dynamic-obstacle marks (2026-10-21; `global_costmap/clear_entirely_global_costmap` on the 2D trees until 2026-10-28) |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
 | Service client | `clear_plan` | `std_srvs/Empty`, the planner's (2026-10-14). Called from `goalCompleted()` on **CANCELED** and, since 2026-10-22, **SUCCEEDED**, so the route the planner re-sends on `plan` once a second disappears from the console with the goal instead of staying up until the next one. Success was left out at first because the re-send is trimmed to the robot, but the trim starts at the nearest pose anywhere on the plan, so the stub grew back along the route once the robot moved off the goal. Not on failure (the route explains the failure); the planner drops that route itself once no navigation has used it for its `plan_idle_clear_time` (30 s, 2026-10-25). Fire and forget, on the node's default callback group; a planner that is not up gets a WARN and the route stays |
-| Service client | `set_motion_key` | `syncai_common/SetMotionKey` (`syncai_driver_manager`), via the `SetMotionKey` BT node — the docking trees' gait switch until 2026-11-12; no tree calls it today |
 
 Each action name is its navigator's `getName()` (`PoseNavigatorTraits::kActionName`);
 it is also the suffix of the internal client node `BtActionServer` creates
@@ -507,35 +505,19 @@ ros2 topic pub --once /<robot_id>/goal_pose geometry_msgs/msg/PoseStamped \
 
 ```
 
-## Docking (2026-10 → removed 2026-11-12)
+## Switching the gait (no tree does today)
 
-`dock.xml` and `undock.xml`, selected per goal by `NavigateToGoal.behavior_tree`,
-were the backend's DOCK and UNDOCK steps. `dock.xml` took the **dock pose** as
-the goal's `pose`, navigated with `move.xml`'s structure to a staging pose 1 m
-in front of it (`ComputeStagingPose`; obstacle avoidance happened there),
-switched the gait to MPC (`SetMotionKey key="5"`, confirmed by
-`WaitForMotionState state="5"`, then 3 s of settling), and drove the last metre
-blind with controller_server's `dock_to_pose` (`DockToPose
-controller_id="Docking"`), ending standing on the dock in MPC. `undock.xml`
-ignored the pose and backed straight out 1 m (`ComputeBackOutPose` →
-`DockToPose controller_id="Undocking"`) and returned to RL, confirmed by
-`WaitForMotionState state="1"`. Both went on 2026-11-12, together with the
-backend's DOCK / UNDOCK steps, `syncai_common`'s `DockToPose` action, the
-`DockToPose` / `ComputeStagingPose` / `ComputeBackOutPose` BT nodes and their
-`DOCK_FAILED` rows; git history has the trees, whose headers carry the design
-record. A goal that still names either tree is ABORTED with `error_code` NONE
-before a tree runs (the file is missing).
-
-What still applies to a tree that switches the gait, and why the three gait
-nodes and their `DOCK_FAILED` rows were kept: `set_motion_key` is one-way UDP,
-so its `success` means only that the datagram left; the controller's own report
-on `mode` data[1] (MPC = 5, Locomotion = 1, read off the robot on 2026-10-14) is
-the check, and the switch was seen after 49 ms on robot01. The settling time
-after it (3 s, raised from 2 s on 2026-10-15) is a judgement, not a
-measurement: nothing reports when the gait under MPC is steady. `MODE Z` (stand,
-`key="0"`) is **not** a no-op for a robot already standing in MPC — on robot01
-it took the robot down and up again (2026-10-15). A cancel halts a tree before
-any RL restore runs, so a cancelled gait switch leaves MPC on.
+The BT gait nodes (`SetMotionKey`, `Wait`, `WaitForMotionState`) were removed
+with nothing left to use them; git history has them. What a tree that switches
+the gait again has to know about the gait controller: `set_motion_key` is
+one-way UDP, so its `success` means only that the datagram left; the
+controller's own report on `mode` data[1] (MPC = 5, Locomotion = 1, read off
+the robot on 2026-10-14) is the check, and the switch was seen after 49 ms on
+robot01. A settling time after it (3 s was used) is a judgement, not a
+measurement: nothing reports when the gait under MPC is steady. `MODE Z`
+(stand, `key="0"`) is **not** a no-op for a robot already standing in MPC — on
+robot01 it took the robot down and up again (2026-10-15). A cancel halts a tree
+before any restore step runs, so a cancelled gait switch would leave MPC on.
 
 ## Gotchas
 
@@ -546,8 +528,7 @@ any RL restore runs, so a cancelled gait switch leaves MPC on.
   be running first — otherwise `initialize()` returns false and `main.cpp` exits
   with `RCLCPP_FATAL`. The `sleep 10` in the byobu scripts is this constraint.
   A tree that is not the default is the exception: its nodes are constructed
-  at its **first goal**, and a server only it needs (`set_motion_key`, for a
-  tree that switches the gait) missing then fails *that goal* (`ABORTED`,
+  at its **first goal**, and a server only it needs missing then fails *that goal* (`ABORTED`,
   `error_code` NONE, the task_runner log names the server), not the node.
   The 3D trees are built at the first goal on a 3D map the same way; their
   two global clears are `planner_server/Octo3D/clear_overlay`, served by the

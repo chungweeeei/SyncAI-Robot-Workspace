@@ -14,9 +14,6 @@ controller_server (syncai_controller)          one process, one local_costmap
   └─ FollowPathRPP3D → syncai_controller::RegulatedPurePursuitController3D
 ```
 
-(`Docking` / `Undocking`, the `DockingController` instances behind the
-`dock_to_pose` action, went with docking on 2026-11-12.)
-
 The 2D RPP (`FollowPathRPP`, `RegulatedPurePursuitController`, the
 `FollowPath` before MPPI) went with 2D navigation on 2026-10-28; RPP 3D, which
 began as its copy, is the A/B.
