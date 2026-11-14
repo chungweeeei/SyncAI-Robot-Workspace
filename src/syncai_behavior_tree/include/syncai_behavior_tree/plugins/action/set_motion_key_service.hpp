@@ -15,9 +15,9 @@ namespace syncai_behavior_tree
  * syncai_common::srv::SetMotionKey -- syncai_driver_manager's gait-mode
  * switch (set_motion_key). The key goes to the gait controller verbatim:
  * "0" stand, "1" RL locomotion, "2" lie down, "3" damping, "4" e-stop,
- * "5" MPC. Written for the docking trees (2026-10), which switched to MPC
- * before the approach and back to RL afterwards; they went on 2026-11-12 and
- * no tree uses it today.
+ * "5" MPC. Written for the docking trees (2026-10, gone 2026-11-12);
+ * charge.xml (2026-11) uses it to switch to MPC before the approach, to lie
+ * down on the charger, and to restore RL after a failure.
  *
  * The response's `success` means the driver sent the UDP datagram, nothing
  * more: the gait controller never acknowledges a mode command, and the mode

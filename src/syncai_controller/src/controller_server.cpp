@@ -370,11 +370,11 @@ bool ControllerServer::findGoalCheckerId(
 
 void ControllerServer::computeControl()
 {
-  // Bounded, not blocking: the only other holder is a parameter callback
-  // (microseconds), so a refusal here means something holds the lock that
-  // should not, and a goal must fail rather than queue up and start moving
-  // the robot whenever that something lets go. Bounded so that shows as a
-  // refused goal, not a hang.
+  // Bounded, not blocking: the other holders are a parameter callback
+  // (microseconds) and a track_pose goal (its whole run, seconds). A
+  // FollowPath goal arriving during a charge approach must fail, not queue
+  // up and start moving the robot the moment the approach ends; 100 ms tells
+  // that apart from a goal that merely landed inside a parameter update.
   std::unique_lock<std::timed_mutex> lock(dynamic_params_lock_, std::chrono::milliseconds(100));
   if (!lock.owns_lock()) {
     // No zero twist here: cmd_vel belongs to the loop that holds the lock,

@@ -16,8 +16,8 @@ find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-# For CLIENT types only: ComputePathToPose / ComputePathThroughPoses
-# (2026-11). The numeric error codes belong to the action being served, so no
+# For CLIENT types only: SetMotionKey (the gait nodes, 2026-10) and
+# ComputePathToPose / ComputePathThroughPoses (2026-11). The numeric error codes belong to the action being served, so no
 # BT node reads NavigateToGoal's constants -- the node -> code table stays in
 # syncai_task_runner. Consequence: a change to syncai_common rebuilds this
 # package too.
