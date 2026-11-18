@@ -560,9 +560,9 @@ reports a lie-down). Nothing leaves the charger since `undock.xml` went
 (2026-11-12): STANDUP, then a back-off, is the caller's.
 
 **The charger's geometry is `TrackPose`'s `offset_x` in the tree and nowhere
-else** — 0.54 m from the tag to `base_link`, derived (the charger repo's
-0.27 m at the camera + the camera's 0.27 m ahead of `base_link`), not
-measured; `Charging.view_distance` in the controller's params must equal it.
+else** — 0.50 m from the tag to `base_link` since 2026-11-18 (0.54, derived
+from the charger repo's 0.27 m at the camera + the camera's 0.27 m ahead of
+`base_link`, left robot01 lying 0.043 m short of the contacts on one run); `Charging.view_distance` in the controller's params must equal it.
 What the approach does when the odometry or the detector misbehaves is
 `syncai_controller`'s README, "Tracking a pose". Needs the `landmark_detector`
 window of the nav session.
