@@ -543,7 +543,7 @@ says the charger is, off by the localizer's error on contacts that take about 3 
 uses the map only to get in front of the charger and walks the last metre on
 the tag as the camera sees it.
 
-`move.xml`'s structure to a staging pose 1.3 m out along the tag's yaw,
+`move.xml`'s structure to a staging pose 1.4 m out along the tag's yaw,
 facing it (`ComputeStagingPose facing_landmark`) → `SetMotionKey 5` →
 `WaitForMotionState 5` → `Wait 3000` → `DetectLandmark` (detection starts
 only now, standing in MPC: the tag must be seen within 5 s; it also wakes the

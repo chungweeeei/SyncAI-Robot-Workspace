@@ -22,8 +22,8 @@
   Charger waypoint stores from its Detect button). The map pose is only good
   enough to get in front of the charger. ComputeStagingPose facing_landmark
   puts the staging pose `distance` out along that yaw, turned to face the
-  tag: 1.3 m, where the tag fills enough of the image for a pose and the
-  robot has 0.76 m to walk in.
+  tag: 1.4 m, where the tag fills enough of the image for a pose and the
+  robot has 0.90 m to walk in (1.3 m until 2026-11-18).
 
   Why not dock.xml with the tag's pose: DockToPose drives to a pose fixed in
   odom at acceptance, so it ends wherever the map said the charger was -- off
@@ -112,7 +112,7 @@
 
   The retry (2026-11-18, on request). The charge proper -- MPC switch,
   detection, approach, lie-down, battery check -- is a RecoveryNode with one
-  retry, and before the retry the robot goes back to {staging_pose} (1.3 m
+  retry, and before the retry the robot goes back to {staging_pose} (1.4 m
   out, facing the tag) with TrackPose's target_pose, a fixed pose in map,
   blind like the approach. Which way depends on charge_lie_down_sent:
    - case 1, the approach failed (tag not seen, LOST, TARGET_UNSTABLE, ...):
@@ -167,7 +167,7 @@
               </ReactiveSequence>
               <Sequence name="PlanToStaging">
                 <!-- {goal} is the charger's tag: stage in front of it, facing it -->
-                <ComputeStagingPose dock_pose="{goal}" distance="1.3" facing_landmark="true" staging_pose="{staging_pose}"/>
+                <ComputeStagingPose dock_pose="{goal}" distance="1.4" facing_landmark="true" staging_pose="{staging_pose}"/>
                 <ComputePathToPose goal="{staging_pose}" path="{path}" planner_id="Octo3D"/>
               </Sequence>
             </Fallback>

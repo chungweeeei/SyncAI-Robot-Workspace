@@ -81,7 +81,7 @@
     # dock_max_start_distance of its first target and dock_max_start_lateral
     # of that target's axis; otherwise the goal is refused and the robot
     # stops. The approach is blind, so this keeps it to the space the staging
-    # leg drove through (charge.xml stages 1.3 m out). Written for the
+    # leg drove through (charge.xml stages 1.4 m out). Written for the
     # dock_to_pose approach (2026-11, gone 2026-11-12 with the dock trees),
     # whose names they keep: a dock pose moved by a preempt after the staging
     # leg used to be driven to wherever it was.
@@ -276,7 +276,7 @@
     # charge.xml's back-off to its staging pose (2026-11-18), with Charging
     # (in MPC, after a failed approach) or ChargeBackOff (in RL, stood up off
     # the charger): the robot only has to get back to where the approach
-    # starts from, 1.3 m out, and DetectLandmark / track_pose's own start
+    # starts from, 1.4 m out, and DetectLandmark / track_pose's own start
     # gate judge it from there. So it is wide -- the contacts'
     # charge_goal_checker would hold the robot in each axis's band for
     # nothing. The same rule as charge_goal_checker binds it, against BOTH
@@ -1114,7 +1114,7 @@
     # The back-off off the charger in RL (2026-11-18): charge.xml stands a
     # robot that lay down and did not charge up (SetMotionKey 0, after which
     # the gait controller is in RL) and walks it straight back to the
-    # staging pose, 1.3 m in front of the tag, before switching to MPC for
+    # staging pose, 1.4 m in front of the tag, before switching to MPC for
     # the second approach. Charging's floors are MPC's and RL stands still
     # under them, so this is the same law (ApproachController) with RL's.
     #
@@ -1129,11 +1129,11 @@
     # The bands follow Charging's rule -- tolerance + hysteresis over floor x
     # ~0.3 s of latency (x 0.30 x 0.3 = 0.09, lateral 0.20 x 0.3 = 0.06,
     # heading 0.45 x 0.3 = 0.135) -- and staging_goal_checker is wider than
-    # each. view_distance 1.3 = charge.xml's staging distance: the nose stays
+    # each. view_distance 1.4 = charge.xml's staging distance: the nose stays
     # on the tag as the robot backs away from it.
     ChargeBackOff:
       plugin: "syncai_controller::ApproachController"
-      view_distance: 1.3
+      view_distance: 1.4
       final_heading_distance: 0.10
       final_heading_hysteresis: 0.05
       rotate_in_place_angle: 0.5
