@@ -108,8 +108,8 @@ BT::NodeStatus DetectLandmark::onRunning()
       char buf[64];
       std::snprintf(buf, sizeof(buf), "%.1f", secondsSince(last_usable_));
       return fail(
-        "the landmark detector has given no usable answer for " + std::string(buf) + " s: " +
-        last_reason_);
+        "the landmark detector has given no usable answer for " + std::string(buf) +
+        " s: " + last_reason_);
     }
     return BT::NodeStatus::RUNNING;
   }
@@ -117,8 +117,7 @@ BT::NodeStatus DetectLandmark::onRunning()
   if (have) {
     setOutput("landmark_pose", sighting);
     RCLCPP_INFO(
-      node_->get_logger(),
-      "[DetectLandmark] '%s' in view after %.2f s: (%.3f, %.3f, %.3f) in '%s'",
+      node_->get_logger(), "[DetectLandmark] '%s' in view after %.2f s: (%.3f, %.3f, %.3f) in '%s'",
       landmark_id_.c_str(), secondsSince(start_), sighting.pose.position.x,
       sighting.pose.position.y, sighting.pose.position.z, sighting.header.frame_id.c_str());
     logSummary("found");
@@ -181,8 +180,8 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
           }
         }
       } else if (response->error_code == Service::Response::UNKNOWN_LANDMARK) {
-        fatal_ = "landmark '" + landmark_id_ + "' is not in the detector's registry: " +
-                 response->error_msg;
+        fatal_ = "landmark '" + landmark_id_ +
+                 "' is not in the detector's registry: " + response->error_msg;
       } else {
         // SENSOR_STARTING, NOT_DETECTED and TRANSFORM_FAILED are a detector
         // that works and has nothing to show; SENSOR_UNAVAILABLE is one that
@@ -190,8 +189,8 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
         if (response->error_code != Service::Response::SENSOR_UNAVAILABLE) {
           last_usable_ = std::chrono::steady_clock::now();
         }
-        last_reason_ = "error_code " + std::to_string(response->error_code) + ": " +
-                       response->error_msg;
+        last_reason_ =
+          "error_code " + std::to_string(response->error_code) + ": " + response->error_msg;
       }
     } else if (std::chrono::steady_clock::now() - request_sent_ > kAnswerTimeout) {
       request_pending_ = false;
@@ -223,8 +222,8 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
       node_->get_logger(), *node_->get_clock(), 2000,
       "[%s] no trusted sighting of '%s' yet: %s (%u answers, %u sightings: %u ambiguous, %u "
       "under %d in a row, %u poor fit)",
-      registrationName().c_str(), landmark_id_.c_str(), last_reason_.c_str(), answers_,
-      sightings_, ambiguous_, short_streak_, min_consecutive_, poor_fit_);
+      registrationName().c_str(), landmark_id_.c_str(), last_reason_.c_str(), answers_, sightings_,
+      ambiguous_, short_streak_, min_consecutive_, poor_fit_);
   }
   return have;
 }
@@ -234,8 +233,9 @@ bool DetectLandmark::trusted(const Service::Response & response)
   char buf[160];
   if (response.ambiguous && ambiguous_policy_ == AmbiguousPolicy::Drop) {
     ++ambiguous_;
-    last_reason_ = "the newest sighting is ambiguous (the detector holds a second pose it has "
-                   "not ruled out)";
+    last_reason_ =
+      "the newest sighting is ambiguous (the detector holds a second pose it has "
+      "not ruled out)";
     return false;
   }
   if (static_cast<int>(response.consecutive) < min_consecutive_) {
@@ -282,7 +282,7 @@ BT::NodeStatus DetectLandmark::fail(const std::string & msg)
   config().blackboard->set<std::string>(  // NOLINT
     blackboard_keys::kFailedNode, registrationName());
   config().blackboard->set<std::string>(blackboard_keys::kFailureMsg, msg);  // NOLINT
-  config().blackboard->set<std::string>(  // NOLINT
+  config().blackboard->set<std::string>(                                     // NOLINT
     blackboard_keys::kNavStatusMsg,
     stream_ ? "Lost the charger's marker detection" : "The charger's marker was not found");
   return BT::NodeStatus::FAILURE;

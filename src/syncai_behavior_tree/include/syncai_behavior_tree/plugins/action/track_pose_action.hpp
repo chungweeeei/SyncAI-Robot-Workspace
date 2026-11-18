@@ -40,7 +40,6 @@ namespace syncai_behavior_tree
  */
 class TrackPoseAction : public BtActionNode<syncai_common::action::TrackPose>
 {
-
 public:
   TrackPoseAction(
     const std::string & xml_tag_name, const std::string & action_name,

@@ -27,8 +27,8 @@ geometry_msgs::msg::Pose makePose(
   z.normalize();
   const tf2::Vector3 y = z.cross(normal);
   tf2::Quaternion q;
-  tf2::Matrix3x3(
-    normal.x(), y.x(), z.x(), normal.y(), y.y(), z.y(), normal.z(), y.z(), z.z()).getRotation(q);
+  tf2::Matrix3x3(normal.x(), y.x(), z.x(), normal.y(), y.y(), z.y(), normal.z(), y.z(), z.z())
+    .getRotation(q);
   geometry_msgs::msg::Pose pose;
   pose.position.x = position.x();
   pose.position.y = position.y();
@@ -111,10 +111,10 @@ TEST(LandmarkFacing, NoPoseWhereNoneExists)
 {
   // At the sensor's origin.
   EXPECT_FALSE(faceLandmarkToSensor(
-      makePose(tf2::Vector3(0.0, 0.0, 0.0), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp)));
+    makePose(tf2::Vector3(0.0, 0.0, 0.0), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp)));
   // The detected up along the ray.
   EXPECT_FALSE(faceLandmarkToSensor(
-      makePose(tf2::Vector3(0.0, -1.0, 0.0), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp)));
+    makePose(tf2::Vector3(0.0, -1.0, 0.0), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp)));
   // A zero quaternion.
   geometry_msgs::msg::Pose zero;
   zero.position.z = 1.0;
@@ -135,8 +135,7 @@ TEST(LandmarkFacing, StressRandomSightings)
     const auto facing = faceLandmarkToSensor(detected);
     ASSERT_TRUE(facing.has_value());
     const tf2::Quaternion q(
-      facing->orientation.x, facing->orientation.y, facing->orientation.z,
-      facing->orientation.w);
+      facing->orientation.x, facing->orientation.y, facing->orientation.z, facing->orientation.w);
     ASSERT_NEAR(q.length(), 1.0, 1e-9);
     ASSERT_NEAR(axisOf(*facing, 0).dot((-position).normalized()), 1.0, 1e-9);
     ASSERT_GT(axisOf(*facing, 2).dot(axisOf(detected, 2)), 0.0);

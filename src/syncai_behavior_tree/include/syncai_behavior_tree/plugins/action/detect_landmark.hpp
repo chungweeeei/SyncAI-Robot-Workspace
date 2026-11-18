@@ -96,8 +96,7 @@ public:
       BT::InputPort<int>(
         "min_consecutive", 3, "Sightings in a row a trusted sighting needs behind it"),
       BT::InputPort<double>(
-        "max_reprojection_error_px", 0.0,
-        "Largest fit residual trusted [px]; <= 0 = not judged"),
+        "max_reprojection_error_px", 0.0, "Largest fit residual trusted [px]; <= 0 = not judged"),
       BT::InputPort<std::string>(
         "ambiguous", "drop",
         "A sighting the detector still holds an alternative for: drop or ignore_orientation"),

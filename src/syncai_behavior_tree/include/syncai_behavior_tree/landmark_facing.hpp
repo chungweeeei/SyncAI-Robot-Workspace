@@ -45,8 +45,7 @@ inline std::optional<geometry_msgs::msg::Pose> faceLandmarkToSensor(
 
   // +z: the detected up, less its part along the ray.
   const tf2::Quaternion detected_q(
-    detected.orientation.x, detected.orientation.y, detected.orientation.z,
-    detected.orientation.w);
+    detected.orientation.x, detected.orientation.y, detected.orientation.z, detected.orientation.w);
   if (detected_q.length2() < kMinLength) {
     return std::nullopt;
   }
@@ -61,9 +60,9 @@ inline std::optional<geometry_msgs::msg::Pose> faceLandmarkToSensor(
   const tf2::Vector3 left = up.cross(to_sensor);
   tf2::Quaternion facing_q;
   tf2::Matrix3x3(
-    to_sensor.x(), left.x(), up.x(),
-    to_sensor.y(), left.y(), up.y(),
-    to_sensor.z(), left.z(), up.z()).getRotation(facing_q);
+    to_sensor.x(), left.x(), up.x(), to_sensor.y(), left.y(), up.y(), to_sensor.z(), left.z(),
+    up.z())
+    .getRotation(facing_q);
   facing_q.normalize();
 
   geometry_msgs::msg::Pose facing;

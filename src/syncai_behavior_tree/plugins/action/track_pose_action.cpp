@@ -148,7 +148,8 @@ BT::NodeStatus TrackPoseAction::on_aborted()
     char residuals[128] = "";
     if (result_.result->final_distance_error >= 0.0f) {
       std::snprintf(
-        residuals, sizeof(residuals), "; last seen %.3f m from the target, lateral %+.3f m, %+.3f rad",
+        residuals, sizeof(residuals),
+        "; last seen %.3f m from the target, lateral %+.3f m, %+.3f rad",
         static_cast<double>(result_.result->final_distance_error),
         static_cast<double>(result_.result->final_lateral_error),
         static_cast<double>(result_.result->final_yaw_error));
