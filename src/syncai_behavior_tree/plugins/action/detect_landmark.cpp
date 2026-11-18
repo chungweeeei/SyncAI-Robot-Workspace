@@ -86,7 +86,8 @@ BT::NodeStatus DetectLandmark::onStart()
   request_pending_ = false;
   fatal_.clear();
   last_reason_ = "no answer from " + service_name_ + " yet";
-  answers_ = sightings_ = ambiguous_ = short_streak_ = poor_fit_ = used_ = position_only_ = ambiguous_near_ = 0;
+  answers_ = sightings_ = ambiguous_ = short_streak_ = poor_fit_ = used_ = 0;
+  position_only_ = ambiguous_near_ = 0;
 
   config().blackboard->set<std::string>(  // NOLINT
     blackboard_keys::kNavStatusMsg,

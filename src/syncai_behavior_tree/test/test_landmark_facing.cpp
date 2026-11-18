@@ -147,7 +147,8 @@ TEST(LandmarkFacing, StressRandomSightings)
 
 TEST(LandmarkNear, RangeIsTheLengthOfThePosition)
 {
-  const auto pose = makePose(tf2::Vector3(0.3, -0.4, 1.2), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp);
+  const auto pose =
+    makePose(tf2::Vector3(0.3, -0.4, 1.2), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp);
   EXPECT_NEAR(landmarkRange(pose), 1.3, 1e-12);
 }
 
