@@ -43,8 +43,8 @@
   The last metre is a Parallel of two nodes, because the detector publishes
   nothing by itself and the controller judges nothing:
    - PublishLandmark polls detect_landmark and publishes the sightings it
-     TRUSTS on tracked_landmark -- not ambiguous (ArUco's mirrored solution
-     not yet ruled out), at least 3 sightings in a row. It never succeeds;
+     TRUSTS on tracked_landmark -- at least 3 sightings in a row. It never
+     succeeds;
      it fails only when detection cannot work at all (unknown landmark, the
      detector silent or SENSOR_UNAVAILABLE for 5 s). A tag out of view is
      not its failure: nothing is published, and TrackPose's pose_timeout
@@ -52,16 +52,24 @@
    - TrackPose follows that topic. Its success ends the Parallel
      (success_threshold 1) and halts the publisher; either one failing
      fails it (failure_threshold 1), which cancels the approach.
-  Dropping every ambiguous sighting is the first setting, not a finding: the
-  ambiguity is worst near the tag's axis at about a metre -- the staging
-  pose -- where the two solutions also nearly coincide. PublishLandmark logs
-  how many it dropped when it ends; if the approach starves there, set
-  accept_ambiguous and let track_pose's own test (targets that scatter in
-  odom stop the robot) hold the flips.
+  ambiguous="position_only" on both detection nodes (2026-11-18): from the
+  staging pose every sighting is ambiguous -- ArUco's two mirrored solutions
+  only merge within about 0.6 m of the tag -- so the default, "drop", never
+  found the tag, and "accept" had the target jump between the two solutions
+  and the robot stop 76 times in 85 s without advancing. position_only keeps
+  an ambiguous sighting's position and turns its face square to the camera;
+  inside 0.6 m the sightings are not ambiguous and are sent as given.
+  Replayed on that day's bags, a full pose from beyond 0.65 m put the target
+  4-5 cm off the tag's axis whichever solution was picked and the position
+  alone 2.4 cm, which is why full_pose_within is left at its default (never).
 
   THE CHARGER'S GEOMETRY IS THE TrackPose offset AND NOWHERE ELSE: offset_x
   is where base_link stands on the charger, metres out from the tag along
-  its face normal, and offset_yaw pi turns the robot to face it. 0.54 =
+  its face normal, and offset_yaw pi turns the robot to face it. 0.50 since
+  2026-11-18: at 0.54 robot01 lay 0.043 m short of the contacts and was
+  pushed onto them by hand (one run, read off the odometry; from the stop to
+  lying still the body also moved 0.04 m back, which this does not undo by
+  itself if it varies). Before that, 0.54 =
   SyncAI-Robot-Charger's stop, 0.27 m from the tag at the CAMERA, plus the
   camera's 0.27 m ahead of base_link (G23.urdf). Derived, not measured: lay
   the robot on the charger and read the tag's distance in base_link. The
@@ -76,7 +84,9 @@
   tolerances, where the tag may leave the image.
 
   The tree LIES THE ROBOT DOWN on the charger (2026-11-12, on request):
-  after TrackPose succeeds, SetMotionKey key="2" (`MODE X`) and a Wait of
+  after TrackPose succeeds, a Wait of 2000 ms standing still (2026-11-18:
+  the goal check accepts a position, and the gait is still stepping when it
+  does), then SetMotionKey key="2" (`MODE X`) and a Wait of
   4000 ms, so SUCCEEDED means "lying on the charger". dock.xml did the same
   from 2026-10-14 to 2026-10-15 and dropped it for the backend's LIEDOWN
   step; a charge needs the contacts loaded, so here it is part of the step.
@@ -142,10 +152,10 @@
           <Wait msec="3000"/>
           <!-- Only now look for the tag (header): standing still in MPC -->
           <SetBlackboard output_key="nav_status_msg" value="Looking for the charger's marker"/>
-          <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000"/>
+          <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000" ambiguous="position_only"/>
           <Parallel name="ApproachOnTheTag" success_threshold="1" failure_threshold="1">
-            <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000"/>
-            <TrackPose pose_topic="tracked_landmark" offset_x="0.54" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
+            <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000" ambiguous="position_only"/>
+            <TrackPose pose_topic="tracked_landmark" offset_x="0.50" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
           </Parallel>
         </Sequence>
         <ForceFailure>
@@ -156,6 +166,12 @@
       <!-- On the charger: lie down on the contacts (header). After the
            Fallback on purpose -- a refused lie-down must not send RL -->
       <Sequence name="LieDownOnCharger">
+        <SetBlackboard output_key="nav_status_msg" value="On the charger, standing still before lying down"/>
+        <!-- Stand 2 s first (2026-11-18, on request): track_pose's goal check
+             is a position held inside its tolerances, not a body at rest. On
+             robot01 that day it succeeded 0.45 s after a reverse command, and
+             the lie-down went out 0.15 s later with the gait still stepping -->
+        <Wait name="StandStillOnCharger" msec="2000"/>
         <SetBlackboard output_key="nav_status_msg" value="Lying down on the charger"/>
         <SetMotionKey name="LieDown" key="2" server_timeout="500"/>
         <Wait msec="4000"/>

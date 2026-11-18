@@ -1002,24 +1002,37 @@
       # (its dock_center_x_m), plus the camera's 0.27 m ahead of base_link
       # (G23.urdf: lidar_top 0.195 + camera 0.07). Derived, not measured: lay
       # the robot on the charger and read the tag's distance in base_link.
-      view_distance: 0.54
+      # 0.50 since 2026-11-18, with charge.xml's offset_x: at 0.54 robot01 lay
+      # 0.043 m short of the contacts (one run, read off the odometry).
+      view_distance: 0.50
       final_heading_distance: 0.10
       final_heading_hysteresis: 0.05
       # Turn in place first when the nose is further off the view point than
       # this (~29 deg): what the charger's aligner did before anything else.
       rotate_in_place_angle: 0.5
-      # Forward / back. v_linear_min is Docking's measured MPC floor (0.05,
-      # 2026-10-14). The cap is low: blind, and the tag fills the image fast.
+      # Forward / back. The cap is low: blind, and the tag fills the image fast.
+      # v_linear_min 0.05 -> 0.12 (2026-11-18, robot01, the first approach
+      # that reached the charger): under MPC a forward command of 0.07-0.08
+      # moved the robot 0.000-0.005 m/s in odom, and it stood 0.15 m short of
+      # the target for 25 s until max_duration; 0.10 gave 0.01-0.04, 0.16-0.20
+      # gave 0.08-0.09. So the gait walks from about 0.10 up, at roughly half
+      # the command less that dead zone, and 0.12 is ~0.04 m/s -- the
+      # charger's min_linear_speed_mps too. Docking's 0.05 (2026-10-14) was
+      # not a floor of this gait. v_reverse_max follows it: the law refuses a
+      # floor above the reverse cap; backing up is as unmeasured as before.
       k_x: 0.5
-      v_linear_min: 0.05
+      v_linear_min: 0.12
       v_linear_max: 0.25
-      v_reverse_max: 0.10
+      v_reverse_max: 0.12
       # Slower as the target nears: at or under each distance [m] left, the
       # speed cap [m/s] beside it. The charger's approach_table_dx (2026-10-16:
       # each step starts ~0.65 s x its speed + ~1 s of its own further out)
       # -- its gait, not this one.
+      # Speeds 0.10 / 0.05 -> 0.15 / 0.12 (2026-11-18): both were inside the
+      # dead zone above, so the last 0.15 m was commanded a speed the gait
+      # does not walk at. In odom these are about 0.09 / 0.06 / 0.04 m/s.
       speed_table_distance: [0.25, 0.15, 0.08]
-      speed_table_speed: [0.20, 0.10, 0.05]
+      speed_table_speed: [0.20, 0.15, 0.12]
       # The strafe. UNMEASURED under MPC: 0.10 is a guess between Docking's
       # forward floor and the charger's 0.15 (its gait strafed right worse than
       # left, which driver_manager's scale_left / scale_right would absorb
@@ -1032,8 +1045,14 @@
       # The small forward / back component that goes with such a strafe is
       # under v_linear_min: measure the strafe at a yawed body too, and
       # whether it creeps along the axis.
+      # v_lateral_min 0.10 -> 0.15 (2026-11-18): the charger's measured
+      # strafe floor (min_strafe_speed_mps). Still unmeasured here: on that
+      # day's run the strafe changed direction too often to read a speed off
+      # odom. What was read: with vx ~0 while strafing the robot backed away
+      # at 0.03 m/s, which no parameter here corrects (the charger adds a
+      # fifth of the strafe as forward speed).
       k_y: 0.5
-      v_lateral_min: 0.10
+      v_lateral_min: 0.15
       v_lateral_max: 0.20
       # The turn. v_angular_min is Docking's (0.15, see there). The cap is
       # well under the stack's 0.65: the camera has to keep the tag, and the
