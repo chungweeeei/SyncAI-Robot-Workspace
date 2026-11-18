@@ -32,12 +32,29 @@ namespace syncai_behavior_tree
  *    published, and track_pose's pose_timeout / lost_timeout judge that.
  *
  * The judging is here because the detector only detects (DetectLandmark.srv)
- * and the controller only drives: a sighting is trusted when it is not
- * `ambiguous` (ArUco holds a mirrored solution it has not ruled out),
- * follows `min_consecutive` sightings in a row, and fits within
- * `max_reprojection_error_px` when that is set. One sighting is published
- * once: the detector answers at once with its newest, and this polls faster
- * than the camera delivers.
+ * and the controller only drives: a sighting is trusted when it follows
+ * `min_consecutive` sightings in a row, fits within
+ * `max_reprojection_error_px` when that is set, and the `ambiguous` port
+ * allows it. One sighting is published once: the detector answers at once
+ * with its newest, and this polls faster than the camera delivers.
+ *
+ * An AMBIGUOUS sighting (ArUco holds a mirrored solution it has not ruled
+ * out) has a position to trust and an orientation that is one of two. The
+ * `ambiguous` port says what is done with it (2026-11, in place of the
+ * boolean accept_ambiguous):
+ *  - "drop" (the default): not used. From further than ~0.6 m every
+ *    sighting of a single marker is ambiguous, so this alone never sees the
+ *    landmark from a staging pose.
+ *  - "accept": used as the detector gave it. The detector alternates
+ *    between the two solutions frame by frame, and a target built on the
+ *    normal jumps from side to side with it (robot01, 2026-11-18: track_pose
+ *    stopped 76 times in 85 s and the robot never walked in).
+ *  - "position_only": its position kept, its face turned square to the
+ *    sensor (faceLandmarkToSensor()). Both solutions give that one pose, so
+ *    the target lies on the line from the landmark to the robot and the
+ *    robot walks straight at it; near the landmark, where the sightings are
+ *    no longer ambiguous, the detected orientation is published and the
+ *    approach corrects across the axis there. What charge.xml sets.
  *
  * The pose is asked for in the SENSOR's frame (target_frame empty): the
  * detector then needs no TF and answers in every state, and track_pose takes
@@ -74,9 +91,9 @@ public:
       BT::InputPort<double>(
         "max_reprojection_error_px", 0.0,
         "Largest fit residual trusted [px]; <= 0 = not judged"),
-      BT::InputPort<bool>(
-        "accept_ambiguous", false,
-        "Trust a sighting the detector still holds an alternative for"),
+      BT::InputPort<std::string>(
+        "ambiguous", "drop",
+        "A sighting the detector still holds an alternative for: drop, accept or position_only"),
       BT::InputPort<int>(
         "timeout", 5000, "DetectLandmark: milliseconds to the first trusted sighting"),
       BT::InputPort<int>(
@@ -95,6 +112,9 @@ public:
 
 private:
   using Service = syncai_common::srv::DetectLandmark;
+
+  // What is done with an ambiguous sighting (the `ambiguous` port).
+  enum class AmbiguousPolicy { Drop, Accept, PositionOnly };
 
   // Take a finished answer if there is one, then send the next request.
   // Returns true when `sighting` holds a new trusted sighting.
@@ -117,7 +137,7 @@ private:
   double max_age_{0.0};
   int min_consecutive_{3};
   double max_reprojection_error_px_{0.0};
-  bool accept_ambiguous_{false};
+  AmbiguousPolicy ambiguous_policy_{AmbiguousPolicy::Drop};
   std::chrono::steady_clock::time_point start_;
   std::chrono::steady_clock::time_point deadline_;
   std::chrono::milliseconds sensor_timeout_{5000};
@@ -143,6 +163,8 @@ private:
   unsigned short_streak_{0};
   unsigned poor_fit_{0};
   unsigned used_{0};
+  // Of used_, the ambiguous ones sent with their position only.
+  unsigned position_only_{0};
 };
 
 }  // namespace syncai_behavior_tree

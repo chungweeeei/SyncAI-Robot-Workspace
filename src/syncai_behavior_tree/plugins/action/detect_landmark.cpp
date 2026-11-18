@@ -7,6 +7,7 @@
 #include <string>
 
 #include "syncai_behavior_tree/blackboard_keys.hpp"
+#include "syncai_behavior_tree/landmark_facing.hpp"
 
 namespace syncai_behavior_tree
 {
@@ -54,7 +55,17 @@ BT::NodeStatus DetectLandmark::onStart()
   getInput("max_age", max_age_);
   getInput("min_consecutive", min_consecutive_);
   getInput("max_reprojection_error_px", max_reprojection_error_px_);
-  getInput("accept_ambiguous", accept_ambiguous_);
+  std::string ambiguous = "drop";
+  getInput("ambiguous", ambiguous);
+  if (ambiguous == "drop") {
+    ambiguous_policy_ = AmbiguousPolicy::Drop;
+  } else if (ambiguous == "accept") {
+    ambiguous_policy_ = AmbiguousPolicy::Accept;
+  } else if (ambiguous == "position_only") {
+    ambiguous_policy_ = AmbiguousPolicy::PositionOnly;
+  } else {
+    return fail("ambiguous is '" + ambiguous + "'; it must be drop, accept or position_only");
+  }
   int timeout_ms = 5000;
   int sensor_timeout_ms = 5000;
   getInput("timeout", timeout_ms);
@@ -72,7 +83,7 @@ BT::NodeStatus DetectLandmark::onStart()
   request_pending_ = false;
   fatal_.clear();
   last_reason_ = "no answer from " + service_name_ + " yet";
-  answers_ = sightings_ = ambiguous_ = short_streak_ = poor_fit_ = used_ = 0;
+  answers_ = sightings_ = ambiguous_ = short_streak_ = poor_fit_ = used_ = position_only_ = 0;
 
   config().blackboard->set<std::string>(  // NOLINT
     blackboard_keys::kNavStatusMsg,
@@ -152,9 +163,23 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
           last_stamp_ns_ = stamp_ns;
           ++sightings_;
           if (trusted(*response)) {
-            ++used_;
             sighting = response->pose;
             have = true;
+            if (response->ambiguous && ambiguous_policy_ == AmbiguousPolicy::PositionOnly) {
+              // The orientation is one of two; the position is not.
+              const auto facing = faceLandmarkToSensor(response->pose.pose);
+              if (facing) {
+                sighting.pose = *facing;
+                ++position_only_;
+              } else {
+                have = false;
+                ++ambiguous_;
+                last_reason_ = "the newest sighting is ambiguous and has no pose facing the sensor";
+              }
+            }
+            if (have) {
+              ++used_;
+            }
           }
         }
       } else if (response->error_code == Service::Response::UNKNOWN_LANDMARK) {
@@ -201,7 +226,7 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
       "[%s] no trusted sighting of '%s' yet: %s (%u answers, %u sightings: %u ambiguous, %u "
       "under %d in a row, %u poor fit)",
       registrationName().c_str(), landmark_id_.c_str(), last_reason_.c_str(), answers_,
-      sightings_, ambiguous_, short_streak_, poor_fit_, min_consecutive_);
+      sightings_, ambiguous_, short_streak_, min_consecutive_, poor_fit_);
   }
   return have;
 }
@@ -209,7 +234,7 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
 bool DetectLandmark::trusted(const Service::Response & response)
 {
   char buf[160];
-  if (response.ambiguous && !accept_ambiguous_) {
+  if (response.ambiguous && ambiguous_policy_ == AmbiguousPolicy::Drop) {
     ++ambiguous_;
     last_reason_ = "the newest sighting is ambiguous (the detector holds a second pose it has "
                    "not ruled out)";
@@ -242,11 +267,13 @@ void DetectLandmark::logSummary(const char * why)
   // detector saw was thrown away, and for which reason.
   RCLCPP_INFO(
     node_->get_logger(),
-    "[%s] %s after %.1f s on '%s': %u answers, %u sightings, %u trusted; dropped %u ambiguous "
-    "(%.0f %%), %u under %d in a row, %u poor fit",
+    "[%s] %s after %.1f s on '%s': %u answers, %u sightings, %u trusted (%u of them ambiguous, "
+    "sent with their position only); dropped %u ambiguous (%.0f %%), %u under %d in a row, %u "
+    "poor fit",
     registrationName().c_str(), why, secondsSince(start_), landmark_id_.c_str(), answers_,
-    sightings_, used_, ambiguous_, sightings_ > 0 ? 100.0 * ambiguous_ / sightings_ : 0.0,
-    short_streak_, min_consecutive_, poor_fit_);
+    sightings_, used_, position_only_, ambiguous_,
+    sightings_ > 0 ? 100.0 * ambiguous_ / sightings_ : 0.0, short_streak_, min_consecutive_,
+    poor_fit_);
 }
 
 BT::NodeStatus DetectLandmark::fail(const std::string & msg)
