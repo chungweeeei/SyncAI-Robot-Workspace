@@ -163,6 +163,12 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # ROS-free: the pose an ambiguous sighting is published as.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_landmark_facing test/test_landmark_facing.cpp)
+  target_include_directories(test_landmark_facing PRIVATE include)
+  ament_target_dependencies(test_landmark_facing geometry_msgs tf2)
 endif()
 
 ament_export_include_directories(include)
