@@ -51,9 +51,9 @@ byobu session specs instead. Navigation is driven by a Behavior Tree.
 | `syncai_common` | Shared msg / srv / action interfaces (`RobotState`, `SwitchMode`, `SetMotionKey`, `ExecuteTask`, …). **Not tracked here**, see below |
 | `syncai_util` | Helpers (geometry, odometry window, simple action server, robot utils); on this branch also `path_height.hpp` (a path's heights, the ground under the robot) and `StairMode`, the stair state machine both 3D-aware controllers run (`test/test_stair_mode.cpp`) |
 | `syncai_nav_core` | Header-only abstract interfaces for nav plugins (port of `nav2_core`) |
-| `syncai_costmap` | The local costmap's layers: a **terrain layer**, a rolling 2.5D grid of the lidar's returns that marks low obstacles, drop-offs and ledges and judges a stair lethal, and inflation. The planner's global costmap has no layers at all (Octo3D reads no cells). The static and obstacle layers and the keepout filter went with 2D navigation (2026-10-28) |
-| `syncai_global_planner` | `compute_path_to_pose` action server with one planner, `Octo3D` (OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`); it keeps a dynamic-obstacle overlay of the lidar cloud, on which it answers `is_path_valid` and detours when it replans, and reads the map's forbidden zones from `keepout.json`. NavFn, StraightLine and SmacPlanner2D (`GridBased`) went with 2D navigation (2026-10-28) |
-| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). RPP 3D (`RegulatedPurePursuitController3D`; the 2D RPP it was copied from went with 2D navigation) and the goal check follow paths with heights in 3D, and both RPP 3D and MPPI climb stairs in a *stair mode* (`syncai_util::StairMode`) that switches the gait controller's RL policy. The trees name MPPI (`FollowPath`); RPP 3D is the A/B |
+| `syncai_costmap` | The local costmap's layers: a **terrain layer**, a rolling 2.5D grid of the lidar's returns that marks low obstacles, drop-offs and ledges and judges a stair lethal, and inflation. The planner's global costmap has no layers at all (Octo3D reads no cells). |
+| `syncai_global_planner` | `compute_path_to_pose` action server with one planner, `Octo3D` (OctomapPlanner3D, the quadruped's ground-constrained 3D planner on `map/<name>/octomap.bt`); it keeps a dynamic-obstacle overlay of the lidar cloud, on which it answers `is_path_valid` and detours when it replans, and reads the map's forbidden zones from `keepout.json`. |
+| `syncai_controller` | `follow_path` action server and the local costmap; loads MPPI as `FollowPath` and RPP 3D as `FollowPathRPP3D`, each clamping its own acceleration (no velocity smoother). RPP 3D (`RegulatedPurePursuitController3D`) and the goal check follow paths with heights in 3D, and both RPP 3D and MPPI climb stairs in a *stair mode* (`syncai_util::StairMode`) that switches the gait controller's RL policy. The trees name MPPI (`FollowPath`); RPP 3D is the A/B |
 | `syncai_mppi_controller` | MPPI controller plugin (port of `nav2_mppi_controller`, Humble): local obstacle avoidance on the local costmap, optimal trajectory on `local_plan`. It also matches a path with heights in 3D and climbs stairs in the shared stair mode — blind, without the optimizer or the costmap |
 | `syncai_behavior_tree` | BT engine + navigation BT nodes (port of `nav2_behavior_tree`) |
 | `syncai_task_runner` | BT navigator: serves `nav2_msgs/NavigateToPose` and `syncai_common/NavigateToGoal` (the same, with a failure reason in the result), ticks `behavior_trees/move.xml` (Octo3D + MPPI) |
@@ -142,7 +142,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   └── release/                  # offline release bundle for the IPC (currently non-functional, see CLAUDE.md)
 ├── docs/                         # operating procedures: lidar-camera calibration, localizer offline replay
 ├── .github/                      # CI: lint, arm64 build + smoke test of every session spec
-├── map/                          # LIO map output per map name (map.pcd, poses.txt, gridmap.* or octomap.bt, optional keepout.*) — gitignored
+├── map/                          # LIO map output per map name (map.pcd, poses.txt, octomap.bt, optional keepout.json) — gitignored
 ├── log/stack/<robot_id>/         # multilog capture of every byobu pane — gitignored
 ├── Dockerfile                    # multi-stage: base → deps-builder → livox / gtsam / sophus / ceres / iridescence, base → rust-underlay (all parallel) → dev
 ├── docker-compose.yml            # infra: postgres (5432) / pgadmin (5050) / temporal (7233) / temporal_ui (8081)
@@ -340,8 +340,7 @@ Nothing has to be launched by hand. The robot container's main process is
 bringup → pointlio + localizer → lio_bridge → planner + controller →
 task_runner → driver_manager → robot_state → camera_feeder, with `sleep` offsets
 standing in for the missing lifecycle manager. The session navigates on 3D maps
-(`map/<name>/octomap.bt`) only: it has no map_server since 2026-10-28, so a 2D
-gridmap is no longer served. Forbidden zones are `map/<name>/keepout.json`,
+(`map/<name>/octomap.bt`) only. Forbidden zones are `map/<name>/keepout.json`,
 read by the 3D planner beside the tree — draw them as the forbidden area only,
 the planner keeps the robot's radius off them itself.
 
@@ -378,9 +377,8 @@ that API. A raw `nav2_msgs/NavigateToPose` goal to `/<robot_id>/navigate_to_pose
 which also says why a failed goal failed) works as well, and is the route that
 needs nothing outside this repo.
 
-**3D navigation and stairs.** Every map is 3D (`map/<name>/octomap.bt`) since
-2026-10-28, when 2D navigation (a `gridmap.yaml` planned on by SmacPlanner2D)
-was removed. `move.xml` / `patrol.xml` ask for `planner_id="Octo3D"`
+**3D navigation and stairs.** Every map is 3D (`map/<name>/octomap.bt`).
+`move.xml` / `patrol.xml` ask for `planner_id="Octo3D"`
 (OctomapPlanner3D on the map's `octomap.bt`) and `controller_id="FollowPath"`
 (MPPI, 3D-aware since 2026-10-20; `FollowPathRPP3D` is the A/B), so a MOVE
 plans on the octree and can climb the stairs the robot walked while mapping:
@@ -414,14 +412,13 @@ plans on the octree and can climb the stairs the robot walked while mapping:
 - **No obstacle avoidance on stairs**, by decision (2026-10-20): from the hold
   at the stair's foot to the hold past its top the climb reads no costmap.
   On the flat the local costmap runs the terrain layer, which sees low
-  obstacles, drop-offs and ledges the old obstacle layer's height band missed,
-  clears an obstacle as soon as a later ray passes through it, and judges a
+  obstacles, drop-offs and ledges, clears an obstacle as soon as a later ray passes through it, and judges a
   stair lethal, which also keeps MPPI off a stair it was not routed over.
 - **Forbidden zones** are `map/<name>/keepout.json` beside the tree (polygons
   in the map frame, each with a z band naming its floor), read by `Octo3D`
   with the tree and reloaded with `planner_server/Octo3D/load_keepout`; the
   planner keeps the robot's radius off them itself, so draw the forbidden area
-  only. The 2D keepout mask (`keepout.yaml` / `.pgm`) is read by nothing here.
+  only.
 
 Climbing has **not** been run on the robot: whether HIMLOCO takes the
 stairwell, its landing turns and the backwards descent, and whether a switch
@@ -451,14 +448,13 @@ run away mid-drive and starts over.
 `map.pcd` is not final when the save returns: pgo then spawns `clean_map`, a
 detached job that survives the mode switch and, a few minutes later, atomically
 replaces `map.pcd` with a copy without people and one-off returns.
-`map_clean.recipe.json` beside it says `converting` → `ok` / `failed`; a
-gridmap converted before `ok` was made from the raw map. `patches/` stay raw,
+`map_clean.recipe.json` beside it says `converting` → `ok` / `failed`;
+anything derived before `ok` was made from the raw map. `patches/` stay raw,
 so `ros2 run syncai_mapping clean_map map/<name>` re-cleans by hand.
 
 From a shell you get those files and no `octomap.bt`: `clean_map --octomap 1`
 writes it, which is what the console's save button (`POST /api/v1/maps`)
-drives; the backend's pcd → gridmap recipes still run for its 2D editor, but
-nothing here navigates on a gridmap since 2026-10-28. Then point the robot at
+drives. Then point the robot at
 the new map — `[map] name` in the instance INI, or the console's map switch,
 which does the same live. Editing zones and renaming a map are backend routes
 too, and all write into this repo's `map/` (renaming the map the stack is

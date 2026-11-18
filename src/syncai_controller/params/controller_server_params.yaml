@@ -77,6 +77,61 @@
     cusp_min_angle: 2.0
     cusp_window: 0.4
 
+    # Where a charge's approach may start: the robot within
+    # dock_max_start_distance of its first target and dock_max_start_lateral
+    # of that target's axis; otherwise the goal is refused and the robot
+    # stops. The approach is blind, so this keeps it to the space the staging
+    # leg drove through (charge.xml stages 1.4 m out). Written for the
+    # dock_to_pose approach (2026-11, gone 2026-11-12 with the dock trees),
+    # whose names they keep: a dock pose moved by a preempt after the staging
+    # leg used to be driven to wherever it was.
+    dock_max_start_distance: 1.5
+    dock_max_start_lateral: 0.3
+
+    # TrackPose (track_pose, 2026-11): the last metre of a charge, to a pose
+    # that every sighting of the charger's tag corrects. The two ids are what
+    # an empty goal field resolves to (entries of the lists below; a missing
+    # one only warns and refuses track goals), the three durations what a
+    # zero Duration in the goal does:
+    #  - pose_timeout: the newest pose older than this -> the robot stops and
+    #    waits (HOLDING). A pose's age is from its STAMP, the image's capture,
+    #    so it includes the camera and detector latency (~0.1-0.2 s);
+    #  - lost_timeout: no usable target this long -> the goal ends (LOST, or
+    #    TRANSFORM_FAILED / TARGET_UNSTABLE when poses came and were no use);
+    #  - max_duration: the whole goal. No progress checker runs here (a robot
+    #    standing still for a pose is not stuck), so this is the bound.
+    default_track_controller_id: "Charging"
+    default_track_goal_checker_id: "charge_goal_checker"
+    track_pose_timeout: 0.5
+    track_lost_timeout: 5.0
+    track_max_duration: 90.0
+    # The guards on the odometry. The target is held in odom, so the odometry
+    # has to be right only from one pose to the next -- a slow drift is
+    # corrected by every sighting -- but the approach is blind, and a
+    # Point-LIO that lags or diverges (2026-10-30, 2026-11-09) must stop it,
+    # not steer it:
+    #  - track_transform_wait: a pose is taken into odom at its own stamp;
+    #    when the odometry has not reached that stamp yet (it lags the camera
+    #    on a saturated CPU) the pose waits this long, then is dropped and
+    #    counted (feedback poses_rejected). Dropped poses age the target into
+    #    pose_timeout; they do not end the goal by themselves.
+    #  - track_target_max_spread_*: with a goal's target_filter_window the
+    #    target is the median of that window, and the robot stops while 80 %
+    #    of the window does not lie within these of it (targets that scatter:
+    #    the odometry running away or reset, or the detector flipping between
+    #    a tag's two solutions). Wide to start with -- a tag's yaw noise at
+    #    1 m alone scatters the target by centimetres -- and to be tightened
+    #    from the once-a-second "spread" in the log.
+    #  - track_min_poses: fewer targets than this in the window is no target.
+    #  - track_max_odom_speed: the robot's net speed in odom over 0.4 s. This
+    #    action commands 0.25 m/s at most; four times that is the odometry,
+    #    not the robot. Stops at once, ends the goal after failure_tolerance.
+    track_transform_wait: 0.3
+    track_target_max_spread_xy: 0.08
+    track_target_max_spread_yaw: 0.2
+    track_min_poses: 3
+    track_max_odom_speed: 1.0
+
     # Paths with heights (2026-10): OctomapPlanner3D writes the ground height
     # on every pose, and its stair links climb. On dp1f_1012's spiral stair
     # the path is back over the same x / y every 8.1 m, 2.5 m higher, so a
@@ -107,8 +162,8 @@
     # the navigation checker stays first. Until 2026-10 an empty id only fell
     # back with exactly one checker loaded, and adding a second would have
     # failed every BT navigation.
-    goal_checker_plugins: ["goal_checker"]
-    # Two controllers, one local costmap. FollowPath is MPPI
+    goal_checker_plugins: ["goal_checker", "charge_goal_checker", "staging_goal_checker"]
+    # Three controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
     # local costmap and bends round a blocker inside it, which RPP cannot --
     # RPP tracks the path and refuses to drive when the path is blocked. It
@@ -120,7 +175,11 @@
     # goal names runs; the other costs memory, not CPU. FollowPathRPP, dev's
     # 2D RPP (the FollowPath until MPPI), went with 2D navigation on
     # 2026-10-28.
-    controller_plugins: ["FollowPath", "FollowPathRPP3D"]
+    # Charging (2026-11) is the holonomic approach to a charger's tag, for
+    # the track_pose action (see its block); ChargeBackOff (2026-11-18) is
+    # the same law at the RL gait's floors, for charge.xml's back-off after a
+    # charge that did not start (see its block).
+    controller_plugins: ["FollowPath", "FollowPathRPP3D", "Charging", "ChargeBackOff"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -180,6 +239,57 @@
       # is the first sign this has become too narrow.
       yaw_goal_tolerance: 0.2
       stateful: true
+
+    # The track_pose default: the goal checker of a charge (2026-11). Not a
+    # SimpleGoalChecker like the dock trees' dock_goal_checker (gone
+    # 2026-11-12), which accepted a robot the moment it entered a 5 cm
+    # radius, still walking -- the Charging controller's bands (1-1.5 cm)
+    # were never reached, and a charger's tolerance is across its axis, which
+    # a radius does not say. This one takes along / lateral / yaw in the
+    # target's frame, does not latch, and wants all three held for
+    # settle_time (approach_goal_check.hpp).
+    #
+    # EACH TOLERANCE MUST BE WIDER than where Charging lets that axis rest,
+    # its tolerance + hysteresis (x 0.02 m, lateral 0.03 m, heading 0.08 rad),
+    # or the law stands still short of what this accepts and the goal runs
+    # into max_duration. Nothing checks it at run time (two plugins);
+    # test_approach_law reads both blocks and fails on it. Change them
+    # together.
+    #
+    # lateral 0.035 is WIDER than the ~3 cm SyncAI-Robot-Charger held at the
+    # contacts. It cannot be tightened here alone: the band under it is
+    # floor x latency (0.10 m/s x 0.3 s), both unmeasured under MPC. Measure
+    # v_lateral_min and the latency first, then narrow Charging's bands and
+    # this with them. Meanwhile the result's final_lateral_error says what
+    # each charge achieved.
+    charge_goal_checker:
+      plugin: "syncai_controller::ApproachGoalChecker"
+      along_tolerance: 0.025
+      lateral_tolerance: 0.035
+      yaw_tolerance: 0.09
+      # Longer than a pass straight through a tolerance at that axis's floor
+      # (the strafe: 0.07 m at 0.10 m/s = 0.7 s), so a robot crossing the
+      # target has not arrived. track_pose freezes the target while this
+      # runs (a new sighting would restart it).
+      settle_time: 1.0
+
+    # charge.xml's back-off to its staging pose (2026-11-18), with Charging
+    # (in MPC, after a failed approach) or ChargeBackOff (in RL, stood up off
+    # the charger): the robot only has to get back to where the approach
+    # starts from, 1.4 m out, and DetectLandmark / track_pose's own start
+    # gate judge it from there. So it is wide -- the contacts'
+    # charge_goal_checker would hold the robot in each axis's band for
+    # nothing. The same rule as charge_goal_checker binds it, against BOTH
+    # controllers: each tolerance wider than where the law lets that axis
+    # rest (Charging: x 0.02 m, lateral 0.03 m, heading 0.08 rad;
+    # ChargeBackOff: 0.10 m, 0.08 m, 0.16 rad); test_approach_law reads all
+    # three blocks.
+    staging_goal_checker:
+      plugin: "syncai_controller::ApproachGoalChecker"
+      along_tolerance: 0.15
+      lateral_tolerance: 0.12
+      yaw_tolerance: 0.20
+      settle_time: 0.5
 
     FollowPath:
       plugin: "syncai_mppi_controller::MPPIController"
@@ -881,6 +991,181 @@
       # and carrot only, no stops).
       stair_policy_mode: 1
       flat_policy_mode: -1
+
+    # The last metre of a charge (2026-11): syncai_controller::ApproachController,
+    # driven by track_pose with a target each new sighting of the charger's
+    # tag corrects. Under MPC, which strafes: the nose stays on the tag (the
+    # view point) while the strafe takes the robot onto the dock's axis, and
+    # it walks in only through the gate. The law and the reason for each knob
+    # are in approach_law.hpp; the closed loop is test/test_approach_law.cpp.
+    #
+    # Starting values, not a tuning: nothing below has driven the robot yet.
+    # Pre-scale, like every other block. What came from SyncAI-Robot-Charger
+    # (scripts/align.py, config/motion.yaml) was measured on that repo's own
+    # firmware and gait, not under this stack's MPC, and says so where used.
+    #
+    # The bands must sit inside the goal checker's tolerances, or the robot
+    # holds still outside them and never succeeds: at rest an axis may sit at
+    # its tolerance + hysteresis (x 0.02 m, lateral 0.03 m, heading 0.08 rad),
+    # each under charge_goal_checker's (0.025 / 0.035 / 0.09). Change them
+    # together; test_approach_law fails when they cross.
+    Charging:
+      plugin: "syncai_controller::ApproachController"
+      # The nose points at the point this far beyond the target along its
+      # heading -- the tag -- and at the target's own yaw within
+      # final_heading_distance of it (back on the view point only beyond
+      # final_heading_distance + final_heading_hysteresis, so the reference
+      # does not flip on a robot rocking across one line). view_distance IS
+      # the dock's offset from its tag: charge.xml's TrackPose offset_x is the
+      # one place that distance is decided, and this must equal it.
+      # 0.54 = SyncAI-Robot-Charger's stop, 0.27 m from the tag AT THE CAMERA
+      # (its dock_center_x_m), plus the camera's 0.27 m ahead of base_link
+      # (G23.urdf: lidar_top 0.195 + camera 0.07). Derived, not measured: lay
+      # the robot on the charger and read the tag's distance in base_link.
+      # 0.50 since 2026-11-18, with charge.xml's offset_x: at 0.54 robot01 lay
+      # 0.043 m short of the contacts (one run, read off the odometry).
+      view_distance: 0.50
+      final_heading_distance: 0.10
+      final_heading_hysteresis: 0.05
+      # Turn in place first when the nose is further off the view point than
+      # this (~29 deg): what the charger's aligner did before anything else.
+      rotate_in_place_angle: 0.5
+      # Forward / back. The cap is low: blind, and the tag fills the image fast.
+      # v_linear_min 0.05 -> 0.12 (2026-11-18, robot01, the first approach
+      # that reached the charger): under MPC a forward command of 0.07-0.08
+      # moved the robot 0.000-0.005 m/s in odom, and it stood 0.15 m short of
+      # the target for 25 s until max_duration; 0.10 gave 0.01-0.04, 0.16-0.20
+      # gave 0.08-0.09. So the gait walks from about 0.10 up, at roughly half
+      # the command less that dead zone, and 0.12 is ~0.04 m/s -- the
+      # charger's min_linear_speed_mps too. Docking's 0.05 (2026-10-14) was
+      # not a floor of this gait. v_reverse_max follows it: the law refuses a
+      # floor above the reverse cap; backing up is as unmeasured as before.
+      k_x: 0.5
+      v_linear_min: 0.12
+      v_linear_max: 0.25
+      v_reverse_max: 0.12
+      # Slower as the target nears: at or under each distance [m] left, the
+      # speed cap [m/s] beside it. The charger's approach_table_dx (2026-10-16:
+      # each step starts ~0.65 s x its speed + ~1 s of its own further out)
+      # -- its gait, not this one.
+      # Speeds 0.10 / 0.05 -> 0.15 / 0.12 (2026-11-18): both were inside the
+      # dead zone above, so the last 0.15 m was commanded a speed the gait
+      # does not walk at. In odom these are about 0.09 / 0.06 / 0.04 m/s.
+      speed_table_distance: [0.25, 0.15, 0.08]
+      speed_table_speed: [0.20, 0.15, 0.12]
+      # The strafe. UNMEASURED under MPC: 0.10 is a guess between Docking's
+      # forward floor and the charger's 0.15 (its gait strafed right worse than
+      # left, which driver_manager's scale_left / scale_right would absorb
+      # here). The first thing to measure: hold a vy of 0.06 / 0.08 / 0.10 for
+      # 2 s under MPC each way and read /odom.
+      # Both floors are owed in the BODY frame: with the nose on the tag the
+      # body is turned off the dock's axis, so the law raises them by
+      # 1 / cos(that angle) and the body's vy still meets v_lateral_min
+      # (2026-11; before, a strafe from 0.3 m off the axis was sent 0.096).
+      # The small forward / back component that goes with such a strafe is
+      # under v_linear_min: measure the strafe at a yawed body too, and
+      # whether it creeps along the axis.
+      # v_lateral_min 0.10 -> 0.15 (2026-11-18): the charger's measured
+      # strafe floor (min_strafe_speed_mps). Still unmeasured here: on that
+      # day's run the strafe changed direction too often to read a speed off
+      # odom. What was read: with vx ~0 while strafing the robot backed away
+      # at 0.03 m/s, which no parameter here corrects (the charger adds a
+      # fifth of the strafe as forward speed).
+      k_y: 0.5
+      v_lateral_min: 0.15
+      v_lateral_max: 0.20
+      # The turn. v_angular_min is Docking's (0.15, see there). The cap is
+      # well under the stack's 0.65: the camera has to keep the tag, and the
+      # charger's 0.15-0.25 turns already swung its heading.
+      k_yaw: 1.0
+      v_angular_min: 0.15
+      v_angular_max: 0.30
+      # The bands, per axis: stop inside tolerance, start again only beyond
+      # tolerance + hysteresis. Sized for ~0.3 s of gait latency (the charger's
+      # command-to-legs): tolerance + hysteresis must exceed floor x latency,
+      # what the gait carries on after a stop -- lateral 0.10 x 0.3 = 3 cm,
+      # heading 0.15 x 0.3 = 0.045 rad. With more latency an axis hunts across
+      # its band for good (the robot alternating align / hold in the log about
+      # once a second); widen the band before lowering a floor.
+      x_tolerance: 0.01
+      x_hysteresis: 0.01
+      lateral_tolerance: 0.015
+      lateral_hysteresis: 0.015
+      heading_tolerance: 0.04
+      heading_hysteresis: 0.04
+      # Walk in only while |lateral| <= gate_lateral_min + gate_lateral_slope x
+      # (distance left) and |heading error| <= gate_heading; closed, it reopens
+      # below gate_reopen_ratio of both. 0.145 m at 0.7 m out, 0.04 m at the
+      # target. gate_lateral_min must exceed lateral_tolerance +
+      # lateral_hysteresis and gate_heading heading_tolerance +
+      # heading_hysteresis, or the gate could close on an error no axis is
+      # correcting (the node refuses to start).
+      gate_lateral_min: 0.04
+      gate_lateral_slope: 0.15
+      gate_heading: 0.15
+      gate_reopen_ratio: 0.5
+      # Docking's values; there is no velocity smoother in the stack.
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # Only for setPlan() given a target in another frame than odom
+      # (track_pose hands odom).
+      transform_tolerance: 0.2
+
+    # The back-off off the charger in RL (2026-11-18): charge.xml stands a
+    # robot that lay down and did not charge up (SetMotionKey 0, after which
+    # the gait controller is in RL) and walks it straight back to the
+    # staging pose, 1.4 m in front of the tag, before switching to MPC for
+    # the second approach. Charging's floors are MPC's and RL stands still
+    # under them, so this is the same law (ApproachController) with RL's.
+    #
+    # EVERY SPEED HERE IS A GUESS. What is known of RL: it does not walk
+    # forward below ~0.30 m/s (FollowPath's walk_vx_min) or turn in place
+    # below ~0.45 rad/s pre-scale (in_place_wz_min). What is not: RL walking
+    # BACKWARDS, which nothing in the stack has asked of it (MPPI's vx_min is
+    # 0), and its strafe (driver_manager's scale_left / scale_right are 1.0
+    # placeholders, which is why MPPI runs DiffDrive). Measure on the first
+    # run: command vx -0.30 and vy +-0.20 for 2 s each in RL and read /odom.
+    #
+    # The bands follow Charging's rule -- tolerance + hysteresis over floor x
+    # ~0.3 s of latency (x 0.30 x 0.3 = 0.09, lateral 0.20 x 0.3 = 0.06,
+    # heading 0.45 x 0.3 = 0.135) -- and staging_goal_checker is wider than
+    # each. view_distance 1.4 = charge.xml's staging distance: the nose stays
+    # on the tag as the robot backs away from it.
+    ChargeBackOff:
+      plugin: "syncai_controller::ApproachController"
+      view_distance: 1.4
+      final_heading_distance: 0.10
+      final_heading_hysteresis: 0.05
+      rotate_in_place_angle: 0.5
+      k_x: 0.5
+      v_linear_min: 0.30
+      v_linear_max: 0.30
+      v_reverse_max: 0.30
+      # One entry: there is no slowing in at RL's floor.
+      speed_table_distance: [0.10]
+      speed_table_speed: [0.30]
+      k_y: 0.5
+      v_lateral_min: 0.20
+      v_lateral_max: 0.25
+      k_yaw: 1.0
+      v_angular_min: 0.45
+      v_angular_max: 0.65
+      x_tolerance: 0.05
+      x_hysteresis: 0.05
+      lateral_tolerance: 0.04
+      lateral_hysteresis: 0.04
+      heading_tolerance: 0.08
+      heading_hysteresis: 0.08
+      # gate_lateral_min over lateral tolerance + hysteresis (0.08) and
+      # gate_heading over heading's (0.16), as the law requires, and
+      # rotate_in_place_angle over gate_heading.
+      gate_lateral_min: 0.10
+      gate_lateral_slope: 0.15
+      gate_heading: 0.25
+      gate_reopen_ratio: 0.5
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      transform_tolerance: 0.2
 
 # The local costmap is an internal node created by controller_server
 # (constructed as a plain node named "local_costmap").

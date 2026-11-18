@@ -14,10 +14,12 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+# battery_state, for WaitForCharging (2026-11-18)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-# For CLIENT types only: ComputePathToPose / ComputePathThroughPoses
-# (2026-11). The numeric error codes belong to the action being served, so no
+# For CLIENT types only: SetMotionKey (the gait nodes, 2026-10) and
+# ComputePathToPose / ComputePathThroughPoses (2026-11). The numeric error codes belong to the action being served, so no
 # BT node reads NavigateToGoal's constants -- the node -> code table stays in
 # syncai_task_runner. Consequence: a change to syncai_common rebuilds this
 # package too.
@@ -35,6 +37,7 @@ set(dependencies
   rclcpp
   rclcpp_action
   rclcpp_lifecycle
+  sensor_msgs
   std_msgs
   std_srvs
   syncai_common
@@ -74,6 +77,42 @@ list(APPEND plugin_libs syncai_follow_path_action_bt_node)
 add_library(syncai_clear_costmap_service_bt_node SHARED
   plugins/action/clear_costmap_service.cpp)
 list(APPEND plugin_libs syncai_clear_costmap_service_bt_node)
+
+# Gait switching (2026-10, written for dock.xml / undock.xml, which went on
+# 2026-11-12 with DockToPose and ComputeBackOutPose; charge.xml uses these
+# three and ComputeStagingPose)
+add_library(syncai_set_motion_key_service_bt_node SHARED
+  plugins/action/set_motion_key_service.cpp)
+list(APPEND plugin_libs syncai_set_motion_key_service_bt_node)
+
+add_library(syncai_wait_action_bt_node SHARED
+  plugins/action/wait_action.cpp)
+list(APPEND plugin_libs syncai_wait_action_bt_node)
+
+add_library(syncai_wait_for_motion_state_action_bt_node SHARED
+  plugins/action/wait_for_motion_state.cpp)
+list(APPEND plugin_libs syncai_wait_for_motion_state_action_bt_node)
+
+# Charging (2026-11): the nodes charge.xml uses. detect_landmark registers
+# two tags, DetectLandmark and PublishLandmark. ComputeStagingPose was
+# dock.xml's (2026-10) and stayed for charge.xml's staging leg when the dock
+# trees went on 2026-11-12.
+add_library(syncai_compute_staging_pose_action_bt_node SHARED
+  plugins/action/compute_staging_pose.cpp)
+list(APPEND plugin_libs syncai_compute_staging_pose_action_bt_node)
+
+add_library(syncai_detect_landmark_action_bt_node SHARED
+  plugins/action/detect_landmark.cpp)
+list(APPEND plugin_libs syncai_detect_landmark_action_bt_node)
+
+add_library(syncai_track_pose_action_bt_node SHARED
+  plugins/action/track_pose_action.cpp)
+list(APPEND plugin_libs syncai_track_pose_action_bt_node)
+
+# charge.xml's last step (2026-11-18): the battery reads charging
+add_library(syncai_wait_for_charging_action_bt_node SHARED
+  plugins/action/wait_for_charging.cpp)
+list(APPEND plugin_libs syncai_wait_for_charging_action_bt_node)
 
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
@@ -132,6 +171,16 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # ROS-free: the pose an ambiguous sighting is published as.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_landmark_facing test/test_landmark_facing.cpp)
+  target_include_directories(test_landmark_facing PRIVATE include)
+  ament_target_dependencies(test_landmark_facing geometry_msgs tf2)
+
+  # ROS-free: WaitForCharging's judgement of the battery samples.
+  ament_add_gtest(test_charging_check test/test_charging_check.cpp)
+  target_include_directories(test_charging_check PRIVATE include)
 endif()
 
 ament_export_include_directories(include)

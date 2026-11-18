@@ -36,6 +36,7 @@
   <!-- The launch file reads the runtime params overlay to log and vet it. -->
   <exec_depend>python3-yaml</exec_depend>
 
+  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
