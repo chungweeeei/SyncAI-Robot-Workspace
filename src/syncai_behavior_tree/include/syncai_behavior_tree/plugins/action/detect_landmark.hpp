@@ -45,26 +45,23 @@ namespace syncai_behavior_tree
  *  - "drop" (the default): not used. From further than ~0.6 m every
  *    sighting of a single marker is ambiguous, so this alone never sees the
  *    landmark from a staging pose.
- *  - "accept": used as the detector gave it. The detector alternates
- *    between the two solutions frame by frame, and a target built on the
- *    normal jumps from side to side with it (robot01, 2026-11-18: track_pose
- *    stopped 76 times in 85 s and the robot never walked in).
- *  - "position_only": its position kept, its face turned square to the
+ *  - "ignore_orientation": its position kept, its face turned square to the
  *    sensor (faceLandmarkToSensor()). Both solutions give that one pose, so
  *    the target lies on the line from the landmark to the robot and the
  *    robot walks straight at it; near the landmark, where the sightings are
  *    no longer ambiguous, the detected orientation is published and the
  *    approach corrects across the axis there. What charge.xml sets.
- *    With `full_pose_within` > 0 that holds only while the landmark is
- *    further than that from the sensor: nearer (and until it is
- *    `full_pose_hysteresis` further again) an ambiguous sighting is
- *    published as the detector gave it. That is the charger's order
- *    (1000 docks, 2 failed): walk to ~1 m on the marker's bearing, then
- *    correct across the axis from there -- room to do it in, and the strafe
- *    is the motion its detector's BranchTracker (the landmark detector's
- *    too, since 2026-11-18) tells the two solutions apart by. Without
- *    it the whole correction is left to the last 0.3 m, inside the ~0.6 m
- *    where the image decides.
+ *    Sending the detector's orientation again from a set range inward
+ *    (full_pose_within, 2026-11-18) was built and removed unused: replayed
+ *    on robot01's bags, a full pose from beyond 0.65 m put the target
+ *    4-5 cm off the tag's axis whichever solution was picked, the position
+ *    alone 2.4 cm.
+ *
+ * There is no "use it as the detector gave it" (it was "accept" until
+ * 2026-11-18): the detector alternates between the two solutions frame by
+ * frame and a target built on the normal jumps from side to side with it
+ * (robot01, 2026-11-18: track_pose stopped 76 times in 85 s and the robot
+ * never walked in).
  *
  * The pose is asked for in the SENSOR's frame (target_frame empty): the
  * detector then needs no TF and answers in every state, and track_pose takes
@@ -103,13 +100,7 @@ public:
         "Largest fit residual trusted [px]; <= 0 = not judged"),
       BT::InputPort<std::string>(
         "ambiguous", "drop",
-        "A sighting the detector still holds an alternative for: drop, accept or position_only"),
-      BT::InputPort<double>(
-        "full_pose_within", 0.0,
-        "position_only: nearer than this [m] an ambiguous sighting is used as given; 0 = never"),
-      BT::InputPort<double>(
-        "full_pose_hysteresis", 0.1,
-        "position_only: how much further than full_pose_within [m] before position only again"),
+        "A sighting the detector still holds an alternative for: drop or ignore_orientation"),
       BT::InputPort<int>(
         "timeout", 5000, "DetectLandmark: milliseconds to the first trusted sighting"),
       BT::InputPort<int>(
@@ -130,7 +121,7 @@ private:
   using Service = syncai_common::srv::DetectLandmark;
 
   // What is done with an ambiguous sighting (the `ambiguous` port).
-  enum class AmbiguousPolicy { Drop, Accept, PositionOnly };
+  enum class AmbiguousPolicy { Drop, IgnoreOrientation };
 
   // Take a finished answer if there is one, then send the next request.
   // Returns true when `sighting` holds a new trusted sighting.
@@ -154,10 +145,6 @@ private:
   int min_consecutive_{3};
   double max_reprojection_error_px_{0.0};
   AmbiguousPolicy ambiguous_policy_{AmbiguousPolicy::Drop};
-  double full_pose_within_{0.0};
-  double full_pose_hysteresis_{0.1};
-  // Whether the last sighting was nearer than full_pose_within (with its hysteresis).
-  bool near_{false};
   std::chrono::steady_clock::time_point start_;
   std::chrono::steady_clock::time_point deadline_;
   std::chrono::milliseconds sensor_timeout_{5000};
@@ -183,10 +170,8 @@ private:
   unsigned short_streak_{0};
   unsigned poor_fit_{0};
   unsigned used_{0};
-  // Of used_, the ambiguous ones sent with their position only, and the
-  // ambiguous ones sent as given because the landmark was near.
-  unsigned position_only_{0};
-  unsigned ambiguous_near_{0};
+  // Of used_, the ambiguous ones sent with their position only.
+  unsigned orientation_ignored_{0};
 };
 
 }  // namespace syncai_behavior_tree

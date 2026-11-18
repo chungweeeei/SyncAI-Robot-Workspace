@@ -1,8 +1,6 @@
 #ifndef SYNCAI_BEHAVIOR_TREE__LANDMARK_FACING_HPP_
 #define SYNCAI_BEHAVIOR_TREE__LANDMARK_FACING_HPP_
 
-#include <algorithm>
-#include <cmath>
 #include <optional>
 
 #include "geometry_msgs/msg/pose.hpp"
@@ -75,31 +73,6 @@ inline std::optional<geometry_msgs::msg::Pose> faceLandmarkToSensor(
   facing.orientation.z = facing_q.z();
   facing.orientation.w = facing_q.w();
   return facing;
-}
-
-/** @brief How far a landmark is from the sensor: the length of its position. */
-inline double landmarkRange(const geometry_msgs::msg::Pose & detected)
-{
-  return std::hypot(detected.position.x, detected.position.y, detected.position.z);
-}
-
-/**
- * @brief Whether a landmark at `range` counts as near, with hysteresis: it
- * becomes near below `near_range` and stops being near only beyond
- * `near_range + hysteresis`, so a robot stepping in place on the line does
- * not change its mind every frame. near_range <= 0: never near.
- *
- * For an ambiguous sighting published with its position only while far and
- * as the detector gave it once near (2026-11): the charger walks to ~1 m on
- * the marker's bearing alone and corrects across the axis from there, where
- * a strafe is what tells its detector the two solutions apart.
- */
-inline bool landmarkIsNear(bool was_near, double range, double near_range, double hysteresis)
-{
-  if (near_range <= 0.0) {
-    return false;
-  }
-  return was_near ? range <= near_range + std::max(hysteresis, 0.0) : range < near_range;
 }
 
 }  // namespace syncai_behavior_tree

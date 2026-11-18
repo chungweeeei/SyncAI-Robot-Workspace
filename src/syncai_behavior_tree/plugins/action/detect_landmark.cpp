@@ -59,16 +59,11 @@ BT::NodeStatus DetectLandmark::onStart()
   getInput("ambiguous", ambiguous);
   if (ambiguous == "drop") {
     ambiguous_policy_ = AmbiguousPolicy::Drop;
-  } else if (ambiguous == "accept") {
-    ambiguous_policy_ = AmbiguousPolicy::Accept;
-  } else if (ambiguous == "position_only") {
-    ambiguous_policy_ = AmbiguousPolicy::PositionOnly;
+  } else if (ambiguous == "ignore_orientation") {
+    ambiguous_policy_ = AmbiguousPolicy::IgnoreOrientation;
   } else {
-    return fail("ambiguous is '" + ambiguous + "'; it must be drop, accept or position_only");
+    return fail("ambiguous is '" + ambiguous + "'; it must be drop or ignore_orientation");
   }
-  getInput("full_pose_within", full_pose_within_);
-  getInput("full_pose_hysteresis", full_pose_hysteresis_);
-  near_ = false;
   int timeout_ms = 5000;
   int sensor_timeout_ms = 5000;
   getInput("timeout", timeout_ms);
@@ -86,8 +81,7 @@ BT::NodeStatus DetectLandmark::onStart()
   request_pending_ = false;
   fatal_.clear();
   last_reason_ = "no answer from " + service_name_ + " yet";
-  answers_ = sightings_ = ambiguous_ = short_streak_ = poor_fit_ = used_ = 0;
-  position_only_ = ambiguous_near_ = 0;
+  answers_ = sightings_ = ambiguous_ = short_streak_ = poor_fit_ = used_ = orientation_ignored_ = 0;
 
   config().blackboard->set<std::string>(  // NOLINT
     blackboard_keys::kNavStatusMsg,
@@ -169,35 +163,12 @@ bool DetectLandmark::poll(geometry_msgs::msg::PoseStamped & sighting)
           if (trusted(*response)) {
             sighting = response->pose;
             have = true;
-            if (response->ambiguous && ambiguous_policy_ == AmbiguousPolicy::PositionOnly) {
-              const bool was_near = near_;
-              near_ = landmarkIsNear(
-                near_, landmarkRange(response->pose.pose), full_pose_within_,
-                full_pose_hysteresis_);
-              if (near_ != was_near) {
-                RCLCPP_INFO(
-                  node_->get_logger(),
-                  "[%s] '%s' at %.2f m: ambiguous sightings are now %s (full_pose_within %.2f m, "
-                  "hysteresis %.2f m)",
-                  registrationName().c_str(), landmark_id_.c_str(),
-                  landmarkRange(response->pose.pose),
-                  near_ ? "used as the detector gives them" : "sent with their position only",
-                  full_pose_within_, full_pose_hysteresis_);
-              }
-            }
-            if (
-              response->ambiguous && ambiguous_policy_ == AmbiguousPolicy::PositionOnly && near_)
-            {
-              // Near: the detector's pick, for the approach to correct across the axis on.
-              ++ambiguous_near_;
-            } else if (
-              response->ambiguous && ambiguous_policy_ == AmbiguousPolicy::PositionOnly)
-            {
+            if (response->ambiguous && ambiguous_policy_ == AmbiguousPolicy::IgnoreOrientation) {
               // The orientation is one of two; the position is not.
               const auto facing = faceLandmarkToSensor(response->pose.pose);
               if (facing) {
                 sighting.pose = *facing;
-                ++position_only_;
+                ++orientation_ignored_;
               } else {
                 have = false;
                 ++ambiguous_;
@@ -294,11 +265,11 @@ void DetectLandmark::logSummary(const char * why)
   // detector saw was thrown away, and for which reason.
   RCLCPP_INFO(
     node_->get_logger(),
-    "[%s] %s after %.1f s on '%s': %u answers, %u sightings, %u trusted (of them ambiguous: %u "
-    "sent with their position only, %u near and sent as given); dropped %u ambiguous (%.0f %%), "
-    "%u under %d in a row, %u poor fit",
+    "[%s] %s after %.1f s on '%s': %u answers, %u sightings, %u trusted (%u of them "
+    "ambiguous, sent with their position only); dropped %u ambiguous (%.0f %%), %u under %d in "
+    "a row, %u poor fit",
     registrationName().c_str(), why, secondsSince(start_), landmark_id_.c_str(), answers_,
-    sightings_, used_, position_only_, ambiguous_near_, ambiguous_,
+    sightings_, used_, orientation_ignored_, ambiguous_,
     sightings_ > 0 ? 100.0 * ambiguous_ / sightings_ : 0.0, short_streak_, min_consecutive_,
     poor_fit_);
 }

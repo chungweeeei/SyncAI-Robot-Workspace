@@ -52,16 +52,16 @@
    - TrackPose follows that topic. Its success ends the Parallel
      (success_threshold 1) and halts the publisher; either one failing
      fails it (failure_threshold 1), which cancels the approach.
-  ambiguous="position_only" on both detection nodes (2026-11-18): from the
+  ambiguous="ignore_orientation" on both detection nodes (2026-11-18): from the
   staging pose every sighting is ambiguous -- ArUco's two mirrored solutions
   only merge within about 0.6 m of the tag -- so the default, "drop", never
-  found the tag, and "accept" had the target jump between the two solutions
-  and the robot stop 76 times in 85 s without advancing. position_only keeps
+  found the tag, and using them as given had the target jump between the two solutions
+  and the robot stop 76 times in 85 s without advancing. ignore_orientation keeps
   an ambiguous sighting's position and turns its face square to the camera;
   inside 0.6 m the sightings are not ambiguous and are sent as given.
   Replayed on that day's bags, a full pose from beyond 0.65 m put the target
   4-5 cm off the tag's axis whichever solution was picked and the position
-  alone 2.4 cm, which is why full_pose_within is left at its default (never).
+  alone 2.4 cm, which is why there is no switch back to the full pose nearer in.
 
   THE CHARGER'S GEOMETRY IS THE TrackPose offset AND NOWHERE ELSE: offset_x
   is where base_link stands on the charger, metres out from the tag along
@@ -152,9 +152,9 @@
           <Wait msec="3000"/>
           <!-- Only now look for the tag (header): standing still in MPC -->
           <SetBlackboard output_key="nav_status_msg" value="Looking for the charger's marker"/>
-          <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000" ambiguous="position_only"/>
+          <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000" ambiguous="ignore_orientation"/>
           <Parallel name="ApproachOnTheTag" success_threshold="1" failure_threshold="1">
-            <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000" ambiguous="position_only"/>
+            <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000" ambiguous="ignore_orientation"/>
             <TrackPose pose_topic="tracked_landmark" offset_x="0.50" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
           </Parallel>
         </Sequence>

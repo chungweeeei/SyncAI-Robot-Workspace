@@ -14,8 +14,6 @@ namespace
 {
 
 using syncai_behavior_tree::faceLandmarkToSensor;
-using syncai_behavior_tree::landmarkIsNear;
-using syncai_behavior_tree::landmarkRange;
 
 // A camera optical frame: z ahead, x right, y down.
 const tf2::Vector3 kOpticalUp(0.0, -1.0, 0.0);
@@ -142,48 +140,6 @@ TEST(LandmarkFacing, StressRandomSightings)
     ASSERT_NEAR(q.length(), 1.0, 1e-9);
     ASSERT_NEAR(axisOf(*facing, 0).dot((-position).normalized()), 1.0, 1e-9);
     ASSERT_GT(axisOf(*facing, 2).dot(axisOf(detected, 2)), 0.0);
-  }
-}
-
-TEST(LandmarkNear, RangeIsTheLengthOfThePosition)
-{
-  const auto pose =
-    makePose(tf2::Vector3(0.3, -0.4, 1.2), tf2::Vector3(0.0, 0.0, -1.0), kOpticalUp);
-  EXPECT_NEAR(landmarkRange(pose), 1.3, 1e-12);
-}
-
-TEST(LandmarkNear, EntersBelowTheRangeAndLeavesOnlyBeyondTheHysteresis)
-{
-  // Walking in: far until under 1.0 m.
-  EXPECT_FALSE(landmarkIsNear(false, 1.05, 1.0, 0.1));
-  EXPECT_FALSE(landmarkIsNear(false, 1.0, 1.0, 0.1));
-  EXPECT_TRUE(landmarkIsNear(false, 0.99, 1.0, 0.1));
-  // Stepping back a little: still near up to 1.1 m.
-  EXPECT_TRUE(landmarkIsNear(true, 1.08, 1.0, 0.1));
-  EXPECT_TRUE(landmarkIsNear(true, 1.1, 1.0, 0.1));
-  EXPECT_FALSE(landmarkIsNear(true, 1.11, 1.0, 0.1));
-}
-
-TEST(LandmarkNear, ZeroRangeIsNeverNearAndANegativeHysteresisIsNone)
-{
-  EXPECT_FALSE(landmarkIsNear(false, 0.1, 0.0, 0.1));
-  EXPECT_FALSE(landmarkIsNear(true, 0.1, 0.0, 0.1));
-  EXPECT_FALSE(landmarkIsNear(true, 1.01, 1.0, -0.5));
-  EXPECT_TRUE(landmarkIsNear(true, 1.0, 1.0, -0.5));
-}
-
-TEST(LandmarkNear, StressASwayInsideTheHysteresisNeverChangesTheAnswer)
-{
-  std::mt19937 generator(20261118);
-  std::uniform_real_distribution<double> sway(-0.04, 0.04);
-  for (int run = 0; run < 1000; ++run) {
-    // Standing 2 cm inside the line, swaying 4 cm either way.
-    bool near = landmarkIsNear(false, 0.98, 1.0, 0.1);
-    ASSERT_TRUE(near);
-    for (int i = 0; i < 300; ++i) {
-      near = landmarkIsNear(near, 0.98 + sway(generator), 1.0, 0.1);
-      ASSERT_TRUE(near);
-    }
   }
 }
 
