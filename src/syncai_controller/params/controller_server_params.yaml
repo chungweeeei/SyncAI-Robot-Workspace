@@ -162,7 +162,7 @@
     # the navigation checker stays first. Until 2026-10 an empty id only fell
     # back with exactly one checker loaded, and adding a second would have
     # failed every BT navigation.
-    goal_checker_plugins: ["goal_checker", "charge_goal_checker"]
+    goal_checker_plugins: ["goal_checker", "charge_goal_checker", "staging_goal_checker"]
     # Three controllers, one local costmap. FollowPath is MPPI
     # (syncai_mppi_controller, 2026-10): it samples (v, w) sequences on the
     # local costmap and bends round a blocker inside it, which RPP cannot --
@@ -176,8 +176,10 @@
     # 2D RPP (the FollowPath until MPPI), went with 2D navigation on
     # 2026-10-28.
     # Charging (2026-11) is the holonomic approach to a charger's tag, for
-    # the track_pose action (see its block).
-    controller_plugins: ["FollowPath", "FollowPathRPP3D", "Charging"]
+    # the track_pose action (see its block); ChargeBackOff (2026-11-18) is
+    # the same law at the RL gait's floors, for charge.xml's back-off after a
+    # charge that did not start (see its block).
+    controller_plugins: ["FollowPath", "FollowPathRPP3D", "Charging", "ChargeBackOff"]
 
     progress_checker:
       plugin: "syncai_controller::SimpleProgressChecker"
@@ -270,6 +272,24 @@
       # target has not arrived. track_pose freezes the target while this
       # runs (a new sighting would restart it).
       settle_time: 1.0
+
+    # charge.xml's back-off to its staging pose (2026-11-18), with Charging
+    # (in MPC, after a failed approach) or ChargeBackOff (in RL, stood up off
+    # the charger): the robot only has to get back to where the approach
+    # starts from, 1.3 m out, and DetectLandmark / track_pose's own start
+    # gate judge it from there. So it is wide -- the contacts'
+    # charge_goal_checker would hold the robot in each axis's band for
+    # nothing. The same rule as charge_goal_checker binds it, against BOTH
+    # controllers: each tolerance wider than where the law lets that axis
+    # rest (Charging: x 0.02 m, lateral 0.03 m, heading 0.08 rad;
+    # ChargeBackOff: 0.10 m, 0.08 m, 0.16 rad); test_approach_law reads all
+    # three blocks.
+    staging_goal_checker:
+      plugin: "syncai_controller::ApproachGoalChecker"
+      along_tolerance: 0.15
+      lateral_tolerance: 0.12
+      yaw_tolerance: 0.20
+      settle_time: 0.5
 
     FollowPath:
       plugin: "syncai_mppi_controller::MPPIController"
@@ -1089,6 +1109,62 @@
       max_angular_accel: 3.2
       # Only for setPlan() given a target in another frame than odom
       # (track_pose hands odom).
+      transform_tolerance: 0.2
+
+    # The back-off off the charger in RL (2026-11-18): charge.xml stands a
+    # robot that lay down and did not charge up (SetMotionKey 0, after which
+    # the gait controller is in RL) and walks it straight back to the
+    # staging pose, 1.3 m in front of the tag, before switching to MPC for
+    # the second approach. Charging's floors are MPC's and RL stands still
+    # under them, so this is the same law (ApproachController) with RL's.
+    #
+    # EVERY SPEED HERE IS A GUESS. What is known of RL: it does not walk
+    # forward below ~0.30 m/s (FollowPath's walk_vx_min) or turn in place
+    # below ~0.45 rad/s pre-scale (in_place_wz_min). What is not: RL walking
+    # BACKWARDS, which nothing in the stack has asked of it (MPPI's vx_min is
+    # 0), and its strafe (driver_manager's scale_left / scale_right are 1.0
+    # placeholders, which is why MPPI runs DiffDrive). Measure on the first
+    # run: command vx -0.30 and vy +-0.20 for 2 s each in RL and read /odom.
+    #
+    # The bands follow Charging's rule -- tolerance + hysteresis over floor x
+    # ~0.3 s of latency (x 0.30 x 0.3 = 0.09, lateral 0.20 x 0.3 = 0.06,
+    # heading 0.45 x 0.3 = 0.135) -- and staging_goal_checker is wider than
+    # each. view_distance 1.3 = charge.xml's staging distance: the nose stays
+    # on the tag as the robot backs away from it.
+    ChargeBackOff:
+      plugin: "syncai_controller::ApproachController"
+      view_distance: 1.3
+      final_heading_distance: 0.10
+      final_heading_hysteresis: 0.05
+      rotate_in_place_angle: 0.5
+      k_x: 0.5
+      v_linear_min: 0.30
+      v_linear_max: 0.30
+      v_reverse_max: 0.30
+      # One entry: there is no slowing in at RL's floor.
+      speed_table_distance: [0.10]
+      speed_table_speed: [0.30]
+      k_y: 0.5
+      v_lateral_min: 0.20
+      v_lateral_max: 0.25
+      k_yaw: 1.0
+      v_angular_min: 0.45
+      v_angular_max: 0.65
+      x_tolerance: 0.05
+      x_hysteresis: 0.05
+      lateral_tolerance: 0.04
+      lateral_hysteresis: 0.04
+      heading_tolerance: 0.08
+      heading_hysteresis: 0.08
+      # gate_lateral_min over lateral tolerance + hysteresis (0.08) and
+      # gate_heading over heading's (0.16), as the law requires, and
+      # rotate_in_place_angle over gate_heading.
+      gate_lateral_min: 0.10
+      gate_lateral_slope: 0.15
+      gate_heading: 0.25
+      gate_reopen_ratio: 0.5
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
       transform_tolerance: 0.2
 
 # The local costmap is an internal node created by controller_server

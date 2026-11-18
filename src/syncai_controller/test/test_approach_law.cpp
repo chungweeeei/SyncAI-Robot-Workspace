@@ -398,3 +398,25 @@ TEST(ApproachGoalCheck, TheParamsFileKeepsTheCheckerWiderThanTheLawsRest)
     check.at("lateral_tolerance"), law.at("lateral_tolerance") + law.at("lateral_hysteresis"));
   EXPECT_GT(check.at("yaw_tolerance"), law.at("heading_tolerance") + law.at("heading_hysteresis"));
 }
+
+TEST(ApproachGoalCheck, TheStagingCheckerIsWiderThanBothBackOffLaws)
+{
+  // charge.xml backs off to its staging pose with Charging (in MPC) or
+  // ChargeBackOff (in RL), both judged by staging_goal_checker (2026-11-18):
+  // the same rule as above, against each.
+  const auto check = readBlock(CONTROLLER_PARAMS_FILE, "staging_goal_checker");
+  ASSERT_TRUE(check.count("along_tolerance") && check.count("lateral_tolerance"));
+  ASSERT_TRUE(check.count("yaw_tolerance"));
+  for (const char * block : {"Charging", "ChargeBackOff"}) {
+    SCOPED_TRACE(block);
+    const auto law = readBlock(CONTROLLER_PARAMS_FILE, block);
+    ASSERT_TRUE(law.count("x_tolerance") && law.count("x_hysteresis"));
+    ASSERT_TRUE(law.count("lateral_tolerance") && law.count("lateral_hysteresis"));
+    ASSERT_TRUE(law.count("heading_tolerance") && law.count("heading_hysteresis"));
+    EXPECT_GT(check.at("along_tolerance"), law.at("x_tolerance") + law.at("x_hysteresis"));
+    EXPECT_GT(
+      check.at("lateral_tolerance"), law.at("lateral_tolerance") + law.at("lateral_hysteresis"));
+    EXPECT_GT(
+      check.at("yaw_tolerance"), law.at("heading_tolerance") + law.at("heading_hysteresis"));
+  }
+}

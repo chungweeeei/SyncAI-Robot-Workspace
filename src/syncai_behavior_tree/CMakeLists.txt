@@ -14,6 +14,8 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+# battery_state, for WaitForCharging (2026-11-18)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 # For CLIENT types only: SetMotionKey (the gait nodes, 2026-10) and
@@ -35,6 +37,7 @@ set(dependencies
   rclcpp
   rclcpp_action
   rclcpp_lifecycle
+  sensor_msgs
   std_msgs
   std_srvs
   syncai_common
@@ -106,6 +109,11 @@ add_library(syncai_track_pose_action_bt_node SHARED
   plugins/action/track_pose_action.cpp)
 list(APPEND plugin_libs syncai_track_pose_action_bt_node)
 
+# charge.xml's last step (2026-11-18): the battery reads charging
+add_library(syncai_wait_for_charging_action_bt_node SHARED
+  plugins/action/wait_for_charging.cpp)
+list(APPEND plugin_libs syncai_wait_for_charging_action_bt_node)
+
 # Behavior Tree control node plugins
 add_library(syncai_pipeline_sequence_bt_node SHARED
   plugins/control/pipeline_sequence.cpp)
@@ -169,6 +177,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_landmark_facing test/test_landmark_facing.cpp)
   target_include_directories(test_landmark_facing PRIVATE include)
   ament_target_dependencies(test_landmark_facing geometry_msgs tf2)
+
+  # ROS-free: WaitForCharging's judgement of the battery samples.
+  ament_add_gtest(test_charging_check test/test_charging_check.cpp)
+  target_include_directories(test_charging_check PRIVATE include)
 endif()
 
 ament_export_include_directories(include)

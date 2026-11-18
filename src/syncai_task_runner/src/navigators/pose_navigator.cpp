@@ -78,8 +78,17 @@ const std::map<std::string, std::pair<uint16_t, const char *>> kStageByFailedNod
    {GoalResult::DOCK_FAILED, "Charging failed: the charger's marker was not seen"}},
   {"PublishLandmark",
    {GoalResult::DOCK_FAILED, "Charging failed: the landmark detector stopped answering"}},
+  // Since 2026-11-18 also the back-off to the staging pose before the
+  // charge's one retry; the detail's "staging pose" says which.
   {"TrackPose",
-   {GoalResult::DOCK_FAILED, "Charging failed: the approach to the charger did not complete"}},
+   {GoalResult::DOCK_FAILED,
+    "Charging failed: the approach to the charger (or the back-off for a retry) did not "
+    "complete"}},
+  // charge.xml's last step (2026-11-18): lying on the charger, the battery
+  // never read charging -- after the retry, since the first such failure
+  // stands the robot up and tries again. The detail has the last sample.
+  {"WaitForCharging",
+   {GoalResult::DOCK_FAILED, "Charging failed: on the charger, but the battery is not charging"}},
 };
 
 // The planner's own reasons (2026-11): ComputePathToPose's error_code, which

@@ -4,7 +4,9 @@
 #include <memory>
 #include <string>
 
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "syncai_behavior_tree/bt_action_node.hpp"
+#include "syncai_behavior_tree/bt_conversions.hpp"
 #include "syncai_common/action/track_pose.hpp"
 
 namespace syncai_behavior_tree
@@ -22,12 +24,23 @@ namespace syncai_behavior_tree
  * hand-written quaternion is what goes wrong. The charger's geometry lives
  * in the tree that names these ports, and nowhere else.
  *
+ * Or a pose that stands still (2026-11-18): with `target_pose` set, the goal
+ * follows that pose's frame (tracked_frame = its frame_id) with the pose
+ * itself as the offset, and pose_topic / tracked_frame / offset_* are not
+ * read. charge.xml backs off to its staging pose this way after a failed
+ * approach or a charge that did not start -- the staging pose is in `map`,
+ * and the charger is blind there, so a staging pose is a fixed point to
+ * walk back to, not a sighting. track_pose holds it in odom like any target
+ * (the localizer's corrections to map -> odom move it as they move the
+ * map), so filter_window applies as well.
+ *
  * Writes the navigator's status sentence from the server's feedback and
  * report_failure()s on abort with the server's own reason and code, which
  * the navigator maps to DOCK_FAILED.
  */
 class TrackPoseAction : public BtActionNode<syncai_common::action::TrackPose>
 {
+
 public:
   TrackPoseAction(
     const std::string & xml_tag_name, const std::string & action_name,
@@ -57,6 +70,10 @@ public:
         "geometry_msgs/PoseStamped topic to follow (PublishLandmark's); empty with "
         "tracked_frame set"),
       BT::InputPort<std::string>("tracked_frame", "", "TF frame to follow instead of a topic"),
+      BT::InputPort<geometry_msgs::msg::PoseStamped>(
+        "target_pose",
+        "A fixed pose to drive base_link to (its frame followed, the pose the offset); "
+        "replaces pose_topic, tracked_frame and offset_*"),
       BT::InputPort<double>(
         "offset_x", 0.0,
         "Where base_link ends, in the tracked pose's frame [m]: for a tag (+x out of its "
@@ -77,6 +94,11 @@ public:
       BT::InputPort<double>("max_duration", 0.0, "Seconds; <= 0 = the server's default"),
     });
   }
+
+private:
+  // Set per goal in on_tick(): the status sentences say which of the two
+  // a goal is.
+  bool fixed_target_{false};
 };
 
 }  // namespace syncai_behavior_tree

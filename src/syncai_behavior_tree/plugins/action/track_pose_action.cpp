@@ -8,6 +8,13 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "syncai_behavior_tree/blackboard_keys.hpp"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#include "tf2/utils.h"
+#pragma GCC diagnostic pop
+// The fromMsg() overload tf2::getYaw() needs on a geometry_msgs quaternion,
+// in this translation unit (compute_staging_pose.cpp has why).
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 namespace syncai_behavior_tree
 {
@@ -33,17 +40,30 @@ TrackPoseAction::TrackPoseAction(
 
 void TrackPoseAction::on_tick()
 {
-  getInput("pose_topic", goal_.pose_topic);
-  getInput("tracked_frame", goal_.tracked_frame);
   getInput("controller_id", goal_.controller_id);
   getInput("goal_checker_id", goal_.goal_checker_id);
 
   double x = 0.0;
   double y = 0.0;
   double yaw = M_PI;
-  getInput("offset_x", x);
-  getInput("offset_y", y);
-  getInput("offset_yaw", yaw);
+  geometry_msgs::msg::PoseStamped target;
+  fixed_target_ = getInput("target_pose", target) && !target.header.frame_id.empty();
+  if (fixed_target_) {
+    // Its frame followed, the pose itself the offset (header). A zero
+    // quaternion reads as yaw 0 here; ComputeStagingPose, which writes the
+    // pose charge.xml passes, refuses one before it gets this far.
+    goal_.pose_topic.clear();
+    goal_.tracked_frame = target.header.frame_id;
+    x = target.pose.position.x;
+    y = target.pose.position.y;
+    yaw = tf2::getYaw(target.pose.orientation);
+  } else {
+    getInput("pose_topic", goal_.pose_topic);
+    getInput("tracked_frame", goal_.tracked_frame);
+    getInput("offset_x", x);
+    getInput("offset_y", y);
+    getInput("offset_yaw", yaw);
+  }
   goal_.target_offset.position.x = x;
   goal_.target_offset.position.y = y;
   goal_.target_offset.position.z = 0.0;
@@ -66,7 +86,8 @@ void TrackPoseAction::on_tick()
   goal_.max_duration = toDuration(max_duration);
 
   config().blackboard->set<std::string>(  // NOLINT
-    blackboard_keys::kNavStatusMsg, "Approaching the charger");
+    blackboard_keys::kNavStatusMsg,
+    fixed_target_ ? "Backing off to the staging pose" : "Approaching the charger");
 }
 
 void TrackPoseAction::on_wait_for_result(std::shared_ptr<const Track::Feedback> feedback)
@@ -77,6 +98,14 @@ void TrackPoseAction::on_wait_for_result(std::shared_ptr<const Track::Feedback> 
     return;
   }
   char buf[96];
+  if (fixed_target_) {
+    // Nothing to wait for but the odometry and TF: no marker in these.
+    std::snprintf(
+      buf, sizeof(buf), "Backing off: %.2f m from the staging pose",
+      static_cast<double>(feedback->distance_to_target));
+    config().blackboard->set<std::string>(blackboard_keys::kNavStatusMsg, buf);  // NOLINT
+    return;
+  }
   switch (feedback->state) {
     case Track::Feedback::TRACKING:
       std::snprintf(
@@ -96,7 +125,8 @@ void TrackPoseAction::on_wait_for_result(std::shared_ptr<const Track::Feedback> 
 
 BT::NodeStatus TrackPoseAction::on_success()
 {
-  config().blackboard->set<std::string>(blackboard_keys::kNavStatusMsg, "On the charger");  // NOLINT
+  config().blackboard->set<std::string>(  // NOLINT
+    blackboard_keys::kNavStatusMsg, fixed_target_ ? "At the staging pose" : "On the charger");
   RCLCPP_INFO(
     node_->get_logger(),
     "[TrackPoseAction][%s] on the target: final error %.3f m (lateral %+.3f m) / %+.3f rad",
@@ -131,7 +161,8 @@ BT::NodeStatus TrackPoseAction::on_aborted()
   RCLCPP_ERROR(node_->get_logger(), "[TrackPoseAction][%s] %s", __func__, detail.c_str());
   report_failure(detail, true, result_.result->error_code);
   config().blackboard->set<std::string>(  // NOLINT
-    blackboard_keys::kNavStatusMsg, "Charging approach failed");
+    blackboard_keys::kNavStatusMsg,
+    fixed_target_ ? "Backing off to the staging pose failed" : "Charging approach failed");
   return BT::NodeStatus::FAILURE;
 }
 

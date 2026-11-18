@@ -104,7 +104,7 @@ ran and **failed**; `SUCCEEDED` and `CANCELED` keep the default `NONE`.
 | `PLAN_FAILED` = 200 | the planner branch failed the tree — `ComputePathToPose` (or, for a route, `ComputePathThroughPoses`) aborted twice, the second time after the `clear_overlay` recovery — and the planner gave no finer reason | `Planning failed: no path to the goal (planner compute_path_to_pose aborted the goal)` |
 | 201–224 (2026-11) | the same, with the planner's own reason: its result's `error_code`, copied unchanged — `GOAL_IN_KEEPOUT` 223, `GOAL_OCCUPIED` 206, `NO_VALID_PATH` 208, `MAP_NOT_LOADED` 220, … (`syncai_common`'s `ComputePathToPose.action` has the table, with whether a retry can help) | a sentence for the code, then the planner's: `Planning failed: the goal is inside a keepout zone (planner compute_path_to_pose aborted the goal: goal_in_keepout: the goal lies inside keepout zone 'z1'; … [start (…) -> goal (…)])` |
 | `FOLLOW_PATH_FAILED` = 100 | the controller branch failed the tree: `FollowPath` aborted on its last retry — blocked with no detour, no progress, robot pose lost | `Path following failed: the robot could not reach the goal along its path (controller follow_path aborted the goal)` |
-| `DOCK_FAILED` = 300 | `charge.xml` (2026-11): `ComputeStagingPose` rejected the charger's pose, `DetectLandmark` did not see the tag (after the MPC switch), `SetMotionKey` refused (`LOCKED`), `WaitForMotionState` never saw the state it waited for, `PublishLandmark` (the detector stopped answering) or `TrackPose` (the approach, with `track_pose`'s reason and 33x code in the detail). It was the docking branch of `dock.xml` / `undock.xml` until 2026-11-12. A charge can still end 100 / 200: that is the staging leg | `Charging failed: the approach to the charger did not complete (...)` |
+| `DOCK_FAILED` = 300 | `charge.xml` (2026-11): `ComputeStagingPose` rejected the charger's pose, `DetectLandmark` did not see the tag (after the MPC switch), `SetMotionKey` refused (`LOCKED`), `WaitForMotionState` never saw the state it waited for, `PublishLandmark` (the detector stopped answering), `TrackPose` (the approach or, since 2026-11-18, the back-off before the retry, with `track_pose`'s reason and 33x code in the detail) or `WaitForCharging` (lying on the charger, the battery never read charging; 2026-11-18). After the retry the reason is the second attempt's. It was the docking branch of `dock.xml` / `undock.xml` until 2026-11-12. A charge can still end 100 / 200: that is the staging leg | `Charging failed: the approach to the charger did not complete (...)` |
 | `UNKNOWN` = 1 | the tree failed with nothing attributable: a server never acknowledged a goal (the message names it), an exception inside the tree | the node's message, or a pointer to the task_runner log |
 
 How it knows: the BT action nodes write `failed_node` / `failure_msg` to the
@@ -383,7 +383,7 @@ absolute XML path, or change the `default_bt_xml` parameter.
 | `base_frame` | `base_link` | Launch file overrides with `<robot_id>/base_link` |
 | `odom_topic` | `odom` | Feeds the `OdomSmoother` (0.3 s window) |
 | `transform_tolerance` | `0.1` | Copied to the BT nodes' client node. The navigator's own robot-pose lookups (feedback, waypoints, the "Begin navigating" line) take the newest transform without waiting since 2026-11: with a wait, every tick of a TF outage blocked the BT thread this long (the 20 Hz tree under 10 Hz) and logged an unthrottled ERROR |
-| `plugin_lib_names` | sixteen BT node libraries | Must list every library whose tags `move.xml`, `patrol.xml` and `charge.xml` use — which is every node library `syncai_behavior_tree` builds. The charge tree's six (`SetMotionKey`, `Wait`, `WaitForMotionState`, `ComputeStagingPose`, `DetectLandmark`, `TrackPose`) cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
+| `plugin_lib_names` | seventeen BT node libraries | Must list every library whose tags `move.xml`, `patrol.xml` and `charge.xml` use — which is every node library `syncai_behavior_tree` builds. The charge tree's seven (`SetMotionKey`, `Wait`, `WaitForMotionState`, `ComputeStagingPose`, `DetectLandmark`, `TrackPose`, `WaitForCharging`) cost nothing at boot: a node (and its wait for its server) is constructed only when a tree using its tag is loaded |
 | `default_nav_through_poses_bt_xml` | `<share>/behavior_trees/patrol.xml` | `navigate_through_poses`' default tree (2026-11), declared lazily by its navigator like `default_bt_xml` |
 | `waypoint_passed_radius` | `1.0` m | The two routes only: a waypoint the robot comes within this of (x / y) is passed and dropped from `remaining_goals`, what a replan plans through; never the last one. Wide because a waypoint is passed through, not stopped on. Also the radius within which the path's own pass of a waypoint is looked for (2026-11, below). A first value, unmeasured |
 | `waypoint_passed_z_tolerance` | `1.0` m | 2026-11: and only when its z is within this of the robot's ground height, so a waypoint on another floor is never passed from below or above it. Storeys are 2.5 m and more apart |
@@ -476,6 +476,7 @@ ros2 action send_goal /<robot_id>/navigate_through_goals syncai_common/action/Na
 | Action client | `follow_path` | via the BT node |
 | Action client | `track_pose` | `syncai_common/TrackPose`, via the `TrackPose` BT node — `charge.xml` only (2026-11) |
 | Service client | `detect_landmark` | `syncai_common/DetectLandmark`, polled by the `DetectLandmark` / `PublishLandmark` BT nodes — `charge.xml` only; not waited for at tree load |
+| Subscriber | `battery_state` | `sensor_msgs/BatteryState` (syncai_driver_manager), via the `WaitForCharging` BT node — `charge.xml`'s last step only (2026-11-18) |
 | Publisher | `tracked_landmark` | `geometry_msgs/PoseStamped`, the charger's tag as `PublishLandmark` trusts it, in the camera's frame — what `track_pose` follows during a charge |
 | Service client | `planner_server/Octo3D/clear_overlay` | `nav2_msgs/ClearEntireCostmap`, via the `ClearEntireCostmap` BT node — `move.xml`'s / `patrol.xml`'s two planner-side clears, dropping `Octo3D`'s dynamic-obstacle marks (2026-10-21; `global_costmap/clear_entirely_global_costmap` on the 2D trees until 2026-10-28) |
 | Service client | `local_costmap/clear_entirely_local_costmap` | via the BT node |
@@ -549,15 +550,30 @@ only now, standing in MPC: the tag must be seen within 5 s; it also wakes the
 detector) → a `Parallel` of `PublishLandmark` (polls `detect_landmark`,
 publishes the sightings it trusts on `tracked_landmark`) and `TrackPose`
 (`track_pose`, controller `Charging`, goal checker `charge_goal_checker`, a
-1 s filter window) → `SetMotionKey 2` + `Wait 4000`: the tree **lies the
-robot down on the charger** (2026-11-12), so SUCCEEDED means lying on the
-contacts. Any failure from the switch through the approach restores RL and
-is `DOCK_FAILED`, with `track_pose`'s own reason and 33x code in the detail
-(`LOST`, `TARGET_UNSTABLE`, …); a tag not in view costs an MPC switch and
-its restore. A refused lie-down is `DOCK_FAILED` too but sends no RL — the
-robot stays standing on the charger in MPC. The 4000 ms is a guess (nothing
-reports a lie-down). Nothing leaves the charger since `undock.xml` went
-(2026-11-12): STANDUP, then a back-off, is the caller's.
+1 s filter window) → `Wait 2000` → `SetMotionKey 2` + `Wait 4000`: the tree
+**lies the robot down on the charger** (2026-11-12) → `WaitForCharging`
+(2026-11-18): `battery_state` must read `CHARGING` for 2 s within 10 s
+(at ≥ 95 % charge, not `DISCHARGING`), so SUCCEEDED means lying on the
+contacts **and charging**. The 4000 ms, 2 s, 10 s and 95 % are guesses.
+
+Everything from the MPC switch to the battery check is tried **twice**
+(2026-11-18, a `RecoveryNode` with one retry). Before the retry the robot
+goes back to the staging pose with `TrackPose target_pose="{staging_pose}"`
+and `staging_goal_checker`, and the retry starts again from the MPC switch:
+
+| First failure | Before the retry |
+|---|---|
+| the approach (tag not seen, `LOST`, `TARGET_UNSTABLE`, …): standing in MPC | back off in MPC with `Charging` |
+| lying on the charger, not charging | `SetMotionKey 0` (stand up; the gait controller comes up in RL) → `WaitForMotionState 1` (10 s) → back off in RL with `ChargeBackOff` |
+
+A second failure, or a failed stand-up or back-off, is `DOCK_FAILED` with that
+step's reason (the first attempt's is in the log). RL is restored then only
+if the robot was not lain down — the blackboard's `charge_lie_down_sent`,
+set before the lie-down key goes out, so a refused lie-down counts: a robot
+left on the charger is never sent RL. A tag not in view costs an MPC switch
+and its restore, twice. The back-off is part of this goal, not `undock.xml`
+come back: a robot that ended lying on the charger is still the caller's to
+stand up (STANDUP) and back off.
 
 **The charger's geometry is `TrackPose`'s `offset_x` in the tree and nowhere
 else** — 0.50 m from the tag to `base_link` since 2026-11-18 (0.54, derived

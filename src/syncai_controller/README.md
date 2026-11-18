@@ -787,14 +787,16 @@ interfaces. Selection is by ID: the parameter names an ID, and `<id>.plugin`
 names the C++ type.
 
 **Controllers** (`syncai_nav_core::Controller`, parameter `controller_plugins`) —
-three entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
-2D navigation, and two more until 2026-11-12; `Charging` came on 2026-11):
+four entries (five until 2026-10-28, when the 2D RPP `FollowPathRPP` went with
+2D navigation, and two more until 2026-11-12; `Charging` came on 2026-11,
+`ChargeBackOff` on 2026-11-18):
 
 | ID | Plugin | Used by |
 |---|---|---|
 | `FollowPath` | `syncai_mppi_controller::MPPIController` | `follow_path` (move.xml, patrol.xml) |
 | `FollowPathRPP3D` | `syncai_controller::RegulatedPurePursuitController3D` | `follow_path`, the A/B (`controller_id` in move.xml) |
 | `Charging` | `syncai_controller::ApproachController` | `track_pose`, charge.xml |
+| `ChargeBackOff` | `syncai_controller::ApproachController` at the RL gait's floors | `track_pose`, charge.xml's back-off to the staging pose in RL, after a lie-down that did not charge (2026-11-18; every speed a guess — RL backwards and RL's strafe are unmeasured, its block says what to measure) |
 
 The IDs are what a goal's `controller_id` field selects.
 
@@ -831,6 +833,11 @@ built, never loaded.
 One `SimpleGoalChecker` instance is configured, `goal_checker` (navigation).
 One `ApproachGoalChecker`, `charge_goal_checker` (0.025 m along / 0.035 m lateral /
 0.09 rad, 1 s), is the `track_pose` default.
+A second, `staging_goal_checker` (0.15 m / 0.12 m / 0.20 rad, 0.5 s;
+2026-11-18), ends charge.xml's back-off to its staging pose before a retry,
+with `Charging` (in MPC) or `ChargeBackOff` (in RL): the robot only has to be
+back where the approach starts from. It must be wider than where **both**
+laws rest, which `test_approach_law` checks.
 **An empty `goal_checker_id` resolves to the first entry of
 `goal_checker_plugins`, however many are loaded** (2026-10). Upstream — and this
 server until then — only fell back when exactly one was loaded, which was fine

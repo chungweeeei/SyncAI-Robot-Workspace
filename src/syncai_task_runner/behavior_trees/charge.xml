@@ -3,15 +3,18 @@
   move.xml's machinery, switch the gait to MPC and let it settle, then look
   for the charger's tag and walk the last metre onto the charger on the tag
   itself -- TrackPose following the sightings PublishLandmark publishes --
-  and lie down there, on the contacts.
+  lie down there, on the contacts, and wait for the battery to say it is
+  charging. A charge that fails after the staging leg is tried once more
+  from the staging pose (2026-11-18, "The retry" below).
 
   Selected per goal by NavigateToGoal.behavior_tree ("charge.xml"). Until
   2026-11-12 dock.xml sat beside it, and its header (git history) is the
   design record for what the two shared: the staging leg (move.xml with
   goal="{staging_pose}"), the overlay clear, the MPC switch and its check
   (SetMotionKey 5 -> WaitForMotionState 5 -> Wait 3000), RL restored only on
-  a failure after the switch was attempted, no in-tree retry of the
-  approach, the attribution and the status sentences. What is different
+  a failure after the switch was attempted, the attribution and the status
+  sentences. dock.xml had no in-tree retry; this tree has one since
+  2026-11-18. What is different
   here, and why:
 
   The goal's `pose` is the TAG, not where the robot ends: the charger's
@@ -86,19 +89,58 @@
   The tree LIES THE ROBOT DOWN on the charger (2026-11-12, on request):
   after TrackPose succeeds, a Wait of 2000 ms standing still (2026-11-18:
   the goal check accepts a position, and the gait is still stepping when it
-  does), then SetMotionKey key="2" (`MODE X`) and a Wait of
-  4000 ms, so SUCCEEDED means "lying on the charger". dock.xml did the same
-  from 2026-10-14 to 2026-10-15 and dropped it for the backend's LIEDOWN
-  step; a charge needs the contacts loaded, so here it is part of the step.
-  There is no report of a lie-down to wait for (WaitForMotionState knows
-  MPC = 5 and RL = 1 only), so the 4000 ms is dock.xml's guess, not a
-  measurement. It sits AFTER the MPC half's Fallback: a refused lie-down
-  fails the goal (DOCK_FAILED, SetMotionKey's reason) but does not send RL,
-  which would start the locomotion policy on the contacts -- the robot is
-  left standing on the charger in MPC.
+  does), then SetMotionKey key="2" (`MODE X`) and a Wait of 4000 ms.
+  dock.xml did the same from 2026-10-14 to 2026-10-15 and dropped it for the
+  backend's LIEDOWN step; a charge needs the contacts loaded, so here it is
+  part of the step. There is no report of a lie-down to wait for
+  (WaitForMotionState knows MPC = 5 and RL = 1 only), so the 4000 ms is
+  dock.xml's guess, not a measurement. The blackboard's
+  charge_lie_down_sent is set to "true" BEFORE the key goes out, so a
+  lie-down that was refused or half done counts as lain down: such a robot
+  is never sent RL, which would start the locomotion policy on the contacts.
 
-  Nothing leaves the charger since undock.xml went (2026-11-12): a robot
-  lying on it has to be stood up (STANDUP) and backed off by the caller.
+  The battery check (2026-11-18, on request): lying on the charger is not
+  charging -- a contact short of its pad, a charger switched off. The last
+  node, WaitForCharging, reads syncai_driver_manager's battery_state and
+  succeeds once it reads CHARGING (the pack's net current over 0.1 A) for
+  2 s, or, at 95 % and above, anything but DISCHARGING, since a full pack's
+  current tapers to nothing with the contacts made; samples from before the
+  node started do not count (wait_for_charging.hpp). SUCCEEDED therefore
+  means "lying on the charger AND charging". 2 s, 10 s and 95 % are
+  guesses: read on the first runs how long after the lie-down the node logs
+  "charging after", and the current a robot lying on the charger draws.
+
+  The retry (2026-11-18, on request). The charge proper -- MPC switch,
+  detection, approach, lie-down, battery check -- is a RecoveryNode with one
+  retry, and before the retry the robot goes back to {staging_pose} (1.3 m
+  out, facing the tag) with TrackPose's target_pose, a fixed pose in map,
+  blind like the approach. Which way depends on charge_lie_down_sent:
+   - case 1, the approach failed (tag not seen, LOST, TARGET_UNSTABLE, ...):
+     the robot still stands in MPC, and backs off with Charging, the
+     approach's own controller.
+   - case 2, lying down without charging: SetMotionKey 0 stands it up, after
+     which the gait controller is in RL (the controller's own logic), and
+     WaitForMotionState 1 waits up to 10 s for that report -- the end of
+     the stand-up the 4000 ms Waits only guessed at. It backs off in RL
+     with ChargeBackOff, the same law at RL's floors (its block in
+     controller_server_params.yaml; RL walking backwards is unmeasured).
+  Both then end on staging_goal_checker, which is wide: the robot only has
+  to be where the approach starts from. The retry starts with the MPC switch
+  and its settling again, as the first attempt does, and in case 1 the
+  switch only re-confirms MPC. A second failure ends the goal DOCK_FAILED
+  with the second attempt's reason (the first is in task_runner's log); so
+  does a failed back-off or stand-up, with no further try.
+
+  The gait on a final failure: RL (key "1") only while
+  charge_lie_down_sent is "false" -- the robot stands, in MPC or (after a
+  case-2 stand-up whose back-off failed) RL. Once a lie-down was sent and no
+  stand-up has followed, nothing is sent: the robot is left lying (or, if
+  the lie-down was refused, standing) on the charger.
+
+  Nothing else leaves the charger since undock.xml went (2026-11-12): a
+  robot that ended lying on it has to be stood up (STANDUP) and backed off
+  by the caller. The back-off here is not undock.xml come back: it is part
+  of this goal's retry and goes to this goal's staging pose.
 
   A preempt that moves {goal} after the staging leg reaches neither node:
   TrackPose's goal has no pose in it, and the tag in view is the one driven
@@ -142,40 +184,76 @@
         </RecoveryNode>
       </PipelineSequence>
 
-      <!-- MPC half: restore RL on any failure after the switch was attempted -->
-      <Fallback name="ChargeInMpc">
-        <Sequence name="SwitchAndApproach">
-          <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for charging"/>
-          <SetMotionKey key="5" server_timeout="500"/>
-          <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (dock.xml) -->
-          <WaitForMotionState state="5" timeout="5000"/>
-          <Wait msec="3000"/>
-          <!-- Only now look for the tag (header): standing still in MPC -->
-          <SetBlackboard output_key="nav_status_msg" value="Looking for the charger's marker"/>
-          <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000" ambiguous="ignore_orientation"/>
-          <Parallel name="ApproachOnTheTag" success_threshold="1" failure_threshold="1">
-            <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000" ambiguous="ignore_orientation"/>
-            <TrackPose pose_topic="tracked_landmark" offset_x="0.50" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
-          </Parallel>
-        </Sequence>
+      <!-- Nothing lain down yet in this goal (the blackboard outlives goals) -->
+      <SetBlackboard output_key="charge_lie_down_sent" value="false"/>
+
+      <!-- The charge proper, one retry (header, "The retry"). RL is restored
+           on the final failure only if no lie-down was sent -->
+      <Fallback name="ChargeOrRestore">
+        <RecoveryNode number_of_retries="1" name="ChargeWithRetry">
+          <Sequence name="ApproachLieDownAndCharge">
+            <SetBlackboard output_key="nav_status_msg" value="Switching the gait to MPC for charging"/>
+            <SetMotionKey key="5" server_timeout="500"/>
+            <!-- Confirm the controller reports MPC (mode data[1] == 5), then let it settle (dock.xml) -->
+            <WaitForMotionState state="5" timeout="5000"/>
+            <Wait msec="3000"/>
+            <!-- Only now look for the tag (header): standing still in MPC -->
+            <SetBlackboard output_key="nav_status_msg" value="Looking for the charger's marker"/>
+            <DetectLandmark landmark_id="charger_a" min_consecutive="3" timeout="5000" ambiguous="ignore_orientation"/>
+            <Parallel name="ApproachOnTheTag" success_threshold="1" failure_threshold="1">
+              <PublishLandmark landmark_id="charger_a" min_consecutive="3" topic="tracked_landmark" sensor_timeout="5000" ambiguous="ignore_orientation"/>
+              <TrackPose pose_topic="tracked_landmark" offset_x="0.50" offset_y="0.0" offset_yaw="3.141592653589793" controller_id="Charging" goal_checker_id="charge_goal_checker" filter_window="1.0"/>
+            </Parallel>
+
+            <!-- On the charger: lie down on the contacts (header) -->
+            <SetBlackboard output_key="nav_status_msg" value="On the charger, standing still before lying down"/>
+            <!-- Stand 2 s first (2026-11-18, on request): track_pose's goal check
+                 is a position held inside its tolerances, not a body at rest. On
+                 robot01 that day it succeeded 0.45 s after a reverse command, and
+                 the lie-down went out 0.15 s later with the gait still stepping -->
+            <Wait name="StandStillOnCharger" msec="2000"/>
+            <SetBlackboard output_key="nav_status_msg" value="Lying down on the charger"/>
+            <!-- Set BEFORE the key: a lie-down that was refused or half done
+                 must not be followed by RL (header) -->
+            <SetBlackboard output_key="charge_lie_down_sent" value="true"/>
+            <SetMotionKey name="LieDown" key="2" server_timeout="500"/>
+            <Wait msec="4000"/>
+
+            <!-- Lying on the charger is not charging (header, "The battery check") -->
+            <SetBlackboard output_key="nav_status_msg" value="Checking that the battery is charging"/>
+            <WaitForCharging hold_time="2000" timeout="10000" full_percentage="0.95"/>
+          </Sequence>
+
+          <!-- Back to the staging pose; the retry then switches to MPC again -->
+          <IfThenElse name="BackOffToStaging">
+            <BlackboardCheckString value_A="{charge_lie_down_sent}" value_B="true" return_on_mismatch="FAILURE">
+              <AlwaysSuccess/>
+            </BlackboardCheckString>
+            <!-- Case 2, lying without charging: stand up (the gait controller
+                 comes up in RL) and back off in RL -->
+            <Sequence name="Case2StandUpAndBackOff">
+              <SetBlackboard output_key="nav_status_msg" value="Not charging: standing up to try again"/>
+              <SetMotionKey name="StandUp" key="0" server_timeout="500"/>
+              <WaitForMotionState name="StoodUpInRl" state="1" timeout="10000"/>
+              <SetBlackboard output_key="charge_lie_down_sent" value="false"/>
+              <TrackPose name="BackOffInRl" target_pose="{staging_pose}" controller_id="ChargeBackOff" goal_checker_id="staging_goal_checker" filter_window="1.0"/>
+            </Sequence>
+            <!-- Case 1, the approach failed: still standing in MPC, back off as is -->
+            <Sequence name="Case1BackOff">
+              <SetBlackboard output_key="nav_status_msg" value="Charging approach failed: backing off to try again"/>
+              <TrackPose name="BackOffInMpc" target_pose="{staging_pose}" controller_id="Charging" goal_checker_id="staging_goal_checker" filter_window="1.0"/>
+            </Sequence>
+          </IfThenElse>
+        </RecoveryNode>
+
+        <!-- Failed for good: RL back only for a robot that never lay down
+             (header). ForceFailure keeps the goal failed either way -->
         <ForceFailure>
-          <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
+          <BlackboardCheckString value_A="{charge_lie_down_sent}" value_B="false" return_on_mismatch="SUCCESS">
+            <SetMotionKey name="RestoreRL" key="1" server_timeout="500"/>
+          </BlackboardCheckString>
         </ForceFailure>
       </Fallback>
-
-      <!-- On the charger: lie down on the contacts (header). After the
-           Fallback on purpose -- a refused lie-down must not send RL -->
-      <Sequence name="LieDownOnCharger">
-        <SetBlackboard output_key="nav_status_msg" value="On the charger, standing still before lying down"/>
-        <!-- Stand 2 s first (2026-11-18, on request): track_pose's goal check
-             is a position held inside its tolerances, not a body at rest. On
-             robot01 that day it succeeded 0.45 s after a reverse command, and
-             the lie-down went out 0.15 s later with the gait still stepping -->
-        <Wait name="StandStillOnCharger" msec="2000"/>
-        <SetBlackboard output_key="nav_status_msg" value="Lying down on the charger"/>
-        <SetMotionKey name="LieDown" key="2" server_timeout="500"/>
-        <Wait msec="4000"/>
-      </Sequence>
     </Sequence>
   </BehaviorTree>
 </root>

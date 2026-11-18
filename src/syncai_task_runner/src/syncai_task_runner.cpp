@@ -33,6 +33,7 @@ TaskRunner::TaskRunner(rclcpp::NodeOptions options)
     "syncai_compute_staging_pose_action_bt_node",
     "syncai_detect_landmark_action_bt_node",
     "syncai_track_pose_action_bt_node",
+    "syncai_wait_for_charging_action_bt_node",
   };
 
   syncai_util::declare_parameter_if_not_declared(
