@@ -18,6 +18,9 @@
 #
 #   docker compose exec robot01 scripts/build.sh [colcon args...]
 #
+# or, since 2026-11, in the Dockerfile's `builder` stage, which compiles the
+# release image's install/ (BUILD_SYMLINK=0).
+#
 # Every argument is appended to `colcon build --symlink-install` plus the
 # build-type arguments below, so `--packages-select syncai_global_planner` or
 # `--parallel-workers 2` work as they would on a bare colcon invocation.
@@ -28,6 +31,16 @@
 #                                                (and skip the Rust-source prune
 #                                                that follows the build)
 #   BUILD_TYPE      Release|RelWithDebInfo|Debug|MinSizeRel|off  (Release)
+#   BUILD_SYMLINK   1|0                (1)       0 = no --symlink-install
+#
+# BUILD_SYMLINK=0 is for an install/ that has to stand without src/ and build/
+# beside it -- the release image. A --symlink-install tree is links back into
+# both (launch files, params, behaviour trees, every C++ binary), which is
+# what makes an edit under src/ live on the next session without a rebuild,
+# and what makes the tree useless anywhere else. Do not switch an existing
+# install/ from one to the other: colcon is not built to turn a link into a
+# file or the reverse, and a tree that is half of each is worse than either.
+# Start from a clean build/ + install/, as the builder stage always does.
 #
 # BUILD_TYPE is a release build by default. Without it every ament_cmake
 # package configures with an empty CMAKE_BUILD_TYPE -- no -O at all -- and only
@@ -72,6 +85,7 @@ WS="$(pwd)"
 BUILD_ROSDEP="${BUILD_ROSDEP:-check}"
 BUILD_COLCON="${BUILD_COLCON:-1}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
+BUILD_SYMLINK="${BUILD_SYMLINK:-1}"
 
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'build.sh: %s\n' "$*" >&2; exit 1; }
@@ -214,9 +228,16 @@ case "$BUILD_TYPE" in
            "(got '${BUILD_TYPE}')" ;;
 esac
 
+install_args=()
+case "$BUILD_SYMLINK" in
+    1) install_args=(--symlink-install) ;;
+    0) ;;
+    *) die "BUILD_SYMLINK must be 1 or 0 (got '${BUILD_SYMLINK}')" ;;
+esac
+
 if [ "$BUILD_COLCON" = "1" ]; then
-    step "colcon build --symlink-install ${type_args[*]} $*"
-    colcon build --symlink-install "${type_args[@]}" "$@"
+    step "colcon build ${install_args[*]} ${type_args[*]} $*"
+    colcon build "${install_args[@]}" "${type_args[@]}" "$@"
 
     # --- 5. prune the rclrs nodes' installed source ------------------------
     # cargo-ament-build copies every ament_cargo package's Cargo.toml,

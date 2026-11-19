@@ -1,0 +1,148 @@
+# The stack on a robot that has no checkout of this repository (2026-11): the
+# release image and the two infra services, and nothing that is built here.
+#
+# This file is not used from the workspace. It is copied into the release
+# image (deploy/), and scripts/release/install.sh puts the copy of the image
+# it activates at /opt/syncai/docker-compose.release.yml -- so the compose file
+# on a robot always belongs to the image it starts, a rollback included. Every
+# relative path below is therefore relative to /opt/syncai, the robot's data
+# directory, which is also what the backend's compose calls ROBOT_WS.
+#
+#   docker compose -f /opt/syncai/docker-compose.release.yml ps
+#   docker compose -f /opt/syncai/docker-compose.release.yml logs -f robot
+#
+# Self-contained on purpose: the target has this one file, so it cannot
+# `include` docker-compose.robots.yml the way docker-compose.yml does. The
+# robot service below is that file's robot01 with four differences, and the
+# two have to be kept in step by hand (the reasons behind each device, group
+# and mount are written out there, once, and not repeated here):
+#   - image, not build: ${SYNCAI_IMAGE}, which install.sh writes into .env
+#   - no workspace mount. install/, config/sessions/ and config/cyclonedds.xml
+#     are in the image; only what a robot owns is mounted, path by path
+#   - no X11 (DISPLAY, the socket, the xauth cookie): nothing in the release
+#     opens a window -- the calibration GUI is not in it
+#   - user 1000:1000 fixed rather than ${UID}:${GID}: no file here is created
+#     in a developer's checkout, and the image's HOME belongs to uid 1000
+#
+# pgadmin and temporal_ui are left out (docker-compose.yml has them for
+# development). Neither is needed to run a robot; a Temporal UI on an
+# engineer's laptop pointed at this host's port 7233 shows the same thing.
+#
+# The backend and the console are separate containers from separate
+# repositories and are not started from here. The backend needs
+# ROBOT_WS=/opt/syncai in its own .env to share this directory.
+
+name: syncai
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-default}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    container_name: temporal
+    restart: unless-stopped
+    environment:
+      - DB=${TEMPORAL_DB:-postgres12}
+      - DB_PORT=${TEMPORAL_DB_PORT:-5432}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_SEEDS=${TEMPORAL_POSTGRES_SEEDS:-postgres}
+      # Read only when the namespace is created, on a fresh data/postgres;
+      # docker-compose.yml has how to change it on a running stack.
+      - DEFAULT_NAMESPACE_RETENTION=${TEMPORAL_NAMESPACE_RETENTION:-5d}
+    ports:
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  robot:
+    # No default: a robot started on "whatever image is there" is the mistake
+    # this whole arrangement exists to rule out.
+    image: ${SYNCAI_IMAGE:?SYNCAI_IMAGE is not set -- run install.sh, which writes it to .env}
+    # robot01, as in development, so scripts/attach.sh and every
+    # `docker exec robot01 ...` in the docs work unchanged. It is the
+    # container's name, not the robot's: that is [system] robot_id in the INI.
+    container_name: robot01
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    security_opt:
+      - apparmor=unconfined
+    stdin_open: true
+    tty: true
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    environment:
+      # A literal, and config/cyclonedds.xml in the image pins the same
+      # domain; docker-compose.robots.yml has why it is not ${ROS_DOMAIN_ID}.
+      ROS_DOMAIN_ID: "1"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
+      ROS_LOG_DIR: /tmp/ros_log
+      RCUTILS_COLORIZED_OUTPUT: "0"
+      PYTHONUNBUFFERED: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    devices:
+      # Compose refuses to start the container when either camera is absent,
+      # as in development. Both names come from the udev rules on the HOST,
+      # which carry this robot's own camera serials (install.sh checks for
+      # them and does not install them).
+      - /dev/syncai/camera0
+      - /dev/syncai/camera1
+      - /dev/snd:/dev/snd
+    device_cgroup_rules:
+      - "c 81:* rmw"
+      - "c 116:* rmw"
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${AUDIO_GID:-29}"
+    volumes:
+      - /dev/syncai:/dev/syncai:ro
+      - type: tmpfs
+        target: /tmp/ros_log
+        tmpfs:
+          size: 134217728 # 128 MiB
+          mode: 0o1777
+      # --- what the robot owns ------------------------------------------
+      # The instance INI over the fixed path every launch file reads.
+      # Read-write and a single file: the backend's map switch rewrites its
+      # [map] name line in place, through its own mount of the same file. A
+      # name with no file on the host is mounted as an empty directory,
+      # silently -- install.sh creates the file before the first `up`.
+      - ./config/instances/${ROBOT_INSTANCE:-robot}.ini:/home/syncrobotic/robot_ws/config/system.ini
+      # The localizer's last trusted pose (last_pose.json), so a robot shut
+      # down on 2F boots on 2F.
+      - ./config/state:/home/syncrobotic/robot_ws/config/state
+      # The settings pages' overlays, written by the backend, loaded by the
+      # controller's and the planner's launch after their factory params.
+      - ./config/params:/home/syncrobotic/robot_ws/config/params
+      # The camera's intrinsics, made on this robot.
+      - ./config/calibration:/home/syncrobotic/robot_ws/config/calibration
+      # Maps: read by the localizer and Octo3D, written by pgo_node and
+      # clean_map. MUST be the directory the backend mounts as its map/.
+      - ./map:/home/syncrobotic/robot_ws/map
+      # multilog's per-pane logs (log/stack/<robot_id>/...), on the host so
+      # they survive the container being replaced by the next release.
+      - ./log:/home/syncrobotic/robot_ws/log
+      # --- the host's services --------------------------------------------
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      - /run/avahi-daemon:/run/avahi-daemon:ro

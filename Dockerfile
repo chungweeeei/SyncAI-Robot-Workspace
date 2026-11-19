@@ -1,7 +1,7 @@
 # =============================================================================
-# SyncAI robot workspace — multi-stage build (development).
+# SyncAI robot workspace — multi-stage build, two images out of one file.
 #
-#   base              shared runtime floor (ros-base + cyclonedds + uid-1000 user)
+#   base              shared floor (ros-base + cyclonedds + uid-1000 user)
 #     ├─ deps-builder   compiler + Boost / TBB / Eigen, shared by the five below
 #     │    ├─ livox       Livox-SDK2  ─┐
 #     │    ├─ gtsam       GTSAM        │
@@ -10,10 +10,20 @@
 #     │    └─ iridescence Iridescence ─┘
 #     ├─ rust-underlay  Rust toolchain (/opt/rust) + ros2-rust underlay for rclrs
 #     │                 (/opt/ros2_rust_underlay)
-#     └─ dev            the interactive dev image: colcon, byobu, Node.js, -dev
-#                       headers, plus the COPYs out of every stage above.
-#                       Workspace bind-mounted at ~/robot_ws and built by hand
-#                       (colcon). Compose target: dev.
+#     └─ runtime-base   what the built workspace needs to RUN: the linked
+#          │            libraries, GTSAM, the underlay, byobu / multilog / nmcli,
+#          │            the GStreamer plugins. Adds no build tool and no -dev
+#          │            package to the ones ros-base itself depends on (gcc and
+#          │            cmake are in base through it, and stay).
+#          ├─ dev          the interactive dev image: runtime-base + colcon,
+#          │    │          Node.js, -dev headers, the Rust toolchain and the
+#          │    │          other source-built libraries. Workspace bind-mounted
+#          │    │          at ~/robot_ws and built by hand. Compose target: dev.
+#          │    └─ builder   dev + src/, a Release `colcon build` without
+#          │                 --symlink-install. Never shipped.
+#          └─ release      the image that goes to a robot (2026-11):
+#                          runtime-base + builder's install/ + the session specs.
+#                          No source, no workspace mount.
 #
 # The dev target keeps today's workflow (workspace mounted at ~/robot_ws, build
 # by hand). The source builds are split into stages that depend only on `base`
@@ -23,14 +33,17 @@
 # (~30-60 min on Tegra) and the underlay (a long colcon build) are the two that
 # matter; keep anything that changes often out of their stages.
 #
-#   docker build --target dev -t syncai-robot .
+#   docker build --target dev -t syncai-robot-base .
 #   # or, via compose:  docker compose build robot01
 #
-# NOTE: the production stages (ws-builder / nav-runtime / backend-runtime) that
-# baked the colcon install space into slim runtime images were removed while
-# the project is in the dev phase. docker-compose.prod.yml and scripts/release/
-# still reference them and will not work until the stages are re-added. See git
-# history for the removed stages when it's time to ship to the IPC.
+# The release target is built by CI only (.github/workflows/release.yml), from
+# a checkout with both .repos files imported and scripts/release/prepare.sh
+# run; docs/release-deployment.md has the way from there to a robot.
+#
+# There was a note here until 2026-11 that the production stages (ws-builder /
+# nav-runtime / backend-runtime) could be recovered from git history. They
+# could not: no revision ever held them, nor a docker-compose.prod.yml. The
+# builder / release stages at the end of this file were written from scratch.
 # =============================================================================
 
 # colcon's Rust plugins, installed in two stages (rust-underlay builds rclrs
@@ -39,7 +52,7 @@
 ARG COLCON_CARGO_PIP="colcon-cargo==0.2.0 colcon-ros-cargo==0.2.0"
 
 # ---------------------------------------------------------------------------
-# base: shared by dev and both production runtimes
+# base: shared by every stage below, the source builds included
 # ---------------------------------------------------------------------------
 FROM ubuntu:22.04 AS base
 
@@ -234,7 +247,8 @@ RUN apt-get update && apt-get install -y \
 
 # ---------------------------------------------------------------------------
 # rust-underlay: the Rust toolchain for rclrs (/opt/rust) and the ros2-rust
-# underlay built with it (/opt/ros2_rust_underlay). dev COPYs both trees.
+# underlay built with it (/opt/ros2_rust_underlay). runtime-base COPYs the
+# underlay, which the built nodes link; dev COPYs the toolchain on top.
 #
 # A stage of its own (2026-10) rather than two stanzas near the end of dev,
 # where every edit to an earlier dev layer -- GStreamer, VizionSDK, Node, an
@@ -402,13 +416,174 @@ RUN mkdir -p "${ROS2_RUST_UNDERLAY}/src" && cd "${ROS2_RUST_UNDERLAY}" && \
     chmod -R a+w /opt/rust
 
 # ---------------------------------------------------------------------------
+# runtime-base: everything the built workspace needs to RUN, and nothing it
+# needs only to build. Both images are made from it (2026-11):
+#
+#   dev     = runtime-base + compilers, -dev headers, Rust toolchain, colcon
+#   release = runtime-base + the install/ the builder stage compiled
+#
+# One stage under both, rather than a release stage with an apt list of its
+# own, for two reasons. The release image then runs on the very layers the
+# builder linked against -- two `apt-get install`s on different days can
+# resolve one package name to two versions, and packages.ros.org syncs move
+# every ros-humble-* at once. And there is one list to add a runtime dependency
+# to: put it here and both images have it.
+#
+# Which stage a new package goes in: if a node needs it while running, here;
+# if only `colcon build` does (a -dev package, a header-only library, a
+# generator), dev. A linked library put in dev by mistake still builds and
+# still runs on robot01, and the release stage's ldd check then fails the
+# release build with its name. Nothing catches the same mistake for something
+# loaded at run time (a GStreamer element, a tool a node shells out to) until
+# that node starts in the release image -- so when in doubt, here.
+# ---------------------------------------------------------------------------
+FROM base AS runtime-base
+
+# The shared libraries the workspace's binaries link, beyond what base already
+# brings. Not a guess: this is what `ldd` over every ELF file in install/
+# resolved to on 2026-11-19 (74 files, direct_visual_lidar_calibration and
+# vizionsdk_ros2 left out as the release leaves them out), reduced to the
+# packages that neither base nor another line here already implies:
+#   - libboost-context / libzmq5       : behaviortree_cpp_v3, and through it
+#                                        syncai_behavior_tree / _task_runner
+#   - libboost-serialization / -timer  : GTSAM's own, for syncai_mapping
+#   - libpcl-filters / libpcl-io       : syncai_pointlio / _localizer / _mapping.
+#       libpcl-io is what brings libvtk9.1 (97 MB) -- the one runtime library,
+#       not the VTK + Qt5 -dev tree that libpcl-dev drags into dev.
+#   - libopencv-contrib4.5d            : syncai_landmark_detection (aruco)
+#   - libgstreamer-plugins-base1.0-0   : syncai_camera_feeder (gstapp)
+#   - ros-humble-octomap               : syncai_global_planner's Octo3D and
+#                                        syncai_mapping's clean_map
+#   - ros-humble-map-msgs              : syncai_costmap's update topics
+#   - ros-humble-pcl-msgs              : linked by the rclrs nodes
+#   - python3-psutil / python3-netifaces: imported by syncai_sys_manager. base
+#       has both already, but only as dependencies of ros2doctor and ros2cli;
+#       named so that they do not leave with a change to either.
+# With these the image's apt packages come to about 1.1 GB, against 3.7 GB in
+# dev. To redo the list after a new dependency: scripts/release/check_libs.sh
+# prints what does not resolve, and the release stage runs it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libboost-context1.74.0 \
+    libboost-serialization1.74.0 \
+    libboost-timer1.74.0 \
+    libzmq5 \
+    libpcl-filters1.12 \
+    libpcl-io1.12 \
+    libopencv-contrib4.5d \
+    libgstreamer-plugins-base1.0-0 \
+    ros-humble-octomap \
+    ros-humble-map-msgs \
+    ros-humble-pcl-msgs \
+    python3-psutil \
+    python3-netifaces \
+    && rm -rf /var/lib/apt/lists/*
+
+# What the stack shells out to, and what an operator needs in a shell in here:
+#   - byobu (tmux)      : NodeManager builds each operating mode as a byobu
+#                         session; without it switch_mode starts nothing
+#   - daemontools       : multilog, which every pane's output is piped into
+#                         (log/stack/<robot_id>/...)
+#   - network-manager   : nmcli, for syncai_sys_manager's wifi services against
+#                         the host's NetworkManager over the mounted D-Bus socket
+#   - net-tools, bluez  : ifconfig / netstat and the bluetooth tools, to look
+#                         at the host's interfaces from in here
+#   - ros-humble-teleop-twist-keyboard: the fallback teleop when no backend is
+#                         up (remapped onto /<robot_id>/cmd_vel by hand)
+# In dev's first apt layer until 2026-11; a robot running the release image
+# needs every one of them just as much.
+RUN apt-get update && apt-get install -y \
+    ros-humble-teleop-twist-keyboard \
+    byobu \
+    daemontools \
+    net-tools \
+    network-manager \
+    bluez \
+    && rm -rf /var/lib/apt/lists/*
+
+# GStreamer for the camera stream. The base image carries only
+# gstreamer1.0-plugins-base, which is why a pipeline built here fails with
+# `no element "v4l2src"`:
+#   - plugins-good  : v4l2src (V4L2 capture)
+#   - plugins-bad   : h264parse (videoparsersbad)
+#   - gstreamer1.0-rtsp : rtspclientsink, to publish into mediamtx
+#   - gstreamer1.0-tools: gst-inspect-1.0 / gst-launch-1.0, without which there
+#                         is no way to tell a missing element from a missing
+#                         command when debugging a pipeline in here
+#   - gstreamer1.0-alsa : alsasink, for the WebRTC worker's WHIP branch (the
+#                         operator's microphone out of the USB speaker). NOT in
+#                         plugins-base despite living in that source package,
+#                         and its absence fails the pipeline string at parse
+#                         time rather than at playback. pulsesink exists in
+#                         this image and is a trap: there is no PulseAudio
+#                         daemon here, and the speaker is reached as
+#                         plughw:CARD=CD002AUDIO, the same by-name device the
+#                         TTS gateway resolves to.
+#
+# Elements are loaded by name when a pipeline is parsed, so nothing here shows
+# in ldd: the release stage's check cannot see one go missing, and the CI smoke
+# test does not start the camera feeder. A change to this list is checked on a
+# robot, with the camera.
+#
+# NOT included, and not installable from apt: the Tegra elements (nvjpegdec,
+# nvvidconv, nvv4l2h264enc) live in nvidia-l4t-gstreamer and there is no L4T apt
+# repo in this image. They are instead injected by the nvidia container runtime,
+# which already lists them in /etc/nvidia-container-runtime/host-files-for-
+# container.d/drivers.csv on the host — but only when the container requests it
+# via NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES. Hardware encoding in
+# here additionally needs /dev/video0 passed through and membership of the host's
+# video group; see docker-compose.robots.yml.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-rtsp \
+    gstreamer1.0-tools \
+    gstreamer1.0-alsa \
+    && rm -rf /var/lib/apt/lists/*
+
+# aplay, to check the robot's speaker from a shell in here (`aplay -l`, then
+# play something at it). It used to be a dependency: the in-tree backend's TTS
+# gateway shelled out to aplay for its /speak route rather than pull in a
+# Python audio stack. That backend moved to SyncAI-Robot-Backend in 2026-09 and
+# its container owns the speaker now, so nothing in this image plays audio on
+# its own — the binary stays because the passthrough it needs (/dev/snd plus
+# the host audio group, from docker-compose.robots.yml) is still wired up and a
+# silent speaker is quicker to diagnose from the container that owns the robot
+# than from one that does not.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# GTSAM, the one source-built library a release binary links (libgtsam and
+# libmetis-gtsam, by syncai_mapping's pgo_node). The stage's whole tree, the
+# 3.5 MB of headers included, so that dev needs no second COPY of it: split
+# into lib/ here and include/ there, the two would have to be kept in step for
+# nothing. Livox-SDK2, Sophus, Ceres and Iridescence are dev's -- the workspace
+# builds its own Livox-SDK2 into install/, Sophus is header-only, and the other
+# two are linked by direct_visual_lidar_calibration alone.
+COPY --from=gtsam /out/usr/local /usr/local
+RUN ldconfig
+
+# The ros2-rust underlay (see the rust-underlay stage): the rebuilt standard
+# interfaces every binary here links -- the C++ ones too, since this overlays
+# /opt/ros/humble for the whole workspace -- and the rclrs nodes' message
+# libraries. The Rust toolchain (/opt/rust) is dev's. Sourced after
+# /opt/ros/humble and before the workspace, in that order, in every shell: the
+# session panes take their ROS environment from ~/.bashrc and nowhere else.
+ENV ROS2_RUST_UNDERLAY=/opt/ros2_rust_underlay
+COPY --from=rust-underlay /opt/ros2_rust_underlay /opt/ros2_rust_underlay
+RUN echo "source ${ROS2_RUST_UNDERLAY}/install/setup.bash" >> /home/syncrobotic/.bashrc && \
+    echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' \
+        >> /home/syncrobotic/.bashrc
+
+# ---------------------------------------------------------------------------
 # dev: the interactive development image (compose service robot01,
 # image syncai-robot-base, target: dev): tooling, workspace bind-mounted at
-# runtime, colcon build run by hand.
+# runtime, colcon build run by hand. runtime-base plus what a build needs.
 # ---------------------------------------------------------------------------
-FROM base AS dev
+FROM runtime-base AS dev
 
-# Build toolchain, PCL/ROS build deps, and operator conveniences.
+# Build toolchain and PCL/ROS build deps. (The operator conveniences that used
+# to share this layer -- byobu, multilog, nmcli -- are runtime-base's.)
 #
 # There is no rviz2 (removed 2026-10): the robot has no display, and rviz2, if
 # used at all, runs on a workstation (config/rviz2/ went 2026-10-28). (The costmap
@@ -438,18 +613,16 @@ FROM base AS dev
 # python3-opencv and python3-dotenv were here for syncai_backend (cv2 encoded
 # the map images its /image route serves; dotenv read the workspace .env) and
 # left with it in 2026-09 — nothing in this workspace imports either now.
+#
+# compressed-image-transport stays here, not in runtime-base: no package the
+# release carries uses image_transport (the landmark detector subscribes to
+# the CompressedImage topic itself), so it is a tool for a shell in dev.
 RUN apt-get update && apt-get install -y \
     ros-humble-compressed-image-transport \
     ros-humble-pcl-conversions \
-    ros-humble-teleop-twist-keyboard \
     python3-colcon-common-extensions \
     python3-rosdep \
     python3-vcstool \
-    byobu \
-    daemontools \
-    net-tools \
-    network-manager \
-    bluez \
     git \
     build-essential \
     cmake \
@@ -466,16 +639,14 @@ RUN apt-get update && apt-get install -y \
 #   - libapr1-dev / libaprutil1-dev: livox_ros_driver2
 #   - libboost-all-dev / libtbb-dev / libeigen3-dev: GTSAM/Sophus headers
 #     (the libs themselves come prebuilt from the gtsam / sophus stages)
-#   - ros-humble-octomap: syncai_mapping's clean_map -- the post-save map
-#     cleaning pgo_node spawns after save_maps (2026-10), which uses OctoMap's
-#     ray traversal and voxel keys; rosdep key `octomap`. It had a stanza of
-#     its own at the end of this stage while the underlay was built in dev,
-#     so that adding it did not re-run that build; the underlay is a stage of
-#     its own now, so it lives here with the other build deps.
-#   - ros-humble-map-msgs: syncai_costmap <depend>s on it (the costmap
-#     update topics). It used to arrive only transitively, through
-#     rviz2's default plugins, so dropping rviz2 in 2026-10 failed that
-#     package's configure; `rosdep check` names it if it goes missing again.
+# ros-humble-octomap and ros-humble-map-msgs were in this list until 2026-11
+# and are in runtime-base now: both ship the libraries along with the headers,
+# and a release binary links them. Two things about them worth keeping:
+# octomap's consumer besides Octo3D is syncai_mapping's clean_map (the
+# post-save map cleaning pgo_node spawns after save_maps, rosdep key
+# `octomap`); and map-msgs used to arrive only transitively, through rviz2's
+# default plugins, so dropping rviz2 in 2026-10 failed syncai_costmap's
+# configure -- `rosdep check` names it if it goes missing again.
 # Removed 2026-10-28 with 2D navigation: libgraphicsmagick++1-dev
 # (syncai_map_server's map_io, pkg-config) and ros-humble-laser-geometry (the
 # costmap's obstacle layer, LaserScan -> PointCloud2); no package needs them.
@@ -488,15 +659,13 @@ RUN apt-get update && apt-get install -y \
     libboost-all-dev \
     libtbb-dev \
     libeigen3-dev \
-    ros-humble-octomap \
-    ros-humble-map-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # xtensor / xsimd: syncai_mppi_controller (the MPPI port) evaluates its batch
 # of sampled trajectories as xtensor expressions, vectorised through xsimd
 # (NEON on the Jetson). Both are header-only, so this is a build dependency
-# and lives in dev, not base. Jammy ships xtensor 0.23 / xsimd 7.6, the pair
-# Humble's nav2_mppi_controller is built against (rosdep keys xtensor /
+# and lives in dev, not runtime-base. Jammy ships xtensor 0.23 / xsimd 7.6, the
+# pair Humble's nav2_mppi_controller is built against (rosdep keys xtensor /
 # xsimd); a newer xtensor from source would need the upstream port's
 # post-Humble API changes too. Its own layer, so the one above keeps its cache.
 RUN apt-get update && apt-get install -y \
@@ -504,69 +673,20 @@ RUN apt-get update && apt-get install -y \
     libxsimd-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# GStreamer for the camera stream. The base image carries only
-# gstreamer1.0-plugins-base, which is why a pipeline built here fails with
-# `no element "v4l2src"`:
-#   - plugins-good  : v4l2src (V4L2 capture)
-#   - plugins-bad   : h264parse (videoparsersbad)
-#   - gstreamer1.0-rtsp : rtspclientsink, to publish into mediamtx
-#   - gstreamer1.0-tools: gst-inspect-1.0 / gst-launch-1.0, without which there
-#                         is no way to tell a missing element from a missing
-#                         command when debugging a pipeline in here
-#   - gstreamer1.0-alsa : alsasink, for the WebRTC worker's WHIP branch (the
-#                         operator's microphone out of the USB speaker). NOT in
-#                         plugins-base despite living in that source package,
-#                         and its absence fails the pipeline string at parse
-#                         time rather than at playback. pulsesink exists in
-#                         this image and is a trap: there is no PulseAudio
-#                         daemon here, and the speaker is reached as
-#                         plughw:CARD=CD002AUDIO, the same by-name device the
-#                         TTS gateway resolves to.
-#
-# NOT included, and not installable from apt: the Tegra elements (nvjpegdec,
-# nvvidconv, nvv4l2h264enc) live in nvidia-l4t-gstreamer and there is no L4T apt
-# repo in this image. They are instead injected by the nvidia container runtime,
-# which already lists them in /etc/nvidia-container-runtime/host-files-for-
-# container.d/drivers.csv on the host — but only when the container requests it
-# via NVIDIA_VISIBLE_DEVICES / NVIDIA_DRIVER_CAPABILITIES. Hardware encoding in
-# here additionally needs /dev/video0 passed through and membership of the host's
-# video group; see docker-compose.robots.yml.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad \
-    gstreamer1.0-rtsp \
-    gstreamer1.0-tools \
-    gstreamer1.0-alsa \
-    && rm -rf /var/lib/apt/lists/*
-
 # GStreamer headers, .pc files and the unversioned .so links, for
 # syncai_camera_feeder: its `gstreamer` / `gstreamer-app` crates find the
 # libraries through pkg-config in their build scripts and link with
-# -lgstreamer-1.0 / -lgstapp-1.0 / -lglib-2.0, none of which the runtime
-# packages above ship (they carry only the versioned .so.0). The package's
+# -lgstreamer-1.0 / -lgstapp-1.0 / -lglib-2.0, none of which runtime-base's
+# GStreamer packages ship (they carry only the versioned .so.0). The package's
 # manifest and its own devcontainer both list these two; this image did not,
 # and the build only ever passed in a container where they had been installed
 # by hand -- the 2026-10-12 image rebuild dropped them and the link failed
 # with `cannot find -lgstapp-1.0`. It got that far rather than failing at
 # pkg-config because cargo reused the build-script output cached in
-# build/syncai_camera_feeder from the run that had them. Its own layer, so
-# the runtime layer above keeps its cache.
+# build/syncai_camera_feeder from the run that had them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# aplay, to check the robot's speaker from a shell in here (`aplay -l`, then
-# play something at it). It used to be a dependency: the in-tree backend's TTS
-# gateway shelled out to aplay for its /speak route rather than pull in a
-# Python audio stack. That backend moved to SyncAI-Robot-Backend in 2026-09 and
-# its container owns the speaker now, so nothing in this image plays audio on
-# its own — the binary stays because the passthrough it needs (/dev/snd plus
-# the host audio group, from docker-compose.robots.yml) is still wired up and a
-# silent speaker is quicker to diagnose from the container that owns the robot
-# than from one that does not.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # VizionSDK: the closed-source TechNexion camera SDK that
@@ -643,10 +763,10 @@ RUN apt-get update && apt-get install -y \
     libopencv-contrib-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Prebuilt Livox-SDK2 / GTSAM / Sophus / Ceres / Iridescence, one COPY per
-# builder stage (each stage holds only its own library under /out/usr/local).
+# Prebuilt Livox-SDK2 / Sophus / Ceres / Iridescence, one COPY per builder
+# stage (each stage holds only its own library under /out/usr/local). GTSAM,
+# the fifth, is already here: runtime-base copies it, headers and all.
 COPY --from=livox /out/usr/local /usr/local
-COPY --from=gtsam /out/usr/local /usr/local
 COPY --from=sophus /out/usr/local /usr/local
 COPY --from=ceres /out/usr/local /usr/local
 COPY --from=iridescence /out/usr/local /usr/local
@@ -671,25 +791,24 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Rust toolchain + ros2-rust underlay, from the rust-underlay stage (see there
-# for what is in each tree and why). What has to be installed here as well is
-# what the workspace's own Rust packages use at `colcon build` time:
-# libclang-dev for rclrs's bindgen, and the colcon-cargo / colcon-ros-cargo
-# plugins (pinned in COLCON_CARGO_PIP, same as the stage) for colcon to
-# discover and build a package.xml + Cargo.toml package at all. The COPYs keep
-# the stage's world-writable modes, which cargo needs under a runtime uid.
+# Rust toolchain, from the rust-underlay stage (see there for what is in the
+# tree and why). The underlay itself -- /opt/ros2_rust_underlay, its ENV and
+# its line in ~/.bashrc -- is runtime-base's, because the built nodes link it.
+# What has to be installed here as well is what the workspace's own Rust
+# packages use at `colcon build` time: libclang-dev for rclrs's bindgen, and
+# the colcon-cargo / colcon-ros-cargo plugins (pinned in COLCON_CARGO_PIP, same
+# as the stage) for colcon to discover and build a package.xml + Cargo.toml
+# package at all. The COPY keeps the stage's world-writable modes, which cargo
+# needs under a runtime uid.
 ARG COLCON_CARGO_PIP
 ENV RUSTUP_HOME=/opt/rust/rustup \
     CARGO_HOME=/opt/rust/cargo \
-    PATH=/opt/rust/cargo/bin:${PATH} \
-    ROS2_RUST_UNDERLAY=/opt/ros2_rust_underlay
+    PATH=/opt/rust/cargo/bin:${PATH}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev \
     && rm -rf /var/lib/apt/lists/* && \
     pip3 install --no-cache-dir ${COLCON_CARGO_PIP}
 COPY --from=rust-underlay /opt/rust /opt/rust
-COPY --from=rust-underlay /opt/ros2_rust_underlay /opt/ros2_rust_underlay
-RUN echo "source ${ROS2_RUST_UNDERLAY}/install/setup.bash" >> /home/syncrobotic/.bashrc
 
 # ccache, for CI (2026-10): every CI run is a clean `colcon build` of ~11 min,
 # almost all of it recompiling sources that did not change, and the critical
@@ -723,7 +842,139 @@ WORKDIR /home/syncrobotic
 # another uid can write but not read -- the same error.
 RUN rosdep update --rosdistro humble && chmod -R a+rwX /home/syncrobotic/.ros
 
-# Auto-source the mounted workspace overlay in every shell.
-RUN echo '[ -f ~/robot_ws/install/setup.bash ] && source ~/robot_ws/install/setup.bash' >> ~/.bashrc
+# (The line that sources the mounted workspace overlay in every shell is
+# written in runtime-base, after the underlay's: the release image needs the
+# same three in the same order.)
 
 CMD ["bash"]
+
+# ---------------------------------------------------------------------------
+# builder: compiles the workspace for the release image. Never shipped, never
+# tagged; `--target dev` does not build it.
+#
+# In the Dockerfile rather than a COPY of an install/ built beforehand in the
+# build container, so that what ships depends on src/ alone: the bind-mounted
+# install/ of a working checkout keeps whatever earlier builds left in it (a
+# development checkout's still listed dock.xml and DockToPose.action a week
+# after both were deleted), and is a --symlink-install tree in any case.
+#
+# The context is a checkout with both .repos files imported -- .dockerignore
+# keeps build/ install/ log/ and every .git out of it. scripts/build.sh is the
+# same script robot01 and CI build with, with two differences:
+#   - BUILD_SYMLINK=0: a real install/, no link back into src/ or build/. It
+#     is also what lets syncai_sys_manager's InstallNoSource strip its .py
+#     files (the guard there skips a symlinked install).
+#   - direct_visual_lidar_calibration and vizionsdk_ros2 are skipped. The
+#     first is a GUI tool run by hand on recorded bags -- on a workstation's
+#     dev image, the robot has no display -- and the only user of Ceres,
+#     Iridescence and pcl_ros; nothing starts the second. CALIBRATION mode
+#     itself (bringup + the camera feeder, to record the bags) is in the
+#     release.
+# The path is the one robot01 mounts the workspace at, and has to be: the four
+# rclrs packages' ament hooks and every setup.sh bake the absolute install
+# prefix in, and the release stage copies install/ to the same place.
+#
+# No ccache: a clean build is ~11 min on the arm64 runner and a release is
+# built rarely. BuildKit cache mounts would not survive between CI runs anyway.
+# ---------------------------------------------------------------------------
+FROM dev AS builder
+
+# mkdir as syncrobotic before WORKDIR: WORKDIR creates a missing directory
+# owned by root whatever USER is, and colcon then cannot make build/ in it.
+RUN mkdir -p /home/syncrobotic/robot_ws
+WORKDIR /home/syncrobotic/robot_ws
+
+COPY --chown=syncrobotic:syncrobotic colcon.meta ./
+COPY --chown=syncrobotic:syncrobotic scripts/build.sh scripts/build.sh
+COPY --chown=syncrobotic:syncrobotic scripts/release/check_build.sh scripts/release/check_build.sh
+COPY --chown=syncrobotic:syncrobotic src/ src/
+
+# check_build.sh fails the image on any package that did not come out as a
+# release build -- build.sh's default, but a default: an extra --cmake-args
+# here, or a changed BUILD_TYPE, would otherwise ship an unoptimised planner
+# with nothing to show for it but a slow robot.
+RUN BUILD_SYMLINK=0 BUILD_ROSDEP=off scripts/build.sh \
+        --packages-skip direct_visual_lidar_calibration vizionsdk_ros2 && \
+    scripts/release/check_build.sh
+
+# ---------------------------------------------------------------------------
+# release: the image a robot runs without a checkout (2026-11). runtime-base,
+# the builder's install/, and the two pieces of config/ that belong to a
+# version of the code rather than to a robot:
+#   - config/sessions/*.yaml : the windows, commands and `sleep` offsets of
+#     each operating mode. Startup order is code here (no lifecycle manager).
+#   - config/cyclonedds.xml  : the DDS configuration CYCLONEDDS_URI points at.
+# Everything a robot owns stays on its host and is bind-mounted over the empty
+# places made below (docker-compose.release.yml): the instance INI over
+# config/system.ini, config/state, config/params, config/calibration, map/ and
+# log/. They are created here, owned by syncrobotic, so the image also runs
+# where one is not mounted -- CI's smoke test writes its fixture maps into the
+# image's own map/.
+#
+# Built by .github/workflows/release.yml only, which also runs the smoke test
+# in it before it is pushed. scripts/release/prepare.sh writes the
+# .release-manifest this stage copies (the SHA of this repository and of each
+# dependencies.repos checkout); without that file the build stops here, and
+# should -- an image nobody can trace to its sources is not a release.
+# ---------------------------------------------------------------------------
+FROM runtime-base AS release
+
+USER syncrobotic
+RUN mkdir -p /home/syncrobotic/robot_ws/config/state \
+             /home/syncrobotic/robot_ws/config/params \
+             /home/syncrobotic/robot_ws/config/calibration \
+             /home/syncrobotic/robot_ws/map \
+             /home/syncrobotic/robot_ws/log && \
+    : > /home/syncrobotic/robot_ws/config/system.ini
+WORKDIR /home/syncrobotic/robot_ws
+
+COPY --from=builder --chown=syncrobotic:syncrobotic \
+    /home/syncrobotic/robot_ws/install install/
+COPY --chown=syncrobotic:syncrobotic config/sessions/ config/sessions/
+COPY --chown=syncrobotic:syncrobotic config/cyclonedds.xml config/cyclonedds.xml
+
+# deploy/: what the HOST needs to run this image, carried inside it so that
+# it is never a different version from it. scripts/release/save_bundle.sh
+# takes install.sh out to put beside the image's tar, and install.sh takes the
+# rest out on the robot, every time it switches image -- on a rollback the old
+# compose file comes back with the old binaries. Nothing in the container
+# reads this directory.
+COPY --chown=syncrobotic:syncrobotic \
+    docker-compose.release.yml \
+    scripts/release/install.sh \
+    scripts/release/.env.example \
+    scripts/release/robot.ini.example \
+    scripts/attach.sh \
+    deploy/
+
+# The image checks itself, and a failure here is a failed build rather than a
+# robot that does not start:
+#   - check_libs.sh: every shared library every binary in install/ links must
+#     resolve in THIS image. The builder had dev's packages around it; this
+#     stage has only runtime-base's. A miss names the file and the library,
+#     and the fix is a line in runtime-base.
+#   - check_runtime.sh: what is reached by name while running, which ldd
+#     cannot see -- byobu, multilog and nmcli on PATH, the camera feeder's
+#     GStreamer elements, syncai_sys_manager importing from its bytecode-only
+#     install, every launch the session specs name -- and that install/ holds
+#     no link back into a source tree.
+# Bind-mounted from the context for the one RUN, so neither script is in the
+# image.
+RUN --mount=type=bind,source=scripts/release,target=/tmp/release-checks \
+    bash /tmp/release-checks/check_libs.sh install && \
+    bash /tmp/release-checks/check_runtime.sh install
+
+# sys_manager is the container's main process, as in docker-compose.robots.yml:
+# it builds the AUTO session itself, so `docker compose up -d` is the whole
+# bring-up. The three sources are spelt out rather than left to ~/.bashrc
+# because this is not an interactive shell.
+CMD ["bash", "-c", "source /opt/ros/humble/setup.bash && source /opt/ros2_rust_underlay/install/setup.bash && source install/setup.bash && exec ros2 launch syncai_sys_manager sys_manager.launch.py"]
+
+# Last, so that two releases of the same sources share every layer above: the
+# version is the build time, and changes on every build.
+ARG SYNCAI_VERSION=unversioned
+ARG SYNCAI_REVISION=unknown
+COPY --chown=syncrobotic:syncrobotic .release-manifest MANIFEST
+LABEL org.opencontainers.image.title="SyncAI robot stack" \
+      org.opencontainers.image.version="${SYNCAI_VERSION}" \
+      org.opencontainers.image.revision="${SYNCAI_REVISION}"

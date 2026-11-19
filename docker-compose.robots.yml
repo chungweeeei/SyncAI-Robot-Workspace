@@ -22,6 +22,11 @@
 # Start everything (infra + robot):
 #   docker compose up -d
 #
+# docker-compose.release.yml carries a copy of robot01 for a robot that runs
+# the release image with no checkout (it cannot `include` this file there). A
+# device, group, mount or environment variable added to robot01 here belongs
+# in that copy too; the reasons stay written here, once.
+#
 # NOTE (X11): DISPLAY=:1 targets the Jetson's local desktop via the unix
 # socket mount. If GUIs fail after a host reboot, check `ls /tmp/.X11-unix`
 # (X0 -> :0) and regenerate the xauth cookie:

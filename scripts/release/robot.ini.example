@@ -1,0 +1,16 @@
+[system]
+robot_id: CHANGE_ME
+
+[map]
+name:
+pcd: map/%(name)s/map.pcd
+
+[initial_pose]
+x: 0.0
+y: 0.0
+z: 0.0
+yaw: 0.0
+
+[sensor.lidar]
+type: mid360
+ip: CHANGE_ME

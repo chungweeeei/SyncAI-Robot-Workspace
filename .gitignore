@@ -137,3 +137,10 @@ src/syncai_landmark_detection/
 # (a [patch.crates-io] table pointing rclrs and the message crates at install/
 # and the image's ros2-rust underlay) -- build output, not config.
 .cargo/
+
+# Release tooling (2026-11). .release-manifest is written by
+# scripts/release/prepare.sh for the Dockerfile's release stage to copy;
+# dist/ is where scripts/release/save_bundle.sh puts a bundle (an image tar of
+# several hundred megabytes).
+/.release-manifest
+/dist/

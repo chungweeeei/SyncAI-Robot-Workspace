@@ -139,15 +139,16 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml
 │   ├── urdf2glb.py               # bakes G23.urdf into the GLB the operator console renders (handed over to its repo)
 │   ├── calibration/              # camera intrinsics + lidar-camera extrinsic tools (see docs/lidar-camera-calibration.md)
-│   └── release/                  # offline release bundle for the IPC (currently non-functional, see CLAUDE.md)
-├── docs/                         # operating procedures: lidar-camera calibration, localizer offline replay
-├── .github/                      # CI: lint, arm64 build + smoke test of every session spec
+│   └── release/                  # release image tooling: prepare / check_* (CI + Dockerfile), save_bundle.sh (laptop), install.sh (robot) — docs/release-deployment.md
+├── docs/                         # operating procedures: lidar-camera calibration, localizer offline replay, release deployment
+├── .github/                      # CI: lint, arm64 build + smoke test of every session spec; release.yml builds and pushes the release image
 ├── map/                          # LIO map output per map name (map.pcd, poses.txt, octomap.bt, optional keepout.json) — gitignored
 ├── log/stack/<robot_id>/         # multilog capture of every byobu pane — gitignored
-├── Dockerfile                    # multi-stage: base → deps-builder → livox / gtsam / sophus / ceres / iridescence, base → rust-underlay (all parallel) → dev
+├── Dockerfile                    # multi-stage: base → deps-builder → livox / gtsam / sophus / ceres / iridescence, base → rust-underlay (all parallel) → runtime-base → dev (→ builder), runtime-base → release
 ├── docker-compose.yml            # infra: postgres (5432) / pgadmin (5050) / temporal (7233) / temporal_ui (8081)
 ├── docker-compose.robots.yml     # robot01 (host networking, nvidia runtime, cameras, audio, D-Bus, avahi); `include`d above
 ├── docker-compose.build.yml      # standalone one-shot `colcon build` service (same image, own project name)
+├── docker-compose.release.yml    # a robot with no checkout: the release image + postgres + temporal, against /opt/syncai (shipped inside the image)
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
 ├── ruff.toml                     # Python lint config (syncai_sys_manager, scripts/)
 ├── third-party.repos             # vcstool: src/third-party/ — upstream, pinned

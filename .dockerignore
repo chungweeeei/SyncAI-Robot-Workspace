@@ -1,9 +1,11 @@
-# Keep the docker build context small and free of secrets. The ws-builder
-# stage COPYs src/ (submodules are already checked out on disk, so no SSH is
-# needed at build time); everything else here is runtime/host data that must
-# never end up in an image layer.
+# Keep the docker build context small and free of secrets. The Dockerfile's
+# builder stage COPYs src/ for the release image (the vcs checkouts and their
+# submodules are already on disk, so nothing is cloned at build time);
+# everything else here is runtime/host data that must never end up in an
+# image layer.
 
-# colcon artifacts (host-side, bind-mounted in dev; prod builds its own)
+# colcon artifacts (host-side, bind-mounted in dev; the builder stage makes
+# its own, so a checkout's --symlink-install tree can never reach a release)
 build/
 install/
 log/

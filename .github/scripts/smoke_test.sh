@@ -2,7 +2,11 @@
 # =============================================================================
 # CI smoke test: bring up each session spec's panes and check that every node
 # comes up and stays up. Run by the `smoke` job of .github/workflows/ci.yml,
-# inside the robot image, after `build` has produced install/.
+# inside the robot image, after `build` has produced install/ -- and, since
+# 2026-11, by .github/workflows/release.yml inside the release image, mounted
+# at this same path, where install/ and config/sessions/ are the image's own.
+# It must therefore keep to what both have: nothing from src/, no tool that
+# only the dev image carries.
 #
 # What it proves: every launch in config/sessions/start_nav.yaml,
 # start_mapping.yaml and calib_lidar_camera.yaml starts, its plugins load, its parameters pass their own

@@ -290,19 +290,68 @@ only on `base`, so BuildKit runs them in parallel and no `dev` edit invalidates
 them: `base` (ros-base + cyclonedds + uid-1000 user) → `deps-builder` →
 `livox` / `gtsam` / `sophus` / `ceres` / `iridescence` (one library each,
 installed with `DESTDIR=/out`; GTSAM is the slow one — keep these stages free of
-anything that changes often); `base` → `rust-underlay`; `base` → `dev`
-(colcon, byobu, Node.js, the VizionSDK `.deb`, `ros-humble-octomap`,
-`libclang-dev` + `colcon-cargo` / `colcon-ros-cargo`, and one `COPY --from` per
-stage above). Compose builds `target: dev`. There is **no rviz2** or
+anything that changes often); `base` → `rust-underlay`; `base` →
+**`runtime-base`** (2026-11: what the built workspace needs to *run* — the
+linked libraries by their runtime packages, GTSAM, the Rust underlay, byobu /
+multilog / nmcli, the GStreamer plugins, the three `.bashrc` source lines) →
+`dev` (runtime-base plus colcon, compilers, every `-dev` package, the Rust
+toolchain, Node.js, the VizionSDK `.deb`, and the Livox / Sophus / Ceres /
+Iridescence trees). **A package a node needs while running goes in
+`runtime-base`, one only `colcon build` needs in `dev`**: a linked library put
+in `dev` by mistake still runs on robot01 and then fails the release image's
+build; something loaded at run time (a GStreamer element, a tool a node shells
+out to) put in `dev` is caught only by `check_runtime.sh`'s list or on a robot.
+Compose builds `target: dev`. There is **no rviz2** or
 `pointcloud_to_laserscan` in the image (the robot has no display);
 `ros-humble-map-msgs` is listed explicitly because those used to pull it in.
 Most of `dev`'s largest layer is VTK + Qt5
 regardless: `libpcl-dev` hard-Depends on them. `chmod -R a+w /opt/rust` runs
 once, at the end of `rust-underlay` — a second walk duplicates the 516 MB
 toolchain in another layer. `dev` is a pure ROS image: do not add a pip package
-for a process that runs in another container. The production stages were
-removed during the dev phase, so `scripts/release/` does not work today —
-recover them from git history when it is time to ship to the IPC.
+for a process that runs in another container.
+
+### The release image
+
+Two more stages make the image a robot runs **without a checkout** (2026-11;
+arm64 only): `dev` → `builder` (`COPY src/`, `scripts/build.sh` with
+`BUILD_SYMLINK=0`, skipping `direct_visual_lidar_calibration` and
+`vizionsdk_ros2`; never shipped) and `runtime-base` → **`release`** (the
+builder's `install/`, `config/sessions/`, `config/cyclonedds.xml`, a
+`MANIFEST` of every checkout's SHA, and `deploy/` — the compose file,
+`install.sh` and the templates for the host, carried in the image so they are
+never another version). The path is still `/home/syncrobotic/robot_ws`: the
+rclrs packages' ament hooks and every `setup.sh` bake the absolute install
+prefix in. The stage checks itself and a failure fails the build:
+`check_build.sh` (every package a Release build), `check_libs.sh` (`ldd` over
+every ELF in `install/`), `check_runtime.sh` (what is reached by name: byobu,
+multilog, nmcli, the feeder's GStreamer elements, `sys_manager` importing from
+its bytecode-only install, every launch the session specs name). It is built
+**only by `.github/workflows/release.yml`** (manual; weekly without a push),
+which runs the smoke test inside it and pushes
+`ghcr.io/<repo>:release-<YYYYMMDD-HHMM>` — the version is the build time, there
+are no git tags. `scripts/release/save_bundle.sh` turns that into a directory
+for a robot with no network, and `install.sh` from it installs, updates and
+rolls back against `/opt/syncai`, the robot's data directory and the backend's
+`ROBOT_WS`. `docs/release-deployment.md` is the procedure. What follows from it
+when editing:
+
+- **A session spec or `cyclonedds.xml` change ships with the image**, not with
+  the host; `config/instances/`, `config/state/`, `config/params/`,
+  `config/calibration/`, `map/` and `log/` are the host's and are mounted path
+  by path (`docker-compose.release.yml`).
+- **`docker-compose.release.yml` duplicates robot01's service** from
+  `docker-compose.robots.yml` (it cannot `include` a file the target does not
+  have): a device, group, mount or environment variable added to one belongs in
+  the other. It has postgres and temporal only, no pgadmin / temporal_ui.
+- **The backend reads three things from the host that are the image's**:
+  `config/cyclonedds.xml` and, read-only, `src/syncai_controller/params/` and
+  `src/syncai_global_planner/params/` (the settings pages' factory defaults).
+  `install.sh` copies them out of the image on every switch; moving or renaming
+  either params directory is a cross-repository change, as before.
+- **The smoke test runs in both images**, so it may use nothing from `src/` and
+  no tool only `dev` has.
+- A statement that the production stages could be recovered from git history
+  stood here and in the `Dockerfile` until 2026-11. No revision ever held them.
 
 `colcon.meta` at the workspace root carries per-package cmake args. colcon only
 finds it because its `--metas` default is the relative `./colcon.meta` — same
@@ -651,8 +700,9 @@ something to verify or edit here.
 - `build/`, `install/`, `log/`, `data/`, `.env`, `record/` (hand-recorded
   rosbags), `/map/`, `/models/`, `/config/calibration/` (each robot's own
   camera intrinsics, made on the robot), `/config/state/` (per-robot runtime
-  state: the localizer's `last_pose.json`) and `/config/params/` (per-robot
-  runtime parameter overlays the backend writes) are gitignored, as are the seven
+  state: the localizer's `last_pose.json`), `/config/params/` (per-robot
+  runtime parameter overlays the backend writes), `/dist/` (release bundles)
+  and `/.release-manifest` are gitignored, as are the seven
   `dependencies.repos` checkouts and `src/syncai_backend/` (so a clone of the
   backend kept there for development can never be committed back in). `.env`
   holds secrets — never commit it.
@@ -667,13 +717,16 @@ something to verify or edit here.
   `urdf2glb.py` (see "Out of tree"), `calibration/` (camera intrinsics and
   lidar-camera extrinsic; `collect_board.py` / `snapshot.py` need rclpy, the
   rest only numpy + OpenCV + PyYAML and also run on the host), and `release/`
-  (an offline release bundle for the customer IPC, currently
-  **non-functional**: it needs the removed production Dockerfile stages and a
-  `docker-compose.prod.yml` that is not in the tree, and its `.env.example`
-  says `ROS_DOMAIN_ID=0` while the stack pins domain 1). `skills-lock.json` is
-  Claude Code tooling metadata, not stack config.
-- `docs/` holds operating procedures: `lidar-camera-calibration.md` and
-  `localizer-offline-replay.md`. Plans that pass through it are deleted once
+  (the release image's tooling, see "The release image": `prepare.sh` — CI,
+  version + manifest, refuses a dirty tree; `check_build.sh` / `check_libs.sh`
+  / `check_runtime.sh` — run inside the Dockerfile's builder and release
+  stages; `save_bundle.sh` — a laptop, pulls a pushed image into a directory
+  for an offline robot; `install.sh` — on the robot, and shipped inside the
+  image, so editing it changes the *next* release's installer; `.env.example`
+  and `robot.ini.example`, the two files a first install stops to have filled
+  in). `skills-lock.json` is Claude Code tooling metadata, not stack config.
+- `docs/` holds operating procedures: `lidar-camera-calibration.md`,
+  `localizer-offline-replay.md` and `release-deployment.md`. Plans that pass through it are deleted once
   done; git history has the old ones (and the former `doc/` design proposals).
 
 ## Tests
@@ -721,6 +774,13 @@ and reading the fixture's `keepout.json` (one zone). `camera_feeder` is skipped
 (no camera). The script refuses to run outside CI or against another INI,
 because it starts `driver_manager` too. A change to the gtsam / sophus / livox /
 rust-underlay stages rebuilds GTSAM and the underlay (most of an hour).
+
+`.github/workflows/release.yml` is separate and never runs on a push: manual
+(`workflow_dispatch`) to build, smoke-test and push the release image, and
+weekly on a schedule to build and smoke-test without pushing — the only thing
+that notices an ordinary commit breaking the non-symlink build or
+`runtime-base`'s package list before a release is wanted. It reads `ci.yml`'s
+BuildKit cache (`scope=robot-dev`) and writes none. See "The release image".
 
 ```bash
 colcon test --packages-select <package_name>

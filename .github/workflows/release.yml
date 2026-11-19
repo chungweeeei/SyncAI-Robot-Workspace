@@ -1,0 +1,218 @@
+name: release
+
+# Builds the release image -- the one a robot runs with no checkout of this
+# repository (Dockerfile, `release` stage) -- starts every node in it, and
+# pushes it to ghcr.io. This workflow is the only place a release image is
+# made: there is no supported local release build, so that what reaches a
+# robot was compiled from a clean checkout, by the same steps, every time.
+#
+#   Run it:      Actions -> release -> Run workflow (on the branch to release)
+#   The result:  ghcr.io/<owner>/<repo>:release-<version>, the version being
+#                the build time (YYYYMMDD-HHMM, Asia/Taipei), printed in the
+#                run's summary together with the SHA of every checkout
+#   To a robot:  scripts/release/save_bundle.sh <version> on a laptop, then
+#                install.sh from that bundle on the robot
+#                (docs/release-deployment.md)
+#
+# arm64 only, like ci.yml and for its reason: the robots are Jetsons.
+#
+# Why ci.yml does not do this on every push: the builder stage is a second
+# full compile of the workspace (it cannot share ci.yml's ccache, which hangs
+# off a different build path), for an image nobody deploys from a pull
+# request. What that leaves unchecked between releases is the release build
+# itself -- no --symlink-install, two packages skipped, runtime-base's package
+# list instead of dev's -- so the schedule below builds and smoke-tests it once
+# a week and pushes nothing. A red scheduled run means the next release would
+# have failed; fix it while nobody is waiting for one.
+#
+# The schedule only fires for the copy of this file on the default branch, and
+# builds `dev` from there (the branch releases are cut from).
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Push the image to ghcr.io (off = build and smoke-test only)
+        type: boolean
+        default: true
+  schedule:
+    # Mondays 03:00 Asia/Taipei.
+    - cron: "0 19 * * 0"
+
+# One release build at a time: two would race for the same minute's version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: build + smoke + push (arm64, release image)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
+
+      # vcstool on the runner, where ci.yml takes it from the dev image: this
+      # job never loads the dev image (the release build has it as a stage,
+      # inside BuildKit), and pulling 4.5 GB to run two `vcs import`s would
+      # also take the disk the release image needs. In a venv because the
+      # runner's Python refuses a system-wide pip install, and with
+      # setuptools held below 81 because vcstool 0.3.0 imports pkg_resources,
+      # which a venv on Python 3.12 does not have by default and newer
+      # setuptools no longer ships.
+      - name: Import vcs checkouts
+        run: |
+          python3 -m venv "$RUNNER_TEMP/vcs"
+          "$RUNNER_TEMP/vcs/bin/pip" install --quiet 'setuptools<81' vcstool==0.3.0
+          "$RUNNER_TEMP/vcs/bin/vcs" import --recursive --input third-party.repos
+          "$RUNNER_TEMP/vcs/bin/vcs" import --input dependencies.repos
+
+      # Refuses a dirty tree, picks the version, writes .release-manifest (the
+      # SHA of every checkout -- dependencies.repos follows branches, so this
+      # is the record of what the image holds).
+      - name: Prepare the release
+        id: prep
+        run: scripts/release/prepare.sh
+
+      # ghcr.io names must be lowercase; the repository's is not.
+      - name: Resolve the image reference
+        id: image
+        env:
+          VERSION: ${{ steps.prep.outputs.version }}
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:release-${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # cache-from ci.yml's scope: base, the source-built libraries, the Rust
+      # underlay and dev are the same stages there, so a Dockerfile ci.yml has
+      # already built costs this job only the builder and release stages. On a
+      # miss this builds GTSAM and the underlay too (most of an hour) and
+      # still succeeds. No cache-to: the builder's layers change with every
+      # commit and would only evict the ones worth keeping.
+      #
+      # load, not push: the image is pushed only after the smoke test below
+      # has started every node in it.
+      - name: Build the release image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: release
+          tags: ${{ steps.image.outputs.ref }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          build-args: |
+            SYNCAI_VERSION=${{ steps.prep.outputs.version }}
+            SYNCAI_REVISION=${{ steps.prep.outputs.revision }}
+          load: true
+          push: false
+          cache-from: type=gha,scope=robot-dev
+
+      - name: Image size
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+        run: docker image ls --format '{{.Repository}}:{{.Tag}}  {{.Size}}' "$REF"
+
+      # ci.yml's smoke test, unchanged, in the image that ships: every pane of
+      # the three session specs against generated fixture maps. Here it is
+      # also the only check of what the release stage's `ldd` pass cannot
+      # see: the session specs and cyclonedds.xml as baked into the image,
+      # whatever a launch file or a plugin loads at run time, and a real
+      # (not symlinked) install/ being complete. It does not go through
+      # sys_manager -- it starts the panes itself -- so byobu, multilog and
+      # syncai_sys_manager's stripped .pyc install are not exercised here,
+      # nor is the camera feeder, which it skips. Those four are what the
+      # first run of a release on a robot is for.
+      #
+      # The image's own user (uid 1000), not the runner's: that is what a
+      # robot runs it as. Hence the modes -- the INI is rewritten in place by
+      # the script and the logs are written through a bind mount, both by a
+      # uid that owns neither on the runner. The script is mounted at the
+      # path it has in a checkout, because it finds the workspace root from
+      # its own location; map/ is the image's own directory.
+      - name: smoke test (every node comes up in the release image)
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+        run: |
+          sudo ip addr add 192.168.1.103/32 dev lo
+          cat > "$RUNNER_TEMP/system.ini" <<'INI'
+          [system]
+          robot_id: ci_smoke
+
+          [map]
+          name: ci_smoke
+          pcd: map/%(name)s/map.pcd
+
+          [initial_pose]
+          x: 0.0
+          y: 0.0
+          z: 0.0
+          yaw: 0.0
+
+          [sensor.lidar]
+          type: mid360
+          ip: 192.168.1.172
+          INI
+          chmod 666 "$RUNNER_TEMP/system.ini"
+          mkdir -p log/smoke && chmod 777 log/smoke
+          docker run --rm --network host --shm-size 512m \
+            -e CI=true -e ROS_DOMAIN_ID=1 -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+            -e CYCLONEDDS_URI=/home/syncrobotic/robot_ws/config/cyclonedds.xml \
+            -e ROS_LOG_DIR=/tmp/ros_log -e RCUTILS_COLORIZED_OUTPUT=0 -e PYTHONUNBUFFERED=1 \
+            -v "$RUNNER_TEMP/system.ini:/home/syncrobotic/robot_ws/config/system.ini" \
+            -v "$GITHUB_WORKSPACE/.github/scripts/smoke_test.sh:/home/syncrobotic/robot_ws/.github/scripts/smoke_test.sh:ro" \
+            -v "$GITHUB_WORKSPACE/log/smoke:/home/syncrobotic/robot_ws/log/smoke" \
+            "$REF" .github/scripts/smoke_test.sh
+
+      - name: upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-logs
+          path: log/smoke/
+
+      - name: Push the image
+        if: github.event_name == 'workflow_dispatch' && inputs.push
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+        run: docker push "$REF"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+          VERSION: ${{ steps.prep.outputs.version }}
+          PUSHED: ${{ github.event_name == 'workflow_dispatch' && inputs.push }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### release ${VERSION:-(no version: prepare failed)}"
+            echo
+            if [ "$OUTCOME" = success ] && [ "$PUSHED" = true ]; then
+              echo "Pushed \`$REF\`."
+              echo
+              echo "Bundle it for an offline robot: \`scripts/release/save_bundle.sh $VERSION\`"
+            elif [ "$OUTCOME" = success ]; then
+              echo "Built and smoke-tested, not pushed (scheduled run, or push switched off)."
+            else
+              echo "Failed -- nothing was pushed."
+            fi
+            if [ -f .release-manifest ]; then
+              echo
+              echo '```'
+              cat .release-manifest
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
