@@ -71,7 +71,7 @@ wrong. Check with `ros2 node info /<robot_id>/localizer_node`, not with
 | `initialpose` | `geometry_msgs/PoseWithCovarianceStamped`, depth 10 | the console, rviz "2D Pose Estimate", the backend's map switch | A 2D guess through `applyPlanarGuess` (below); `position.z` is the ground's height and taken only when `covariance[14]` (the z variance) is positive |
 | `relocalize` | `syncai_common/srv/Relocalize` | the backend (initial pose, map switch), a shell | (Re)load a PCD and take the request's raw 6-DOF pose as the next guess |
 | `[map] pcd`, `[initial_pose]` | `config/system.ini` via the launch | | `map_path` (loaded during construction) and the boot guess |
-| `config/state/<robot_id>/last_pose.json` | written by this node, read by the launch | | The boot guess when it is for the loaded map, ahead of `[initial_pose]`; see "The last pose file" |
+| `config/state/<robot_id>/last_pose.json` | written by this node, read by the launch and, since 2026-11, by `syncai_mapping`'s `pgo_node` (where a `resume_mapping` without a hint starts): a change of its fields or its path is a change there too | | The boot guess when it is for the loaded map, ahead of `[initial_pose]`; see "The last pose file" |
 
 The two topics are joined by a `message_filters` `ApproximateTime` synchroniser
 (queue 10, age penalty 0.1). They are **absolute names set as parameters**,
