@@ -44,7 +44,8 @@ find_package(octomap REQUIRED)
 # library syncai_localizer already parses its last_pose.json with (its
 # CMakeLists.txt has the same line); apt nlohmann-json3-dev, rosdep key
 # nlohmann-json-dev. Header-only, so linking its interface target only adds
-# an include directory; only keepout_zones.cpp includes it.
+# an include directory; keepout_zones.cpp and stair_links.cpp (a resumed
+# map's sessions.json, 2026-11) include it.
 find_package(nlohmann_json 3.2.0 REQUIRED)
 
 set(dependencies
