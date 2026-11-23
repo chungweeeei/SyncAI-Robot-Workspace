@@ -1176,7 +1176,8 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
   double start_z = start.pose.position.z;
   double tf_z = 0.0;
   std::string tf_error;
-  if (startHeightHint(tf_z, &tf_error)) {
+  const bool start_z_measured = startHeightHint(tf_z, &tf_error);
+  if (start_z_measured) {
     start_z = tf_z;
   } else {
     RCLCPP_WARN_THROTTLE(
@@ -1191,8 +1192,11 @@ nav_msgs::msg::Path OctomapPlanner3D::planThrough(
 
   // The start is snapped without the overlay: the robot stands where it
   // stands, and a person beside it must not make its own cell unavailable.
-  const o3d::SnapResult s =
-    astar_->snap(start.pose.position.x, start.pose.position.y, start_z, search_params_);
+  // With the height from TF it is not moved to another layer either
+  // (snapStart(), 2026-11-23): a floor under the robot the map refuses
+  // fails start_unavailable instead of starting the route a storey away.
+  const o3d::SnapResult s = astar_->snapStart(
+    start.pose.position.x, start.pose.position.y, start_z, search_params_, start_z_measured);
   if (s.cell == o3d::kNoCell) {
     return fail(
       s.outside ? o3d::PlanFailure::StartOutsideMap : o3d::PlanFailure::StartUnavailable, s.detail);
