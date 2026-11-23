@@ -1594,7 +1594,24 @@ int main(int argc, char ** argv)
     for (const Pose & p : poses) {
       track.push_back({p.x, p.y, p.z - lidar_height});
     }
-    links = buildStairLinks(*map, track, stair_params, tree.get());
+    // The track's mapping runs (sessions.json beside --poses), as the plugin
+    // reads them: no link across a run's start.
+    std::vector<size_t> run_starts = {0};
+    if (!poses_path.empty()) {
+      std::string runs_error;
+      if (!readTrackRuns(poses_path, track.size(), run_starts, runs_error)) {
+        std::printf("track: %s; read as ONE walk\n", runs_error.c_str());
+      } else if (run_starts.size() > 1) {
+        std::printf(
+          "track: %zu keyframes in %zu mapping runs (sessions.json), starting at keyframes",
+          track.size(), run_starts.size());
+        for (const size_t s : run_starts) {
+          std::printf(" %zu", s);
+        }
+        std::printf("; no link is laid across the start of a run\n");
+      }
+    }
+    links = buildStairLinks(*map, track, stair_params, tree.get(), run_starts);
     // The plugin's startup log counts the same way (countLinks).
     const LinkCounts n = countLinks(*links);
     std::printf(

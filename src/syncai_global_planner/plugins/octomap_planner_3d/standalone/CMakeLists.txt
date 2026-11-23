@@ -2,7 +2,7 @@
 # the search offline against a map's octomap.bt on a workstation (homebrew /
 # apt octomap and nlohmann-json -- `brew install octomap nlohmann-json`,
 # `apt install liboctomap-dev nlohmann-json3-dev` -- are enough; the JSON
-# library reads the map's keepout.json). The ROS build (../../../CMakeLists.txt) compiles
+# library reads the map's keepout.json and sessions.json). The ROS build (../../../CMakeLists.txt) compiles
 # the same sources into the planner library and the same CLI; this file is
 # only the no-ROS entry point and is not a colcon package (no package.xml, and
 # colcon stops at the syncai_global_planner root anyway).

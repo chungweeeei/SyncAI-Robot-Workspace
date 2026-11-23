@@ -398,7 +398,16 @@ too. So stairs come from the map's own track instead: `poses.txt` (next to
 stretch of it that leaves one large component (≥ `stair_anchor_min_area`,
 10 m²) and arrives in another at least `stair_min_rise` (0.3 m) higher or
 lower, within `stair_max_length` (60 m) of track, is a stair the legs have
-taken. The track says *where* the stair is; since 2026-10-19 it no longer
+taken. **The track is one walk only within a mapping run.** A map made in
+more than one run (`syncai_mapping`'s `resume_mapping`) has a `sessions.json`
+beside `poses.txt` saying where each run begins
+(`{"version": 1, "sessions": [{"first": 0, "count": 812}, {"first": 812, "count": 240}]}`),
+and no stair or gap link is laid from the last keyframe of one run to the
+first of the next (2026-11, `readTrackRuns`): the robot was carried there, or
+driven unmapped, and read as one walk a run ended on 2F and resumed on 1F
+was a stair straight through the slab. No file = one run; a file that does
+not tile the track exactly is not used at all, and the planner logs an
+**error** saying the track is read as one walk. The track says *where* the stair is; since 2026-10-19 it no longer
 says how to climb it. A single flight (≤ `stair_straight_max_flight`, 8 m of
 track) becomes a **row of straight stair links** across the stair's width:
 the surfaces beside the walked stretch (within `stair_straight_fit_radius`,
@@ -1184,7 +1193,7 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | Parameter | Default | Notes |
 |---|---|---|
 | `octomap_file` | `""` (launch: `map/<name>/octomap.bt`) | Derived by the launch file from the directory of `[map] pcd`; empty or missing → every `Octo3D` plan fails with `map_not_loaded`, nothing else is affected |
-| `poses_file` | `""` (= `poses.txt` next to `octomap_file`) | The map's track, for the stair links; missing → a warning and no links. Build-time |
+| `poses_file` | `""` (= `poses.txt` next to `octomap_file`) | The map's track, for the stair links; missing → a warning and no links. `sessions.json` beside it, when there, breaks the track where a mapping run begins. Build-time |
 | `body_frame`, `lidar_height` | `pointlio_body` (launch: `<robot_id>/pointlio_body`), `0.481` | The frame the robot's real height is read from, and the sensor's height above the ground (`map_clean.recipe.json`'s `lidar_height`). Dynamic |
 | `goal_z_mode` | `request` | `request`: the goal's own z picks the floor; `start`: the robot's floor. Dynamic |
 | `robot_radius`, `body_clearance` | `0.25`, `0.6` | Footprint disc (= the padded footprint's inscribed radius, and the local costmap's terrain_layer `robot_radius`) and the band above a surface the body needs. Build-time |
