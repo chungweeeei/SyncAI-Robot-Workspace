@@ -53,6 +53,11 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
+      # The image build's RUN steps (apt, pip, rosdep, the source checkouts
+      # of the library stages) use the host's network stack, not a bridge
+      # network BuildKit creates — the same stack the container itself runs
+      # on below (network_mode: host).
+      network: host
     image: syncai-robot-base
     # Host uid/gid so ./build, ./install and ./log stay owned by the host user
     # (HOME in the image is world-writable for exactly this).
