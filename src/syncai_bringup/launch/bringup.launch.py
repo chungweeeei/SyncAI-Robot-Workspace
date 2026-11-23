@@ -18,8 +18,9 @@
 # before syncai_lio_bridge.
 #
 # Publishes:
-#   * The G23 body TF tree via robot_state_publisher (reads the URDF under
-#     description/). The URDF root link is base_link, so with frame_prefix the
+#   * The robot's body TF tree via robot_state_publisher (reads the model's
+#     URDF under description/; what follows describes G23.urdf, the one every
+#     robot ran until 2026-11). The URDF root link is base_link, so with frame_prefix the
 #     legs hang directly off <robot_id>/base_link (odom->base_link comes from
 #     LIO). The fixed joints (the 4 *_Ankle, lidar_top_joint,
 #     lidar_top_imu_joint and camera_optical_joint) go to /tf_static; the 12
@@ -52,6 +53,13 @@
 # every other launch file in the stack. The same INI also supplies the lidar's
 # own IP and model ([sensor.lidar] ip / type), which are per-robot hardware
 # identity and belong next to robot_id rather than in a shared params file.
+#
+# The INI's [system] robot_model (g23 when absent) picks the URDF (MODEL_URDF)
+# and the model's own values, config/models/<robot_model>/bringup.yaml beside
+# the INI, loaded after params/bringup.yaml: a host_ip on another subnet, say.
+# A model with no such file fails the launch rather than come up on another
+# robot's values; the helpers are copied from controller_server.launch.py, not
+# shared, as every launch's are.
 #
 # Node parameters live in params/bringup.yaml under /**/ wildcard keys. Only the
 # values that cannot be static are set here, appended after the file so they win:
@@ -159,6 +167,16 @@ LIVOX_MODELS = {"mid360": "MID360", "mid360s": "Mid360s"}
 # raise.
 FALLBACK_LIDAR_MODEL = "mid360"
 
+# The URDF robot_state_publisher reads for each [system] robot_model, under
+# description/. A table rather than "<MODEL>.urdf" by convention, so that a
+# model is listed here only once its URDF carries the three links the stack
+# hangs things on -- lidar_top (the driver's cloud), lidar_top_imu (Point-LIO's
+# body) and camera_optical_frame (the feeder's images). M20.urdf does not yet
+# (its lidar mount is not measured), and is listed anyway: the body tree is
+# what the mount will be measured against, and a missing lidar_top shows as an
+# unparented cloud, not as another robot's legs.
+MODEL_URDF = {"g23": "G23.urdf", "m20": "M20.urdf"}
+
 logger = launch_logging.get_logger("bringup.launch")
 
 
@@ -180,6 +198,97 @@ def read_robot_id(config_path: str) -> str:
         return FALLBACK_ROBOT_ID
 
     return robot_id
+
+
+def count_leaves(node) -> int:
+    if isinstance(node, dict):
+        return sum(count_leaves(v) for v in node.values())
+    return 1
+
+
+# The model an INI that names none is taken to be: the one every factory params
+# file in this workspace was written for (config/models/README.md).
+FALLBACK_ROBOT_MODEL = "g23"
+
+
+def read_robot_model(config_path: str) -> str:
+    """[system] robot_model from the INI: which kind of robot this is.
+
+    Lower-cased, because it names a directory (config/models/<model>/). A
+    missing INI or key falls back to FALLBACK_ROBOT_MODEL with a warning, the
+    way robot_id falls back: an INI written before 2026-11 has no such key and
+    is a G23's.
+    """
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    model = config.get("system", "robot_model", fallback="").strip().lower()
+    if not model:
+        logger.warning(
+            f"No [system] robot_model in '{config_path}'; "
+            f"falling back to '{FALLBACK_ROBOT_MODEL}'"
+        )
+        return FALLBACK_ROBOT_MODEL
+    return model
+
+
+def models_dir(config_path: str) -> str:
+    """config/models/: the one beside the system INI when there is one, else
+    the workspace's.
+
+    An INI kept somewhere else and passed with system_config:= (a replay's, a
+    test's) names a model; it does not bring the models with it, and must not
+    have to.
+    """
+    beside = os.path.join(os.path.dirname(os.path.abspath(config_path)), "models")
+    if os.path.isdir(beside):
+        return beside
+    return os.path.join(os.path.dirname(DEFAULT_SYSTEM_INI), "models")
+
+
+def model_params(path: str, model: str):
+    """Return the robot model's params file for this launch, or None when it
+    holds no key.
+
+    Loaded after the factory params: what this *model* of robot changes from
+    them (body size, gait limits, sensor mount). Nothing here is skipped: a
+    missing or unreadable file fails the launch. Falling back to the factory
+    values would start another robot on the G23's footprint and gait floors
+    and look healthy doing it, so a model that changes nothing here says so
+    with a file that holds no key (config/models/g23/ is six of those) -- and
+    that file is not handed to rcl, which is never given an empty block.
+    """
+    model_dir = os.path.dirname(path)
+    if not os.path.isdir(model_dir):
+        raise RuntimeError(
+            f"robot_model '{model}': no directory '{model_dir}'. Check [system] "
+            "robot_model in the system INI against config/models/."
+        )
+    if not os.path.isfile(path):
+        raise RuntimeError(
+            f"robot_model '{model}': '{path}' does not exist, so this launch has no "
+            f"{model} parameters and will not start on another model's. Write the file "
+            "(config/models/README.md; a block with no key means no difference)."
+        )
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            raise ValueError("top level is not a mapping")
+        keys = 0
+        for node, section in data.items():
+            if not isinstance(section, dict) or "ros__parameters" not in section:
+                raise ValueError(f"'{node}' has no ros__parameters block")
+            keys += count_leaves(section["ros__parameters"] or {})
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        raise RuntimeError(
+            f"robot_model '{model}': '{path}' is unreadable ({e}); not starting on "
+            "the factory params alone"
+        ) from e
+    if keys == 0:
+        logger.info(f"robot_model '{model}': '{path}' holds no key; factory params as they are")
+        return None
+    logger.info(f"robot_model '{model}': '{path}' loaded, {keys} key(s) over the factory params")
+    return path
 
 
 def read_lidar_ip(config_path: str) -> str:
@@ -252,25 +361,33 @@ def read_lidar_type(config_path: str) -> str:
     return FALLBACK_LIDAR_MODEL
 
 
-def read_host_ip(params_path: str) -> str:
-    """Read host_ip from the livox node's block in the params YAML.
+def read_host_ip(*params_paths: str) -> str:
+    """Read host_ip from the livox node's block in the params YAML(s).
 
     The host IP is the address of the machine's interface on the lidar's subnet
     — the driver binds its receive sockets to it, so it is per-robot wiring, not
     a property of the lidar. It lives in the params file (rather than the INI)
     because that is where every other livox setting already is; it is read back
     out here because the value is needed to render JSON, not to set a ROS param.
-    """
-    with open(params_path, "r") as f:
-        params = yaml.safe_load(f) or {}
 
-    host_ip = (
-        params.get(LIVOX_PARAMS_KEY, {}).get("ros__parameters", {}).get("host_ip", "")
-    )
-    host_ip = str(host_ip).strip()
+    Given the files in the order the node loads them (the factory params, then
+    the robot model's when it holds a key), the last one that sets host_ip
+    wins, as it does for the ROS parameter: the JSON the driver binds to must
+    not disagree with the parameter it reports.
+    """
+    host_ip = ""
+    for params_path in params_paths:
+        with open(params_path, "r") as f:
+            params = yaml.safe_load(f) or {}
+
+        block = (params.get(LIVOX_PARAMS_KEY) or {}).get("ros__parameters") or {}
+        value = str(block.get("host_ip", "")).strip()
+        if value:
+            host_ip = value
+
     if not host_ip:
         raise RuntimeError(
-            f"No host_ip under '{LIVOX_PARAMS_KEY}' in '{params_path}'. Set it "
+            f"No host_ip under '{LIVOX_PARAMS_KEY}' in {list(params_paths)}. Set it "
             "to this machine's IP on the lidar subnet (`ip -4 addr`)."
         )
 
@@ -403,11 +520,42 @@ def launch_setup(context, *args, **kwargs):
     config_path = LaunchConfiguration("system_config").perform(context)
     robot_id = read_robot_id(config_path)
 
-    urdf_file = LaunchConfiguration("urdf_file").perform(context)
+    # The robot model picks two things here: the URDF, and the model's own
+    # values over the factory params (config/models/<robot_model>/bringup.yaml
+    # beside the system INI; a model without that file fails the launch in
+    # model_params).
+    robot_model = read_robot_model(config_path)
+
+    # An explicit urdf_file:= wins; otherwise the model's. A model with no
+    # URDF listed fails here rather than publish the G23's legs under another
+    # robot's base_link.
+    urdf_file = LaunchConfiguration("urdf_file").perform(context).strip()
+    if not urdf_file:
+        if robot_model not in MODEL_URDF:
+            raise RuntimeError(
+                f"robot_model '{robot_model}' has no URDF in MODEL_URDF "
+                f"({sorted(MODEL_URDF)}). Add it to bringup.launch.py, or pass urdf_file:=."
+            )
+        urdf_file = MODEL_URDF[robot_model]
+    logger.info(f"robot_model '{robot_model}': robot_state_publisher on '{urdf_file}'")
+
     # Resolved as well as passed through: the nodes get the file itself, and
     # write_livox_config needs one value out of it (see read_host_ip).
     params_path = LaunchConfiguration("params_file").perform(context)
     params_file = LaunchConfiguration("params_file")
+
+    model_path = LaunchConfiguration("model_params_file").perform(context)
+    if not model_path:
+        model_path = os.path.join(models_dir(config_path), robot_model, "bringup.yaml")
+    model_overlay = model_params(model_path, robot_model)
+
+    # What both nodes load before their computed overrides, and what
+    # read_host_ip reads back in the same order.
+    params_paths = [params_path]
+    parameters = [params_file]
+    if model_overlay:
+        params_paths.append(model_overlay)
+        parameters.append(model_overlay)
 
     # Load the URDF. robot_state_publisher only parses the kinematic tree for
     # TF; meshes (referenced with relative ../meshes/ paths) are never loaded
@@ -431,10 +579,10 @@ def launch_setup(context, *args, **kwargs):
         namespace=robot_id,
         output="screen",
         parameters=[
-            params_file,
+            *parameters,
             {
-                # Computed here, so appended after the params file to win over
-                # it: the URDF text read off disk, and the frame prefix which
+                # Computed here, so appended after the params files to win over
+                # them: the URDF text read off disk, and the frame prefix which
                 # needs the resolved robot_id.
                 "robot_description": robot_description,
                 "frame_prefix": f"{robot_id}/",
@@ -452,7 +600,7 @@ def launch_setup(context, *args, **kwargs):
         robot_id,
         read_lidar_type(config_path),
         read_lidar_ip(config_path),
-        read_host_ip(params_path),
+        read_host_ip(*params_paths),
     )
     livox_overrides = {
         # Both are derived from the resolved robot_id, so they are appended
@@ -479,7 +627,7 @@ def launch_setup(context, *args, **kwargs):
         name=LIVOX_NODE_NAME,
         namespace=robot_id,
         output="screen",
-        parameters=[params_file, livox_overrides],
+        parameters=[*parameters, livox_overrides],
     )
 
     return [robot_state_publisher, livox_driver]
@@ -505,10 +653,18 @@ def generate_launch_description():
 
     declare_urdf_file = DeclareLaunchArgument(
         "urdf_file",
-        default_value="G23.urdf",
+        default_value="",
         description="URDF file name under syncai_bringup/description/ for "
         "robot_state_publisher (capsule collisions swapped to cylinder so "
-        "urdfdom can parse it; TF-only, collision fidelity not needed)",
+        "urdfdom can parse it; TF-only, collision fidelity not needed). Empty "
+        "(default) = the one MODEL_URDF lists for the INI's [system] robot_model",
+    )
+
+    declare_model_params_file = DeclareLaunchArgument(
+        "model_params_file",
+        default_value="",
+        description="Robot-model params YAML loaded after params_file; empty = "
+        "config/models/<robot_model>/bringup.yaml beside system_config",
     )
 
     declare_livox_xfer_format = DeclareLaunchArgument(
@@ -523,6 +679,7 @@ def generate_launch_description():
         [
             declare_system_config,
             declare_params_file,
+            declare_model_params_file,
             declare_urdf_file,
             declare_livox_xfer_format,
             OpaqueFunction(function=launch_setup),

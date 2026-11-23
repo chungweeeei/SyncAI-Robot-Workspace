@@ -909,10 +909,28 @@ was no longer true. Change both in the params file and restart. A preempt that
 **switches controllers** resets the newcomer; one that
 keeps the controller still does not.
 
+### The robot model's file
+
+Between the factory file and the runtime overlay below, the launch loads
+**`config/models/<robot_model>/controller_server.yaml`** (tracked), for the
+model the INI's `[system] robot_model` names (absent = `g23`): the footprint,
+the terrain layer's body values, the speed limits, the gait floors and the
+stair block of that kind of robot, under the same `/**/controller_server:` and
+`/**/local_costmap:` keys. The factory file in this package is still the
+G23's, so `config/models/g23/controller_server.yaml` holds no key — and every
+key another model's file leaves out is the G23's. `config/models/model_keys.yaml`
+lists the ones a model must set and `config/models/test_model_overlays.py`
+checks them; `test_approach_law` still reads the factory file alone, so a
+model's own `Charging` bands are not held against its goal checkers by any
+test. A model with no file (or one that does not parse) **fails the launch**:
+unlike the runtime overlay there is no falling back, because the fallback is
+another robot's body. `model_params_file:=` points at another file.
+`config/models/README.md` has the rest.
+
 ### The runtime overlay (console settings)
 
-The launch loads two files: the factory `params/controller_server_params.yaml`
-(this package, tracked, never written at runtime) and then, when it exists,
+The launch loads the factory `params/controller_server_params.yaml`
+(this package, tracked, never written at runtime), the model's file above, and then, when it exists,
 **`config/params/<robot_id>/controller_server.yaml`** beside the system INI
 (gitignored). The overlay is written by `syncai_backend`'s controller settings
 page and holds only the keys the operator changed, under the same

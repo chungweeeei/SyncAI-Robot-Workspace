@@ -551,6 +551,16 @@ any namespace. Every key is a `declare_parameter` whose default repeats the
 struct default, so a missing key degrades to the code default instead of
 throwing. The launch layers the instance values on top.
 
+Between the two it loads `config/models/<robot_model>/localizer.yaml`, for the
+model the INI's `[system] robot_model` names (absent = `g23`, whose file holds
+no key because this package's file is the G23's). `lidar_height` is the key
+another kind of robot must set, to the value its planner, controller and
+task_runner files carry (`config/models/model_keys.yaml`). A model with no
+file fails the launch (`config/models/README.md`); `model_params_file:=`
+points at another file. The models directory is the one beside the INI, else
+`~/robot_ws/config/models`, so `system_config:=` at an INI kept elsewhere
+needs nothing copied beside it.
+
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
 | `cloud_topic` / `odom_topic` | `/pointlio/body_cloud` / `/pointlio/lio_odom` | `/<robot_id>/pointlio/…` | Absolute, into pointlio's namespace |

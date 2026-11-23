@@ -12,14 +12,17 @@
 # one-line map switch is unaffected. A map without the file still launches;
 # the Octo3D plugin then logs one error and fails its own plans only.
 #
-# Two parameter files are loaded, in order: the factory params in this
-# package (tracked, never written at runtime) and the robot's runtime overlay,
-# config/params/<robot_id>/planner_server.yaml beside the system INI -- the
-# keys the console's settings page changed, written by syncai_backend. A later
-# file wins key by key; deleting the overlay, or launching with
-# use_runtime_params:=false, falls back to the factory values. Same scheme as
-# controller_server.launch.py, whose helpers below are copied, not shared:
-# a launch file in one package does not import another package's.
+# Three parameter files are loaded, in order, a later one winning key by key:
+# the factory params in this package (tracked, never written at runtime); the
+# robot model's, config/models/<robot_model>/planner_server.yaml beside the
+# system INI (tracked; Octo3D's body -- radius, clearance, step, slope --
+# for the model [system] robot_model names, and a model with no such file
+# fails the launch); and the robot's runtime overlay,
+# config/params/<robot_id>/planner_server.yaml -- the keys the console's
+# settings page changed, written by syncai_backend. Deleting the overlay, or
+# launching with use_runtime_params:=false, falls back to the first two. Same
+# scheme as controller_server.launch.py, whose helpers below are copied, not
+# shared: a launch file in one package does not import another package's.
 
 import configparser
 import os
@@ -63,6 +66,91 @@ def read_robot_id(config_path: str) -> str:
         return FALLBACK_ROBOT_ID
 
     return robot_id
+
+
+# The model an INI that names none is taken to be: the one every factory params
+# file in this workspace was written for (config/models/README.md).
+FALLBACK_ROBOT_MODEL = "g23"
+
+
+def read_robot_model(config_path: str) -> str:
+    """[system] robot_model from the INI: which kind of robot this is.
+
+    Lower-cased, because it names a directory (config/models/<model>/). A
+    missing INI or key falls back to FALLBACK_ROBOT_MODEL with a warning, the
+    way robot_id falls back: an INI written before 2026-11 has no such key and
+    is a G23's.
+    """
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    model = config.get("system", "robot_model", fallback="").strip().lower()
+    if not model:
+        logger.warning(
+            f"No [system] robot_model in '{config_path}'; "
+            f"falling back to '{FALLBACK_ROBOT_MODEL}'"
+        )
+        return FALLBACK_ROBOT_MODEL
+    return model
+
+
+def models_dir(config_path: str) -> str:
+    """config/models/: the one beside the system INI when there is one, else
+    the workspace's.
+
+    An INI kept somewhere else and passed with system_config:= (a replay's, a
+    test's) names a model; it does not bring the models with it, and must not
+    have to.
+    """
+    beside = os.path.join(os.path.dirname(os.path.abspath(config_path)), "models")
+    if os.path.isdir(beside):
+        return beside
+    return os.path.join(os.path.dirname(DEFAULT_SYSTEM_INI), "models")
+
+
+def model_params(path: str, model: str):
+    """Return the robot model's params file for this launch, or None when it
+    holds no key.
+
+    Loaded after the factory params: what this *model* of robot changes from
+    them (body size, gait limits, sensor mount). Nothing here is skipped: a
+    missing or unreadable file fails the launch. Falling back to the factory
+    values would start another robot on the G23's footprint and gait floors
+    and look healthy doing it, so a model that changes nothing here says so
+    with a file that holds no key (config/models/g23/ is six of those) -- and
+    that file is not handed to rcl, which is never given an empty block.
+    """
+    model_dir = os.path.dirname(path)
+    if not os.path.isdir(model_dir):
+        raise RuntimeError(
+            f"robot_model '{model}': no directory '{model_dir}'. Check [system] "
+            "robot_model in the system INI against config/models/."
+        )
+    if not os.path.isfile(path):
+        raise RuntimeError(
+            f"robot_model '{model}': '{path}' does not exist, so this launch has no "
+            f"{model} parameters and will not start on another model's. Write the file "
+            "(config/models/README.md; a block with no key means no difference)."
+        )
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            raise ValueError("top level is not a mapping")
+        keys = 0
+        for node, section in data.items():
+            if not isinstance(section, dict) or "ros__parameters" not in section:
+                raise ValueError(f"'{node}' has no ros__parameters block")
+            keys += count_leaves(section["ros__parameters"] or {})
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        raise RuntimeError(
+            f"robot_model '{model}': '{path}' is unreadable ({e}); not starting on "
+            "the factory params alone"
+        ) from e
+    if keys == 0:
+        logger.info(f"robot_model '{model}': '{path}' holds no key; factory params as they are")
+        return None
+    logger.info(f"robot_model '{model}': '{path}' loaded, {keys} key(s) over the factory params")
+    return path
 
 
 def count_leaves(node) -> int:
@@ -162,7 +250,18 @@ def launch_setup(context, *args, **kwargs):
 
     params_file = LaunchConfiguration("params_file")
 
+    # The robot model's own values, between the factory params and anything
+    # per-robot: config/models/<robot_model>/planner_server.yaml beside the system
+    # INI. A model without that file fails the launch here (model_params).
+    robot_model = read_robot_model(config_path)
+    model_path = LaunchConfiguration("model_params_file").perform(context)
+    if not model_path:
+        model_path = os.path.join(models_dir(config_path), robot_model, "planner_server.yaml")
+    model_overlay = model_params(model_path, robot_model)
+
     parameters = [params_file]
+    if model_overlay:
+        parameters.append(model_overlay)
     if LaunchConfiguration("use_runtime_params").perform(context).lower() == "true":
         overlay_path = LaunchConfiguration("runtime_params_file").perform(context)
         if not overlay_path:
@@ -194,8 +293,9 @@ def launch_setup(context, *args, **kwargs):
         executable="planner_server",
         namespace=robot_id,
         output="screen",
-        # Factory params, then the runtime overlay, then the per-robot
-        # overrides: a later entry wins, and the overlay holds none of these.
+        # Factory params, then the robot model's, then the runtime overlay,
+        # then the per-robot overrides: a later entry wins, and neither
+        # overlay holds any of these.
         parameters=[
             *parameters,
             {
@@ -233,6 +333,15 @@ def generate_launch_description():
         description="Full path to the planner server parameters YAML file",
     )
 
+    declare_model_params_file = DeclareLaunchArgument(
+        "model_params_file",
+        default_value="",
+        description=(
+            "Robot-model params YAML loaded after the factory params; empty = "
+            "config/models/<robot_model>/planner_server.yaml beside system_config"
+        ),
+    )
+
     declare_runtime_params_file = DeclareLaunchArgument(
         "runtime_params_file",
         default_value="",
@@ -252,6 +361,7 @@ def generate_launch_description():
         [
             declare_system_config,
             declare_params_file,
+            declare_model_params_file,
             declare_runtime_params_file,
             declare_use_runtime_params,
             OpaqueFunction(function=launch_setup),

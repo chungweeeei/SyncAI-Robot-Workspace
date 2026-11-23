@@ -23,10 +23,16 @@ with two changes: the mesh paths are rewritten from `./meshes/` to
 `../meshes/M20/` so they resolve the way G23's do, and DEEP Robotics'
 `front_lidar_link` / `rear_lidar_link` and their joints are removed — this
 stack's lidar is one `lidar_top` (+ `lidar_top_imu`), and the M20's mount for
-it has not been added yet. Until it is, nothing launches this file:
-`urdf_file:=M20.urdf` would leave the driver's `lidar_top` cloud and
-Point-LIO's body frame unparented. Its `front_camera_link` /
-`rear_camera_link` are kept as shipped.
+it has not been added yet. Until it is, `robot_model: m20` (which picks this
+file, below) leaves the driver's `lidar_top` cloud and Point-LIO's body frame
+unparented — and does not start at all today, because `config/models/m20/` has
+no `bringup.yaml`. Its `front_camera_link` / `rear_camera_link` are kept as
+shipped.
+
+**Which URDF is the INI's `[system] robot_model`** (2026-11; absent = `g23`):
+`MODEL_URDF` in the launch file maps `g23` → `G23.urdf` and `m20` →
+`M20.urdf`, and a model it does not list fails the launch. `urdf_file:=` still
+names a file directly.
 
 There is deliberately no `maps/` or `rviz/` here. Both existed as empty
 `.gitkeep` placeholders inherited from the `nav2_bringup` skeleton and were
@@ -193,9 +199,10 @@ that branch onto the robot tree through its `lidar_frame` — see above.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `system_config` | `config/system.ini` | INI providing `[system] robot_id` and `[sensor.lidar]` `ip` / `type` |
+| `system_config` | `config/system.ini` | INI providing `[system] robot_id` / `robot_model` and `[sensor.lidar]` `ip` / `type` |
 | `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for every node this file starts |
-| `urdf_file` | `G23.urdf` | File name under `description/` |
+| `model_params_file` | empty | The robot model's params, loaded after `params_file`; empty = `config/models/<robot_model>/bringup.yaml` beside the INI (else the workspace's). A model with no file fails the launch; one whose blocks hold no key (`g23`'s) is not passed on. `host_ip` set here also reaches the rendered livox JSON |
+| `urdf_file` | empty | File name under `description/`; empty = the one `MODEL_URDF` lists for `robot_model` (`G23.urdf` for `g23`) |
 | `livox_xfer_format` | empty | Override the driver's `xfer_format`: `0` = `PointCloud2`, `1` = `CustomMsg`, empty = keep the YAML's `1`. Only the calibration session sets it (`0`), because it runs no LIO; anything else fails the launch |
 
 To move the lidar, edit `lidar_top_joint` in the URDF, measured to the

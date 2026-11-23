@@ -359,6 +359,15 @@ namespace. Every key is a `declare_parameter` whose default repeats the struct
 default, so a missing key degrades to the code default instead of throwing.
 The launch layers the two frame names on top.
 
+Between the two it loads `config/models/<robot_model>/pointlio.yaml`, for the
+model the INI's `[system] robot_model` names (absent = `g23`, whose file holds
+no key because this package's file is the G23's). Of the keys below,
+`lidar_min_range` (the blind radius round the body) and `satu_acc` (sized to
+the G23 gait's impacts) are the ones another kind of robot is likely to
+change; `r_il` / `t_il` are the lidar's own and follow the lidar, not the
+robot. A model with no file fails the launch (`config/models/README.md`);
+`model_params_file:=` points at another file.
+
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
 | `world_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | The YAML said `lidar` until 2026-10, and the code default still does; `pointlio_odom` is what `syncai_mapping`'s `pgo_node` derives in a bare run |

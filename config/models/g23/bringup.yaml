@@ -1,0 +1,13 @@
+# The G23's differences from src/syncai_bringup/params/bringup.yaml: none.
+#
+# The factory file was tuned on the G23 and still carries its body and gait
+# values, so there is nothing to lay over it. The file exists because the
+# launch refuses a model with no file for this node rather than fall back to
+# the factory values (config/models/README.md); a block with no key is how a
+# model says "no difference", and is never handed to the node.
+
+/**/robot_state_publisher:
+  ros__parameters: {}
+
+/**/livox_lidar_publisher:
+  ros__parameters: {}

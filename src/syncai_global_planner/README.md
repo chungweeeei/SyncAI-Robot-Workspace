@@ -1240,10 +1240,25 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 A build-time parameter set through `ros2 param set` is refused with the
 reason; it needs a planner_server restart.
 
+### The robot model's file
+
+After the factory `params/planner_server_params.yaml` the launch loads
+**`config/models/<robot_model>/planner_server.yaml`** (tracked), for the model
+the INI's `[system] robot_model` names (absent = `g23`): `Octo3D`'s body —
+`lidar_height`, `robot_radius`, `body_clearance`, `max_step_height`,
+`max_slope_deg` — and the radii derived from the footprint. The factory file
+is still the G23's, so `config/models/g23/planner_server.yaml` holds no key
+and another model inherits whatever its file leaves out;
+`config/models/model_keys.yaml` lists what it must set, and that
+`Octo3D.robot_radius`, `Octo3D.keepout.block_radius` and the terrain layer's
+`robot_radius` stay one value. A model with no file fails the launch rather
+than plan for another robot's body. `model_params_file:=` points at another
+file; `config/models/README.md` has the rest.
+
 ### The runtime overlay (console settings)
 
 As for the controller (its README, "The runtime overlay"): the launch loads the
-factory `params/planner_server_params.yaml` and then, when it exists,
+factory `params/planner_server_params.yaml`, the model's file above, and then, when it exists,
 **`config/params/<robot_id>/planner_server.yaml`** (gitignored), which
 `syncai_backend`'s planner settings page writes with only the keys the operator
 changed. The backend sets the Dynamic ones live and saves what it read back;

@@ -499,6 +499,14 @@ ros2 launch syncai_task_runner task_runner.launch.py \
     system_config:=/path/to/other.ini
 ```
 
+After `params/task_runner_params.yaml` the launch loads
+`config/models/<robot_model>/task_runner.yaml`, for the model the INI's
+`[system] robot_model` names (absent = `g23`, whose file holds no key because
+this package's file is the G23's): `lidar_height`, which another kind of robot
+must set. A model with no file fails the launch (`config/models/README.md`);
+`model_params_file:=` points at another file. The trees are not per model:
+`charge.xml`'s motion keys are the G23 gait controller's.
+
 Both byobu sessions start it after `sleep 10` — the longest delay in the stack,
 because the BT is constructed at startup and **every action and service it
 references must already be up** (see gotchas).

@@ -1,0 +1,117 @@
+# What a model's files in config/models/<model>/ must hold. Read by
+# test_model_overlays.py only -- no launch reads this file; a launch checks that
+# the model's file exists and parses, and the content is this test's.
+#
+# README.md beside this file has the layering and the reasons.
+
+# The model the factory params files were written for: its files here hold no
+# key, and `required` below does not apply to it. Every other model inherits
+# from it whatever its own file leaves out.
+factory_model: g23
+
+# Per model file: the factory params file it lays over (workspace-relative),
+# and the keys a model other than `factory_model` must set once the file
+# exists -- the values that describe the body, the gait and the sensor mount,
+# where the G23's are wrong for any other robot rather than merely untuned.
+# Dotted paths under the node's ros__parameters.
+files:
+  bringup.yaml:
+    factory: src/syncai_bringup/params/bringup.yaml
+    required: {}
+
+  pointlio.yaml:
+    factory: src/syncai_pointlio/params/pointlio_params.yaml
+    required: {}
+
+  localizer.yaml:
+    factory: src/syncai_localizer/params/localizer_params.yaml
+    required:
+      /**/localizer_node:
+        - lidar_height
+
+  planner_server.yaml:
+    factory: src/syncai_global_planner/params/planner_server_params.yaml
+    required:
+      /**/planner_server:
+        - Octo3D.lidar_height
+        - Octo3D.robot_radius
+        - Octo3D.body_clearance
+        - Octo3D.max_step_height
+        - Octo3D.max_slope_deg
+        - Octo3D.narrow_max_width
+        - Octo3D.stair_flights_turn_radius
+        - Octo3D.dynamic.self_radius
+        - Octo3D.dynamic.block_radius
+        - Octo3D.keepout.block_radius
+
+  controller_server.yaml:
+    factory: src/syncai_controller/params/controller_server_params.yaml
+    required:
+      /**/controller_server:
+        - lidar_height
+        - FollowPath.vx_max
+        - FollowPath.wz_max
+        - FollowPath.motion_model
+        - FollowPath.max_linear_accel
+        - FollowPath.max_angular_accel
+        - FollowPath.walk_vx_min
+        - FollowPath.in_place_wz_min
+        - FollowPath.slow_linear_vel
+        - FollowPath.use_stair_mode
+        - FollowPath.stair_policy_mode
+        - FollowPath.flat_policy_mode
+        - FollowPathRPP3D.desired_linear_vel
+        - FollowPathRPP3D.rotate_to_heading_angular_vel
+        - FollowPathRPP3D.max_linear_accel
+        - FollowPathRPP3D.max_angular_accel
+        - FollowPathRPP3D.use_stair_mode
+        - FollowPathRPP3D.stair_policy_mode
+        - FollowPathRPP3D.flat_policy_mode
+      /**/local_costmap:
+        - footprint
+        - terrain_layer.sensor_height
+        - terrain_layer.robot_radius
+        - terrain_layer.body_clearance
+        - terrain_layer.max_step_height
+        - terrain_layer.max_slope_deg
+        - inflation_layer.inflation_radius
+
+  task_runner.yaml:
+    factory: src/syncai_task_runner/params/task_runner_params.yaml
+    required:
+      /**/task_runner:
+        - lidar_height
+
+# Keys that must hold one value, checked on the merged result (factory + the
+# model's file) of every model, the factory model included: a model that
+# overrides one of a group and leaves another at the G23's value is caught
+# here. Each entry is [model file, node key, dotted path].
+equal:
+  - name: lidar height
+    keys:
+      - [controller_server.yaml, /**/controller_server, lidar_height]
+      - [controller_server.yaml, /**/local_costmap, terrain_layer.sensor_height]
+      - [planner_server.yaml, /**/planner_server, Octo3D.lidar_height]
+      - [localizer.yaml, /**/localizer_node, lidar_height]
+      - [task_runner.yaml, /**/task_runner, lidar_height]
+
+  - name: robot radius
+    keys:
+      - [planner_server.yaml, /**/planner_server, Octo3D.robot_radius]
+      - [planner_server.yaml, /**/planner_server, Octo3D.keepout.block_radius]
+      - [controller_server.yaml, /**/local_costmap, terrain_layer.robot_radius]
+
+  - name: stair mode on or off
+    keys:
+      - [controller_server.yaml, /**/controller_server, FollowPath.use_stair_mode]
+      - [controller_server.yaml, /**/controller_server, FollowPathRPP3D.use_stair_mode]
+
+  - name: stair policy
+    keys:
+      - [controller_server.yaml, /**/controller_server, FollowPath.stair_policy_mode]
+      - [controller_server.yaml, /**/controller_server, FollowPathRPP3D.stair_policy_mode]
+
+  - name: flat policy
+    keys:
+      - [controller_server.yaml, /**/controller_server, FollowPath.flat_policy_mode]
+      - [controller_server.yaml, /**/controller_server, FollowPathRPP3D.flat_policy_mode]

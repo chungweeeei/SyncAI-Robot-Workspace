@@ -277,10 +277,12 @@ jobs:
               gh cache delete --repo "$GITHUB_REPOSITORY" "$key" || true
             done
 
-      # The Python suite is these two files; the C++ packages' gtests are not run
-      # here and their ament linter templates are not enforced (see CLAUDE.md,
-      # "Tests"). The calibration tests need only numpy and OpenCV, which the
-      # image carries for the calibration tools themselves.
+      # The Python suite is these three files; the C++ packages' gtests are not
+      # run here and their ament linter templates are not enforced (see
+      # CLAUDE.md, "Tests"). The calibration tests need only numpy and OpenCV,
+      # which the image carries for the calibration tools themselves; the model
+      # test reads config/models/ against the factory params files with PyYAML
+      # (what a model's file must hold -- the launches only check it exists).
       - name: pytest
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/home/syncrobotic \
@@ -291,7 +293,8 @@ jobs:
               source /opt/ros2_rust_underlay/install/setup.bash
               source install/setup.bash
               python3 -m pytest -v src/syncai_sys_manager/test/test_wifi_manager.py \
-                scripts/calibration/test_calib_common.py'
+                scripts/calibration/test_calib_common.py \
+                config/models/test_model_overlays.py'
 
       # --- smoke: does every node come up? ----------------------------------
       # In this job rather than its own, because it needs the install/ the step
@@ -314,6 +317,7 @@ jobs:
           cat > "$RUNNER_TEMP/system.ini" <<'INI'
           [system]
           robot_id: ci_smoke
+          robot_model: g23
 
           [map]
           name: ci_smoke

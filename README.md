@@ -131,9 +131,10 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   └── third-party/              # six upstream repos, checked out by vcstool
 ├── config/
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
-│   ├── instances/robot.ini       # the robot's identity: [system] robot_id, [map], [initial_pose], [sensor.lidar]
+│   ├── instances/robot.ini       # the robot's identity: [system] robot_id + robot_model, [map], [initial_pose], [sensor.lidar]
+│   ├── models/<robot_model>/     # what each robot model (g23, m20) changes from the factory params; see its README
 │   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL), calib_lidar_camera.yaml (CALIBRATION)
-│   └── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1
+│   └── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1 (SYNCAI_DDS_CONFIG in .env names another)
 ├── scripts/
 │   ├── attach.sh                 # host-side: attach to whichever byobu session is live in the container
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml
@@ -245,6 +246,13 @@ mounts the same file, `ROBOT_INSTANCE` defaulting to `robot`). That INI also nam
 the map to localize against (`[map] name`), the initial pose, and the lidar's IP
 and model (`[sensor.lidar] type: mid360 | mid360s` — a wrong model yields no
 point cloud and no error).
+
+`[system] robot_model` says what kind of robot it is (`g23`; absent = `g23`).
+Each launch loads `config/models/<robot_model>/<node>.yaml` after its factory
+params — the model's footprint, speed limits, lidar height — and refuses to
+start when the model has no such file, rather than come up on another robot's
+body. `config/models/README.md` has the layering and what a new model needs;
+`m20` (DEEP Robotics' Lynx M20) is listed there and not runnable yet.
 
 **First deployment, no map yet:** leave `name:` empty and keep the `pcd:` line
 as it is:

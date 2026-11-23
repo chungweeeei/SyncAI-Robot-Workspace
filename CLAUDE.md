@@ -88,7 +88,7 @@ to end, and the MPPI tuning.
 | `syncai_mapping` | **The mapping back end — not in this repo** (`chungweeeei/SyncAI-Robot-3D-Mapping`, C++, imported by `dependencies.repos`; edit it there, and keep its own `dependencies.repos` pins in step). Its parameter names were renamed there (`keyframe_delta_m`, `loop_gicp_max_corr_dist`, `map_clean_sparse_min_hits`, …); an old key is silently ignored. `pgo_node` at `/<robot_id>/pgo`: services `start_mapping` / `save_maps` / `reset_mapping`, topics `map_cloud` (rviz) / `map_cloud_file` (the notice the backend reads) / `mapping_status` (latched) / `loop_markers`, TF `map → <robot_id>/pointlio_odom` (identity while IDLE, so the console's live scan survives), and the `/dev/shm/syncai_pgo/<robot_id>` PCD hand-off. It comes up **IDLE** and banks nothing until `start_mapping` (`start_on_launch: true` for bag replay). 3-thread executor because `start_mapping` / `reset_mapping` block on the `ResetLIO` client, so `m_pgo_mutex` is load-bearing. Its `local_frame` must equal pointlio's `world_frame` (not adopted from the odom header). Loop edges are `small_gicp`-registered and planar (x / y / yaw), with fixed sigmas and a per-keyframe gravity prior — the fork's ICP lifted revisited corridors in z. `clean_map`, spawned by a successful `save_maps` with `save_patches`, **replaces `map.pcd`** minutes later without people and one-off returns (state in `map_clean.recipe.json`); it is a **detached process** (own session, nice 10, `oom_score_adj 500`, one per host by `flock`), so it survives the mode switch. `ros2 run syncai_mapping clean_map map/<name>` re-cleans by hand. Needs GTSAM, `small_gicp`, OctoMap and `nlohmann-json3-dev`. |
 | `syncai_localizer` | **The relocalizer, nav session only.** Two-stage GICP (`small_gicp`, 0.25 m then 0.1 m) of `pointlio/body_cloud` against `[map] pcd`, broadcasting `map → <robot_id>/pointlio_odom` (frame adopted from the first odom header). **Its names are in the bare `/<robot_id>` namespace** — `/<robot_id>/localizer_node`, `/<robot_id>/relocalize`, `relocalize_check`, `initialpose`, `map_cloud`, `auto_localize`, `reset_odometry` — not `/<robot_id>/localizer/…`; the backend calls the bare names. Registration is motion-gated (`min_update_trans` / `max_update_interval` / `static_blend_alpha`) and capped at 5 Hz; the tuning history is in `params/localizer_params.yaml`. **No map is a state it runs in** (since 2026-10-29): with `[map] name:` empty (a robot with no map yet — every first deployment) or its `map.pcd` missing, the launch starts it with `map_path: ""` and no boot guess; it broadcasts the identity `map → <robot_id>/pointlio_odom` (as pgo_node does while IDLE, so the console's 3D view has a `map` frame for the live scan and the robot), latches an empty `map_cloud`, skips registration, and loads a map on `relocalize` without a restart. Until then the launch started nothing, which left no `map` frame at all. Three-thread executor: services + `initialpose` on their own group so a multi-second `loadMap` never gaps the TF (`ICPLocalizer::m_target_mutex` exists for that split), and a third because `reset_odometry` blocks on its `ResetLIO` client. `auto_localize` is the kidnap search (poses.txt keyframes × a yaw sweep, `GlobalLocalizer`, its own GICP pair); unlike `relocalize` it **blocks and its success is a result**, with deadlines on both halves. `reset_odometry` recovers a **diverged Point-LIO**: seed from a hint or the last *trusted* registration, pause intake, call `pointlio/reset`, gate on its `last_odom_time`, keep `map → body` continuous, converge, optionally fall back to the global search; `skip_seed` goes straight to the search after a full scan window (what the backend calls). Robot must be stationary. Each round's correction is applied **per direction** by localizability (`localizers/localizability.*`, from GICP's Hessian: a corridor's along-axis correction stays with Point-LIO), gated against the last accepted pose (`jump_gate.*`, 5-round streak cap), on the newest `track_accum_scans` scans; a guess is withdrawn after `guess_timeout_sec`; lost (`lost_backoff.after_rounds`, 25 non-converged rounds in a row) with no guess pending, it retries every `lost_backoff.interval` (1 s) instead of at 5 Hz, because each lost round is a capped-out rough stage and the CPU it burns is Point-LIO's; for the same reason the nav spec starts it at `nice -n 10`, so on a saturated CPU it yields to Point-LIO. Thresholds are first guesses, not replay-verified; `test/test_localizability.cpp`. The boot guess is the last trusted pose it saved (`config/state/<robot_id>/last_pose.json`, tmp + fsync + rename, written only once a guess has converged on the loaded map) when that file is for the same map, else `[initial_pose]`; the file carries the ground's z, so a robot shut down on 2F boots on 2F (README, "The last pose file"). **It reports facts, never a verdict** (2026-11): the latched `localization_status` (`syncai_common/LocalizationStatus`, published on a change) carries the loaded map, `relocalize_check`'s answer (`converged`) and `pose_epoch`, which changes on every map load and every guess queued (wherever `localize_success` is cleared; seeded from the wall clock so a restart never repeats a value). `syncai_robot_state` allows an operator's confirmation on `converged` and withdraws one on any other `pose_epoch`; a converged boot guess confirms nothing, and going lost withdraws nothing (README, "Localization status"). |
 | `syncai_lio_bridge` | **The only odometry source — not in this repo** (`chungweeeei/SyncAI-LIO-Bridge`, Rust / rclrs; edit it there). Converts `map → pointlio_odom → pointlio_body` into `odom → base_link` TF + `/<robot_id>/odom` + the AMCL-style `map → odom` correction, all projected to 2D (x, y, yaw) so the planar nav stack never sees a tilted frame. Angular velocity from the lidar IMU gyro, by choice (its README has why). It does its own TF (rclrs has no `tf2_ros`). `lio_bridge.launch.py` sets every parameter inline, no params file. |
-| `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over `description/G23.urdf` + the Livox driver. The URDF carries **`lidar_top`, the lidar itself** (the frame the driver stamps `livox/lidar` with) and under it **`lidar_top_imu`**, the lidar's IMU at `-t_il` from `syncai_pointlio`'s params — what Point-LIO's body frame physically is. `syncai_lio_bridge` / `syncai_robot_state` still name `lidar_top` as their `lidar_frame` (~5 cm off) until their repos move to `lidar_top_imu`; `camera_optical_frame` hangs off `lidar_top`. The fleet runs **MID360 and MID360s**: `[sensor.lidar] type` picks the JSON schema, and the driver's network JSON is **generated** per `robot_id` into `/tmp/syncai_bringup/` from `[sensor.lidar] ip` + `type` + `host_ip` (params) — the vendor JSON in the driver's share dir is not read. No camera node (see "Camera"). |
+| `syncai_bringup` | `bringup.launch.py` — robot_state_publisher over the model's URDF (`description/G23.urdf`; `M20.urdf` for `robot_model: m20`, which has no lidar or camera links yet) + the Livox driver. The G23's URDF carries **`lidar_top`, the lidar itself** (the frame the driver stamps `livox/lidar` with) and under it **`lidar_top_imu`**, the lidar's IMU at `-t_il` from `syncai_pointlio`'s params — what Point-LIO's body frame physically is. `syncai_lio_bridge` / `syncai_robot_state` still name `lidar_top` as their `lidar_frame` (~5 cm off) until their repos move to `lidar_top_imu`; `camera_optical_frame` hangs off `lidar_top`. The fleet runs **MID360 and MID360s**: `[sensor.lidar] type` picks the JSON schema, and the driver's network JSON is **generated** per `robot_id` into `/tmp/syncai_bringup/` from `[sensor.lidar] ip` + `type` + `host_ip` (params) — the vendor JSON in the driver's share dir is not read. No camera node (see "Camera"). |
 
 **Camera.** Exactly one process may hold the V4L2 device (the second opener
 does not fail at `open()`; it dies at `S_FMT` with "Device or resource busy"
@@ -189,7 +189,8 @@ docker-compose bind-mounts over `config/system.ini` inside the container — the
 backend's compose mounts the same file, named by its `ROBOT_INSTANCE`
 (default `robot` since 2026-10-28; a name with no file is mounted as an empty
 directory, silently, so keep the two repos in step). That file has exactly four
-sections: `[system]` (`robot_id`), `[map]` (`name`, plus the `pcd` path written
+sections: `[system]` (`robot_id`, and `robot_model` — see "The robot model"
+below), `[map]` (`name`, plus the `pcd` path written
 with configparser interpolation as `map/%(name)s/map.pcd`, so switching maps is
 a one-line `name:` edit, and `name:` left **empty** means no map yet — the
 first deployment's INI, on which AUTO still comes up (see "Facts about this
@@ -234,6 +235,46 @@ Three rules follow from namespacing:
 
 `use_sim_time` is set **only** in the params YAML, never in launch. A launch
 override placed after the params file would silently win over the YAML value.
+
+### The robot model
+
+`[system] robot_model` (2026-11) says what *kind* of robot this is — `g23`, or
+`m20` for DEEP Robotics' Lynx M20 — where `robot_id` says which one. A missing
+key is read as `g23` with a warning (every INI before it is a G23's). Each of
+the six in-tree launches loads, in order, a later file winning key by key:
+
+```
+<package>/params/<node>_params.yaml       factory params
+config/models/<robot_model>/<node>.yaml   the model's differences (tracked)
+config/params/<robot_id>/<node>.yaml      the runtime overlay (controller / planner)
+{ frame overrides }
+```
+
+- **Nothing falls back.** Every model has all six files (`bringup`, `pointlio`,
+  `localizer`, `planner_server`, `controller_server`, `task_runner`), and a
+  launch raises when the model's directory or its file is missing or does not
+  parse — the opposite of the runtime overlay, which is skipped: another robot
+  coming up on the G23's footprint and gait floors looks healthy and is not. A
+  model that changes nothing for a node says so with a block that holds no
+  key, which the launch does not hand to rcl.
+- **The factory files are still the G23's**, so `config/models/g23/` is six
+  files with no key, and a key another model's file leaves out is inherited
+  from the G23 silently. `config/models/model_keys.yaml` names that
+  (`factory_model`), lists the keys another model must set, and the groups
+  that must hold one value across files (`lidar_height` in five of them);
+  `config/models/test_model_overlays.py` checks both, and that every key in a
+  model file exists in the factory file. Moving the G23's own values out of
+  the factory files into `g23/` is a move of keys, not a launch change.
+- `m20/` holds no params file yet (nothing is measured), so every launch
+  refuses `robot_model: m20` and names the file it wants.
+- `bringup.launch.py` picks the URDF by model (`MODEL_URDF`; `urdf_file:=`
+  still wins).
+- The models directory is the one beside the INI, else the workspace's, so an
+  INI kept elsewhere and passed with `system_config:=` still works.
+- A params file is not everything that differs between models: `charge.xml`'s
+  motion keys, the session specs' windows, the C++ defaults, compose's devices
+  and the out-of-tree packages' params are the G23's for every robot today.
+  `config/models/README.md` has the list and the "change together" table.
 
 ## Build
 
@@ -646,6 +687,13 @@ something to verify or edit here.
   bitten before: a single interface with `multicast=false` disables multicast
   **globally**; peer pings only use the top-priority interface; unicast
   `<Peers>` require the remote side to have `ParticipantIndex=auto`.
+  **Which file is `SYNCAI_DDS_CONFIG` in `.env`** (2026-11; a path under
+  `config/`, default `cyclonedds.xml`), for a host that needs other wiring —
+  a model's own `config/models/<model>/cyclonedds.xml`. It is deliberately not
+  derived from the INI's `robot_model`: `CYCLONEDDS_URI` is set when the
+  container is made, and the recorder's and the backend's containers need the
+  same file. The backend's compose still names `config/cyclonedds.xml` by its
+  fixed path, so setting the variable is a cross-repository change.
 - tmpfs `mode:` in compose must be written as an octal literal (`0o1777`) — a
   bare `1777` is parsed as decimal.
 
@@ -691,10 +739,12 @@ something to verify or edit here.
 
 ## Tests
 
-`syncai_sys_manager` has `test_wifi_manager.py`, and `scripts/calibration/` has
+`syncai_sys_manager` has `test_wifi_manager.py`, `scripts/calibration/` has
 `test_calib_common.py` (where a camera model folds back, on robot01's 2026-11-11 fits
 and random lenses, and the outer-ring corner count; numpy + OpenCV only, so it runs on
-the host too); the C++ packages have the
+the host too), and `config/models/` has `test_model_overlays.py` (what each robot
+model's params files hold, against the factory files and `model_keys.yaml`; PyYAML
+only); the C++ packages have the
 ament linter tests that come with the package templates (never enforced, and
 they would fail) plus seventeen gtests, all ROS-free but one: `syncai_global_planner`'s
 `test_surface_map` (surface map, search, stair links, dynamic overlay),
@@ -721,7 +771,8 @@ only when no run has built that Dockerfile yet; both `.repos` files imported;
 **ccache** (turned on by CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` environment
 variables in the workflow only, so robot01's builds are unchanged; the cache
 is in the Actions cache, saved by `main` / `dev` pushes only, one entry per
-branch); `test_wifi_manager.py` and `test_calib_common.py`;
+branch); `test_wifi_manager.py`, `test_calib_common.py` and
+`test_model_overlays.py`;
 then a **smoke test** (`.github/scripts/smoke_test.sh`): every pane of the three
 session specs, started with their `sleep` offsets against a generated 5 × 5 m
 fixture map (`robot_id: ci_smoke`, a pcd only), failed if any launch has exited

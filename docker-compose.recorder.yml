@@ -36,7 +36,9 @@ services:
     environment:
       ROS_DOMAIN_ID: "1"
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
+      # The same file robot01 is on (docker-compose.robots.yml has why it is a
+      # .env variable): a recorder on another DDS configuration records nothing.
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/${SYNCAI_DDS_CONFIG:-cyclonedds.xml}
       ROS_LOG_DIR: /tmp/ros_log
       RCUTILS_COLORIZED_OUTPUT: "0"
       PYTHONUNBUFFERED: "1"

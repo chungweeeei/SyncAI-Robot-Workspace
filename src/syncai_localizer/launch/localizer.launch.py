@@ -32,6 +32,13 @@
 # (pointlio's topics, the map PCD path, the boot pose) are passed as a second
 # parameters dict that overrides the file. No generated files involved.
 #
+# Between the two sits the robot model's file,
+# config/models/<robot_model>/localizer.yaml beside the system INI: what the
+# model [system] robot_model names changes from the installed file (the
+# lidar's height above the ground). A model with no such file fails the launch
+# rather than run on another robot's values; the helpers are copied from
+# controller_server.launch.py, not shared.
+#
 # The robot_id-dependent values are parameter overrides, not remappings: the
 # node builds its message_filters subscribers from parameter values (absolute
 # names into pointlio's namespace, which a relative name from /<robot_id> could
@@ -56,6 +63,8 @@
 import configparser
 import json
 import os
+
+import yaml
 
 import launch
 import launch_ros.actions
@@ -92,6 +101,97 @@ def read_robot_id(config_path: str) -> str:
         return FALLBACK_ROBOT_ID
 
     return robot_id
+
+
+def count_leaves(node) -> int:
+    if isinstance(node, dict):
+        return sum(count_leaves(v) for v in node.values())
+    return 1
+
+
+# The model an INI that names none is taken to be: the one every factory params
+# file in this workspace was written for (config/models/README.md).
+FALLBACK_ROBOT_MODEL = "g23"
+
+
+def read_robot_model(config_path: str) -> str:
+    """[system] robot_model from the INI: which kind of robot this is.
+
+    Lower-cased, because it names a directory (config/models/<model>/). A
+    missing INI or key falls back to FALLBACK_ROBOT_MODEL with a warning, the
+    way robot_id falls back: an INI written before 2026-11 has no such key and
+    is a G23's.
+    """
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    model = config.get("system", "robot_model", fallback="").strip().lower()
+    if not model:
+        logger.warning(
+            f"No [system] robot_model in '{config_path}'; "
+            f"falling back to '{FALLBACK_ROBOT_MODEL}'"
+        )
+        return FALLBACK_ROBOT_MODEL
+    return model
+
+
+def models_dir(config_path: str) -> str:
+    """config/models/: the one beside the system INI when there is one, else
+    the workspace's.
+
+    An INI kept somewhere else and passed with system_config:= (a replay's, a
+    test's) names a model; it does not bring the models with it, and must not
+    have to.
+    """
+    beside = os.path.join(os.path.dirname(os.path.abspath(config_path)), "models")
+    if os.path.isdir(beside):
+        return beside
+    return os.path.join(os.path.dirname(DEFAULT_SYSTEM_INI), "models")
+
+
+def model_params(path: str, model: str):
+    """Return the robot model's params file for this launch, or None when it
+    holds no key.
+
+    Loaded after the factory params: what this *model* of robot changes from
+    them (body size, gait limits, sensor mount). Nothing here is skipped: a
+    missing or unreadable file fails the launch. Falling back to the factory
+    values would start another robot on the G23's footprint and gait floors
+    and look healthy doing it, so a model that changes nothing here says so
+    with a file that holds no key (config/models/g23/ is six of those) -- and
+    that file is not handed to rcl, which is never given an empty block.
+    """
+    model_dir = os.path.dirname(path)
+    if not os.path.isdir(model_dir):
+        raise RuntimeError(
+            f"robot_model '{model}': no directory '{model_dir}'. Check [system] "
+            "robot_model in the system INI against config/models/."
+        )
+    if not os.path.isfile(path):
+        raise RuntimeError(
+            f"robot_model '{model}': '{path}' does not exist, so this launch has no "
+            f"{model} parameters and will not start on another model's. Write the file "
+            "(config/models/README.md; a block with no key means no difference)."
+        )
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            raise ValueError("top level is not a mapping")
+        keys = 0
+        for node, section in data.items():
+            if not isinstance(section, dict) or "ros__parameters" not in section:
+                raise ValueError(f"'{node}' has no ros__parameters block")
+            keys += count_leaves(section["ros__parameters"] or {})
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        raise RuntimeError(
+            f"robot_model '{model}': '{path}' is unreadable ({e}); not starting on "
+            "the factory params alone"
+        ) from e
+    if keys == 0:
+        logger.info(f"robot_model '{model}': '{path}' holds no key; factory params as they are")
+        return None
+    logger.info(f"robot_model '{model}': '{path}' loaded, {keys} key(s) over the factory params")
+    return path
 
 
 def read_map_pcd(config_path: str) -> str:
@@ -305,6 +405,20 @@ def launch_setup(context, *args, **kwargs):
             config_path
         )
 
+    # The robot model's own values, between the installed params and the
+    # robot_id overrides: config/models/<robot_model>/localizer.yaml beside the
+    # system INI. A model without that file fails the launch here
+    # (model_params).
+    robot_model = read_robot_model(config_path)
+    model_path = LaunchConfiguration("model_params_file").perform(context)
+    if not model_path:
+        model_path = os.path.join(models_dir(config_path), robot_model, "localizer.yaml")
+    model_overlay = model_params(model_path, robot_model)
+
+    parameters = [localizer_params_file()]
+    if model_overlay:
+        parameters.append(model_overlay)
+
     # `name=` is fine here, unlike the planner / controller launches: this
     # process hosts exactly one node, so there is no second node to be remapped
     # onto the same name and lose its parameters.
@@ -316,9 +430,10 @@ def launch_setup(context, *args, **kwargs):
             executable="localizer_node",
             name="localizer_node",
             output="screen",
-            # params file first, robot_id overrides second — later entries win
+            # params file first, the robot model's second, robot_id overrides
+            # last — later entries win
             parameters=[
-                localizer_params_file(),
+                *parameters,
                 localizer_overrides(robot_id, map_pcd, initial_pose, last_pose_file),
             ],
         ),
@@ -331,8 +446,14 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "system_config",
                 default_value=DEFAULT_SYSTEM_INI,
-                description="Path to the system INI file providing [system] robot_id, "
-                "[map] pcd and the optional [initial_pose]",
+                description="Path to the system INI file providing [system] robot_id "
+                "and robot_model, [map] pcd and the optional [initial_pose]",
+            ),
+            DeclareLaunchArgument(
+                "model_params_file",
+                default_value="",
+                description="Robot-model params YAML loaded after the installed params; "
+                "empty = config/models/<robot_model>/localizer.yaml beside system_config",
             ),
             OpaqueFunction(function=launch_setup),
         ]

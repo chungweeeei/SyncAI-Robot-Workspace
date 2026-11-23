@@ -145,7 +145,18 @@ services:
       # since compose service names do not resolve under network_mode: host.
       # lo-only unicast DDS; nav nodes, the backend and CLI tools all share the
       # host's lo.
-      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/cyclonedds.xml
+      #
+      # SYNCAI_DDS_CONFIG (.env) names another file under config/ for a host
+      # whose DDS wiring is not loopback-only -- a robot model's own, say
+      # (`SYNCAI_DDS_CONFIG=models/m20/cyclonedds.xml`). It is a file name and
+      # not derived from the INI's robot_model: this variable is set when the
+      # container is made, before anything reads the INI, and the backend's
+      # and the recorder's containers have to be given the same file. Unset,
+      # it is the path this line always held, which the backend's compose
+      # still names by its fixed path -- so a host that sets it needs the same
+      # change there, or the backend sits on another DDS configuration.
+      # Whatever file it names, its <Domain Id> must stay ROS_DOMAIN_ID above.
+      CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/${SYNCAI_DDS_CONFIG:-cyclonedds.xml}
       # Camera encoding. These two are what make the nvidia container runtime
       # bind-mount the L4T userspace in, including the Tegra GStreamer plugins
       # (nvjpegdec / nvvidconv / nvv4l2h264enc) that drive the hardware encoder.
