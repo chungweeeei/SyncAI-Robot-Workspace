@@ -235,6 +235,35 @@ PlanFailure goalSnapFailure(const SnapResult & g)
   return g.other_component ? PlanFailure::Disconnected : PlanFailure::GoalUnavailable;
 }
 
+SnapResult SurfaceAStar::snapStart(
+  double x, double y, double z_hint, const SearchParams & p, bool height_measured) const
+{
+  if (!height_measured || !p.snap_single_layer) {
+    return snap(x, y, z_hint, p);
+  }
+  SearchParams strict = p;
+  strict.snap_single_layer = false;
+  SnapResult out = snap(x, y, z_hint, strict);
+  if (out.cell == kNoCell && !out.outside) {
+    // Say whether the fallback would have taken another layer: that is the
+    // map refusing the floor the robot stands on, not an empty radius.
+    const SnapResult loose = snap(x, y, z_hint, p);
+    if (loose.cell != kNoCell) {
+      char buf[160];
+      std::snprintf(
+        buf, sizeof buf,
+        "; the only traversable layer within %.2f m is at z %.2f, %.2f m from the robot's measured "
+        "height",
+        p.snap_xy_radius, z_hint + loose.dz, std::fabs(loose.dz));
+      out.detail += buf;
+      out.detail +=
+        ": not taken for a start (snap_single_layer is for a guessed height), so the floor under "
+        "the robot is untraversable in the map here";
+    }
+  }
+  return out;
+}
+
 SnapResult SurfaceAStar::snapGoal(
   double x, double y, double z_hint, const SearchParams & p, uint32_t prefer_component,
   const BlockedView & blocked) const

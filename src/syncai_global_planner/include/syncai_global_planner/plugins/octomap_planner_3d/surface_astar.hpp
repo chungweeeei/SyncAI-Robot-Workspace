@@ -187,6 +187,21 @@ public:
     double x, double y, double z_hint, const SearchParams & p,
     uint32_t prefer_component = kNoComponent, const BlockedView * blocked = nullptr) const;
 
+  // The snap of the robot's start (2026-11-23): snap() with nothing blocked
+  // and no preferred component, and, when height_measured, never the
+  // snap_single_layer fallback. That fallback is for a height someone
+  // guessed -- a goal the backend sends at z = 0 on ground that slopes away
+  // from the map origin. A start height read from TF (pointlio_body minus
+  // lidar_height) is where the robot stands; when nothing traversable lies
+  // within snap_z_window of it, the floor under the robot is one the map
+  // refuses there (footprint_blocked, a hole), and the one other layer in
+  // the radius is a different floor: snapped to it, the route started on
+  // the floor below and the controller was handed a path from a storey the
+  // robot was not on. Without a measured height (no TF, the request's z = 0)
+  // the start is a guess like a goal and keeps the fallback.
+  SnapResult snapStart(
+    double x, double y, double z_hint, const SearchParams & p, bool height_measured) const;
+
   // The snap of the goal a route ends on (2026-11): snap() keeping off the
   // keepout zones only (a goal inside a zone's ring is still moved clear of
   // it, the zones' documented rule), then the dynamic marks as a test, never

@@ -385,7 +385,14 @@ second traversable layer, the one layer there is taken at any height
 (`snap_single_layer`, 2026-10-27, logged as a warning): on outdoor_1027 the
 ground falls 1.4 m from the map origin to the far end, so a z = 0 goal there
 failed `goal_unavailable` with `traversable` printed in the reason. Where
-floors overlap the hint still has to pick one. A failed
+floors overlap the hint still has to pick one. **Never for a start whose
+height came from TF** (`SurfaceAStar::snapStart()`, 2026-11-23): that height
+is where the robot stands, so a floor under it that the map refuses there
+(`footprint_blocked`, a hole) left the ground floor below as the one
+traversable layer in the radius, and the route was planned from the storey
+under the robot. Such a start now fails `start_unavailable`, its reason
+naming the layer the fallback would have taken; without the TF (the
+request's z = 0) the start is a guess and keeps the fallback. A failed
 snap says what *is* there — `goal_unavailable: … surfaces in that column:
 z=[-0.40 (untraversable: footprint_blocked), 4.80 (traversable, component
 2)]` — or that the nearest surface is on another floor.
@@ -1216,7 +1223,7 @@ ranges = the obstacle layer's); they are the robot's now, not the costmap's.
 | `gap_cost_weight` | `1.0` | Cost factor 1 + weight × gaps / disc columns. Dynamic. Declared only since 2026-11 (the struct's 1.0 was the only value; now in the params file) |
 | `heuristic_weight`, `max_iterations`, `max_planning_time` | `1.0`, `2000000`, `2.0` s | Weighted A* and the guards. Dynamic |
 | `snap_xy_radius`, `snap_z_window` | `0.5`, `1.0` | How far a start / goal may be moved to reach traversable ground. Dynamic |
-| `snap_single_layer` | `true` | Nothing within `snap_z_window` and one traversable layer within `snap_xy_radius`: snap to it at any height (sloping ground under a z = 0 goal). `false` = the window is absolute. Dynamic |
+| `snap_single_layer` | `true` | Nothing within `snap_z_window` and one traversable layer within `snap_xy_radius`: snap to it at any height (sloping ground under a z = 0 goal). Never for a start whose height came from TF (2026-11-23). `false` = the window is absolute. Dynamic |
 | `shortcut`, `interpolation_resolution`, `path_z_offset` | `true`, `0.1`, `0.0` | Post-processing. Dynamic |
 | `shortcut_clearance_tolerance`, `shortcut_clearance_floor` | `0.1`, `0.2` | What the shortcut may give up of the search's clearance (2026-11-10, `ShortcutSlack` in `path_postprocess.hpp`; "Corners"): a straightened segment may come `tolerance` closer to the boundary than the least clear cell it replaces, never under `floor` for it. The exact rule (both `0`) left the route in 45° doglegs along a corridor's clearance ridge. The CLI's `--shortcut-slack`. Dynamic |
 | `corner_radius` | `0.5` | The arcs at the plan's corners (2026-11-10, `buildPath` / `cornerArc()`; "Corners"): the largest arc up to this radius that fits half-way along the corner's shorter segment and keeps the shortcut's clearance rule; a cusp, a corner beside a crossing and one with no room stay sharp. `0` = the polyline as before. The CLI's `--corner-radius`. Dynamic |

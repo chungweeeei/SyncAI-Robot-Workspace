@@ -245,6 +245,48 @@ TEST(SurfaceAStar, AHintOffTheOnlyLayerSnapsToItButOverlappingFloorsStillNeedOne
   EXPECT_NE(mid.detail.find("more than one floor"), std::string::npos) << mid.detail;
 }
 
+TEST(SurfaceAStar, AMeasuredStartIsNeverSnappedToAnotherFloor)
+{
+  // An upper floor at 3 m over half the scene, with its floor round
+  // (3, 4) refused (a 2 m square of 0.4 m posts 0.3 m apart: nothing within
+  // snap_xy_radius of the robot is standable up there). The ground floor
+  // under it is then the one traversable layer within the radius, and
+  // snap_single_layer took it at any height: the route started 3 m below
+  // the robot.
+  synthetic::SceneBuilder b(0.1);
+  b.flatFloor(0, 12, 0, 8, 0.0);
+  b.flatFloor(0, 6, 0, 8, 3.0);
+  for (double px = 2.0; px < 4.0; px += 0.3) {
+    for (double py = 3.0; py < 5.0; py += 0.3) {
+      b.box(px, px + 0.1, py, py + 0.1, 3.0, 3.4);
+    }
+  }
+  const auto m = buildSurfaceMap(*b.finish(), SurfaceMapParams{});
+  SurfaceAStar astar(m);
+  SearchParams p;
+  ASSERT_TRUE(p.snap_single_layer);
+  // The robot's ground is 3.0, as the planner reads it from TF.
+  const SnapResult guessed = astar.snapStart(3.0, 4.0, 3.0, p, false);
+  ASSERT_NE(guessed.cell, kNoCell) << guessed.detail;
+  EXPECT_TRUE(guessed.z_fallback);
+  EXPECT_NEAR(m->zTop(guessed.cell), 0.0, 1e-9);  // what a guessed height still gets
+  const SnapResult measured = astar.snapStart(3.0, 4.0, 3.0, p, true);
+  EXPECT_EQ(measured.cell, kNoCell);
+  EXPECT_FALSE(measured.outside);
+  EXPECT_FALSE(measured.z_fallback);
+  EXPECT_NE(measured.detail.find("untraversable in the map here"), std::string::npos)
+    << measured.detail;
+  // Away from the block the upper floor is the start, measured or not.
+  const SnapResult clear = astar.snapStart(5.0, 1.0, 3.0, p, true);
+  ASSERT_NE(clear.cell, kNoCell) << clear.detail;
+  EXPECT_NEAR(m->zTop(clear.cell), 3.0, 1e-9);
+  // And on single-layer ground a measured height inside the window is the
+  // plain snap: nothing changes for a robot on the floor it stands on.
+  const SnapResult ground = astar.snapStart(9.0, 4.0, 0.05, p, true);
+  ASSERT_NE(ground.cell, kNoCell) << ground.detail;
+  EXPECT_NEAR(m->zTop(ground.cell), 0.0, 1e-9);
+}
+
 TEST(SurfaceAStar, PlansThroughTheDoorAndKeepsClearance)
 {
   const auto m = build("wall");
