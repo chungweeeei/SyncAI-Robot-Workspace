@@ -53,10 +53,11 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
-      # The image build's RUN steps (apt, pip, rosdep, the source checkouts
-      # of the library stages) use the host's network stack, not a bridge
-      # network BuildKit creates — the same stack the container itself runs
-      # on below (network_mode: host).
+      # Build on the host network: a host whose Docker daemon runs with
+      # "iptables": false (this M20's /etc/docker/daemon.json) gives bridge
+      # containers no NAT, so every RUN's apt-get failed to resolve
+      # ports.ubuntu.com (2026-11-23). The containers themselves are
+      # network_mode: host already; this is the image build's RUN steps.
       network: host
     image: syncai-robot-base
     # Host uid/gid so ./build, ./install and ./log stay owned by the host user

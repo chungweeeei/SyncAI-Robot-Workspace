@@ -37,6 +37,12 @@ x-robot-common: &robot-common
     context: .
     dockerfile: Dockerfile
     target: dev
+    # Build on the host network: a host whose Docker daemon runs with
+    # "iptables": false (this M20's /etc/docker/daemon.json) gives bridge
+    # containers no NAT, so every RUN's apt-get failed to resolve
+    # ports.ubuntu.com (2026-11-23). The containers themselves are
+    # network_mode: host already; this is the image build's RUN steps.
+    network: host
   image: syncai-robot-base
   # Come back after a host reboot, so the robot boots into AUTO with no one at
   # a shell: sys_manager is the main process and builds the session itself
