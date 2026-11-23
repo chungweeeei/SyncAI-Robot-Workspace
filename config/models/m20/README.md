@@ -19,7 +19,14 @@ M20 really does not differ on.
 | `task_runner.yaml` | `lidar_height` |
 | `fastdds.xml` | **in place** (2026-11): the M20 runs Fast DDS on the vendor's domain 0, where `/LIDAR/POINTS_UDP` (both lidars merged, per-point time) and `/IMU` arrive from the robot's other computers, on `lo` and the internal LAN (10.21.31.120) only, never Wi-Fi. Picked by `.env` (`SYNCAI_RMW` / `SYNCAI_DDS_CONFIG` / `SYNCAI_ROS_DOMAIN_ID`), not by `robot_model` (`../README.md`, "DDS"); the file's header has the measurements. Our `/tf` shares domain 0 with the vendor's: every frame of ours is `<robot_id>/`-prefixed but `map` |
 
-Outside this directory, and not started: a driver for the M20's motion
-interface (`syncai_driver_manager` speaks the G23 gait controller's UDP
-protocol and names its 12 joints), `charge.xml`'s motion keys, and the
+The M20's motion interface is started in `syncai_driver_manager` (branch
+`feature/m20` of SyncAI-Robot-Driver-Manager, 2026-11): with `robot_model: m20`
+its launch loads its own `params/models/m20.yaml` (`robot_protocol: m20`), and
+the same `set_motion_key` "0" / "2" and `cmd_vel` stand, lie down and drive the
+M20 over DEEP Robotics' UDP protocol (`10.21.31.103:30000`); every other key and
+service answers `success: false`, and none of the G23 telemetry topics
+(`imu`, `motor_states`, `battery_state`, `mode`) is published. Its
+`m20_max_*` (cmd_vel → full-scale axis command) are unmeasured.
+
+Outside this directory, and not started: `charge.xml`'s motion keys, and the
 console's mesh (`scripts/urdf2glb.py` on `M20.urdf`).
