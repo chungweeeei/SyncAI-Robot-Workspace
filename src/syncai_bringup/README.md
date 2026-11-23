@@ -12,9 +12,21 @@ only job is to install the robot description, one launch file and its params:
 share/syncai_bringup/
   launch/       bringup.launch.py
   params/       bringup.yaml
-  description/  G23.urdf
-  meshes/       body / hip / thigh / shank STLs (visual only)
+  description/  G23.urdf, M20.urdf
+  meshes/       body / hip / thigh / shank STLs (visual only); M20/ = the M20's STLs
 ```
+
+`M20.urdf` and `meshes/M20/` are DEEP Robotics' Lynx M20 (wheel-legged)
+model, from `DeepRoboticsLab/deep_robotics_model` (`M20/urdf/`, commit
+`52352f5`, 2026-10-27; BSD-3-Clause, its licence in `meshes/M20/LICENSE.txt`),
+with two changes: the mesh paths are rewritten from `./meshes/` to
+`../meshes/M20/` so they resolve the way G23's do, and DEEP Robotics'
+`front_lidar_link` / `rear_lidar_link` and their joints are removed — this
+stack's lidar is one `lidar_top` (+ `lidar_top_imu`), and the M20's mount for
+it has not been added yet. Until it is, nothing launches this file:
+`urdf_file:=M20.urdf` would leave the driver's `lidar_top` cloud and
+Point-LIO's body frame unparented. Its `front_camera_link` /
+`rear_camera_link` are kept as shipped.
 
 There is deliberately no `maps/` or `rviz/` here. Both existed as empty
 `.gitkeep` placeholders inherited from the `nav2_bringup` skeleton and were
