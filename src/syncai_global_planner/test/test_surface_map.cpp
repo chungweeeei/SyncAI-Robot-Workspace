@@ -13,9 +13,11 @@
 // and a climb onto something that is not a floor is refused.
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -2015,6 +2017,142 @@ TEST(GapLinks, AWalkedSillAboveOneStepIsARampCrossingOfTheFlatGait)
   ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
   ASSERT_EQ(r.links.size(), 1u);
   EXPECT_EQ(links->links[r.links[0].link].kind, CrossingKind::Ramp);
+}
+
+// Two walks on one track: the first ends at x_end, the second begins at
+// x_begin (their keyframes in poses.txt order, as a resumed map saves them).
+// Returns the track and where its second run starts.
+template <typename H>
+std::vector<Waypoint> twoRuns(
+  double x0, double x_end, double x_begin, double x1, H height, std::vector<size_t> & run_starts)
+{
+  std::vector<Waypoint> t = walk(x0, x_end, height);
+  run_starts = {0, t.size()};
+  const std::vector<Waypoint> second = walk(x_begin, x1, height);
+  t.insert(t.end(), second.begin(), second.end());
+  return t;
+}
+
+TEST(StairLinks, NoLinkIsLaidAcrossTheStartOfAMappingRun)
+{
+  // Two storeys 5 m apart with nothing between them. One mapping run ends on
+  // the lower one, and the next (a map resumed with resume_mapping) begins a
+  // quarter of a metre on, upstairs: the robot was carried. Read as one walk
+  // that is a 5 m climb in one step, and the stair walker lays it, straight
+  // up through the slab; with the runs told apart there is no stair, which
+  // is the truth about this building.
+  const auto m = build("two_floors");
+  StairLinkParams p;
+  p.detect = false;
+  std::vector<size_t> runs;
+  const auto track = twoRuns(
+    2.0, 6.0, 6.25, 10.0, [](double x) { return x < 6.1 ? 0.0 : 5.0; }, runs);
+  const CellId lower = cellAt(*m, 3.0, 4.0, 0.0), upper = cellAt(*m, 9.0, 4.0, 5.0);
+  ASSERT_NE(lower, kNoCell);
+  ASSERT_NE(upper, kNoCell);
+
+  const auto one_walk = buildStairLinks(*m, track, p);
+  ASSERT_FALSE(one_walk->links.empty());
+  EXPECT_EQ(
+    one_walk->groupOf(m->cells[lower].component), one_walk->groupOf(m->cells[upper].component));
+
+  const auto two_runs = buildStairLinks(*m, track, p, nullptr, runs);
+  EXPECT_TRUE(two_runs->links.empty());
+  EXPECT_NE(
+    two_runs->groupOf(m->cells[lower].component), two_runs->groupOf(m->cells[upper].component));
+  // {0} is one run, as no list is.
+  EXPECT_EQ(buildStairLinks(*m, track, p, nullptr, {0})->links.size(), one_walk->links.size());
+}
+
+TEST(StairLinks, AStairWalkedWithinARunIsStillLaid)
+{
+  // The second run walks the stair itself: the break is before it, not in it.
+  const auto m = build("stairs");
+  const auto stairs = [](double x) {
+    return x < 4.0 ? 0.0 : 0.17 * std::min(6, static_cast<int>(std::floor((x - 4.0) / 0.29)) + 1);
+  };
+  std::vector<size_t> runs;
+  const auto track = twoRuns(2.0, 3.0, 2.5, 10.0, stairs, runs);
+  const auto links = buildStairLinks(*m, track, StairLinkParams{}, nullptr, runs);
+  ASSERT_EQ(links->flights.size(), 1u);
+  // Its keyframes are the second run's.
+  EXPECT_GE(links->flights[0].kf_a, runs[1]);
+}
+
+TEST(GapLinks, NoGapIsLaidAcrossTheStartOfAMappingRun)
+{
+  // The 0.2 m sill of AWalkedSillAboveOneStepIsARampCrossingOfTheFlatGait,
+  // but nobody walked it: one run stopped short of it and the next began on
+  // the other side, half a metre on (the far side of a wall, in a real map).
+  const auto m = build("threshold_ramp");
+  std::vector<size_t> runs;
+  const auto track = twoRuns(
+    3.0, 5.75, 6.25, 9.0, [](double x) { return x < 6.0 ? 0.0 : 0.2; }, runs);
+  EXPECT_EQ(buildStairLinks(*m, track, StairLinkParams{})->gap_links, 1u);
+  const auto links = buildStairLinks(*m, track, StairLinkParams{}, nullptr, runs);
+  EXPECT_EQ(links->gap_links, 0u);
+  EXPECT_TRUE(links->links.empty());
+}
+
+// sessions.json beside poses.txt, as syncai_mapping's save_maps writes it.
+class TrackRuns : public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    dir_ = std::filesystem::temp_directory_path() /
+           ("syncai_track_runs_" + std::to_string(::getpid()) + "_" +
+            ::testing::UnitTest::GetInstance()->current_test_info()->name());
+    std::filesystem::remove_all(dir_);
+    std::filesystem::create_directories(dir_);
+    std::ofstream poses(dir_ / "poses.txt");
+    for (int i = 0; i < 10; ++i) {
+      poses << i << ".pcd " << 0.5 * i << " 4 0.481 1 0 0 0\n";
+    }
+  }
+  void TearDown() override { std::filesystem::remove_all(dir_); }
+  void sessions(const std::string & text) const { std::ofstream(dir_ / "sessions.json") << text; }
+  std::string poses() const { return (dir_ / "poses.txt").string(); }
+  std::filesystem::path dir_;
+};
+
+TEST_F(TrackRuns, AMapOfOneRunHasNoFileAndIsOneRun)
+{
+  std::vector<Waypoint> track;
+  std::string error;
+  ASSERT_TRUE(readTrack(poses(), 0.481, track, error)) << error;
+  ASSERT_EQ(track.size(), 10u);
+  std::vector<size_t> runs;
+  EXPECT_TRUE(readTrackRuns(poses(), track.size(), runs, error)) << error;
+  EXPECT_EQ(runs, std::vector<size_t>{0});
+}
+
+TEST_F(TrackRuns, AResumedMapsRunsAreRead)
+{
+  sessions(R"({"version": 1, "sessions": [{"first": 0, "count": 6}, {"first": 6, "count": 4}]})");
+  std::vector<size_t> runs;
+  std::string error;
+  EXPECT_TRUE(readTrackRuns(poses(), 10, runs, error)) << error;
+  EXPECT_EQ(runs, (std::vector<size_t>{0, 6}));
+}
+
+TEST_F(TrackRuns, AFileThatDoesNotFitTheTrackIsRefusedWhole)
+{
+  for (const char * text : {
+         R"({"version": 1, "sessions": [{"first": 0, "count": 6}, {"first": 6, "count": 9}]})",
+         R"({"version": 1, "sessions": [{"first": 0, "count": 6}, {"first": 7, "count": 3}]})",
+         R"({"version": 2, "sessions": [{"first": 0, "count": 6}, {"first": 6, "count": 4}]})",
+         R"({"version": 1, "sessions": []})",
+         R"({"version": 1, "sessions": [{"first": 0}]})",
+         R"({"version": 1, "sessions": [{"first": 0, "count": 6}, {"first": 6, "cou)",
+       }) {
+    sessions(text);
+    std::vector<size_t> runs = {0, 3};
+    std::string error;
+    EXPECT_FALSE(readTrackRuns(poses(), 10, runs, error)) << text;
+    EXPECT_EQ(runs, std::vector<size_t>{0}) << text;
+    EXPECT_NE(error.find("sessions.json"), std::string::npos) << error;
+  }
 }
 
 TEST(GapLinks, AWalkedClimbOntoALedgeThatIsNotAFloorIsRefusedAndSaidSo)

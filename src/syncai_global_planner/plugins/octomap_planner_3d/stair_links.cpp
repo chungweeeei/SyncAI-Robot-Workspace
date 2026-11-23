@@ -1,10 +1,12 @@
 #include "syncai_global_planner/plugins/octomap_planner_3d/stair_links.hpp"
 
+#include <nlohmann/json.hpp>
 #include <octomap/OcTree.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <numeric>
@@ -40,8 +42,67 @@ bool readTrack(
   return true;
 }
 
+bool readTrackRuns(
+  const std::string & poses_path, size_t track_size, std::vector<size_t> & run_starts,
+  std::string & error)
+{
+  run_starts = {0};
+  const std::filesystem::path file =
+    std::filesystem::path(poses_path).parent_path() / "sessions.json";
+  std::error_code ec;
+  if (!std::filesystem::exists(file, ec)) {
+    return true;
+  }
+  const auto refuse = [&](const std::string & why) {
+    error = "'" + file.string() + "' " + why;
+    return false;
+  };
+  std::ifstream in(file);
+  if (!in) {
+    return refuse("cannot be opened");
+  }
+  const nlohmann::json doc = nlohmann::json::parse(in, nullptr, /*allow_exceptions=*/false);
+  if (doc.is_discarded() || !doc.is_object()) {
+    return refuse("is not a JSON object");
+  }
+  if (!doc.contains("version") || !doc["version"].is_number_integer() || doc["version"] != 1) {
+    return refuse("is not version 1");
+  }
+  if (!doc.contains("sessions") || !doc["sessions"].is_array() || doc["sessions"].empty()) {
+    return refuse("lists no sessions");
+  }
+  std::vector<size_t> starts;
+  size_t next = 0;
+  for (const nlohmann::json & s : doc["sessions"]) {
+    if (
+      !s.is_object() || !s.contains("first") || !s.contains("count") ||
+      !s["first"].is_number_unsigned() || !s["count"].is_number_unsigned()) {
+      return refuse("has a session without first / count");
+    }
+    const size_t first = s["first"].get<size_t>(), count = s["count"].get<size_t>();
+    if (first != next || count == 0) {
+      return refuse("has sessions that do not follow one another");
+    }
+    starts.push_back(first);
+    next = first + count;
+  }
+  if (next != track_size) {
+    return refuse(
+      "covers " + std::to_string(next) + " keyframes, the track has " + std::to_string(track_size));
+  }
+  run_starts = std::move(starts);
+  return true;
+}
+
 namespace
 {
+
+// Whether keyframe k is the first of a mapping run after the first: where the
+// walk begins anew (readTrackRuns), and nothing may be laid from k - 1.
+bool beginsRun(const std::vector<size_t> & run_starts, size_t k)
+{
+  return k > 0 && std::binary_search(run_starts.begin(), run_starts.end(), k);
+}
 
 // The traversable cell a ground point stands on: within one cell in xy (the
 // footprint rule trims the floor right next to a wall foot or a stair
@@ -2033,8 +2094,8 @@ double maxRiseWithin(const std::vector<Waypoint> & pts, double window)
 // kerb is never a gap.
 void gapLinks(
   const SurfaceMap & m, const octomap::OcTree * tree, const std::vector<Waypoint> & track,
-  const StairLinkParams & p, const std::vector<size_t> & comp_cells, double floor_min_cells,
-  StairLinks & out)
+  const std::vector<size_t> & run_starts, const StairLinkParams & p,
+  const std::vector<size_t> & comp_cells, double floor_min_cells, StairLinks & out)
 {
   if (!p.gap_links || track.size() < 2) {
     return;
@@ -2072,7 +2133,11 @@ void gapLinks(
   size_t anchor_kf = 0;
   double walked = 0.0;
   for (size_t k = 0; k < track.size(); ++k) {
-    if (k > 0) {
+    if (beginsRun(run_starts, k)) {
+      // Another run: the robot did not walk here from the keyframe before.
+      anchor = kNoCell;
+      walked = 0.0;
+    } else if (k > 0) {
       walked += std::hypot(track[k].x - track[k - 1].x, track[k].y - track[k - 1].y);
     }
     const CellId c = anchorCell(m, track[k], p.anchor_z_window);
@@ -2293,7 +2358,7 @@ LinkCounts countLinks(const StairLinks & links)
 
 std::shared_ptr<const StairLinks> buildStairLinks(
   const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
-  const octomap::OcTree * tree)
+  const octomap::OcTree * tree, const std::vector<size_t> & run_starts)
 {
   auto out = std::make_shared<StairLinks>();
   uint32_t ncomp = 0;
@@ -2318,7 +2383,15 @@ std::shared_ptr<const StairLinks> buildStairLinks(
   CellId anchor = kNoCell;
   double walked = 0.0;
   for (size_t k = 0; k < track.size(); ++k) {
-    if (k > 0) {
+    if (beginsRun(run_starts, k)) {
+      // Another mapping run begins (readTrackRuns): the robot was carried or
+      // driven unmapped to here, so the anchor of the run before is not where
+      // this stretch started. Without this a run ended on 2F and resumed on
+      // 1F laid a stair straight through the slab between its last keyframe
+      // and this one.
+      anchor = kNoCell;
+      walked = 0.0;
+    } else if (k > 0) {
       walked += std::hypot(track[k].x - track[k - 1].x, track[k].y - track[k - 1].y);
     }
     const CellId c = anchorCell(m, track[k], params.anchor_z_window);
@@ -2412,7 +2485,7 @@ std::shared_ptr<const StairLinks> buildStairLinks(
     detectStairs(m, tree, params, comp_cells, min_cells, *out);
   }
   kerbLinks(m, params, *out);
-  gapLinks(m, tree, track, params, comp_cells, min_cells, *out);
+  gapLinks(m, tree, track, run_starts, params, comp_cells, min_cells, *out);
   for (uint32_t i = 0; i < ncomp; ++i) {
     out->group[i] = findRoot(out->group, i);
   }

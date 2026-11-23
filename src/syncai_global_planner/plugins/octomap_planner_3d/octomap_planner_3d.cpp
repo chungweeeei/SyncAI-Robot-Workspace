@@ -787,8 +787,31 @@ bool OctomapPlanner3D::buildMapUnguarded(
         stair_params_.detect ? "; the stairs detected off the map only"
                              : ", so the floors of this map do not connect");
     }
+    // The mapping runs of the track (sessions.json, a map resumed with
+    // syncai_mapping's resume_mapping): no link is laid across a run's start,
+    // where the robot did not walk from the keyframe before.
+    std::vector<size_t> run_starts = {0};
+    if (have_track) {
+      std::string runs_error;
+      if (!o3d::readTrackRuns(poses_file, track.size(), run_starts, runs_error)) {
+        // Read as one walk, as before sessions.json existed. An error, not a
+        // warning: a link across a run's start is a stair or a doorway nobody
+        // walked, and nothing later says it is not real.
+        RCLCPP_ERROR(
+          logger_,
+          "[OctomapPlanner3D][%s] %s: the track is read as ONE walk, so a stair or gap link "
+          "may be laid between the end of one mapping run and the start of the next",
+          __func__, runs_error.c_str());
+      } else if (run_starts.size() > 1) {
+        RCLCPP_INFO(
+          logger_,
+          "[OctomapPlanner3D][%s] the track is %zu mapping runs (sessions.json): no link is "
+          "laid across the start of a run",
+          __func__, run_starts.size());
+      }
+    }
     if (have_track || stair_params_.detect || stair_params_.kerb_links) {
-      links = o3d::buildStairLinks(*map, track, stair_params_, tree.get());
+      links = o3d::buildStairLinks(*map, track, stair_params_, tree.get(), run_starts);
       // The counts and the names are stair_links.hpp's (countLinks, linkName):
       // the CLI's --stats prints the same, and the two are compared.
       const o3d::LinkCounts n = o3d::countLinks(*links);

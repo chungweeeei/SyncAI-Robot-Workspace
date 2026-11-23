@@ -500,15 +500,39 @@ bool readTrack(
   const std::string & poses_path, double lidar_height, std::vector<Waypoint> & out,
   std::string & error);
 
+// The mapping runs behind a track of track_size keyframes: the index of each
+// run's first keyframe, ascending, the first 0. From sessions.json beside
+// poses.txt, which syncai_mapping's save_maps writes for a map made in more
+// than one run (resume_mapping, 2026-11):
+//
+//   {"version": 1, "sessions": [{"first": 0, "count": 812}, {"first": 812, "count": 240}]}
+//
+// Consecutive rows of poses.txt are consecutive steps of ONE walk only
+// within a run. Where the next run begins the robot was somewhere else --
+// carried, or driven unmapped: up a storey, or the other side of a wall --
+// and a link laid from the last keyframe of one run to the first of the next
+// is a stair or a doorway nobody walked.
+//
+// {0} without the file: a map of one run has none. False, with {0} and error
+// set, when the file is there and is not an exact tiling of [0, track_size)
+// (readTrack skips a row it cannot parse, which shifts every index after
+// it): half a boundary list is not used, and the caller should say loudly
+// that this map's track is being read as one walk.
+bool readTrackRuns(
+  const std::string & poses_path, size_t track_size, std::vector<size_t> & run_starts,
+  std::string & error);
+
 // The links of a track over a built map. Never null; empty without links.
 // tree is the map's octree, when the caller still has it: the U landings'
 // corners are placed against the walls it holds at body height (see
 // landingObstacle in the .cpp), which the surface map cannot tell from a
 // landing whose floor was never seen. Without it they are placed against
 // the surfaces alone, which misses a wall that runs into the slab above.
+// run_starts is readTrackRuns's (empty = one run): no stair or gap link is
+// laid across the start of a run, the walk beginning anew there.
 std::shared_ptr<const StairLinks> buildStairLinks(
   const SurfaceMap & m, const std::vector<Waypoint> & track, const StairLinkParams & params,
-  const octomap::OcTree * tree = nullptr);
+  const octomap::OcTree * tree = nullptr, const std::vector<size_t> & run_starts = {});
 
 // One crossing a route takes: its inclusive span of the route's waypoints
 // and whether it is taken in the stair gait (in: the link's own gait; out:
