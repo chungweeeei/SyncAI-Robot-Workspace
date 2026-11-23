@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS profile for the M20 (DEEP Robotics' Lynx M20): what the robot, the
+  recorder and the backend containers run on when .env names it
+  (SYNCAI_RMW=rmw_fastrtps_cpp, SYNCAI_DDS_CONFIG=models/m20/fastdds.xml,
+  SYNCAI_ROS_DOMAIN_ID=0; config/models/README.md, "DDS").
+
+  Why Fast DDS on domain 0: the vendor stack publishes /LIDAR/POINTS_UDP (both
+  lidars merged, with per-point time) and /IMU on domain 0 from another
+  computer on the robot's internal LAN (10.21.31.104 / .106), over Fast DDS.
+  Measured on this host (2026-11-23): Fast DDS on domain 0 took 100 of 100
+  clouds and 200 Hz of IMU in 10 s with no setup; Cyclone found the remote
+  participants over eth0 but never the lidar's writer, and an lo-only Cyclone
+  found nothing (the vendor announces only its LAN addresses). A
+  domain_bridge into domain 1 also works but copies every 2 MB cloud once more.
+
+  Interfaces: loopback and the internal LAN only. The address list is what
+  keeps DDS (discovery multicast included) off the Wi-Fi NIC (wlP1p1s0), the
+  ZeroTier interface and docker0: Fast DDS sends, receives and announces on
+  whitelisted addresses alone. Fast DDS 2.6 (Humble) whitelists by address, not
+  by interface name, so 10.21.31.120 is this host's address on the M20's
+  internal LAN; a host given another address there needs this line changed, or
+  it hears nothing from the vendor's computers. The vendor's own host profile
+  (/etc/fastdds/fastdds.xml) whitelists the same two.
+
+  UDP only, no shared-memory transport: the vendor's processes on this host run
+  UDP only, and what was measured above is UDP at 32 MB socket buffers (a 2 MB
+  merged cloud at 10 Hz; the host's net.core.rmem_max is 256 MB). SHM between
+  our own nodes is a later step, measured first, not a default.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>syncai_udp</transport_id>
+      <type>UDPv4</type>
+      <!-- 32 MB: a merged cloud is ~2 MB of 64 KB fragments, best effort -->
+      <receiveBufferSize>33554432</receiveBufferSize>
+      <sendBufferSize>33554432</sendBufferSize>
+      <interfaceWhiteList>
+        <address>127.0.0.1</address>
+        <address>10.21.31.120</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <participant profile_name="syncai_m20" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>syncai_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

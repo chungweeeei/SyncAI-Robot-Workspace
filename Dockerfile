@@ -643,6 +643,21 @@ RUN apt-get update && apt-get install -y \
     libopencv-contrib-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Fast DDS as a second RMW (2026-11), for the M20: its vendor stack publishes
+# the lidar and IMU on Fast DDS, domain 0, from another computer on the robot's
+# internal LAN, and Cyclone did not get the lidar writer discovered from there
+# (the participant was found, the writer never was) while Fast DDS took both
+# topics at full rate with no setup. Which RMW a container runs is
+# SYNCAI_RMW in .env (docker-compose.robots.yml); the default stays Cyclone.
+# Here in `dev` rather than in `base` (where Cyclone is) so that adding it does
+# not rebuild GTSAM and the Rust underlay. Nothing is rebuilt for it: the
+# workspace and the underlay already carry the fastrtps type supports, since
+# ros-base installs rosidl_typesupport_fastrtps_*; only the RMW itself (and
+# with it the Fast DDS library) was missing.
+RUN apt-get update && apt-get install -y \
+    ros-humble-rmw-fastrtps-cpp \
+    && rm -rf /var/lib/apt/lists/*
+
 # Prebuilt Livox-SDK2 / GTSAM / Sophus / Ceres / Iridescence, one COPY per
 # builder stage (each stage holds only its own library under /out/usr/local).
 COPY --from=livox /out/usr/local /usr/local

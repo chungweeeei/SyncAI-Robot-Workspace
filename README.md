@@ -134,7 +134,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 │   ├── instances/robot.ini       # the robot's identity: [system] robot_id + robot_model, [map], [initial_pose], [sensor.lidar]
 │   ├── models/<robot_model>/     # what each robot model (g23, m20) changes from the factory params; see its README
 │   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL), calib_lidar_camera.yaml (CALIBRATION)
-│   └── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1 (SYNCAI_DDS_CONFIG in .env names another)
+│   └── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1 (SYNCAI_DDS_CONFIG / SYNCAI_RMW in .env name another)
 ├── scripts/
 │   ├── attach.sh                 # host-side: attach to whichever byobu session is live in the container
 │   ├── build.sh                  # in-image: colcon build of every ROS package; entrypoint of docker-compose.build.yml
@@ -514,10 +514,16 @@ against a generated 3D fixture map (`.github/scripts/smoke_test.sh`).
   plain nodes and come up active immediately, so ordering lives in the session
   specs' `sleep` fields.
 - **`use_sim_time`** is set *only* in the params YAML files, never in launch.
-- **DDS is loopback-only.** `config/cyclonedds.xml` disables multicast, binds
-  `lo`, and pins `<Domain Id="1">`. Host networking is used for the lidar's UDP
-  on the physical NIC and so the containers share the host's loopback, **not**
-  for LAN discovery. Compose sets `ROS_DOMAIN_ID: "1"` as a literal; the Jetson
-  host shell exports `ROS_DOMAIN_ID=69`, so a `ros2` CLI or rviz2 run on the
-  host will not see the containers until that export is changed.
+- **DDS is loopback-only** by default. `config/cyclonedds.xml` disables
+  multicast, binds `lo`, and pins `<Domain Id="1">`. Host networking is used for
+  the lidar's UDP on the physical NIC and so the containers share the host's
+  loopback, **not** for LAN discovery. Compose takes the domain from
+  `SYNCAI_ROS_DOMAIN_ID` (default 1), not `ROS_DOMAIN_ID`: the Jetson host shell
+  exports `ROS_DOMAIN_ID=69`, so a `ros2` CLI or rviz2 run on the host will not
+  see the containers until that export is changed.
+- **The M20 runs Fast DDS on domain 0** (`.env`: `SYNCAI_RMW=rmw_fastrtps_cpp`,
+  `SYNCAI_DDS_CONFIG=models/m20/fastdds.xml`, `SYNCAI_ROS_DOMAIN_ID=0`), the
+  vendor's domain, where its lidar and IMU come from the robot's other
+  computers; the profile keeps DDS on `lo` and the internal LAN (10.21.31.120),
+  off Wi-Fi. `config/models/README.md`, "DDS".
 - **Secrets** — `.env` holds local secrets and is gitignored. Do not commit it.

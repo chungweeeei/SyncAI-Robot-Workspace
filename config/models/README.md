@@ -107,22 +107,33 @@ are still the G23's for every robot: `charge.xml`'s motion keys, the windows of
 `syncai_camera_feeder`) plus `syncai_mapping`'s — each of those repos takes the
 same `config/models/<robot_model>/<node>.yaml` layer when it needs one.
 
-## cyclonedds.xml
+## DDS
 
-A model directory may hold its own `cyclonedds.xml`. It is not picked by
-`robot_model`: `CYCLONEDDS_URI` is set by compose when the container is made,
-before anything reads the INI, and the backend's and the recorder's containers
-need the same file. `SYNCAI_DDS_CONFIG` in `.env` names it, relative to
-`config/` (default `cyclonedds.xml`, the loopback-only file every robot ran on
-until now):
+A model directory may hold its own DDS file: a `cyclonedds.xml`, or a Fast DDS
+profile (`fastdds.xml`). It is not picked by `robot_model`: the RMW's
+environment is set by compose when the container is made, before anything
+reads the INI, and the backend's and the recorder's containers need the same.
+Three `.env` variables, set together:
+
+| Variable | Default | |
+|---|---|---|
+| `SYNCAI_RMW` | `rmw_cyclonedds_cpp` | the RMW; `rmw_fastrtps_cpp` is in the image since 2026-11 |
+| `SYNCAI_DDS_CONFIG` | `cyclonedds.xml` | the file, relative to `config/`; compose hands it to both `CYCLONEDDS_URI` and `FASTRTPS_DEFAULT_PROFILES_FILE`, and the RMW reads its own |
+| `SYNCAI_ROS_DOMAIN_ID` | `1` | `ROS_DOMAIN_ID`; not `ROS_DOMAIN_ID` itself, which the Jetson host's shell exports as 69 and compose would prefer over `.env` |
+
+The M20's:
 
 ```
-SYNCAI_DDS_CONFIG=models/m20/cyclonedds.xml
+SYNCAI_RMW=rmw_fastrtps_cpp
+SYNCAI_DDS_CONFIG=models/m20/fastdds.xml
+SYNCAI_ROS_DOMAIN_ID=0
 ```
 
-`<Domain Id>` in the file and `ROS_DOMAIN_ID` in compose are still two places
-that must agree, and the backend's compose names `config/cyclonedds.xml` by its
-fixed path — a host that sets `SYNCAI_DDS_CONFIG` needs the same change there.
+Under Cyclone, `<Domain Id>` in the file and the domain variable are two
+places that must agree; Fast DDS takes the domain from `ROS_DOMAIN_ID` alone.
+The backend's compose names `config/cyclonedds.xml`, Cyclone and domain 1 by
+fixed values — a host that sets these needs the same change there, or the
+backend sees nothing.
 
 ## Adding a model
 

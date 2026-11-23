@@ -77,9 +77,17 @@ x-robot-common: &robot-common
 # only this one leaves DDS configured for a domain nothing is publishing on.
 # Note the flip side: anything started on the HOST (rviz2, ros2 CLI) inherits
 # 69 and will NOT see the containers until that export is changed.
+#
+# Both are .env-selectable since 2026-11, through SYNCAI_-prefixed names that
+# no host shell exports (the 69 trap above is a variable called ROS_DOMAIN_ID):
+# SYNCAI_ROS_DOMAIN_ID (default 1) and SYNCAI_RMW (default
+# rmw_cyclonedds_cpp). The M20 runs rmw_fastrtps_cpp on domain 0, the
+# vendor's, where its lidar and IMU are published from the robot's other
+# computers (config/models/m20/fastdds.xml has why). Under Cyclone the domain
+# is still pinned in the XML too; Fast DDS takes it from ROS_DOMAIN_ID alone.
 x-robot-env: &robot-env
-  ROS_DOMAIN_ID: "1"
-  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  ROS_DOMAIN_ID: "${SYNCAI_ROS_DOMAIN_ID:-1}"
+  RMW_IMPLEMENTATION: ${SYNCAI_RMW:-rmw_cyclonedds_cpp}
   DISPLAY: ":1"
   XAUTHORITY: /tmp/.docker.xauth
   # rcl/spdlog per-process logs + `ros2 launch` stdout/stderr capture land
@@ -148,7 +156,7 @@ services:
       #
       # SYNCAI_DDS_CONFIG (.env) names another file under config/ for a host
       # whose DDS wiring is not loopback-only -- a robot model's own, say
-      # (`SYNCAI_DDS_CONFIG=models/m20/cyclonedds.xml`). It is a file name and
+      # (`SYNCAI_DDS_CONFIG=models/m20/fastdds.xml`). It is a file name and
       # not derived from the INI's robot_model: this variable is set when the
       # container is made, before anything reads the INI, and the backend's
       # and the recorder's containers have to be given the same file. Unset,
@@ -156,7 +164,14 @@ services:
       # still names by its fixed path -- so a host that sets it needs the same
       # change there, or the backend sits on another DDS configuration.
       # Whatever file it names, its <Domain Id> must stay ROS_DOMAIN_ID above.
+      #
+      # The one variable names the file for either RMW: both variables below
+      # are set to it, and each RMW reads only its own (a Fast DDS profile under
+      # Cyclone, or the reverse, is never opened). So SYNCAI_DDS_CONFIG and
+      # SYNCAI_RMW are set together: models/m20/fastdds.xml with
+      # rmw_fastrtps_cpp.
       CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/${SYNCAI_DDS_CONFIG:-cyclonedds.xml}
+      FASTRTPS_DEFAULT_PROFILES_FILE: /home/syncrobotic/robot_ws/config/${SYNCAI_DDS_CONFIG:-cyclonedds.xml}
       # Camera encoding. These two are what make the nvidia container runtime
       # bind-mount the L4T userspace in, including the Tegra GStreamer plugins
       # (nvjpegdec / nvvidconv / nvv4l2h264enc) that drive the hardware encoder.

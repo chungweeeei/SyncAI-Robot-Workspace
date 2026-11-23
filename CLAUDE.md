@@ -673,10 +673,11 @@ something to verify or edit here.
   header has the xauth-cookie recipe). `ROS_LOG_DIR` is a 128 MiB tmpfs. Under
   `network_mode: host` compose service names do not resolve: anything that
   talks to the infra uses `127.0.0.1` and the host-published ports.
-- **`ROS_DOMAIN_ID` is a literal `"1"` in compose, not `${ROS_DOMAIN_ID:-1}`.**
-  Compose interpolation gives the invoking shell precedence over `.env`, and
-  the Jetson host's `~/.bashrc` exports `ROS_DOMAIN_ID=69`, so an overridable
-  default silently resolved to 69. The flip side: anything started on the
+- **`ROS_DOMAIN_ID` in compose is `${SYNCAI_ROS_DOMAIN_ID:-1}`, never
+  `${ROS_DOMAIN_ID:-1}`.** Compose interpolation gives the invoking shell
+  precedence over `.env`, and the Jetson host's `~/.bashrc` exports
+  `ROS_DOMAIN_ID=69`, so an overridable default of that name silently resolved
+  to 69 (it was a literal `"1"` until 2026-11). The flip side: anything started on the
   **host** (rviz2, `ros2` CLI) inherits 69 and will not see the containers
   until that export is changed.
 - **CycloneDDS** is the RMW, configured by hand: `config/cyclonedds.xml` —
@@ -694,6 +695,15 @@ something to verify or edit here.
   container is made, and the recorder's and the backend's containers need the
   same file. The backend's compose still names `config/cyclonedds.xml` by its
   fixed path, so setting the variable is a cross-repository change.
+  **The M20 runs Fast DDS** (2026-11): `SYNCAI_RMW=rmw_fastrtps_cpp`,
+  `SYNCAI_DDS_CONFIG=models/m20/fastdds.xml`, `SYNCAI_ROS_DOMAIN_ID=0` — the
+  vendor's domain, where `/LIDAR/POINTS_UDP` and `/IMU` arrive from the robot's
+  other computers (Cyclone found their participants but never the lidar's
+  writer). Compose hands `SYNCAI_DDS_CONFIG` to both `CYCLONEDDS_URI` and
+  `FASTRTPS_DEFAULT_PROFILES_FILE`; each RMW reads its own. The profile
+  whitelists `127.0.0.1` and the internal LAN's `10.21.31.120` by address
+  (Fast DDS 2.6 has no interface names), which keeps DDS off Wi-Fi; UDP only.
+  `rmw_fastrtps_cpp` is installed in the `dev` stage, not `base`.
 - tmpfs `mode:` in compose must be written as an octal literal (`0o1777`) — a
   bare `1777` is parsed as decimal.
 

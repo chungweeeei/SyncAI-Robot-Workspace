@@ -15,9 +15,9 @@
 # so that it survives the shell that started it.
 #
 # Same image as robot01 (rosbag2 and the livox / syncai_common message types
-# from the workspace's install/), same DDS setup (host network, CycloneDDS on
-# lo, domain 1 -- see x-robot-env in docker-compose.robots.yml; keep the two in
-# step), same workspace mount and instance INI, for robot_id. No devices: it
+# from the workspace's install/), same DDS setup (host network; domain, RMW
+# and DDS file from the same .env variables -- see x-robot-env in
+# docker-compose.robots.yml; keep the two in step), same workspace mount and instance INI, for robot_id. No devices: it
 # only subscribes. restart "no": it is for a night of recording, not a service.
 # =============================================================================
 
@@ -34,11 +34,13 @@ services:
     network_mode: host
     entrypoint: ["scripts/record/lio_ring_record.sh"]
     environment:
-      ROS_DOMAIN_ID: "1"
-      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-      # The same file robot01 is on (docker-compose.robots.yml has why it is a
-      # .env variable): a recorder on another DDS configuration records nothing.
+      # The same domain, RMW and file robot01 is on (docker-compose.robots.yml
+      # has why they are .env variables): a recorder on another DDS
+      # configuration records nothing.
+      ROS_DOMAIN_ID: "${SYNCAI_ROS_DOMAIN_ID:-1}"
+      RMW_IMPLEMENTATION: ${SYNCAI_RMW:-rmw_cyclonedds_cpp}
       CYCLONEDDS_URI: /home/syncrobotic/robot_ws/config/${SYNCAI_DDS_CONFIG:-cyclonedds.xml}
+      FASTRTPS_DEFAULT_PROFILES_FILE: /home/syncrobotic/robot_ws/config/${SYNCAI_DDS_CONFIG:-cyclonedds.xml}
       ROS_LOG_DIR: /tmp/ros_log
       RCUTILS_COLORIZED_OUTPUT: "0"
       PYTHONUNBUFFERED: "1"
