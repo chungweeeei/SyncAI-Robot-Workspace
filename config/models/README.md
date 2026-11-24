@@ -102,10 +102,16 @@ files state and no code checks.
 A params file cannot carry everything that differs between models. Today these
 are still the G23's for every robot: `charge.xml`'s motion keys, the windows of
 `config/sessions/*.yaml`, the C++ defaults behind the params, the devices in
-`docker-compose.robots.yml`, and the four out-of-tree packages' own params
-(`syncai_driver_manager`, `syncai_robot_state`, `syncai_lio_bridge`,
-`syncai_camera_feeder`) plus `syncai_mapping`'s — each of those repos takes the
-same `config/models/<robot_model>/<node>.yaml` layer when it needs one.
+`docker-compose.robots.yml`, and three out-of-tree packages' own params
+(`syncai_robot_state`, `syncai_lio_bridge`, `syncai_camera_feeder`) plus
+`syncai_mapping`'s — each of those repos takes the same
+`config/models/<robot_model>/<node>.yaml` layer when it needs one.
+
+`syncai_driver_manager` is the exception (2026-11): its launch reads the same
+`[system] robot_model` but loads a layer **inside its own package**,
+`params/models/<robot_model>.yaml` (`g23.yaml`, `m20.yaml`), after its shared
+params file, and refuses a model with no file, as these launches do. It has no
+file here, and `model_keys.yaml` / `test_model_overlays.py` do not see it.
 
 ## DDS
 
