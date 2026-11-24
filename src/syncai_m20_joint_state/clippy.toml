@@ -1,0 +1,3 @@
+# clippy configuration (lint levels live in each package's Cargo.toml [lints]; only lint parameters go here)
+# Read from the package directory (next to Cargo.toml).
+msrv = "1.85"

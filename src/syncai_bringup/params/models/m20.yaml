@@ -10,13 +10,13 @@
 # launch start the Livox driver (has_livox_block), and the M20 has no Livox of
 # ours -- its two lidars are the vendor stack's, merged on /LIDAR/POINTS_UDP
 # with their IMU on /IMU, published from the robot's other computers. So on an
-# M20 this launch is robot_state_publisher alone.
+# M20 this launch starts robot_state_publisher and syncai_m20_joint_state only.
 #
-# What that publishes today: M20.urdf's fixed joints on /tf_static -- the two
-# cameras, lidar_link and imu (the URDF has where each value came from). Its 16
-# leg and wheel joints are revolute / continuous and appear on /tf only once
-# something publishes /joint_states, which nothing does on the M20
-# (syncai_driver_manager's m20 protocol publishes none of the G23's telemetry).
+# What that publishes: M20.urdf's fixed joints on /tf_static -- the two cameras,
+# lidar_link and imu (the URDF has where each value came from) -- and its 16 leg
+# and wheel joints on /tf from <robot_id>/joint_states, which the launch's
+# MODEL_JOINT_STATES starts syncai_m20_joint_state for (the vendor's /JOINTS_DATA
+# converted to M20.urdf's angles).
 
 /**/robot_state_publisher:
   ros__parameters: {}

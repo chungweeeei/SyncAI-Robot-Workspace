@@ -41,7 +41,10 @@
 #     stamped <robot_id>/lidar_top -- only for a robot model whose params carry
 #     the /**/livox_lidar_publisher block (the G23's g23.yaml; has_livox_block).
 #     A model without one (the M20, whose lidars are the vendor stack's) gets
-#     robot_state_publisher alone.
+#     no driver.
+#   * <robot_id>/joint_states, for a model MODEL_JOINT_STATES names (the M20:
+#     syncai_m20_joint_state, from the vendor's /JOINTS_DATA), so its leg and
+#     wheel links reach /tf through robot_state_publisher.
 #
 # No camera. This file could start the TechNexion camera through vizionsdk_ros2
 # (use_camera:=true, off by default) until 2026-10-17, when that node was
@@ -181,6 +184,16 @@ FALLBACK_LIDAR_MODEL = "mid360"
 # what the mount will be measured against, and a missing lidar_top shows as an
 # unparented cloud, not as another robot's legs.
 MODEL_URDF = {"g23": "G23.urdf", "m20": "M20.urdf"}
+
+# The node that publishes <robot_id>/joint_states for a model, as (package,
+# executable): robot_state_publisher puts a URDF's revolute / continuous joints
+# on /tf only from that topic. The M20's is syncai_m20_joint_state, which
+# converts the vendor's /JOINTS_DATA (2026-11-24). The G23 has none on purpose:
+# its leg angles reach their only consumer (the console's 3D model) over
+# syncai_driver_manager's motor_states, so its legs stay off /tf. Named here
+# and not in package.xml, so a G23 build needs neither the package nor the
+# vendor's drdds it depends on.
+MODEL_JOINT_STATES = {"m20": ("syncai_m20_joint_state", "m20_joint_state_node")}
 
 logger = launch_logging.get_logger("bringup.launch")
 
@@ -612,6 +625,22 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
+    nodes = [robot_state_publisher]
+
+    # The model's joint_states source, in the same namespace, so it publishes
+    # the /<robot_id>/joint_states this robot_state_publisher subscribes to.
+    if robot_model in MODEL_JOINT_STATES:
+        package, executable = MODEL_JOINT_STATES[robot_model]
+        logger.info(f"robot_model '{robot_model}': joint_states from {package}")
+        nodes.append(
+            Node(
+                package=package,
+                executable=executable,
+                namespace=robot_id,
+                output="screen",
+            )
+        )
+
     # Only for a model whose params carry the Livox block (has_livox_block).
     # Without it this launch is robot_state_publisher alone: the URDF's fixed
     # joints on /tf_static, and its moving ones once something publishes
@@ -622,7 +651,7 @@ def launch_setup(context, *args, **kwargs):
     if not has_livox_block(*params_paths):
         logger.info(
             f"robot_model '{robot_model}': no '{LIVOX_PARAMS_KEY}' block in "
-            f"{params_paths}, so no Livox driver; robot_state_publisher only"
+            f"{params_paths}, so no Livox driver"
         )
         if xfer_format_arg.strip():
             # The calibration session asks for PointCloud2 from a driver this
@@ -632,7 +661,7 @@ def launch_setup(context, *args, **kwargs):
                 f"livox_xfer_format:={xfer_format_arg} ignored: robot_model "
                 f"'{robot_model}' runs no Livox driver"
             )
-        return [robot_state_publisher]
+        return nodes
 
     # Livox driver, brought over from
     # livox_ros_driver2/launch_ROS2/msg_MID360_launch.py. The user config JSON
@@ -672,7 +701,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[*parameters, livox_overrides],
     )
 
-    return [robot_state_publisher, livox_driver]
+    return [*nodes, livox_driver]
 
 
 def generate_launch_description():

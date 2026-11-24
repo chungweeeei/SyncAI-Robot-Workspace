@@ -242,7 +242,8 @@ if [ "$BUILD_COLCON" = "1" ]; then
     # flag to skip it). That copy exists so a downstream Rust package can depend
     # on the crate: colcon-ros-cargo turns every marker on AMENT_PREFIX_PATH into
     # a `[patch.crates-io]` entry pointing at that directory. These four are
-    # binary-only nodes nothing depends on, and at runtime they need lib/,
+    # binary-only nodes nothing depends on (and syncai_m20_joint_state, in
+    # this tree, the same), and at runtime they need lib/,
     # launch/ and params/ only -- so the copy is dead weight, and source we
     # would rather not ship in an install/ that goes to the customer IPC.
     #
@@ -260,7 +261,7 @@ if [ "$BUILD_COLCON" = "1" ]; then
     # removes it.
     step "pruning installed Rust source of the rclrs nodes"
     for pkg in syncai_driver_manager syncai_robot_state syncai_lio_bridge \
-               syncai_camera_feeder; do
+               syncai_camera_feeder syncai_m20_joint_state; do
         prefix="install/${pkg}"
         [ -d "${prefix}" ] || continue
         rm -rf "${prefix}/share/${pkg}/rust" \

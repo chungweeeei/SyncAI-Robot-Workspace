@@ -57,18 +57,21 @@ Both nodes here are namespaced, and `robot_state_publisher` additionally gets
 
 ## bringup — body TF tree + MID360 / MID360s
 
-Two nodes, both namespaced by `robot_id` — the second only for a model with a
-Livox (since 2026-11-24). The launch starts the driver when the params it
+Up to three nodes, all namespaced by `robot_id`: `robot_state_publisher`
+always; the Livox driver only for a model with a Livox (since 2026-11-24); and
+a `joint_states` source only for a model `MODEL_JOINT_STATES` names — the M20's
+is `syncai_m20_joint_state` (2026-11-24), the vendor's `/JOINTS_DATA` converted
+to `M20.urdf`'s angles, so its leg and wheel links are on `/tf`. Named in the
+launch, not in `package.xml`, so a G23 build needs neither that package nor the
+vendor's `drdds` under it. The launch starts the driver when the params it
 loads have a `/**/livox_lidar_publisher` block (`has_livox_block`): the
 G23's `params/models/g23.yaml` has it, the M20's `m20.yaml` deliberately does
 not (its two lidars are the vendor stack's, on `/LIDAR/POINTS_UDP`), so an M20
-gets `robot_state_publisher` over `M20.urdf` alone and a `livox_xfer_format:=`
-on it is ignored with a warning. That publishes `M20.urdf`'s fixed joints on
-`/tf_static` — the two cameras, `lidar_link` and `imu` (the URDF has where each
-came from); its 16 leg and wheel joints are revolute / continuous
-and reach `/tf` only once something publishes `/joint_states`, which nothing
-does on the M20 yet. Whether a model has a Livox is a params change, not a
-launch change.
+gets `robot_state_publisher` over `M20.urdf` and `m20_joint_state_node`, and a
+`livox_xfer_format:=` on it is ignored with a warning. That publishes
+`M20.urdf`'s fixed joints on `/tf_static` — the two cameras, `lidar_link` and
+`imu` (the URDF has where each came from) — and its 16 leg and wheel joints on
+`/tf`. Whether a model has a Livox is a params change, not a launch change.
 
 **`robot_state_publisher`** parses `description/G23.urdf` and publishes the body
 TF tree with `frame_prefix: <robot_id>/`. What actually reaches TF:

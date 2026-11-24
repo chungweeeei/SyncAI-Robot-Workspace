@@ -1,0 +1,20 @@
+[package]
+name = "syncai_m20_joint_state"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]                         # one [[bin]] per node; this is the name `ros2 run` uses
+name = "m20_joint_state_node"
+path = "src/main.rs"
+
+[dependencies]
+# 0.8 with every other rclrs package here: the image's rust-underlay builds rclrs 0.8.0 from a
+# pinned SHA, and the three ros2-rust repos move together (Dockerfile)
+rclrs = "0.8"
+ros-env = "0.2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

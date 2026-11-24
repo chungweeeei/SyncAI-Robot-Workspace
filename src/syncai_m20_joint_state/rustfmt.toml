@@ -1,0 +1,7 @@
+# rustfmt configuration (stable options only, so the Rust 1.85 rustfmt works without nightly)
+# rustfmt searches upward from each file, so this one (next to Cargo.toml) covers the whole package.
+# The edition is not set here; it comes from each package's Cargo.toml.
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
