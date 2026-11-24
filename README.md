@@ -96,7 +96,7 @@ over DDS; the infra it needs (postgres, temporal) stays in this repo's
 
 ### Third-party (`src/third-party/`)
 
-All six are checked out by vcstool from `third-party.repos` (they were git
+All seven are checked out by vcstool from `third-party.repos` (they were git
 submodules until `fca520b`); nothing is vendored there any more.
 
 | Package | Notes |
@@ -106,6 +106,7 @@ submodules until `fca520b`); nothing is vendored there any more.
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver. `colcon.meta` passes the cmake flags the driver needs; see "Build" |
 | `small_gicp` | Pinned to `v1.0.1`, unmodified; the registration backend of `syncai_localizer` and of `syncai_mapping`'s loop closure |
 | `vizionsdk-ros2` | TechNexion camera wrapper; needs the VizionSDK `.deb` the `Dockerfile` installs |
+| `sdk_deploy` | DEEP Robotics' SDK repo, imported for its `drdds` package (the M20's message types) only; `scripts/build.sh` puts a `COLCON_IGNORE` in its six other packages |
 
 The FAST-LIO2 fork that used to be imported at `src/third-party/FASTLIO2_ROS2`
 is gone: its packages were ported in-tree as `syncai_pointlio`,
@@ -128,7 +129,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ```
 .
 ├── src/                          # colcon packages (see table above)
-│   └── third-party/              # six upstream repos, checked out by vcstool
+│   └── third-party/              # seven upstream repos, checked out by vcstool
 ├── config/
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
 │   ├── instances/robot.ini       # the robot's identity: [system] robot_id + robot_model, [map], [initial_pose], [sensor.lidar]

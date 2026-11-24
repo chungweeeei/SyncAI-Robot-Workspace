@@ -80,6 +80,31 @@ repositories:
     type: git
     url: https://github.com/koide3/small_gicp.git
     version: v1.0.1
+  src/third-party/sdk_deploy:
+    # DEEP Robotics' public SDK repo (BSD 3-Clause), imported for ONE package:
+    # src/drdds, the message types of the Lynx M20's own stack -- what its
+    # other computers publish on DDS domain 0 (/JOINTS_DATA is
+    # drdds/msg/JointsData). Main's HEAD as of 2026-11-24; no tags upstream.
+    #
+    # The repo's six other packages (m20_sdk_deploy, m20s_sdk_deploy,
+    # lite3_sdk_deploy, lite3_sdk_service, lite3_transfer, s10_sdk_deploy) are
+    # the vendor's RL deployment code, linked against the onnxruntime and
+    # legged-SDK .so files the repo carries; nothing here uses them.
+    # scripts/build.sh and scripts/sync.sh therefore drop a COLCON_IGNORE into
+    # every package directory of this checkout but src/drdds after each
+    # import, as they restore livox's package.xml; a by-hand `vcs import`
+    # leaves colcon building all seven until one of them runs. The checkout is
+    # ~810 MB (onnxruntime builds, gamepad .apk, meshes), which vcstool cannot
+    # narrow to one directory.
+    #
+    # drdds has fewer messages (20 + 1 srv) than the copy in the M20 driver
+    # sources an integrator gave us (49, unlicensed); JointsData / JointData /
+    # MetaType are identical in both, and decode the robot's live /JOINTS_DATA.
+    # Check that again after bumping this pin: Humble's RMW matches types by
+    # name only, so a changed definition fails as garbage, not as an error.
+    type: git
+    url: https://github.com/DeepRoboticsLab/sdk_deploy.git
+    version: 20279073bc43522aa06b0abf611bb2daaa53d87d
   src/third-party/vizionsdk-ros2:
     # Branch `main`, no tags upstream -- pinned to a SHA because the branch tip
     # moves, and an import that silently pulls new driver code onto a robot is

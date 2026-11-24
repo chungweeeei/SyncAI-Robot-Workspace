@@ -115,6 +115,7 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
              third-party/small_gicp:third-party.repos \
              third-party/vizionsdk-ros2:third-party.repos \
              third-party/direct_visual_lidar_calibration:third-party.repos \
+             third-party/sdk_deploy:third-party.repos \
              syncai_common:dependencies.repos \
              syncai_mapping:dependencies.repos \
              syncai_driver_manager:dependencies.repos \
@@ -130,7 +131,7 @@ for entry in third-party/behaviortree_cpp_v3:third-party.repos \
     fi
 done
 if [ -n "${missing}" ]; then
-    # Deduplicate: five empty third-party dirs are still one missing import, and
+    # Deduplicate: seven empty third-party dirs are still one missing import, and
     # so are seven empty first-party ones.
     lists="$(printf '%s\n' ${missing} | sort -u | tr '\n' ' ')"
     die "empty vcs checkout(s) — on the HOST run, from the workspace root:" \
@@ -157,6 +158,24 @@ if [ ! -f "${livox}/package.xml" ]; then
     echo "  restoring ${livox}/package.xml from package_ROS2.xml"
     cp -f "${livox}/package_ROS2.xml" "${livox}/package.xml"
 fi
+
+# DEEP Robotics' sdk_deploy is imported for src/drdds alone (the M20's message
+# types). Its other packages are the vendor's RL deployment nodes, linked
+# against the onnxruntime / legged-SDK .so files in that repo, and nothing here
+# uses them -- so every package directory in the checkout but drdds gets a
+# COLCON_IGNORE (rosdep's package crawl honours it too). Found by package.xml
+# rather than named, so a robot the vendor adds after a pin bump is skipped as
+# well. The markers are untracked files in that checkout; a re-import may drop
+# them, and this puts them back.
+sdk=src/third-party/sdk_deploy
+while IFS= read -r pkg_xml; do
+    pkg_dir="$(dirname "${pkg_xml}")"
+    [ "${pkg_dir}" = "${sdk}/src/drdds" ] && continue
+    if [ ! -f "${pkg_dir}/COLCON_IGNORE" ]; then
+        echo "  ignoring ${pkg_dir} (sdk_deploy: only drdds is built)"
+        touch "${pkg_dir}/COLCON_IGNORE"
+    fi
+done < <(find "${sdk}" -name .git -prune -o -name package.xml -print)
 
 # --- 2. ROS environment ------------------------------------------------------
 # Underlay only. Sourcing install/setup.bash before building would overlay

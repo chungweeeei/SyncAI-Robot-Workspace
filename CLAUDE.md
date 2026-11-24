@@ -167,8 +167,9 @@ already ships Rust bindings.
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver |
 | `small_gicp` | Pinned to upstream tag `v1.0.1`. Unmodified. The registration backend of `syncai_localizer` and `syncai_mapping`'s loop verification. Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package found by `find_package(small_gicp)`. |
 | `vizionsdk-ros2` | TechNexion camera wrapper. **Nothing starts it**; it is still imported and built. Needs the closed-source VizionSDK `.deb`, which the `Dockerfile` downloads (`VIZIONSDK_VERSION`); there is no rosdep key for it. |
+| `sdk_deploy` | DEEP Robotics' public SDK repo (BSD 3-Clause), pinned to a main SHA, imported for **`drdds` alone**: the message types of the M20's own stack (`/JOINTS_DATA` is `drdds/msg/JointsData`), which decode the robot's live topics. Nothing in the stack uses it yet. Its six other packages (the vendor's RL deployment nodes, linked against the onnxruntime / legged-SDK `.so` files it carries) get a `COLCON_IGNORE` from `scripts/build.sh` and `scripts/sync.sh` after every import, as livox's `package.xml` is restored — a by-hand `vcs import` leaves colcon building all seven until one runs. The checkout is ~810 MB, which vcstool cannot narrow. |
 
-All six are checked out by vcstool from `third-party.repos`; bumping one is a
+All seven are checked out by vcstool from `third-party.repos`; bumping one is a
 one-line `version:` edit there plus `vcs import --recursive < third-party.repos --force`.
 The import target is the workspace root, not `src`: the keys already carry
 `src/`. The FAST-LIO2 fork once imported at `src/third-party/FASTLIO2_ROS2` was
@@ -323,7 +324,7 @@ throwaway container never reaches robot01, so a missing dep is a `Dockerfile`
 change. The script restores the `livox_ros_driver2` `package.xml` when a
 `vcs import` has deleted it, and refuses to start on an empty vcs checkout,
 naming the `.repos` file to import per missing directory (a `dir:repos` table
-of the six third-party and seven first-party checkouts). The first-party checks
+of the seven third-party and seven first-party checkouts). The first-party checks
 matter most: an absent `src/syncai_common` fails every package, but an absent
 `syncai_mapping` / `_driver_manager` / `_robot_state` / `_lio_bridge` /
 `_camera_feeder` / `_landmark_detection` fails *nothing* — colcon builds a

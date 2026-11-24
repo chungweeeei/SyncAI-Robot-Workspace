@@ -126,6 +126,18 @@ if [ -f "$livox/package_ROS2.xml" ] && ! cmp -s "$livox/package_ROS2.xml" "$livo
     cp -f "$livox/package_ROS2.xml" "$livox/package.xml"
 fi
 
+# sdk_deploy is imported for its src/drdds alone; every other package in it
+# (the vendor's RL deployment nodes, linked against .so files that repo ships)
+# gets a COLCON_IGNORE, as scripts/build.sh also does before building.
+sdk=src/third-party/sdk_deploy
+if [ -d "$sdk" ]; then
+    while IFS= read -r pkg_xml; do
+        pkg_dir=$(dirname "$pkg_xml")
+        [ "$pkg_dir" = "$sdk/src/drdds" ] && continue
+        [ -f "$pkg_dir/COLCON_IGNORE" ] || { echo "== $pkg_dir: COLCON_IGNORE"; touch "$pkg_dir/COLCON_IGNORE"; }
+    done < <(find "$sdk" -name .git -prune -o -name package.xml -print)
+fi
+
 # Where every checkout ended up -- the record `vcs export --exact` gives CI.
 # A detached third-party checkout reads as the tag it is on, or its SHA.
 echo
