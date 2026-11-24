@@ -117,7 +117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .declare_parameter("publish_rate")
         // /JOINTS_DATA arrives at ~180 Hz or more; the leg links' TF is for looking at, and
         // every message here is one robot_state_publisher turns into 16 transforms on /tf.
-        .default(50.0)
+        // 20 = robot_state_publisher's own publish_frequency default, which caps its moving
+        // transforms: at 50 (until 2026-11-24) more than half the joint_states were converted
+        // and published only to be dropped there (robot01: 44 Hz in, ~15-20 Hz of /tf out).
+        // Raise the two together.
+        .default(20.0)
         .range(ParameterRange {
             lower: Some(0.0),
             upper: None,

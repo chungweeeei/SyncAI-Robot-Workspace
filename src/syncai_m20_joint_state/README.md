@@ -25,7 +25,7 @@ robot_state_publisher → /tf: <robot_id>/base_link → <robot_id>/{fl,fr,hl,hr}
 | Parameter | Default | |
 |---|---|---|
 | `joints_topic` | `/JOINTS_DATA` | `/JOINTS_DATA_10HZ` is the same data at 10 Hz |
-| `publish_rate` | `50.0` | publications per second at most, 0 = one per reading. `/JOINTS_DATA` arrives at ~180 Hz or more, and each publication is 16 transforms on `/tf`; the leg links are for looking at |
+| `publish_rate` | `20.0` | publications per second at most, 0 = one per reading. `/JOINTS_DATA` arrives at ~180 Hz or more, and `robot_state_publisher` turns at most its `publish_frequency` (default 20 Hz) of them into `/tf`; raise the two together. It was 50 until 2026-11-24, when robot01 showed 44 Hz of `joint_states` in and ~15–20 Hz of `/tf` out |
 
 Both are read-only. There is no params file: nothing else is a choice, and the
 conversion tables are the vendor's (below), not ours to tune.
@@ -83,6 +83,8 @@ and `cargo test` from this directory, after one `colcon build` (it writes the
 ## Checked
 
 robot01, 2026-11-24, in an isolated namespace beside the running stack: ~44 Hz
-of `joint_states` at the default 50 Hz cap, the first reading needing no
+of `joint_states` at the then-default 50 Hz cap, the first reading needing no
 start-up correction, the angles matching the lying pose the robot was in.
-`robot_state_publisher` turning them into `/tf` was not yet watched end to end.
+Then in the bringup launch: all 16 leg and wheel transforms on `/tf` under
+`robot01/base_link`, stamped with our clock, at `robot_state_publisher`'s
+20 Hz.
