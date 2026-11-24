@@ -15,8 +15,8 @@
 # What that publishes: M20.urdf's fixed joints on /tf_static -- the two cameras,
 # lidar_link and imu (the URDF has where each value came from) -- and its 16 leg
 # and wheel joints on /tf from <robot_id>/joint_states, which the launch's
-# MODEL_JOINT_STATES starts syncai_m20_joint_state for (the vendor's /JOINTS_DATA
-# converted to M20.urdf's angles).
+# MODEL_JOINT_STATES starts syncai_m20_joint_state for (the vendor's
+# /JOINTS_DATA_10HZ converted to M20.urdf's angles, so the legs' TF is 10 Hz).
 
 /**/robot_state_publisher:
   ros__parameters: {}

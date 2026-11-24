@@ -43,7 +43,7 @@
 #     A model without one (the M20, whose lidars are the vendor stack's) gets
 #     no driver.
 #   * <robot_id>/joint_states, for a model MODEL_JOINT_STATES names (the M20:
-#     syncai_m20_joint_state, from the vendor's /JOINTS_DATA), so its leg and
+#     syncai_m20_joint_state, from the vendor's /JOINTS_DATA_10HZ), so its leg and
 #     wheel links reach /tf through robot_state_publisher.
 #
 # No camera. This file could start the TechNexion camera through vizionsdk_ros2
@@ -188,7 +188,8 @@ MODEL_URDF = {"g23": "G23.urdf", "m20": "M20.urdf"}
 # The node that publishes <robot_id>/joint_states for a model, as (package,
 # executable): robot_state_publisher puts a URDF's revolute / continuous joints
 # on /tf only from that topic. The M20's is syncai_m20_joint_state, which
-# converts the vendor's /JOINTS_DATA (2026-11-24). The G23 has none on purpose:
+# converts the vendor's /JOINTS_DATA_10HZ (2026-11-24; its 10 Hz copy of
+# /JOINTS_DATA, so the M20's leg TF is 10 Hz). The G23 has none on purpose:
 # its leg angles reach their only consumer (the console's 3D model) over
 # syncai_driver_manager's motor_states, so its legs stay off /tf. Named here
 # and not in package.xml, so a G23 build needs neither the package nor the

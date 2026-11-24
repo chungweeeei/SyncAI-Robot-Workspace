@@ -6,7 +6,7 @@ The Lynx M20's leg and wheel angles as `sensor_msgs/JointState`, so that
 `robot_model: m20` (`MODEL_JOINT_STATES`), in the `<robot_id>` namespace.
 
 ```
-/JOINTS_DATA (drdds/msg/JointsData, the vendor's, domain 0, no namespace)
+/JOINTS_DATA_10HZ (drdds/msg/JointsData, the vendor's, domain 0, no namespace)
       │  raw × dir + offset (the vendor's own tables)
       ▼
 /<robot_id>/joint_states (sensor_msgs/JointState, M20.urdf's joint names)
@@ -19,16 +19,37 @@ robot_state_publisher → /tf: <robot_id>/base_link → <robot_id>/{fl,fr,hl,hr}
 
 | | Name | Type | |
 |---|---|---|---|
-| sub | `/JOINTS_DATA` (`joints_topic`) | `drdds/msg/JointsData` | best effort, keep last; the vendor's writer is reliable / transient local. Absolute: the vendor publishes with no namespace |
+| sub | `/JOINTS_DATA_10HZ` (`joints_topic`) | `drdds/msg/JointsData` | best effort, keep last; the vendor's writer is reliable / transient local. Absolute: the vendor publishes with no namespace |
 | pub | `joint_states` | `sensor_msgs/JointState` | reliable, depth 10; 16 joints, `position` (rad), `velocity` (rad/s), `effort` (N·m) |
 
 | Parameter | Default | |
 |---|---|---|
-| `joints_topic` | `/JOINTS_DATA` | `/JOINTS_DATA_10HZ` is the same data at 10 Hz |
-| `publish_rate` | `20.0` | publications per second at most, 0 = one per reading. `/JOINTS_DATA` arrives at ~180 Hz or more, and `robot_state_publisher` turns at most its `publish_frequency` (default 20 Hz) of them into `/tf`; raise the two together. It was 50 until 2026-11-24, when robot01 showed 44 Hz of `joint_states` in and ~15–20 Hz of `/tf` out |
+| `joints_topic` | `/JOINTS_DATA_10HZ` | the vendor's 10 Hz copy of `/JOINTS_DATA` (the same message from the same writer at ~190 Hz, and the default until 2026-11-24). See "Which topic" |
+| `publish_rate` | `20.0` | publications per second at most, 0 = one per reading. A cap for a fast `joints_topic` only — the default 10 Hz topic is under it, so every reading is published. `/JOINTS_DATA` arrives at ~190 Hz, and `robot_state_publisher` turns at most its `publish_frequency` (default 20 Hz) of them into `/tf`; raise the two together. It was 50 until 2026-11-24, when robot01 showed 44 Hz of `joint_states` in and ~15–20 Hz of `/tf` out |
 
 Both are read-only. There is no params file: nothing else is a choice, and the
 conversion tables are the vendor's (below), not ours to tune.
+
+### Which topic
+
+The vendor's stack publishes the joint readings twice, from one writer
+(reliable / transient local): `/JOINTS_DATA` at ~190 Hz, which its own
+controller reads, and `/JOINTS_DATA_10HZ`, the same `drdds/msg/JointsData`
+10 times a second (robot01, 2026-11-24: 193.4 Hz and 10.0 Hz, the latter
+94–106 ms apart).
+
+This node read `/JOINTS_DATA` at first and threw nine readings in ten away
+under `publish_rate`: 193 messages a second taken off the robot's LAN and
+deserialised for 19 Hz of `joint_states`, 5.5 % of a core. The leg links' TF
+is for looking at (the console's model), so since 2026-11-24 the default is
+the 10 Hz topic. What it costs is the rate: `joint_states`, and the 16 leg and
+wheel transforms, come at 10 Hz, half of what `robot_state_publisher` would
+pass on. The CPU after the change is not measured yet.
+
+A consumer that needs the legs faster (anything estimating or controlling
+from them) sets `joints_topic` back to `/JOINTS_DATA` — `bringup.launch.py`
+passes this node no parameters today, so that is a `parameters=` there — and
+`publish_rate` then caps it again.
 
 ## The conversion
 
@@ -61,7 +82,7 @@ If the vendor changes their tables, change `conversion.rs` with them and
 record a lying and a standing reading for the tests again.
 
 **The stamp is our clock**, not the message's: the vendor stamps
-`/JOINTS_DATA` with its own computer's uptime (seconds since its boot), which
+its joint readings with its own computer's uptime (seconds since its boot), which
 `robot_state_publisher` would put on every leg transform, beyond the reach of
 any TF lookup on our clock.
 

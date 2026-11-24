@@ -4,7 +4,7 @@
   <name>syncai_m20_joint_state</name>
   <version>0.1.0</version>
   <description>
-    Republishes the Lynx M20's leg and wheel angles (the vendor's /JOINTS_DATA) as
+    Republishes the Lynx M20's leg and wheel angles (the vendor's /JOINTS_DATA_10HZ) as
     sensor_msgs/JointState in M20.urdf's joint convention, for robot_state_publisher
   </description>
   <maintainer email="chungweeeei@gmail.com">chungweeeei</maintainer>

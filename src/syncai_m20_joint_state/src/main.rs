@@ -1,7 +1,11 @@
-//! m20_joint_state: the Lynx M20's `/JOINTS_DATA` (drdds/msg/JointsData, published by the
+//! m20_joint_state: the Lynx M20's `/JOINTS_DATA_10HZ` (drdds/msg/JointsData, published by the
 //! vendor's stack on DDS domain 0) as `joint_states` (sensor_msgs/JointState) in M20.urdf's
 //! joint names and convention, which is what robot_state_publisher needs to put the 16 leg and
 //! wheel links on /tf. The conversion is the vendor's own (conversion.rs).
+//!
+//! The vendor publishes the same readings twice: `/JOINTS_DATA` at ~190 Hz, for its own
+//! controller, and `/JOINTS_DATA_10HZ`, the same message 10 times a second. The leg links' TF
+//! is for looking at, so this node reads the slow one (`joints_topic`).
 //!
 //! Started by syncai_bringup's bringup.launch.py for `robot_model: m20`, in the `<robot_id>`
 //! namespace, so it publishes `/<robot_id>/joint_states` beside that robot_state_publisher.
@@ -47,7 +51,7 @@ impl Bridge {
         if raw_position.iter().any(|p| !p.is_finite()) {
             log_warn!(
                 self.logger.throttle(std::time::Duration::from_secs(5)),
-                "non-finite joint position in /JOINTS_DATA, reading dropped"
+                "non-finite joint position in a JointsData reading, dropped"
             );
             return;
         }
@@ -58,12 +62,12 @@ impl Bridge {
             if wrapped.is_empty() {
                 log_info!(
                     &self.logger,
-                    "first /JOINTS_DATA reading; vendor offsets as they are"
+                    "first JointsData reading; vendor offsets as they are"
                 );
             } else {
                 log_warn!(
                     &self.logger,
-                    "first /JOINTS_DATA reading; offset moved a full turn for {wrapped:?} \
+                    "first JointsData reading; offset moved a full turn for {wrapped:?} \
                      (the vendor's start-up correction)"
                 );
             }
@@ -108,19 +112,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input: ReadOnlyParameter<Arc<str>> = node
         .declare_parameter("joints_topic")
         // Absolute: the vendor publishes with no namespace, from its own computers, and a
-        // relative name would resolve to /<robot_id>/JOINTS_DATA, where nothing ever arrives.
-        // /JOINTS_DATA_10HZ is the same data at 10 Hz.
-        .default(Arc::<str>::from("/JOINTS_DATA"))
+        // relative name would resolve to /<robot_id>/JOINTS_DATA_10HZ, where nothing ever
+        // arrives. The 10 Hz topic, not /JOINTS_DATA (the same message from the same writer at
+        // ~190 Hz; the default until 2026-11-24): reading that one meant taking 193 messages a
+        // second off the robot's LAN to throw nine in ten away below, 5.5 % of a core on
+        // robot01 for 19 Hz of joint_states. The price is leg TF at 10 Hz, half of what
+        // robot_state_publisher would pass on. Name /JOINTS_DATA again for a consumer that
+        // needs the legs faster than that.
+        .default(Arc::<str>::from("/JOINTS_DATA_10HZ"))
         .description("the vendor's drdds/msg/JointsData topic")
         .read_only()?;
     let rate: ReadOnlyParameter<f64> = node
         .declare_parameter("publish_rate")
-        // /JOINTS_DATA arrives at ~180 Hz or more; the leg links' TF is for looking at, and
-        // every message here is one robot_state_publisher turns into 16 transforms on /tf.
-        // 20 = robot_state_publisher's own publish_frequency default, which caps its moving
-        // transforms: at 50 (until 2026-11-24) more than half the joint_states were converted
-        // and published only to be dropped there (robot01: 44 Hz in, ~15-20 Hz of /tf out).
-        // Raise the two together.
+        // A cap for a fast joints_topic only: the default /JOINTS_DATA_10HZ is under it, so
+        // every one of its readings is published. /JOINTS_DATA arrives at ~190 Hz; the leg
+        // links' TF is for looking at, and every message here is one robot_state_publisher
+        // turns into 16 transforms on /tf. 20 = robot_state_publisher's own publish_frequency
+        // default, which caps its moving transforms: at 50 (until 2026-11-24) more than half
+        // the joint_states were converted and published only to be dropped there (robot01:
+        // 44 Hz in, ~15-20 Hz of /tf out). Raise the two together.
         .default(20.0)
         .range(ParameterRange {
             lower: Some(0.0),

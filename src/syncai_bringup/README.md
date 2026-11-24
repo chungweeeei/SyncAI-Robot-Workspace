@@ -60,8 +60,9 @@ Both nodes here are namespaced, and `robot_state_publisher` additionally gets
 Up to three nodes, all namespaced by `robot_id`: `robot_state_publisher`
 always; the Livox driver only for a model with a Livox (since 2026-11-24); and
 a `joint_states` source only for a model `MODEL_JOINT_STATES` names — the M20's
-is `syncai_m20_joint_state` (2026-11-24), the vendor's `/JOINTS_DATA` converted
-to `M20.urdf`'s angles, so its leg and wheel links are on `/tf`. Named in the
+is `syncai_m20_joint_state` (2026-11-24), the vendor's `/JOINTS_DATA_10HZ`
+converted to `M20.urdf`'s angles, so its leg and wheel links are on `/tf` (at
+10 Hz). Named in the
 launch, not in `package.xml`, so a G23 build needs neither that package nor the
 vendor's `drdds` under it. The launch starts the driver when the params it
 loads have a `/**/livox_lidar_publisher` block (`has_livox_block`): the
