@@ -1243,11 +1243,11 @@ reason; it needs a planner_server restart.
 ### The robot model's file
 
 After the factory `params/planner_server_params.yaml` the launch loads
-**`config/models/<robot_model>/planner_server.yaml`** (tracked), for the model
+**`params/models/<robot_model>.yaml`** (tracked, in this package), for the model
 the INI's `[system] robot_model` names (absent = `g23`): `Octo3D`'s body —
 `lidar_height`, `robot_radius`, `body_clearance`, `max_step_height`,
 `max_slope_deg` — and the radii derived from the footprint. The factory file
-is still the G23's, so `config/models/g23/planner_server.yaml` holds no key
+is still the G23's, so `params/models/g23.yaml` holds no key
 and another model inherits whatever its file leaves out;
 `config/models/model_keys.yaml` lists what it must set, and that
 `Octo3D.robot_radius`, `Octo3D.keepout.block_radius` and the terrain layer's

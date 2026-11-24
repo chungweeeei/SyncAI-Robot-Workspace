@@ -132,7 +132,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── config/
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
 │   ├── instances/robot.ini       # the robot's identity: [system] robot_id + robot_model, [map], [initial_pose], [sensor.lidar]
-│   ├── models/<robot_model>/     # what each robot model (g23, m20) changes from the factory params; see its README
+│   ├── models/                   # robot models: the cross-package checks of their params files, and per-model DDS files; see its README
 │   ├── sessions/                 # byobu session specs: start_nav.yaml (AUTO), start_mapping.yaml (MANUAL), calib_lidar_camera.yaml (CALIBRATION)
 │   └── cyclonedds.xml            # CycloneDDS: loopback-only unicast, Domain Id 1 (SYNCAI_DDS_CONFIG / SYNCAI_RMW in .env name another)
 ├── scripts/
@@ -248,7 +248,7 @@ and model (`[sensor.lidar] type: mid360 | mid360s` — a wrong model yields no
 point cloud and no error).
 
 `[system] robot_model` says what kind of robot it is (`g23`; absent = `g23`).
-Each launch loads `config/models/<robot_model>/<node>.yaml` after its factory
+Each launch loads its package's `params/models/<robot_model>.yaml` after its factory
 params — the model's footprint, speed limits, lidar height — and refuses to
 start when the model has no such file, rather than come up on another robot's
 body. `config/models/README.md` has the layering and what a new model needs;

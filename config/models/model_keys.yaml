@@ -1,6 +1,9 @@
-# What a model's files in config/models/<model>/ must hold. Read by
-# test_model_overlays.py only -- no launch reads this file; a launch checks that
-# the model's file exists and parses, and the content is this test's.
+# What a model's params files must hold. Each lives in its own package, at
+# <package>/params/models/<model>.yaml beside the factory file it lays over;
+# this file and test_model_overlays.py stay here because some of the rules span
+# packages (one lidar height in five of them). Read by test_model_overlays.py
+# only -- no launch reads this file; a launch checks that the model's file
+# exists and parses, and the content is this test's.
 #
 # README.md beside this file has the layering and the reasons.
 
@@ -9,27 +12,39 @@
 # from it whatever its own file leaves out.
 factory_model: g23
 
-# Per model file: the factory params file it lays over (workspace-relative),
-# and the keys a model other than `factory_model` must set once the file
-# exists -- the values that describe the body, the gait and the sensor mount,
-# where the G23's are wrong for any other robot rather than merely untuned.
-# Dotted paths under the node's ros__parameters.
+# Per package: the factory params file a model's file lays over and the
+# directory the model files are in (both workspace-relative), and the keys a
+# model other than `factory_model` must set once the file exists -- the values
+# that describe the body, the gait and the sensor mount, where the G23's are
+# wrong for any other robot rather than merely untuned. Dotted paths under the
+# node's ros__parameters.
+#
+# `model_nodes`: nodes whose whole block is a model's own and is not in the
+# factory file at all, because the node belongs to that model's hardware (the
+# G23's Livox driver). Their keys are checked against the factory model's file
+# instead of the factory file; another model's file may leave the block out.
 files:
-  bringup.yaml:
+  bringup:
+    models: src/syncai_bringup/params/models
     factory: src/syncai_bringup/params/bringup.yaml
+    model_nodes:
+      - /**/livox_lidar_publisher
     required: {}
 
-  pointlio.yaml:
+  pointlio:
+    models: src/syncai_pointlio/params/models
     factory: src/syncai_pointlio/params/pointlio_params.yaml
     required: {}
 
-  localizer.yaml:
+  localizer:
+    models: src/syncai_localizer/params/models
     factory: src/syncai_localizer/params/localizer_params.yaml
     required:
       /**/localizer_node:
         - lidar_height
 
-  planner_server.yaml:
+  planner_server:
+    models: src/syncai_global_planner/params/models
     factory: src/syncai_global_planner/params/planner_server_params.yaml
     required:
       /**/planner_server:
@@ -44,7 +59,8 @@ files:
         - Octo3D.dynamic.block_radius
         - Octo3D.keepout.block_radius
 
-  controller_server.yaml:
+  controller_server:
+    models: src/syncai_controller/params/models
     factory: src/syncai_controller/params/controller_server_params.yaml
     required:
       /**/controller_server:
@@ -76,7 +92,8 @@ files:
         - terrain_layer.max_slope_deg
         - inflation_layer.inflation_radius
 
-  task_runner.yaml:
+  task_runner:
+    models: src/syncai_task_runner/params/models
     factory: src/syncai_task_runner/params/task_runner_params.yaml
     required:
       /**/task_runner:
@@ -85,33 +102,33 @@ files:
 # Keys that must hold one value, checked on the merged result (factory + the
 # model's file) of every model, the factory model included: a model that
 # overrides one of a group and leaves another at the G23's value is caught
-# here. Each entry is [model file, node key, dotted path].
+# here. Each entry is [package entry under `files`, node key, dotted path].
 equal:
   - name: lidar height
     keys:
-      - [controller_server.yaml, /**/controller_server, lidar_height]
-      - [controller_server.yaml, /**/local_costmap, terrain_layer.sensor_height]
-      - [planner_server.yaml, /**/planner_server, Octo3D.lidar_height]
-      - [localizer.yaml, /**/localizer_node, lidar_height]
-      - [task_runner.yaml, /**/task_runner, lidar_height]
+      - [controller_server, /**/controller_server, lidar_height]
+      - [controller_server, /**/local_costmap, terrain_layer.sensor_height]
+      - [planner_server, /**/planner_server, Octo3D.lidar_height]
+      - [localizer, /**/localizer_node, lidar_height]
+      - [task_runner, /**/task_runner, lidar_height]
 
   - name: robot radius
     keys:
-      - [planner_server.yaml, /**/planner_server, Octo3D.robot_radius]
-      - [planner_server.yaml, /**/planner_server, Octo3D.keepout.block_radius]
-      - [controller_server.yaml, /**/local_costmap, terrain_layer.robot_radius]
+      - [planner_server, /**/planner_server, Octo3D.robot_radius]
+      - [planner_server, /**/planner_server, Octo3D.keepout.block_radius]
+      - [controller_server, /**/local_costmap, terrain_layer.robot_radius]
 
   - name: stair mode on or off
     keys:
-      - [controller_server.yaml, /**/controller_server, FollowPath.use_stair_mode]
-      - [controller_server.yaml, /**/controller_server, FollowPathRPP3D.use_stair_mode]
+      - [controller_server, /**/controller_server, FollowPath.use_stair_mode]
+      - [controller_server, /**/controller_server, FollowPathRPP3D.use_stair_mode]
 
   - name: stair policy
     keys:
-      - [controller_server.yaml, /**/controller_server, FollowPath.stair_policy_mode]
-      - [controller_server.yaml, /**/controller_server, FollowPathRPP3D.stair_policy_mode]
+      - [controller_server, /**/controller_server, FollowPath.stair_policy_mode]
+      - [controller_server, /**/controller_server, FollowPathRPP3D.stair_policy_mode]
 
   - name: flat policy
     keys:
-      - [controller_server.yaml, /**/controller_server, FollowPath.flat_policy_mode]
-      - [controller_server.yaml, /**/controller_server, FollowPathRPP3D.flat_policy_mode]
+      - [controller_server, /**/controller_server, FollowPath.flat_policy_mode]
+      - [controller_server, /**/controller_server, FollowPathRPP3D.flat_policy_mode]

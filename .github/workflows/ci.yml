@@ -281,7 +281,8 @@ jobs:
       # run here and their ament linter templates are not enforced (see
       # CLAUDE.md, "Tests"). The calibration tests need only numpy and OpenCV,
       # which the image carries for the calibration tools themselves; the model
-      # test reads config/models/ against the factory params files with PyYAML
+      # test reads each package's params/models/ against its factory params file
+      # with PyYAML
       # (what a model's file must hold -- the launches only check it exists).
       - name: pytest
         run: |

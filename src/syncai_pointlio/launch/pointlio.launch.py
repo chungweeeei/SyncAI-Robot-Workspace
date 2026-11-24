@@ -32,7 +32,7 @@
 #     they have to be prefixed by hand (same as the nav params).
 #
 # Between the two sits the robot model's file,
-# config/models/<robot_model>/pointlio.yaml beside the system INI: what the
+# params/models/<robot_model>.yaml in this package: what the
 # model [system] robot_model names changes from the installed file (the blind
 # radius round its body, the IMU saturation its gait needs). A model with no
 # such file fails the launch rather than run on another robot's values; the
@@ -93,7 +93,7 @@ FALLBACK_ROBOT_MODEL = "g23"
 def read_robot_model(config_path: str) -> str:
     """[system] robot_model from the INI: which kind of robot this is.
 
-    Lower-cased, because it names a directory (config/models/<model>/). A
+    Lower-cased, because it names a file (params/models/<model>.yaml). A
     missing INI or key falls back to FALLBACK_ROBOT_MODEL with a warning, the
     way robot_id falls back: an INI written before 2026-11 has no such key and
     is a G23's.
@@ -110,18 +110,17 @@ def read_robot_model(config_path: str) -> str:
     return model
 
 
-def models_dir(config_path: str) -> str:
-    """config/models/: the one beside the system INI when there is one, else
-    the workspace's.
+def model_params_path(pkg_share: str, model: str) -> str:
+    """params/models/<model>.yaml in this package's share: the model's file.
 
-    An INI kept somewhere else and passed with system_config:= (a replay's, a
-    test's) names a model; it does not bring the models with it, and must not
-    have to.
+    It sits beside the factory params file it lays over, as
+    syncai_driver_manager's does, so each package owns its per-model values
+    and a key renamed in the factory file is renamed in the model files in the
+    same commit. Being installed, a new model's file needs a colcon build of
+    the package before a launch finds it (--symlink-install links each file,
+    not the directory); model_params_file:= names any file without one.
     """
-    beside = os.path.join(os.path.dirname(os.path.abspath(config_path)), "models")
-    if os.path.isdir(beside):
-        return beside
-    return os.path.join(os.path.dirname(DEFAULT_SYSTEM_INI), "models")
+    return os.path.join(pkg_share, "params", "models", f"{model}.yaml")
 
 
 def model_params(path: str, model: str):
@@ -133,20 +132,15 @@ def model_params(path: str, model: str):
     missing or unreadable file fails the launch. Falling back to the factory
     values would start another robot on the G23's footprint and gait floors
     and look healthy doing it, so a model that changes nothing here says so
-    with a file that holds no key (config/models/g23/ is six of those) -- and
+    with a file that holds no key (each package's params/models/g23.yaml) -- and
     that file is not handed to rcl, which is never given an empty block.
     """
-    model_dir = os.path.dirname(path)
-    if not os.path.isdir(model_dir):
-        raise RuntimeError(
-            f"robot_model '{model}': no directory '{model_dir}'. Check [system] "
-            "robot_model in the system INI against config/models/."
-        )
     if not os.path.isfile(path):
         raise RuntimeError(
             f"robot_model '{model}': '{path}' does not exist, so this launch has no "
             f"{model} parameters and will not start on another model's. Write the file "
-            "(config/models/README.md; a block with no key means no difference)."
+            "in this package's params/models/ and rebuild it (a block with no key means "
+            "no difference), or fix [system] robot_model."
         )
     try:
         with open(path, encoding="utf-8") as f:
@@ -178,12 +172,11 @@ def launch_setup(context, *args, **kwargs):
     params_file = os.path.join(pkg_pointlio, "params", "pointlio_params.yaml")
 
     # The robot model's own values, between the installed params and the frame
-    # overrides: config/models/<robot_model>/pointlio.yaml beside the system
-    # INI. A model without that file fails the launch here (model_params).
+    # overrides: params/models/<robot_model>.yaml in this package. A model without that file fails the launch here (model_params).
     robot_model = read_robot_model(config_path)
     model_path = LaunchConfiguration("model_params_file").perform(context)
     if not model_path:
-        model_path = os.path.join(models_dir(config_path), robot_model, "pointlio.yaml")
+        model_path = model_params_path(pkg_pointlio, robot_model)
     model_overlay = model_params(model_path, robot_model)
 
     parameters = [params_file]
@@ -253,7 +246,7 @@ def generate_launch_description():
                 "model_params_file",
                 default_value="",
                 description="Robot-model params YAML loaded after the installed params; "
-                "empty = config/models/<robot_model>/pointlio.yaml beside system_config",
+                "empty = params/models/<robot_model>.yaml in this package",
             ),
             OpaqueFunction(function=launch_setup),
         ]

@@ -568,4 +568,38 @@
         <parent link="base_link"/>
         <child link="rear_camera_link"/>
     </joint>
+
+    <!-- Lidar and IMU frames, copied from the vendor stack's /tf_static as
+         captured on robot01 on 2026-11-24 (published by its domain_bridge_0 on
+         domain 0, unprefixed, every child of base_link). They are under the
+         vendor's names, not the G23's lidar_top / lidar_top_imu, because they
+         are not the same thing: lidar_link is not one lidar but the frame the
+         vendor merges both into, and imu is the body's IMU, not a lidar's.
+
+         lidar_link: identity on base_link. /LIDAR/POINTS_UDP is stamped
+         "lidar_link", and the vendor puts it at base_link's origin, so the
+         merged cloud is already in the body frame. This one is evidenced by
+         the data, not only by the vendor's TF.
+
+         imu: (-0.026, 0, 0.042), no rotation - the vendor's "imu" frame,
+         UNMEASURED by us. Taken as it stands until the IMU's mount is
+         measured or found in DEEP Robotics' documents: the same /tf_static
+         also has an "imu_link" at the origin and a "utlidar_imu" turned by
+         pi, which disagree with it, and much of that tree reads as a template
+         (other vendors' frame names, frames with identical values, 1.57 / 3.14
+         for pi / 2 and pi). /IMU itself is stamped with an empty frame_id, so
+         the data does not say which is right. -->
+    <link name="lidar_link"/>
+    <joint name="lidar_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="lidar_link"/>
+    </joint>
+
+    <link name="imu"/>
+    <joint name="imu_joint" type="fixed">
+        <origin xyz="-0.026 0 0.042" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="imu"/>
+    </joint>
 </robot>

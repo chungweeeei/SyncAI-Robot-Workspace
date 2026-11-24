@@ -500,7 +500,7 @@ ros2 launch syncai_task_runner task_runner.launch.py \
 ```
 
 After `params/task_runner_params.yaml` the launch loads
-`config/models/<robot_model>/task_runner.yaml`, for the model the INI's
+`params/models/<robot_model>.yaml`, for the model the INI's
 `[system] robot_model` names (absent = `g23`, whose file holds no key because
 this package's file is the G23's): `lidar_height`, which another kind of robot
 must set. A model with no file fails the launch (`config/models/README.md`);

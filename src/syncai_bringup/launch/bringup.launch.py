@@ -38,7 +38,10 @@
 #     argument; both were dropped when the extrinsic moved into the URDF,
 #     because a height-only argument could not carry the pitch.
 #   * The Livox MID360 / MID360s point cloud, via the livox_ros_driver2 node,
-#     stamped <robot_id>/lidar_top.
+#     stamped <robot_id>/lidar_top -- only for a robot model whose params carry
+#     the /**/livox_lidar_publisher block (the G23's g23.yaml; has_livox_block).
+#     A model without one (the M20, whose lidars are the vendor stack's) gets
+#     robot_state_publisher alone.
 #
 # No camera. This file could start the TechNexion camera through vizionsdk_ros2
 # (use_camera:=true, off by default) until 2026-10-17, when that node was
@@ -55,14 +58,16 @@
 # identity and belong next to robot_id rather than in a shared params file.
 #
 # The INI's [system] robot_model (g23 when absent) picks the URDF (MODEL_URDF)
-# and the model's own values, config/models/<robot_model>/bringup.yaml beside
-# the INI, loaded after params/bringup.yaml: a host_ip on another subnet, say.
+# and the model's own values, params/models/<robot_model>.yaml in this
+# package, loaded after params/bringup.yaml: on the G23, the whole Livox
+# driver block, host_ip included.
 # A model with no such file fails the launch rather than come up on another
 # robot's values; the helpers are copied from controller_server.launch.py, not
 # shared, as every launch's are.
 #
-# Node parameters live in params/bringup.yaml under /**/ wildcard keys. Only the
-# values that cannot be static are set here, appended after the file so they win:
+# Node parameters live in params/bringup.yaml and the model's file under /**/
+# wildcard keys. Only the values that cannot be static are set here, appended
+# after the files so they win:
 # the URDF text, frame_prefix, the <robot_id>/-prefixed frame_id, and the path to
 # the livox user config. use_sim_time is set ONLY in the YAML, per the workspace
 # rule — a launch-level override placed after the file silently beats it.
@@ -214,7 +219,7 @@ FALLBACK_ROBOT_MODEL = "g23"
 def read_robot_model(config_path: str) -> str:
     """[system] robot_model from the INI: which kind of robot this is.
 
-    Lower-cased, because it names a directory (config/models/<model>/). A
+    Lower-cased, because it names a file (params/models/<model>.yaml). A
     missing INI or key falls back to FALLBACK_ROBOT_MODEL with a warning, the
     way robot_id falls back: an INI written before 2026-11 has no such key and
     is a G23's.
@@ -231,18 +236,17 @@ def read_robot_model(config_path: str) -> str:
     return model
 
 
-def models_dir(config_path: str) -> str:
-    """config/models/: the one beside the system INI when there is one, else
-    the workspace's.
+def model_params_path(pkg_share: str, model: str) -> str:
+    """params/models/<model>.yaml in this package's share: the model's file.
 
-    An INI kept somewhere else and passed with system_config:= (a replay's, a
-    test's) names a model; it does not bring the models with it, and must not
-    have to.
+    It sits beside the factory params file it lays over, as
+    syncai_driver_manager's does, so each package owns its per-model values
+    and a key renamed in the factory file is renamed in the model files in the
+    same commit. Being installed, a new model's file needs a colcon build of
+    the package before a launch finds it (--symlink-install links each file,
+    not the directory); model_params_file:= names any file without one.
     """
-    beside = os.path.join(os.path.dirname(os.path.abspath(config_path)), "models")
-    if os.path.isdir(beside):
-        return beside
-    return os.path.join(os.path.dirname(DEFAULT_SYSTEM_INI), "models")
+    return os.path.join(pkg_share, "params", "models", f"{model}.yaml")
 
 
 def model_params(path: str, model: str):
@@ -254,20 +258,15 @@ def model_params(path: str, model: str):
     missing or unreadable file fails the launch. Falling back to the factory
     values would start another robot on the G23's footprint and gait floors
     and look healthy doing it, so a model that changes nothing here says so
-    with a file that holds no key (config/models/g23/ is six of those) -- and
+    with a file that holds no key (each package's params/models/g23.yaml) -- and
     that file is not handed to rcl, which is never given an empty block.
     """
-    model_dir = os.path.dirname(path)
-    if not os.path.isdir(model_dir):
-        raise RuntimeError(
-            f"robot_model '{model}': no directory '{model_dir}'. Check [system] "
-            "robot_model in the system INI against config/models/."
-        )
     if not os.path.isfile(path):
         raise RuntimeError(
             f"robot_model '{model}': '{path}' does not exist, so this launch has no "
             f"{model} parameters and will not start on another model's. Write the file "
-            "(config/models/README.md; a block with no key means no difference)."
+            "in this package's params/models/ and rebuild it (a block with no key means "
+            "no difference), or fix [system] robot_model."
         )
     try:
         with open(path, encoding="utf-8") as f:
@@ -361,14 +360,36 @@ def read_lidar_type(config_path: str) -> str:
     return FALLBACK_LIDAR_MODEL
 
 
+def has_livox_block(*params_paths: str) -> bool:
+    """Whether any of the params files has a /**/livox_lidar_publisher block.
+
+    That block is what says this model's lidar is a Livox of ours: since
+    2026-11-24 it lives only in the model's file (params/models/g23.yaml), not
+    in the factory params, so a model whose file leaves it out -- the M20, whose
+    lidars are the vendor stack's on /LIDAR/POINTS_UDP -- gets no driver at all,
+    rather than one started on code defaults with no host IP. Decided by the
+    files, not by a table of models here, so that adding a Livox to a model is a
+    params change only. A block with no key still counts: it says "a Livox, on
+    the defaults".
+    """
+    for params_path in params_paths:
+        with open(params_path, "r") as f:
+            params = yaml.safe_load(f) or {}
+        if LIVOX_PARAMS_KEY in params:
+            return True
+    return False
+
+
 def read_host_ip(*params_paths: str) -> str:
     """Read host_ip from the livox node's block in the params YAML(s).
 
     The host IP is the address of the machine's interface on the lidar's subnet
     — the driver binds its receive sockets to it, so it is per-robot wiring, not
-    a property of the lidar. It lives in the params file (rather than the INI)
-    because that is where every other livox setting already is; it is read back
-    out here because the value is needed to render JSON, not to set a ROS param.
+    a property of the lidar. It lives in the params files (rather than the INI)
+    because that is where every other livox setting already is -- since
+    2026-11-24 the robot model's file (params/models/g23.yaml), which holds the
+    whole livox block; the factory file holds none. It is read back out here
+    because the value is needed to render JSON, not to set a ROS param.
 
     Given the files in the order the node loads them (the factory params, then
     the robot model's when it holds a key), the last one that sets host_ip
@@ -388,7 +409,8 @@ def read_host_ip(*params_paths: str) -> str:
     if not host_ip:
         raise RuntimeError(
             f"No host_ip under '{LIVOX_PARAMS_KEY}' in {list(params_paths)}. Set it "
-            "to this machine's IP on the lidar subnet (`ip -4 addr`)."
+            "in the robot model's params/models/<robot_model>.yaml to this machine's "
+            "IP on the lidar subnet (`ip -4 addr`)."
         )
 
     return host_ip
@@ -521,8 +543,8 @@ def launch_setup(context, *args, **kwargs):
     robot_id = read_robot_id(config_path)
 
     # The robot model picks two things here: the URDF, and the model's own
-    # values over the factory params (config/models/<robot_model>/bringup.yaml
-    # beside the system INI; a model without that file fails the launch in
+    # values over the factory params (params/models/<robot_model>.yaml in
+    # this package; a model without that file fails the launch in
     # model_params).
     robot_model = read_robot_model(config_path)
 
@@ -546,7 +568,7 @@ def launch_setup(context, *args, **kwargs):
 
     model_path = LaunchConfiguration("model_params_file").perform(context)
     if not model_path:
-        model_path = os.path.join(models_dir(config_path), robot_model, "bringup.yaml")
+        model_path = model_params_path(get_package_share_directory("syncai_bringup"), robot_model)
     model_overlay = model_params(model_path, robot_model)
 
     # What both nodes load before their computed overrides, and what
@@ -590,6 +612,28 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
+    # Only for a model whose params carry the Livox block (has_livox_block).
+    # Without it this launch is robot_state_publisher alone: the URDF's fixed
+    # joints on /tf_static, and its moving ones once something publishes
+    # /joint_states. model_params drops a model file that holds no key, so
+    # params_paths is checked rather than the file itself -- an empty livox
+    # block there would not reach the node either.
+    xfer_format_arg = LaunchConfiguration("livox_xfer_format").perform(context)
+    if not has_livox_block(*params_paths):
+        logger.info(
+            f"robot_model '{robot_model}': no '{LIVOX_PARAMS_KEY}' block in "
+            f"{params_paths}, so no Livox driver; robot_state_publisher only"
+        )
+        if xfer_format_arg.strip():
+            # The calibration session asks for PointCloud2 from a driver this
+            # model does not run: its bag would have no lidar in it. Said here
+            # because nothing else would say it.
+            logger.warning(
+                f"livox_xfer_format:={xfer_format_arg} ignored: robot_model "
+                f"'{robot_model}' runs no Livox driver"
+            )
+        return [robot_state_publisher]
+
     # Livox driver, brought over from
     # livox_ros_driver2/launch_ROS2/msg_MID360_launch.py. The user config JSON
     # carries everything the ROS params cannot express: the network wiring
@@ -615,9 +659,7 @@ def launch_setup(context, *args, **kwargs):
     # whose calibration tool reads PointCloud2 only. The topic name stays the
     # same and only its type changes, so this must never be set in a session
     # that also runs pointlio.
-    xfer_format = resolve_xfer_format(
-        LaunchConfiguration("livox_xfer_format").perform(context)
-    )
+    xfer_format = resolve_xfer_format(xfer_format_arg)
     if xfer_format is not None:
         livox_overrides["xfer_format"] = xfer_format
 
@@ -664,14 +706,14 @@ def generate_launch_description():
         "model_params_file",
         default_value="",
         description="Robot-model params YAML loaded after params_file; empty = "
-        "config/models/<robot_model>/bringup.yaml beside system_config",
+        "params/models/<robot_model>.yaml in this package",
     )
 
     declare_livox_xfer_format = DeclareLaunchArgument(
         "livox_xfer_format",
         default_value="",
         description="Override the livox driver's xfer_format: 0 = PointCloud2, "
-        "1 = CustomMsg. Empty (default) keeps params/bringup.yaml's 1, which "
+        "1 = CustomMsg. Empty (default) keeps the model params' 1, which "
         "Point-LIO needs; 0 is for config/sessions/calib_lidar_camera.yaml only",
     )
 

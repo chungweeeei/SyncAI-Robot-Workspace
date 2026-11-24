@@ -1,6 +1,11 @@
-# Parameters for the nodes bringup.launch.py starts: robot_state_publisher
-# (G23 body TF tree) and the Livox driver (MID360 or MID360s — the fleet has
-# both, and none of the settings here differ by model).
+# Parameters every robot model shares, for the nodes bringup.launch.py starts:
+# robot_state_publisher (the body TF tree of the model's URDF).
+#
+# The Livox driver's block, /**/livox_lidar_publisher, is NOT here since
+# 2026-11-24: it is the G23's own lidar (a MID360 / MID360s over its Ethernet),
+# in params/models/g23.yaml, loaded after this file. Another model with a
+# different lidar (the M20's is the vendor stack's, on /LIDAR/POINTS_UDP) has no
+# use for it.
 #
 # A third block, /**/vizionsdk_camera, configured the TechNexion camera node
 # until it was removed from the launch on 2026-10-17 (syncai_camera_feeder owns
@@ -10,65 +15,22 @@
 # works for any robot_id: the launch file reads robot_id from config/system.ini
 # and uses it as the node namespace.
 #
-# What is NOT here, and why — these four are computed at launch time and are
-# appended AFTER this file in the Node's parameters list, so they win:
+# What is NOT in either file, and why — these four are computed at launch time
+# and are appended AFTER the params files in the Node's parameters list, so
+# they win:
 #   * robot_description  - the URDF text, read off disk from description/
 #   * frame_prefix       - needs the resolved robot_id
 #   * frame_id           - same; TF frame names are NOT namespaced by ROS, so
-#                          the fallback below is overridden with
-#                          <robot_id>/lidar_top
+#                          the fallback in the model's file is overridden
+#                          with <robot_id>/lidar_top
 #   * user_config_path   - the livox network JSON, generated per robot_id and
-#                          lidar model at launch time from host_ip below + the
-#                          [sensor.lidar] ip / type in the system INI. type is
-#                          what selects the MID360 vs MID360s JSON schema; there
-#                          is no ROS parameter for the model.
+#                          lidar model at launch time from host_ip (in the
+#                          model's file) + the [sensor.lidar] ip / type in the
+#                          system INI. type is what selects the MID360 vs
+#                          MID360s JSON schema; there is no ROS parameter for
+#                          the model.
 /**/robot_state_publisher:
   ros__parameters:
     # Real robot: there is no /clock. Set ONLY here — a launch-level override
     # placed after this file would silently win over the YAML value.
     use_sim_time: false
-
-/**/livox_lidar_publisher:
-  ros__parameters:
-    use_sim_time: false
-
-    # Mirrored from livox_ros_driver2/launch_ROS2/msg_MID360_launch.py (its
-    # msg_MID360s_launch.py counterpart is byte-identical apart from which
-    # config JSON it points at, so nothing below is model-specific).
-    # 0 = PointCloud2 (PointXYZRTL), 1 = Livox CustomMsg. Must stay 1: the
-    # FAST-LIO2 chain consumes CustomMsg, and switching to 0 for some tool that
-    # wants standard messages breaks LIO silently. A session with no LIO in it
-    # overrides it at launch instead (bringup.launch.py livox_xfer_format:=0,
-    # used by config/sessions/calib_lidar_camera.yaml) -- never edit it here.
-    xfer_format: 1
-    # 0 = all lidars share one topic, 1 = one topic per lidar.
-    multi_topic: 0
-    # 0 = live lidar; anything else is an invalid data source.
-    data_src: 0
-    publish_freq: 10.0
-    output_data_type: 0
-
-    # This machine's IP on the lidar's subnet. NOT a livox_ros_driver2 ROS
-    # parameter — the driver never reads it (it declares a fixed parameter set,
-    # so this override is simply ignored by the node). It is here because the
-    # launch file reads it back out of this file to render the livox user config
-    # JSON, whose host_net_info.*_ip fields are the addresses the driver binds
-    # its receive sockets to. Wrong value = sockets bound to the wrong interface
-    # = zero point clouds, with no error from the driver.
-    #
-    # Check with `ip -4 addr` on the machine the driver runs on (host networking,
-    # so that is the Jetson itself). The lidar's own IP and model are NOT here:
-    # they are per-robot hardware identity, read from [sensor.lidar] ip / type
-    # in config/system.ini.
-    host_ip: "192.168.1.103"
-
-    # Fallback only. TF frame names are not namespaced by ROS, so the launch
-    # file overrides this with "<robot_id>/lidar_top": the URDF's lidar link,
-    # parented by lidar_top_joint, so a raw cloud can be transformed into the
-    # robot tree. Until 2026-10 it was a separate "laser" frame nothing
-    # parented; LIVOX_FRAME_ID in the launch file has why it changed.
-    frame_id: lidar_top
-
-    # Only read when data_src selects an .lvx replay, which we never do.
-    lvx_file_path: "/home/livox/livox_test.lvx"
-    cmdline_input_bd_code: "livox0000000001"

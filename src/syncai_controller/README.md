@@ -912,12 +912,12 @@ keeps the controller still does not.
 ### The robot model's file
 
 Between the factory file and the runtime overlay below, the launch loads
-**`config/models/<robot_model>/controller_server.yaml`** (tracked), for the
+**`params/models/<robot_model>.yaml`** (tracked, in this package), for the
 model the INI's `[system] robot_model` names (absent = `g23`): the footprint,
 the terrain layer's body values, the speed limits, the gait floors and the
 stair block of that kind of robot, under the same `/**/controller_server:` and
 `/**/local_costmap:` keys. The factory file in this package is still the
-G23's, so `config/models/g23/controller_server.yaml` holds no key — and every
+G23's, so `params/models/g23.yaml` holds no key — and every
 key another model's file leaves out is the G23's. `config/models/model_keys.yaml`
 lists the ones a model must set and `config/models/test_model_overlays.py`
 checks them; `test_approach_law` still reads the factory file alone, so a

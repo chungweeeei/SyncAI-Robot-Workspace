@@ -359,7 +359,7 @@ namespace. Every key is a `declare_parameter` whose default repeats the struct
 default, so a missing key degrades to the code default instead of throwing.
 The launch layers the two frame names on top.
 
-Between the two it loads `config/models/<robot_model>/pointlio.yaml`, for the
+Between the two it loads `params/models/<robot_model>.yaml`, for the
 model the INI's `[system] robot_model` names (absent = `g23`, whose file holds
 no key because this package's file is the G23's). Of the keys below,
 `lidar_min_range` (the blind radius round the body) and `satu_acc` (sized to

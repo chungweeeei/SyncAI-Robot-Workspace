@@ -6,12 +6,12 @@ only job is to install the robot description, one launch file and its params:
 
 | Launch file | Used by | Brings up |
 |---|---|---|
-| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window), and `config/sessions/calib_lidar_camera.yaml` with `livox_xfer_format:=0` | `robot_state_publisher` over the G23 URDF (which carries the lidar mount extrinsic), and the Livox MID360 / MID360s driver |
+| `bringup.launch.py` | `config/sessions/start_nav.yaml`, `config/sessions/start_mapping.yaml` (both, first window), and `config/sessions/calib_lidar_camera.yaml` with `livox_xfer_format:=0` | `robot_state_publisher` over the model's URDF (the G23's carries the lidar mount extrinsic), and — only when the model's params have a `livox_lidar_publisher` block (the G23's do, the M20's do not) — the Livox MID360 / MID360s driver |
 
 ```
 share/syncai_bringup/
   launch/       bringup.launch.py
-  params/       bringup.yaml
+  params/       bringup.yaml, models/<robot_model>.yaml
   description/  G23.urdf, M20.urdf
   meshes/       body / hip / thigh / shank STLs (visual only); M20/ = the M20's STLs
 ```
@@ -57,7 +57,18 @@ Both nodes here are namespaced, and `robot_state_publisher` additionally gets
 
 ## bringup — body TF tree + MID360 / MID360s
 
-Two nodes, both namespaced by `robot_id`:
+Two nodes, both namespaced by `robot_id` — the second only for a model with a
+Livox (since 2026-11-24). The launch starts the driver when the params it
+loads have a `/**/livox_lidar_publisher` block (`has_livox_block`): the
+G23's `params/models/g23.yaml` has it, the M20's `m20.yaml` deliberately does
+not (its two lidars are the vendor stack's, on `/LIDAR/POINTS_UDP`), so an M20
+gets `robot_state_publisher` over `M20.urdf` alone and a `livox_xfer_format:=`
+on it is ignored with a warning. That publishes `M20.urdf`'s fixed joints on
+`/tf_static` — the two cameras, `lidar_link` and `imu` (the URDF has where each
+came from); its 16 leg and wheel joints are revolute / continuous
+and reach `/tf` only once something publishes `/joint_states`, which nothing
+does on the M20 yet. Whether a model has a Livox is a params change, not a
+launch change.
 
 **`robot_state_publisher`** parses `description/G23.urdf` and publishes the body
 TF tree with `frame_prefix: <robot_id>/`. What actually reaches TF:
@@ -105,7 +116,9 @@ whole 3D stack is dead — so `bringup` must be running before the bridge.
 
 **`livox_ros_driver2_node`** drives the lidar — the fleet has both MID360 and
 MID360s units, and the same node handles either. Its settings live in
-`params/bringup.yaml`, mirrored from
+`params/models/g23.yaml` — the Livox is the G23's lidar, so since 2026-11-24
+its whole block is in the G23's model file and none of it in the factory
+`params/bringup.yaml` — mirrored from
 `livox_ros_driver2/launch_ROS2/msg_MID360_launch.py` (whose MID360s counterpart
 is byte-identical apart from the config path, so none of these differ by model):
 
@@ -132,7 +145,7 @@ directory:
 | Input | Read from | What it is |
 |---|---|---|
 | lidar IP → `lidar_configs[0].ip` | `[sensor.lidar] ip` in `config/system.ini` | the lidar's own address — per-robot hardware identity, so it sits next to `robot_id` in the instance INI |
-| host IP → `host_net_info` | `host_ip` under `/**/livox_lidar_publisher` in `params/bringup.yaml` | this machine's address on the lidar subnet; the driver **binds its receive sockets** to it |
+| host IP → `host_net_info` | `host_ip` under `/**/livox_lidar_publisher` in `params/models/g23.yaml` | this machine's address on the lidar subnet; the driver **binds its receive sockets** to it |
 | model → the JSON section name | `[sensor.lidar] type` in `config/system.ini` (`mid360` / `mid360s`) | which lidar is bolted to *this* robot — also per-robot hardware identity |
 
 Everything else in the rendered file (UDP ports, `lidar_type: 8`,
@@ -201,7 +214,7 @@ that branch onto the robot tree through its `lidar_frame` — see above.
 |---|---|---|
 | `system_config` | `config/system.ini` | INI providing `[system] robot_id` / `robot_model` and `[sensor.lidar]` `ip` / `type` |
 | `params_file` | `<share>/syncai_bringup/params/bringup.yaml` | Node parameters for every node this file starts |
-| `model_params_file` | empty | The robot model's params, loaded after `params_file`; empty = `config/models/<robot_model>/bringup.yaml` beside the INI (else the workspace's). A model with no file fails the launch; one whose blocks hold no key (`g23`'s) is not passed on. `host_ip` set here also reaches the rendered livox JSON |
+| `model_params_file` | empty | The robot model's params, loaded after `params_file`; empty = this package's `params/models/<robot_model>.yaml` (installed: a new model's file needs a build first). A model with no file fails the launch; one whose blocks hold no key is not passed on. `g23`'s holds the whole Livox driver block, `host_ip` included, which also reaches the rendered livox JSON |
 | `urdf_file` | empty | File name under `description/`; empty = the one `MODEL_URDF` lists for `robot_model` (`G23.urdf` for `g23`) |
 | `livox_xfer_format` | empty | Override the driver's `xfer_format`: `0` = `PointCloud2`, `1` = `CustomMsg`, empty = keep the YAML's `1`. Only the calibration session sets it (`0`), because it runs no LIO; anything else fails the launch |
 
@@ -215,9 +228,12 @@ also carry the 0.25 rad pitch that a height-only argument could not.
 
 ## Parameters
 
-`params/bringup.yaml` uses `/**/<node_name>:` wildcard keys, so the same file
-works at any namespace. It covers the two node names the launch file assigns:
-`robot_state_publisher` and `livox_lidar_publisher`.
+`params/bringup.yaml` and `params/models/<robot_model>.yaml` use
+`/**/<node_name>:` wildcard keys, so the same files work at any namespace.
+They cover the two node names the launch file assigns: the factory file
+`robot_state_publisher` only, and the model's file `livox_lidar_publisher` (the
+G23's lidar; `model_nodes` in `config/models/model_keys.yaml` says so, and its
+test checks another model's livox keys against `g23.yaml`).
 
 Four parameters, spread over the two nodes, are **not** in the file, because
 they cannot be static. The launch file appends them after `params_file` in each
@@ -343,7 +359,7 @@ are symlinked, and edits take effect on the next launch with no rebuild at all.
 - **A lidar that never publishes is almost always the two IPs or the model.**
   Check the rendered config, which the launch logs on startup:
   `cat /tmp/syncai_bringup/<robot_id>_<model>_config.json`. The lidar IP and the
-  model come from the instance INI, the host IP from `params/bringup.yaml`; a
+  model come from the instance INI, the host IP from `params/models/g23.yaml`; a
   host IP that is not on an interface of this machine binds the sockets nowhere
   and the driver reports nothing. A `[sensor.lidar] type` that does not match
   the hardware fails the same quiet way — grep the bringup log for the

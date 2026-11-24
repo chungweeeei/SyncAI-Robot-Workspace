@@ -1,4 +1,8 @@
-"""Checks on config/models/<model>/*.yaml, the per-model parameter files.
+"""Checks on <package>/params/models/<model>.yaml, the per-model parameter files.
+
+Each lives in its package, beside the factory file it lays over; this test
+stays in config/models/ with model_keys.yaml because some of its rules span
+packages (one lidar height in five of them).
 
 A launch only checks that a model's file exists and parses (it refuses to
 start otherwise). What the file *holds* is checked here, because none of it
@@ -7,7 +11,7 @@ leaves out is inherited from the factory file -- the G23's -- without a word.
 
   * every key in a model file is a key of the factory file it lays over, under
     the same node key: a misspelt key would otherwise change nothing;
-  * the factory model has all six files (robot01 boots on them);
+  * the factory model has a file in all six packages (robot01 boots on them);
   * a model other than the factory model sets every key model_keys.yaml
     requires of a file, once that file exists;
   * the groups model_keys.yaml lists as `equal` hold one value on the merged
@@ -33,7 +37,18 @@ with open(MODELS_DIR / "model_keys.yaml", encoding="utf-8") as _f:
 
 FACTORY_MODEL = SCHEMA["factory_model"]
 FILES = SCHEMA["files"]
-MODELS = sorted(p.name for p in MODELS_DIR.iterdir() if p.is_dir() and not p.name.startswith((".", "_")))
+
+
+def model_path(model: str, name: str) -> Path:
+    """<package>/params/models/<model>.yaml for the package entry `name`."""
+    return WORKSPACE / FILES[name]["models"] / f"{model}.yaml"
+
+
+# Every model any package has a file for: a model is named by its files, there
+# is no directory of models to list any more.
+MODELS = sorted(
+    {p.stem for name in FILES for p in (WORKSPACE / FILES[name]["models"]).glob("*.yaml")}
+)
 
 
 def flatten(node, prefix=""):
@@ -67,17 +82,12 @@ def factory_params(file_name: str):
 
 
 def model_files():
-    """(model, file name) for every model file that exists."""
-    return [
-        (model, name)
-        for model in MODELS
-        for name in FILES
-        if (MODELS_DIR / model / name).is_file()
-    ]
+    """(model, package entry) for every model file that exists."""
+    return [(model, name) for model in MODELS for name in FILES if model_path(model, name).is_file()]
 
 
 def test_models_found():
-    assert FACTORY_MODEL in MODELS, f"no config/models/{FACTORY_MODEL}/"
+    assert FACTORY_MODEL in MODELS, f"no package has params/models/{FACTORY_MODEL}.yaml"
 
 
 @pytest.mark.parametrize("file_name", sorted(FILES))
@@ -89,30 +99,68 @@ def test_factory_file_exists(file_name):
 def test_factory_model_has_every_file(file_name):
     # Every launch refuses a model without its file, and the factory model is
     # the one the robots in the field boot as.
-    assert (MODELS_DIR / FACTORY_MODEL / file_name).is_file()
+    assert model_path(FACTORY_MODEL, file_name).is_file()
 
 
-@pytest.mark.parametrize("model", MODELS)
-def test_no_unknown_file(model):
-    # A file under another name is one no launch loads.
-    unknown = sorted(
-        p.name for p in (MODELS_DIR / model).glob("*.yaml") if p.name not in FILES
+@pytest.mark.parametrize("file_name", sorted(FILES))
+def test_models_dir_holds_only_models(file_name):
+    # A launch loads <model>.yaml and nothing else from this directory, so
+    # anything else in it (a .yml, a subdirectory, a stray copy) is a file no
+    # launch reads.
+    stray = sorted(
+        p.name
+        for p in (WORKSPACE / FILES[file_name]["models"]).iterdir()
+        if not (p.is_file() and p.suffix == ".yaml")
     )
-    assert not unknown, f"config/models/{model}/: no launch loads {unknown}"
+    assert not stray, f"{FILES[file_name]['models']}: no launch loads {stray}"
+
+
+def model_nodes(file_name):
+    """Nodes whose block lives in the model files only (model_keys.yaml)."""
+    return set(FILES[file_name].get("model_nodes") or [])
+
+
+@pytest.mark.parametrize("file_name", sorted(FILES))
+def test_model_nodes_not_in_factory(file_name):
+    # A model node in the factory file too would be checked against two
+    # references, and its factory block would reach every model unannounced.
+    both = sorted(model_nodes(file_name) & set(factory_params(file_name)))
+    assert not both, (
+        f"{FILES[file_name]['factory']}: {both} are model_nodes in model_keys.yaml; "
+        "their block belongs in the model files only"
+    )
 
 
 @pytest.mark.parametrize("model,file_name", model_files())
 def test_keys_exist_in_factory(model, file_name):
+    # The reference for a model node is the factory model's own file, since
+    # the factory file has no block for it; the factory model's file is then
+    # the reference for itself, and its keys are not checked (a misspelt key
+    # there shows as a node that misbehaves on the G23, where it is tested).
+    path = model_path(model, file_name).relative_to(WORKSPACE)
     factory = factory_params(file_name)
-    overlay = load_params(MODELS_DIR / model / file_name)
+    reference = load_params(model_path(FACTORY_MODEL, file_name))
+    overlay = load_params(model_path(model, file_name))
     for node, keys in overlay.items():
+        if node in model_nodes(file_name):
+            if model == FACTORY_MODEL:
+                continue
+            assert node in reference, (
+                f"{path}: model node '{node}' is not in {FACTORY_MODEL}'s file"
+            )
+            unknown = sorted(set(keys) - set(reference[node]))
+            assert not unknown, (
+                f"{path}: {node} sets keys {FACTORY_MODEL}'s file does not have "
+                f"(a misspelt key is ignored by the node): {unknown}"
+            )
+            continue
         assert node in factory, (
-            f"{model}/{file_name}: node key '{node}' is not in "
+            f"{path}: node key '{node}' is not in "
             f"{FILES[file_name]['factory']} ({sorted(factory)})"
         )
         unknown = sorted(set(keys) - set(factory[node]))
         assert not unknown, (
-            f"{model}/{file_name}: {node} sets keys the factory file does not have "
+            f"{path}: {node} sets keys the factory file does not have "
             f"(a misspelt key is ignored by the node): {unknown}"
         )
 
@@ -132,18 +180,18 @@ def test_required_keys_are_factory_keys(file_name):
     "model,file_name", [mf for mf in model_files() if mf[0] != FACTORY_MODEL]
 )
 def test_required_keys_set(model, file_name):
-    overlay = load_params(MODELS_DIR / model / file_name)
+    overlay = load_params(model_path(model, file_name))
     for node, keys in FILES[file_name]["required"].items():
         missing = sorted(set(keys) - set(overlay.get(node, {})))
         assert not missing, (
-            f"{model}/{file_name}: {node} leaves these at the {FACTORY_MODEL}'s "
+            f"{model_path(model, file_name).relative_to(WORKSPACE)}: {node} leaves these at the {FACTORY_MODEL}'s "
             f"values: {missing}"
         )
 
 
 def merged_value(model, file_name, node, key):
     value = factory_params(file_name)[node][key]
-    path = MODELS_DIR / model / file_name
+    path = model_path(model, file_name)
     if path.is_file():
         value = load_params(path).get(node, {}).get(key, value)
     return value

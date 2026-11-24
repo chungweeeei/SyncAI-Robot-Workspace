@@ -1,0 +1,22 @@
+# The M20's (DEEP Robotics Lynx M20) parameters over
+# src/syncai_bringup/params/bringup.yaml, loaded after it by bringup.launch.py
+# when the INI's [system] robot_model is m20 (config/models/README.md has the
+# layering).
+#
+# robot_state_publisher: no difference (a block with no key is how a model
+# says so); the launch picks M20.urdf for the model (MODEL_URDF).
+#
+# No /**/livox_lidar_publisher block, on purpose: that block is what makes the
+# launch start the Livox driver (has_livox_block), and the M20 has no Livox of
+# ours -- its two lidars are the vendor stack's, merged on /LIDAR/POINTS_UDP
+# with their IMU on /IMU, published from the robot's other computers. So on an
+# M20 this launch is robot_state_publisher alone.
+#
+# What that publishes today: M20.urdf's fixed joints on /tf_static -- the two
+# cameras, lidar_link and imu (the URDF has where each value came from). Its 16
+# leg and wheel joints are revolute / continuous and appear on /tf only once
+# something publishes /joint_states, which nothing does on the M20
+# (syncai_driver_manager's m20 protocol publishes none of the G23's telemetry).
+
+/**/robot_state_publisher:
+  ros__parameters: {}

@@ -1,6 +1,6 @@
 # config/models — what each robot model changes
 
-One directory per robot **model** (`g23`, `m20`), named by the instance INI:
+A robot **model** (`g23`, `m20`) is named by the instance INI:
 
 ```ini
 [system]
@@ -16,8 +16,8 @@ before 2026-11 has no such key and is a G23's.
 ## What a launch loads, in order
 
 ```
-<package>/params/<node>_params.yaml          factory params, tracked in the package
-config/models/<robot_model>/<node>.yaml      this directory: the model's differences
+<package>/params/<node>_params.yaml          factory params
+<package>/params/models/<robot_model>.yaml   the model's differences
 config/params/<robot_id>/<node>.yaml         the robot's runtime overlay (gitignored,
                                              written by the backend's settings pages;
                                              controller_server and planner_server only)
@@ -27,29 +27,39 @@ config/params/<robot_id>/<node>.yaml         the robot's runtime overlay (gitign
 A later entry wins key by key, so a model file holds **only the keys that
 differ** from the factory file, under the same `/**/<node>:` wildcard keys.
 
-| File | Launch | Node keys |
+**A model's files are in the packages, not here** (since 2026-11-24; until then
+they were `config/models/<model>/<node>.yaml`). Each sits beside the factory
+file it lays over, the way `syncai_driver_manager` keeps its own: the package
+owns its per-model values, and a key renamed in a factory file is renamed in
+the model files in the same commit. This directory keeps what spans packages —
+`model_keys.yaml`, `test_model_overlays.py`, this README — and the DDS files,
+which are not per package.
+
+| Package | Launch | Node keys |
 |---|---|---|
-| `bringup.yaml` | `syncai_bringup/bringup.launch.py` | `/**/robot_state_publisher`, `/**/livox_lidar_publisher` |
-| `pointlio.yaml` | `syncai_pointlio/pointlio.launch.py` | `/**/pointlio_node` |
-| `localizer.yaml` | `syncai_localizer/localizer.launch.py` | `/**/localizer_node` |
-| `planner_server.yaml` | `syncai_global_planner/planner_server.launch.py` | `/**/planner_server`, `/**/global_costmap` |
-| `controller_server.yaml` | `syncai_controller/controller_server.launch.py` | `/**/controller_server`, `/**/local_costmap` |
-| `task_runner.yaml` | `syncai_task_runner/task_runner.launch.py` | `/**/task_runner` |
+| `syncai_bringup` | `bringup.launch.py` | `/**/robot_state_publisher`, `/**/livox_lidar_publisher` |
+| `syncai_pointlio` | `pointlio.launch.py` | `/**/pointlio_node` |
+| `syncai_localizer` | `localizer.launch.py` | `/**/localizer_node` |
+| `syncai_global_planner` | `planner_server.launch.py` | `/**/planner_server`, `/**/global_costmap` |
+| `syncai_controller` | `controller_server.launch.py` | `/**/controller_server`, `/**/local_costmap` |
+| `syncai_task_runner` | `task_runner.launch.py` | `/**/task_runner` |
 
 `bringup.launch.py` also picks the URDF by model (`g23` → `G23.urdf`, `m20` →
 `M20.urdf`; `urdf_file:=` still overrides).
 
-A launch looks for this directory beside the system INI, which is where it is
-on a robot (`config/system.ini`), and otherwise in `~/robot_ws/config/models`:
-an INI kept somewhere else and passed with `system_config:=` names a model
-without having to carry the models with it. `model_params_file:=` on any of the
-six launches names one file directly.
+A launch reads the model's file from the package's **installed** share, so a
+new or renamed model file needs a colcon build of its package before a launch
+sees it (`--symlink-install` links each file, not the directory; an edit to a
+file already installed needs none). `model_params_file:=` on any of the six
+launches names one file directly, built or not. The old layout's lookup beside
+the system INI went with it: an INI passed with `system_config:=` names a model
+and the packages bring its files.
 
 ## Nothing falls back
 
-Every model, the G23 included, has all six files, and a launch **refuses to
-start** when the model's directory or its file for that node is missing, or
-when the file does not parse. This is the opposite of the runtime overlay,
+Every model, the G23 included, has a file in all six packages, and a launch
+**refuses to start** when the model's file for that node is missing, or when
+the file does not parse. This is the opposite of the runtime overlay,
 which is skipped with an error when it is unreadable: a bad settings-page write
 falling back to the factory values is safe, while another robot coming up on
 the G23's footprint, gait floors and stair policy looks healthy and is not.
@@ -67,18 +77,23 @@ empty block).
 ## The factory files are the G23's
 
 The factory params files were tuned on the G23 and still carry its body and
-gait values, which is why `g23/` is six files with no key in them. That is an
-asymmetry, and it is written down in one place: `factory_model` in
+gait values, which is why each package's `params/models/g23.yaml` holds no
+key. That is an asymmetry, and it is written down in one place: `factory_model` in
 `model_keys.yaml`. For every other model, a key its file leaves out is
 inherited from the G23 without a word — so `model_keys.yaml` also lists the
 keys a model **must** set (footprint, radii, lidar height, speed limits, gait
 floors, stair policy), and `test_model_overlays.py` fails when a model's file
 exists and leaves one out.
 
-Moving the G23's own values out of the factory files into `g23/` — so that the
-factory files hold only what is the same on every robot — is the step after
-this one; it is a move of keys between files, with nothing to change in a
-launch.
+Moving the G23's own values out of the factory files into `g23.yaml` — so that
+the factory files hold only what is the same on every robot — is a move of keys
+between files, with nothing to change in a launch. `syncai_bringup` is the
+first (2026-11-24): the Livox driver is the G23's lidar, so its whole
+`/**/livox_lidar_publisher` block is in `g23.yaml` and the factory
+`bringup.yaml` holds `robot_state_publisher` only. A node moved that way is
+listed under `model_nodes` in `model_keys.yaml`: it has no factory block to
+check against, so the test checks another model's keys for it against the
+factory model's file, and another model may leave it out.
 
 ## Values that change together
 
@@ -105,18 +120,19 @@ are still the G23's for every robot: `charge.xml`'s motion keys, the windows of
 `docker-compose.robots.yml`, and three out-of-tree packages' own params
 (`syncai_robot_state`, `syncai_lio_bridge`, `syncai_camera_feeder`) plus
 `syncai_mapping`'s — each of those repos takes the same
-`config/models/<robot_model>/<node>.yaml` layer when it needs one.
+`params/models/<robot_model>.yaml` layer in its package when it needs one.
 
-`syncai_driver_manager` is the exception (2026-11): its launch reads the same
-`[system] robot_model` but loads a layer **inside its own package**,
-`params/models/<robot_model>.yaml` (`g23.yaml`, `m20.yaml`), after its shared
-params file, and refuses a model with no file, as these launches do. It has no
-file here, and `model_keys.yaml` / `test_model_overlays.py` do not see it.
+`syncai_driver_manager` already has it (2026-11, the layout these six launches
+followed): `params/models/g23.yaml` and `m20.yaml` after its shared params
+file, and it refuses a model with no file, as these launches do. Being out of
+tree, it is not in `model_keys.yaml`, and `test_model_overlays.py` does not
+see it.
 
 ## DDS
 
-A model directory may hold its own DDS file: a `cyclonedds.xml`, or a Fast DDS
-profile (`fastdds.xml`). It is not picked by `robot_model`: the RMW's
+`config/models/<model>/` is now only for DDS: a model's own `cyclonedds.xml`,
+or a Fast DDS profile (`fastdds.xml`), and a README of what the model still
+needs (`m20/README.md`). It is not picked by `robot_model`: the RMW's
 environment is set by compose when the container is made, before anything
 reads the INI, and the backend's and the recorder's containers need the same.
 Three `.env` variables, set together:
@@ -143,8 +159,8 @@ backend sees nothing.
 
 ## Adding a model
 
-1. `config/models/<model>/` with the six files; start each from the keys
-   `model_keys.yaml` requires for it.
+1. `params/models/<model>.yaml` in each of the six packages; start each from
+   the keys `model_keys.yaml` requires for it, and rebuild those packages.
 2. `<MODEL>.urdf` in `src/syncai_bringup/description/`, with `lidar_top`,
    `lidar_top_imu` and `camera_optical_frame`, and its entry in
    `bringup.launch.py`'s `MODEL_URDF`.
