@@ -95,6 +95,14 @@ listed under `model_nodes` in `model_keys.yaml`: it has no factory block to
 check against, so the test checks another model's keys for it against the
 factory model's file, and another model may leave it out.
 
+`syncai_pointlio` is the second, by key rather than by node (2026-11-24): the
+seven that describe a robot's sensors (`lidar_type`, `imu_acc_scale`,
+`lidar_min_range`, `satu_gyro`, `satu_acc`, `r_il`, `t_il`) are in each model's
+file and not in the factory one. They are listed under `model_keys`, and the
+rule is the strict one: **every** model's file sets every model key, the
+factory model's included, because there is no factory value under them — a
+key left out would run on the C++ default, not on the G23's.
+
 ## Values that change together
 
 `test_model_overlays.py` checks the first three on the merged result (factory +

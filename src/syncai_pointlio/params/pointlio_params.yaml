@@ -1,7 +1,17 @@
-# Point-LIO (output model) parameters for a real Livox sensor (CustomMsg input).
-# The IMU is fused as a measurement: body angular velocity / specific force are
-# random-walk states, so points are processed at their own timestamps without
-# scan undistortion.
+# Point-LIO (output model) parameters every robot model shares: the estimator,
+# the local map, the filters. The IMU is fused as a measurement: body angular
+# velocity / specific force are random-walk states, so points are processed at
+# their own timestamps without scan undistortion.
+#
+# What belongs to a robot's sensors is NOT here since 2026-11-24 but in
+# params/models/<robot_model>.yaml, loaded after this file (the G23's Livox
+# MID360 in g23.yaml, the Lynx M20's vendor lidars in m20.yaml), the layout
+# syncai_driver_manager has: lidar_type, imu_acc_scale, lidar_min_range,
+# satu_gyro / satu_acc and the r_il / t_il extrinsic. Every model's file sets
+# all seven -- with none of them here, a key a model left out would run on the
+# C++ default, not on another robot's value -- which config/models/
+# model_keys.yaml lists (model_keys) and test_model_overlays.py checks. A model
+# file may also override a key below (the M20's lidar_filter_num).
 #
 # This is a normal ROS parameters file (loaded by pointlio.launch.py via
 # `parameters=[...]`), not a hand-parsed YAML: every key below is a parameter
@@ -11,7 +21,7 @@
 # (Ported unchanged from SyncAI-Fast-LIO2's pointlio/config/pointlio.yaml in
 # 2026-09; tuning notes below predate the move.)
 #
-# Two things are NOT here, on purpose:
+# Two more things are not here, on purpose:
 #   * input topics — handled by launch remappings onto
 #     /<robot_id>/livox/{lidar,imu}, since a relative name would resolve inside
 #     the node's own /<robot_id>/pointlio namespace.
@@ -53,19 +63,12 @@
       max_speed: 1.5
       min_effective_ratio: 0.0
 
-    # 0: livox CustomMsg (per-point time -> full point-by-point update),
-    # 1: sensor_msgs/PointCloud2 (no per-point time -> one batch update per scan)
-    lidar_type: 0
-    # Livox IMU accel is in g-units -> x10 to m/s^2 (satu_acc is compared AFTER scaling)
-    imu_acc_scale: 9.81
-
     lidar_filter_num: 6
     # body_cloud_dense's decimation (2026-10-09): pgo maps from it, at 3x the
     # points the filter and body_cloud use. Same scan, same pass, published
     # only while subscribed. 2 is the floor (1 overflows CycloneDDS's default
     # receive buffer on lo); <= 0 = body_cloud's points.
     dense_filter_num: 2
-    lidar_min_range: 0.5
     lidar_max_range: 30.0
     # Coarser than fastlio2 (0.15): every point group costs an EKF update, keep
     # headroom on Jetson. Lower for more detail if time cost allows.
@@ -99,14 +102,6 @@
     imu_meas_omg_cov: 0.1
     imu_meas_acc_cov: 0.1
 
-    # saturation thresholds: axes at/over these are dropped from the IMU update
-    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale). satu_acc sits
-    # just under the IMU's clip, 4.004 g = 39.28 at imu_acc_scale 9.81, so only
-    # clipped samples are dropped; at 30 (3.06 g) it also dropped the gait's
-    # 3.06-4.0 g impacts, ~90 % of them real readings (2026-11-09)
-    satu_gyro: 35.0
-    satu_acc: 39.0
-
     # point-to-plane measurement
     lidar_meas_cov: 0.01
     plane_thr: 0.1
@@ -124,15 +119,3 @@
     # Write a float
     gravity_init_cov: 0.0
     esti_il: false
-
-    # IMU <- lidar extrinsic. r_il is the row-major 3x3 rotation flattened into a
-    # 9-element list (ROS parameters have no matrix type); t_il is xyz in metres.
-    #
-    # The body frame is the IMU, so this is also what places pointlio_body
-    # relative to the lidar. syncai_bringup's G23.urdf carries the inverse as
-    # lidar_top_imu_joint (lidar_top -> lidar_top_imu, xyz = -t_il with r_il =
-    # identity), the static counterpart of pointlio_body in the robot tree:
-    # change the two together. t_il is the MID360's published IMU offset; it is
-    # not checked against the MID360s, which part of the fleet runs.
-    r_il: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    t_il: [-0.011, -0.02329, 0.04412]

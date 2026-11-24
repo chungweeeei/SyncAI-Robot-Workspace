@@ -581,14 +581,18 @@
          merged cloud is already in the body frame. This one is evidenced by
          the data, not only by the vendor's TF.
 
-         imu: (-0.026, 0, 0.042), no rotation - the vendor's "imu" frame,
-         UNMEASURED by us. Taken as it stands until the IMU's mount is
-         measured or found in DEEP Robotics' documents: the same /tf_static
-         also has an "imu_link" at the origin and a "utlidar_imu" turned by
-         pi, which disagree with it, and much of that tree reads as a template
-         (other vendors' frame names, frames with identical values, 1.57 / 3.14
-         for pi / 2 and pi). /IMU itself is stamped with an empty frame_id, so
-         the data does not say which is right. -->
+         imu: (0.0632, -0.0268, 0.0435), no rotation - not from that
+         /tf_static (whose "imu", (-0.026, 0, 0.042), this was until the same
+         day) but from DEEP Robotics' own MJCF of the M20 (sdk_deploy's
+         M20_description/m20_mjcf/mjcf/M20.xml), where the accelerometer and
+         gyro sit on imu_site at that point of base_link; their controller is
+         simulated on it. The /tf_static tree is an integrator's template
+         (robotPF's layout.urdf: other vendors' frame names, frames with
+         identical values, 1.57 / 3.14 for pi / 2 and pi), with an "imu_link"
+         at the origin and a "utlidar_imu" turned by pi besides. Not measured
+         on the robot; /IMU is stamped with an empty frame_id. syncai_pointlio's
+         params/models/m20.yaml carries the inverse as t_il: change the two
+         together. -->
     <link name="lidar_link"/>
     <joint name="lidar_joint" type="fixed">
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -598,7 +602,7 @@
 
     <link name="imu"/>
     <joint name="imu_joint" type="fixed">
-        <origin xyz="-0.026 0 0.042" rpy="0 0 0"/>
+        <origin xyz="0.0632 -0.0268 0.0435" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="imu"/>
     </joint>

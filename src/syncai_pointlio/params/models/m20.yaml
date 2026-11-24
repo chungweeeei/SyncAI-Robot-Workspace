@@ -1,0 +1,67 @@
+# The Lynx M20's sensors, over src/syncai_pointlio/params/pointlio_params.yaml:
+# loaded after it by pointlio.launch.py when the INI's [system] robot_model is
+# m20 (config/models/README.md has the layering).
+#
+# Not a Livox of ours: the vendor stack's two lidars, merged into one
+# sensor_msgs/PointCloud2 on /LIDAR/POINTS_UDP (~10 Hz, frame "lidar_link", which
+# the vendor puts at its base_link's origin -- the cloud is in the body frame),
+# and its body IMU on /IMU (sensor_msgs/Imu, ~200 Hz, empty frame_id), both on
+# DDS domain 0 from the robot's other computers. Measured on robot01,
+# 2026-11-24.
+#
+# NOT RUNNABLE ON THIS FILE ALONE: pointlio.launch.py remaps the node's inputs
+# onto /<robot_id>/livox/{lidar,imu} for every model, and the M20's are the two
+# absolute names above. Remappings are not parameters, so that is the launch's
+# to choose by model, not this file's.
+#
+# Every value here but lidar_type and imu_acc_scale is a first guess, marked.
+
+/**/pointlio_node:
+  ros__parameters:
+    # PointCloud2. The cloud does carry a per-point time -- a float64 field
+    # `timestamp`, absolute seconds, spanning ~0.106 s and ending ~0.02 s before
+    # the header stamp -- but the node's PointCloud2 reader does not read it yet,
+    # so every scan is one batch update with no motion compensation.
+    lidar_type: 1
+    # The M20's IMU reports m/s^2 already (|a| = 9.77 at rest, 2026-11-24), not
+    # the Livox's g: the G23's 9.81 here would read gravity as ~96 m/s^2.
+    imu_acc_scale: 1.0
+
+    # FIRST GUESS: the G23's. The vendor seems to crop the robot's own points
+    # already: lying, nothing came within 0.45 m of lidar_link and the nearest
+    # returns (0.55-0.6 m, x +/-0.55-0.59, z -0.19..-0.04) sat by the floor.
+    # Check again standing, when the wheels are ~0.6 m from the origin.
+    lidar_min_range: 0.5
+
+    # The IMU's range is not known; these sit above everything it was seen to
+    # read. robot01, 2026-11-24, 90 s of /IMU while the robot was driven back
+    # and forth and turned: no axis clipped (every extreme seen once), |a| up to
+    # 31.2 m/s^2 (3.18 g, on z), |w| up to 1.47 rad/s. So the clip is above
+    # 3.18 g. 39.0 (4 g) keeps every reading seen with ~25 % headroom and stays
+    # under a +/-4 g part's clip if that is what it is; if the range is wider,
+    # the rare reading past 4 g is dropped -- information lost, against a
+    # clipped one fused, the worse of the two. Not yet driven over stairs or
+    # steps, the hardest impacts: run the same probe there before raising it.
+    satu_gyro: 35.0
+    satu_acc: 39.0
+
+    # IMU <- lidar: p_imu = r_il * p_lidar + t_il. The cloud is in the vendor's
+    # base_link, and DEEP Robotics' own MJCF of the M20 (sdk_deploy's
+    # M20_description/m20_mjcf/mjcf/M20.xml, the model their controller is
+    # trained and simulated on) puts the accelerometer and gyro on an imu_site
+    # at (0.0632, -0.0268, 0.0435) in base_link, unrotated, so t_il = -(that).
+    # Mirrored in syncai_bringup's M20.urdf (imu_joint); change the two
+    # together. Not the "imu" of the vendor's /tf_static, (-0.026, 0, 0.042),
+    # used until this was found: that tree is an integrator's template
+    # (robotPF's layout.urdf, other vendors' frame names). Not measured on the
+    # robot either; what the data does say is that the axes are the body's: at
+    # rest gravity reads along +z (a = -1.07, 0.04, 9.71 with the body pitched
+    # ~6 deg).
+    r_il: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    t_il: [-0.0632, 0.0268, -0.0435]
+
+    # Override of a shared key: the merged cloud is 57-93 k points a scan, 3-5x
+    # a MID360's, so the G23's 6 would feed the estimator 10-15 k a scan. 20
+    # brings it near the G23's ~3-4 k. A first guess for the Jetson's CPU, not a
+    # measured one; the health log's time cost says whether it fits.
+    lidar_filter_num: 20

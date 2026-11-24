@@ -23,6 +23,13 @@ factory_model: g23
 # factory file at all, because the node belongs to that model's hardware (the
 # G23's Livox driver). Their keys are checked against the factory model's file
 # instead of the factory file; another model's file may leave the block out.
+#
+# `model_keys`: keys of a node that IS in the factory file, which live in the
+# model files only, because they describe a model's hardware (the G23's Livox
+# against the M20's vendor lidars). Unlike a model node's block, every model's
+# file must set every one of them, the factory model's included: the factory
+# file has no value to fall back to, so a key left out would run on the C++
+# default, not on another robot's.
 files:
   bringup:
     models: src/syncai_bringup/params/models
@@ -34,6 +41,17 @@ files:
   pointlio:
     models: src/syncai_pointlio/params/models
     factory: src/syncai_pointlio/params/pointlio_params.yaml
+    # The sensors (2026-11-24): input type, IMU units and range, self-filter
+    # radius, IMU <- lidar extrinsic
+    model_keys:
+      /**/pointlio_node:
+        - lidar_type
+        - imu_acc_scale
+        - lidar_min_range
+        - satu_gyro
+        - satu_acc
+        - r_il
+        - t_il
     required: {}
 
   localizer:

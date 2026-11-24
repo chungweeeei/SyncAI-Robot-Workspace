@@ -131,6 +131,41 @@ def test_model_nodes_not_in_factory(file_name):
     )
 
 
+def model_keys(file_name):
+    """{node: keys} that live in the model files only (model_keys.yaml)."""
+    return {
+        node: set(keys)
+        for node, keys in (FILES[file_name].get("model_keys") or {}).items()
+    }
+
+
+@pytest.mark.parametrize("file_name", sorted(FILES))
+def test_model_keys_not_in_factory(file_name):
+    # A model key left in the factory file too would be a silent fallback for
+    # a model that forgets it -- the thing model_keys exists to rule out.
+    factory = factory_params(file_name)
+    for node, keys in model_keys(file_name).items():
+        assert node in factory, f"model_keys.yaml: {file_name} has no node '{node}'"
+        both = sorted(keys & set(factory[node]))
+        assert not both, (
+            f"{FILES[file_name]['factory']}: {node} {both} are model_keys in "
+            "model_keys.yaml; they belong in the model files only"
+        )
+
+
+@pytest.mark.parametrize("model,file_name", model_files())
+def test_model_keys_set(model, file_name):
+    # Every model, the factory model included: there is no factory value under
+    # a model key, so one left out is the C++ default.
+    overlay = load_params(model_path(model, file_name))
+    for node, keys in model_keys(file_name).items():
+        missing = sorted(keys - set(overlay.get(node, {})))
+        assert not missing, (
+            f"{model_path(model, file_name).relative_to(WORKSPACE)}: {node} leaves "
+            f"model keys unset (the C++ default would run): {missing}"
+        )
+
+
 @pytest.mark.parametrize("model,file_name", model_files())
 def test_keys_exist_in_factory(model, file_name):
     # The reference for a model node is the factory model's own file, since
@@ -158,7 +193,8 @@ def test_keys_exist_in_factory(model, file_name):
             f"{path}: node key '{node}' is not in "
             f"{FILES[file_name]['factory']} ({sorted(factory)})"
         )
-        unknown = sorted(set(keys) - set(factory[node]))
+        allowed = set(factory[node]) | model_keys(file_name).get(node, set())
+        unknown = sorted(set(keys) - allowed)
         assert not unknown, (
             f"{path}: {node} sets keys the factory file does not have "
             f"(a misspelt key is ignored by the node): {unknown}"
@@ -190,7 +226,8 @@ def test_required_keys_set(model, file_name):
 
 
 def merged_value(model, file_name, node, key):
-    value = factory_params(file_name)[node][key]
+    # A model key has no factory value; every model file sets it (above)
+    value = factory_params(file_name).get(node, {}).get(key)
     path = model_path(model, file_name)
     if path.is_file():
         value = load_params(path).get(node, {}).get(key, value)

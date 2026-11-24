@@ -360,32 +360,41 @@ default, so a missing key degrades to the code default instead of throwing.
 The launch layers the two frame names on top.
 
 Between the two it loads `params/models/<robot_model>.yaml`, for the
-model the INI's `[system] robot_model` names (absent = `g23`, whose file holds
-no key because this package's file is the G23's). Of the keys below,
-`lidar_min_range` (the blind radius round the body) and `satu_acc` (sized to
-the G23 gait's impacts) are the ones another kind of robot is likely to
-change; `r_il` / `t_il` are the lidar's own and follow the lidar, not the
-robot. A model with no file fails the launch (`config/models/README.md`);
-`model_params_file:=` points at another file.
+model the INI's `[system] robot_model` names (absent = `g23`). **Seven keys
+below are in the model files only** (2026-11-24, the layout
+`syncai_driver_manager` has): `lidar_type`, `imu_acc_scale`,
+`lidar_min_range`, `satu_gyro` / `satu_acc` and `r_il` / `t_il` — the robot's
+sensors. `g23.yaml` holds the Livox MID360's (the values in the table, which
+were the factory file's until then); `m20.yaml` the Lynx M20's vendor lidars
+(`PointCloud2` with an IMU in m/s², the extrinsic from DEEP Robotics'
+MJCF `imu_site`, `satu_acc` above the 3.18 g measured on robot01, the rest
+first guesses, marked). Every model's file must set all
+seven: with none in the factory file, a key left out runs on the C++ default.
+`config/models/model_keys.yaml` lists them (`model_keys`) and its test checks.
+A model file may also override a shared key (the M20's `lidar_filter_num` 20,
+for a cloud 3–5× a MID360's). **The M20 does not run yet**: the launch remaps
+the inputs onto `/<robot_id>/livox/{lidar,imu}` for every model, and the M20's
+are `/LIDAR/POINTS_UDP` and `/IMU`. A model with no file fails the launch
+(`config/models/README.md`); `model_params_file:=` points at another file.
 
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
 | `world_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | The YAML said `lidar` until 2026-10, and the code default still does; `pointlio_odom` is what `syncai_mapping`'s `pgo_node` derives in a bare run |
 | `body_frame` | `pointlio_body` | `<robot_id>/pointlio_body` | The lidar's IMU (see "The frames"); `body` until 2026-10, and still the code default |
-| `lidar_type` | `0` | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
-| `imu_acc_scale` | `10.0` | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is 9.81 (and stays there, see `gravity_init_cov`). robot01's YAML says `9.81`. `satu_acc` is compared **after** scaling. |
+| `lidar_type` | `0` (`g23.yaml`) | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
+| `imu_acc_scale` | `9.81` (`g23.yaml`; `1.0` in `m20.yaml`; the code default is `10.0`) | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is 9.81 (and stays there, see `gravity_init_cov`). robot01's YAML says `9.81`. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |
 | `max_lidar_backlog` / `max_lidar_skip` | `0.3` / `2` | | The backlog guard (see "Falling behind"): beyond `max_lidar_backlog` seconds of buffered scans the oldest are skipped, at most `max_lidar_skip` in a row, their IMU still fused. **Write a float** for the first. `<= 0.0` processes every scan however late |
 | `health.summary_period` / `health.max_speed` / `health.min_effective_ratio` | `1.0` / `1.5` / `0.0` | | The health log (see "The health log"): one `lio health:` line per period (`<= 0.0` = off), a WARN when the speed exceeds `max_speed` (the robot tops out at 0.8 m/s) or a scan's matched share falls under `min_effective_ratio` (`0.0` = unchecked until a healthy robot's ratio is measured). **Write floats** |
 | `lidar_filter_num` | `6` | | Keep every n-th point: the filter's input and `body_cloud` |
 | `dense_filter_num` | `2` | | Keep every n-th point for `body_cloud_dense` only. A divisor of `lidar_filter_num` makes `body_cloud`'s points a subset (warned otherwise). 2 is the floor: at 1 a MID360 scan is ~320 KB, over CycloneDDS's default 208 KB receive buffer on `lo`. `<= 0` or `>= lidar_filter_num`: `body_cloud`'s points |
-| `lidar_min_range` / `lidar_max_range` | `0.5` / `30.0` | | metres |
+| `lidar_min_range` / `lidar_max_range` | `0.5` (`g23.yaml`) / `30.0` | | metres |
 | `scan_resolution` / `map_resolution` | `0.25` / `0.2` | | Voxel sizes: the scan's downsampling, and the local map's one-point-per-voxel. The scan is coarser than fastlio2's 0.15 because every point group costs an EKF update; keep headroom on the Jetson. The map's is finer than the scan's so that scans from different poses fill it in (see "The local map" for why 0.2 and not the port's 0.3). |
 | `map_grid_resolution` / `map_capacity` / `map_nearby` | `2.0` / `1000000` / `6` | | The local map (see "The local map"): grid edge (m), LRU capacity (grids), search neighbourhood (`0` / `6` / `18` / `26`). Upstream Point-LIO's values. Out-of-range values log an ERROR and fall back to these. **Write the resolution as a float.** |
 | `gyr_cov_output` / `acc_cov_output` | `1000.0` / `500.0` | | Process noise driving the omg / acc random-walk states. At 1000 the output model tracks the raw gyro almost instantly, which is why the bridge's yaw rate is not the bias-free estimate it looks like. |
 | `b_gyr_cov` / `b_acc_cov` | `0.0001` | | Bias random walk |
 | `imu_meas_omg_cov` / `imu_meas_acc_cov` | `0.1` | | IMU-as-measurement noise |
-| `satu_gyro` / `satu_acc` | `35.0` / `39.0` | | Saturation: axes at/over these are dropped from the IMU update (rad/s; m/s² after scaling). `satu_acc` sits just under the IMU's 4.004 g clip; 30 (≈3 g) until 2026-11-09 (see "Gravity and the accelerometer's clip"). **Write floats** |
+| `satu_gyro` / `satu_acc` | `35.0` / `39.0` (`g23.yaml`) | | Saturation: axes at/over these are dropped from the IMU update (rad/s; m/s² after scaling). `satu_acc` sits just under the IMU's 4.004 g clip; 30 (≈3 g) until 2026-11-09 (see "Gravity and the accelerometer's clip"). **Write floats** |
 | `lidar_meas_cov` / `plane_thr` | `0.01` / `0.1` | | Point-to-plane measurement |
 | `batch_max_points` | `500` | | Same-timestamp groups larger than this are split into sequential chunks |
 | `imu_init_num` | `20` | | Samples averaged by the static init (≈0.1 s at 200 Hz) |
@@ -393,7 +402,7 @@ robot. A model with no file fails the launch (`config/models/README.md`);
 | `gravity_align` | `true` | | Rotate the initial pose so gravity is −z |
 | `gravity_init_cov` | `0.0` | | Initial covariance of the gravity state. `0` holds `g` fixed for good; the port's `0.0001` let the updates move it, and it drifted (see "Gravity and the accelerometer's clip"). Negative logs an ERROR and uses 0. **Write a float** |
 | `esti_il` | `false` | | Estimate the lidar → IMU extrinsic online |
-| `r_il` / `t_il` | identity / `[-0.011, -0.02329, 0.04412]` | | IMU ← lidar extrinsic. `r_il` is the row-major 3×3 flattened to 9 doubles (ROS parameters have no matrix type); the node checks the lengths and keeps the default with an ERROR log on a mismatch. |
+| `r_il` / `t_il` | identity / `[-0.011, -0.02329, 0.04412]` (`g23.yaml`) | | IMU ← lidar extrinsic. `r_il` is the row-major 3×3 flattened to 9 doubles (ROS parameters have no matrix type); the node checks the lengths and keeps the default with an ERROR log on a mismatch. |
 
 ## Running
 

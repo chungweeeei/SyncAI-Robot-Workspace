@@ -1,11 +1,38 @@
-# The G23's differences from src/syncai_pointlio/params/pointlio_params.yaml: none.
+# The G23's sensors, over src/syncai_pointlio/params/pointlio_params.yaml:
+# loaded after it by pointlio.launch.py when the INI's [system] robot_model is
+# g23 (config/models/README.md has the layering).
 #
-# The factory file was tuned on the G23 and still carries its body and gait
-# values, so there is nothing to lay over it. The file exists because the
-# launch refuses a model with no file for this node rather than fall back to
-# the factory values (config/models/README.md has the layering); a block
-# with no key is how a model says "no difference", and is never handed to
-# the node.
+# A Livox MID360 / MID360s through livox_ros_driver2 (CustomMsg, with its own
+# IMU). These seven keys lived in the factory file until 2026-11-24, values
+# unchanged; every model's file sets all of them (config/models/model_keys.yaml,
+# model_keys), because the factory file no longer holds a fallback.
 
 /**/pointlio_node:
-  ros__parameters: {}
+  ros__parameters:
+    # 0: livox CustomMsg (per-point time -> full point-by-point update),
+    # 1: sensor_msgs/PointCloud2 (no per-point time -> one batch update per scan)
+    lidar_type: 0
+    # Livox IMU accel is in g-units -> x10 to m/s^2 (satu_acc is compared AFTER scaling)
+    imu_acc_scale: 9.81
+
+    lidar_min_range: 0.5
+
+    # saturation thresholds: axes at/over these are dropped from the IMU update
+    # satu_gyro in rad/s; satu_acc in m/s^2 (after imu_acc_scale). satu_acc sits
+    # just under the IMU's clip, 4.004 g = 39.28 at imu_acc_scale 9.81, so only
+    # clipped samples are dropped; at 30 (3.06 g) it also dropped the gait's
+    # 3.06-4.0 g impacts, ~90 % of them real readings (2026-11-09)
+    satu_gyro: 35.0
+    satu_acc: 39.0
+
+    # IMU <- lidar extrinsic. r_il is the row-major 3x3 rotation flattened into a
+    # 9-element list (ROS parameters have no matrix type); t_il is xyz in metres.
+    #
+    # The body frame is the IMU, so this is also what places pointlio_body
+    # relative to the lidar. syncai_bringup's G23.urdf carries the inverse as
+    # lidar_top_imu_joint (lidar_top -> lidar_top_imu, xyz = -t_il with r_il =
+    # identity), the static counterpart of pointlio_body in the robot tree:
+    # change the two together. t_il is the MID360's published IMU offset; it is
+    # not checked against the MID360s, which part of the fleet runs.
+    r_il: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    t_il: [-0.011, -0.02329, 0.04412]
