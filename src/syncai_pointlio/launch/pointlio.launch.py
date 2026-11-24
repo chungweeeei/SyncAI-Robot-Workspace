@@ -1,4 +1,5 @@
-# Point-LIO front end launch, for the real Livox sensor.
+# Point-LIO front end launch, for the robot's own lidar and IMU (the G23's
+# Livox, the M20's vendor lidars; params/models/<robot_model>.yaml says which).
 #
 # This is THE definition of how pointlio_node is configured, and the only one:
 # the session specs (config/sessions/start_nav.yaml, start_mapping.yaml) run it
@@ -13,8 +14,9 @@
 #
 # robot_id is read from the system config INI at launch time (same convention as
 # every other launch file in this workspace) and is used as the node namespace,
-# as the prefix for the sensor topics, and as the prefix for the TF frames:
-#   topics: /<robot_id>/livox/lidar, /<robot_id>/livox/imu
+# as the prefix for the Livox topics, and as the prefix for the TF frames:
+#   topics: /<robot_id>/livox/lidar, /<robot_id>/livox/imu (unless the model's
+#           file names its own, below)
 #   frames: <robot_id>/pointlio_odom -> <robot_id>/pointlio_body
 #
 # pointlio_node's settings are plain ROS parameters (params/pointlio_params.yaml,
@@ -24,19 +26,23 @@
 # a /tmp file, because the node parsed that YAML itself with yaml-cpp and knew
 # nothing about ROS parameters.
 #
-# The two robot_id-dependent bits are handled with the mechanism ROS provides
-# for each:
-#   * topics -> remappings. The node subscribes to the relative names "lidar" /
-#     "imu", which would resolve inside its own /<robot_id>/pointlio namespace.
-#   * frames -> parameter overrides. TF frame ids are not namespaced by ROS, so
-#     they have to be prefixed by hand (same as the nav params).
-#
-# Between the two sits the robot model's file,
-# params/models/<robot_model>.yaml in this package: what the
-# model [system] robot_model names changes from the installed file (the blind
-# radius round its body, the IMU saturation its gait needs). A model with no
-# such file fails the launch rather than run on another robot's values; the
-# helpers are copied from controller_server.launch.py, not shared.
+# The parameters, in order, a later one winning key by key:
+#   1. the installed params/pointlio_params.yaml (what every model shares);
+#   2. the Livox input topics, /<robot_id>/livox/{lidar,imu}, as the node's
+#      lidar_topic / imu_topic parameters -- computed here, because they carry
+#      the robot_id and a params file cannot. Remappings of the relative
+#      "lidar" / "imu" did this until 2026-11-24. Unlike a remapping, a
+#      parameter is overridden by the next layer, and `ros2 param get` shows
+#      the topic the node actually reads;
+#   3. the robot model's file, params/models/<robot_model>.yaml in this package:
+#      its sensors (lidar type, IMU units and range, extrinsic), and for a
+#      robot whose sensors are not a Livox of ours its own topics (the M20's
+#      absolute /LIDAR/POINTS_UDP and /IMU), over (2). A model
+#      with no such file fails the launch rather than run on another robot's
+#      values; the helpers are copied from controller_server.launch.py, not
+#      shared;
+#   4. the frame names, prefixed by hand since TF frame ids are not namespaced
+#      by ROS (same as the nav params).
 
 import configparser
 import os
@@ -171,27 +177,29 @@ def launch_setup(context, *args, **kwargs):
     pkg_pointlio = FindPackageShare("syncai_pointlio").find("syncai_pointlio")
     params_file = os.path.join(pkg_pointlio, "params", "pointlio_params.yaml")
 
-    # The robot model's own values, between the installed params and the frame
-    # overrides: params/models/<robot_model>.yaml in this package. A model without that file fails the launch here (model_params).
+    # The robot model's own values, after the installed params and the Livox
+    # topics, before the frames: params/models/<robot_model>.yaml in this
+    # package. A model without that file fails the launch here (model_params).
     robot_model = read_robot_model(config_path)
     model_path = LaunchConfiguration("model_params_file").perform(context)
     if not model_path:
         model_path = model_params_path(pkg_pointlio, robot_model)
     model_overlay = model_params(model_path, robot_model)
 
-    parameters = [params_file]
+    # The Livox driver's topics (syncai_bringup, in the robot_id namespace),
+    # before the model's file so that a robot with other sensors names its own
+    # there. A single set of names covers both the real robot and bag replay:
+    # every rosbag is now recorded with the robot_id prefix the driver
+    # publishes, so the `bag_topics` argument that used to strip the prefix is
+    # gone. Bags predating the prefix need `ros2 bag play --remap` onto these.
+    livox_topics = {
+        "lidar_topic": f"/{robot_id}/livox/lidar",
+        "imu_topic": f"/{robot_id}/livox/imu",
+    }
+
+    parameters = [params_file, livox_topics]
     if model_overlay:
         parameters.append(model_overlay)
-
-    # A single set of topic names covers both the real robot and bag replay:
-    # every rosbag is now recorded with the robot_id prefix the driver publishes,
-    # so the `bag_topics` argument that used to strip the prefix (pointing the
-    # remappings at the raw /livox/{lidar,imu}) is gone. Bags predating the
-    # prefix need `ros2 bag play --remap` instead of a launch argument.
-    remappings = [
-        ("lidar", f"/{robot_id}/livox/lidar"),
-        ("imu", f"/{robot_id}/livox/imu"),
-    ]
 
     # Standalone frame names, NOT <robot_id>/laser -> <robot_id>/base_link,
     # which is what they used to be. base_link is already claimed as a TF child
@@ -225,9 +233,8 @@ def launch_setup(context, *args, **kwargs):
             executable="pointlio_node",
             name="pointlio_node",
             output="screen",
-            remappings=remappings,
-            # installed params, then the robot model's, then the frames — later
-            # entries win
+            # installed params, the Livox topics, the robot model's, then the
+            # frames -- later entries win
             parameters=[*parameters, frame_overrides],
         ),
     ]

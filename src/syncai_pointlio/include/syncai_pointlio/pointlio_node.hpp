@@ -53,6 +53,16 @@ struct NodeConfig
   bool print_time_cost = false;
   int lidar_type = 0;
   // 0: livox_ros_driver2 CustomMsg, 1: sensor_msgs/PointCloud2 (e.g. Isaac Sim)
+  //
+  // The input topics (2026-11-24). Relative by default, so pointlio.launch.py's
+  // remappings of "lidar" / "imu" onto /<robot_id>/livox/{lidar,imu} still
+  // apply -- the G23's, whose names carry the robot_id and so cannot be written
+  // in a params file. A robot whose sensors are someone else's sets absolute
+  // names in its params/models/<robot_model>.yaml (the M20: the vendor's
+  // /LIDAR/POINTS_UDP and /IMU, published with no namespace), which a remapping
+  // of "lidar" / "imu" does not touch.
+  std::string lidar_topic = "lidar";
+  std::string imu_topic = "imu";
   // Scale applied to linear_acceleration. Livox IMU reports g-units -> ~10.0 to get m/s^2.
   // Sensors already in m/s^2 (e.g. Isaac Sim, z~9.81 at rest) must use 1.0, since the
   // filter's gravity magnitude is fixed at 9.81 (point_ekf.cpp). satu_acc is compared

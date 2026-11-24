@@ -9,15 +9,19 @@
 # DDS domain 0 from the robot's other computers. Measured on robot01,
 # 2026-11-24.
 #
-# NOT RUNNABLE ON THIS FILE ALONE: pointlio.launch.py remaps the node's inputs
-# onto /<robot_id>/livox/{lidar,imu} for every model, and the M20's are the two
-# absolute names above. Remappings are not parameters, so that is the launch's
-# to choose by model, not this file's.
-#
-# Every value here but lidar_type and imu_acc_scale is a first guess, marked.
+# Values marked FIRST GUESS are not measured yet.
 
 /**/pointlio_node:
   ros__parameters:
+    # The vendor's topics, over the /<robot_id>/livox/{lidar,imu} the launch
+    # sets: absolute, since the vendor publishes them with no namespace (a
+    # relative name would resolve under /<robot_id>/pointlio). The cloud's
+    # writer is best effort (2026-11-24), which is why the node's lidar reader
+    # is best effort for every robot (pointlio_node.cpp has the argument);
+    # /IMU's writer is reliable, as the IMU reader is.
+    lidar_topic: "/LIDAR/POINTS_UDP"
+    imu_topic: "/IMU"
+
     # PointCloud2. The cloud does carry a per-point time -- a float64 field
     # `timestamp`, absolute seconds, spanning ~0.106 s and ending ~0.02 s before
     # the header stamp -- but the node's PointCloud2 reader does not read it yet,

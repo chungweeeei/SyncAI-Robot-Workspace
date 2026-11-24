@@ -51,23 +51,34 @@ PointLIONode::PointLIONode() : Node("pointlio_node")
   // lidarCB's conversion runs in the same group, and a starved reader should
   // cost latency rather than samples. Upstream Point-LIO uses 200000.
   m_imu_sub = this->create_subscription<sensor_msgs::msg::Imu>(
-    "imu", rclcpp::QoS(rclcpp::KeepLast(2000)),
+    m_node_config.imu_topic, rclcpp::QoS(rclcpp::KeepLast(2000)),
     std::bind(&PointLIONode::imuCB, this, std::placeholders::_1), sensor_options);
 
   // register scan subscriber. Log the resolved name so a missing/incorrect
   // remapping is visible at startup instead of showing up as "no data". Depth
   // 100 (10 s at 10 Hz) for the same reason as the IMU's; 10 was a full second
   // there, so it never bit, but a stalled reader should cost lag, not scans.
+  //
+  // Best effort, for every lidar (2026-11-24). A reliable reader never matches
+  // a best-effort writer and receives nothing, with no error anywhere -- the
+  // M20's /LIDAR/POINTS_UDP is best effort -- while a best-effort reader
+  // matches either kind. Against the G23's reliable Livox writer it means a
+  // fragment lost on a busy host loses that scan instead of being resent:
+  // the filter predicts through it on the IMU (the backlog guard skips scans
+  // on purpose the same way), and the health log's scans-per-second shows how
+  // many. The IMU reader stays reliable: both robots' IMU writers are, and an
+  // IMU hole is a prediction with no measurement (see the depth above).
+  const auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(100)).best_effort();
   if (m_node_config.lidar_type == 1) {
     m_pc2_sub = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "lidar", rclcpp::QoS(rclcpp::KeepLast(100)),
+      m_node_config.lidar_topic, lidar_qos,
       std::bind(&PointLIONode::pc2CB, this, std::placeholders::_1), sensor_options);
     RCLCPP_INFO(
       this->get_logger(), "[PointLIONode][%s] Lidar input: sensor_msgs/PointCloud2 (%s)", __func__,
       m_pc2_sub->get_topic_name());
   } else {
     m_lidar_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-      "lidar", rclcpp::QoS(rclcpp::KeepLast(100)),
+      m_node_config.lidar_topic, lidar_qos,
       std::bind(&PointLIONode::lidarCB, this, std::placeholders::_1), sensor_options);
     RCLCPP_INFO(
       this->get_logger(), "[PointLIONode][%s] Lidar input: livox_ros_driver2/CustomMsg (%s)",
@@ -128,6 +139,9 @@ void PointLIONode::loadParameters()
   m_node_config.print_time_cost =
     this->declare_parameter("print_time_cost", m_node_config.print_time_cost);
   m_node_config.lidar_type = this->declare_parameter("lidar_type", m_node_config.lidar_type);
+  // Input topics; NodeConfig has why they are parameters
+  m_node_config.lidar_topic = this->declare_parameter("lidar_topic", m_node_config.lidar_topic);
+  m_node_config.imu_topic = this->declare_parameter("imu_topic", m_node_config.imu_topic);
   m_node_config.imu_acc_scale =
     this->declare_parameter("imu_acc_scale", m_node_config.imu_acc_scale);
   // The backlog guard; NodeConfig has the argument.

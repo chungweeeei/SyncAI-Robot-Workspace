@@ -22,9 +22,10 @@
 # 2026-09; tuning notes below predate the move.)
 #
 # Two more things are not here, on purpose:
-#   * input topics — handled by launch remappings onto
-#     /<robot_id>/livox/{lidar,imu}, since a relative name would resolve inside
-#     the node's own /<robot_id>/pointlio namespace.
+#   * the Livox input topics, /<robot_id>/livox/{lidar,imu} -- they carry the
+#     robot_id, so pointlio.launch.py sets lidar_topic / imu_topic itself,
+#     before the model's file (where a robot with other sensors names its own).
+#     The relative fallbacks below are for running the node bare.
 #   * the robot_id-prefixed frame names — TF frame ids are not namespaced by
 #     ROS, so pointlio.launch.py overrides body_frame/world_frame explicitly.
 #     The values below are only the fallbacks for running the node bare.
@@ -36,6 +37,12 @@
     # the code defaults still are.
     world_frame: "pointlio_odom"
     body_frame: "pointlio_body"
+
+    # Input topics (2026-11-24; NodeConfig in pointlio_node.hpp has the
+    # argument). Fallbacks: the launch sets the Livox's topics, and a model's
+    # file may set its own.
+    lidar_topic: "lidar"
+    imu_topic: "imu"
     print_time_cost: false
 
     # Scan backlog guard (2026-10-28; NodeConfig in pointlio_node.hpp has the

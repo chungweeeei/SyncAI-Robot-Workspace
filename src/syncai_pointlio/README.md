@@ -37,14 +37,25 @@ had to. `map_builder/` is the ported math (`point_ekf`, `imu_initializer`,
 
 | Input | Kind | Source | Used for |
 |---|---|---|---|
-| `lidar` → `/<robot_id>/livox/lidar` | `livox_ros_driver2/CustomMsg` (`lidar_type: 0`) or `sensor_msgs/PointCloud2` (`lidar_type: 1`), depth 100 | `syncai_bringup`'s Livox driver | The scan. `CustomMsg` carries per-point time in `curvature`; a `PointCloud2` does not, so the update degrades to one batch per scan (warned once). |
-| `imu` → `/<robot_id>/livox/imu` | `sensor_msgs/Imu`, depth 2000 | the lidar's built-in IMU | Fused as a **measurement** (output model). Accelerations are multiplied by `imu_acc_scale` (Livox reports g-units). |
+| `lidar_topic`: `/<robot_id>/livox/lidar` (G23), `/LIDAR/POINTS_UDP` (M20) | `livox_ros_driver2/CustomMsg` (`lidar_type: 0`) or `sensor_msgs/PointCloud2` (`lidar_type: 1`), depth 100 | `syncai_bringup`'s Livox driver | The scan. `CustomMsg` carries per-point time in `curvature`; a `PointCloud2` does not, so the update degrades to one batch per scan (warned once). |
+| `imu_topic`: `/<robot_id>/livox/imu` (G23), `/IMU` (M20) | `sensor_msgs/Imu`, depth 2000 | the lidar's built-in IMU | Fused as a **measurement** (output model). Accelerations are multiplied by `imu_acc_scale` (Livox reports g-units). |
 
-The two topics are **remapped by the launch file**, not parameters: the node
-subscribes to the relative names `lidar` / `imu`, which would otherwise resolve
-inside its own `/<robot_id>/pointlio` namespace. `ros2 node info` shows the
-resolved names, and the node logs them at startup so a wrong remap shows up as
-a wrong name rather than as "no data".
+The two topics are **parameters** since 2026-11-24, `lidar_topic` /
+`imu_topic`; the launch's remappings of the relative `lidar` / `imu` did it
+before. The launch sets the Livox's, `/<robot_id>/livox/{lidar,imu}` (they
+carry the robot_id, which a params file cannot), before the model's file, so a
+robot with other sensors names its own there: the M20's `m20.yaml` sets the
+vendor's absolute `/LIDAR/POINTS_UDP` and `/IMU`, published with no namespace.
+**The lidar reader is best effort for every robot** (2026-11-24): a reliable
+reader never matches a best-effort writer and receives nothing, with no error
+anywhere, and the M20's cloud is best effort. Against the G23's reliable Livox
+writer it means a fragment lost on a busy host costs that scan instead of a
+resend; the filter predicts through it on the IMU, and the health log's scans
+per second (10 at the Livox's rate) is where to look for it. The IMU reader
+stays reliable. The node logs the resolved
+names and the reliability at startup, so a wrong one shows up as a wrong name
+rather than as "no data". The relative `lidar` / `imu` in the factory file are
+the fallbacks for running the node bare.
 
 **Ingest has its own thread, and the queues are deep (2026-10).** Until then
 the node spun single-threaded, so neither subscription callback ran while
@@ -372,9 +383,11 @@ first guesses, marked). Every model's file must set all
 seven: with none in the factory file, a key left out runs on the C++ default.
 `config/models/model_keys.yaml` lists them (`model_keys`) and its test checks.
 A model file may also override a shared key (the M20's `lidar_filter_num` 20,
-for a cloud 3–5× a MID360's). **The M20 does not run yet**: the launch remaps
-the inputs onto `/<robot_id>/livox/{lidar,imu}` for every model, and the M20's
-are `/LIDAR/POINTS_UDP` and `/IMU`. A model with no file fails the launch
+for a cloud 3–5× a MID360's) and the input topics (above). **On the M20**
+(robot01, 2026-11-24, stationary, 25 s): 10 scans/s matched at 97–99 %
+effective with a 1.4 cm residual, `|a|` 9.8, `lio_odom` at 10 Hz drifting under
+1 cm — each scan still one batch update, since the `PointCloud2` reader does not
+read the cloud's per-point `timestamp` yet. A model with no file fails the launch
 (`config/models/README.md`); `model_params_file:=` points at another file.
 
 | Parameter | Default (YAML) | Launch value | Notes |
@@ -433,7 +446,7 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 
 | Log line | Meaning |
 |---|---|
-| `Lidar input: livox_ros_driver2/CustomMsg (/robot01/livox/lidar)` | The remap resolved; if this says `/robot01/pointlio/lidar` the launch was bypassed |
+| `Lidar input: livox_ros_driver2/CustomMsg (/robot01/livox/lidar)` | The launch's `lidar_topic` reached the node; if this says `/robot01/pointlio/lidar` the launch was bypassed (the bare fallback). The M20's reads `sensor_msgs/PointCloud2 (/LIDAR/POINTS_UDP)` |
 | `IMU Message is out of order` / `Lidar Message is out of order` | Buffer flushed after a backwards stamp (bag loop, driver restart) |
 | `lio health: 10 scans in 1.0 s \| pts … near … eff …` | The health log, once a second (see "The health log"); a WARN with ` -- <reasons>` when one holds |
 | `lio health: no scan processed in the last 1.0 s (status …, lidar buffer N scans, IMU buffer M samples)` | Mapping stopped getting scans: lidar 0 = none arriving, lidar > 0 = the IMU not covering them. Once, until `lio health: scans processed again` |
