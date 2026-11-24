@@ -167,9 +167,9 @@ already ships Rust bindings.
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver |
 | `small_gicp` | Pinned to upstream tag `v1.0.1`. Unmodified. The registration backend of `syncai_localizer` and `syncai_mapping`'s loop verification. Ships its own `package.xml` with `<build_type>cmake</build_type>`, so colcon builds it as a plain CMake package found by `find_package(small_gicp)`. |
 | `vizionsdk-ros2` | TechNexion camera wrapper. **Nothing starts it**; it is still imported and built. Needs the closed-source VizionSDK `.deb`, which the `Dockerfile` downloads (`VIZIONSDK_VERSION`); there is no rosdep key for it. |
-| `sdk_deploy` | DEEP Robotics' public SDK repo (BSD 3-Clause), pinned to a main SHA, imported for **`drdds` alone**: the message types of the M20's own stack (`/JOINTS_DATA` is `drdds/msg/JointsData`), which decode the robot's live topics. Nothing in the stack uses it yet. Its six other packages (the vendor's RL deployment nodes, linked against the onnxruntime / legged-SDK `.so` files it carries) get a `COLCON_IGNORE` from `scripts/build.sh` and `scripts/sync.sh` after every import, as livox's `package.xml` is restored — a by-hand `vcs import` leaves colcon building all seven until one runs. The checkout is ~810 MB, which vcstool cannot narrow. |
+| `sdk_deploy` | DEEP Robotics' public SDK repo (BSD 3-Clause), pinned to a main SHA. **Not vcstool's**: it is in `third-party-sparse.repos` and arrives through `scripts/sparse_import.sh` (run by `scripts/sync.sh` and CI) as a partial clone with a sparse checkout of two of its seven packages, ~190 MB of ~810 MB: **`drdds`**, built — the message types of the M20's own stack (`/JOINTS_DATA` is `drdds/msg/JointsData`), which decode the robot's live topics, used by nothing yet — and **`M20_sdk_deploy`**, the vendor's RL deployment node, checked out but given a `COLCON_IGNORE` (it builds only with `-DBUILD_PLATFORM=arm`, for `colcon.meta` when it moves to `build:`). Every package directory there that the file's `build:` does not list gets one; `scripts/build.sh` re-applies them (`--markers-only`) before every build, so a whole checkout made by hand builds `drdds` alone too. |
 
-All seven are checked out by vcstool from `third-party.repos`; bumping one is a
+All but `sdk_deploy` are checked out by vcstool from `third-party.repos`; bumping one is a
 one-line `version:` edit there plus `vcs import --recursive < third-party.repos --force`.
 The import target is the workspace root, not `src`: the keys already carry
 `src/`. The FAST-LIO2 fork once imported at `src/third-party/FASTLIO2_ROS2` was
@@ -749,8 +749,11 @@ something to verify or edit here.
   checkout on its pinned branch — a plain pull never touches them; a checkout
   on another branch is fetched only — and a checkout of every
   `third-party.repos` pin, with submodules and the livox `package.xml`; a
-  third-party checkout on a branch away from its pin is left alone),
-  `build.sh` (in-image, see Build),
+  third-party checkout on a branch away from its pin is left alone; then
+  `sparse_import.sh`), `sparse_import.sh` (git only: the partial, sparse
+  clones of `third-party-sparse.repos` at their pins, and a `COLCON_IGNORE` in
+  every package there its `build:` does not list; `--markers-only` is what
+  `build.sh` runs), `build.sh` (in-image, see Build),
   `urdf2glb.py` (see "Out of tree"), `calibration/` (camera intrinsics and
   lidar-camera extrinsic; `collect_board.py` / `snapshot.py` need rclpy, the
   rest only numpy + OpenCV + PyYAML and also run on the host), and `release/`

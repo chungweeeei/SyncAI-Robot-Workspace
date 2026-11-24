@@ -1,0 +1,53 @@
+# Third-party repos of which only some directories are wanted, materialised
+# in src/ by scripts/sparse_import.sh -- NOT by vcstool, which can only clone a
+# repository whole. `vcs import < third-party-sparse.repos` would fetch every
+# directory and is not how these arrive; scripts/sync.sh (host), CI, and
+# scripts/build.sh's check all go through the script.
+#
+#   scripts/sparse_import.sh                 # clone / move to the pin, then the markers
+#   scripts/sparse_import.sh --markers-only  # COLCON_IGNOREs only (build.sh runs this)
+#
+# Same shape as third-party.repos, plus two keys, each a space-separated list
+# of directories relative to the checkout, on one line (the script reads this
+# file with awk, as sync.sh reads the others):
+#
+#   sparse: the directories checked out. A partial clone (--filter=blob:none)
+#           with a cone-mode sparse checkout: only these directories' files
+#           (and the repo's top-level files) are downloaded and written.
+#   build:  of those, the packages colcon builds. Every other directory in
+#           the checkout with a package.xml gets a COLCON_IGNORE (untracked in
+#           that checkout) -- also in a checkout someone made whole by hand,
+#           so a stray `vcs import` cannot start building the rest.
+#
+# `version` is a commit SHA, as third-party.repos pins: the checkout is
+# detached there, and a pin bump is a one-line commit here. The checkout
+# directories are gitignored with the rest of src/third-party/.
+repositories:
+  src/third-party/sdk_deploy:
+    # DEEP Robotics' public SDK repo (BSD 3-Clause), main's HEAD as of
+    # 2026-11-24; no tags upstream. Wanted for two of its seven packages:
+    #
+    # - src/drdds, built: the message types of the Lynx M20's own stack, what
+    #   its other computers publish on DDS domain 0 (/JOINTS_DATA is
+    #   drdds/msg/JointsData). JointsData / JointData / MetaType are identical
+    #   to those in the integrator's M20 driver sources (49 messages, no
+    #   licence, not used), and the build decodes the robot's live
+    #   /JOINTS_DATA. Check that again after a pin bump: Humble's RMW matches
+    #   types by name only, so a changed definition decodes as garbage, not as
+    #   an error.
+    # - src/M20_sdk_deploy, checked out but NOT built (COLCON_IGNORE): the
+    #   vendor's RL deployment node for the M20 (rl_deploy), kept at hand. It
+    #   does build in the dev image (2026-11-24, ~80 s), but only with
+    #   -DBUILD_PLATFORM=arm: its CMakeLists defaults to x86 and would link
+    #   the x86 onnxruntime it carries. Add that flag to colcon.meta
+    #   ("m20_sdk_deploy") when it moves to `build:`; rl_deploy's RPATH points
+    #   into this checkout's third_party/onnxruntime/arm/lib.
+    #
+    # Not fetched: Lite3_sdk_deploy, lite3_sdk_service, lite3_transfer,
+    # M20S_sdk_deploy, S10_sdk_deploy, img/ -- ~620 MB of other robots'
+    # onnxruntime builds, SDK .so files, gamepad .apk and meshes.
+    type: git
+    url: https://github.com/DeepRoboticsLab/sdk_deploy.git
+    version: 20279073bc43522aa06b0abf611bb2daaa53d87d
+    sparse: src/drdds src/M20_sdk_deploy
+    build: src/drdds

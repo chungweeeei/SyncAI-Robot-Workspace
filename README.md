@@ -96,7 +96,7 @@ over DDS; the infra it needs (postgres, temporal) stays in this repo's
 
 ### Third-party (`src/third-party/`)
 
-All seven are checked out by vcstool from `third-party.repos` (they were git
+Six are checked out by vcstool from `third-party.repos` (they were git
 submodules until `fca520b`); nothing is vendored there any more.
 
 | Package | Notes |
@@ -106,7 +106,7 @@ submodules until `fca520b`); nothing is vendored there any more.
 | `livox_ros_driver2`, `Livox-SDK2` | MID360 / MID360s driver. `colcon.meta` passes the cmake flags the driver needs; see "Build" |
 | `small_gicp` | Pinned to `v1.0.1`, unmodified; the registration backend of `syncai_localizer` and of `syncai_mapping`'s loop closure |
 | `vizionsdk-ros2` | TechNexion camera wrapper; needs the VizionSDK `.deb` the `Dockerfile` installs |
-| `sdk_deploy` | DEEP Robotics' SDK repo, imported for its `drdds` package (the M20's message types) only; `scripts/build.sh` puts a `COLCON_IGNORE` in its six other packages |
+| `sdk_deploy` | DEEP Robotics' SDK repo, in `third-party-sparse.repos`, not `third-party.repos`: `scripts/sparse_import.sh` clones only `src/drdds` (the M20's message types, built) and `src/M20_sdk_deploy` (checked out, `COLCON_IGNORE`), since vcstool clones whole |
 
 The FAST-LIO2 fork that used to be imported at `src/third-party/FASTLIO2_ROS2`
 is gone: its packages were ported in-tree as `syncai_pointlio`,
@@ -129,7 +129,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ```
 .
 ├── src/                          # colcon packages (see table above)
-│   └── third-party/              # seven upstream repos, checked out by vcstool
+│   └── third-party/              # seven upstream repos: six by vcstool, sdk_deploy by scripts/sparse_import.sh
 ├── config/
 │   ├── system.ini                # tracked but EMPTY; the instance INI is bind-mounted over it
 │   ├── instances/robot.ini       # the robot's identity: [system] robot_id + robot_model, [map], [initial_pose], [sensor.lidar]
@@ -153,6 +153,7 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ├── colcon.meta                   # per-package cmake args (livox_ros_driver2)
 ├── ruff.toml                     # Python lint config (syncai_sys_manager, scripts/)
 ├── third-party.repos             # vcstool: src/third-party/ — upstream, pinned
+├── third-party-sparse.repos      # src/third-party/ repos cloned in part, by scripts/sparse_import.sh
 ├── dependencies.repos            # vcstool: our own packages in their own repos (src/syncai_common, _mapping, _driver_manager, _robot_state, _lio_bridge, _camera_feeder)
 ├── .devcontainer/                # VS Code "Reopen in Container"
 └── .env                          # compose env + secrets (gitignored — never commit)
@@ -165,10 +166,11 @@ and regenerate the livox `package.xml` after every import — see "Build").
 ```bash
 sudo apt update && sudo apt install python3-vcstool -y
 vcs import --recursive < third-party.repos     # src/third-party/ — upstream code, pinned
+scripts/sparse_import.sh                       # src/third-party/sdk_deploy — only drdds + M20_sdk_deploy (vcstool clones whole)
 vcs import < dependencies.repos    # src/syncai_{common,mapping,driver_manager,robot_state,lio_bridge,camera_feeder} — our own, in their own repos
 ```
 
-Both are required before the first `colcon build`. The six `src/syncai_*`
+All three are required before the first `colcon build`. The six `src/syncai_*`
 directories `dependencies.repos` imports are gitignored: edit them in their own
 checkouts, because the next `--force` import overwrites whatever is in them.
 

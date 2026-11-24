@@ -126,17 +126,10 @@ if [ -f "$livox/package_ROS2.xml" ] && ! cmp -s "$livox/package_ROS2.xml" "$livo
     cp -f "$livox/package_ROS2.xml" "$livox/package.xml"
 fi
 
-# sdk_deploy is imported for its src/drdds alone; every other package in it
-# (the vendor's RL deployment nodes, linked against .so files that repo ships)
-# gets a COLCON_IGNORE, as scripts/build.sh also does before building.
-sdk=src/third-party/sdk_deploy
-if [ -d "$sdk" ]; then
-    while IFS= read -r pkg_xml; do
-        pkg_dir=$(dirname "$pkg_xml")
-        [ "$pkg_dir" = "$sdk/src/drdds" ] && continue
-        [ -f "$pkg_dir/COLCON_IGNORE" ] || { echo "== $pkg_dir: COLCON_IGNORE"; touch "$pkg_dir/COLCON_IGNORE"; }
-    done < <(find "$sdk" -name .git -prune -o -name package.xml -print)
-fi
+# third-party-sparse.repos: the repos of which only some directories are
+# wanted, cloned in part and moved to their pins by their own script (vcstool
+# cannot), which also writes their COLCON_IGNOREs.
+scripts/sparse_import.sh || failed+=(third-party-sparse.repos)
 
 # Where every checkout ended up -- the record `vcs export --exact` gives CI.
 # A detached third-party checkout reads as the tag it is on, or its SHA.
@@ -147,7 +140,7 @@ while read -r path _ _; do
         || git -C "$path" rev-parse --short HEAD)
     printf '%-48s %-14s %s\n' "$path" "$ref" \
         "$(git -C "$path" log -1 --format='%h %s' 2>/dev/null | cut -c1-60)"
-done < <(entries dependencies.repos; entries third-party.repos)
+done < <(entries dependencies.repos; entries third-party.repos; entries third-party-sparse.repos)
 
 if [ ${#failed[@]} -ne 0 ]; then
     echo "failed: ${failed[*]}"

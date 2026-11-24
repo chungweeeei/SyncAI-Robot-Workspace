@@ -197,6 +197,8 @@ jobs:
       # is imported --recursive because direct_visual_lidar_calibration keeps
       # Sophus / nlohmann-json / nanoflann as git submodules; without it those
       # directories are empty and its configure fails on missing headers.
+      # third-party-sparse.repos is not vcstool's (it clones whole): its
+      # script makes the partial, sparse clones and their COLCON_IGNOREs.
       - name: Import vcs checkouts
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
@@ -204,6 +206,7 @@ jobs:
               set -e
               vcs import --recursive --input third-party.repos
               vcs import --input dependencies.repos
+              scripts/sparse_import.sh
               vcs export --exact src'
 
       # The key is unique per commit (cache keys are immutable), so it never
