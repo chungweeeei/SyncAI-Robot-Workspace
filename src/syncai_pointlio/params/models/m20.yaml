@@ -13,8 +13,8 @@
 
 /**/pointlio_node:
   ros__parameters:
-    # The vendor's topics, over the /<robot_id>/livox/{lidar,imu} the launch
-    # sets: absolute, since the vendor publishes them with no namespace (a
+    # The vendor's topics, in place of the /<robot_id>/livox/{lidar,imu} the
+    # launch sets for a model that names none: absolute, since the vendor publishes them with no namespace (a
     # relative name would resolve under /<robot_id>/pointlio). The cloud's
     # writer is best effort (2026-11-24), which is why the node's lidar reader
     # is best effort for every robot (pointlio_node.cpp has the argument);
@@ -65,7 +65,30 @@
     t_il: [-0.0632, 0.0268, -0.0435]
 
     # Override of a shared key: the merged cloud is 57-93 k points a scan, 3-5x
-    # a MID360's, so the G23's 6 would feed the estimator 10-15 k a scan. 20
-    # brings it near the G23's ~3-4 k. A first guess for the Jetson's CPU, not a
-    # measured one; the health log's time cost says whether it fits.
+    # a MID360's. Measured on robot01, 2026-11-24, driving at 0.5-0.9 m/s with
+    # all 12 cores online:
+    #
+    #   filter  body_cloud/scan  pointlio_node CPU  skipped scans  eff / res
+    #   20      ~3-5 k           60-82 % of a core  none           86-87 % / 3.0 cm
+    #   6       16.6 k           100-123 %          7 in 10 s      85-89 % / 2.9-3.7 cm
+    #
+    # The estimator runs on one thread, so the extra cores do not help: at the
+    # G23's 6 it fell behind and the backlog guard skipped scans, for no better
+    # matching (what limits that while moving is the missing motion
+    # compensation, not the point count). 20 also gives body_cloud the G23's
+    # density (a MID360's ~20 k / 6 = ~3.3 k), which is what its consumers --
+    # the localizer's GICP, the terrain layer, the planner's overlay -- are
+    # sized for. Try 10-15 against the skipped-scan WARN if it ever needs to
+    # be denser.
     lidar_filter_num: 20
+
+    # body_cloud_dense's decimation, for mapping only: syncai_mapping's pgo
+    # maps from it, and it is published only while subscribed, so the
+    # estimator above never sees it. The shared 2 would hand pgo 28-46 k points
+    # a scan on the M20, to be deskewed and published in the same pass as the
+    # estimator's -- more than the 16.6 k at which lidar_filter_num 6 already
+    # skipped scans. 5 gives 11-19 k, the G23's ~10 k order (a MID360's ~20 k /
+    # 2), and divides 20, so body_cloud's points stay a subset of the dense
+    # cloud's (the node warns otherwise; 6 would not divide). FIRST GUESS:
+    # watch the backlog WARN while mapping.
+    dense_filter_num: 5

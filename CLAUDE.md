@@ -292,8 +292,11 @@ config/params/<robot_id>/<node>.yaml        the runtime overlay (controller / pl
 - A params file is not everything that differs between models: `charge.xml`'s
   motion keys, the session specs' windows, the C++ defaults, compose's devices
   and the out-of-tree packages' params are the G23's for every robot today —
-  but `syncai_driver_manager`'s, which has the same per-model layer in its
-  package (and is not in `model_keys.yaml`).
+  but `syncai_driver_manager`'s, `syncai_mapping`'s (`map_clean_min_range`,
+  `map_clean_lidar_height`: 0.60 m on the M20, measured) and
+  `syncai_robot_state`'s (its six input topics, an empty one not subscribed, and
+  `lidar_frame`), which have the same per-model layer in their packages (and
+  are not in `model_keys.yaml`).
   `config/models/README.md` has the list and the "change together" table.
 
 ## Build

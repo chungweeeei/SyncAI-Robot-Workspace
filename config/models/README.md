@@ -111,7 +111,7 @@ files state and no code checks.
 
 | Rule | Keys |
 |---|---|
-| One lidar height | `controller_server.lidar_height`, `local_costmap.terrain_layer.sensor_height`, `planner_server.Octo3D.lidar_height`, `localizer_node.lidar_height`, `task_runner.lidar_height` — and, outside this directory, `syncai_mapping`'s `map_clean_lidar_height`, six C++ defaults and `scripts/map_repair/octomap_bt.py` |
+| One lidar height | `controller_server.lidar_height`, `local_costmap.terrain_layer.sensor_height`, `planner_server.Octo3D.lidar_height`, `localizer_node.lidar_height`, `task_runner.lidar_height` — and, outside this directory, `syncai_mapping`'s `map_clean_lidar_height` (its own `params/models/<robot_model>.yaml`: 0.481 G23, 0.60 M20), six C++ defaults and `scripts/map_repair/octomap_bt.py` |
 | One robot radius | `Octo3D.robot_radius`, `terrain_layer.robot_radius`, `Octo3D.keepout.block_radius` (and the footprint's padded inscribed radius) |
 | One stair policy | `FollowPath.*` and `FollowPathRPP3D.*`: `use_stair_mode`, `stair_policy_mode`, `flat_policy_mode` |
 | Footprint | `local_costmap.footprint` ↔ `inflation_layer.inflation_radius` (≥ circumscribed radius), `Octo3D.narrow_max_width` (the diagonal), `Octo3D.stair_flights_turn_radius` (circumscribed radius), `Octo3D.dynamic.block_radius` |
@@ -125,16 +125,29 @@ files state and no code checks.
 A params file cannot carry everything that differs between models. Today these
 are still the G23's for every robot: `charge.xml`'s motion keys, the windows of
 `config/sessions/*.yaml`, the C++ defaults behind the params, the devices in
-`docker-compose.robots.yml`, and three out-of-tree packages' own params
-(`syncai_robot_state`, `syncai_lio_bridge`, `syncai_camera_feeder`) plus
-`syncai_mapping`'s — each of those repos takes the same
-`params/models/<robot_model>.yaml` layer in its package when it needs one.
+`docker-compose.robots.yml`, and two out-of-tree packages' own params
+(`syncai_lio_bridge`, `syncai_camera_feeder`) — each of those repos takes the
+same `params/models/<robot_model>.yaml` layer in its package when it needs one.
 
-`syncai_driver_manager` already has it (2026-11, the layout these six launches
-followed): `params/models/g23.yaml` and `m20.yaml` after its shared params
-file, and it refuses a model with no file, as these launches do. Being out of
-tree, it is not in `model_keys.yaml`, and `test_model_overlays.py` does not
-see it.
+Three out-of-tree packages already have it, `params/models/g23.yaml` and
+`m20.yaml` after their shared params file, refusing a model with no file as
+these launches do:
+
+- `syncai_driver_manager` (2026-11, the layout these six launches followed);
+- `syncai_mapping` (2026-11-24, branch `feature/m20` of
+  SyncAI-Robot-3D-Mapping): `map_clean_min_range` and `map_clean_lidar_height`,
+  which its launch also refuses a model's file for leaving out. The M20's
+  lidar height is 0.60 m, measured on robot01 (the floor 0.55–0.58 m below the
+  vendor's merged cloud, the IMU 0.0435 m above it): the value the M20's nav
+  params must carry as their `lidar_height` when they are written.
+- `syncai_robot_state` (2026-11-24, branch `feature/m20` of SyncAI-Robot-State):
+  its six input topics (an empty one is not subscribed — the M20's `mode`) and
+  `lidar_frame` (G23 `lidar_top_imu`, M20 `lidar_link`). On the M20 only
+  `wifi_status` and `safety_locked` have a publisher today; battery, joint and
+  gait state are the vendor's drdds types, which it does not read.
+
+Being out of tree, none is in `model_keys.yaml`, and `test_model_overlays.py`
+does not see them.
 
 ## DDS
 

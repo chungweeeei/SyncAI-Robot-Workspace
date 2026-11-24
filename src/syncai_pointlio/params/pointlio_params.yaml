@@ -24,7 +24,7 @@
 # Two more things are not here, on purpose:
 #   * the Livox input topics, /<robot_id>/livox/{lidar,imu} -- they carry the
 #     robot_id, so pointlio.launch.py sets lidar_topic / imu_topic itself,
-#     before the model's file (where a robot with other sensors names its own).
+#     for each one the model's file does not name (the M20's names its own).
 #     The relative fallbacks below are for running the node bare.
 #   * the robot_id-prefixed frame names — TF frame ids are not namespaced by
 #     ROS, so pointlio.launch.py overrides body_frame/world_frame explicitly.

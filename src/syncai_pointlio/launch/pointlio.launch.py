@@ -26,21 +26,21 @@
 # a /tmp file, because the node parsed that YAML itself with yaml-cpp and knew
 # nothing about ROS parameters.
 #
-# The parameters, in order, a later one winning key by key:
+# The parameters:
 #   1. the installed params/pointlio_params.yaml (what every model shares);
-#   2. the Livox input topics, /<robot_id>/livox/{lidar,imu}, as the node's
-#      lidar_topic / imu_topic parameters -- computed here, because they carry
-#      the robot_id and a params file cannot. Remappings of the relative
-#      "lidar" / "imu" did this until 2026-11-24. Unlike a remapping, a
-#      parameter is overridden by the next layer, and `ros2 param get` shows
-#      the topic the node actually reads;
-#   3. the robot model's file, params/models/<robot_model>.yaml in this package:
+#   2. the robot model's file, params/models/<robot_model>.yaml in this package:
 #      its sensors (lidar type, IMU units and range, extrinsic), and for a
-#      robot whose sensors are not a Livox of ours its own topics (the M20's
-#      absolute /LIDAR/POINTS_UDP and /IMU), over (2). A model
-#      with no such file fails the launch rather than run on another robot's
-#      values; the helpers are copied from controller_server.launch.py, not
-#      shared;
+#      robot whose sensors are not a Livox of ours its own input topics (the
+#      M20's absolute /LIDAR/POINTS_UDP and /IMU). A model with no such file
+#      fails the launch rather than run on another robot's values; the helpers
+#      are copied from controller_server.launch.py, not shared;
+#   3. the Livox input topics, /<robot_id>/livox/{lidar,imu}, as the node's
+#      lidar_topic / imu_topic parameters -- computed here, because they carry
+#      the robot_id and a params file cannot -- for whichever the model's file
+#      leaves out. Remappings of the relative "lidar" / "imu" did this until
+#      2026-11-24; `ros2 param get` now shows the topic the node reads. Only
+#      the keys the model does not set, because a dict here would override the
+#      model's file wherever it sat in the list (launch_setup has why);
 #   4. the frame names, prefixed by hand since TF frame ids are not namespaced
 #      by ROS (same as the nav params).
 
@@ -129,6 +129,20 @@ def model_params_path(pkg_share: str, model: str) -> str:
     return os.path.join(pkg_share, "params", "models", f"{model}.yaml")
 
 
+def model_param_keys(path: str) -> set:
+    """The top-level parameter names the model's file sets for pointlio_node.
+
+    Read after model_params(), which has already refused a missing or
+    unreadable file, so a failure here is not expected and is not caught.
+    """
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    keys = set()
+    for section in data.values():
+        keys.update((section or {}).get("ros__parameters") or {})
+    return keys
+
+
 def model_params(path: str, model: str):
     """Return the robot model's params file for this launch, or None when it
     holds no key.
@@ -187,19 +201,38 @@ def launch_setup(context, *args, **kwargs):
     model_overlay = model_params(model_path, robot_model)
 
     # The Livox driver's topics (syncai_bringup, in the robot_id namespace),
-    # before the model's file so that a robot with other sensors names its own
-    # there. A single set of names covers both the real robot and bag replay:
-    # every rosbag is now recorded with the robot_id prefix the driver
+    # for each input the model's file does not name itself (the M20's names
+    # the vendor's). A single set of names covers both the real robot and bag
+    # replay: every rosbag is now recorded with the robot_id prefix the driver
     # publishes, so the `bag_topics` argument that used to strip the prefix is
     # gone. Bags predating the prefix need `ros2 bag play --remap` onto these.
+    #
+    # Left out rather than layered under the model's file: the order of the
+    # files does NOT decide between them. A dict here becomes a params file
+    # keyed `/**`, and rclcpp merges every file first, then applies the node
+    # keys in the order each first appeared -- `/**/pointlio_node` (the factory
+    # file's, the model's merged into it) before `/**` -- so the dict won over
+    # m20.yaml wherever it sat in the list (robot01, 2026-11-24: subscribed to
+    # /robot01/livox/lidar and received nothing). The frame overrides below are
+    # dicts for the same reason they win: nothing else sets those keys.
+    model_keys = model_param_keys(model_path)
     livox_topics = {
-        "lidar_topic": f"/{robot_id}/livox/lidar",
-        "imu_topic": f"/{robot_id}/livox/imu",
+        key: topic
+        for key, topic in (
+            ("lidar_topic", f"/{robot_id}/livox/lidar"),
+            ("imu_topic", f"/{robot_id}/livox/imu"),
+        )
+        if key not in model_keys
     }
+    for key in ("lidar_topic", "imu_topic"):
+        if key in model_keys:
+            logger.info(f"robot_model '{robot_model}': {key} from {model_path}")
 
-    parameters = [params_file, livox_topics]
+    parameters = [params_file]
     if model_overlay:
         parameters.append(model_overlay)
+    if livox_topics:
+        parameters.append(livox_topics)
 
     # Standalone frame names, NOT <robot_id>/laser -> <robot_id>/base_link,
     # which is what they used to be. base_link is already claimed as a TF child
@@ -233,8 +266,8 @@ def launch_setup(context, *args, **kwargs):
             executable="pointlio_node",
             name="pointlio_node",
             output="screen",
-            # installed params, the Livox topics, the robot model's, then the
-            # frames -- later entries win
+            # installed params, the robot model's, the Livox topics it does not
+            # name, then the frames
             parameters=[*parameters, frame_overrides],
         ),
     ]
