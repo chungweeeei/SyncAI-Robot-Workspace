@@ -177,12 +177,15 @@ FALLBACK_LIDAR_MODEL = "mid360"
 
 # The URDF robot_state_publisher reads for each [system] robot_model, under
 # description/. A table rather than "<MODEL>.urdf" by convention, so that a
-# model is listed here only once its URDF carries the three links the stack
-# hangs things on -- lidar_top (the driver's cloud), lidar_top_imu (Point-LIO's
-# body) and camera_optical_frame (the feeder's images). M20.urdf does not yet
-# (its lidar mount is not measured), and is listed anyway: the body tree is
-# what the mount will be measured against, and a missing lidar_top shows as an
-# unparented cloud, not as another robot's legs.
+# model is listed here only once its URDF carries the links the stack hangs
+# things on: the frame its cloud is stamped with, the IMU Point-LIO's body
+# frame is, and the camera's. They are named per model, not by convention --
+# the G23's lidar_top / lidar_top_imu / camera_optical_frame, the M20's
+# lidar_link / imu (its cameras are the vendor's, and nothing of ours reads
+# them yet) -- and the two consumers that close a TF chain on the IMU's link
+# name it in their own per-model params (syncai_lio_bridge's and
+# syncai_robot_state's lidar_frame). Until 2026-11-25 the bridge's was
+# lidar_top_imu for every robot, and on an M20 it published no odometry.
 MODEL_URDF = {"g23": "G23.urdf", "m20": "M20.urdf"}
 
 # The node that publishes <robot_id>/joint_states for a model, as (package,

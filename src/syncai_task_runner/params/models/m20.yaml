@@ -1,0 +1,16 @@
+# The Lynx M20's body, over src/syncai_task_runner/params/task_runner_params.yaml:
+# loaded after it by task_runner.launch.py when the INI's [system] robot_model
+# is m20 (config/models/README.md has the layering).
+#
+# FIRST VALUES (2026-11-25). The trees are not per model: move.xml and
+# patrol.xml name no gait and run as they are; charge.xml's motion keys and
+# dock geometry are the G23's and must not be sent to an M20.
+
+/**/task_runner:
+  ros__parameters:
+    # Point-LIO's body frame above the ground, m: the navigator's ground
+    # height (body_frame's z minus this) decides which of a patrol's waypoints
+    # are on the robot's floor. The M20's IMU, measured standing on robot01,
+    # 2026-11-24. One number in five files (config/models/model_keys.yaml,
+    # `equal`).
+    lidar_height: 0.60

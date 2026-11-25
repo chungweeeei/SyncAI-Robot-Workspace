@@ -1,0 +1,87 @@
+# The Lynx M20's body, over
+# src/syncai_global_planner/params/planner_server_params.yaml: loaded after it
+# by planner_server.launch.py when the INI's [system] robot_model is m20
+# (config/models/README.md has the layering).
+#
+# FIRST VALUES (2026-11-25), for the first navigation test on flat ground.
+#
+# The sizes come from M20.urdf posed at robot01's standing joint reading
+# (syncai_controller's params/models/m20.yaml has the extents and how they
+# were read): half-length 0.41, half-width 0.24, the shell's top 0.64-0.68 m
+# above the ground. Padded as the factory file pads the G23's for each rule.
+#
+# Every surface-map value is baked in at startup, and a map is judged with
+# them: use a map the M20 made (its poses.txt is read with lidar_height, and
+# syncai_mapping cleaned it with the same 0.60).
+#
+# No /**/global_costmap block: the M20 changes nothing there, and a block with
+# no key beside one that has keys would be handed to rcl as it is (the launch
+# only withholds a file that holds no key at all).
+
+/**/planner_server:
+  ros__parameters:
+    Octo3D:
+      # Point-LIO's body frame (the M20's IMU) above the ground, m: measured
+      # standing on robot01, 2026-11-24, and what syncai_mapping's m20.yaml
+      # ran clean_map with (map_clean_lidar_height). One number in five files
+      # (config/models/model_keys.yaml, `equal`).
+      lidar_height: 0.60
+
+      # The padded footprint's inscribed radius: half-width 0.24 + 0.01, as
+      # terrain_layer.robot_radius and keepout.block_radius below. The G23's
+      # value, because the M20 is about as wide; its extra length is in the
+      # three footprint figures further down.
+      robot_radius: 0.25
+      # Free voxels needed above a surface for the body: the shell's top is
+      # 0.64-0.68 m up (0.085 above base_link, which stands 0.55-0.59 above
+      # the ground), so 7 cells would leave 2-6 cm and 8 leave 12-16. Also the
+      # top of the band a return is an obstacle in (dynamic, and the terrain
+      # layer's). Nothing mounted on the robot's back is in the URDF: measure
+      # it and raise this if something stands higher than the shell.
+      body_clearance: 0.8
+      # The operator's figures (2026-11-25): a 0.2 m step, the G23's 20 deg.
+      # Not measured on the M20's gait. At the tree's 0.1 m this is two
+      # cells, as the G23's 0.17 was; where map.pcd gave a measured floor it
+      # is 0.2 m exactly.
+      max_step_height: 0.2
+      max_slope_deg: 20.0
+
+      # Flat ground only (2026-11-25): no link of any kind is laid. The M20's
+      # gait bridge has no stair gait to switch to (syncai_driver_manager's
+      # m20 protocol refuses set_policy_mode) and the controllers' stair mode
+      # is off, so a route over a stair would be planned and then walked on
+      # the flat gait into a flight the terrain layer calls lethal. This one
+      # switch also drops the detected stairs (stair_detect) and the walked
+      # gap links (gap_links: door sills and short slopes the surface rules
+      # refuse), which are read off the same track inside it: a room reached
+      # only through such a gap is unreachable until this is true again.
+      stair_links: false
+      # The disc the body sweeps turning in place on a landing: the footprint's
+      # circumscribed radius with the 0.03 padding the factory value has
+      # (0.44 x 0.27). Unused while stair_links is off.
+      stair_flights_turn_radius: 0.52
+
+      dynamic:
+        # Returns this close to the sensor, in the plane, are the robot's own
+        # and neither mark nor clear. The sensor is Point-LIO's body, the IMU
+        # at (0.063, -0.027) of base_link; the body's furthest point from it
+        # is the hind-left wheel, 0.53 m, and 0.65 leaves the 0.1 m the G23's
+        # 0.6 leaves round its feet. The vendor may crop the robot from its
+        # merged cloud already (lying, nothing came within 0.45 m): check
+        # standing, and adjust on the robot.
+        self_radius: 0.65
+        # How near a mark closes a cell. The G23's 0.35 is its footprint's
+        # sideways reach at the path heading +/-0.35 rad with 0.03 padding
+        # (0.38 sin + 0.25 cos = 0.365); the same on the M20's (0.44, 0.27) is
+        # 0.40. Between the inscribed radius (0.25) and the circumscribed one
+        # (0.49), as the factory file asks.
+        block_radius: 0.40
+
+      keepout:
+        # = robot_radius: a zone closes a gap narrower than the robot.
+        block_radius: 0.25
+
+      # The padded footprint's diagonal (0.84 x 0.50 with the 0.01 padding):
+      # the narrowest width the body can turn round in, so a passage under it
+      # is sent `slow` on plan_crossings. The G23's is 0.85.
+      narrow_max_width: 0.98

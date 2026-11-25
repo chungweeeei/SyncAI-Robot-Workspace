@@ -126,10 +126,11 @@ A params file cannot carry everything that differs between models. Today these
 are still the G23's for every robot: `charge.xml`'s motion keys, the windows of
 `config/sessions/*.yaml`, the C++ defaults behind the params, the devices in
 `docker-compose.robots.yml`, and two out-of-tree packages' own params
-(`syncai_lio_bridge`, `syncai_camera_feeder`) — each of those repos takes the
-same `params/models/<robot_model>.yaml` layer in its package when it needs one.
+(`syncai_camera_feeder`, `syncai_landmark_detection`) — each of those repos
+takes the same `params/models/<robot_model>.yaml` layer in its package when it
+needs one.
 
-Three out-of-tree packages already have it, `params/models/g23.yaml` and
+Four out-of-tree packages already have it, `params/models/g23.yaml` and
 `m20.yaml` after their shared params file, refusing a model with no file as
 these launches do:
 
@@ -145,6 +146,13 @@ these launches do:
   `lidar_frame` (G23 `lidar_top_imu`, M20 `lidar_link`). On the M20 only
   `wifi_status` and `safety_locked` have a publisher today; battery, joint and
   gait state are the vendor's drdds types, which it does not read.
+- `syncai_lio_bridge` (2026-11-25, branch `feature/m20` of SyncAI-LIO-Bridge):
+  `lidar_frame`, the URDF link of the IMU Point-LIO's body frame is (G23
+  `lidar_top_imu`, M20 `imu`), and `imu_topic`, where its gyro is read for the
+  odom topic's yaw rate (G23 `livox/imu`, M20 the vendor's absolute `/IMU`).
+  Both were written into its launch and source for the G23; on an M20 the
+  bridge waited for `base_link -> lidar_top_imu` for good and the stack had no
+  odometry at all.
 
 Being out of tree, none is in `model_keys.yaml`, and `test_model_overlays.py`
 does not see them.
@@ -182,8 +190,20 @@ backend sees nothing.
 
 1. `params/models/<model>.yaml` in each of the six packages; start each from
    the keys `model_keys.yaml` requires for it, and rebuild those packages.
-2. `<MODEL>.urdf` in `src/syncai_bringup/description/`, with `lidar_top`,
-   `lidar_top_imu` and `camera_optical_frame`, and its entry in
-   `bringup.launch.py`'s `MODEL_URDF`.
+2. `<MODEL>.urdf` in `src/syncai_bringup/description/`, with `base_link` at
+   the body's centre and a link for the IMU Point-LIO's body frame is, and its
+   entry in `bringup.launch.py`'s `MODEL_URDF`. The links are named per model,
+   not by convention (the G23's `lidar_top` / `lidar_top_imu` /
+   `camera_optical_frame`, the M20's `lidar_link` / `imu`): name the IMU's in
+   `syncai_lio_bridge`'s and `syncai_robot_state`'s
+   `params/models/<model>.yaml` (`lidar_frame`), or the bridge publishes
+   nothing.
 3. `robot_model: <model>` in the robot's INI.
 4. `python3 -m pytest config/models/test_model_overlays.py`.
+
+A model's sizes are derived from its URDF, not copied from the G23's: the
+footprint from the standing body's extents, and from it the inscribed radius
+(`robot_radius`), the circumscribed one (`inflation_radius`,
+`stair_flights_turn_radius`), the diagonal (`narrow_max_width`) and the
+overlay's radii; `body_clearance` from the body's top above the ground.
+`syncai_controller`'s `params/models/m20.yaml` has the M20's worked through.

@@ -1,0 +1,152 @@
+# The Lynx M20's body and gait, over
+# src/syncai_controller/params/controller_server_params.yaml: loaded after it by
+# controller_server.launch.py when the INI's [system] robot_model is m20
+# (config/models/README.md has the layering).
+#
+# FIRST VALUES (2026-11-25), for the first navigation test on flat ground.
+# Nothing here has driven the robot yet.
+#
+# THE BODY, which every size below is derived from: M20.urdf's collision
+# geometry and meshes, posed with forward kinematics at the standing joint
+# reading of robot01, 2026-11-24 (syncai_m20_joint_state's conversion.rs,
+# STANDING), in base_link (the body's centre):
+#
+#   length  x -0.407 .. +0.406   the wheels' rims (centres at +/-0.31, r 0.09);
+#                                the body's shell itself is +/-0.41 (the mesh,
+#                                DEEP Robotics' 820 mm)
+#   width   y -0.236 .. +0.218   the legs' outer faces; the hips roll the
+#                                wheels in under the body (hipx 0.04-0.10 rad),
+#                                so the stance sets it: 0.254 with hipx at 0
+#   height  the shell's top is 0.085 above base_link and the wheels' bottoms
+#           0.592 below it, 0.68 in all; measured on the floor in the cloud,
+#           base_link stood 0.55-0.58 up (2026-11-24), so 0.64-0.67
+#
+# A different stance (the gait's height, the hips' roll) changes all three.
+#
+# Flat ground only: the stair mode is off, and so are the planner's stair links
+# (syncai_global_planner's m20.yaml). The M20's gait bridge (syncai_driver_manager,
+# robot_protocol m20) has stand, lie down and cmd_vel and no gait switch --
+# set_policy_mode answers success: false.
+#
+# Not here, and still the G23's for an M20: the Charging / ChargeBackOff blocks
+# and their goal checkers (charge.xml is the G23's dock and motion keys).
+
+/**/controller_server:
+  ros__parameters:
+    # Point-LIO's body frame above the ground, m. On the M20 that frame is the
+    # vendor's body IMU, 0.0435 m above base_link: measured standing on robot01
+    # (2026-11-24, the floor 0.55-0.58 m below the merged cloud's origin), the
+    # value syncai_mapping's m20.yaml cleaned this robot's maps with. The URDF
+    # at the standing reading says 0.635 (wheel bottoms 0.592 under base_link);
+    # the 3 cm between them is the stance or the tyres, unresolved. One number
+    # in five files (config/models/model_keys.yaml, `equal`).
+    lidar_height: 0.60
+
+    FollowPath:
+      # The operator's limits for the first runs (2026-11-25): 1.0 m/s and
+      # 1.0 rad/s, as cmd_vel. What the robot does with them is NOT
+      # calibrated: syncai_driver_manager's m20.yaml maps cmd_vel to a
+      # fraction of the gait's full scale with max_vx 2.0 / max_wz 2.0, both
+      # unmeasured guesses, so 1.0 here is half scale of an unknown top speed
+      # and the rollouts assume the commanded speed is the real one. Hold a
+      # few cmd_vel plateaus against /odom before trusting either, and change
+      # these with those (and with FollowPathRPP3D's two below).
+      #
+      # The robot's pose is also older here than on a G23: the vendor's merged
+      # cloud arrives ~133 ms after its stamp and Point-LIO waits up to 120 ms
+      # more for the rear lidar (syncai_pointlio's m20.yaml), so the optimizer
+      # plans from where the robot was ~0.2 s ago -- 0.2 m at this speed.
+      vx_max: 1.0
+      wz_max: 1.0
+      # DiffDrive, as the G23: the M20's protocol takes a lateral axis
+      # (driver_manager's max_vy), but its gain is unmeasured as well.
+      motion_model: "DiffDrive"
+      # The G23's, unmeasured on the M20: the clamp on the output, there being
+      # no velocity smoother. The optimizer does not model it, so from 1.0 m/s
+      # the robot needs 0.5 m to stop.
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      # The G23's floors exist because its RL gait stands still under ~0.3 m/s
+      # and does not turn in place under ~0.45 rad/s. A wheeled base has no
+      # such floor that anyone has measured, but 0 is not "no floor" here: it
+      # also switches off the direct approach, the approach slowdown and the
+      # back-out, which are written on walk_vx_min (controller.cpp). So a
+      # small value keeps those three and lets the robot creep: the last
+      # approach_floor_dist (0.2 m) to the goal and a direct approach are
+      # driven at 0.1 m/s.
+      walk_vx_min: 0.1
+      in_place_wz_min: 0.1
+      # The cap over a span the planner marks `slow` (a passage narrower than
+      # narrow_max_width, a walked gap). On the G23 this equals walk_vx_min
+      # because 0.30 is the slowest its gait walks; on the M20 it is a speed
+      # for a doorway, kept at the value the G23 has taken doors with. Must
+      # stay at or above walk_vx_min, or the floor wins.
+      slow_linear_vel: 0.30
+      # Horizon 26 x 0.05 = 1.3 s (the G23's 32 = 1.6 s). A rolled-out
+      # footprint that leaves the 4 x 4 m local costmap reads LETHAL, so the
+      # horizon has to end inside its 2 m half-width: 1.30 m at vx_max 1.0,
+      # plus the padded footprint's nose (0.42 m) and the window's lag (it
+      # re-centres at 5 Hz, 0.20 m at 1.0) is 1.92 m. At 32 it would reach
+      # 2.22 m and every fast candidate would "collide" at its far end.
+      # prune_distance 2.0 still holds it (1.30 + the 0.5 m carrot). Raise
+      # this only with a wider costmap or a lower vx_max.
+      time_steps: 26
+      # Off: there is no stair gait to switch to (see the header), and with it
+      # on a path that rises 0.3 m within 1 m would stop the robot before the
+      # rise and wait for a policy switch that is refused. Both controllers
+      # hold one value (model_keys.yaml, `equal`).
+      use_stair_mode: false
+      # -1 = never switch (stair_mode.hpp). The G23's 1 is its gait
+      # controller's HIMLOCO index, which means nothing to an M20; written so
+      # that turning use_stair_mode on by itself sends no policy index.
+      stair_policy_mode: -1
+      flat_policy_mode: -1
+
+    FollowPathRPP3D:
+      # The A/B controller, on FollowPath's numbers: the same limits, the same
+      # clamps, the same floors (config/models/README.md, "Values that change
+      # together").
+      desired_linear_vel: 1.0
+      rotate_to_heading_angular_vel: 1.0
+      max_linear_accel: 1.0
+      max_angular_accel: 3.2
+      min_approach_linear_velocity: 0.1
+      rotate_to_heading_min_angular_vel: 0.1
+      use_stair_mode: false
+      stair_policy_mode: -1
+      flat_policy_mode: -1
+
+/**/local_costmap:
+  ros__parameters:
+    # The standing body's rectangle about base_link (the header's extents):
+    # half-length 0.41 (the wheels' rims and the shell's ends), half-width
+    # 0.24 (the wider leg, 0.236). The G23's is 0.35 x 0.22: the M20 is 0.12 m
+    # longer and about as wide. With footprint_padding 0.01 the inscribed
+    # radius is 0.25 and the circumscribed one 0.489.
+    footprint: "[[0.41,0.24],[0.41,-0.24],[-0.41,-0.24],[-0.41,0.24]]"
+
+    terrain_layer:
+      # = controller_server's lidar_height: the cloud's frame above the ground.
+      sensor_height: 0.60
+      # The four geometry rules are Octo3D's (syncai_global_planner's
+      # m20.yaml has where each comes from); one calibration, two files.
+      # robot_radius: the padded footprint's inscribed radius (0.24 + 0.01).
+      robot_radius: 0.25
+      # The shell's top is 0.64-0.68 m above the ground; 0.7 would leave as
+      # little as 2 cm, under the planner's 0.1 m voxel. A return up to this
+      # far above its cell's ground is an obstacle, so this is also what the
+      # robot is kept from driving under.
+      body_clearance: 0.8
+      # The operator's figures (2026-11-25): a 0.2 m step, 20 deg as the G23.
+      # Not measured on the M20's gait.
+      max_step_height: 0.2
+      max_slope_deg: 20.0
+
+    inflation_layer:
+      # At least the padded footprint's circumscribed radius (0.489):
+      # MPPI's CostCritic checks the footprint only where the centre's cell has
+      # a cost, so a smaller ring leaves a centre 0.45-0.49 m from an obstacle
+      # reading 0 while a corner clips it (the factory file has the G23's
+      # case). cost_scaling_factor is left: with it the cost at a given
+      # distance is the G23's, on a body 6 cm longer to the corner.
+      inflation_radius: 0.50

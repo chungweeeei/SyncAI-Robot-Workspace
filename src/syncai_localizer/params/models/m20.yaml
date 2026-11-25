@@ -1,0 +1,19 @@
+# The Lynx M20's body, over src/syncai_localizer/params/localizer_params.yaml:
+# loaded after it by localizer.launch.py when the INI's [system] robot_model is
+# m20 (config/models/README.md has the layering).
+#
+# FIRST VALUES (2026-11-25). Only the body's height: the registration's own
+# tuning (voxel sizes, gates, localizability thresholds) is the G23's, on a
+# body_cloud that syncai_pointlio's m20.yaml decimates to the G23's density
+# (lidar_filter_num 20) for that reason. Not replayed on M20 data.
+
+/**/localizer_node:
+  ros__parameters:
+    # Point-LIO's body frame above the ground, m: an initialpose that gives a z
+    # gives the ground's, and the guess puts the body this far above it; the
+    # saved last pose's ground_z is the body's z minus it. On the M20 the body
+    # frame is the vendor's IMU, 0.0435 m above base_link; measured standing
+    # on robot01, 2026-11-24 (the floor 0.55-0.58 m below the merged cloud's
+    # origin). One number in five files (config/models/model_keys.yaml,
+    # `equal`), and syncai_mapping's map_clean_lidar_height.
+    lidar_height: 0.60
