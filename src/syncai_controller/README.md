@@ -326,6 +326,14 @@ is walked as the stair is, blind on the stair carrot (accepted 2026-10-22; a
 descent turns round and backs it). Keep `stair_standoff` + `stair_enter_dist`
 under `stair_exit_ahead_dist`, or the robot would leave stair mode where it
 stopped.
+
+**`stair_standoff_down`** (2026-11-25; −1 = `stair_standoff` for both, the
+factory value) replaces `stair_standoff` for a stair that goes *down* from the
+robot (`StairMode::slopeAhead()` < 0 over the entry window, read before either
+window could hold the drop). A drop is the worse place to overrun the hold's
+brake. The M20 sets it to 1.5 m (1.0 up), after its first stair runs on
+robot01; the same rule with `stair_enter_dist` and `stair_exit_ahead_dist`
+applies.
 The detection, the policy switch and the latched report are
 one state machine, **`syncai_util::StairMode`** (`stair_mode.hpp`; lifted out
 of RPP 3D on 2026-10-20 when MPPI needed the same behaviour, so there is one
@@ -897,8 +905,8 @@ parameter now applies live** (`approach_velocity_scaling_dist`,
 `use_collision_detection` and `use_interpolation` were read once), and so do
 **StairMode's window and settle time on both controllers**
 (`StairMode::setParameter()`: `stair_min_rise`, `stair_enter_dist`,
-`stair_standoff`, `stair_exit_behind_dist`, `stair_exit_ahead_dist`,
-`stair_policy_settle_time`) — the console's `stair_standoff` was stored and
+`stair_standoff`, `stair_standoff_down`, `stair_exit_behind_dist`,
+`stair_exit_ahead_dist`, `stair_policy_settle_time`) — the console's `stair_standoff` was stored and
 unused on both until 2026-11. `use_stair_mode` and the two policy ids are
 refused: flipped mid-goal they could leave the robot in the stair policy.
 **`controller_frequency` is refused at runtime** (2026-11): every controller

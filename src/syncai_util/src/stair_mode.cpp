@@ -19,7 +19,8 @@ const std::vector<std::string> & StairMode::runtimeParameters()
 {
   static const std::vector<std::string> keys = {
     "stair_min_rise",         "stair_enter_dist",      "stair_standoff",
-    "stair_exit_behind_dist", "stair_exit_ahead_dist", "stair_policy_settle_time"};
+    "stair_standoff_down",    "stair_exit_behind_dist", "stair_exit_ahead_dist",
+    "stair_policy_settle_time"};
   return keys;
 }
 
@@ -38,6 +39,8 @@ bool StairMode::setParameter(const std::string & key, double value)
     params_.enter_dist = value;
   } else if (key == "stair_standoff") {
     params_.standoff = value;
+  } else if (key == "stair_standoff_down") {
+    params_.standoff_down = value;
   } else if (key == "stair_exit_behind_dist") {
     params_.exit_behind_dist = value;
   } else if (key == "stair_exit_ahead_dist") {
@@ -65,6 +68,8 @@ void StairMode::initialize(const rclcpp::Node::SharedPtr & node, const std::stri
   declare_parameter_if_not_declared(
     node, plugin_name + ".stair_standoff", rclcpp::ParameterValue(params_.standoff));
   declare_parameter_if_not_declared(
+    node, plugin_name + ".stair_standoff_down", rclcpp::ParameterValue(params_.standoff_down));
+  declare_parameter_if_not_declared(
     node, plugin_name + ".stair_exit_behind_dist",
     rclcpp::ParameterValue(params_.exit_behind_dist));
   declare_parameter_if_not_declared(
@@ -79,6 +84,7 @@ void StairMode::initialize(const rclcpp::Node::SharedPtr & node, const std::stri
   node->get_parameter(plugin_name + ".stair_min_rise", params_.min_rise);
   node->get_parameter(plugin_name + ".stair_enter_dist", params_.enter_dist);
   node->get_parameter(plugin_name + ".stair_standoff", params_.standoff);
+  node->get_parameter(plugin_name + ".stair_standoff_down", params_.standoff_down);
   node->get_parameter(plugin_name + ".stair_exit_behind_dist", params_.exit_behind_dist);
   node->get_parameter(plugin_name + ".stair_exit_ahead_dist", params_.exit_ahead_dist);
   node->get_parameter(plugin_name + ".stair_policy_settle_time", params_.settle_time);
@@ -297,8 +303,21 @@ StairMode::Decision StairMode::update(
   // stopping distance to 0 with it, and the window must still reach the
   // flight from the body's front edge. The standoff (2026-10-22) goes on top
   // of the stopping distance: it is where the robot is to stand once braked.
+  //
+  // Which standoff (2026-11-25): stair_standoff_down when the stair ahead
+  // goes down, read on the plan out to the farther of the two leads plus the
+  // window, so the choice is made before either window could hold the drop.
+  // Only off the stairs: on them the lead is not what decides the exit.
+  double standoff = params_.standoff;
+  if (!on_stairs_ && params_.standoff_down >= 0.0) {
+    const double look =
+      stop_dist + std::max(params_.standoff, params_.standoff_down) + params_.enter_dist;
+    if (slopeAhead(remaining_poses, look) < 0) {
+      standoff = params_.standoff_down;
+    }
+  }
   const double lead = std::max(
-    {stop_dist + params_.standoff, body_reach,
+    {stop_dist + standoff, body_reach,
      transition_ == Transition::Entering ? entry_lead_ : 0.0, 0.0});
   const bool want = wantStairs(remaining_poses, lead);
   if (transition_ == Transition::None && want != on_stairs_) {

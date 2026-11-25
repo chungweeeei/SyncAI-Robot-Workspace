@@ -123,6 +123,14 @@ public:
     // the robot in stair mode does not reach the stair from where it stopped.
     // 0 = aim at the foot, as before.
     double standoff{1.0};
+    // stair_standoff_down: the standoff for a stair that goes DOWN from the
+    // robot (slopeAhead() < 0 over the entry window), in place of standoff;
+    // < 0 = standoff for both (2026-11-25). A drop is the worse place to
+    // overrun the brake -- the policy switch then happens with the front of
+    // the body over the first step -- and on the M20, which walks down
+    // facing forward, the operator wanted it to stand further back from the
+    // edge before switching than it stands from a riser.
+    double standoff_down{-1.0};
     // stair_exit_behind_dist / stair_exit_ahead_dist: the window that must
     // have gone level before leaving. The ahead window keeps a landing in
     // stair mode instead of switching the policy twice per turn -- 2.5 m

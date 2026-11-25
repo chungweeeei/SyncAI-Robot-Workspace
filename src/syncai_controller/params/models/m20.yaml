@@ -149,6 +149,28 @@
       # read every cycle, so set it while the robot is not on a flight.
       # FollowPathRPP3D's copy below holds the same.
       stair_descend_backwards: false
+      # The first stair runs on robot01 (2026-11-25, dp_1125): the operator
+      # wanted the robot to stand further back from a drop before the gait
+      # switch than the 1.0 m it stands from a riser -- going down forwards,
+      # the body's front is what reaches the edge first, and the brake into
+      # the hold overruns. 1.5 m down, 1.0 m up (stair_standoff, the
+      # factory's); 1.5 + stair_enter_dist 1.0 stays under
+      # stair_exit_ahead_dist 3.5. Both live-settable.
+      stair_standoff_down: 1.5
+      # How far past the top (or the foot, going down) the robot walks
+      # before the gait goes back to Basic: the window behind its centre
+      # that must hold less than stair_min_rise. 0.8 -> 1.2 m after the same
+      # runs: the operator found the switch back came too early, and 0.8 is
+      # the G23's -- its hind legs off the last step at 0.8 behind the
+      # centre -- while the M20 is 0.82 m long (hind wheels 0.41 behind the
+      # centre) and walks on the stair gait until then. Live-settable.
+      stair_exit_behind_dist: 1.2
+      # 0.5 -> 0.7 m/s on the flight, the operator's call after the same
+      # runs (0.5 felt slow on the M20's stair gait). As cmd_vel through
+      # driver_manager's unmeasured max_vx 2.0 (~0.88 of it reached on the
+      # flat). Brake from it into the hold at the top: 0.75 v^2 /
+      # max_linear_accel = 0.37 m. Live-settable.
+      stair_linear_vel: 0.7
 
     goal_checker:
       # 0.1 rad (the G23's 0.2, which is wide for a gait that cannot slow its
@@ -181,6 +203,9 @@
       stair_policy_mode: 1
       flat_policy_mode: 0
       stair_descend_backwards: false
+      stair_standoff_down: 1.5
+      stair_exit_behind_dist: 1.2
+      stair_linear_vel: 0.7
 
 /**/local_costmap:
   ros__parameters:

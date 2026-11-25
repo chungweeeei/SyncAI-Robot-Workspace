@@ -496,7 +496,11 @@
       # (1.5 stood it 1.1 m from the 2F step up). The floor to the stair is
       # walked blind on the stair carrot. Keep it + stair_enter_dist under
       # stair_exit_ahead_dist.
-      stair_standoff: 1.0
+      stair_standoff: 1.2
+      # The standoff for a stair going DOWN from the robot, in place of
+      # stair_standoff (2026-11-25); -1 = stair_standoff for both. Same
+      # rule: keep it + stair_enter_dist under stair_exit_ahead_dist.
+      stair_standoff_down: -1.0
       stair_exit_behind_dist: 0.8
       # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
       # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to
@@ -948,6 +952,8 @@
       # walked blind on the stair carrot. Keep it + stair_enter_dist under
       # stair_exit_ahead_dist.
       stair_standoff: 1.0
+      # = FollowPath.stair_standoff_down (see there).
+      stair_standoff_down: -1.0
       stair_exit_behind_dist: 0.8
       # 2.5 -> 3.5 (2026-10-21): a switchback's landing is laid as out 0.5 m,
       # across (the flights' axes 1.5-1.9 m apart on dp), in 0.5 m -- up to

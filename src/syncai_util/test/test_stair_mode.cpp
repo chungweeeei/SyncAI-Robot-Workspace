@@ -247,6 +247,57 @@ TEST(StairMode, StandoffEntersThatMuchEarlierAtAnySpeed)
   }
 }
 
+namespace
+{
+// The first pose, walking the path from its start, at which a fresh
+// StairMode holds for a policy switch; the path's size if it never does.
+size_t firstHold(const StairMode::Params & params, const nav_msgs::msg::Path & path)
+{
+  const size_t n = path.poses.size();
+  for (size_t idx = 0; idx < n; ++idx) {
+    Harness h(params);
+    h.sm.setReportedPolicy(0);
+    h.sm.setPlan(path);
+    if (h.sm.update(at(0.0), n - idx, 0.0).hold) {
+      return idx;
+    }
+  }
+  return n;
+}
+}  // namespace
+
+TEST(StairMode, StandoffDownMovesOnlyADescentsEntry)
+{
+  // stair_standoff_down (2026-11-25): a stair going down from the robot is
+  // entered that much further back than one going up, which keeps
+  // stair_standoff; < 0 (the default) keeps stair_standoff for both.
+  ASSERT_LT(StairMode::Params().standoff_down, 0.0);
+  const auto up = stairPath();
+  auto down = up;
+  std::reverse(down.poses.begin(), down.poses.end());
+
+  StairMode::Params same;  // standoff 1.0, standoff_down unset
+  StairMode::Params longer = same;
+  longer.standoff_down = 1.5;
+
+  const size_t down_same = firstHold(same, down);
+  const size_t down_longer = firstHold(longer, down);
+  ASSERT_LT(down_same, down.poses.size());
+  // 0.5 m more standoff = 5 poses earlier (a pose of slack for the 0.1 m
+  // sums, as in the standoff case above).
+  EXPECT_NEAR(
+    static_cast<double>(down_same) - static_cast<double>(down_longer), 5.0, 1.0);
+
+  // Going up, the descent's standoff is not read.
+  EXPECT_EQ(firstHold(longer, up), firstHold(same, up));
+
+  // A shorter one is honoured too: it is a replacement, not a minimum.
+  StairMode::Params shorter = same;
+  shorter.standoff_down = 0.5;
+  EXPECT_NEAR(
+    static_cast<double>(firstHold(shorter, down)) - static_cast<double>(down_same), 5.0, 1.0);
+}
+
 TEST(StairMode, DisabledNeverHolds)
 {
   StairMode::Params p = windowsOnly();
@@ -639,16 +690,18 @@ TEST(StairModeParameters, RuntimeKeysReachTheirFieldsAndStartupKeysDoNot)
   EXPECT_TRUE(sm.setParameter("stair_min_rise", 0.4));
   EXPECT_TRUE(sm.setParameter("stair_enter_dist", 1.2));
   EXPECT_TRUE(sm.setParameter("stair_standoff", 0.7));
+  EXPECT_TRUE(sm.setParameter("stair_standoff_down", 1.4));
   EXPECT_TRUE(sm.setParameter("stair_exit_behind_dist", 0.5));
   EXPECT_TRUE(sm.setParameter("stair_exit_ahead_dist", 4.0));
   EXPECT_TRUE(sm.setParameter("stair_policy_settle_time", 2.0));
   EXPECT_DOUBLE_EQ(sm.params().min_rise, 0.4);
   EXPECT_DOUBLE_EQ(sm.params().enter_dist, 1.2);
   EXPECT_DOUBLE_EQ(sm.params().standoff, 0.7);
+  EXPECT_DOUBLE_EQ(sm.params().standoff_down, 1.4);
   EXPECT_DOUBLE_EQ(sm.params().exit_behind_dist, 0.5);
   EXPECT_DOUBLE_EQ(sm.params().exit_ahead_dist, 4.0);
   EXPECT_DOUBLE_EQ(sm.params().settle_time, 2.0);
-  EXPECT_EQ(StairMode::runtimeParameters().size(), 6u);
+  EXPECT_EQ(StairMode::runtimeParameters().size(), 7u);
   for (const auto & key : StairMode::startupParameters()) {
     EXPECT_FALSE(sm.setParameter(key, 1.0)) << key;
   }
