@@ -42,7 +42,17 @@
     # the controller only sees a cancel on its next 50 ms cycle.
     default_server_timeout: 100
     # How long (ms) to wait for an action/service server to appear before failing.
-    wait_for_service_timeout: 1000
+    # 1000 -> 20000 (2026-11-25): every BtActionNode / BtServiceNode waits
+    # this long in its constructor, and move.xml / patrol.xml are built at
+    # startup -- task_runner is started 10 s after planner_server (the nav
+    # spec's sleep), and on robot01 (M20, dp_1125, stair links on) the
+    # planner's planner_server/Octo3D/clear_overlay came up a few seconds
+    # later than that: the 1 s wait threw, the tree failed to load, and
+    # task_runner exited FATAL with no navigate_to_goal server, so every goal
+    # went nowhere until the pane was restarted by hand. The cost of the
+    # longer wait: a tree first loaded at its first goal (charge.xml) whose
+    # server really is down now rejects that goal after 20 s instead of 1 s.
+    wait_for_service_timeout: 20000
     # Reload the XML from disk on every goal (handy while editing trees).
     always_reload_bt_xml: false
 
