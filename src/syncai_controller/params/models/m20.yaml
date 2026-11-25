@@ -23,10 +23,12 @@
 #
 # A different stance (the gait's height, the hips' roll) changes all three.
 #
-# Flat ground only: the stair mode is off, and so are the planner's stair links
-# (syncai_global_planner's m20.yaml). The M20's gait bridge (syncai_driver_manager,
-# robot_protocol m20) has stand, lie down and cmd_vel and no gait switch --
-# set_policy_mode answers success: false.
+# Stairs ON for the first stair tests (2026-11-25), with the planner's stair
+# links (syncai_global_planner's m20.yaml): syncai_driver_manager's m20 protocol
+# switches the gait on set_policy_mode since its 98b30f1 (0 = Basic 0x1001,
+# 1 = Stairs 0x1003), so the stair mode below stops before a flight, switches
+# to the stair gait, climbs, and switches back, as on the G23. Nothing of it
+# has run on the M20 yet.
 #
 # Not here, and still the G23's for an M20: the Charging / ChargeBackOff blocks
 # and their goal checkers (charge.xml is the G23's dock and motion keys).
@@ -102,16 +104,27 @@
       # prune_distance 2.0 still holds it (1.30 + the 0.5 m carrot). Raise
       # this only with a wider costmap or a lower vx_max.
       time_steps: 26
-      # Off: there is no stair gait to switch to (see the header), and with it
-      # on a path that rises 0.3 m within 1 m would stop the robot before the
-      # rise and wait for a policy switch that is refused. Both controllers
-      # hold one value (model_keys.yaml, `equal`).
-      use_stair_mode: false
-      # -1 = never switch (stair_mode.hpp). The G23's 1 is its gait
-      # controller's HIMLOCO index, which means nothing to an M20; written so
-      # that turning use_stair_mode on by itself sends no policy index.
-      stair_policy_mode: -1
-      flat_policy_mode: -1
+      # On for the stair tests (see the header). Startup-only: a change needs
+      # a controller_server restart. Both controllers hold one value
+      # (model_keys.yaml, `equal`).
+      use_stair_mode: true
+      # The M20's set_policy_mode indices (driver_manager's
+      # gait_param_for_policy): 1 = the Stairs gait, 0 = Basic. The flat one
+      # is named rather than left at -1, because -1 means "go back to what
+      # `mode` reported before the switch" and the M20's driver publishes no
+      # `mode` -- with nothing heard, the robot would stay in the stair gait
+      # (stair_mode.hpp).
+      stair_policy_mode: 1
+      flat_policy_mode: 0
+      # Down forwards: the G23 descends backwards because HIMLOCO walks down
+      # facing the risers; the M20's stair gait goes down facing forward
+      # (the operator, 2026-11-25; unmeasured here). The flag is the test
+      # switch: live with
+      #   ros2 param set /<robot_id>/controller_server \
+      #     FollowPath.stair_descend_backwards true|false
+      # read every cycle, so set it while the robot is not on a flight.
+      # FollowPathRPP3D's copy below holds the same.
+      stair_descend_backwards: false
 
     FollowPathRPP3D:
       # The A/B controller, on FollowPath's numbers: the same limits, the same
@@ -124,9 +137,10 @@
       # = FollowPath's walk_vx_min / in_place_wz_min (see there).
       min_approach_linear_velocity: 0.25
       rotate_to_heading_min_angular_vel: 0.4
-      use_stair_mode: false
-      stair_policy_mode: -1
-      flat_policy_mode: -1
+      use_stair_mode: true
+      stair_policy_mode: 1
+      flat_policy_mode: 0
+      stair_descend_backwards: false
 
 /**/local_costmap:
   ros__parameters:

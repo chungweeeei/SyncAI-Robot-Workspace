@@ -287,9 +287,12 @@ config/params/<robot_id>/<node>.yaml        the runtime overlay (controller / pl
   operator's limits (`vx_max` / `wz_max` 1.0, `max_step_height` 0.2), the gait
   floors at 0.1 (0 would also switch off MPPI's direct approach and back-out),
   MPPI's `time_steps` cut to 26 so that the horizon at 1.0 m/s stays inside
-  the 4 m costmap, and **no stairs**: `use_stair_mode: false` and
-  `Octo3D.stair_links: false` (which drops the detected stairs and the walked
-  gap links with it), since the M20's gait bridge refuses `set_policy_mode`.
+  the 4 m costmap, and **stairs on for testing** (2026-11-25):
+  `use_stair_mode: true` with the M20's own gait indices
+  (`stair_policy_mode: 1` Stairs / `flat_policy_mode: 0` Basic, which its
+  gait bridge switches on `set_policy_mode`), `Octo3D.stair_links: true`, and
+  `stair_descend_backwards: false` (the M20 walks down forwards; the G23's
+  `true` is HIMLOCO's), unrun on the robot.
   Nothing has driven the robot; `config/models/m20/README.md` has what is
   measured and what is not.
 - `bringup.launch.py` picks the URDF by model (`MODEL_URDF`; `urdf_file:=`

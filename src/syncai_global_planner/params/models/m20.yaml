@@ -46,19 +46,19 @@
       max_step_height: 0.2
       max_slope_deg: 20.0
 
-      # Flat ground only (2026-11-25): no link of any kind is laid. The M20's
-      # gait bridge has no stair gait to switch to (syncai_driver_manager's
-      # m20 protocol refuses set_policy_mode) and the controllers' stair mode
-      # is off, so a route over a stair would be planned and then walked on
-      # the flat gait into a flight the terrain layer calls lethal. This one
-      # switch also drops the detected stairs (stair_detect) and the walked
-      # gap links (gap_links: door sills and short slopes the surface rules
-      # refuse), which are read off the same track inside it: a room reached
-      # only through such a gap is unreachable until this is true again.
-      stair_links: false
+      # On for the first stair tests (2026-11-25): syncai_driver_manager's m20
+      # protocol switches to the Stairs gait on set_policy_mode, and the
+      # controllers' stair mode is on (syncai_controller's m20.yaml). This one
+      # switch also brings back the detected stairs (stair_detect) and the
+      # walked gap links (gap_links: door sills and short slopes), read off
+      # the same track. Build-time: a change needs a planner_server restart.
+      # Off again (false) puts the M20 back on flat ground only: then a route
+      # over a stair is never planned, which, with the stair mode off, would
+      # walk the flat gait into a flight the terrain layer calls lethal.
+      stair_links: true
       # The disc the body sweeps turning in place on a landing: the footprint's
       # circumscribed radius with the 0.03 padding the factory value has
-      # (0.44 x 0.27). Unused while stair_links is off.
+      # (0.44 x 0.27).
       stair_flights_turn_radius: 0.52
 
       dynamic:
