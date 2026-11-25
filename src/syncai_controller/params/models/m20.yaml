@@ -89,6 +89,19 @@
       # below hold the same two (config/models/README.md, "Gait floors").
       walk_vx_min: 0.25
       in_place_wz_min: 0.4
+      # Every in-place turn (onto a new path, onto the goal's heading, the
+      # direct approach's turn) runs at this, not at wz_max, so the M20 had
+      # been turning at the G23's 0.65 -- 0.4-0.65 rad/s measured, which the
+      # operator found sluggish. At 1.0 (= wz_max and FollowPathRPP3D's
+      # rotate_to_heading_angular_vel) the vendor's MotionStatus read
+      # 0.56-1.19, mostly 0.8-1.0, and an A <-> B run (4.8 m) took 12-15 s
+      # instead of 15-18 (robot01, 2026-11-25, 8 runs, all reached). The
+      # cost: the long body's centre drifts more while it turns inside the
+      # goal window, so the reached xy grew from ~0.07 m on average to
+      # 0.10-0.13 (7 of 8 over xy_goal_tolerance's 0.10, accepted because the
+      # checker latches xy). Lower this, or give the final turn its own rate,
+      # if the goal's position matters more than the time.
+      final_rotation_wz: 1.0
       # The cap over a span the planner marks `slow` (a passage narrower than
       # narrow_max_width, a walked gap). On the G23 this equals walk_vx_min
       # because 0.30 is the slowest its gait walks; on the M20 it is a speed
