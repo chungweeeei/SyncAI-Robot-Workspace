@@ -286,8 +286,9 @@ config/params/<robot_id>/<node>.yaml        the runtime overlay (controller / pl
   0.82 × 0.48 m, `body_clearance` 0.8), `lidar_height` 0.60 (measured), the
   operator's limits (`vx_max` / `wz_max` 1.0, `max_step_height` 0.2), the gait
   floors at 0.1 (0 would also switch off MPPI's direct approach and back-out),
-  MPPI's `time_steps` cut to 26 so that the horizon at 1.0 m/s stays inside
-  the 4 m costmap, and **stairs on for testing** (2026-11-25):
+  a longer MPPI lookahead for the 0.82 m body on a 5 × 5 m local costmap
+  (`time_steps` 34, `prune_distance` 2.5, the horizon at 1.0 m/s inside its
+  half-width), and **stairs on for testing** (2026-11-25):
   `use_stair_mode: true` with the M20's own gait indices
   (`stair_policy_mode: 1` Stairs / `flat_policy_mode: 0` Basic, which its
   gait bridge switches on `set_policy_mode`), `Octo3D.stair_links: true`, and

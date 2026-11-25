@@ -108,15 +108,26 @@
       # for a doorway, kept at the value the G23 has taken doors with. Must
       # stay at or above walk_vx_min, or the floor wins.
       slow_linear_vel: 0.30
-      # Horizon 26 x 0.05 = 1.3 s (the G23's 32 = 1.6 s). A rolled-out
-      # footprint that leaves the 4 x 4 m local costmap reads LETHAL, so the
-      # horizon has to end inside its 2 m half-width: 1.30 m at vx_max 1.0,
-      # plus the padded footprint's nose (0.42 m) and the window's lag (it
-      # re-centres at 5 Hz, 0.20 m at 1.0) is 1.92 m. At 32 it would reach
-      # 2.22 m and every fast candidate would "collide" at its far end.
-      # prune_distance 2.0 still holds it (1.30 + the 0.5 m carrot). Raise
-      # this only with a wider costmap or a lower vx_max.
-      time_steps: 26
+      # The lookahead, longer for the M20's 0.82 m body (2026-11-25, the
+      # operator's call; unmeasured): the horizon 34 x 0.05 = 1.7 s, the path
+      # kept ahead 2.5 m, and PathFollowCritic's carrot 7 points (0.7 m on
+      # Octo3D's 0.1 m path) past the furthest rollout. All three are bounded
+      # by the local costmap, now 5 x 5 m (below): a rolled-out footprint
+      # that leaves the window reads LETHAL, so the horizon has to end inside
+      # its 2.5 m half-width -- 1.70 m at vx_max 1.0, plus the padded
+      # footprint's nose (0.42 m) and the window's lag (it re-centres at
+      # 5 Hz, 0.20 m at 1.0) is 2.32 m, and the 1.70 + 0.70 m carrot is
+      # inside prune_distance. 36 would reach 2.42 m, 8 cm from the edge. On
+      # the 4 x 4 m window this was 26 / 2.0 / 5 (1.92 m of its 2 m); the
+      # window, the horizon and the prune distance change together. The cost
+      # is CPU: the terrain layer's grid is 1.56x and the optimizer's work
+      # grows with time_steps -- watch for "Control loop missed its desired
+      # rate" in the controller log, already seen now and then at 26 on the
+      # 4 m window.
+      time_steps: 34
+      prune_distance: 2.5
+      PathFollowCritic:
+        offset_from_furthest: 7
       # On for the stair tests (see the header). Startup-only: a change needs
       # a controller_server restart. Both controllers hold one value
       # (model_keys.yaml, `equal`).
@@ -157,6 +168,13 @@
 
 /**/local_costmap:
   ros__parameters:
+    # 5 x 5 m (the G23's 4 x 4) to hold the longer lookahead above
+    # (FollowPath's time_steps / prune_distance), a step short of 6 x 6 for
+    # the CPU. Its 2.5 m half-width is inside terrain_layer's max_range
+    # (3.0 m from the lidar), so the layer sees the whole window but its
+    # corners.
+    width: 5
+    height: 5
     # The standing body's rectangle about base_link (the header's extents):
     # half-length 0.41 (the wheels' rims and the shell's ends), half-width
     # 0.24 (the wider leg, 0.236). The G23's is 0.35 x 0.22: the M20 is 0.12 m

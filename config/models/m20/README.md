@@ -39,7 +39,7 @@ From it, with the padding the factory files use for each rule:
 | `Octo3D.dynamic.block_radius` | 0.35 | **0.40** | the footprint's sideways reach at ±0.35 rad |
 | `Octo3D.dynamic.self_radius` | 0.6 | **0.65** | the furthest wheel from the IMU (0.53) + 0.1; to adjust on the robot |
 | `body_clearance` ×2 | 0.6 | **0.8** | the shell's top, 0.64–0.68, with more than a voxel to spare |
-| `FollowPath.time_steps` | 32 | **26** | the horizon at `vx_max` 1.0 plus the 0.42 m nose inside the 4 m costmap |
+| `FollowPath.time_steps` | 32 | **34** | the horizon at `vx_max` 1.0 plus the 0.42 m nose and the window's lag inside the 5 × 5 m local costmap (4 × 4 on the G23); `prune_distance` 2.5, `PathFollowCritic.offset_from_furthest` 7 with it |
 
 A different stance height or hip roll changes all of it; nothing mounted on the
 robot's back is in the URDF.
