@@ -43,6 +43,32 @@
     # file may set its own.
     lidar_topic: "lidar"
     imu_topic: "imu"
+
+    # Per-point time of a PointCloud2 lidar (lidar_type 1), 2026-11-25;
+    # NodeConfig in pointlio_node.hpp and scan_merger.hpp have the argument.
+    # Empty = the cloud carries none and a message is one moment at its header
+    # stamp. A model whose cloud does carry it names the float64 field of
+    # absolute seconds (the M20's "timestamp"): each point then gets its own
+    # time, and the messages are cut into lidar_scan_period scans by time,
+    # each handed to the filter once it is lidar_merge_holdback older than the
+    # newest point seen -- the wait for a lidar whose points come late (the
+    # M20's rear one, up to a sweep behind the front one in the same message).
+    # Neither of the two is read while the field is empty; a Livox CustomMsg
+    # (lidar_type 0) has its own per-point time and uses none of the three.
+    lidar_time_field: ""
+    lidar_merge_holdback: 0.0
+    lidar_scan_period: 0.1
+    # The lidars of a merged cloud told apart (2026-11-25), so that a scan
+    # waits only as long as the late one needs, lidar_merge_holdback at most:
+    # an integer field of the cloud and the bounds of each lidar's values,
+    # [b0, b1) [b1, b2) ... A lidar whose newest point falls
+    # lidar_source_timeout behind the newest of all is down -- WARNed once,
+    # and no longer waited for. Empty field = one fixed holdback; none of the
+    # three is read without lidar_time_field. The bounds' [0] is a
+    # placeholder: an empty list has no type for the ROS params parser.
+    lidar_source_field: ""
+    lidar_source_bounds: [0]
+    lidar_source_timeout: 0.5
     print_time_cost: false
 
     # Scan backlog guard (2026-10-28; NodeConfig in pointlio_node.hpp has the

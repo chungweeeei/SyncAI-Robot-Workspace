@@ -1,9 +1,15 @@
 #include "syncai_pointlio/utils.h"
+
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
+#include <cstring>
 #include <numeric>
 
-pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range, double max_range, int dense_filter_num, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out)
+pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(
+  const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range,
+  double max_range, int dense_filter_num, pcl::PointCloud<pcl::PointXYZINormal>::Ptr * dense_out,
+  const std::string & time_field, std::vector<double> * times, std::vector<double> * dense_times,
+  const std::string & source_field, std::vector<long> * sources)
 {
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
     const size_t point_num = static_cast<size_t>(msg->width) * static_cast<size_t>(msg->height);
@@ -30,6 +36,74 @@ pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::ms
     if (has_intensity)
         it_i.reset(new sensor_msgs::PointCloud2ConstIterator<float>(*msg, "intensity"));
 
+    // Per-point absolute time, when the caller names the field and the cloud has it as one
+    // float64 (the M20's `timestamp`). Any other layout reads as "no time": *times stays empty.
+    if (times) times->clear();
+    if (dense_times) dense_times->clear();
+    bool has_time = false;
+    if (times && !time_field.empty())
+      for (const auto & f : msg->fields)
+        if (
+          f.name == time_field && f.datatype == sensor_msgs::msg::PointField::FLOAT64 &&
+          f.count == 1) {
+          has_time = true;
+          break;
+        }
+    std::unique_ptr<sensor_msgs::PointCloud2ConstIterator<double>> it_t;
+    if (has_time) it_t.reset(new sensor_msgs::PointCloud2ConstIterator<double>(*msg, time_field));
+
+    // Which lidar a point came from, when the caller names an integer field for it (the M20's
+    // `ring`, uint16): read by offset, since its type is the sensor's choice. Any other layout
+    // reads as "no source": *sources stays empty.
+    if (sources) sources->clear();
+    const sensor_msgs::msg::PointField * source_f = nullptr;
+    if (sources && !source_field.empty())
+      for (const auto & f : msg->fields)
+        if (
+          f.name == source_field && f.count == 1 &&
+          f.datatype != sensor_msgs::msg::PointField::FLOAT32 &&
+          f.datatype != sensor_msgs::msg::PointField::FLOAT64) {
+          source_f = &f;
+          break;
+        }
+    auto read_source = [&](size_t i) -> long {
+      const size_t width = msg->width > 0 ? msg->width : 1;
+      const uint8_t * ptr = msg->data.data() + (i / width) * msg->row_step +
+                            (i % width) * msg->point_step + source_f->offset;
+      switch (source_f->datatype) {
+        case sensor_msgs::msg::PointField::INT8: {
+          int8_t v;
+          std::memcpy(&v, ptr, 1);
+          return v;
+        }
+        case sensor_msgs::msg::PointField::UINT8: {
+          uint8_t v;
+          std::memcpy(&v, ptr, 1);
+          return v;
+        }
+        case sensor_msgs::msg::PointField::INT16: {
+          int16_t v;
+          std::memcpy(&v, ptr, 2);
+          return v;
+        }
+        case sensor_msgs::msg::PointField::UINT16: {
+          uint16_t v;
+          std::memcpy(&v, ptr, 2);
+          return v;
+        }
+        case sensor_msgs::msg::PointField::INT32: {
+          int32_t v;
+          std::memcpy(&v, ptr, 4);
+          return v;
+        }
+        default: {
+          uint32_t v;
+          std::memcpy(&v, ptr, 4);
+          return static_cast<long>(v);
+        }
+      }
+    };
+
     const double min_sq = min_range * min_range;
     const double max_sq = max_range * max_range;
     size_t idx = 0;
@@ -37,6 +111,12 @@ pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::ms
     {
         float intensity = 0.0f;
         if (has_intensity) { intensity = *(*it_i); ++(*it_i); }
+        double time = 0.0;
+        if (has_time) {
+          time = *(*it_t);
+          ++(*it_t);
+        }
+        if (has_time && !std::isfinite(time)) continue;
         const bool keep = idx % filter_num == 0;
         const bool keep_dense = dense && idx % dense_filter_num == 0;
         if (!keep && !keep_dense)
@@ -52,11 +132,17 @@ pcl::PointCloud<pcl::PointXYZINormal>::Ptr Utils::pc2ToPCL(const sensor_msgs::ms
         p.y = y;
         p.z = z;
         p.intensity = intensity;
-        p.curvature = 0.0f; // no per-point time -> snapshot, no deskew
-        if (keep)
-            cloud->push_back(p);
-        if (keep_dense)
-            dense_cloud->push_back(p);
+        p.curvature =
+          0.0f;  // no per-point time here -> snapshot, no deskew (ScanMerger sets it from *times)
+        if (keep) {
+          cloud->push_back(p);
+          if (has_time) times->push_back(time);
+          if (source_f) sources->push_back(read_source(idx));
+        }
+        if (keep_dense) {
+          dense_cloud->push_back(p);
+          if (has_time && dense_times) dense_times->push_back(time);
+        }
     }
     if (dense_out)
         *dense_out = dense ? dense_cloud : cloud;

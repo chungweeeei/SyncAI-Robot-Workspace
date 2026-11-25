@@ -35,6 +35,7 @@
 #include "syncai_common/srv/reset_lio.hpp"
 #include "syncai_pointlio/map_builder/commons.h"
 #include "syncai_pointlio/map_builder/map_builder.h"
+#include "syncai_pointlio/scan_merger.hpp"
 #include "syncai_pointlio/utils.h"
 
 namespace syncai_pointlio
@@ -63,6 +64,33 @@ struct NodeConfig
   // of "lidar" / "imu" does not touch.
   std::string lidar_topic = "lidar";
   std::string imu_topic = "imu";
+  // Per-point time of a PointCloud2 lidar (lidar_type 1), 2026-11-25. Empty
+  // (the default): the cloud carries none, and a message is one moment at its
+  // header stamp, as it always was (Isaac Sim's rendered scan). Named (the
+  // M20's "timestamp", a float64 of absolute seconds): every point is given
+  // its own time, and the messages go through a ScanMerger, which has the
+  // whole argument -- the M20's merged cloud is two lidars whose sweeps are in
+  // one message, 100 ms apart, or one of them missing, and the filter cannot
+  // step back to a point that comes late.
+  //
+  // lidar_merge_holdback is how long a scan waits for a late lidar's points
+  // before the filter gets it, s, and so how much older the odometry's newest
+  // point is; 0 waits for nothing and drops what comes late. lidar_scan_period
+  // is the length of the scans cut from the stream. Neither is read without
+  // lidar_time_field.
+  std::string lidar_time_field = "";
+  double lidar_merge_holdback = 0.0;
+  double lidar_scan_period = 0.1;
+  // The lidars of a merged cloud told apart (2026-11-25), so that a scan
+  // waits for the one that is late rather than the full holdback: an integer
+  // field of the cloud (the M20's "ring") and the bounds of each source's
+  // values, [b0, b1) [b1, b2) ... (the M20's [0, 96, 192]: front, rear). A
+  // source whose newest point is lidar_source_timeout behind the newest of all
+  // is down: WARNed once and no longer waited for. Empty field (the default):
+  // one fixed holdback, as before. Read only with lidar_time_field.
+  std::string lidar_source_field = "";
+  std::vector<int64_t> lidar_source_bounds;
+  double lidar_source_timeout = 0.5;
   // Scale applied to linear_acceleration. Livox IMU reports g-units -> ~10.0 to get m/s^2.
   // Sensors already in m/s^2 (e.g. Isaac Sim, z~9.81 at rest) must use 1.0, since the
   // filter's gravity magnitude is fixed at 9.81 (point_ekf.cpp). satu_acc is compared
@@ -213,6 +241,8 @@ public:
   // The publish half of timerCB, once the builder is MAPPING: TF, odometry,
   // the deskewed clouds, all for m_package.
   void publishResults();
+  // "ring 96-191": a scan-merger source as the logs name it
+  std::string sourceName(std::size_t i) const;
 
   // The `reset` service: throw the whole solution away and start over, in
   // place. Takes no lock against timerCB: it relies on sharing the default
@@ -247,6 +277,15 @@ private:
   // whether it was a WARN still waiting for its all-clear.
   int m_backlog_skipped = 0;
   double m_backlog_max_seen = 0.0;
+  // Cuts a PointCloud2 lidar with per-point time into scans
+  // (NodeConfig::lidar_time_field); null without one. Guarded by
+  // m_state_data.lidar_mutex, as the buffers it fills are: pc2CB feeds it,
+  // resetCB empties it, reportBacklog reads its counts.
+  std::unique_ptr<syncai_pointlio::ScanMerger> m_scan_merger;
+  // Whether the "no such time field in the cloud" error is out, pc2CB only
+  bool m_time_field_missing_logged = false;
+  // Whether the "no such source field in the cloud" error is out, pc2CB only
+  bool m_source_field_missing_logged = false;
   std::chrono::steady_clock::time_point m_last_backlog_report = std::chrono::steady_clock::now();
   bool m_backlog_warned = false;
   // The health log's window, when it started, whether a scan has been

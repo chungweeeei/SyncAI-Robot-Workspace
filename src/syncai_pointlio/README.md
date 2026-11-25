@@ -134,6 +134,115 @@ before" rather than an exact match; the error is a millisecond of motion. The
 MAP_INIT frame has no groups and is published with the end state alone, as
 before. Each deskew runs only when its output has a subscriber.
 
+### A cloud of two lidars
+
+The Lynx M20's `/LIDAR/POINTS_UDP` is its front and rear lidars merged by the
+vendor into one `PointCloud2` (192 rings: 0–95 front, 96–191 rear), every point
+with its own absolute time in a float64 `timestamp`. A message is **not one
+moment, and not even one sweep of each**. Bag of robot01, 2026-11-24, 816 s,
+8156 messages:
+
+| A message holds | Share |
+|---|---|
+| Both lidars' sweeps of the same 100 ms | 51.8 % |
+| The rear lidar's sweep one older (100 ms behind the front one's) | 15.2 % |
+| No rear sweep | 16.5 % |
+| Two rear sweeps (the message after one with none) | 16.5 % |
+
+The front sweep always ends ~22 ms before the header stamp, the message arrives
+~133 ms after it, and the state flips every 0.4 s at the median (the first 60 s
+were all "one older"). No point is repeated or lost between messages.
+
+Until 2026-11-25 the `PointCloud2` path took a message whole at its header
+stamp: a front point was on average 73 ms older than the time it was given, a
+rear one 106 ms (up to 316 ms), and nothing was deskewed. Reading the time per
+point is not enough by itself, because **the filter only steps forward**
+(`PointEKF::predictState` returns on `dt <= 0`): a rear sweep that comes one
+message late is 100 ms older than the front sweep already run, and would be
+projected with the pose of now.
+
+So with `lidar_time_field` the messages go through `ScanMerger`
+(`scan_merger.hpp`, ROS-free, `test/test_scan_merger.cpp`): the points wait,
+and a scan — every point of every lidar within one `lidar_scan_period` window
+of a fixed time grid, each with its own offset as `curvature` — is handed to
+the filter once the late lidar's points for it are in, `lidar_merge_holdback`
+behind the newest point seen at the latest. A point that still comes after its
+scan went is dropped and counted. On that bag a holdback of 100 ms lost
+0.006 % of the rear points, 110 ms none; the M20's is 120.
+
+**Waiting for the late lidar only** (2026-11-25). With the holdback alone,
+every scan waits the full 120 ms, though in most messages both lidars are
+already in. `lidar_source_field: ring` with `lidar_source_bounds: [0, 96,
+192]` tells the two apart: each lidar's newest point is tracked, and a scan
+goes as soon as both have passed its end — still the holdback behind the
+newest point at the latest. Bag of robot01, 2026-11-25 13:42, 434 s, 4329
+messages, the same hand-off replayed offline (`lidar_filter_num` 20) and
+measured in the node (`merge wait` on the health line, "The health log"):
+
+| How long a scan waited (newest point − scan end) | Holdback alone | Per lidar |
+|---|---|---|
+| Median / mean | 200 / 200 ms | 0 / 45 ms |
+| p90 / max | 200 / 400 ms | 100 / 300 ms |
+| Points dropped as late | 0 | 0 |
+
+On that bag the front sweep ends on the 100 ms grid's lines, so the holdback
+alone always waited two messages. Neither lidar's points ever went back in
+time (0 of either), which the per-lidar wait assumes; the rear's newest
+trailed the front's by 0 ms at the median, 100 ms at p90 (a sweep behind), 300
+ms at most. Replayed again through the repo's own `m20.yaml` (`map/m20_airy_1125_merged134219_final`): the same. The two runs' maps agree to 5 cm for 96 % of their wall cells, and
+Point-LIO's effective share and residual are the same (88 %, 3.10 cm): only
+when a scan is handed on changed, not what is in it.
+
+A lidar whose newest point falls more than `lidar_source_timeout` (0.5 s)
+behind the newest of all is **down**: one WARN, `lidar ring 96-191: its
+newest point is … s behind …`, the scans no longer wait for it, and one INFO
+when it is back. Point time decides it, not the wall clock, so a bag replayed
+at any rate reads the same. The same bag with the rear lidar's points cut out
+for 30 s by a relay: the WARN at the cut's 0.5 s, the INFO at its end
+(`back after 30.0 s`), no point dropped as late, and over the cut 1029 points
+a scan (1529 before), 90 % effective, 3.19 cm residual — a one-lidar Point-LIO
+that held, but is now said out loud. A ring outside every range is kept in
+its scan, counted, and WARNed every 5 s; a cloud without the field is one
+ERROR, and every scan then waits the full holdback.
+
+The same bag replayed through the mapping session on a Mac, before and after
+(`lidar_filter_num: 20`, both runs 10 scans/s, none skipped):
+
+| | Whole message at its stamp | Per-point time, merged |
+|---|---|---|
+| Effective points, median (min) | 80 % (71 %) | 88 % (79 %) |
+| Residual, median / p90 | 3.45 / 4.11 cm | 3.13 / 3.37 cm |
+| Residual turning at 1.0–1.5 rad/s | 4.00 cm | 3.27 cm |
+| pgo's loops accepted (of candidates) | 21 (40) | 30 (42) |
+| Correction at an accepted loop, median / max | 0.17 / 1.12 m | 0.03 / 0.09 m |
+| Loop rotation correction, median / max | 1.14 / 7.67° | 0.07 / 1.17° |
+| Wall thickness of the cleaned map, median (thinnest quarter) | 16.4 (12.4) cm | 9.9 (7.0) cm |
+| Points `clean_map` removed | 13.9 % | 6.2 % |
+
+(Wall thickness: the 5–95 % spread across each straight wall piece in 1 m
+cells, 0.8–1.6 m above the floor; a G23 map of another site measures 10.9
+(4.9) cm the same way.) The residual no longer grows with the turn rate, but
+it does not come back to the 1.3 cm of the first seconds standing still
+either: what is left is not timing, and is not explained yet (the two lidars'
+extrinsics are the vendor's, `t_il` is from a drawing).
+
+What it costs, and what is not done:
+
+- **The odometry's newest point is the merge wait older** than it could be,
+  on top of the ~155 ms the message is already late by: 45 ms on average with
+  the lidars told apart (above), 200 ms with the holdback alone. Nothing to
+  mapping. Neither is measured on the robot yet.
+- **Every point is its own EKF update now**, ~13 000 a second where the batch
+  path made ~38: the Livox's regime, and no scan was skipped on the Mac, but
+  `lidar_filter_num: 20` was measured on the M20's own computer under the
+  batch path and is not re-measured.
+- A scan's stamp is its last point's time, not the vendor's header stamp
+  (~22 ms later).
+- Whether the vendor already compensates the cloud for motion is not known
+  from the vendor; the replay indicates it does not (were the cloud already
+  compensated to its stamp, per-point time would have made the residual worse,
+  and it made it better).
+
 ### The local map
 
 Every scan point is matched against Point-LIO's **own** map, built from its
@@ -340,6 +449,7 @@ lio health: 10 scans in 1.0 s | pts 412 near 93% eff 81% (min 74%) res 1.21 cm |
 | `\|ba\|`, `\|bg\|`, `\|g\|` | Bias and gravity estimate norms | Biases walking off. `\|g\|` is 9.810 at `gravity_init_cov` 0 (see "Gravity and the accelerometer's clip"); it drifted when it was estimated |
 | `cost` | `timerCB` per processed scan, mean / max, against the lidar's 100 ms | See "Falling behind" |
 | `map … grids … pts evicted … refused …` | The local map's grids and points, the grids its LRU has dropped and the points it turned away because their voxel already held one, both since the last `reset` (see "The local map"); last on the line, so a parser of the earlier fields keeps their positions (`refused` came after `evicted`) | `pts` still growing on a route already driven: the scans are landing in voxels the earlier laps left empty — a pose off the surfaces it mapped. `refused` climbs by roughly the scan's points every scan once a place is mapped |
+| `merge wait … max … ms` | With a scan merger (`lidar_time_field`) only, after `map`: per scan, how far the newest point seen was past the scan's end when it went to the filter (point time), mean / largest — how much older the odometry is for waiting on a late lidar | Near `lidar_merge_holdback` + a sweep for long: one lidar a sweep behind, or the lidars not told apart (`lidar_source_field`) |
 
 The line is a **WARN** with every reason that holds appended after ` -- `
 (`speed 2.13 m/s over health.max_speed 1.50`, `3 IMU samples with |acc| 39.3 >=
@@ -386,15 +496,20 @@ A model file may also override a shared key (the M20's `lidar_filter_num` 20,
 for a cloud 3–5× a MID360's) and the input topics (above). **On the M20**
 (robot01, 2026-11-24, stationary, 25 s): 10 scans/s matched at 97–99 %
 effective with a 1.4 cm residual, `|a|` 9.8, `lio_odom` at 10 Hz drifting under
-1 cm — each scan still one batch update, since the `PointCloud2` reader does not
-read the cloud's per-point `timestamp` yet. A model with no file fails the launch
+1 cm. Its cloud's per-point `timestamp` is read since 2026-11-25
+(`lidar_time_field`, "A cloud of two lidars" below). A model with no file fails the launch
 (`config/models/README.md`); `model_params_file:=` points at another file.
 
 | Parameter | Default (YAML) | Launch value | Notes |
 |---|---|---|---|
 | `world_frame` | `pointlio_odom` | `<robot_id>/pointlio_odom` | The YAML said `lidar` until 2026-10, and the code default still does; `pointlio_odom` is what `syncai_mapping`'s `pgo_node` derives in a bare run |
 | `body_frame` | `pointlio_body` | `<robot_id>/pointlio_body` | The lidar's IMU (see "The frames"); `body` until 2026-10, and still the code default |
-| `lidar_type` | `0` (`g23.yaml`) | | `0` Livox `CustomMsg`, `1` `PointCloud2` (kept for the Isaac Sim path; no per-point time) |
+| `lidar_type` | `0` (`g23.yaml`) | | `0` Livox `CustomMsg`, `1` `PointCloud2` (Isaac Sim's has no per-point time; the M20's does, `lidar_time_field`) |
+| `lidar_time_field` | `""` (`timestamp` in `m20.yaml`) | | `lidar_type: 1` only: the cloud's float64 field of absolute seconds per point. Empty = none, a message is one moment at its header stamp. Named, every point gets its own time and the stream is cut into scans by it ("A cloud of two lidars"); a cloud without that field logs one error and is taken whole |
+| `lidar_merge_holdback` | `0.0` (`0.12` in `m20.yaml`) | | With `lidar_time_field`: seconds a scan waits behind the newest point before the filter gets it, for a lidar whose points come late — with `lidar_source_field`, the longest it waits. `0` waits for nothing (with sources: for nothing past them) and drops what comes after its scan went (counted in a WARN every 5 s) |
+| `lidar_scan_period` | `0.1` | | With `lidar_time_field`: the length of the scans cut from the stream, s, on a grid of whole multiples of it |
+| `lidar_source_field` / `lidar_source_bounds` | `""` / `[0]` (`ring` / `[0, 96, 192]` in `m20.yaml`) | | With `lidar_time_field`: an integer field of the cloud and the bounds of each lidar's values, `[b0, b1)` `[b1, b2)` …, so a scan waits only for the late lidar ("A cloud of two lidars"). Empty field = the holdback alone. `[0]` is a placeholder: an empty list has no type for the params parser. Bounds that do not increase fail the node at start |
+| `lidar_source_timeout` | `0.5` | | With `lidar_source_field`: a lidar this many seconds (point time) behind the newest point of all is down — WARNed once, no longer waited for |
 | `imu_acc_scale` | `9.81` (`g23.yaml`; `1.0` in `m20.yaml`; the code default is `10.0`) | | Livox IMU accel is in g → m/s². Sensors already in m/s² need `1.0`; the filter's gravity is 9.81 (and stays there, see `gravity_init_cov`). robot01's YAML says `9.81`. `satu_acc` is compared **after** scaling. |
 | `print_time_cost` | `false` | | Logs, per frame, `process()` time and the whole `timerCB` (process + deskew + publish) as a WARN. The total is the one to compare with the input queues: the subscriptions wait for all of it. |
 | `max_lidar_backlog` / `max_lidar_skip` | `0.3` / `2` | | The backlog guard (see "Falling behind"): beyond `max_lidar_backlog` seconds of buffered scans the oldest are skipped, at most `max_lidar_skip` in a row, their IMU still fused. **Write a float** for the first. `<= 0.0` processes every scan however late |
@@ -451,7 +566,13 @@ ros2 run tf2_ros tf2_echo <robot_id>/pointlio_odom <robot_id>/pointlio_body
 | `lio health: 10 scans in 1.0 s \| pts … near … eff …` | The health log, once a second (see "The health log"); a WARN with ` -- <reasons>` when one holds |
 | `lio health: no scan processed in the last 1.0 s (status …, lidar buffer N scans, IMU buffer M samples)` | Mapping stopped getting scans: lidar 0 = none arriving, lidar > 0 = the IMU not covering them. Once, until `lio health: scans processed again` |
 | `IMU gap of N ms (samples lost before this node?)` | Two consecutive IMU stamps more than 30 ms apart (throttled to 1 s). The MID360 alone stays under ~23 ms; a gap past that is samples dropped by the driver, DDS or this node's queue — the filter coasted through it without a measurement |
-| `PointCloud2 input has no per-point time` | `lidar_type: 1` — batch update per scan, expected on Isaac |
+| `PointCloud2 input has no per-point time` | `lidar_type: 1` with no `lidar_time_field` — batch update per scan, expected on Isaac |
+| `Per-point time from the cloud's 'timestamp' field: scans of 100 ms cut by time, handed to the filter once every lidar has passed their end (ring 0-95, ring 96-191), at most 120 ms behind the newest point; …` | `lidar_time_field` and `lidar_source_field` are set (the M20): the scan merger waits per lidar. Without the second the line ends `handed to the filter once 120 ms behind the newest point` |
+| `lidar ring 96-191: its newest point is 0.62 s behind the newest of all (lidar_source_timeout 0.50 s); scans no longer wait for it …` | That lidar sent no point for over the timeout: stopped, unplugged, or dropped by the vendor's merge. The scans go on without it. Once, until `lidar ring 96-191 is back after N s without points` |
+| `N of M lidar points in the last 5 s had a ring outside every range of lidar_source_bounds` | The cloud's numbering no longer matches the bounds; those points are kept but move no lidar's progress |
+| `lidar_source_field '…' is not an integer field of …` | The field named in the params is not in the cloud; every scan waits the full holdback |
+| `lidar_time_field '…' is not a float64 field of …` | The field named in the params is not in the cloud; the line lists the fields it has. Every message is then one moment at its header stamp, with no motion compensation |
+| `N of M lidar points (x %) … came after their scan had gone to the filter` | A lidar's points arrived more than `lidar_merge_holdback` behind the newest and were dropped; the line has how far behind. Raise the holdback to that, at the price of older odometry |
 | `[resetCB] LIO reset; re-initialising IMU (robot must be still).` | A `reset` landed (normally from `pgo/reset_mapping`) |
 | `t_il needs 3 elements` / `r_il needs 9 elements` | Malformed extrinsic in the params file; the default was kept |
 | `lidar backlog up to 0.45 s (max_lidar_backlog 0.30 s): skipped N scans in the last 5 s …` | The node is not keeping up with the lidar and the guard is skipping scans (every 5 s while it lasts). A backlog that keeps growing from one line to the next means it is below 1 / (`max_lidar_skip` + 1) of real time — look at the CPU |

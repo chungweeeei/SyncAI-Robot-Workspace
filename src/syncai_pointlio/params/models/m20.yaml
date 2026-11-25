@@ -22,11 +22,42 @@
     lidar_topic: "/LIDAR/POINTS_UDP"
     imu_topic: "/IMU"
 
-    # PointCloud2. The cloud does carry a per-point time -- a float64 field
-    # `timestamp`, absolute seconds, spanning ~0.106 s and ending ~0.02 s before
-    # the header stamp -- but the node's PointCloud2 reader does not read it yet,
-    # so every scan is one batch update with no motion compensation.
+    # PointCloud2, two lidars merged by the vendor: 192 rings, 0-95 the front
+    # lidar and 96-191 the rear one, ~103 k points when both sweeps are in it
+    # (46 k-156 k seen), each point with its own absolute time in the float64
+    # field `timestamp`.
     lidar_type: 1
+
+    # Read that time, and cut the stream into scans by it (2026-11-25;
+    # scan_merger.hpp has the argument). A message is not one moment. Bag of
+    # robot01, 2026-11-24, 816 s, 8156 messages: the front lidar's 100 ms sweep
+    # always ends ~22 ms before the header stamp, and the rear lidar's is in
+    # the same window in 52 % of the messages, one sweep (100 ms) older in
+    # 15 %, absent in 16.5 % and two sweeps long in the 16.5 % after those; the
+    # message itself arrives ~133 ms after its stamp. Taken whole at the header
+    # stamp (until this was read), a front point was 73 ms older than the time
+    # it was given on average and a rear point 106 ms, up to 316 ms, with no
+    # motion compensation: an offline map of that bag had walls ~2x a G23
+    # map's thickness.
+    #
+    # lidar_merge_holdback: the longest a scan waits for the rear lidar's
+    # points before the filter gets it. On that bag 100 ms still lost 0.006 %
+    # of the rear points (it ends ~2 ms after the front one) and 110 ms none;
+    # 120 leaves a margin.
+    #
+    # lidar_source_*: the wait is per lidar (2026-11-25), told apart by ring,
+    # so a scan goes as soon as both lidars have passed its end -- the full
+    # 120 ms only while the rear one is a sweep behind -- and a lidar that
+    # stops is WARNed rather than mapped without in silence. A lidar is down
+    # 0.5 s behind the other: on the 11-24 bag the rear one was never more
+    # than a sweep and a half (~0.2 s) behind; on the 11-25 13:42 bag, 0.3 s
+    # at most. That bag replayed: a scan waited 45 ms on average (200 ms with
+    # the holdback alone), nothing dropped as late, the map the same (README).
+    lidar_time_field: "timestamp"
+    lidar_merge_holdback: 0.12
+    lidar_source_field: "ring"
+    lidar_source_bounds: [0, 96, 192]
+    lidar_source_timeout: 0.5
     # The M20's IMU reports m/s^2 already (|a| = 9.77 at rest, 2026-11-24), not
     # the Livox's g: the G23's 9.81 here would read gravity as ~96 m/s^2.
     imu_acc_scale: 1.0

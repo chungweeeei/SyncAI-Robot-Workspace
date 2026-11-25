@@ -147,6 +147,13 @@ if(BUILD_TESTING)
   # sample.
   ament_add_gtest(test_fixed_gravity test/test_fixed_gravity.cpp)
   target_link_libraries(test_fixed_gravity pointlio_map_builder)
+
+  # ROS-free: the scan merger (header-only) against the shapes the Lynx M20's
+  # merged cloud takes -- both lidars in one window, the rear one a sweep
+  # behind, absent, two sweeps at once -- late points, a restarted stream.
+  # Linked to the core only for its PCL / Eigen include paths.
+  ament_add_gtest(test_scan_merger test/test_scan_merger.cpp)
+  target_link_libraries(test_scan_merger pointlio_map_builder)
 endif()
 
 ament_package()

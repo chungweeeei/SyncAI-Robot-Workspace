@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <stdexcept>
 #include <string>
 
 using namespace std::chrono_literals;
@@ -76,6 +77,58 @@ PointLIONode::PointLIONode() : Node("pointlio_node")
     RCLCPP_INFO(
       this->get_logger(), "[PointLIONode][%s] Lidar input: sensor_msgs/PointCloud2 (%s)", __func__,
       m_pc2_sub->get_topic_name());
+    if (!m_node_config.lidar_time_field.empty()) {
+      if (m_node_config.lidar_scan_period <= 0.0 || m_node_config.lidar_merge_holdback < 0.0) {
+        // A scan of no length never ends, and a negative wait hands a scan on
+        // before its own points are in: neither is a value to run on.
+        throw std::invalid_argument(
+          "lidar_scan_period must be > 0 and lidar_merge_holdback >= 0 (got " +
+          std::to_string(m_node_config.lidar_scan_period) + " s, " +
+          std::to_string(m_node_config.lidar_merge_holdback) + " s)");
+      }
+      syncai_pointlio::ScanMerger::Config merger_config;
+      merger_config.holdback = m_node_config.lidar_merge_holdback;
+      merger_config.scan_period = m_node_config.lidar_scan_period;
+      if (!m_node_config.lidar_source_field.empty()) {
+        // Sources that overlap or are empty would put a point down to the
+        // wrong lidar, and a timeout of nothing marks every source down at
+        // once: neither is a value to run on.
+        const auto & bounds = m_node_config.lidar_source_bounds;
+        bool increasing = bounds.size() >= 2;
+        for (std::size_t i = 1; i < bounds.size(); ++i) increasing &= bounds[i] > bounds[i - 1];
+        if (!increasing || m_node_config.lidar_source_timeout <= 0.0) {
+          throw std::invalid_argument(
+            "lidar_source_field '" + m_node_config.lidar_source_field +
+            "' needs lidar_source_bounds of at least two increasing values (got " +
+            std::to_string(bounds.size()) + ") and lidar_source_timeout > 0 (got " +
+            std::to_string(m_node_config.lidar_source_timeout) + " s)");
+        }
+        merger_config.source_bounds.assign(bounds.begin(), bounds.end());
+        merger_config.source_timeout = m_node_config.lidar_source_timeout;
+      }
+      m_scan_merger = std::make_unique<syncai_pointlio::ScanMerger>(merger_config);
+      if (m_scan_merger->numSources() > 0) {
+        std::string ranges;
+        for (std::size_t i = 0; i < m_scan_merger->numSources(); ++i) {
+          ranges += (i ? ", " : "") + sourceName(i);
+        }
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[PointLIONode][%s] Per-point time from the cloud's '%s' field: scans of %.0f ms cut by "
+          "time, handed to the filter once every lidar has passed their end (%s), at most %.0f ms "
+          "behind the newest point; a lidar %.1f s behind the others is not waited for",
+          __func__, m_node_config.lidar_time_field.c_str(), m_node_config.lidar_scan_period * 1e3,
+          ranges.c_str(), m_node_config.lidar_merge_holdback * 1e3,
+          m_node_config.lidar_source_timeout);
+      } else {
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[PointLIONode][%s] Per-point time from the cloud's '%s' field: scans of %.0f ms cut by "
+          "time, handed to the filter once %.0f ms behind the newest point",
+          __func__, m_node_config.lidar_time_field.c_str(), m_node_config.lidar_scan_period * 1e3,
+          m_node_config.lidar_merge_holdback * 1e3);
+      }
+    }
   } else {
     m_lidar_sub = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(
       m_node_config.lidar_topic, lidar_qos,
@@ -142,6 +195,19 @@ void PointLIONode::loadParameters()
   // Input topics; NodeConfig has why they are parameters
   m_node_config.lidar_topic = this->declare_parameter("lidar_topic", m_node_config.lidar_topic);
   m_node_config.imu_topic = this->declare_parameter("imu_topic", m_node_config.imu_topic);
+  // Per-point time of a PointCloud2 lidar and the scan merger; NodeConfig has the argument
+  m_node_config.lidar_time_field =
+    this->declare_parameter("lidar_time_field", m_node_config.lidar_time_field);
+  m_node_config.lidar_merge_holdback =
+    this->declare_parameter("lidar_merge_holdback", m_node_config.lidar_merge_holdback);
+  m_node_config.lidar_scan_period =
+    this->declare_parameter("lidar_scan_period", m_node_config.lidar_scan_period);
+  m_node_config.lidar_source_field =
+    this->declare_parameter("lidar_source_field", m_node_config.lidar_source_field);
+  m_node_config.lidar_source_bounds =
+    this->declare_parameter("lidar_source_bounds", std::vector<int64_t>{});
+  m_node_config.lidar_source_timeout =
+    this->declare_parameter("lidar_source_timeout", m_node_config.lidar_source_timeout);
   m_node_config.imu_acc_scale =
     this->declare_parameter("imu_acc_scale", m_node_config.imu_acc_scale);
   // The backlog guard; NodeConfig has the argument.
@@ -324,10 +390,95 @@ void PointLIONode::pc2CB(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
   // CloudType => pcl::PointCloud<pcl::PointXYZINormal>
   CloudType::Ptr dense;
+  std::vector<double> times, dense_times;
+  std::vector<long> sources;
+  const bool want_sources = m_scan_merger && m_scan_merger->numSources() > 0;
   CloudType::Ptr cloud = Utils::pc2ToPCL(
     msg, m_builder_config.lidar_filter_num, m_builder_config.lidar_min_range,
-    m_builder_config.lidar_max_range, m_node_config.dense_filter_num, &dense);
-  // PointCloud2 carries no per-point time (curvature = 0): every point in the
+    m_builder_config.lidar_max_range, m_node_config.dense_filter_num, &dense,
+    m_node_config.lidar_time_field, &times, &dense_times,
+    want_sources ? m_node_config.lidar_source_field : std::string(),
+    want_sources ? &sources : nullptr);
+  if (
+    want_sources && sources.size() != cloud->size() && !cloud->empty() &&
+    !m_source_field_missing_logged) {
+    // Named in the params and not in the cloud (or not an integer): said once.
+    // The merger then sees no source move, so every one goes down after
+    // lidar_source_timeout and it falls back to the fixed holdback.
+    std::string fields;
+    for (const auto & f : msg->fields) fields += (fields.empty() ? "" : ", ") + f.name;
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "[PointLIONode][%s] lidar_source_field '%s' is not an integer field of %s (its fields: "
+      "%s); the lidars cannot be told apart, so every scan waits the full lidar_merge_holdback "
+      "(%.0f ms)",
+      __func__, m_node_config.lidar_source_field.c_str(), m_pc2_sub->get_topic_name(),
+      fields.c_str(), m_node_config.lidar_merge_holdback * 1e3);
+    m_source_field_missing_logged = true;
+  }
+
+  // A cloud with per-point time: not one scan but a piece of the point stream,
+  // which the merger cuts into scans by time (ScanMerger has why a message
+  // cannot be taken whole). Each scan's stamp is its window's start and its
+  // points' curvature their own offset into it, what lidarCB hands on for a
+  // Livox.
+  if (m_scan_merger && times.size() == cloud->size() && !cloud->empty()) {
+    std::lock_guard<std::mutex> lock(m_state_data.lidar_mutex);
+    std::vector<syncai_pointlio::ScanMerger::Scan> scans;
+    syncai_pointlio::ScanMerger::Timed dense_in;
+    if (dense != cloud && dense_times.size() == dense->size()) dense_in = {dense, &dense_times};
+    syncai_pointlio::ScanMerger::Timed sparse_in{cloud, &times};
+    if (want_sources) sparse_in.sources = &sources;
+    m_scan_merger->add(sparse_in, dense_in, scans);
+    for (const auto & e : m_scan_merger->takeEvents()) {
+      if (e.up) {
+        RCLCPP_INFO(
+          this->get_logger(),
+          "[PointLIONode][%s] lidar %s is back after %.1f s without points; scans wait for it "
+          "again",
+          __func__, sourceName(e.source).c_str(), e.seconds);
+      } else {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[PointLIONode][%s] lidar %s: its newest point is %.2f s behind the newest of all "
+          "(lidar_source_timeout %.2f s); scans no longer wait for it and are made without it "
+          "until it is back -- is that lidar running?",
+          __func__, sourceName(e.source).c_str(), e.seconds, m_node_config.lidar_source_timeout);
+      }
+    }
+    for (auto & scan : scans) {
+      if (scan.start_time < m_state_data.last_lidar_time) {
+        // The merger started over on older times (a bag played again): what
+        // is still buffered is the old stream's, as in the whole-message path
+        // below.
+        RCLCPP_WARN(
+          this->get_logger(), "[PointLIONode][%s] Lidar Message is out of order", __func__);
+        std::deque<std::pair<double, pcl::PointCloud<pcl::PointXYZINormal>::Ptr>>().swap(
+          m_state_data.lidar_buffer);
+        m_state_data.lidar_dense_buffer.clear();
+      }
+      m_state_data.lidar_buffer.emplace_back(scan.start_time, scan.cloud);
+      m_state_data.lidar_dense_buffer.push_back(scan.dense);
+      m_state_data.last_lidar_time = scan.start_time;
+    }
+    return;
+  }
+  if (m_scan_merger && !cloud->empty() && !m_time_field_missing_logged) {
+    // Named in the params and not in the cloud (or not a float64): said once,
+    // with what the cloud does carry, and the message is taken whole below.
+    std::string fields;
+    for (const auto & f : msg->fields) fields += (fields.empty() ? "" : ", ") + f.name;
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "[PointLIONode][%s] lidar_time_field '%s' is not a float64 field of %s (its fields: %s); "
+      "every message is taken as one moment at its header stamp instead, with no motion "
+      "compensation",
+      __func__, m_node_config.lidar_time_field.c_str(), m_pc2_sub->get_topic_name(),
+      fields.c_str());
+    m_time_field_missing_logged = true;
+  }
+
+  // PointCloud2 with no per-point time (curvature = 0): every point in the
   // scan shares one timestamp, so the point-by-point update degenerates into a
   // single batch update per scan (no distortion compensation).
   RCLCPP_WARN_ONCE(
@@ -578,6 +729,44 @@ void PointLIONode::reportBacklog()
   m_backlog_skipped = 0;
   m_backlog_max_seen = 0.0;
   m_last_backlog_report = now;
+
+  // The scan merger's losses over the same window. A late point is one whose
+  // scan had already gone to the filter: dropped, since the filter cannot step
+  // back to it, so the map and the odometry are that lidar's short for the
+  // moment.
+  if (m_scan_merger) {
+    syncai_pointlio::ScanMerger::Stats stats;
+    {
+      std::lock_guard<std::mutex> lock(m_state_data.lidar_mutex);
+      stats = m_scan_merger->takeStats();
+    }
+    if (stats.late_points > 0) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[PointLIONode][%s] %zu of %zu lidar points (%.1f %%) in the last %.0f s came after "
+        "their scan had gone to the filter, up to %.0f ms behind it, and were dropped: a lidar's "
+        "points are arriving later than lidar_merge_holdback (%.0f ms) waits for",
+        __func__, stats.late_points, stats.points, 100.0 * stats.late_points / stats.points, window,
+        stats.max_late * 1e3, m_node_config.lidar_merge_holdback * 1e3);
+    }
+    if (stats.unmatched_points > 0) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[PointLIONode][%s] %zu of %zu lidar points in the last %.0f s had a %s outside every "
+        "range of lidar_source_bounds, or none: they are kept, but no lidar's progress is read "
+        "from them -- has the sensor's numbering changed?",
+        __func__, stats.unmatched_points, stats.points, window,
+        m_node_config.lidar_source_field.c_str());
+    }
+    if (stats.restarts > 0) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[PointLIONode][%s] the lidar's point times went back by more than %.1f s %zu time(s) "
+        "in the last %.0f s (a bag played again, or the sensor's clock was set): the scan "
+        "merger started over on the new times",
+        __func__, m_scan_merger->config().restart_gap, stats.restarts, window);
+    }
+  }
 }
 
 void PointLIONode::recordHealth(double cost_ms)
@@ -718,7 +907,8 @@ void PointLIONode::reportHealth()
   //  gravity norms | timerCB cost per scan | the local map's grids, points,
   //  the grids its LRU has dropped and the points it refused because their
   //  voxel was taken, both since the last reset (last, so a parser of the
-  //  older lines keeps its field positions; refused came after evicted).
+  //  older lines keeps its field positions; refused came after evicted) |
+  //  with a scan merger, its mean and longest wait (appended below).
   const double scans = w.scans;
   char line[512];
   std::snprintf(
@@ -732,10 +922,27 @@ void PointLIONode::reportHealth()
     w.gyro_abs_max, x.v.norm(), w.speed_max, std_p_cm, std_r_deg, x.ba.norm(), x.bg.norm(),
     x.g.norm(), w.cost_ms_sum / scans, w.cost_ms_max, map.numGrids(), map.numPoints(),
     map.numEvicted(), map.numRefused());
+  // The scan merger's wait, last for the same reason: how far the newest
+  // point was past each scan's end when it went to the filter, in point time
+  // -- how much older the odometry is for waiting on a late lidar.
+  std::string merge_wait;
+  if (m_scan_merger) {
+    syncai_pointlio::ScanMerger::Wait wait;
+    {
+      std::lock_guard<std::mutex> lock(m_state_data.lidar_mutex);
+      wait = m_scan_merger->takeWait();
+    }
+    if (wait.scans > 0) {
+      std::snprintf(
+        buf, sizeof(buf), " | merge wait %.0f max %.0f ms", 1e3 * wait.sum / wait.scans,
+        1e3 * wait.max);
+      merge_wait = buf;
+    }
+  }
   if (reasons.empty()) {
-    RCLCPP_INFO(this->get_logger(), "%s", line);
+    RCLCPP_INFO(this->get_logger(), "%s%s", line, merge_wait.c_str());
   } else {
-    RCLCPP_WARN(this->get_logger(), "%s%s", line, reasons.c_str());
+    RCLCPP_WARN(this->get_logger(), "%s%s%s", line, merge_wait.c_str(), reasons.c_str());
   }
 }
 
@@ -826,6 +1033,8 @@ void PointLIONode::resetCB(
       m_state_data.lidar_buffer);
     m_state_data.lidar_dense_buffer.clear();
     m_state_data.last_lidar_time = -1.0;
+    // The points still waiting for their scan belong to the old run too
+    if (m_scan_merger) m_scan_merger->reset();
   }
 
   // Easy to miss and it silently defeats the timestamp gate: syncPackage()
@@ -858,6 +1067,13 @@ void PointLIONode::resetCB(
   response->success = true;
   response->message = "LIO reset; re-initialising IMU (robot must be still).";
   RCLCPP_WARN(this->get_logger(), "[PointLIONode][resetCB] %s", response->message.c_str());
+}
+
+std::string PointLIONode::sourceName(std::size_t i) const
+{
+  const auto range = m_scan_merger->sourceRange(i);
+  return m_node_config.lidar_source_field + " " + std::to_string(range.first) + "-" +
+         std::to_string(range.second - 1);
 }
 
 }  // namespace syncai_pointlio

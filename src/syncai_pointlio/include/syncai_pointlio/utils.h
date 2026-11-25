@@ -1,12 +1,15 @@
 #pragma once
+#include <builtin_interfaces/msg/time.hpp>
+#include <livox_ros_driver2/msg/custom_msg.hpp>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/header.hpp>
+
 #include <iomanip>
 #include <iostream>
-#include <pcl/point_types.h>
-#include <pcl/point_cloud.h>
-#include <std_msgs/msg/header.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <livox_ros_driver2/msg/custom_msg.hpp>
-#include <builtin_interfaces/msg/time.hpp>
+#include <string>
+#include <vector>
 
 #define RESET "\033[0m"
 #define BLACK "\033[30m"  /* Black */
@@ -30,8 +33,25 @@ public:
     // filter_num is a multiple of it, the main cloud's points are a subset.
     static pcl::PointCloud<pcl::PointXYZINormal>::Ptr livox2PCL(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg, int filter_num, double min_range = 0.5, double max_range = 20.0, int dense_filter_num = 0, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out = nullptr);
     // PointCloud2 path for sensors that publish sensor_msgs/PointCloud2 (e.g. Isaac Sim):
-    // no per-point time, so curvature (per-point time offset in ms) is set to 0 -> treated
-    // as an instantaneous snapshot (no motion deskew), matching a full rendered scan.
-    static pcl::PointCloud<pcl::PointXYZINormal>::Ptr pc2ToPCL(const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range = 0.5, double max_range = 20.0, int dense_filter_num = 0, pcl::PointCloud<pcl::PointXYZINormal>::Ptr *dense_out = nullptr);
+    // curvature (per-point time offset in ms) is set to 0 -> with nothing else, the cloud is
+    // an instantaneous snapshot (no motion deskew), matching a full rendered scan.
+    //
+    // With time_field (2026-11-25) each kept point's absolute time, seconds, is read from that
+    // float64 field into *times (and *dense_times for the dense cloud), index for index with
+    // the cloud -- for a cloud that does carry it (the Lynx M20's `timestamp`), which
+    // ScanMerger then cuts into scans by. A point whose time is not finite is skipped. When the
+    // cloud has no such float64 field, *times comes back empty and the caller decides.
+    //
+    // With source_field (2026-11-25) each kept point of the main cloud also gets that integer
+    // field's value in *sources -- which lidar of a merged cloud it came from (the M20's
+    // `ring`: 0-95 front, 96-191 rear), for ScanMerger to wait for the late one. Empty when
+    // the cloud has no such integer field.
+    static pcl::PointCloud<pcl::PointXYZINormal>::Ptr pc2ToPCL(
+      const sensor_msgs::msg::PointCloud2::SharedPtr msg, int filter_num, double min_range = 0.5,
+      double max_range = 20.0, int dense_filter_num = 0,
+      pcl::PointCloud<pcl::PointXYZINormal>::Ptr * dense_out = nullptr,
+      const std::string & time_field = "", std::vector<double> * times = nullptr,
+      std::vector<double> * dense_times = nullptr, const std::string & source_field = "",
+      std::vector<long> * sources = nullptr);
     static builtin_interfaces::msg::Time getTime(const double& sec);
 };
