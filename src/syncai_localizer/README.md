@@ -9,7 +9,9 @@ broadcasts the result as the `map → <robot_id>/pointlio_odom` correction that
 `relocalize_check`, listens on `initialpose`, applies the INI's
 `[initial_pose]` as a boot guess, and serves `auto_localize`, a hint-free
 global search for a kidnapped robot, and `reset_odometry`, which zeroes a
-diverged Point-LIO and carries the map pose across. In the mapping session `syncai_mapping`'s
+diverged Point-LIO and carries the map pose across. Since 2026-11 it also
+reports what it knows about its own estimate on the latched
+`localization_status`, for `syncai_robot_state`'s state machine. In the mapping session `syncai_mapping`'s
 `pgo_node` owns the same TF instead; this node is never up at the same time.
 
 ```
@@ -46,7 +48,7 @@ level up from where most docs used to put it:
 | node | `/robot01/localizer_node` |
 | services | `/robot01/relocalize`, `/robot01/relocalize_check` |
 | subscribed | `/robot01/initialpose` |
-| published | `/robot01/map_cloud` |
+| published | `/robot01/map_cloud`, `/robot01/localization_status` |
 | TF | `map → robot01/pointlio_odom` |
 
 It was `<robot_id>/localizer` until fork commit `3f5f01b` (2026-07-29) dropped
@@ -91,9 +93,57 @@ silence.
 | `auto_localize` | `syncai_common/srv/AutoLocalize` | Kidnap recovery, no hint. **Blocks** until a pose is found *and* the timer has registered against it, or fails with localization unchanged. See below. |
 | `reset_odometry` | `syncai_common/srv/ResetOdometry` | Zero the odometry, keep the map pose: calls `pointlio/reset` and re-seeds the new run — or, with `skip_seed`, runs `auto_localize`'s search on it (the backend's `POST /api/v1/localization/auto`). **Blocks**, robot **stationary**. See below. |
 | `relocalize_check` | `syncai_common/srv/IsValid` | `code: 1` always answers `valid: true` (liveness); anything else answers whether the first registration after the last guess converged. **The stack's only localization-quality signal.** |
+| `localization_status` | `syncai_common/msg/LocalizationStatus`, depth 1, RELIABLE + TRANSIENT_LOCAL | The loaded map's name, `relocalize_check`'s answer and `pose_epoch`, published **on a change only** (2026-11). For `syncai_robot_state`. See "Localization status". |
 
 Nothing is broadcast until the first cloud/odom pair has arrived; with no map
 loaded the TF stays at identity.
+
+### Localization status: facts for the robot's state machine
+
+Since 2026-11 `syncai_robot_state` owns the robot's state machine, and a robot
+is `UNINITIALIZED` until an **operator** has confirmed its position
+(`set_robot_state`): a navigation task, a scheduled one included, is refused
+before that. This node's part is to report facts, on `localization_status`:
+
+| Field | What it is |
+|---|---|
+| `map` | The loaded map's directory name (`mapNameFromPcdPath`); `""` with no map |
+| `converged` | `relocalize_check`'s answer for `code: 0`. The Confirm control is enabled on it |
+| `pose_epoch` | Names the estimate. Changes on every map load (`setLoadedMap`) and every guess queued — the boot guess, `relocalize`, `initialpose`, `auto_localize`, `reset_odometry` — i.e. wherever `localize_success` is cleared |
+
+`syncai_robot_state` remembers the `pose_epoch` a confirmation was given at
+and treats any other value as "not confirmed". So a map switch, a new initial
+pose and a restarted localizer all withdraw the confirmation without an event
+that could be missed, and this node holds no "confirmed" flag — a task never
+touches the localizer, so it is the wrong place to judge whether one may
+start.
+
+Three things that are deliberate:
+
+- **A topic, not the service.** `relocalize_check` is a poll, and a guess that
+  is queued and converges between two asks (one 0.2 s round is enough) is
+  invisible to a poller. That is the event a confirmation must be withdrawn
+  on.
+- **The epoch is seeded from the wall clock at start-up.** Counted from zero,
+  "boot, map load, boot guess" reaches the same value on every run, and a
+  confirmation would survive a restart of this node.
+- **A converged boot guess confirms nothing.** `converged` turning true by
+  itself — the last pose file's guess landing — only makes the position
+  confirmable. A robot carried elsewhere overnight converges too, somewhere.
+
+`converged` is not a running quality signal: like `relocalize_check` it stays
+true through a `LOST` or `DEGRADED` stretch, until the next guess. Going lost
+does not withdraw a confirmation; the health thresholds are not replay-verified
+and a false alarm would fail every scheduled task behind it.
+
+Each publish logs one `localization_status:` line saying which of the three
+moved, with the old and new values — the record of why a confirmed robot went
+back to `UNINITIALIZED`.
+
+```bash
+ros2 topic echo --qos-reliability reliable --qos-durability transient_local \
+  /<robot_id>/localization_status
+```
 
 ### Three ways a guess arrives, two of them planar
 
@@ -488,7 +538,8 @@ numbers, `DEGRADED` shows in the 08:08 round and `LOST` from about 08:09:40;
 the 07:xx rounds (2.8–3.7 cm mean, 11–15 cm max) stay `OK` — lower the two
 correction thresholds if that slower creep is what should show.
 
-**Log only.** Nothing broadcast changes, nothing is stopped or reset, and
+**Log only.** Nothing broadcast changes (`localization_status` carries
+`relocalize_check`'s answer, not this state), nothing is stopped or reset, and
 `relocalize_check` keeps its meaning; `RobotState.localization_valid` is still
 TF presence. Acting on the state (cancel navigation, call `reset_odometry`) is
 a separate decision, after the thresholds have been read against real runs.
@@ -850,6 +901,13 @@ replay-A runs on the same `syncai_pointlio` build.
   `RobotState.localization_valid` is TF presence only and reads true against a
   map the robot was never localized in; do not turn it into a quality signal
   from anything but `relocalize_check`.
+- **`localization_status` is a cross-repository contract** (2026-11):
+  `syncai_robot_state` withdraws an operator's confirmation on `pose_epoch`
+  and allows one on `converged`. A new way to queue a guess must bump
+  `pose_epoch` where it clears `localize_success`, or the robot keeps a
+  confirmation of a pose it no longer has. The reader asks for
+  TRANSIENT_LOCAL, so relaxing the publisher to VOLATILE stops the match
+  silently.
 - **`relocCB` takes the raw 6-DOF pose; the other two paths are planar.** A
   `relocalize` from a 2D source must be followed by an `initialpose`, or the
   tilted mount leaves rough GICP retrying a flat guess forever.

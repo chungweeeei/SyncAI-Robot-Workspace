@@ -142,6 +142,22 @@ LocalizerNode::LocalizerNode() : Node("localizer_node")
   m_map_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "map_cloud", rclcpp::QoS(1).transient_local());
 
+  // What this node knows about its own estimate, as facts: which map, whether the last guess
+  // converged (relocalize_check's answer), and an epoch that names the estimate. Latched, so
+  // syncai_robot_state learns it whenever it starts, and published on a change only.
+  //
+  // It exists because relocalize_check is a poll: a guess that is queued and converges between
+  // two asks is invisible to a poller, and that is the event an operator's confirmation of the
+  // position has to be withdrawn on. This node still judges nothing -- whether a task may start
+  // is syncai_robot_state's call (SetRobotState / BeginTask), since no task ever touches the
+  // localizer. The subscriber must ask for TRANSIENT_LOCAL too.
+  m_status_pub = this->create_publisher<syncai_common::msg::LocalizationStatus>(
+    "localization_status", rclcpp::QoS(1).reliable().transient_local());
+  // Before the first setLoadedMap below. See NodeState::pose_epoch for why not zero.
+  const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
+  m_state.pose_epoch = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch).count());
+
   // Load the map during construction. Previously only relocalize called loadMap, so an
   // initialpose sent first after a restart hit an empty target (align() returned false
   // outright); and having every entry point do its own catch-up loadMap turned "is the map
@@ -423,6 +439,10 @@ void LocalizerNode::timerCB()
   // Before the early return, so a node that never gets odometry logs that
   // too (NO_ODOM).
   updateHealth(rclcpp::Clock().now().seconds());
+  // Before the early return too: with no odometry yet (or no map at all) there is still a
+  // state to report, and "not converged" is what keeps an operator from confirming a position
+  // nothing has estimated.
+  publishStatusIfChanged();
   if (!m_state.message_received) return;
 
   // The known start pose from config: only once the first odom has arrived is there a "current
@@ -1058,6 +1078,60 @@ void LocalizerNode::setLoadedMap(const std::string & pcd_path)
   // A pose on the previous map says nothing about this one; the guess that
   // comes with a map switch establishes it again once it converges.
   m_state.pose_established = false;
+  // Nor does a confirmation of it (NodeState::pose_epoch). relocalize queues a guess right
+  // after this and bumps it again; a load with no guess behind it is why this one is here.
+  ++m_state.pose_epoch;
+}
+
+void LocalizerNode::publishStatusIfChanged()
+{
+  std::string map_name;
+  bool converged = false;
+  std::uint64_t epoch = 0;
+  {
+    std::lock_guard<std::mutex> lock(m_state.service_mutex);
+    map_name = m_state.loaded_map_name;
+    converged = m_state.localize_success;
+    epoch = m_state.pose_epoch;
+  }
+  if (
+    m_state.status_sent && map_name == m_state.status_sent_map &&
+    converged == m_state.status_sent_converged && epoch == m_state.status_sent_epoch) {
+    return;
+  }
+
+  // One line per change, saying which of the three moved: this is the record of why a
+  // confirmed robot went back to UNINITIALIZED, read beside the guess's own log line (each
+  // entry point logs where its guess came from).
+  const char * why = "first report";
+  if (m_state.status_sent) {
+    if (map_name != m_state.status_sent_map) {
+      why = "another map was loaded";
+    } else if (epoch != m_state.status_sent_epoch) {
+      why = converged ? "a new guess was queued and has converged" : "a new guess was queued";
+    } else {
+      why = converged ? "the pending guess converged" : "the estimate is no longer converged";
+    }
+  }
+  RCLCPP_INFO(
+    this->get_logger(),
+    "localization_status: %s -- map '%s', converged %s, pose_epoch %llu (was map '%s', "
+    "converged %s, pose_epoch %llu)",
+    why, map_name.c_str(), converged ? "true" : "false", static_cast<unsigned long long>(epoch),
+    m_state.status_sent_map.c_str(), m_state.status_sent_converged ? "true" : "false",
+    static_cast<unsigned long long>(m_state.status_sent_epoch));
+
+  syncai_common::msg::LocalizationStatus msg;
+  msg.stamp = this->get_clock()->now();
+  msg.map = map_name;
+  msg.converged = converged;
+  msg.pose_epoch = epoch;
+  m_status_pub->publish(msg);
+
+  m_state.status_sent = true;
+  m_state.status_sent_map = map_name;
+  m_state.status_sent_converged = converged;
+  m_state.status_sent_epoch = epoch;
 }
 
 void LocalizerNode::logRoundStats(const rclcpp::Time & now)
@@ -1463,6 +1537,7 @@ void LocalizerNode::relocCB(
     m_state.initial_guess.block<3, 1>(0, 3) = V3F(x, y, z);
     m_state.service_received = true;
     m_state.localize_success = false;
+    ++m_state.pose_epoch;  // a new estimate is being asked for
     // Timed by the timer's guess_timeout_sec, unlike auto_localize's.
     m_state.guess_owned_by_service = false;
   }
@@ -1583,6 +1658,7 @@ void LocalizerNode::applyPlanarGuess(
   m_state.initial_guess.block<3, 1>(0, 3) = guess_t.cast<float>();
   m_state.service_received = true;
   m_state.localize_success = false;
+  ++m_state.pose_epoch;  // a new estimate is being asked for
   // Timed by the timer's guess_timeout_sec, unlike auto_localize's.
   m_state.guess_owned_by_service = false;
   const char * filled_in = "roll/pitch/z from current estimate";
@@ -1670,6 +1746,7 @@ Convergence LocalizerNode::handOverAndAwait(const M4F & guess, double timeout_se
     m_state.initial_guess = guess;
     m_state.service_received = true;
     m_state.localize_success = false;
+    ++m_state.pose_epoch;  // a new estimate is being asked for
     m_state.guess_owned_by_service = true;
   }
 
@@ -2043,6 +2120,7 @@ void LocalizerNode::resetOdomCB(
       m_state.initial_guess = guess;
       m_state.service_received = true;
       m_state.localize_success = false;
+      ++m_state.pose_epoch;  // a new estimate is being asked for
       // Owned: handOverAndAwait's deadline withdraws it, not guess_timeout_sec.
       m_state.guess_owned_by_service = true;
     }

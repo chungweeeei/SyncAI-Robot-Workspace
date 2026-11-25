@@ -53,6 +53,7 @@
 #include <string>
 #include <utility>
 
+#include "syncai_common/msg/localization_status.hpp"
 #include "syncai_common/srv/auto_localize.hpp"
 #include "syncai_common/srv/is_valid.hpp"
 #include "syncai_common/srv/relocalize.hpp"
@@ -383,6 +384,22 @@ struct NodeState
   // converged on the loaded map since it was loaded (service_mutex). A guess that is withdrawn
   // leaves it as it was. Until it is true nothing is written to the last pose file.
   bool pose_established = false;
+  // Names the estimate for localization_status (service_mutex): it changes whenever the
+  // estimate stops being the one an operator could have confirmed -- a map is loaded
+  // (setLoadedMap), or a guess is queued, which is every place localize_success is cleared.
+  // syncai_robot_state remembers the value a confirmation was given at and withdraws it on any
+  // other, so there is no event for it to miss and nothing here knows about confirmations.
+  //
+  // Seeded from the wall clock in the constructor rather than counted from zero: boot, map
+  // load, boot guess reaches the same count on every run, and a confirmation would then
+  // survive a restarted localizer.
+  std::uint64_t pose_epoch = 0;
+  // What localization_status last carried (timer thread only: publishStatusIfChanged is its
+  // one writer and reader), so that it is published on a change and not at the timer's rate.
+  bool status_sent = false;
+  std::string status_sent_map;
+  bool status_sent_converged = false;
+  std::uint64_t status_sent_epoch = 0;
   // The last pose file's throttle (timer thread only): what was written last, and when.
   bool last_pose_saved = false;
   V3D last_pose_saved_t = V3D::Zero();
@@ -621,6 +638,11 @@ private:
   // loaded_map_path and its name together, after a successful loadMap.
   void setLoadedMap(const std::string & pcd_path);
 
+  // Publish localization_status when the loaded map, relocalize_check's answer or pose_epoch
+  // differs from what was last sent. From timerCB, before its no-odometry return, so a
+  // localizer with no map or no odometry yet is heard from too.
+  void publishStatusIfChanged();
+
   NodeConfig m_config;
   NodeState m_state;
 
@@ -652,6 +674,9 @@ private:
   rclcpp::Client<syncai_common::srv::ResetLIO>::SharedPtr m_lio_reset_cli;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr m_initialpose_sub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr m_map_cloud_pub;
+  // Latched facts for syncai_robot_state, which owns the robot's state machine; see
+  // publishStatusIfChanged and NodeState::pose_epoch.
+  rclcpp::Publisher<syncai_common::msg::LocalizationStatus>::SharedPtr m_status_pub;
 };
 
 }  // namespace syncai_localizer
