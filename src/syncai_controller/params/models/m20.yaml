@@ -150,6 +150,22 @@
       # FollowPathRPP3D's copy below holds the same.
       stair_descend_backwards: false
 
+    goal_checker:
+      # 0.1 rad (the G23's 0.2, which is wide for a gait that cannot slow its
+      # turn under ~0.45 rad/s; the M20 turns at final_rotation_wz 1.0 and
+      # stops within ~0.4 s). Tightened at the operator's request
+      # (2026-11-25): accepted headings came in at 0.01-0.09 rad over 8 runs
+      # on robot01 (dp_1125, B <-> C). That is NOT where the robot ends up:
+      # 2 s later the heading was 0.26-0.42 rad past the goal's, on the far
+      # side. The vendor's MotionStatus shows the stop itself is quick
+      # (0.8 rad/s -> ~0.25 in 0.17 s -> ~0 by 0.4 s, 0.1-0.15 rad); the rest
+      # is the robot pose being ~0.25-0.3 s old (the merged cloud arrives
+      # ~133 ms after its stamp and Point-LIO holds up to 120 ms for the rear
+      # lidar), so the turn is stopped ~0.2 rad late at this rate. A tighter
+      # window does not fix that; the final rotation has to lead the pose
+      # (or slow into the heading). Open.
+      yaw_goal_tolerance: 0.1
+
     FollowPathRPP3D:
       # The A/B controller, on FollowPath's numbers: the same limits, the same
       # clamps, the same floors (config/models/README.md, "Values that change
