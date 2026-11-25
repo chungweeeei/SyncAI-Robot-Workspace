@@ -7,6 +7,13 @@
 //! controller, and `/JOINTS_DATA_10HZ`, the same message 10 times a second. The leg links' TF
 //! is for looking at, so this node reads the slow one (`joints_topic`).
 //!
+//! The same reading is also published as `motor_states_low_rate` (syncai_common/MotorStates),
+//! which syncai_robot_state nests into RobotState.motor_status for the console. On the G23 that
+//! topic is syncai_driver_manager's; the M20's gait bridge has no joint telemetry, and this node
+//! already holds the vendor's reading, so it is published here. `error` is 0 for every motor:
+//! the vendor's `status_word` is not decoded yet (its bits are undocumented in sdk_deploy), and a
+//! raw word passed through would read as a fault on the console.
+//!
 //! Started by syncai_bringup's bringup.launch.py for `robot_model: m20`, in the `<robot_id>`
 //! namespace, so it publishes `/<robot_id>/joint_states` beside that robot_state_publisher.
 
@@ -19,12 +26,14 @@ use ros_env::builtin_interfaces::msg::Time as TimeMsg;
 use ros_env::drdds::msg::JointsData;
 use ros_env::sensor_msgs::msg::JointState;
 use ros_env::std_msgs::msg::Header;
+use ros_env::syncai_common::msg::{MotorState, MotorStates};
 
 use conversion::{Calibration, JOINT_COUNT, JOINT_NAMES, directed};
 
 /// What the subscription callback owns.
 struct Bridge {
     publisher: Publisher<JointState>,
+    motor_publisher: Publisher<MotorStates>,
     clock: Clock,
     logger: Logger,
     /// Fixed by the first reading (conversion.rs has why)
@@ -74,6 +83,10 @@ impl Bridge {
             cal
         });
 
+        let position = calibration.positions(&raw_position);
+        let velocity = directed(&field(|j| j.velocity));
+        let effort = directed(&field(|j| j.torque));
+
         let out = JointState {
             // Our clock, not the message's: the vendor stamps with its own computer's uptime
             // (seconds since its boot), which robot_state_publisher would put on every leg
@@ -83,9 +96,9 @@ impl Bridge {
                 frame_id: String::new(),
             },
             name: JOINT_NAMES.iter().map(|n| n.to_string()).collect(),
-            position: calibration.positions(&raw_position).to_vec(),
-            velocity: directed(&field(|j| j.velocity)).to_vec(),
-            effort: directed(&field(|j| j.torque)).to_vec(),
+            position: position.to_vec(),
+            velocity: velocity.to_vec(),
+            effort: effort.to_vec(),
         };
         if let Err(e) = self.publisher.publish(out) {
             log_error!(
@@ -95,6 +108,41 @@ impl Bridge {
             return;
         }
         self.last_publish_ns = Some(now_ns);
+
+        // The same reading as the console's motor table, in the same joint convention.
+        // Nanoseconds on our clock, as syncai_driver_manager stamps it on the G23
+        // (MotorStates.msg); syncai_robot_state converts to seconds when it nests it.
+        let motors = MotorStates {
+            timestamp: u64::try_from(now_ns).unwrap_or(0),
+            states: (0..JOINT_COUNT)
+                .map(|i| MotorState {
+                    name: JOINT_NAMES[i].to_string(),
+                    q: position[i] as f32,
+                    dq: velocity[i] as f32,
+                    ddq: 0.0,
+                    tau_est: effort[i] as f32,
+                    // The motor's winding temperature, °C; the driver's own is driver_temp
+                    temperature: celsius_i8(joints[i].motion_temp),
+                    // Not decoded yet (module doc): 0 = no fault reported
+                    error: 0,
+                })
+                .collect(),
+        };
+        if let Err(e) = self.motor_publisher.publish(motors) {
+            log_error!(
+                self.logger.throttle(std::time::Duration::from_secs(5)),
+                "publish motor_states_low_rate failed: {e}"
+            );
+        }
+    }
+}
+
+/// MotorState.temperature is an int8: rounded and clamped, and a non-finite reading as 0.
+fn celsius_i8(t: f32) -> i8 {
+    if t.is_finite() {
+        t.round().clamp(f32::from(i8::MIN), f32::from(i8::MAX)) as i8
+    } else {
+        0
     }
 }
 
@@ -147,6 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bridge = Bridge {
         // Reliable: robot_state_publisher's subscription matches it whatever its own QoS
         publisher: node.create_publisher("joint_states".keep_last(10).reliable())?,
+        // SensorData, as syncai_driver_manager publishes it on the G23 and syncai_robot_state
+        // subscribes; at joint_states' rate (the 10 Hz joints_topic), under the G23's 20 Hz
+        motor_publisher: node.create_publisher("motor_states_low_rate".sensor_data_qos())?,
         clock: node.get_clock(),
         logger: node.logger().clone(),
         calibration: None,
@@ -162,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     log_info!(
         node.logger(),
-        "{topic} -> joint_states at <= {rate} Hz ({} joints)",
+        "{topic} -> joint_states + motor_states_low_rate at <= {rate} Hz ({} joints)",
         JOINT_COUNT
     );
 

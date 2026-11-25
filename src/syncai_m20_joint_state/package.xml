@@ -5,7 +5,8 @@
   <version>0.1.0</version>
   <description>
     Republishes the Lynx M20's leg and wheel angles (the vendor's /JOINTS_DATA_10HZ) as
-    sensor_msgs/JointState in M20.urdf's joint convention, for robot_state_publisher
+    sensor_msgs/JointState in M20.urdf's joint convention, for robot_state_publisher, and as
+    syncai_common/MotorStates on motor_states_low_rate, for syncai_robot_state
   </description>
   <maintainer email="chungweeeei@gmail.com">chungweeeei</maintainer>
   <license>Apache-2.0</license>
@@ -18,6 +19,8 @@
   <depend>builtin_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <!-- MotorStates on motor_states_low_rate, for syncai_robot_state -->
+  <depend>syncai_common</depend>
 
   <export>
     <build_type>ament_cargo</build_type>

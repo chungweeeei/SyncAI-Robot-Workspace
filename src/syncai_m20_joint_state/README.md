@@ -21,6 +21,7 @@ robot_state_publisher → /tf: <robot_id>/base_link → <robot_id>/{fl,fr,hl,hr}
 |---|---|---|---|
 | sub | `/JOINTS_DATA_10HZ` (`joints_topic`) | `drdds/msg/JointsData` | best effort, keep last; the vendor's writer is reliable / transient local. Absolute: the vendor publishes with no namespace |
 | pub | `joint_states` | `sensor_msgs/JointState` | reliable, depth 10; 16 joints, `position` (rad), `velocity` (rad/s), `effort` (N·m) |
+| pub | `motor_states_low_rate` | `syncai_common/MotorStates` | SensorData QoS (as `syncai_driver_manager` publishes it on the G23); the same reading, same joint names and values, `timestamp` in ns on our clock, `temperature` the vendor's `motion_temp` rounded to °C, `ddq` 0, and **`error` 0 for every motor** — the vendor's `status_word` is not decoded yet. `syncai_robot_state` nests it into `RobotState.motor_status` (2026-11-25; on the M20 nothing published it before) |
 
 | Parameter | Default | |
 |---|---|---|
