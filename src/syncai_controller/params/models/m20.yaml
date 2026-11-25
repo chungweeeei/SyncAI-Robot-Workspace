@@ -66,16 +66,27 @@
       # the robot needs 0.5 m to stop.
       max_linear_accel: 1.0
       max_angular_accel: 3.2
-      # The G23's floors exist because its RL gait stands still under ~0.3 m/s
-      # and does not turn in place under ~0.45 rad/s. A wheeled base has no
-      # such floor that anyone has measured, but 0 is not "no floor" here: it
-      # also switches off the direct approach, the approach slowdown and the
-      # back-out, which are written on walk_vx_min (controller.cpp). So a
-      # small value keeps those three and lets the robot creep: the last
-      # approach_floor_dist (0.2 m) to the goal and a direct approach are
-      # driven at 0.1 m/s.
-      walk_vx_min: 0.1
-      in_place_wz_min: 0.1
+      # The gait floors: the M20 has them too. The first values (0.1 / 0.1,
+      # on the guess that a wheeled base creeps) stalled the robot twice in
+      # the first A <-> B runs on robot01 (2026-11-25, map m20_dp2f), read off
+      # the vendor's own MotionStatus over its UDP link, not only off /odom:
+      #   - in place, MPPI asked wz -0.14 rad/s for 28 s (the in-place turn
+      #     onto the path had been refused by the footprint check) and the
+      #     robot reported OmegaZ 0.00 throughout, until the progress checker
+      #     aborted; 0.65 rad/s turned it at 0.4-0.65;
+      #   - 0.13 m from the goal, the direct approach walked at 0.1 m/s for
+      #     30 s and the robot stood (0.06 m in 30 s).
+      # Raised live to these two, the next 17 runs reached the goal with no
+      # stall (15-18 s each for 4.8 m). Where the floor actually is lies
+      # somewhere in 0.14-0.4 rad/s and 0.1-0.25 m/s, unmeasured; these are
+      # values that worked, as cmd_vel through driver_manager's (unmeasured)
+      # max_vx / max_wz 2.0. Still not 0: that would also switch off the
+      # direct approach, the approach slowdown and the back-out, which are
+      # written on walk_vx_min (controller.cpp). FollowPathRPP3D's
+      # min_approach_linear_velocity / rotate_to_heading_min_angular_vel
+      # below hold the same two (config/models/README.md, "Gait floors").
+      walk_vx_min: 0.25
+      in_place_wz_min: 0.4
       # The cap over a span the planner marks `slow` (a passage narrower than
       # narrow_max_width, a walked gap). On the G23 this equals walk_vx_min
       # because 0.30 is the slowest its gait walks; on the M20 it is a speed
@@ -110,8 +121,9 @@
       rotate_to_heading_angular_vel: 1.0
       max_linear_accel: 1.0
       max_angular_accel: 3.2
-      min_approach_linear_velocity: 0.1
-      rotate_to_heading_min_angular_vel: 0.1
+      # = FollowPath's walk_vx_min / in_place_wz_min (see there).
+      min_approach_linear_velocity: 0.25
+      rotate_to_heading_min_angular_vel: 0.4
       use_stair_mode: false
       stair_policy_mode: -1
       flat_policy_mode: -1
