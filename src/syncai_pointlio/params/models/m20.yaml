@@ -71,14 +71,21 @@
     # The IMU's range is not known; these sit above everything it was seen to
     # read. robot01, 2026-11-24, 90 s of /IMU while the robot was driven back
     # and forth and turned: no axis clipped (every extreme seen once), |a| up to
-    # 31.2 m/s^2 (3.18 g, on z), |w| up to 1.47 rad/s. So the clip is above
-    # 3.18 g. 39.0 (4 g) keeps every reading seen with ~25 % headroom and stays
-    # under a +/-4 g part's clip if that is what it is; if the range is wider,
-    # the rare reading past 4 g is dropped -- information lost, against a
-    # clipped one fused, the worse of the two. Not yet driven over stairs or
-    # steps, the hardest impacts: run the same probe there before raising it.
+    # 31.2 m/s^2 (3.18 g, on z), |w| up to 1.47 rad/s.
+    #
+    # satu_acc 150 since 2026-11-26 (39.0, 4 g, until then). Over stairs the
+    # accelerometer reads far more and still does not clip: on the dp_1125 bag
+    # (robot01, 2026-11-25, one floor up and back down) az peaked at
+    # 61-80 m/s^2, each impact ~15 ms wide with no flat top. 39 dropped 123 of
+    # those real samples, all on the stairs, and the descent diverged (eff
+    # down to 60 %, the map's track ending 12.8 m from where it started).
+    # Replayed with 150 (beside a beam-angle correction both runs had), the
+    # descent no longer diverged (eff >= 73 %, |ba| at the end 0.06 against
+    # 0.34). 150 is a ceiling above everything seen, not the part's clip,
+    # which is still unknown: replace it with the datasheet's range minus a
+    # margin once DEEP Robotics gives it.
     satu_gyro: 35.0
-    satu_acc: 39.0
+    satu_acc: 150.0
 
     # IMU <- lidar: p_imu = r_il * p_lidar + t_il. The cloud is in the vendor's
     # base_link, and DEEP Robotics' own MJCF of the M20 (sdk_deploy's
