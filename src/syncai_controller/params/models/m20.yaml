@@ -87,8 +87,21 @@
       # written on walk_vx_min (controller.cpp). FollowPathRPP3D's
       # min_approach_linear_velocity / rotate_to_heading_min_angular_vel
       # below hold the same two (config/models/README.md, "Gait floors").
+      #
+      # in_place_wz_min 0.4 -> 0.65 (2026-11-26, robot01, dp_1125): 0.4 does
+      # not turn the M20 either. Twice on one route ((2.75, -8.24) ->
+      # (1.32, -15.47), an L whose corner the robot overruns by ~0.15 m) MPPI
+      # asked for an in-place right turn of ~80 deg at the corner, the floor
+      # raised it to wz -0.40 (with vx 0.07, under in_place_vx_max), and the
+      # robot stood still for 30 s (< 1 cm, 572 of 592 commands at -0.40 in
+      # record/nav_stall_20261126_163800) until the progress checker aborted;
+      # the retry's in-place turn at 1.0 rad/s turned it 50 deg in 1 s. So the
+      # floor is somewhere in 0.4-0.65 (or 0.4 does not start the gait with a
+      # small vx beside it -- not told apart: the vendor's MotionStatus was not
+      # recorded); 0.65 is the value seen turning it. Set live first; one
+      # verification run pending at this commit.
       walk_vx_min: 0.25
-      in_place_wz_min: 0.4
+      in_place_wz_min: 0.65
       # Every in-place turn (onto a new path, onto the goal's heading, the
       # direct approach's turn) runs at this, not at wz_max, so the M20 had
       # been turning at the G23's 0.65 -- 0.4-0.65 rad/s measured, which the
@@ -198,7 +211,7 @@
       max_angular_accel: 3.2
       # = FollowPath's walk_vx_min / in_place_wz_min (see there).
       min_approach_linear_velocity: 0.25
-      rotate_to_heading_min_angular_vel: 0.4
+      rotate_to_heading_min_angular_vel: 0.65
       use_stair_mode: true
       stair_policy_mode: 1
       flat_policy_mode: 0
