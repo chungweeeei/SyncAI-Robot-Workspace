@@ -591,8 +591,16 @@
          identical values, 1.57 / 3.14 for pi / 2 and pi), with an "imu_link"
          at the origin and a "utlidar_imu" turned by pi besides. Not measured
          on the robot; /IMU is stamped with an empty frame_id. syncai_pointlio's
-         params/models/m20.yaml carries the inverse as t_il: change the two
-         together. -->
+         params/models/m20.yaml carries the inverse as r_il / t_il: change the
+         two together.
+
+         Its rpy since 2026-11-26 (0 until then): the IMU's axes turned by
+         roll +0.39 deg, pitch -0.47 deg against base_link, the transpose of
+         m20.yaml's r_il, which was fitted from motion on the dp_1125 bag
+         (gyro against the cloud's rotation; m20.yaml has the fit and its
+         caveats). Point-LIO's body frame is this IMU, so syncai_lio_bridge
+         closes base_link through it and an unrotated joint here would tilt
+         base_link by the same ~0.6 deg. -->
     <link name="lidar_link"/>
     <joint name="lidar_joint" type="fixed">
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -602,7 +610,7 @@
 
     <link name="imu"/>
     <joint name="imu_joint" type="fixed">
-        <origin xyz="0.0632 -0.0268 0.0435" rpy="0 0 0"/>
+        <origin xyz="0.0632 -0.0268 0.0435" rpy="0.006807 -0.008203 -0.000028"/>
         <parent link="base_link"/>
         <child link="imu"/>
     </joint>

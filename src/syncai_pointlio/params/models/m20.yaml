@@ -99,8 +99,37 @@
     # robot either; what the data does say is that the axes are the body's: at
     # rest gravity reads along +z (a = -1.07, 0.04, 9.71 with the body pitched
     # ~6 deg).
-    r_il: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-    t_il: [-0.0632, 0.0268, -0.0435]
+    #
+    # r_il since 2026-11-26 (identity until then): the IMU's axes are turned
+    # from the cloud's by roll -0.39 deg, pitch +0.47 deg, yaw 0, i.e. r_il =
+    # Exp((-0.39, +0.47, 0) deg). Fitted from motion on the dp_1125 bag, the
+    # way LI-Init does: over 2 s windows, the rotation of Point-LIO's pose
+    # (the cloud's frame turning) against the gyro's integral,
+    # phi_lio - phi_gyro = [phi_gyro]x d + b dt, solved for the misalignment d
+    # and a gyro bias b. Whole run -0.37 / +0.49 (+-0.02) deg, and each
+    # segment agrees (1F -0.39 / +0.52, stairs up -0.45 / +0.33, down
+    # -0.48 / +0.40); the static gravity-vs-floor angle, 0.5-0.9 deg, is the
+    # same order. Yaw is not observable from that walk (+0.11 +- 0.14) and
+    # stays 0. Replayed with it, the map's 2F went from 1.21 deg yawed against
+    # its 1F to 0.22 deg, and a 2F wall seen through the hall from 1F
+    # keyframes from 0.44 m off its 2F self to 0.03 m (pgo's loop closures
+    # are planar and within one floor, so nothing else corrects that).
+    # CAVEATS: the fit and that replay also had two corrections this stack
+    # does not have yet (each Airy's beam-angle error, and the cloud's
+    # timestamp shifted +26 ms onto /IMU's clock), so this value has not run
+    # without them; one replay per setting; how 0.6 deg of roll / pitch
+    # becomes 1.4 deg of yaw over a climb is not worked out; and the 1F
+    # track's tilt went 0.30 -> 0.65 deg with it (the accelerometer's down and
+    # this gyro-fitted rotation still disagree by ~0.3 deg). esti_il stays
+    # false, so this value is what runs.
+    #
+    # t_il = -r_il * imu_site, so it moves under 1 mm with the rotation; the
+    # IMU's position is still the MJCF's. M20.urdf's imu_joint carries the
+    # inverse (r_il transposed, as its rpy): change the two together.
+    r_il: [0.999966355, -0.000027918, 0.008202892,
+           -0.000027918, 0.999976834, 0.006806655,
+           -0.008202892, -0.006806655, 0.999943189]
+    t_il: [-0.063555, 0.026505, -0.043162]
 
     # Override of a shared key: the merged cloud is 57-93 k points a scan, 3-5x
     # a MID360's. Measured on robot01, 2026-11-24, driving at 0.5-0.9 m/s with

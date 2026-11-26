@@ -488,8 +488,8 @@ below are in the model files only** (2026-11-24, the layout
 sensors. `g23.yaml` holds the Livox MID360's (the values in the table, which
 were the factory file's until then); `m20.yaml` the Lynx M20's vendor lidars
 (`PointCloud2` with an IMU in m/s², the extrinsic from DEEP Robotics'
-MJCF `imu_site`, `satu_acc` 150 above the 80 m/s² seen over stairs, the rest first
-guesses, marked). Every model's file must set all
+MJCF `imu_site`, `satu_acc` 150 above the 80 m/s² seen over stairs, `r_il` fitted from the
+gyro against the cloud's rotation, the rest first guesses, marked). Every model's file must set all
 seven: with none in the factory file, a key left out runs on the C++ default.
 `config/models/model_keys.yaml` lists them (`model_keys`) and its test checks.
 A model file may also override a shared key (the M20's `lidar_filter_num` 20,
