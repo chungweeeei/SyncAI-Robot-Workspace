@@ -114,13 +114,18 @@
     # its 1F to 0.22 deg, and a 2F wall seen through the hall from 1F
     # keyframes from 0.44 m off its 2F self to 0.03 m (pgo's loop closures
     # are planar and within one floor, so nothing else corrects that).
-    # CAVEATS: the fit and that replay also had two corrections this stack
-    # does not have yet (each Airy's beam-angle error, and the cloud's
-    # timestamp shifted +26 ms onto /IMU's clock), so this value has not run
-    # without them; one replay per setting; how 0.6 deg of roll / pitch
-    # becomes 1.4 deg of yaw over a climb is not worked out; and the 1F
-    # track's tilt went 0.30 -> 0.65 deg with it (the accelerometer's down and
-    # this gyro-fitted rotation still disagree by ~0.3 deg). esti_il stays
+    # The fit and that replay also had two corrections this stack does not
+    # have (a constant beam-angle correction of each Airy, and the cloud's
+    # timestamp shifted +26 ms onto /IMU's clock). Replayed again with this
+    # file as it is (satu_acc 150 + this r_il, neither correction), the map
+    # was the best of six runs: 2F yawed +0.33 deg against its 1F (the
+    # original -2.63), that wall 0.32 m off its 2F self, each floor straight
+    # (registered wing by wing onto map/dp: 2F wings within 0.15 deg of each
+    # other, 1F 0.36; the beam-angle runs bent 2F by 0.9-1.3 deg), the 2F
+    # floor at 4.88 m (map/dp 4.95; the runs with the 26 ms shift put it at
+    # 4.61-4.65), back at the start within 0.09 m. Left: one replay per
+    # setting; how 0.6 deg of roll / pitch becomes ~3 deg of yaw over a climb
+    # is not worked out; the 2F track still tilts 0.68 deg. esti_il stays
     # false, so this value is what runs.
     #
     # t_il = -r_il * imu_site, so it moves under 1 mm with the rotation; the
