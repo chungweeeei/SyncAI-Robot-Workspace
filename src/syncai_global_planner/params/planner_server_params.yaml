@@ -185,8 +185,10 @@
       # The measured floor (2026-10-29): outdoor_1027's 12 cm kerb is one
       # voxel along its whole length, no kerb above, and the G23 fell at it a
       # third time in the sim with the kerb links in. map.pcd beside the tree
-      # holds the true heights, so each traversable cell gets the median of
-      # the cloud's points in its top voxel, smoothed over its neighbours
+      # holds the true heights, so each traversable cell gets the height of
+      # the surface the cloud's points in and just under its top voxel are on
+      # (2026-11-26: the top voxel's alone terraced dp_1125's 11 deg hump into
+      # kerbs), smoothed over its neighbours
       # within floor_same_surface of it, and between two measured cells a
       # step is metric: under step_edge_min_rise level (a 20 deg slope rises
       # 0.036 m per column; the contour lines vanish), from it a sure step

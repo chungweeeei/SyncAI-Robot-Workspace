@@ -62,11 +62,14 @@
 // third time in the sim with the kerb links in, was one cell along its whole
 // length and no kerb to the map, while map.pcd puts it at 0.12 m. So when
 // the build is given the map.pcd beside the tree, every traversable cell
-// gets a **measured floor** (SurfaceCell::floor_z): the median height of the
-// cloud's points inside its own top voxel, smoothed edge-preserving over its
-// neighbours on the same surface (a kerb's other side never votes). Only
-// points that fall in a traversable cell's voxel are kept while the file is
-// streamed -- walls, trees and ceilings are dropped as they are read -- so
+// gets a **measured floor** (SurfaceCell::floor_z): the height of the surface
+// most of the cloud's points in its top voxel and just under it are on
+// (2026-11-26; the top voxel's alone, until then, read a floor lying near a
+// voxel face up to 5 cm high and terraced slopes), smoothed edge-preserving
+// over its neighbours on the same surface (a kerb's other side never votes).
+// Only points that fall in or under a traversable cell's voxel are kept
+// while the file is streamed -- walls, trees and ceilings are dropped as
+// they are read -- so
 // the cost is one pass over the file. Between two cells that both have one
 // the step edges and the kerbs read metric heights (SurfaceMap::stepCells):
 // under step_edge_min_rise is level, so a slope's contour lines vanish, and
@@ -364,8 +367,8 @@ struct BuildStats
   std::vector<size_t> component_sizes;         // descending
   size_t step_edges = 0, sure_step_edges = 0;  // cells with step_rise >= 1, >= kSureStepCells
   size_t kerb_lines = 0, kerb_cells = 0;       // kerbs (see the header) and their low-side cells
-  // The measured floor: the pcd's points, those in a traversable cell's top
-  // voxel, and the traversable cells that got a height. floor_error says why
+  // The measured floor: the pcd's points, those in or under a traversable
+  // cell's top voxel, and the traversable cells that got a height. floor_error says why
   // a pcd that was given was not read (the map is then built on the voxels).
   size_t floor_points = 0, floor_points_kept = 0, floor_cells = 0;
   std::string floor_error;

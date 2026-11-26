@@ -621,13 +621,17 @@ G23 fell at it a third time in the sim with the kerb links in (a route from
 other, until it fell at (49.0, 19.5)). `map.pcd`, beside the tree, holds
 the true heights. So the build (`computeMeasuredFloor`, stage 7b) streams
 it once, keeps only the points that fall in a traversable cell's top voxel
--- walls, trees, ceilings and the floors under rejected cells are dropped
-as they are read, so the memory is the floor's points, not the file -- and
-gives every traversable cell a `floor_z`: the median of its points,
+or the voxel under it -- walls, trees, ceilings and the floors under
+rejected cells are dropped as they are read, so the memory is the floor's
+points, not the file -- and gives every traversable cell a `floor_z`: the
+surface its points are on (`rawFloor`: of the points from
+`floor_same_surface` under the top voxel up, the median of the densest
+0.1 m that reaches into the top voxel, then shifted to the median within
+`floor_same_surface` of it until it stays; none in the top voxel, none),
 smoothed edge-preserving (the median of the raw floors within two columns
 on its surface that lie within `floor_same_surface`, 0.05 m, of its own; a
-cell without points of its own takes those inside its own voxel; fewer than
-three votes leave it NaN). Between two cells that both have one, the step
+cell without a raw floor of its own takes those where its own could have
+been; fewer than three votes leave it NaN). Between two cells that both have one, the step
 edges, the kerb lines, the kerb links' march and `kerbCrossing` read the
 metric height (`SurfaceMap::stepCells`): under `step_edge_min_rise`
 (0.06 m) is level, from it a sure step. A slope's contour lines vanish (a
@@ -646,6 +650,37 @@ outdoor_1027's 4.2 M points, +0.64 s for dp_1028's 24 M (2.35 → 2.90 s in
 all), in the background build thread; robot01 not measured yet.
 `measured_floor: false`, or the CLI's `--no-floor-pcd`, reads the voxels
 alone, and the plan is then bit-for-bit what it was.
+
+*Under the top voxel too* (2026-11-26). Until then a cell's raw floor was
+the median of its top voxel's points alone. A column's top voxel is the
+one its highest return lies in, a couple of lidar sigmas over its floor,
+so a column whose floor lay just under a voxel face read only the few
+returns above the face, up to 5 cm high, and the smoothing pooled each
+voxel's columns: dp_1125's 1F hump (0.19 m, 11° up and down, x −12..−20)
+read as terraces 0.086 m apart and had a kerb at each foot, three of the
+map's five, and flat floor lying on a voxel face had sure steps wherever
+its columns took one voxel or the other. The voxel under the top counts
+now, but only `floor_same_surface` of it (a column astride a kerb has most
+of its returns on the low side, and read as that broke the kerb into
+pieces), and only for a surface that reaches into the top voxel (a sparse
+column's reflections under the floor read 8 cm low); the start is the
+densest 0.1 m, not the top voxel's median (a few returns of something on
+the floor above a face held it there). On dp_1125, against the tree with
+the same parameters (M20: `max_step_height` 0.2, `body_clearance` 0.8):
+kerbs 5 → 3 (the hump's three gone; the two 10 cm kerbs at y −13 cell for
+cell the same; the 2F short stair's 13 cm bottom riser now one); sure step
+cells 3346 → 1394, of which 2175 gone, each on floor whose neighbouring
+cells the cloud puts within 1.3 cm, and 223 new, mostly the risers of the
+three stairs and real 10-20 cm edges, a dozen on flat floor; cells without
+a measured floor 1158 → 990; every floor that moved, moved down (p1
+−3.3 cm, p99 +0.1 cm); components, stair links and check-poses unchanged.
+Its one gap link went: the "ramp" from kf 2315 to 2316 up the 2F short
+stair, whose anchors' floors had read under 0.3 m apart -- the same steps
+the stair link beside it lays as a straight flight, now judged as one. A
+route over the hump goes straight across (it took one or two kerb links),
+and the three floor-to-floor routes plan as before. `test_surface_map`: a
+hump and a kerb under a lidar's scatter (σ 1.2 cm, sixteen returns a
+column).
 
 A stretch that is not one straight flight is laid as **flights and landing
 corners** since 2026-10-21 (`stair_flights`), because the legs climb a

@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -1863,13 +1864,21 @@ struct ScannedFloor
   std::unique_ptr<octomap::OcTree> tree;
 };
 
-ScannedFloor scanFloor(const Height & height)
+// With scatter > 0, a lidar's floor instead: sixteen points per column with
+// Gaussian noise of that sigma, so a column's highest point -- the one that
+// picks its top voxel -- sits ~2 sigma above its floor, as on dp_1125's 1F
+// (2026-11-26: a cell's points 3-6 cm apart from p5 to p95).
+ScannedFloor scanFloor(const Height & height, double scatter = 0.0)
 {
   ScannedFloor f;
   std::map<std::pair<int, int>, double> top;
-  for (double y = 0.025; y < 8.0; y += 0.05) {
-    for (double x = 0.025; x < 12.0; x += 0.05) {
-      const double z = height(x, y) + 0.01 * std::sin(37.0 * x + 91.0 * y);
+  std::mt19937 rng(20261126);
+  std::normal_distribution<double> noise(0.0, scatter > 0.0 ? scatter : 1.0);
+  const double step = scatter > 0.0 ? 0.025 : 0.05;
+  for (double y = step / 2; y < 8.0; y += step) {
+    for (double x = step / 2; x < 12.0; x += step) {
+      const double z =
+        height(x, y) + (scatter > 0.0 ? noise(rng) : 0.01 * std::sin(37.0 * x + 91.0 * y));
       f.points.insert(
         f.points.end(), {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
       const auto key = std::make_pair(
@@ -1965,6 +1974,57 @@ TEST(MeasuredFloor, ARampsContourLinesVanishAndABadCloudFallsBackToTheVoxels)
   for (const SurfaceCell & c : m->cells) {
     EXPECT_TRUE(std::isnan(c.floor_z));
   }
+}
+
+TEST(MeasuredFloor, AGentleHumpInALidarsScatterIsLevelGround)
+{
+  // dp_1125's 1F (2026-11-26): a hump 0.19 m high, 11 deg up, 0.8 m of top,
+  // 11 deg down, whose two feet were kerbs. A column's top voxel is the one
+  // its highest return lies in, ~2.5 cm above its floor, and only the points
+  // in that voxel were its floor: a column whose floor lies just under a
+  // voxel face read the few returns above the face, ~4 cm high, and the
+  // smoothing pooled each voxel's columns into a terrace, 0.086 m apart at
+  // each face, a sure step every 0.1 m of rise.
+  const double t = std::tan(11.0 * M_PI / 180.0), h = 0.19, run = h / t;
+  const auto hump = scanFloor(
+    [=](double x, double) {
+      const double up = std::clamp((x - 4.0) / run, 0.0, 1.0);
+      const double down = std::clamp((x - (4.0 + run + 0.8)) / run, 0.0, 1.0);
+      return -0.05 + h * (up - down);
+    },
+    0.012);
+  BuildStats s;
+  const auto m =
+    buildSurfaceMap(*hump.tree, SurfaceMapParams{}, &s, writeCloud(hump.points, "hump.pcd", true));
+  EXPECT_TRUE(s.floor_error.empty()) << s.floor_error;
+  EXPECT_EQ(s.kerb_lines, 0u);
+  EXPECT_EQ(s.sure_step_edges, 0u);
+  // Each column on the slope reads its own height, not its voxel's.
+  for (double x = 4.05; x < 4.0 + run; x += 0.1) {
+    const double truth = -0.05 + h * (x - 4.0) / run;
+    const CellId c = m->traversableAt(x, 4.0, truth + 0.05);
+    ASSERT_NE(c, kNoCell) << x;
+    EXPECT_NEAR(m->cells[c].floor_z, truth, 0.015) << x;
+  }
+}
+
+TEST(MeasuredFloor, AKerbInALidarsScatterIsStillAKerb)
+{
+  // The same scatter over outdoor_1027's 12 cm kerb: the voxel under a
+  // column's top counts towards its floor only floor_same_surface deep, so
+  // the low side, a kerb's height down, never pulls the top of the kerb down.
+  const auto kerb = scanFloor([](double x, double) { return x < 6.0 ? -0.04 : 0.08; }, 0.012);
+  BuildStats s;
+  const auto m = buildSurfaceMap(
+    *kerb.tree, SurfaceMapParams{}, &s, writeCloud(kerb.points, "kerb_scatter.pcd", true));
+  EXPECT_TRUE(s.floor_error.empty()) << s.floor_error;
+  EXPECT_EQ(s.kerb_lines, 1u);
+  const CellId low = m->traversableAt(5.95, 4.0, 0.0), high = m->traversableAt(6.05, 4.0, 0.1);
+  ASSERT_NE(low, kNoCell);
+  ASSERT_NE(high, kNoCell);
+  EXPECT_NEAR(m->cells[low].floor_z, -0.04, 0.01);
+  EXPECT_NEAR(m->cells[high].floor_z, 0.08, 0.01);
+  EXPECT_TRUE(m->cells[low].flags & kKerb);
 }
 
 // ---- Walked gaps (2026-11-02; stair_links.hpp) ----

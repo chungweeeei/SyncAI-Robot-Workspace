@@ -802,16 +802,80 @@ bool streamPcdXyz(const std::string & path, size_t * points, std::string & error
   return true;
 }
 
+// A cell's raw floor from its points' heights [lo, hi), sorted, of which
+// only those from same under its top voxel's floor face (top_bottom) up
+// count: the median of the densest 2 * same of them that reaches into the
+// top voxel -- the surface most of those returns are on -- then the median
+// of those within same of that, repeated until it moves less than a
+// millimetre (a median shift, settling on that surface).
+//
+// Not the top voxel's median as a start: a few returns of something on the
+// floor above the voxel face held it up there, out of reach of the floor
+// 7 cm under it (dp_1125, 2026-11-26, beside the lobby's stair: twelve sure
+// steps on flat floor). Not the whole voxel under the top either: a column
+// astride a kerb, its top voxel the kerb's, has most of its returns on the
+// low side, a kerb's height down, and read as the low side it broke
+// dp_1125's 10 cm kerbs into pieces. And reaching into the top voxel, since
+// that voxel is where the tree says the surface is: a sparse column's one or
+// two returns under it (a glossy floor's reflections) read as a floor 8 cm
+// under its neighbours'. NaN with no point in the top voxel, as before: the
+// neighbours vote for it. Eight rounds are far more than a floor needs --
+// each moves it at most same -- and bound a pathological run.
+float rawFloor(const float * lo, const float * hi, float top_bottom, float same)
+{
+  const auto medianOf = [](const float * a, const float * b) { return a[(b - a) / 2]; };
+  lo = std::lower_bound(lo, hi, top_bottom - same);
+  const float * top = std::lower_bound(lo, hi, top_bottom);
+  if (top == hi) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  const float * best = lo;
+  const float * best_end = lo;
+  for (const float *a = lo, *b = lo; a < hi; ++a) {
+    while (b < hi && *b <= *a + 2 * same) {
+      ++b;
+    }
+    if (b > top && b - a > best_end - best) {
+      best = a;
+      best_end = b;
+    }
+  }
+  float z = medianOf(best, best_end);
+  for (int round = 0; round < 8; ++round) {
+    const float * a = std::lower_bound(lo, hi, z - same);
+    const float * b = std::upper_bound(lo, hi, z + same);
+    if (a == b) {
+      break;
+    }
+    const float next = medianOf(a, b);
+    const bool settled = std::fabs(next - z) < 0.001f;
+    z = next;
+    if (settled) {
+      break;
+    }
+  }
+  return z;
+}
+
 // Every traversable cell's floor_z (see the header). A point counts for the
 // cell whose top voxel it falls in -- the voxel the tree marked occupied
-// because of points like it -- and the raw floor of a cell is the median of
-// its points. Each traversable cell then takes the median of the raw floors
+// because of points like it -- or the voxel under it, and the raw floor of a
+// cell is the surface its points are on, found from floor_same_surface
+// under its top voxel up (rawFloor). The median of the top voxel's points
+// alone was the raw floor until 2026-11-26: a column's top voxel is the one
+// its HIGHEST return lies in, a couple of lidar sigmas above its floor, so a
+// column whose floor lay just under a voxel face read only the few returns
+// above the face, up to ~5 cm high. On dp_1125's 1F an 11 deg hump read as
+// terraces 0.086 m apart, a kerb at each foot, and flat floor lying on a
+// voxel face as sure steps wherever the columns took one voxel or the
+// other: 2175 of its 3346 sure step cells, none of them over 1.3 cm in the
+// cloud. Each traversable cell then takes the median of the raw floors
 // within two columns on its own surface (layerNear within one step) that
 // are within floor_same_surface of its own -- edge-preserving: the far side
 // of a kerb never votes, and a lone return (a leaf, a foot) is outvoted. A
-// cell with no point of its own votes with the raw floors that lie inside
-// its own voxel (its true floor does, or the voxel would not be its top).
-// Fewer than three votes leave it NaN: the voxels are read there.
+// cell with no raw floor of its own votes with the raw floors that lie
+// where its own could (its voxel, or floor_same_surface under it). Fewer
+// than three votes leave it NaN: the voxels are read there.
 void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & stats)
 {
   for (SurfaceCell & c : m.cells) {
@@ -820,9 +884,10 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
   if (pcd.empty() || m.cells.empty()) {
     return;
   }
-  // (cell, z) of every point in a traversable cell's top voxel; the rest of
-  // the cloud (walls, ceilings, trees, the floors under rejected cells) is
-  // dropped as it is read.
+  // (cell, z) of every point in a traversable cell's top voxel or the one
+  // under it; the rest of the cloud (walls, ceilings, trees, the floors under
+  // rejected cells) is dropped as it is read. A column's surfaces are a
+  // clearance apart, so no voxel is both one cell's top and another's under.
   std::vector<std::pair<CellId, float>> kept;
   std::string error;
   const bool ok = streamPcdXyz(pcd, &stats.floor_points, error, [&](float x, float y, float z) {
@@ -835,6 +900,7 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
     }
     const uint32_t col = m.col(ix, iy);
     const int kz = static_cast<int>(std::floor((z - m.z0) / m.res));
+    CellId under = kNoCell;
     for (uint32_t i = m.col_begin[col], e = m.col_begin[col + 1]; i < e; ++i) {
       if (m.cells[i].kz == kz) {
         if (m.traversable(i)) {
@@ -842,6 +908,12 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
         }
         return;
       }
+      if (m.cells[i].kz == kz + 1) {
+        under = i;
+      }
+    }
+    if (under != kNoCell && m.traversable(under)) {
+      kept.emplace_back(under, z);
     }
   });
   if (!ok) {
@@ -849,7 +921,7 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
     return;
   }
   stats.floor_points_kept = kept.size();
-  // Raw floor per cell: a counting sort by cell, then the median of each run.
+  // Raw floor per cell: a counting sort by cell, then rawFloor of each run.
   const size_t n = m.cells.size();
   std::vector<uint32_t> begin(n + 1, 0);
   for (const auto & k : kept) {
@@ -866,6 +938,7 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
     }
   }
   std::vector<std::pair<CellId, float>>().swap(kept);
+  const float same = static_cast<float>(m.params.floor_same_surface);
   std::vector<float> raw(n, std::numeric_limits<float>::quiet_NaN());
   for (CellId c = 0; c < n; ++c) {
     if (begin[c] == begin[c + 1]) {
@@ -873,11 +946,9 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
     }
     float * lo = zs.data() + begin[c];
     float * hi = zs.data() + begin[c + 1];
-    float * mid = lo + (hi - lo) / 2;
-    std::nth_element(lo, mid, hi);
-    raw[c] = *mid;
+    std::sort(lo, hi);
+    raw[c] = rawFloor(lo, hi, static_cast<float>(m.z0 + m.cells[c].kz * m.res), same);
   }
-  const float same = static_cast<float>(m.params.floor_same_surface);
   std::vector<float> votes;
   for (CellId c = 0; c < n; ++c) {
     if (!m.traversable(c)) {
@@ -885,13 +956,13 @@ void computeMeasuredFloor(const std::string & pcd, SurfaceMap & m, BuildStats & 
     }
     const int ix = m.colIx(m.cell_col[c]), iy = m.colIy(m.cell_col[c]);
     const int kz = m.cells[c].kz;
-    // A cell's own floor, or the voxel its floor must lie in.
+    // A cell's own floor, or where rawFloor could have found it.
     float lo, hi;
     if (!std::isnan(raw[c])) {
       lo = raw[c] - same;
       hi = raw[c] + same;
     } else {
-      lo = static_cast<float>(m.z0 + kz * m.res);
+      lo = static_cast<float>(m.z0 + kz * m.res) - same;
       hi = static_cast<float>(m.z0 + (kz + 1) * m.res);
     }
     votes.clear();
