@@ -751,6 +751,51 @@ now). dp's landings are 0.95–1.05 m deep, under the turn's 0.91 m plus the
 hind legs' half body, so all three corners stay 0.5 m out and come out
 0.02–0.10 m short; a startup note names each such landing.
 
+**With the robot's footprint** (2026-11-26, `footprint`). The disc and the
+leg's `robot_radius` above are a round robot's; the Lynx M20 is 0.82 × 0.48 m,
+and on robot01's first descent of dp_1125's switchback stair its side passed
+0.02–0.17 m from the landings' inner walls and newels (localizer track against
+`map.pcd`; on the flights, which are centred, 0.35–0.55 m either side). With
+`footprint` set — the local costmap's polygon string, verbatim, one value in
+two files (`config/models/model_keys.yaml`, `equal`) — a U's room at each `t`
+is the polygon (`footprint_sweep.hpp`, header-only, ROS-free) swept over the
+whole motion the landing is walked with: off the arriving flight once the
+body's back end has left its head, the turn in place onto the leg (on the
+corner and `stair_footprint_turn_stop`, 0.15 m = the controllers'
+`stair_turn_dist`, either side of it), the leg, the turn onto the next flight,
+and onto that flight until the body's front reaches its foot — every straight
+run and every turn with `stair_footprint_heading_tolerance` (0.2 rad) of
+heading error, everything kept `stair_footprint_margin` (0.05 m) clear.
+The two flights' own treads, a tread past their foot / head included, are not
+obstacles (the one going up stands in the body's band from its second step;
+the foot the axis march finds was the first tread on dp_1125's third
+landing), and what stands beside them — walls, newel, the wall between the
+flights — is, since a flight's width is measured to it. An L's turn is swept
+and reported, each flight's room either side of the body is in the geometry
+line (`side 0.66/0.66/0.46/0.41 m`), and a landing short of room names the
+footprint, the tightest step and every step's room:
+
+```
+note: landing 3: no room for the footprint (0.82 x 0.48 m) -- the first turn comes 0.14 m
+closer than footprint_margin 0.05 to a wall, ... (room past the margin: off the flight -0.13,
+the first turn -0.14, the leg across -0.02, the second turn +0.10, onto the next flight +0.21)
+```
+
+What it does **not** do on dp_1125: move a corner. A symmetric rectangle
+turned 90° with 0.2 rad of overshoot either end sweeps all but ~6° of its
+circumscribed disc, so the turns are about the disc again, and that
+stairwell's landings 2 and 3 are too shallow for the M20 to turn on with the
+margin (0.02 / 0.14 m short) wherever the corners go — they stay 0.50 m out
+and the path is the same, point for point, as with the disc. Tried and
+dropped the same day: moving whole flights sideways off the middle of their
+treads, away from the newel; on dp_1125 it moved nothing, the turns and not
+the newel being what binds. The overshoot is the controllers' (stair mode's
+`stair_turn_done_angle` of 5° at the M20's 1 rad/s on a pose 0.25 s old: the
+turns on robot01 hunted −42 / +21 / −14 / +16°), and a turn that stopped on
+its heading is what would let the tolerance, and the room a landing needs,
+come down. `footprint: ""` is the disc, unchanged (the CLI's plan on dp_1125
+is identical without `--footprint`).
+
 A walked link that stays walked is **centred in the stairwell** since 2026-10-20
 (`stair_centre`), because the operator walks a stair where they like —
 along the inner rail, across a landing's inside corner — and the path copied

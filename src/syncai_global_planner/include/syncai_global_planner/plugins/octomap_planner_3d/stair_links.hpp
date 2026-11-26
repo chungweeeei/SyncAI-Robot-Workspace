@@ -204,6 +204,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_map.hpp"
@@ -270,7 +271,32 @@ struct StairLinkParams
   // the padded footprint's circumscribed radius, sqrt(0.38^2 + 0.25^2).
   // The corners go where the landing leaves the most room round it (see
   // the header); the leg between them needs robot_radius either side.
+  // Both are the round-robot stand-ins of `footprint` below, used only
+  // while it is empty.
   double flights_turn_radius = 0.455;
+  // The robot's footprint (base_link frame, the local costmap's polygon;
+  // footprint_sweep.hpp), swept over a flights link's motions (2026-11-26):
+  // a U landing's corners go where the whole of it -- off the flight, the
+  // turn in place, the leg across, the turn, onto the next flight -- leaves
+  // the most room, an L landing's turn is checked, and each flight's room
+  // either side is logged. Empty = the discs above, as before. The M20's
+  // 0.82 m body is why: robot01's first descent of dp_1125's switchback
+  // stair (2026-11-26) passed 0.02-0.17 m from the landings' inner walls,
+  // which the discs had passed as clear.
+  std::vector<std::pair<double, double>> footprint;
+  // Room the sweep keeps beyond the polygon (m): the controller tracks the
+  // path within ~0.05 m on a flight, and a landing's walls come in the map
+  // at 0.1 m voxels.
+  double footprint_margin = 0.05;
+  // Heading error the sweep allows either side of every straight run and
+  // past both ends of every turn (rad): the M20 crossed robot01's landings
+  // 10-15 deg off the leg's heading, and its pose lags ~0.25 s, so a turn
+  // at 1 rad/s stops late. 0.2 rad of a 0.82 m body is 0.08 m sideways.
+  double footprint_heading_tolerance = 0.2;
+  // How far before a corner the controllers stop to turn in place: their
+  // stair_turn_dist (0.15 on every robot). The turn is swept there, at the
+  // corner, and at the same distance past it (the link walked the other way).
+  double footprint_turn_stop = 0.15;
   // Centre a walked link in the stairwell (see the header). false = the
   // operator's line, the 2026-10-19 behaviour.
   bool centre = true;

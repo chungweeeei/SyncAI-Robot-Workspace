@@ -105,7 +105,7 @@ key left out would run on the C++ default, not on the G23's.
 
 ## Values that change together
 
-`test_model_overlays.py` checks the first three on the merged result (factory +
+`test_model_overlays.py` checks the first four on the merged result (factory +
 model file) of every model. The rest are rules the comments in the factory
 files state and no code checks.
 
@@ -114,7 +114,8 @@ files state and no code checks.
 | One lidar height | `controller_server.lidar_height`, `local_costmap.terrain_layer.sensor_height`, `planner_server.Octo3D.lidar_height`, `localizer_node.lidar_height`, `task_runner.lidar_height` — and, outside this directory, `syncai_mapping`'s `map_clean_lidar_height` (its own `params/models/<robot_model>.yaml`: 0.481 G23, 0.60 M20), six C++ defaults and `scripts/map_repair/octomap_bt.py` |
 | One robot radius | `Octo3D.robot_radius`, `terrain_layer.robot_radius`, `Octo3D.keepout.block_radius` (and the footprint's padded inscribed radius) |
 | One stair policy | `FollowPath.*` and `FollowPathRPP3D.*`: `use_stair_mode`, `stair_policy_mode`, `flat_policy_mode` |
-| Footprint | `local_costmap.footprint` ↔ `inflation_layer.inflation_radius` (≥ circumscribed radius), `Octo3D.narrow_max_width` (the diagonal), `Octo3D.stair_flights_turn_radius` (circumscribed radius), `Octo3D.dynamic.block_radius` |
+| One footprint | `local_costmap.footprint` = `Octo3D.footprint` (2026-11-26: the planner sweeps it over the stair landings) |
+| Footprint | `local_costmap.footprint` ↔ `inflation_layer.inflation_radius` (≥ circumscribed radius), `Octo3D.narrow_max_width` (the diagonal), `Octo3D.stair_flights_turn_radius` (circumscribed radius; only while `Octo3D.footprint` is empty), `Octo3D.dynamic.block_radius` |
 | Surface rules | `Octo3D.{body_clearance,max_step_height,max_slope_deg}` = `terrain_layer.`'s |
 | Speed calibration | `FollowPath.vx_max` / `wz_max` and `FollowPathRPP3D.desired_linear_vel` / `rotate_to_heading_angular_vel`, with `syncai_driver_manager`'s velocity scales |
 | Gait floors | `FollowPath.walk_vx_min` = `slow_linear_vel` = `FollowPathRPP3D.min_approach_linear_velocity`; `in_place_wz_min` = `rotate_to_heading_min_angular_vel` |

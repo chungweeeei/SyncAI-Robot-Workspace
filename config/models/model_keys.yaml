@@ -73,6 +73,7 @@ files:
         - Octo3D.max_slope_deg
         - Octo3D.narrow_max_width
         - Octo3D.stair_flights_turn_radius
+        - Octo3D.footprint
         - Octo3D.dynamic.self_radius
         - Octo3D.dynamic.block_radius
         - Octo3D.keepout.block_radius
@@ -129,6 +130,13 @@ equal:
       - [planner_server, /**/planner_server, Octo3D.lidar_height]
       - [localizer, /**/localizer_node, lidar_height]
       - [task_runner, /**/task_runner, lidar_height]
+
+  # The planner sweeps the local costmap's polygon over the stair landings
+  # (2026-11-26, syncai_global_planner's stair_links): one body, one string.
+  - name: footprint
+    keys:
+      - [controller_server, /**/local_costmap, footprint]
+      - [planner_server, /**/planner_server, Octo3D.footprint]
 
   - name: robot radius
     keys:

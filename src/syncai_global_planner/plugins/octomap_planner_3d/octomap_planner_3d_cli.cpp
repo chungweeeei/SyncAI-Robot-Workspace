@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/footprint_sweep.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
@@ -97,6 +98,11 @@ void usage()
     "                           a measurement, the path is not changed): per shortcut vertex the\n"
     "                           largest arc up to radius (m) that keeps the clearance of the\n"
     "                           segments it replaces, and the largest that keeps clearance (m)\n"
+    "  --footprint <polygon>    the robot's footprint, \"[[x, y], ...]\" (the planner's\n"
+    "                           Octo3D.footprint, the local costmap's polygon): swept over\n"
+    "                           the stair landings' turns and legs (footprint_sweep.hpp);\n"
+    "                           without it the discs of stair_flights_turn_radius /\n"
+    "                           robot_radius, as before 2026-11-26\n"
     "  --no-stair-links         no stair links at all: neither the --poses track's flights\n"
     "                           nor the stairs detected off the map (--param stair_detect=0\n"
     "                           keeps the track's only), nor the kerb links (--param\n"
@@ -235,6 +241,12 @@ bool setParam(SurfaceMapParams & p, SearchParams & sp, StairLinkParams & st, con
     st.flights_lead = v;
   } else if (k == "stair_flights_turn_radius") {
     st.flights_turn_radius = v;
+  } else if (k == "stair_footprint_margin") {
+    st.footprint_margin = v;
+  } else if (k == "stair_footprint_heading_tolerance") {
+    st.footprint_heading_tolerance = v;
+  } else if (k == "stair_footprint_turn_stop") {
+    st.footprint_turn_stop = v;
   } else if (k == "stair_centre") {
     st.centre = v != 0.0;
   } else if (k == "stair_detect") {
@@ -1425,6 +1437,13 @@ int main(int argc, char ** argv)
     } else if (a == "--corners") {
       corner_radius = std::atof(next("--corners").c_str());
       corner_clearance = std::atof(next("--corners").c_str());
+    } else if (a == "--footprint") {
+      const std::string fp = next("--footprint");
+      std::string error;
+      if (!parseFootprint(fp, stair_params.footprint, error)) {
+        std::fprintf(stderr, "--footprint '%s': %s\n", fp.c_str(), error.c_str());
+        return 2;
+      }
     } else if (a == "--no-stair-links") {
       stair_links = false;
     } else if (a == "--floor-pcd") {

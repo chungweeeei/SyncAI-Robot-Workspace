@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "sensor_msgs/point_cloud2_iterator.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/footprint_sweep.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_nav_core/exceptions.hpp"
 #include "syncai_util/geometry_utils.hpp"
@@ -181,6 +182,15 @@ void OctomapPlanner3D::initialize(
     rclcpp::ParameterValue(stair_params_.flights_landing_slope_deg));
   dp("stair_flights_lead", rclcpp::ParameterValue(stair_params_.flights_lead));
   dp("stair_flights_turn_radius", rclcpp::ParameterValue(stair_params_.flights_turn_radius));
+  // The robot's footprint over a flights link's landings (2026-11-26,
+  // StairLinkParams::footprint): the local costmap's polygon string, the
+  // same value (config/models/model_keys.yaml, `equal`). "" = the discs.
+  dp("footprint", rclcpp::ParameterValue(std::string("")));
+  dp("stair_footprint_margin", rclcpp::ParameterValue(stair_params_.footprint_margin));
+  dp(
+    "stair_footprint_heading_tolerance",
+    rclcpp::ParameterValue(stair_params_.footprint_heading_tolerance));
+  dp("stair_footprint_turn_stop", rclcpp::ParameterValue(stair_params_.footprint_turn_stop));
   dp("stair_centre", rclcpp::ParameterValue(stair_params_.centre));
   dp("stair_centre_dz", rclcpp::ParameterValue(stair_params_.centre_dz));
   dp("stair_centre_max_half_width", rclcpp::ParameterValue(stair_params_.centre_max_half_width));
@@ -279,6 +289,25 @@ void OctomapPlanner3D::initialize(
     name + ".stair_flights_landing_slope_deg", stair_params_.flights_landing_slope_deg);
   node->get_parameter(name + ".stair_flights_lead", stair_params_.flights_lead);
   node->get_parameter(name + ".stair_flights_turn_radius", stair_params_.flights_turn_radius);
+  {
+    std::string fp_str, fp_error;
+    node->get_parameter(name + ".footprint", fp_str);
+    if (!o3d::parseFootprint(fp_str, stair_params_.footprint, fp_error)) {
+      // The discs, rather than no stairs: a typo here should not cost a site
+      // its stairwell. Loud, because the landings are then placed for a
+      // round robot.
+      RCLCPP_ERROR(
+        logger_,
+        "[OctomapPlanner3D][%s] footprint '%s' does not parse (%s): the stair landings are "
+        "placed with stair_flights_turn_radius / robot_radius instead",
+        __func__, fp_str.c_str(), fp_error.c_str());
+      stair_params_.footprint.clear();
+    }
+  }
+  node->get_parameter(name + ".stair_footprint_margin", stair_params_.footprint_margin);
+  node->get_parameter(
+    name + ".stair_footprint_heading_tolerance", stair_params_.footprint_heading_tolerance);
+  node->get_parameter(name + ".stair_footprint_turn_stop", stair_params_.footprint_turn_stop);
   node->get_parameter(name + ".stair_centre", stair_params_.centre);
   node->get_parameter(name + ".stair_centre_dz", stair_params_.centre_dz);
   node->get_parameter(name + ".stair_centre_max_half_width", stair_params_.centre_max_half_width);
@@ -353,6 +382,21 @@ void OctomapPlanner3D::initialize(
     __func__, octomap_file_.c_str(), body_frame_.c_str(), lidar_height_, map_params_.robot_radius,
     map_params_.body_clearance, map_params_.max_step_height, map_params_.max_slope_deg,
     goal_z_mode_.c_str());
+  if (stair_params_.footprint.empty()) {
+    RCLCPP_INFO(
+      logger_,
+      "[OctomapPlanner3D][%s] stair landings: no footprint, placed with a turn disc of %.2f m "
+      "and robot_radius either side of the leg",
+      __func__, stair_params_.flights_turn_radius);
+  } else {
+    RCLCPP_INFO(
+      logger_,
+      "[OctomapPlanner3D][%s] stair landings: footprint %s swept over every turn and leg, "
+      "margin %.2f m, heading tolerance %.2f rad, turns swept %.2f m either side of the corner",
+      __func__, o3d::footprintString(stair_params_.footprint).c_str(),
+      stair_params_.footprint_margin, stair_params_.footprint_heading_tolerance,
+      stair_params_.footprint_turn_stop);
+  }
 
   // Registered last: nothing above should run under it.
   dyn_params_handler_ = node->add_on_set_parameters_callback(

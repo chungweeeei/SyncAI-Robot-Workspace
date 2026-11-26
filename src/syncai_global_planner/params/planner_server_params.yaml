@@ -291,6 +291,32 @@
       # under this disc plus the hind legs' half body: every corner is 0.5 m
       # out and 0.02-0.10 m short, and a startup note says so per landing.
       stair_flights_turn_radius: 0.455
+      # The robot's own footprint (2026-11-26), swept over a flights link's
+      # landings instead of the disc above and robot_radius beside the leg:
+      # off the flight, the turn in place (where stair mode stops,
+      # stair_footprint_turn_stop before the corner, and on it), the leg
+      # across, the turn, onto the next flight -- each with
+      # stair_footprint_heading_tolerance of heading error -- and a U's
+      # corners go where that leaves the most room; an L's turn and each
+      # flight's room either side are checked and logged. Why: the disc is
+      # too much room where the body never points and robot_radius too
+      # little beside a long body crossing a landing a little askew --
+      # robot01's M20 (0.82 m) passed 0.02-0.17 m from dp_1125's landing
+      # walls on its first descent, the corners laid with the disc. The
+      # local costmap's polygon, verbatim (its footprint_padding 0.01 is in
+      # the margin): one value in two files (config/models/model_keys.yaml,
+      # `equal`). "" = the disc, as before. This is the G23's.
+      footprint: "[[0.35,0.22],[0.35,-0.22],[-0.35,-0.22],[-0.35,0.22]]"
+      # Room kept beyond the polygon (m): the controllers hold a flight's
+      # axis within ~0.05 m, and the walls come at 0.1 m voxels.
+      stair_footprint_margin: 0.05
+      # Heading error either side of each straight run and past both ends of
+      # each turn (rad): robot01's M20 crossed the landings 10-15 deg off the
+      # leg, and a turn at 1 rad/s on a pose 0.25 s old stops late.
+      stair_footprint_heading_tolerance: 0.2
+      # = the controllers' stair_turn_dist (syncai_controller): where they
+      # stop to turn before a corner.
+      stair_footprint_turn_stop: 0.15
       # A walked link (a switchback stairwell) is centred in the well
       # (2026-10-20): at every point the cross-section square to the walk is
       # measured on the surface map -- columns holding a surface within

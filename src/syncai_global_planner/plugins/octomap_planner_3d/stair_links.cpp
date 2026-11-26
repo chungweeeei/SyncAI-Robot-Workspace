@@ -10,9 +10,12 @@
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <queue>
 #include <sstream>
 #include <unordered_map>
+
+#include "syncai_global_planner/plugins/octomap_planner_3d/footprint_sweep.hpp"
 
 namespace syncai_global_planner::octomap_planner_3d
 {
@@ -1047,6 +1050,187 @@ bool flightLinks(
     }
   }
 
+  // The robot's footprint over the landings (StairLinkParams::footprint,
+  // footprint_sweep.hpp; 2026-11-26): the walls, newels and anything
+  // standing on a landing whose floor is at zl, within reach of the box
+  // (x0, y0)-(x1, y1), as column centres for a FootprintSweep. A clearance
+  // past kSweepCap is not told apart: the corners only need to know which
+  // place leaves the most room up to there. The treads of the two flights
+  // that meet on the landing (a, b) are left out: the one going up stands in
+  // the body's band from its second step, and it is what the body walks
+  // onto, not a wall -- counted, it was the tightest place on every landing
+  // of dp_1125, whatever the corners did. A flight's width is measured to
+  // its walls, rails or the drop (sideReach), so what stands beside the
+  // treads -- the newel, the wall between the flights -- stays in. The
+  // treads are taken to start a tread before the flight's foot (or after its
+  // head): the foot is where the march down the axis first finds the
+  // landing's height, and on dp_1125's third landing that was the first
+  // tread, 0.25 m up the flight, whose riser then read as a wall square
+  // across the way on.
+  constexpr double kSweepCap = 0.5;
+  constexpr double kTreadSlack = 0.3;  // one tread; dp's are 0.29
+  const bool use_fp = !p.footprint.empty();
+  const auto inTreads = [&](const Flight & f, double x, double y) {
+    const double rx = x - f.foot.x, ry = y - f.foot.y;
+    const double along = rx * f.dx + ry * f.dy;
+    const double len = (f.head.x - f.foot.x) * f.dx + (f.head.y - f.foot.y) * f.dy;
+    const double perp = std::fabs(-rx * f.dy + ry * f.dx);
+    return along > -kTreadSlack && along < len + kTreadSlack &&
+           perp < f.width / 2.0 - m.res / 2.0;
+  };
+  const auto makeSweep = [&](
+                           double x0, double y0, double x1, double y1, double zl,
+                           const Flight & a, const Flight & b) {
+    const double pad = footprintRadius(p.footprint) + kSweepCap + m.res;
+    std::vector<std::pair<double, double>> obs;
+    for (int iy = std::max(0, m.iyOf(y0 - pad)); iy <= std::min(m.ny - 1, m.iyOf(y1 + pad));
+         ++iy) {
+      for (int ix = std::max(0, m.ixOf(x0 - pad)); ix <= std::min(m.nx - 1, m.ixOf(x1 + pad));
+           ++ix) {
+        const double cx = m.cx(ix), cy = m.cy(iy);
+        if (
+          !inTreads(a, cx, cy) && !inTreads(b, cx, cy) &&
+          landingObstacle(m, tree, ix, iy, zl, p.centre_dz)) {
+          obs.push_back({cx, cy});
+        }
+      }
+    }
+    return FootprintSweep(p.footprint, std::move(obs), m.res / 2.0, kSweepCap);
+  };
+  char fp_size[48] = "";
+  if (use_fp) {
+    std::snprintf(
+      fp_size, sizeof fp_size, "%.2f x %.2f m", 2.0 * footprintReachX(p.footprint),
+      2.0 * footprintReachY(p.footprint));
+  }
+
+  // A U landing's floor as the map holds it, not the walk's ground (pose
+  // z - lidar_height): on dp's first landing that is 0.2 m under the floor,
+  // the body still pitched from the flight, and the map holds a surface
+  // 0.2 m below it too, so neither the walk's z nor the surface nearest it
+  // under the walk reads the floor; with either, most of the landing came
+  // out a wall. The height most columns of the landing's near metre hold a
+  // surface at, within a riser and a half of the walk. The corners stand on
+  // it too (2026-11; at the walk's z before, 0.1 m under the floor on dp's
+  // first and third landings).
+  const auto uFloor = [&](const Flight & f, const Flight & g, double z) {
+    std::vector<std::pair<double, double>> xy;
+    const double along_g0 = (g.foot.x - f.head.x) * f.dx + (g.foot.y - f.head.y) * f.dy;
+    const double sa = std::max(0.0, along_g0);
+    const double ex = g.foot.x - f.head.x - along_g0 * f.dx;  // f's axis to g's, across
+    const double ey = g.foot.y - f.head.y - along_g0 * f.dy;
+    for (double s = sa + 0.2; s <= sa + 1.0 + 1e-9; s += m.res) {
+      for (double a = 0.0; a <= 1.0 + 1e-9; a += 0.05) {
+        xy.push_back({f.head.x + s * f.dx + a * ex, f.head.y + s * f.dy + a * ey});
+      }
+    }
+    return landingFloor(m, xy, z);
+  };
+  // A U's corners t out from the later of its two stair edges (see the U
+  // below): on f's axis and on g's, so the leg between them is square to the
+  // flights.
+  const auto uCorners = [&](const Flight & f, const Flight & g, double zl, double t, Waypoint & c1,
+                            Waypoint & c2) {
+    const double along_g = (g.foot.x - f.head.x) * f.dx + (g.foot.y - f.head.y) * f.dy;
+    const double s = std::max(0.0, along_g) + t;
+    c1 = {f.head.x + s * f.dx, f.head.y + s * f.dy, zl};
+    c2 = {g.foot.x + (s - along_g) * f.dx, g.foot.y + (s - along_g) * f.dy, zl};
+  };
+  // The obstacles of a U landing for the footprint, out to its corners'
+  // furthest (t = 1.5) and pad beyond (the flights' sideways moves below).
+  const auto uSweep = [&](const Flight & f, const Flight & g, double zl, double pad) {
+    Waypoint f1, f2;
+    uCorners(f, g, zl, 1.5, f1, f2);
+    const double xs[] = {f.head.x, g.foot.x, f1.x, f2.x};
+    const double ys[] = {f.head.y, g.foot.y, f1.y, f2.y};
+    return makeSweep(
+      *std::min_element(xs, xs + 4) - pad, *std::min_element(ys, ys + 4) - pad,
+      *std::max_element(xs, xs + 4) + pad, *std::max_element(ys, ys + 4) + pad, zl, f, g);
+  };
+  // The room a U landing leaves the footprint with its corners t out (past
+  // footprint_margin; negative = short), over the whole motion the landing
+  // is walked with, not two discs and a half-width: off the arriving flight
+  // along its axis (once the body's back end has left the head -- behind
+  // that it is over the flight, whose treads stand in the band above the
+  // landing when the flight comes down onto it), the turn onto the leg, the
+  // leg, the turn onto the next flight, and onto that flight as far as the
+  // body's front end reaching its foot. Each turn where the controllers stop
+  // for it (footprint_turn_stop before the corner, either way the link is
+  // walked) and on the corner, each straight run and each turn with
+  // footprint_heading_tolerance of heading error. The discs placed
+  // dp_1125's corners where the M20's side passed 0.02-0.17 m from the
+  // landings' inner walls: a disc is too much room toward where the body
+  // never points, and robot_radius either side of the leg too little for a
+  // 0.82 m body 10-15 deg off its heading. where: the step the room is
+  // least at; parts: every step's room, for the notes.
+  const auto uRoom = [&](const FootprintSweep & sweep, const Flight & f, const Flight & g,
+                         double zl, double t, const char ** where, std::string * parts) {
+    const double ux = f.dx, uy = f.dy;  // out, onto the landing
+    Waypoint c1, c2;
+    uCorners(f, g, zl, t, c1, c2);
+    double lx = c2.x - c1.x, ly = c2.y - c1.y;
+    const double len = std::hypot(lx, ly);
+    if (len > 1e-6) {
+      lx /= len;
+      ly /= len;
+    } else {
+      lx = -uy;
+      ly = ux;
+    }
+    const double tol = p.footprint_heading_tolerance, stop = p.footprint_turn_stop;
+    const double step = m.res / 2.0, reach_x = footprintReachX(p.footprint);
+    const double yaw_u = std::atan2(uy, ux), yaw_l = std::atan2(ly, lx);
+    const double yaw_g = std::atan2(g.dy, g.dx);
+    double best = sweep.cap();
+    const char * at = "";
+    std::vector<std::pair<const char *, double>> each;  // per step, in order
+    const auto take = [&](double r, const char * what) {
+      if (r < best) {
+        best = r;
+        at = what;
+      }
+      if (each.empty() || each.back().first != what) {
+        each.push_back({what, r});
+      } else {
+        each.back().second = std::min(each.back().second, r);
+      }
+    };
+    const double d1 = std::max(0.0, (c1.x - f.head.x) * ux + (c1.y - f.head.y) * uy);
+    const double s1 = std::min(reach_x, d1);
+    take(
+      sweep.segment(f.head.x + s1 * ux, f.head.y + s1 * uy, c1.x, c1.y, yaw_u, tol, step),
+      "off the flight");
+    for (const auto & [px, py] :
+         {std::pair{c1.x, c1.y}, std::pair{c1.x - stop * ux, c1.y - stop * uy},
+          std::pair{c1.x + stop * lx, c1.y + stop * ly}}) {
+      take(sweep.turn(px, py, yaw_u, yaw_l, tol), "the first turn");
+    }
+    take(sweep.segment(c1.x, c1.y, c2.x, c2.y, yaw_l, tol, step), "the leg across");
+    for (const auto & [px, py] :
+         {std::pair{c2.x, c2.y}, std::pair{c2.x - stop * lx, c2.y - stop * ly},
+          std::pair{c2.x - stop * ux, c2.y - stop * uy}}) {
+      take(sweep.turn(px, py, yaw_l, yaw_g, tol), "the second turn");
+    }
+    const double d2 = std::max(0.0, (c2.x - g.foot.x) * ux + (c2.y - g.foot.y) * uy);
+    const double s2 = std::min(reach_x, d2);
+    take(
+      sweep.segment(c2.x, c2.y, g.foot.x + s2 * ux, g.foot.y + s2 * uy, yaw_g, tol, step),
+      "onto the next flight");
+    if (where) {
+      *where = at;
+    }
+    if (parts) {
+      parts->clear();
+      char part[64];
+      for (const auto & [what, r] : each) {
+        std::snprintf(
+          part, sizeof part, "%s%s %+.2f", parts->empty() ? "" : ", ", what,
+          r - p.footprint_margin);
+        *parts += part;
+      }
+    }
+    return best - p.footprint_margin;
+  };
   // The polyline: lead-in, flights, corners on the landings, lead-out.
   StairLink link;
   link.kf_a = ka;
@@ -1054,7 +1238,7 @@ bool flightLinks(
   link.flights = true;
   link.n_flights = F.size();
   std::vector<Waypoint> & pts = link.pts;
-  char buf[400];
+  char buf[640];
   std::string shapes;
   const Waypoint lead_in = {
     F.front().foot.x - p.flights_lead * F.front().dx,
@@ -1159,6 +1343,30 @@ bool flightLinks(
       const double cx = f.head.x + t * f.dx, cy = f.head.y + t * f.dy;
       const Waypoint c = {cx, cy, landingFloor(m, cx, cy, 0.5, z)};
       onLanding(c.z);
+      // Where the corner goes is settled (the axes meet there); whether the
+      // body can turn on it is only reported. Swept where the controllers
+      // stop for the turn either way and on the corner itself.
+      if (use_fp) {
+        const FootprintSweep sweep = makeSweep(cx, cy, cx, cy, c.z, f, g);
+        const double tol = p.footprint_heading_tolerance, stop = p.footprint_turn_stop;
+        const double yaw_f = std::atan2(f.dy, f.dx), yaw_g = std::atan2(g.dy, g.dx);
+        double r = sweep.cap();
+        for (const auto & [px, py] :
+             {std::pair{cx, cy}, std::pair{cx - stop * f.dx, cy - stop * f.dy},
+              std::pair{cx + stop * g.dx, cy + stop * g.dy}}) {
+          r = std::min(r, sweep.turn(px, py, yaw_f, yaw_g, tol));
+        }
+        r -= p.footprint_margin;
+        if (r < 0.0) {
+          std::snprintf(
+            buf, sizeof buf,
+            "landing %zu: no room for the footprint (%s) to turn at the L's corner -- it comes "
+            "%.2f m closer than footprint_margin %.2f to a wall, a newel or something on the "
+            "landing",
+            j + 1, fp_size, -r, p.footprint_margin);
+          out.notes.push_back(buf);
+        }
+      }
       link.turns.push_back(pts.size());
       pts.push_back(c);
       std::snprintf(
@@ -1193,20 +1401,7 @@ bool flightLinks(
       // near metre hold a surface at, within a riser and a half of the walk.
       // The corners stand on it too (2026-11; at the walk's z before, 0.1 m
       // under the floor on dp's first and third landings).
-      double zl = z;
-      {
-        std::vector<std::pair<double, double>> xy;
-        const double along_g0 = (g.foot.x - f.head.x) * f.dx + (g.foot.y - f.head.y) * f.dy;
-        const double sa = std::max(0.0, along_g0);
-        const double ex = g.foot.x - f.head.x - along_g0 * f.dx;  // f's axis to g's, across
-        const double ey = g.foot.y - f.head.y - along_g0 * f.dy;
-        for (double s = sa + 0.2; s <= sa + 1.0 + 1e-9; s += m.res) {
-          for (double a = 0.0; a <= 1.0 + 1e-9; a += 0.05) {
-            xy.push_back({f.head.x + s * f.dx + a * ex, f.head.y + s * f.dy + a * ey});
-          }
-        }
-        zl = landingFloor(m, xy, z);
-      }
+      const double zl = uFloor(f, g, z);
       onLanding(zl);
       const double cap = R + 0.3;
       std::unordered_map<uint32_t, bool> blocked;
@@ -1242,12 +1437,25 @@ bool flightLinks(
         }
         return r;
       };
+      // With the robot's footprint (2026-11-26), the room at t is the whole
+      // motion the landing is walked with, swept with the real polygon
+      // (uRoom, above).
+      std::optional<FootprintSweep> sweep;
+      if (use_fp) {
+        sweep.emplace(uSweep(f, g, zl, 0.0));
+      }
+      const auto fpRoom = [&](double t, const char ** where, std::string * parts) {
+        return uRoom(*sweep, f, g, zl, t, where, parts);
+      };
+      const auto roomAt = [&](double t) {
+        return sweep ? fpRoom(t, nullptr, nullptr) : room(t);
+      };
       // At least half a body out from the later edge (the hind legs are
       // 0.3 m behind the centre), at most 1.5 m.
       std::vector<std::pair<double, double>> tried;  // t, room
       double best = -std::numeric_limits<double>::infinity();
       for (double t = 0.5; t <= 1.5 + 1e-9; t += m.res / 2.0) {
-        tried.push_back({t, room(t)});
+        tried.push_back({t, roomAt(t)});
         best = std::max(best, tried.back().second);
       }
       double t_pick = tried.front().first, room_pick = tried.front().second;
@@ -1268,7 +1476,18 @@ bool flightLinks(
         buf, sizeof buf, "%sU (turns %.2f m out, %.2f m %s)", shapes.empty() ? "" : ", ",
         s0 + t_pick, std::fabs(room_pick), room_pick >= 0.0 ? "to spare" : "short");
       shapes += buf;
-      if (room_pick < 0.0) {
+      if (room_pick < 0.0 && sweep) {
+        const char * where = "";
+        std::string parts;
+        fpRoom(t_pick, &where, &parts);
+        std::snprintf(
+          buf, sizeof buf,
+          "landing %zu: no room for the footprint (%s) -- %s comes %.2f m closer than "
+          "footprint_margin %.2f to a wall, a newel or something on the landing wherever the "
+          "corners go (room past the margin: %s)",
+          j + 1, fp_size, where, -room_pick, p.footprint_margin, parts.c_str());
+        out.notes.push_back(buf);
+      } else if (room_pick < 0.0) {
         std::snprintf(
           buf, sizeof buf,
           "landing %zu: no room to turn in place -- the body reaches %.2f m into a wall, a "
@@ -1308,9 +1527,31 @@ bool flightLinks(
     std::snprintf(buf, sizeof buf, "%s%.1f", widths.empty() ? "" : "/", f.width);
     widths += buf;
   }
+  // Each flight's room either side of the footprint, the axis being the
+  // middle of the treads: logged, and a note when it is under the margin
+  // (the flight is laid all the same -- it is the only way between floors).
+  std::string sides;
+  if (use_fp) {
+    const double hw = footprintReachY(p.footprint);
+    sides = ", side ";
+    for (size_t j = 0; j < F.size(); ++j) {
+      const double side = F[j].width / 2.0 - hw;
+      std::snprintf(buf, sizeof buf, "%s%.2f", j ? "/" : "", side);
+      sides += buf;
+      if (side < p.footprint_margin) {
+        std::snprintf(
+          buf, sizeof buf,
+          "flight %zu: %.2f m wide, which leaves the footprint (%s) %.2f m a side, under "
+          "footprint_margin %.2f",
+          j + 1, F[j].width, fp_size, side, p.footprint_margin);
+        out.notes.push_back(buf);
+      }
+    }
+    sides += " m";
+  }
   std::snprintf(
-    buf, sizeof buf, "%zu flights %s m wide, landings: %s, %zu turns", F.size(), widths.c_str(),
-    shapes.c_str(), link.turns.size());
+    buf, sizeof buf, "%zu flights %s m wide%s, landings: %s, %zu turns", F.size(), widths.c_str(),
+    sides.c_str(), shapes.c_str(), link.turns.size());
   link.geometry = buf;
   addLink(m, std::move(link), out);
   return true;

@@ -58,8 +58,18 @@
       stair_links: true
       # The disc the body sweeps turning in place on a landing: the footprint's
       # circumscribed radius with the 0.03 padding the factory value has
-      # (0.44 x 0.27).
+      # (0.44 x 0.27). Only the stand-in for `footprint` below, used while it
+      # is empty.
       stair_flights_turn_radius: 0.52
+      # The M20's own footprint swept over the landings (2026-11-26; the
+      # factory file has how). On robot01's first descent of dp_1125's
+      # switchback stair (2026-11-26) the body passed 0.02-0.17 m from the
+      # landings' inner walls and newels with the corners placed by the disc
+      # above and robot_radius beside the leg: the 0.82 m body crossed a
+      # landing 10-15 deg off the leg's heading, which puts its side 0.33 m
+      # out, not 0.25. = local_costmap's footprint in syncai_controller's
+      # m20.yaml (model_keys.yaml, `equal`).
+      footprint: "[[0.41,0.24],[0.41,-0.24],[-0.41,-0.24],[-0.41,0.24]]"
 
       dynamic:
         # Returns this close to the sensor, in the plane, are the robot's own

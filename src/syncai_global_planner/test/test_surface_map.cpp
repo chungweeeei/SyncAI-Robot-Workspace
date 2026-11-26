@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "syncai_global_planner/plugins/octomap_planner_3d/dynamic_overlay.hpp"
+#include "syncai_global_planner/plugins/octomap_planner_3d/footprint_sweep.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/keepout_zones.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/path_postprocess.hpp"
 #include "syncai_global_planner/plugins/octomap_planner_3d/surface_astar.hpp"
@@ -819,6 +820,173 @@ TEST(StairLinks, AnUnwalkedUStairIsLaidAsFlightsAndCorners)
   const PlanResult r = astar.plan(lo.cell, hi.cell, p);
   ASSERT_EQ(r.failure, PlanFailure::None) << r.detail;
   EXPECT_EQ(r.links.size(), 1u);
+}
+
+// ---- the footprint over a stair's landings (footprint_sweep.hpp, 2026-11-26) ----
+
+namespace
+{
+const FootprintPoints kG23Footprint = {{0.35, 0.22}, {0.35, -0.22}, {-0.35, -0.22}, {-0.35, 0.22}};
+const FootprintPoints kM20Footprint = {{0.41, 0.24}, {0.41, -0.24}, {-0.41, -0.24}, {-0.41, 0.24}};
+}  // namespace
+
+TEST(FootprintSweep, ParsesTheCostmapsString)
+{
+  FootprintPoints fp;
+  std::string error;
+  ASSERT_TRUE(parseFootprint("[[0.41,0.24],[0.41,-0.24],[-0.41,-0.24],[-0.41,0.24]]", fp, error))
+    << error;
+  EXPECT_EQ(fp, kM20Footprint);
+  ASSERT_TRUE(parseFootprint(" [ [1, 2], [3.5e-1, -4], [0,0] ] ", fp, error)) << error;
+  EXPECT_EQ(fp.size(), 3u);
+  EXPECT_DOUBLE_EQ(fp[1].first, 0.35);
+  EXPECT_TRUE(parseFootprint("", fp, error));
+  EXPECT_TRUE(fp.empty());
+  EXPECT_TRUE(parseFootprint("[]", fp, error));
+  EXPECT_TRUE(fp.empty());
+  EXPECT_FALSE(parseFootprint("[[0.4,0.2],[0.4,-0.2]]", fp, error));  // two points
+  EXPECT_FALSE(parseFootprint("[[0.4,0.2],[0.4,-0.2],[0.1]]", fp, error));
+  EXPECT_FALSE(parseFootprint("[[0.4,0.2],[0.4,-0.2],[0,x]]", fp, error));
+  EXPECT_FALSE(parseFootprint("[[0.4,0.2],[0.4,-0.2],[0,0]", fp, error));
+}
+
+TEST(FootprintSweep, ClearanceIsTheRectanglesNotADisc)
+{
+  // A wall of column centres along x = 1.0 (cells 0.1 m, so its near edge is
+  // at 0.95) and the M20 at the origin.
+  std::vector<std::pair<double, double>> wall;
+  for (double y = -2.0; y <= 2.0 + 1e-9; y += 0.1) {
+    wall.push_back({1.0, y});
+  }
+  const FootprintSweep s(kM20Footprint, wall, 0.05, 1.0);
+  // Facing the wall: 0.95 - 0.41; side on: 0.95 - 0.24; the same backwards.
+  EXPECT_NEAR(s.pose(0.0, 0.0, 0.0), 0.54, 1e-9);
+  EXPECT_NEAR(s.pose(0.0, 0.0, M_PI / 2), 0.71, 1e-9);
+  EXPECT_NEAR(s.pose(0.0, 0.0, M_PI), 0.54, 1e-9);
+  // Pressed into it: negative, by how far.
+  EXPECT_NEAR(s.pose(0.6, 0.0, 0.0), -0.06, 1e-9);
+  // Side on, the run is as wide as the body give or take the heading
+  // tolerance: 0.41 sin(0.2) + 0.24 cos(0.2) = 0.317 of reach.
+  EXPECT_NEAR(
+    s.segment(0.0, -1.0, 0.0, 1.0, M_PI / 2, 0.2, 0.05),
+    0.95 - (0.41 * std::sin(0.2) + 0.24 * std::cos(0.2)), 1e-3);
+  // A quarter turn from facing the wall to side on sweeps the corner's
+  // radius toward it: 0.95 - hypot(0.41, 0.24).
+  EXPECT_NEAR(s.turn(0.0, 0.0, 0.0, M_PI / 2, 0.0), 0.95 - std::hypot(0.41, 0.24), 0.01);
+  // Nothing within the cap reads as the cap.
+  const FootprintSweep far(kM20Footprint, {{5.0, 5.0}}, 0.05, 0.5);
+  EXPECT_DOUBLE_EQ(far.pose(0.0, 0.0, 0.0), 0.5);
+}
+
+TEST(FootprintSweep, ATurnNeedsLessThanTheDisc)
+{
+  // A quarter turn clockwise from facing +x sweeps each corner of the body
+  // through 90 deg of arc, which leaves the diagonals at 45 and 225 deg
+  // unswept at the full corner radius (0.475): a post there, 0.40 m out to
+  // its near edge, is inside the disc but clear of the turning polygon --
+  // why the landings are swept and not tested with a disc.
+  const double d = 0.45;
+  const FootprintSweep s(
+    kM20Footprint, {{d * std::cos(M_PI / 4), d * std::sin(M_PI / 4)}}, 0.05, 1.0);
+  EXPECT_LT(d - 0.05 - footprintRadius(kM20Footprint), 0.0);
+  EXPECT_GT(s.turn(0.0, 0.0, 0.0, -M_PI / 2, 0.0), 0.0);
+  // Turned the other way the body swings through the post.
+  EXPECT_LT(s.turn(0.0, 0.0, 0.0, M_PI / 2, 0.0), 0.0);
+}
+
+namespace
+{
+// dp's middle stair in small, as AnUnwalkedUStairIsLaidAsFlightsAndCorners,
+// with the landing's far wall at landing_end (6.0 there: a landing 1.26 m
+// deep past the wall between the flights, which ends at x = 4.74).
+std::shared_ptr<const StairLinks> uStairLinks(double landing_end, const StairLinkParams & p)
+{
+  synthetic::SceneBuilder b;
+  b.flatFloor(0, 3.0, 0, 8.0, 0.0);
+  b.floor(3.0, 4.74, 0.5, 1.7, [](double x, double) {
+    return 0.17 * std::min(6, static_cast<int>(std::floor((x - 3.0) / 0.29)) + 1);
+  });
+  b.flatFloor(4.74, landing_end, 0.5, 3.5, 1.02);
+  b.floor(3.0, 4.74, 2.3, 3.5, [](double x, double) {
+    return 1.02 + 0.17 * std::min(6, static_cast<int>(std::floor((4.74 - x) / 0.29)) + 1);
+  });
+  b.flatFloor(0, 3.0, 2.3, 8.0, 2.04);
+  b.box(3.0, 4.74, 1.7, 2.3, 0.0, 3.0);
+  b.box(3.0, landing_end + 0.1, 0.4, 0.5, 0.0, 3.5);
+  b.box(3.0, landing_end + 0.1, 3.5, 3.6, 0.0, 3.5);
+  b.box(landing_end, landing_end + 0.1, 0.4, 3.6, 0.0, 3.5);
+  // With the tree, as the plugin builds them: the landings' walls are read
+  // off it at body height (landingObstacle), and a wall that runs up past
+  // the band has no surface there for the map-only stand-in to see.
+  const auto tree = b.finish();
+  const auto m = buildSurfaceMap(*tree, SurfaceMapParams{});
+  return buildStairLinks(*m, {}, p, tree.get());
+}
+
+bool hasNote(const StairLinks & links, const std::string & what)
+{
+  return std::any_of(links.notes.begin(), links.notes.end(), [&](const std::string & n) {
+    return n.find(what) != std::string::npos;
+  });
+}
+}  // namespace
+
+TEST(StairLinks, AULandingsCornersLeaveTheFootprintRoom)
+{
+  // With each robot's own footprint the leg across the landing keeps its
+  // side clear of the wall's end between the flights by half its width, the
+  // heading tolerance's swing and the margin -- robot_radius alone put the
+  // M20's side 0.02-0.17 m from dp_1125's newels -- and the landing is deep
+  // enough that no note says otherwise.
+  for (const FootprintPoints & fp : {kG23Footprint, kM20Footprint}) {
+    StairLinkParams p;
+    p.footprint = fp;
+    const auto links = uStairLinks(6.0, p);
+    ASSERT_EQ(links->links.size(), 1u) << (links->notes.empty() ? "" : links->notes[0]);
+    const StairLink & l = links->links[0];
+    ASSERT_TRUE(l.flights) << l.geometry;
+    ASSERT_EQ(l.turns.size(), 2u) << l.geometry;
+    EXPECT_NE(l.geometry.find("side "), std::string::npos) << l.geometry;
+    EXPECT_FALSE(hasNote(*links, "footprint")) << l.geometry;
+    const double reach = footprintReachX(fp) * std::sin(p.footprint_heading_tolerance) +
+                         footprintReachY(fp) * std::cos(p.footprint_heading_tolerance);
+    for (const size_t t : l.turns) {
+      // 0.05 of the wall box's own voxel rounding and the cell's half.
+      EXPECT_GE(l.pts[t].x - 4.74, reach + p.footprint_margin - 0.1)
+        << "corner " << t << " at x " << l.pts[t].x << ": " << l.geometry;
+      EXPECT_LT(l.pts[t].x, 6.0) << l.geometry;
+    }
+  }
+}
+
+TEST(StairLinks, AULandingTooShallowForTheBodySaysSo)
+{
+  // The far wall 0.6 m past the flights: the M20 (0.82 m long) cannot turn
+  // there whatever the corners do. The link is laid all the same -- it is
+  // the only way up -- and a note names the footprint.
+  StairLinkParams p;
+  p.footprint = kM20Footprint;
+  const auto links = uStairLinks(5.34, p);
+  ASSERT_EQ(links->links.size(), 1u) << (links->notes.empty() ? "" : links->notes[0]);
+  EXPECT_TRUE(hasNote(*links, "no room for the footprint")) << links->links[0].geometry;
+}
+
+TEST(StairLinks, WithoutAFootprintTheLandingsAreTheDiscsAsBefore)
+{
+  // An empty footprint is the round-robot placement unchanged, point for
+  // point: the factory default for a robot that does not set one.
+  const auto a = uStairLinks(6.0, StairLinkParams{});
+  StairLinkParams p;
+  p.footprint = {};
+  const auto b = uStairLinks(6.0, p);
+  ASSERT_EQ(a->links.size(), 1u);
+  ASSERT_EQ(b->links.size(), 1u);
+  ASSERT_EQ(a->links[0].pts.size(), b->links[0].pts.size());
+  for (size_t i = 0; i < a->links[0].pts.size(); ++i) {
+    EXPECT_DOUBLE_EQ(a->links[0].pts[i].x, b->links[0].pts[i].x);
+    EXPECT_DOUBLE_EQ(a->links[0].pts[i].y, b->links[0].pts[i].y);
+  }
+  EXPECT_EQ(a->links[0].geometry.find("side "), std::string::npos);
 }
 
 TEST(SurfaceAStar, NoCornerCutting)
