@@ -159,7 +159,18 @@
     # the localizer's GICP, the terrain layer, the planner's overlay -- are
     # sized for. Try 10-15 against the skipped-scan WARN if it ever needs to
     # be denser.
-    lidar_filter_num: 20
+    #
+    # 20 -> 5 on 2026-11-27 with NO change in what the filter sees: the relay
+    # on 10.21.31.106 (~/lidarTransfer/run_relay.sh, cloud_relay_cpp) now keeps
+    # every 4th point (stride:=4) before it sends /LIDAR/POINTS_UDP, and this
+    # filter counts the index of the cloud it receives, so 4 x 5 picks the raw
+    # indices % 20 == 0 that 20 picked from the full cloud. CHANGE THE TWO
+    # TOGETHER: the relay's stride times this is the decimation. Why the relay:
+    # the full cloud was ~2.8 MB (~108 k points) at 10 Hz, and the relay's
+    # sending of it (Foxy, asynchronous) put ~78 ms between its stamp and this
+    # node's receipt (3.7 ms of that the network), and parsing all of it cost
+    # this node most of its 46 ms a scan -- for 1 point in 20.
+    lidar_filter_num: 5
 
     # body_cloud_dense's decimation, for mapping only: syncai_mapping's pgo
     # maps from it, and it is published only while subscribed, so the
@@ -170,4 +181,9 @@
     # 2), and divides 20, so body_cloud's points stay a subset of the dense
     # cloud's (the node warns otherwise; 6 would not divide). FIRST GUESS:
     # watch the backlog WARN while mapping.
-    dense_filter_num: 5
+    #
+    # 5 -> 1 on 2026-11-27, with the relay's stride 4 (above): every point the
+    # relay sends, raw index % 4 where it was % 5, so ~25 % more points a scan
+    # for pgo (~14-24 k). It must be under lidar_filter_num and divide it, and
+    # with 5 that leaves only 1. Watch the backlog WARN while mapping.
+    dense_filter_num: 1
