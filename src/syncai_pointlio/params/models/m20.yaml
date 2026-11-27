@@ -58,6 +58,13 @@
     lidar_source_field: "ring"
     lidar_source_bounds: [0, 96, 192]
     lidar_source_timeout: 0.5
+    # lidar_merge_end_tolerance (2026-11-27): both lidars' sweeps start on the
+    # 100 ms grid line and end 0.1 ms before the next (robot01, 114 messages:
+    # end phase 99.9 ms p10-p90, start 0.0), so at 0 a message never completed
+    # its own scan and every scan waited a sweep for the next message -- the
+    # `merge wait` of 56-91 ms mean, lio_odom ~200 ms old when received. 1 ms
+    # is ten times that gap and a hundredth of a sweep.
+    lidar_merge_end_tolerance: 0.001
     # The M20's IMU reports m/s^2 already (|a| = 9.77 at rest, 2026-11-24), not
     # the Livox's g: the G23's 9.81 here would read gravity as ~96 m/s^2.
     imu_acc_scale: 1.0

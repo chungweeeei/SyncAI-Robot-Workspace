@@ -76,11 +76,16 @@ struct NodeConfig
   // lidar_merge_holdback is how long a scan waits for a late lidar's points
   // before the filter gets it, s, and so how much older the odometry's newest
   // point is; 0 waits for nothing and drops what comes late. lidar_scan_period
-  // is the length of the scans cut from the stream. Neither is read without
+  // is the length of the scans cut from the stream. lidar_merge_end_tolerance
+  // (2026-11-27, ScanMerger::Config::end_tolerance has why) is how short of a
+  // scan's end the lidars may stop and the scan still count as complete, s:
+  // the M20's sweeps end 0.1 ms before the grid line, and at 0 every scan
+  // waited a sweep for the next message. None is read without
   // lidar_time_field.
   std::string lidar_time_field = "";
   double lidar_merge_holdback = 0.0;
   double lidar_scan_period = 0.1;
+  double lidar_merge_end_tolerance = 0.0;
   // The lidars of a merged cloud told apart (2026-11-25), so that a scan
   // waits for the one that is late rather than the full holdback: an integer
   // field of the cloud (the M20's "ring") and the bounds of each source's

@@ -89,6 +89,20 @@ public:
     std::vector<long> source_bounds;
     // A source this far behind the newest point of all is down, s
     double source_timeout = 0.5;
+    // How close to a window's end the watermark must come for the window to
+    // be complete, s: it goes once the watermark is at end - end_tolerance.
+    // 0 = at the end itself. A point that comes for [end - end_tolerance, end)
+    // after its window went is late, dropped and counted like any other. The
+    // caller keeps it under scan_period.
+    //
+    // Why (2026-11-27): the M20's two lidars are synchronised to whole tenths
+    // of a second, so a message is one full sweep of each, [g, g + 99.9 ms],
+    // on exactly this grid -- its newest point 0.1 ms short of the window's
+    // end. At 0 no message completed its own window: every scan waited for
+    // the next message, a whole sweep (robot01: `merge wait` 56-91 ms mean,
+    // lio_odom ~200 ms old when received). The next sweep starts on the grid
+    // line, so a tolerance well under a sweep takes nothing of it.
+    double end_tolerance = 0.0;
   };
 
   // One message's points and their absolute times, index for index
@@ -226,7 +240,7 @@ public:
     if (!m_sources.empty()) trackSources(sparse);
 
     const double watermark = this->watermark();
-    while (m_window_start + m_config.scan_period <= watermark) {
+    while (m_window_start + m_config.scan_period - m_config.end_tolerance <= watermark) {
       // A stream that stopped for a while (a pause in a bag, a dead lidar)
       // leaves windows with nothing in them: go to the one the oldest pending
       // point is in, instead of walking the gap a window at a time.

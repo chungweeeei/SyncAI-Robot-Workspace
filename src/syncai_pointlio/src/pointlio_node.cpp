@@ -86,9 +86,19 @@ PointLIONode::PointLIONode() : Node("pointlio_node")
           std::to_string(m_node_config.lidar_scan_period) + " s, " +
           std::to_string(m_node_config.lidar_merge_holdback) + " s)");
       }
+      if (
+        m_node_config.lidar_merge_end_tolerance < 0.0 ||
+        m_node_config.lidar_merge_end_tolerance >= m_node_config.lidar_scan_period) {
+        // Negative waits past the end for nothing; a whole scan or more would
+        // hand a window on before any of its points are in.
+        throw std::invalid_argument(
+          "lidar_merge_end_tolerance must be >= 0 and under lidar_scan_period (got " +
+          std::to_string(m_node_config.lidar_merge_end_tolerance) + " s)");
+      }
       syncai_pointlio::ScanMerger::Config merger_config;
       merger_config.holdback = m_node_config.lidar_merge_holdback;
       merger_config.scan_period = m_node_config.lidar_scan_period;
+      merger_config.end_tolerance = m_node_config.lidar_merge_end_tolerance;
       if (!m_node_config.lidar_source_field.empty()) {
         // Sources that overlap or are empty would put a point down to the
         // wrong lidar, and a timeout of nothing marks every source down at
@@ -115,18 +125,20 @@ PointLIONode::PointLIONode() : Node("pointlio_node")
         RCLCPP_INFO(
           this->get_logger(),
           "[PointLIONode][%s] Per-point time from the cloud's '%s' field: scans of %.0f ms cut by "
-          "time, handed to the filter once every lidar has passed their end (%s), at most %.0f ms "
-          "behind the newest point; a lidar %.1f s behind the others is not waited for",
+          "time, handed to the filter once every lidar has passed their end (%s; %.1f ms short "
+          "of it counts), at most %.0f ms behind the newest point; a lidar %.1f s behind the "
+          "others is not waited for",
           __func__, m_node_config.lidar_time_field.c_str(), m_node_config.lidar_scan_period * 1e3,
-          ranges.c_str(), m_node_config.lidar_merge_holdback * 1e3,
-          m_node_config.lidar_source_timeout);
+          ranges.c_str(), m_node_config.lidar_merge_end_tolerance * 1e3,
+          m_node_config.lidar_merge_holdback * 1e3, m_node_config.lidar_source_timeout);
       } else {
         RCLCPP_INFO(
           this->get_logger(),
           "[PointLIONode][%s] Per-point time from the cloud's '%s' field: scans of %.0f ms cut by "
-          "time, handed to the filter once %.0f ms behind the newest point",
+          "time, handed to the filter once %.0f ms behind the newest point (%.1f ms short of it "
+          "counts)",
           __func__, m_node_config.lidar_time_field.c_str(), m_node_config.lidar_scan_period * 1e3,
-          m_node_config.lidar_merge_holdback * 1e3);
+          m_node_config.lidar_merge_holdback * 1e3, m_node_config.lidar_merge_end_tolerance * 1e3);
       }
     }
   } else {
@@ -202,6 +214,8 @@ void PointLIONode::loadParameters()
     this->declare_parameter("lidar_merge_holdback", m_node_config.lidar_merge_holdback);
   m_node_config.lidar_scan_period =
     this->declare_parameter("lidar_scan_period", m_node_config.lidar_scan_period);
+  m_node_config.lidar_merge_end_tolerance = this->declare_parameter(
+    "lidar_merge_end_tolerance", m_node_config.lidar_merge_end_tolerance);
   m_node_config.lidar_source_field =
     this->declare_parameter("lidar_source_field", m_node_config.lidar_source_field);
   m_node_config.lidar_source_bounds =

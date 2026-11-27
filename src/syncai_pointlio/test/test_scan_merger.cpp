@@ -529,3 +529,85 @@ TEST(ScanMergerSources, RestartResetsTheLidars)
   EXPECT_NEAR(run.scans.front().start_time, 100.0, 1e-9);
   EXPECT_EQ(run.merger.takeStats().restarts, 1u);
 }
+
+// ---- Sweeps that end just short of the grid line (2026-11-27) ---------------
+
+namespace
+{
+
+// One lidar's sweep as the M20 sends it (robot01, 2026-11-27): starting on
+// the 100 ms grid line and ending 0.1 ms before the next, [start, start +
+// 0.0999], `n` points evenly over it.
+void m20Sweep(Message & m, double start, float tag, int n = 100)
+{
+  for (int i = 0; i < n; ++i) {
+    ScanMerger::Point p;
+    p.x = tag;
+    p.y = static_cast<float>(i);
+    m.cloud->push_back(p);
+    m.times.push_back(start + 0.0999 * i / (n - 1));
+    m.rings.push_back(tag == kFront ? 10 + i % 80 : 100 + i % 80);
+  }
+}
+
+}  // namespace
+
+// The newest point of a message is 0.1 ms short of its window's end. With no
+// tolerance the window waits for the next message, a whole sweep; with the
+// M20's 1 ms each message hands on its own scan, whole, as it arrives.
+TEST(ScanMergerSources, EndToleranceHandsOnTheMessagesOwnScan)
+{
+  ScanMerger::Config tolerant_config = m20SourcesConfig();
+  tolerant_config.end_tolerance = 0.001;
+  Harness strict(m20SourcesConfig());
+  Harness tolerant(tolerant_config);
+  for (int k = 0; k < 6; ++k) {
+    Message m;
+    m20Sweep(m, 100.0 + 0.1 * k, kFront);
+    m20Sweep(m, 100.0 + 0.1 * k, kRear);
+    strict.feed(m);
+    tolerant.feed(m);
+    EXPECT_EQ(strict.scans.size(), static_cast<std::size_t>(k)) << "message " << k;
+    ASSERT_EQ(tolerant.scans.size(), static_cast<std::size_t>(k + 1)) << "message " << k;
+    EXPECT_NEAR(tolerant.scans.back().start_time, 100.0 + 0.1 * k, 1e-9);
+    EXPECT_EQ(countTag(*tolerant.scans.back().cloud, kFront), 100);
+    EXPECT_EQ(countTag(*tolerant.scans.back().cloud, kRear), 100);
+  }
+  expectOrderedWindows(tolerant.scans, 0.1);
+  // What the filter's newest point costs: a sweep at 0, nothing with it
+  EXPECT_GT(strict.merger.takeWait().max, 0.099);
+  EXPECT_LT(tolerant.merger.takeWait().max, 0.001);
+  EXPECT_EQ(tolerant.merger.takeStats().late_points, 0u);
+  EXPECT_TRUE(tolerant.events.empty());
+}
+
+// The price: a point for the last millisecond of a window that comes after
+// the window went is late -- dropped and counted, never moved into the next
+// scan, whose own points are untouched.
+TEST(ScanMergerSources, PointInsideTheToleranceAfterItsScanIsLate)
+{
+  ScanMerger::Config config = m20SourcesConfig();
+  config.end_tolerance = 0.001;
+  Harness run(config);
+  Message first;
+  m20Sweep(first, 100.0, kFront);
+  m20Sweep(first, 100.0, kRear);
+  run.feed(first);
+  ASSERT_EQ(run.scans.size(), 1u);
+
+  Message second;
+  m20Sweep(second, 100.1, kFront);
+  m20Sweep(second, 100.1, kRear);
+  ScanMerger::Point straggler;
+  straggler.x = kRear;
+  second.cloud->push_back(straggler);
+  second.times.push_back(100.0995);  // window [100.0, 100.1), already gone
+  second.rings.push_back(150);
+  run.feed(second);
+
+  ASSERT_EQ(run.scans.size(), 2u);
+  EXPECT_EQ(countTag(*run.scans[1].cloud, kRear), 100);
+  const auto stats = run.merger.takeStats();
+  EXPECT_EQ(stats.late_points, 1u);
+  EXPECT_NEAR(stats.max_late, 0.0005, 1e-6);
+}
