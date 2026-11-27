@@ -50,6 +50,8 @@ void MPPIController::initialize(
   auto getParam = parameters_handler_->getParamGetter(name_);
   getParam(visualize_, "visualize", false);
   getParam(reset_period_, "reset_period", 1.0);
+  // Not upstream; see predictPose(). <= 0: the pose as the TF gives it.
+  getParam(pose_latency_, "pose_latency", 0.0);
   // Not upstream; see clampAcceleration(). <= 0 disables either clamp.
   getParam(max_linear_accel_, "max_linear_accel", 1.0);
   getParam(max_angular_accel_, "max_angular_accel", 3.2);
@@ -1342,9 +1344,36 @@ bool MPPIController::isApproachBlocked(double x, double y, double yaw, double wa
   return false;
 }
 
+geometry_msgs::msg::PoseStamped MPPIController::predictPose(
+  const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed) const
+{
+  // Not upstream (2026-11-27). The pose this controller is handed is
+  // Point-LIO's, and on robot01 it is ~0.11 s old when it arrives (lio_odom
+  // received 114 ms after its stamp, median; lio_bridge republishes it
+  // stamped now + transform_tolerance, so its age does not show) -- at
+  // 1 rad/s the heading the optimizer starts from is ~6 deg behind the body,
+  // every correction overshoots, and the next corrects the other way. The
+  // measured speed is not that old: its yaw rate is the IMU's gyro and its
+  // forward speed Point-LIO's. So the pose is carried forward by
+  // pose_latency at that speed, an arc (yaw at the middle of the interval),
+  // in the pose's own frame. Planar, as everything else the optimizer sees.
+  if (pose_latency_ <= 0.0) {
+    return pose;
+  }
+  const double dt = pose_latency_;
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  const double mid = yaw + 0.5 * speed.angular.z * dt;
+  geometry_msgs::msg::PoseStamped out = pose;
+  out.pose.position.x += (speed.linear.x * std::cos(mid) - speed.linear.y * std::sin(mid)) * dt;
+  out.pose.position.y += (speed.linear.x * std::sin(mid) + speed.linear.y * std::cos(mid)) * dt;
+  out.pose.orientation =
+    syncai_util::geometry_utils::orientationAroundZAxis(yaw + speed.angular.z * dt);
+  return out;
+}
+
 geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
-  const geometry_msgs::msg::PoseStamped & robot_pose, const geometry_msgs::msg::Twist & robot_speed,
-  syncai_nav_core::GoalChecker * goal_checker)
+  const geometry_msgs::msg::PoseStamped & measured_pose,
+  const geometry_msgs::msg::Twist & robot_speed, syncai_nav_core::GoalChecker * goal_checker)
 {
 #ifdef BENCHMARK_TESTING
   auto start = std::chrono::system_clock::now();
@@ -1356,6 +1385,7 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommandsImpl(
   last_time_called_ = clock_->now();
 
   std::lock_guard<std::mutex> param_lock(*parameters_handler_->getLock());
+  const geometry_msgs::msg::PoseStamped robot_pose = predictPose(measured_pose, robot_speed);
   nav_msgs::msg::Path transformed_plan = path_handler_.transformPath(robot_pose);
 
   // For applyApproachScaling(): planar, because the local path's heights are

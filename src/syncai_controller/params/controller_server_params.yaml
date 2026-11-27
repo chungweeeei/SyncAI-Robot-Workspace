@@ -601,6 +601,21 @@
       # out of initialize() and takes controller_server down.
       time_steps: 32
       model_dt: 0.05
+      # Not upstream (2026-11-27), both off here (the G23's gait is taken to
+      # turn as commanded, with a pose of Point-LIO's own small latency):
+      # pose_latency (s) carries the robot's pose forward at the measured
+      # speed before the optimizer starts from it (controller.cpp
+      # predictPose()); yaw_response is the gait's measured yaw rate per
+      # commanded one, which the motion model predicts with (empty = the
+      # identity; syncai_util/yaw_response.hpp). The M20 sets both
+      # (params/models/m20.yaml has the measurements). The tables are
+      # startup-only.
+      pose_latency: 0.0
+      yaw_response:
+        left_command: [0.0]
+        left_rate: [0.0]
+        right_command: [0.0]
+        right_rate: [0.0]
       # Upstream's default 1000 (the README example uses 2000). Measure the
       # controller process's CPU on the Orin before raising it or time_steps:
       # a cycle past 50 ms shows up as "Control loop missed its desired rate".

@@ -26,6 +26,7 @@
 #include <xtensor/xnoalias.hpp>
 
 #include "syncai_mppi_controller/tools/parameters_handler.hpp"
+#include "syncai_util/yaw_response.hpp"
 
 namespace mppi
 {
@@ -60,6 +61,18 @@ public:
     xt::noalias(xt::view(state.wz, xt::all(), xt::range(1, _))) =
       xt::view(state.cwz, xt::all(), xt::range(0, -1));
 
+    // Not upstream (2026-11-27): the yaw rate the body turns at for each
+    // commanded one (syncai_util/yaw_response.hpp has why). The commands
+    // (cwz) are what goes out; the trajectories are integrated from what the
+    // gait makes of them, so a correction inside the dead band is predicted
+    // to turn nothing. Column 0 is the measured rate and stays.
+    if (yaw_response_.active()) {
+      auto realised = xt::view(state.wz, xt::all(), xt::range(1, _));
+      for (auto & w : realised) {
+        w = static_cast<float>(yaw_response_.rate(w));
+      }
+    }
+
     if (isHolonomic()) {
       xt::noalias(xt::view(state.vy, xt::all(), xt::range(1, _))) =
         xt::view(state.cvy, xt::all(), xt::range(0, -1));
@@ -77,6 +90,17 @@ public:
    * @param control_sequence Control sequence to apply constraints to
    */
   virtual void applyConstraints(models::ControlSequence & /*control_sequence*/) {}
+
+  /**
+   * @brief The gait's measured yaw response predict() maps the commands through
+   * (empty: the identity, upstream's assumption)
+   */
+  void setYawResponse(const syncai_util::YawResponse & response) {yaw_response_ = response;}
+
+  const syncai_util::YawResponse & yawResponse() const {return yaw_response_;}
+
+protected:
+  syncai_util::YawResponse yaw_response_;
 };
 
 /**

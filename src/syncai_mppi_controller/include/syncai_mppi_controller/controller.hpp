@@ -110,8 +110,14 @@ protected:
     * @brief Upstream's computeVelocityCommands() body
     */
   geometry_msgs::msg::TwistStamped computeVelocityCommandsImpl(
-    const geometry_msgs::msg::PoseStamped & robot_pose,
+    const geometry_msgs::msg::PoseStamped & measured_pose,
     const geometry_msgs::msg::Twist & robot_speed, syncai_nav_core::GoalChecker * goal_checker);
+
+  /**
+    * @brief The pose carried forward pose_latency at the measured speed (not upstream)
+    */
+  geometry_msgs::msg::PoseStamped predictPose(
+    const geometry_msgs::msg::PoseStamped & pose, const geometry_msgs::msg::Twist & speed) const;
 
   /**
     * @brief Limit the change from the last command to max_*_accel per cycle
@@ -281,6 +287,7 @@ protected:
   bool visualize_;
 
   double reset_period_;
+  double pose_latency_{0.0};
   double max_linear_accel_{1.0};
   double max_angular_accel_{3.2};
   double walk_vx_min_{0.0};

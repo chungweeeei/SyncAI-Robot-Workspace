@@ -54,10 +54,40 @@
       # few cmd_vel plateaus against /odom before trusting either, and change
       # these with those (and with FollowPathRPP3D's two below).
       #
-      # The robot's pose is also older here than on a G23: the vendor's merged
-      # cloud arrives ~133 ms after its stamp and Point-LIO waits up to 120 ms
-      # more for the rear lidar (syncai_pointlio's m20.yaml), so the optimizer
-      # plans from where the robot was ~0.2 s ago -- 0.2 m at this speed.
+      # The robot's pose is also older here than on a G23: lio_odom is received
+      # ~114 ms after its stamp (median, robot01 2026-11-27, after the relay's
+      # stride 4 and the scan merger's end tolerance; ~200 ms before), so the
+      # optimizer is handed where the robot was ~0.11 s ago. pose_latency
+      # (not upstream, controller.cpp predictPose()) carries that pose forward
+      # at the measured speed -- yaw rate from the IMU's gyro, which is not
+      # late -- before the optimizer starts from it. Without it, at 1 rad/s
+      # every heading correction started ~6 deg behind the body, overshot,
+      # and the next one corrected the other way. Re-measure with the stack's
+      # latency (syncai_pointlio's notes) and change the two together.
+      pose_latency: 0.11
+      #
+      # The gait's yaw response, which the motion model predicts with (not
+      # upstream, 2026-11-27; syncai_util/yaw_response.hpp has the argument):
+      # command -> the yaw rate the body turns at, per side. robot01's
+      # open-loop steps in the Basic gait (record/m20_stair_1127/
+      # t5_turn_response, standing and walking alike):
+      #
+      #   angular.z   0.3   0.5   0.6 left     0.6 right   0.7    1.0
+      #   body        0     0     0.15-0.36    0.49-0.50   0.53   0.93-0.95
+      #
+      # Upstream assumes the identity, so MPPI planned arcs and swerves at
+      # 0.15-0.4 the robot never turned (a flat route turning 76 deg over 2 m
+      # ended 0.5 m off its plan); an inverse table in syncai_driver_manager
+      # (c02aa2f) could not straighten the jump at 0.5-0.6 and made a straight
+      # line weave +-5 deg -- its tables are emptied with this. The left 0.31
+      # is the median of three 0.6 runs; the right was stepped at 0.6 only
+      # (1.0 assumed as the left); the Stairs gait is not measured, and stair
+      # mode does not use this table. Startup-only.
+      yaw_response:
+        left_command: [0.0, 0.5, 0.6, 0.7, 1.0]
+        left_rate: [0.0, 0.0, 0.31, 0.53, 0.94]
+        right_command: [0.0, 0.5, 0.6, 1.0]
+        right_rate: [0.0, 0.0, 0.5, 0.94]
       vx_max: 1.0
       wz_max: 1.0
       # DiffDrive, as the G23: the M20's protocol takes a lateral axis

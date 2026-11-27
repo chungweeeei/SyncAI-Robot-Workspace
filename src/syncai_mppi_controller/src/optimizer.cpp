@@ -103,8 +103,50 @@ void Optimizer::getParams()
   getParam(tc_vx_weights_, "tc_vx_weights", std::vector<double>{1.1, 0.0, 0.0011});
   getParam(tc_wz_weights_, "tc_wz_weights", std::vector<double>{0.63, 0.0, 0.00063});
 
+  // Not upstream (2026-11-27): the gait's measured yaw response, which the
+  // motion model predicts with (syncai_util/yaw_response.hpp). Empty = the
+  // identity. Startup-only: it is handed to the motion model built below.
+  syncai_util::YawResponseSide yaw_left, yaw_right;
+  getParam(yaw_left.command, "yaw_response.left_command", std::vector<double>{},
+    ParameterType::Static);
+  getParam(yaw_left.rate, "yaw_response.left_rate", std::vector<double>{}, ParameterType::Static);
+  getParam(yaw_right.command, "yaw_response.right_command", std::vector<double>{},
+    ParameterType::Static);
+  getParam(yaw_right.rate, "yaw_response.right_rate", std::vector<double>{},
+    ParameterType::Static);
+  // A params file cannot write an empty list (it has no type for the ROS
+  // parser), so the factory file's [0.0] stands for one: no table.
+  for (auto * v : {&yaw_left.command, &yaw_left.rate, &yaw_right.command, &yaw_right.rate}) {
+    if (v->size() == 1 && (*v)[0] == 0.0) {
+      v->clear();
+    }
+  }
+  for (const char * key : {"left_command", "left_rate", "right_command", "right_rate"}) {
+    parameters_handler_->addReadOnly(
+      name_ + ".yaw_response." + key,
+      "the motion model's yaw response is set at startup; restart controller_server");
+  }
+
   s.constraints = s.base_constraints;
   setMotionModel(motion_model_name);
+  {
+    syncai_util::YawResponse response;
+    response.set(yaw_left, yaw_right);  // throws, naming the side, on a table it cannot use
+    motion_model_->setYawResponse(response);
+    if (response.active()) {
+      auto list = [](const std::vector<double> & v) {
+        std::string out;
+        for (double x : v) out += (out.empty() ? "" : " ") + std::to_string(x).substr(0, 4);
+        return out;
+      };
+      RCLCPP_INFO(
+        logger_,
+        "Motion model predicts the gait's yaw response: left command [%s] -> rate [%s], "
+        "right command [%s] -> rate [%s]",
+        list(yaw_left.command).c_str(), list(yaw_left.rate).c_str(),
+        list(yaw_right.command).c_str(), list(yaw_right.rate).c_str());
+    }
+  }
   rebuildPriors(true);
   parameters_handler_->addPostCallback([this]() { onParametersChanged(); });
 
@@ -440,6 +482,14 @@ xt::xtensor<float, 2> Optimizer::getOptimizedTrajectory()
 
   xt::noalias(xt::view(sequence, xt::all(), 0)) = control_sequence_.vx;
   xt::noalias(xt::view(sequence, xt::all(), 1)) = control_sequence_.wz;
+  // Not upstream (2026-11-27): the path the commands are predicted to drive,
+  // as the candidates were scored -- through the gait's yaw response.
+  const auto & response = motion_model_->yawResponse();
+  if (response.active()) {
+    for (auto & w : xt::view(sequence, xt::all(), 1)) {
+      w = static_cast<float>(response.rate(w));
+    }
+  }
 
   if (isHolonomic()) {
     xt::noalias(xt::view(sequence, xt::all(), 2)) = control_sequence_.vy;
