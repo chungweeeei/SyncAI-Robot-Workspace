@@ -262,9 +262,19 @@
     # The standing body's rectangle about base_link (the header's extents):
     # half-length 0.41 (the wheels' rims and the shell's ends), half-width
     # 0.24 (the wider leg, 0.236). The G23's is 0.35 x 0.22: the M20 is 0.12 m
-    # longer and about as wide. With footprint_padding 0.01 the inscribed
-    # radius is 0.25 and the circumscribed one 0.489.
+    # longer and about as wide. The polygon stays the body: it is one string
+    # with syncai_global_planner's Octo3D.footprint (model_keys' `equal`),
+    # which sweeps it over the stair landings.
     footprint: "[[0.41,0.24],[0.41,-0.24],[-0.41,-0.24],[-0.41,0.24]]"
+    # 0.01 -> 0.05 (2026-11-27, the operator after obstacle-avoidance runs on
+    # robot01: the rectangle let MPPI pass obstacles too close). The padded
+    # footprint is 0.92 x 0.58 m, inscribed 0.29, circumscribed 0.544; only
+    # this costmap's checks grow (MPPI's CostCritic, the direct approach and
+    # back-out), not the planner's. The price is doors: dp's 2F lab door,
+    # 0.75 m between the jambs, leaves 8.5 cm a side (12.5 at 0.01); 0.10
+    # would leave 3.5. terrain_layer.robot_radius stays 0.25, the body's own
+    # (one value with the planner's, model_keys' `robot radius`).
+    footprint_padding: 0.05
 
     terrain_layer:
       # = controller_server's lidar_height: the cloud's frame above the ground.
@@ -284,10 +294,11 @@
       max_slope_deg: 20.0
 
     inflation_layer:
-      # At least the padded footprint's circumscribed radius (0.489):
-      # MPPI's CostCritic checks the footprint only where the centre's cell has
-      # a cost, so a smaller ring leaves a centre 0.45-0.49 m from an obstacle
+      # At least the padded footprint's circumscribed radius (0.544 with
+      # footprint_padding 0.05; 0.489 and 0.50 here at 0.01): MPPI's
+      # CostCritic checks the footprint only where the centre's cell has a
+      # cost, so a smaller ring leaves a centre just inside the corner's reach
       # reading 0 while a corner clips it (the factory file has the G23's
       # case). cost_scaling_factor is left: with it the cost at a given
-      # distance is the G23's, on a body 6 cm longer to the corner.
-      inflation_radius: 0.50
+      # distance is the G23's. Change with footprint_padding.
+      inflation_radius: 0.55
