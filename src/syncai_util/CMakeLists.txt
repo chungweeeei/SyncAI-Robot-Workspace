@@ -97,6 +97,7 @@ if(BUILD_TESTING)
   # Header-only, ROS-free: the gait's measured yaw response that MPPI's motion
   # model predicts with (yaw_response.hpp).
   ament_add_gtest(test_yaw_response test/test_yaw_response.cpp)
+  target_link_libraries(test_yaw_response ${PROJECT_NAME})
 endif()
 
 ament_export_include_directories(include)
