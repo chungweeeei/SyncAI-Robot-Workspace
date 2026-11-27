@@ -93,6 +93,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_path_cusps test/test_path_cusps.cpp)
   target_link_libraries(test_path_cusps ${PROJECT_NAME})
   ament_target_dependencies(test_path_cusps ${dependencies})
+
+  # Header-only, ROS-free: the gait's measured yaw response that MPPI's motion
+  # model predicts with (yaw_response.hpp).
+  ament_add_gtest(test_yaw_response test/test_yaw_response.cpp)
 endif()
 
 ament_export_include_directories(include)
